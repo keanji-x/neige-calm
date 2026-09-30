@@ -7,13 +7,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 
 mod client_transport;
-mod server_requests;
-pub use server_requests::{
-    DynamicToolCallParams, DynamicToolCallResponse, DynamicToolRequest, DynamicToolText,
-    ServerRequestId,
-};
 #[cfg(test)]
 mod server_request_tests;
+mod server_requests;
 use client_transport::{PendingRequest, TransportAbort};
 
 #[cfg(feature = "fixtures")]
@@ -514,7 +510,6 @@ type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<UnixStre
 pub struct CodexAppServer {
     sink: WsSink,
     transport: Arc<TransportAbort>,
-    server_requests: Arc<server_requests::Registration>,
     pending: Pending,
     next_id: AtomicU64,
     /// A leak/wedge backstop for a request whose response never arrives; lifecycle is driven by notifications / EOF / child exit, not by this timer.
@@ -525,7 +520,6 @@ pub struct CodexAppServer {
 
 impl Drop for CodexAppServer {
     fn drop(&mut self) {
-        self.server_requests.close();
         self.transport.poison();
         self.reader.abort();
     }
@@ -613,13 +607,8 @@ fn turn_steer_params(
 }
 
 impl CodexAppServer {
-    /// Register the sole dynamic-tool consumer for this connection; the default is explicit refusal.
-    pub fn take_dynamic_tool_requests(&self) -> Result<mpsc::Receiver<DynamicToolRequest>> {
-        self.server_requests.take()
-    }
-
     /// Test-only: a fully-constructed [`CodexAppServer`] over an in-process `UnixStream::pair` handshake; the returned server end must be kept alive or the connection closes.
-    #[cfg(any(test, feature = "fixtures"))]
+    #[cfg(test)]
     pub(crate) async fn connect_pair_for_test()
     -> (Self, NotificationStream, WebSocketStream<UnixStream>) {
         let (client_io, server_io) = UnixStream::pair().expect("unix socket pair");
@@ -636,19 +625,16 @@ impl CodexAppServer {
         let sink: WsSink = Arc::new(Mutex::new(write));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
-        let server_requests = Arc::new(server_requests::Registration::default());
         let reader = tokio::spawn(reader_loop(
             read,
             pending.clone(),
             notif_tx,
             sink.clone(),
             transport.clone(),
-            server_requests.clone(),
         ));
         let client = Self {
             sink,
             transport,
-            server_requests,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -724,14 +710,12 @@ impl CodexAppServer {
         // Unbounded: notification delivery must never block the reader's response routing.
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
 
-        let server_requests = Arc::new(server_requests::Registration::default());
         let reader = tokio::spawn(reader_loop(
             read,
             pending.clone(),
             notif_tx,
             sink.clone(),
             transport.clone(),
-            server_requests.clone(),
         ));
 
         tracing::debug!(sock = %sock_path.display(), "codex app-server: connected");
@@ -739,7 +723,6 @@ impl CodexAppServer {
         let client = Self {
             sink,
             transport,
-            server_requests,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -798,37 +781,7 @@ impl CodexAppServer {
         &self,
         params: PermissionThreadStartParams,
     ) -> Result<ThreadResult> {
-        self.thread_start_with_permissions_and_tools(params, Vec::new())
-            .await
-    }
-
-    pub(crate) async fn thread_start_with_params_and_tools(
-        &self,
-        params: ThreadStartParams,
-        tools: Vec<Value>,
-    ) -> Result<ThreadResult> {
-        self.thread_start_with_permissions_and_tools(
-            PermissionThreadStartParams {
-                cwd: params.cwd,
-                approval_policy: params.approval_policy,
-                permissions: ThreadPermissionSelection::LegacySandbox(params.sandbox_mode),
-                developer_instructions: params.developer_instructions,
-                config: params.config,
-            },
-            tools,
-        )
-        .await
-    }
-
-    async fn thread_start_with_permissions_and_tools(
-        &self,
-        params: PermissionThreadStartParams,
-        tools: Vec<Value>,
-    ) -> Result<ThreadResult> {
         let mut value = json!({"cwd":params.cwd,"approvalPolicy":params.approval_policy});
-        if !tools.is_empty() {
-            value["dynamicTools"] = json!(tools);
-        }
         match params.permissions {
             ThreadPermissionSelection::LegacySandbox(mode) => {
                 value["sandbox"] = Value::String(mode);
@@ -1134,9 +1087,8 @@ async fn reader_loop(
     notif_tx: mpsc::UnboundedSender<Notification>,
     sink: WsSink,
     transport: Arc<TransportAbort>,
-    registration: Arc<server_requests::Registration>,
 ) {
-    let mut requests = server_requests::Dispatch::new(sink, transport, registration);
+    let mut requests = server_requests::Dispatch::new(sink, transport);
     loop {
         let frame = tokio::select! {
             finished = requests.tasks.join_next() => {
@@ -1368,20 +1320,17 @@ mod tests {
         let sink: WsSink = Arc::new(Mutex::new(write));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
-        let server_requests = Arc::new(server_requests::Registration::default());
         let reader = tokio::spawn(reader_loop(
             read,
             pending.clone(),
             notif_tx,
             sink.clone(),
             transport.clone(),
-            server_requests.clone(),
         ));
 
         let client = CodexAppServer {
             sink,
             transport,
-            server_requests,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,

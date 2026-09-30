@@ -1,6 +1,6 @@
 //! Recovery requires durable evidence that preparation never committed.
-use crate::mcp_track_report::{boot, call_tool, planner_identity};
-use crate::task_recovery::{current, declaration, declare, finish, recovery_args};
+use crate::mcp_track_report::boot;
+use crate::task_recovery::{current, declaration, declare, finish, user_recovery};
 use calm_server::task_recovery::task_recovery_view;
 
 #[tokio::test]
@@ -88,17 +88,12 @@ async fn task_recovery_retained_operation_evidence_blocks_unbound_predecessor() 
         sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,phase_detail_json,tx_output_json,spawn_artifacts_json,compensation_state,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,?3,'h',?10,?4,'{}','{}',?5,?6,?7,?8,?9,1,1)")
             .bind(case).bind(kind).bind(&b.id).bind(target.unwrap_or(boot.track_id.as_str())).bind(phase).bind(detail).bind(output).bind(artifacts).bind(compensation).bind(if target.is_some() { "card" } else { "track" })
             .execute(&pool).await.unwrap();
-        let error = call_tool(
-            &boot,
-            "calm.plan.recover",
-            planner_identity(&boot),
-            recovery_args(&b, case),
-        )
-        .await
-        .expect_err(case);
-        assert_eq!(error.code, -32409, "{case}: {error:?}");
+        let error = user_recovery(&boot, &b, case, "Recover the failed task")
+            .await
+            .expect_err(case);
         assert!(
-            error.message.contains("uncertain external effects"),
+            matches!(&error, calm_server::error::CalmError::Conflict(message)
+                if message.contains("uncertain external effects")),
             "{case}: {error:?}"
         );
         let view = task_recovery_view(

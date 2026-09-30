@@ -79,7 +79,7 @@ pub async fn acquire_workspace_lease_for_test(
 /// Take a lease that RECORDS ITS BASE through the production `acquire_workspace_lease_tx` (the
 /// five base columns in the one INSERT) at `path`, the sibling of
 /// `acquire_workspace_lease_for_test` whose plain lease writes the legacy all-NULL tuple.
-/// `plan.list.worktree.base_sha` and `recovery.guidance.retained.base_sha` are read from that
+/// `plan.list.worktree.base_sha` is read from that
 /// row. `canonical_path` is `path` as given and `git_common_dir` is `<path>/.git`: the directory
 /// need not be a git repository, the columns only have to be the shape the CHECK accepts.
 /// `fixtures`-only.

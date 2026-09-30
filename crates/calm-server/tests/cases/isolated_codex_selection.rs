@@ -134,8 +134,14 @@ async fn isolated_codex_disabled_backend_keeps_safe_preparation_recovery() {
     .await
     .unwrap();
     assert!(view.recovery.allowed, "{}", view.recovery.reason);
-    let receipt=call_tool(&boot,"calm.plan.recover",planner_identity(&boot),
-        json!({"key":task.key,"expected_attempt_id":task.id,"idempotency_key":"enable-and-recover","reason":"Retry preparation after configuring the isolated backend."})).await.unwrap();
+    let receipt = crate::task_recovery::user_recovery(
+        &boot,
+        &task,
+        "enable-and-recover",
+        "Retry preparation after configuring the isolated backend.",
+    )
+    .await
+    .unwrap();
     assert_eq!(receipt["key"], task.key);
     assert_ne!(receipt["attempt_id"], task.id);
     assert_eq!(current(&boot, "disabled").await.key, task.key);

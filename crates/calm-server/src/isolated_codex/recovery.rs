@@ -3,27 +3,11 @@ use super::{journal, record::Admission};
 use crate::dedicated_codex::StopState;
 use crate::model::{Task, TaskStatus};
 use crate::operation::Tx;
-use crate::task_recovery::{
-    AdmissionError, RecoveryRefusal, RecoveryRefusalCode, RefusalSite, SupportedContinuation,
-};
+use crate::task_recovery::{AdmissionError, RecoveryRefusal, RecoveryRefusalCode};
 use sha2::{Digest, Sha256};
 
-fn denied(
-    site: RefusalSite,
-    continuation: SupportedContinuation,
-    reason: String,
-) -> AdmissionError {
-    RecoveryRefusal::conflict(
-        site,
-        RecoveryRefusalCode::PredecessorNotQuiescent,
-        continuation,
-        reason,
-    )
-    .into()
-}
-
-fn permanent(site: RefusalSite, reason: String) -> AdmissionError {
-    denied(site, SupportedContinuation::None, reason)
+fn denied(reason: String) -> AdmissionError {
+    RecoveryRefusal::conflict(RecoveryRefusalCode::PredecessorNotQuiescent, reason).into()
 }
 
 /// No live card/session or filesystem is authority.
@@ -33,8 +17,7 @@ pub(crate) async fn require_stopped_tx(
     op_id: &str,
 ) -> Result<(), AdmissionError> {
     if task.status != TaskStatus::Failed || !super::selected(task).unwrap_or(false) {
-        return Err(permanent(
-            RefusalSite::IsolatedRouteMismatch,
+        return Err(denied(
             "predecessor isolated operation does not belong to a failed isolated-route execution; \
              its namespace stop cannot fence this key, so same-key recovery is permanently \
              unavailable"
@@ -52,8 +35,7 @@ pub(crate) async fn require_stopped_tx(
     let Some((_, phase, spawn_artifacts, compensation)) =
         operation.filter(|(kind, ..)| kind == super::OPERATION_KIND)
     else {
-        return Err(permanent(
-            RefusalSite::IsolatedOperationNotThisExecution,
+        return Err(denied(
             "predecessor isolated operation named for settlement is not this execution's keyed \
              isolated operation; its namespace stop cannot fence this key, so same-key recovery \
              is permanently unavailable"
@@ -61,36 +43,28 @@ pub(crate) async fn require_stopped_tx(
         ));
     };
     if spawn_artifacts || compensation {
-        return Err(permanent(
-            RefusalSite::IsolatedCompensationRecorded,
+        return Err(denied(
             "predecessor isolated execution recorded spawn artifacts or compensation state, so \
              its namespace stop is not attributable; same-key recovery is permanently \
-             unavailable and no settlement briefing re-opens it"
+             unavailable and no settlement notice re-opens it"
                 .into(),
         ));
     }
     if phase != "failed" {
         if matches!(phase.as_str(), "succeeded" | "stuck") {
-            return Err(permanent(
-                RefusalSite::IsolatedOperationTerminalWithoutFailure,
-                format!(
-                    "predecessor isolated operation ended in phase {phase} rather than failed; \
+            return Err(denied(format!(
+                "predecessor isolated operation ended in phase {phase} rather than failed; \
                      the failed execution has no matching stop proof, so same-key recovery is \
                      permanently unavailable"
-                ),
-            ));
+            )));
         }
         // The Controller may already have checkpointed `Quiesced` before the separate
         // parked-completion transaction; this branch tests the phase alone.
-        return Err(denied(
-            RefusalSite::IsolatedStopPending,
-            SupportedContinuation::WaitForSettlement,
-            format!(
-                "predecessor isolated operation is in phase {phase}, not failed; the settlement \
+        return Err(denied(format!(
+            "predecessor isolated operation is in phase {phase}, not failed; the settlement \
                  that records its stop has not completed, so recovery re-opens once the kernel \
-                 settles it and delivers the settlement briefing"
-            ),
-        ));
+                 settles it and delivers the settlement notice"
+        )));
     }
     confirmed_record_tx(tx, task, op_id).await.map(|_| ())
 }
@@ -104,8 +78,7 @@ pub(super) async fn confirmed_record_tx(
 ) -> Result<super::record::RunRecord, AdmissionError> {
     // Do not expose parse errors or the private record through this capability.
     let unreadable = || {
-        permanent(
-            RefusalSite::IsolatedRecordUnreadable,
+        denied(
             "predecessor isolated operation's journal cannot be read as a prepared run, so no \
              namespace stop proof exists for it; same-key recovery is permanently unavailable"
                 .into(),
@@ -116,8 +89,7 @@ pub(super) async fn confirmed_record_tx(
         .map_err(|_| unreadable())?;
     let session = record.session().map_err(|_| unreadable())?;
     let StopState::Quiesced(proof) = &session.stop else {
-        return Err(permanent(
-            RefusalSite::IsolatedStopUnconfirmed,
+        return Err(denied(
             "predecessor isolated execution has no recorded namespace quiescence proof although \
              its operation is terminal, and the kernel will not record one; same-key recovery is \
              permanently unavailable"
@@ -172,13 +144,10 @@ pub(super) async fn confirmed_record_tx(
         } else {
             "has an identity chain or stop proof that does not validate for this execution".into()
         };
-        return Err(permanent(
-            RefusalSite::IsolatedStopIdentityMismatch,
-            format!(
-                "predecessor isolated execution's recorded run {unmet}; same-key recovery is \
+        return Err(denied(format!(
+            "predecessor isolated execution's recorded run {unmet}; same-key recovery is \
                  permanently unavailable"
-            ),
-        ));
+        )));
     }
     Ok(record)
 }

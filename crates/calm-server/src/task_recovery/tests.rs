@@ -1,10 +1,9 @@
-//! Every admission refusal site, driven through the real admission function with a
-//! fixture that trips exactly that site.
+//! Every admission refusal, driven through the real admission function with a fixture that
+//! trips exactly that refusing check.
 use super::admission;
 use super::launch_test_support::{RecoveryFixture, initial_claimed_task, recovered_claimed_task};
 use super::refusal::{
     AdmissionError, RecoveryRefusal, RecoveryRefusalCode as Code, RefusalKind as Kind,
-    RefusalSite as Site, SupportedContinuation as Next,
 };
 use crate::db::prelude::*;
 use crate::db::sqlite::{SqlxRepo, TaskReporter, begin_immediate_tx, task_fail_from_worker_tx};
@@ -19,6 +18,92 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 const PLANNER: &str = calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
+
+/// One fixture per refusing check in admission, in source order; each trips exactly that check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Site {
+    /// The actor is neither a User nor a Planner.
+    ActorNotUserOrPlanner,
+    /// The Planner session cannot be resolved to a role.
+    PlannerSessionUnresolved,
+    /// The Track is closed, so it does not schedule work.
+    TrackNotReady,
+    /// Child-task routes are not recoverable.
+    ChildTaskRoute,
+    /// A Planner asked for a task outside auto-declare (user-owned or
+    /// declare-and-wait).
+    PlannerOutsideAutoDeclare,
+    /// The bounded Planner retry for this key was consumed.
+    PlannerRetryLimit,
+    /// The frozen constraint fails `validate` for this Track.
+    ConstraintShapeInvalid,
+    /// The frozen context closure was truncated at claim.
+    FrozenContextTruncated,
+    /// No frozen context was recorded for the failed execution.
+    FrozenContextMissing,
+    /// The frozen context is valid JSON but not a reference list.
+    FrozenContextMalformed,
+    /// No declaration in the report carries the key.
+    DeclarationMissing,
+    /// The declaration is duplicated, tombstoned or not ready.
+    DeclarationNotCurrent,
+    /// The declaration block carries validation diagnostics.
+    DeclarationInvalid,
+    /// The declare-and-wait release was withdrawn.
+    ReleaseWithdrawn,
+    /// The constraint fails `validate` at the inner check.
+    InnerConstraintShapeInvalid,
+    /// The declaration's route or author differs from the frozen ones.
+    RouteOrAuthorChanged,
+    /// A frozen context reference names a missing Track.
+    FrozenTrackMissing,
+    /// A frozen context reference left the authorized area.
+    ContextMovedOutsideArea,
+    /// A frozen context reference names a Track without a report.
+    FrozenReportMissing,
+    /// A frozen context reference names a missing block.
+    FrozenBlockMissing,
+    /// The root reference no longer names the declaration block.
+    RootIdentityChanged,
+    /// A frozen reference's content hash changed.
+    RootHashChanged,
+    /// A prepared isolated execution shares its key with other operations or
+    /// verification effects.
+    IsolatedAmbiguousOperations,
+    /// An ordinary worker card was prepared for the key.
+    OrdinaryWorkerPrepared,
+    /// Verification effects exist for the key without a worker card.
+    VerificationEffectsWithoutWorker,
+    /// The failure is not a spawn failure and nothing proves a stop.
+    NotSpawnFailedWithoutStopProof,
+    /// A keyed operation has uncertain external effects.
+    OperationUncertainExternalEffects,
+    /// The execution is not a failed isolated-route execution.
+    IsolatedRouteMismatch,
+    /// The named operation is not this execution's isolated operation.
+    IsolatedOperationNotThisExecution,
+    /// Compensation state or spawn artifacts were recorded.
+    IsolatedCompensationRecorded,
+    /// The isolated operation has not reached a terminal phase.
+    IsolatedStopPending,
+    /// The isolated operation ended without a failed outcome.
+    IsolatedOperationTerminalWithoutFailure,
+    /// The operation's journal record cannot be read as a prepared run.
+    IsolatedRecordUnreadable,
+    /// The journal holds no quiescence proof for the terminal operation.
+    IsolatedStopUnconfirmed,
+    /// The recorded run's admission is not closed, or its identity chain or
+    /// stop proof does not validate for this execution.
+    IsolatedStopIdentityMismatch,
+    /// The attempt's allocation row is missing.
+    AllocationMissing,
+    /// The accepted recovery's predecessor row is missing.
+    PredecessorRowMissing,
+    /// The accepted recovery's admitting actor is unsupported.
+    ProvenanceUnsupported,
+    /// The Track no longer schedules the accepted recovery.
+    TrackNoLongerSchedules,
+}
 const CHILD_ROUTE: &str = calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 
 fn declaration(declared_by: &str) -> Value {
@@ -528,7 +613,7 @@ async fn recovery_refuses_on_a_closed_track() {
     )
     .await;
     let refusal = refused(Site::TrackNotReady, admit(&fx, ActorId::User, 1).await);
-    assert_eq!(refusal.site, Site::TrackNotReady, "{refusal:?}");
+    assert_eq!(refusal.code, Code::TrackNotReady, "{refusal:?}");
     assert_eq!(refusal.reason, "track is closed; reopen it first");
 
     sql(
@@ -542,246 +627,192 @@ async fn recovery_refuses_on_a_closed_track() {
         .expect("a reopened track admits the recovery");
 }
 
-/// What every site names, keyed by the site; a fixture that drifts onto a neighbouring site is red.
-const ROWS: &[(Site, Code, Kind, Next)] = &[
+/// What every refusing check names, keyed by its fixture.
+const ROWS: &[(Site, Code, Kind)] = &[
     (
         Site::ActorNotUserOrPlanner,
         Code::NotAuthorized,
         Kind::Forbidden,
-        Next::None,
     ),
     (
         Site::PlannerSessionUnresolved,
         Code::NotAuthorized,
         Kind::Forbidden,
-        Next::None,
     ),
-    (
-        Site::TrackNotReady,
-        Code::TrackNotReady,
-        Kind::Conflict,
-        Next::None,
-    ),
-    (
-        Site::ChildTaskRoute,
-        Code::UnsupportedSpawn,
-        Kind::Conflict,
-        Next::None,
-    ),
+    (Site::TrackNotReady, Code::TrackNotReady, Kind::Conflict),
+    (Site::ChildTaskRoute, Code::UnsupportedSpawn, Kind::Conflict),
     (
         Site::PlannerOutsideAutoDeclare,
         Code::UserAuthorizationRequired,
         Kind::Forbidden,
-        Next::UserRecovery,
     ),
     (
         Site::PlannerRetryLimit,
         Code::RecoveryLimitReached,
         Kind::Forbidden,
-        Next::UserRecovery,
     ),
     (
         Site::ConstraintShapeInvalid,
         Code::MissingFrozenContract,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::FrozenContextTruncated,
         Code::MissingFrozenContract,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::FrozenContextMissing,
         Code::MissingFrozenContract,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::FrozenContextMalformed,
         Code::MissingFrozenContract,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::DeclarationMissing,
         Code::DeclarationWithdrawn,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::DeclarationNotCurrent,
         Code::DeclarationWithdrawn,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::DeclarationInvalid,
         Code::DeclarationWithdrawn,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::ReleaseWithdrawn,
         Code::DeclarationWithdrawn,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::InnerConstraintShapeInvalid,
         Code::MissingFrozenContract,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::RouteOrAuthorChanged,
         Code::ContractChanged,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::FrozenTrackMissing,
         Code::ContractChanged,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::ContextMovedOutsideArea,
         Code::ContractChanged,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::FrozenReportMissing,
         Code::ContractChanged,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::FrozenBlockMissing,
         Code::ContractChanged,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::RootIdentityChanged,
         Code::ContractChanged,
         Kind::Conflict,
-        Next::None,
     ),
-    (
-        Site::RootHashChanged,
-        Code::ContractChanged,
-        Kind::Conflict,
-        Next::None,
-    ),
+    (Site::RootHashChanged, Code::ContractChanged, Kind::Conflict),
     (
         Site::IsolatedAmbiguousOperations,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::OrdinaryWorkerPrepared,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::NewTask,
     ),
     (
         Site::VerificationEffectsWithoutWorker,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::NewTask,
     ),
     (
         Site::NotSpawnFailedWithoutStopProof,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::NewTask,
     ),
     (
         Site::OperationUncertainExternalEffects,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::NewTask,
     ),
     (
         Site::IsolatedRouteMismatch,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::IsolatedOperationNotThisExecution,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::IsolatedCompensationRecorded,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::IsolatedStopPending,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::WaitForSettlement,
     ),
     (
         Site::IsolatedOperationTerminalWithoutFailure,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::IsolatedRecordUnreadable,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::IsolatedStopUnconfirmed,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::IsolatedStopIdentityMismatch,
         Code::PredecessorNotQuiescent,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::AllocationMissing,
         Code::RecoveryLineageMissing,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::PredecessorRowMissing,
         Code::RecoveryLineageMissing,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::ProvenanceUnsupported,
         Code::NotAuthorized,
         Kind::Conflict,
-        Next::None,
     ),
     (
         Site::TrackNoLongerSchedules,
         Code::TrackNotReady,
         Kind::Conflict,
-        Next::None,
     ),
 ];
-
-/// Sites no fixture in this file can reach, each with its reason.
-const UNREACHABLE: &[(Site, &str)] = &[];
 
 /// Drives the real function with a fixture that trips exactly `site`.
 async fn drive(site: Site) -> RecoveryRefusal {
@@ -846,18 +877,8 @@ async fn drive(site: Site) -> RecoveryRefusal {
                 .await;
                 let declare_and_wait = refused(site, admit(&fx, planner(), 1).await);
                 assert_eq!(
-                    (
-                        user_owned.site,
-                        user_owned.code,
-                        user_owned.kind,
-                        user_owned.continuation
-                    ),
-                    (
-                        declare_and_wait.site,
-                        declare_and_wait.code,
-                        declare_and_wait.kind,
-                        declare_and_wait.continuation
-                    ),
+                    (user_owned.code, user_owned.kind),
+                    (declare_and_wait.code, declare_and_wait.kind),
                     "{site:?}"
                 );
                 user_owned
@@ -1326,43 +1347,19 @@ async fn drive(site: Site) -> RecoveryRefusal {
     }
 }
 
-/// The sites actually returned must be exactly `Site::ALL` minus `UNREACHABLE`.
 #[tokio::test]
-async fn every_refusal_site_names_its_code_kind_and_continuation() {
-    let mut exercised = std::collections::BTreeSet::new();
-    for &(site, code, kind, continuation) in ROWS {
+async fn every_refusal_names_its_code_and_kind() {
+    let sites: std::collections::BTreeSet<Site> = ROWS.iter().map(|(site, ..)| *site).collect();
+    assert_eq!(sites.len(), ROWS.len(), "one row per fixture");
+    assert_eq!(ROWS.len(), 39, "every refusing check has a row");
+    for &(site, code, kind) in ROWS {
         let refusal = Box::pin(drive(site)).await;
         assert_eq!(
-            (
-                refusal.site,
-                refusal.code,
-                refusal.kind,
-                refusal.continuation
-            ),
-            (site, code, kind, continuation),
+            (refusal.code, refusal.kind),
+            (code, kind),
             "{site:?} named {refusal:?}"
         );
-        assert!(
-            exercised.insert(refusal.site),
-            "{site:?} has more than one row"
-        );
-    }
-    let expected: std::collections::BTreeSet<Site> = Site::ALL
-        .iter()
-        .copied()
-        .filter(|site| {
-            !UNREACHABLE
-                .iter()
-                .any(|(unreachable, _)| unreachable == site)
-        })
-        .collect();
-    assert_eq!(
-        exercised, expected,
-        "every production refusal site needs exactly one row in ROWS, or an UNREACHABLE entry with its reason"
-    );
-    for (site, reason) in UNREACHABLE {
-        assert!(Site::ALL.contains(site), "{site:?} is not a site");
-        assert!(!reason.is_empty(), "{site:?} needs its reason");
+        assert!(!refusal.reason.is_empty(), "{site:?} needs its sentence");
     }
 }
 
@@ -1373,7 +1370,7 @@ async fn isolated_stop_sentences_name_the_condition_their_branch_tests() {
         pending.reason,
         "predecessor isolated operation is in phase parked, not failed; the settlement that \
          records its stop has not completed, so recovery re-opens once the kernel settles it \
-         and delivers the settlement briefing"
+         and delivers the settlement notice"
     );
     let mismatch = Box::pin(drive(Site::IsolatedStopIdentityMismatch)).await;
     assert_eq!(
@@ -1391,65 +1388,11 @@ async fn isolated_stop_sentences_name_the_condition_their_branch_tests() {
         Site::IsolatedStopIdentityMismatch,
         admit(&fx, ActorId::User, 1).await,
     );
-    assert_eq!(stop_proof.site, Site::IsolatedStopIdentityMismatch);
     assert_eq!(
         stop_proof.reason,
         "predecessor isolated execution's recorded run has an identity chain or stop proof that \
          does not validate for this execution; same-key recovery is permanently unavailable"
     );
-}
-
-/// The wildcard-free match does not compile once a variant exists that it does not map.
-#[test]
-fn refusal_site_all_lists_every_variant_exactly_once() {
-    fn position(site: Site) -> usize {
-        match site {
-            Site::ActorNotUserOrPlanner => 0,
-            Site::PlannerSessionUnresolved => 1,
-            Site::TrackNotReady => 2,
-            Site::ChildTaskRoute => 3,
-            Site::PlannerOutsideAutoDeclare => 4,
-            Site::PlannerRetryLimit => 5,
-            Site::ConstraintShapeInvalid => 6,
-            Site::FrozenContextTruncated => 7,
-            Site::FrozenContextMissing => 8,
-            Site::FrozenContextMalformed => 9,
-            Site::DeclarationMissing => 10,
-            Site::DeclarationNotCurrent => 11,
-            Site::DeclarationInvalid => 12,
-            Site::ReleaseWithdrawn => 13,
-            Site::InnerConstraintShapeInvalid => 14,
-            Site::RouteOrAuthorChanged => 15,
-            Site::FrozenTrackMissing => 16,
-            Site::ContextMovedOutsideArea => 17,
-            Site::FrozenReportMissing => 18,
-            Site::FrozenBlockMissing => 19,
-            Site::RootIdentityChanged => 20,
-            Site::RootHashChanged => 21,
-            Site::IsolatedAmbiguousOperations => 22,
-            Site::OrdinaryWorkerPrepared => 23,
-            Site::VerificationEffectsWithoutWorker => 24,
-            Site::NotSpawnFailedWithoutStopProof => 25,
-            Site::OperationUncertainExternalEffects => 26,
-            Site::IsolatedRouteMismatch => 27,
-            Site::IsolatedOperationNotThisExecution => 28,
-            Site::IsolatedCompensationRecorded => 29,
-            Site::IsolatedStopPending => 30,
-            Site::IsolatedOperationTerminalWithoutFailure => 31,
-            Site::IsolatedRecordUnreadable => 32,
-            Site::IsolatedStopUnconfirmed => 33,
-            Site::IsolatedStopIdentityMismatch => 34,
-            Site::AllocationMissing => 35,
-            Site::PredecessorRowMissing => 36,
-            Site::ProvenanceUnsupported => 37,
-            Site::TrackNoLongerSchedules => 38,
-        }
-    }
-    const VARIANTS: usize = 39;
-    assert_eq!(Site::ALL.len(), VARIANTS);
-    for (index, site) in Site::ALL.iter().enumerate() {
-        assert_eq!(position(*site), index, "{site:?} is misplaced in ALL");
-    }
 }
 
 /// The wire spellings are a published vocabulary: distinct and byte-stable.

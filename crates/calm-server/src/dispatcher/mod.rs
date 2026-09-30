@@ -1494,7 +1494,7 @@ pub(crate) fn harness_observation_from_event(
         }),
         Event::TaskExecutionSettled { task_id, .. } => Some(HarnessObservation::SystemContext {
             text: format!(
-                "Failed task execution {task_id} has stopped and its Operation has settled. Re-read calm.plan.list for the current attempt and recovery capability. Choose a same-contract recovery only when authorized; if User authorization is required, explain that next step. Isolated recovery uses a new workspace; retained files remain evidence."
+                "Failed task execution {task_id} has stopped and its Operation has settled. Re-read calm.plan.list for the current attempt; retained files remain evidence."
             ),
         }),
         // Gate log paths use the author key resolved from the execution row.

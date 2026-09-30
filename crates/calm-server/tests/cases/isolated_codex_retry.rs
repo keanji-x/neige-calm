@@ -194,7 +194,7 @@ async fn set_output(fx: &Fixture, task: &Task, value: &Value) {
     sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE kind='codex-isolated-worker' AND idempotency_key=?2")
         .bind(value.to_string()).bind(&task.id).execute(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
 }
-async fn expect_denied(fx: &Fixture, task: &Task, label: &str) {
+async fn expect_denied(fx: &Fixture, task: &Task, label: &str) -> Value {
     let (status, view) = rest(fx, "GET", &route(fx, "attempts"), Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{label}: {view}");
     assert_eq!(view["recovery"]["allowed"], false, "{label}: {view}");
@@ -208,33 +208,7 @@ async fn expect_denied(fx: &Fixture, task: &Task, label: &str) {
     .await
     .unwrap();
     assert_eq!(count, 1, "{label}: rejection must not allocate");
-}
-
-/// `IsolatedStopUnconfirmed` / `IsolatedStopIdentityMismatch` are permanent denials. The
-/// Planner is refused by policy first (user-owned task), so the re-check's sentence is appended.
-async fn expect_no_continuation(fx: &Fixture, label: &str, sentence: &str) {
-    let list = crate::mcp_track_report::call_tool(
-        &fx.boot,
-        "calm.plan.list",
-        crate::mcp_track_report::planner_identity(&fx.boot),
-        json!({}),
-    )
-    .await
-    .unwrap();
-    let recovery = &list["tasks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|task| task["key"] == "retry")
-        .unwrap()["recovery"];
-    assert_eq!(recovery["allowed"], false, "{label}: {recovery}");
-    let guidance = &recovery["guidance"];
-    assert_eq!(
-        guidance["supported_continuation"], "none",
-        "{label}: {guidance}"
-    );
-    let condition = guidance["blocking_condition"].as_str().unwrap();
-    assert!(condition.contains(sentence), "{label}: {condition}");
+    view
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -309,9 +283,10 @@ async fn stop_evidence_corruption_and_ambiguous_operations_refuse_retry() {
             .pointer_mut(&format!("{record}{path}"))
             .expect("production receipt path") = value;
         set_output(&fx, &task, &changed).await;
-        expect_denied(&fx, &task, path).await;
+        let view = expect_denied(&fx, &task, path).await;
         if let Some(sentence) = sentence {
-            expect_no_continuation(&fx, path, sentence).await;
+            let reason = view["recovery"]["reason"].as_str().unwrap();
+            assert!(reason.contains(sentence), "{path}: {reason}");
         }
     }
     set_output(&fx, &task, &original).await;

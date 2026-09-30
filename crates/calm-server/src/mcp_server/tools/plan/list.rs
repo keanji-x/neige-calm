@@ -123,10 +123,6 @@ pub(super) fn summary(entry: &Value) -> Value {
             "candidate/verification/gate_attempt",
             "candidate/upstream/sha",
             "candidate/upstream/behind",
-            "recovery/guidance/blocking_condition",
-            "recovery/guidance/supported_continuation",
-            // An empty `{}` (terminal worker, no lease) must survive the summary.
-            "recovery/guidance/retained",
             "gate_result/passed",
             "gate_result/status",
             "gate_result/failing_step",

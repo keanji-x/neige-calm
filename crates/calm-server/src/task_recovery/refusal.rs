@@ -1,5 +1,5 @@
-//! Typed recovery refusals. The refusing site decides the wire code, write-path kind,
-//! continuation and reason sentence; nothing downstream re-derives them.
+//! Typed recovery refusals. The refusing check decides the wire code, write-path kind and
+//! reason sentence; nothing downstream re-derives them.
 
 use crate::error::CalmError;
 
@@ -46,209 +46,36 @@ impl RecoveryRefusalCode {
     }
 }
 
-/// Every production site that constructs a refusal, one variant each, in source order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum RefusalSite {
-    /// The actor is neither a User nor a Planner.
-    ActorNotUserOrPlanner,
-    /// The Planner session cannot be resolved to a role.
-    PlannerSessionUnresolved,
-    /// The Track is closed, so it does not schedule work.
-    TrackNotReady,
-    /// Child-task routes are not recoverable.
-    ChildTaskRoute,
-    /// A Planner asked for a task outside auto-declare (user-owned or
-    /// declare-and-wait).
-    PlannerOutsideAutoDeclare,
-    /// The bounded Planner retry for this key was consumed.
-    PlannerRetryLimit,
-    /// The frozen constraint fails `validate` for this Track.
-    ConstraintShapeInvalid,
-    /// The frozen context closure was truncated at claim.
-    FrozenContextTruncated,
-    /// No frozen context was recorded for the failed execution.
-    FrozenContextMissing,
-    /// The frozen context is valid JSON but not a reference list.
-    FrozenContextMalformed,
-    /// No declaration in the report carries the key.
-    DeclarationMissing,
-    /// The declaration is duplicated, tombstoned or not ready.
-    DeclarationNotCurrent,
-    /// The declaration block carries validation diagnostics.
-    DeclarationInvalid,
-    /// The declare-and-wait release was withdrawn.
-    ReleaseWithdrawn,
-    /// The constraint fails `validate` at the inner check.
-    InnerConstraintShapeInvalid,
-    /// The declaration's route or author differs from the frozen ones.
-    RouteOrAuthorChanged,
-    /// A frozen context reference names a missing Track.
-    FrozenTrackMissing,
-    /// A frozen context reference left the authorized area.
-    ContextMovedOutsideArea,
-    /// A frozen context reference names a Track without a report.
-    FrozenReportMissing,
-    /// A frozen context reference names a missing block.
-    FrozenBlockMissing,
-    /// The root reference no longer names the declaration block.
-    RootIdentityChanged,
-    /// A frozen reference's content hash changed.
-    RootHashChanged,
-    /// A prepared isolated execution shares its key with other operations or
-    /// verification effects.
-    IsolatedAmbiguousOperations,
-    /// An ordinary worker card was prepared for the key.
-    OrdinaryWorkerPrepared,
-    /// Verification effects exist for the key without a worker card.
-    VerificationEffectsWithoutWorker,
-    /// The failure is not a spawn failure and nothing proves a stop.
-    NotSpawnFailedWithoutStopProof,
-    /// A keyed operation has uncertain external effects.
-    OperationUncertainExternalEffects,
-    /// The execution is not a failed isolated-route execution.
-    IsolatedRouteMismatch,
-    /// The named operation is not this execution's isolated operation.
-    IsolatedOperationNotThisExecution,
-    /// Compensation state or spawn artifacts were recorded.
-    IsolatedCompensationRecorded,
-    /// The isolated operation has not reached a terminal phase.
-    IsolatedStopPending,
-    /// The isolated operation ended without a failed outcome.
-    IsolatedOperationTerminalWithoutFailure,
-    /// The operation's journal record cannot be read as a prepared run.
-    IsolatedRecordUnreadable,
-    /// The journal holds no quiescence proof for the terminal operation.
-    IsolatedStopUnconfirmed,
-    /// The recorded run's admission is not closed, or its identity chain or
-    /// stop proof does not validate for this execution.
-    IsolatedStopIdentityMismatch,
-    /// The attempt's allocation row is missing.
-    AllocationMissing,
-    /// The accepted recovery's predecessor row is missing.
-    PredecessorRowMissing,
-    /// The accepted recovery's admitting actor is unsupported.
-    ProvenanceUnsupported,
-    /// The Track no longer schedules the accepted recovery.
-    TrackNoLongerSchedules,
-}
-
-impl RefusalSite {
-    /// Every variant, exactly once; the test inventory proves it exhaustive by a wildcard-free match.
-    #[cfg(test)]
-    pub(crate) const ALL: &[RefusalSite] = &[
-        Self::ActorNotUserOrPlanner,
-        Self::PlannerSessionUnresolved,
-        Self::TrackNotReady,
-        Self::ChildTaskRoute,
-        Self::PlannerOutsideAutoDeclare,
-        Self::PlannerRetryLimit,
-        Self::ConstraintShapeInvalid,
-        Self::FrozenContextTruncated,
-        Self::FrozenContextMissing,
-        Self::FrozenContextMalformed,
-        Self::DeclarationMissing,
-        Self::DeclarationNotCurrent,
-        Self::DeclarationInvalid,
-        Self::ReleaseWithdrawn,
-        Self::InnerConstraintShapeInvalid,
-        Self::RouteOrAuthorChanged,
-        Self::FrozenTrackMissing,
-        Self::ContextMovedOutsideArea,
-        Self::FrozenReportMissing,
-        Self::FrozenBlockMissing,
-        Self::RootIdentityChanged,
-        Self::RootHashChanged,
-        Self::IsolatedAmbiguousOperations,
-        Self::OrdinaryWorkerPrepared,
-        Self::VerificationEffectsWithoutWorker,
-        Self::NotSpawnFailedWithoutStopProof,
-        Self::OperationUncertainExternalEffects,
-        Self::IsolatedRouteMismatch,
-        Self::IsolatedOperationNotThisExecution,
-        Self::IsolatedCompensationRecorded,
-        Self::IsolatedStopPending,
-        Self::IsolatedOperationTerminalWithoutFailure,
-        Self::IsolatedRecordUnreadable,
-        Self::IsolatedStopUnconfirmed,
-        Self::IsolatedStopIdentityMismatch,
-        Self::AllocationMissing,
-        Self::PredecessorRowMissing,
-        Self::ProvenanceUnsupported,
-        Self::TrackNoLongerSchedules,
-    ];
-}
-
-/// The single continuation the kernel supports for a refused recovery, decided by the refusing site.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SupportedContinuation {
-    /// Declare a new task (new key); never retry the same key.
-    NewTask,
-    /// Only an explicit User recovery can allocate another execution.
-    UserRecovery,
-    /// The isolated predecessor is still stopping; its settlement briefing
-    /// re-opens the decision.
-    WaitForSettlement,
-    /// No kernel-supported continuation for this refusal.
-    None,
-}
-
-impl SupportedContinuation {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::NewTask => "new_task",
-            Self::UserRecovery => "user_recovery",
-            Self::WaitForSettlement => "wait_for_settlement",
-            Self::None => "none",
-        }
-    }
-}
-
 /// Which `CalmError` (and therefore HTTP/RPC status) a refusal maps to on
-/// the write path. The mapping is fixed per site, never derived.
+/// the write path. The mapping is fixed per refusing check, never derived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RefusalKind {
     Conflict,
     Forbidden,
 }
 
-/// A refusal as the site decided it. `reason` is a complete, true
+/// A refusal as the refusing check decided it. `reason` is a complete, true
 /// sentence: it is the wire `reason`.
 #[derive(Clone, Debug)]
 pub(crate) struct RecoveryRefusal {
-    pub site: RefusalSite,
     pub code: RecoveryRefusalCode,
     pub kind: RefusalKind,
-    pub continuation: SupportedContinuation,
     pub reason: String,
 }
 
 impl RecoveryRefusal {
-    pub(crate) fn conflict(
-        site: RefusalSite,
-        code: RecoveryRefusalCode,
-        continuation: SupportedContinuation,
-        reason: impl Into<String>,
-    ) -> Self {
+    pub(crate) fn conflict(code: RecoveryRefusalCode, reason: impl Into<String>) -> Self {
         Self {
-            site,
             code,
             kind: RefusalKind::Conflict,
-            continuation,
             reason: reason.into(),
         }
     }
 
-    pub(crate) fn forbidden(
-        site: RefusalSite,
-        code: RecoveryRefusalCode,
-        continuation: SupportedContinuation,
-        reason: impl Into<String>,
-    ) -> Self {
+    pub(crate) fn forbidden(code: RecoveryRefusalCode, reason: impl Into<String>) -> Self {
         Self {
-            site,
             code,
             kind: RefusalKind::Forbidden,
-            continuation,
             reason: reason.into(),
         }
     }

@@ -83,10 +83,6 @@ pub fn executor_environment_with_plugins(plugin_tools: &[String]) -> Value {
     })
 }
 
-/// One sentence for recover tool descriptions and responses; the JSON above is
-/// the machine-readable form of the same fact.
-pub const RECOVER_CHANGES: &str = "Recovery re-runs in the identical execution environment with the same capabilities; only the workspace is new. It cannot resolve a failure caused by a missing capability (for example no network); change the task's goal, inputs or explicit plugin grants instead. Delegated names remain fixed; current platform scope and plugin availability are rechecked on every call.";
-
 /// Fixed capability policy. No caller-provided profile or fallback sandbox.
 pub(crate) fn apply(
     doc: &mut DocumentMut,

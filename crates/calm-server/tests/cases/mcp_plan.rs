@@ -857,15 +857,61 @@ async fn list_returns_plan_shape_without_gate_commands() {
 }
 
 /// The exact field set of an ordinary (non-isolated) entry: a field only a deleted or isolated
-/// mechanism fills must not reach it (#1893 §3.2).
+/// mechanism fills must not reach it (#1893 §3.2). The entry is a failed task whose recovery is
+/// refused, the one state that used to carry `recovery.guidance`.
 #[tokio::test]
 async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
+    use calm_server::db::sqlite::{
+        TaskReporter, begin_immediate_tx, task_claim_pending_tx, task_fail_from_worker_tx,
+    };
     let boot = boot().await;
     write_task_block(&boot, json!({"key": "a", "kind": "codex", "goal": "g"})).await;
+    let task = boot
+        .repo
+        .task_current_get(boot.track_id.as_str(), "a")
+        .await
+        .unwrap()
+        .expect("task a projected");
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = begin_immediate_tx(&pool).await.unwrap();
+    assert_eq!(
+        task_claim_pending_tx(&mut tx, &task.id, 10, &[], false)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        task_fail_from_worker_tx(
+            &mut tx,
+            &task.id,
+            boot.track_id.as_str(),
+            TaskReporter::Kernel,
+            "worker exited",
+            11
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
     let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), json!({}))
         .await
         .expect("list ok");
-    let fields: std::collections::BTreeSet<&str> = out["tasks"][0]
+    let entry = &out["tasks"][0];
+    assert_eq!(entry["status"], "failed", "{out}");
+    assert_eq!(entry["recovery"]["allowed"], false, "{out}");
+    let recovery_fields: std::collections::BTreeSet<&str> = entry["recovery"]
+        .as_object()
+        .expect("recovery object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        recovery_fields,
+        std::collections::BTreeSet::from(["allowed", "code", "reason"]),
+        "{out}"
+    );
+    let fields: std::collections::BTreeSet<&str> = entry
         .as_object()
         .expect("one entry")
         .keys()

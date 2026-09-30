@@ -268,9 +268,9 @@ fn worker_payload_is_pure_function_of_the_row() {
     assert_eq!(p["cwd"], json!("/repo"));
 }
 
-/// The recovery executor statement and the worker payload branch on the same row predicate.
+/// The stated executor environment and the worker payload branch on the same row predicate.
 #[test]
-fn recovery_executor_statement_follows_the_worker_payload_route() {
+fn executor_environment_follows_the_worker_payload_route() {
     let legacy = [
         (TaskKind::Codex, "codex-worker", "shared-codex"),
         (TaskKind::Claude, "claude-worker", "claude"),
@@ -280,19 +280,12 @@ fn recovery_executor_statement_follows_the_worker_payload_route() {
         let mut task = task("a", TaskStatus::Pending, &[], 0);
         task.kind = kind;
         assert_eq!(build_worker_payload(&task).unwrap().0, operation_kind);
-        let statement = crate::task_recovery::executor_statement(&task).unwrap();
         assert_eq!(
-            statement.environment,
+            crate::task_recovery::executor_environment(&task).unwrap(),
             json!({
                 "executor": executor,
                 "note": "recovery re-runs on the same executor as the failed attempt; its environment is unchanged",
             })
-        );
-        assert!(
-            !statement
-                .recover_changes
-                .contains("only the workspace is new"),
-            "{kind:?} must not promise a fresh isolated workspace"
         );
     }
     let mut isolated = task("i", TaskStatus::Pending, &[], 0);
@@ -303,14 +296,9 @@ fn recovery_executor_statement_follows_the_worker_payload_route() {
         build_worker_payload(&isolated).unwrap().0,
         crate::isolated_codex::OPERATION_KIND
     );
-    let statement = crate::task_recovery::executor_statement(&isolated).unwrap();
     assert_eq!(
-        statement.environment,
+        crate::task_recovery::executor_environment(&isolated).unwrap(),
         crate::dedicated_codex::executor_environment()
-    );
-    assert_eq!(
-        statement.recover_changes,
-        crate::dedicated_codex::RECOVER_CHANGES
     );
 }
 

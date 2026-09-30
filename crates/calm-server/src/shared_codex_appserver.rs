@@ -660,7 +660,6 @@ const MODEL_LIST_MAX_PAGES: usize = 20;
 pub type NotificationFanout = broadcast::Sender<Notification>;
 
 pub struct SharedCodexAppServer {
-    recovery: Option<crate::semantic_recovery::RecoveryService>,
     sock: PathBuf,
     kernel_mcp_socket_path: PathBuf,
     home: Arc<SharedCodexHome>,
@@ -981,7 +980,6 @@ impl SharedCodexAppServer {
         let home = Arc::new(SharedCodexHome::new(root.join("codex-home"), legacy));
         let (tx, _) = broadcast::channel(16);
         Arc::new(Self {
-            recovery: None,
             sock: root.join("run/codex-appserver.sock"),
             kernel_mcp_socket_path: transport::default_socket_path(&root),
             home,
@@ -1038,20 +1036,9 @@ impl SharedCodexAppServer {
         repo: Arc<dyn Repo>,
         pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     ) -> Arc<Self> {
-        Self::new_with_recovery(cfg, home, repo, pending_codex_threads_handle, None)
-    }
-
-    pub(crate) fn new_with_recovery(
-        cfg: &Config,
-        home: Arc<SharedCodexHome>,
-        repo: Arc<dyn Repo>,
-        pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
-        recovery: Option<crate::semantic_recovery::RecoveryService>,
-    ) -> Arc<Self> {
         let data_dir = cfg.data_dir_resolved();
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Self {
-            recovery,
             sock: data_dir.join("run/codex-appserver.sock"),
             kernel_mcp_socket_path: transport::default_socket_path(&data_dir),
             home,
@@ -1284,32 +1271,19 @@ impl SharedCodexAppServer {
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
         let config = params.config.to_wire_config()?;
-        let semantic_recovery = self.recovery.is_some()
-            && self.repo.card_role_get(card_id).await? == Some(CardRole::Planner);
-        let tools = if semantic_recovery {
-            vec![crate::semantic_recovery::descriptor()]
-        } else {
-            Vec::new()
-        };
         let thread = client
-            .thread_start_with_params_and_tools(
-                ThreadStartParams {
-                    cwd: params.cwd,
-                    approval_policy: params.approval_policy,
-                    sandbox_mode: params.sandbox_mode,
-                    developer_instructions: params.developer_instructions,
-                    config,
-                },
-                tools,
-            )
+            .thread_start_with_params(ThreadStartParams {
+                cwd: params.cwd,
+                approval_policy: params.approval_policy,
+                sandbox_mode: params.sandbox_mode,
+                developer_instructions: params.developer_instructions,
+                config,
+            })
             .await?;
         let thread_id = thread
             .thread_id()
             .ok_or_else(|| CalmError::CodexAppServer("thread/start returned no thread.id".into()))?
             .to_string();
-        if semantic_recovery {
-            crate::semantic_recovery::register(self.repo.as_ref(), card_id, &thread_id).await?;
-        }
         self.kernel_initiated_threads
             .lock()
             .await
@@ -3307,10 +3281,6 @@ impl SharedCodexAppServer {
         client: Arc<CodexAppServer>,
         mut notifications: crate::codex_appserver::NotificationStream,
     ) -> Result<()> {
-        if let Some(service) = &self.recovery {
-            // New connection, new receiver; no job owns the replaceable client.
-            service.install(&client)?;
-        }
         // Stamp the daemon (re)connect wall-clock; common path for both fresh-spawn and hot-takeover.
         self.daemon_connected_at_ms
             .store(now_ms(), Ordering::SeqCst);

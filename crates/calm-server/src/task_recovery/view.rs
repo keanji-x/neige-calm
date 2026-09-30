@@ -1,13 +1,13 @@
 //! Gate-free execution summaries and current recovery capability.
 
 use super::admission;
-use super::refusal::{AdmissionError, RecoveryRefusal};
+use super::refusal::AdmissionError;
 use crate::db::sqlite::{task_attempt_current_tx, task_attempt_get_tx, task_get_tx};
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, TrackId};
-use crate::model::{Task, TaskStatus, Track};
+use crate::model::{Task, TaskStatus};
 use calm_types::task_recovery::{
     TaskAttemptAllocation, TaskAttemptOrigin, TaskAttemptView, TaskRecoveryCapability,
     TaskRecoveryView,
@@ -56,27 +56,6 @@ pub(crate) async fn task_recovery_view_tx(
     key: &str,
     actor: &ActorId,
 ) -> Result<TaskRecoveryView> {
-    task_recovery_view_with_refusal_tx(tx, track_id, key, actor)
-        .await
-        .map(|(view, _)| view)
-}
-
-/// A refused admission together with the Track row read under the transaction;
-/// guidance derives its closed wording from this Track, never from an earlier snapshot.
-#[derive(Clone, Debug)]
-pub(crate) struct RefusedRecovery {
-    pub refusal: RecoveryRefusal,
-    pub track: Track,
-}
-
-/// The view plus the typed admission refusal behind a refused `recovery` capability;
-/// `None` when recovery is allowed or the capability is not an admission refusal.
-pub(crate) async fn task_recovery_view_with_refusal_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    track_id: &TrackId,
-    key: &str,
-    actor: &ActorId,
-) -> Result<(TaskRecoveryView, Option<RefusedRecovery>)> {
     let track = crate::db::sqlite::track_get_tx(tx, track_id).await?;
     let event = Event::PlanUpdated {
         track_id: track.id.clone(),
@@ -114,19 +93,16 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
         {
             return Err(CalmError::Conflict("task declaration is invalid".into()));
         }
-        return Ok((
-            TaskRecoveryView {
-                key: key.to_string(),
-                current: None,
-                attempts: Vec::new(),
-                recovery: TaskRecoveryCapability {
-                    allowed: false,
-                    code: "not_started".into(),
-                    reason: "No execution has been allocated for this task.".into(),
-                },
+        return Ok(TaskRecoveryView {
+            key: key.to_string(),
+            current: None,
+            attempts: Vec::new(),
+            recovery: TaskRecoveryCapability {
+                allowed: false,
+                code: "not_started".into(),
+                reason: "No execution has been allocated for this task.".into(),
             },
-            None,
-        ));
+        });
     };
     let mut allocations = Vec::new();
     loop {
@@ -163,7 +139,6 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
         .last()
         .ok_or_else(|| CalmError::NotFound(format!("task {key}")))?;
     let current_task = task_get_tx(tx, &current.attempt_id).await?;
-    let mut refusal = None;
     let recovery = match &current_task {
         Some(task) if task.status == TaskStatus::Failed => {
             match admission::admit_recovery_tx(tx, &track, task, current.generation, actor).await {
@@ -176,18 +151,11 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
                         "Retry the preparation failure as a new execution under its unchanged contract.".into()
                     },
                 },
-                Err(AdmissionError::Refused(refused)) => {
-                    let capability = TaskRecoveryCapability {
-                        allowed: false,
-                        code: refused.code.as_str().into(),
-                        reason: refused.reason.clone(),
-                    };
-                    refusal = Some(RefusedRecovery {
-                        refusal: refused,
-                        track: track.clone(),
-                    });
-                    capability
-                }
+                Err(AdmissionError::Refused(refused)) => TaskRecoveryCapability {
+                    allowed: false,
+                    code: refused.code.as_str().into(),
+                    reason: refused.reason,
+                },
                 Err(AdmissionError::Other(error)) => return Err(error),
             }
         }
@@ -215,15 +183,12 @@ pub(crate) async fn task_recovery_view_with_refusal_tx(
         }
         attempts.push(entry);
     }
-    Ok((
-        TaskRecoveryView {
-            key: key.to_string(),
-            current: Some(current),
-            attempts,
-            recovery,
-        },
-        refusal,
-    ))
+    Ok(TaskRecoveryView {
+        key: key.to_string(),
+        current: Some(current),
+        attempts,
+        recovery,
+    })
 }
 
 pub(crate) async fn current_blocking_reason_tx(

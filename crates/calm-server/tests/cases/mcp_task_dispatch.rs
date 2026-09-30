@@ -403,14 +403,7 @@ async fn dispatch_replay_after_recovery_keeps_creation_identity_and_reports_curr
     let key = original["receipt"]["task_key"].as_str().unwrap();
     let task = crate::task_recovery::current(&b, key).await;
     crate::task_recovery::finish(&b, &task, false).await;
-    let recovery = call_tool(
-        &b,
-        "calm.plan.recover",
-        planner_identity(&b),
-        crate::task_recovery::recovery_args(&task, "dispatch-repair"),
-    )
-    .await
-    .unwrap();
+    let recovery = crate::task_recovery::recover(&b, &task, "dispatch-repair").await;
     let saved = counts(&b).await;
     let replay = dispatch(&b, args()).await.unwrap();
     assert_eq!(replay["receipt"], original["receipt"]);
@@ -509,31 +502,4 @@ async fn dispatch_response_states_the_fixed_executor_environment_up_front() {
     // Replays restate the same envelope; it is not attempt-specific.
     let replay = dispatch(&b, args()).await.unwrap();
     assert_eq!(replay["current"]["executor_environment"], *environment);
-}
-
-#[tokio::test]
-async fn recover_response_restates_identical_environment_with_new_workspace() {
-    let b = boot().await;
-    policy(&b, "auto-declare").await;
-    let original = dispatch(&b, args()).await.unwrap();
-    let key = original["receipt"]["task_key"].as_str().unwrap();
-    let task = crate::task_recovery::current(&b, key).await;
-    crate::task_recovery::finish(&b, &task, false).await;
-    let recovery = call_tool(
-        &b,
-        "calm.plan.recover",
-        planner_identity(&b),
-        crate::task_recovery::recovery_args(&task, "dispatch-environment"),
-    )
-    .await
-    .unwrap();
-    assert!(recovery["attempt_id"].is_string());
-    assert_eq!(
-        recovery["executor_environment"],
-        original["current"]["executor_environment"]
-    );
-    let changes = recovery["recover_changes"].as_str().unwrap();
-    assert!(changes.contains("identical execution environment"));
-    assert!(changes.contains("only the workspace is new"));
-    assert!(changes.contains("missing capability"));
 }

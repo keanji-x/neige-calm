@@ -1,37 +1,13 @@
-//! Task continuity through the public Planner entry points.
+//! Task continuity through the User recovery entry point.
 
 use serde_json::json;
 
-#[tokio::test]
-async fn task_recovery_planner_surface_is_available_and_worker_is_forbidden() {
-    let boot = boot().await;
-    let args = json!({"key": "b", "expected_attempt_id": "unknown",
-        "idempotency_key": "recover-b", "reason": "retry failed work"});
-    let planner = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        args.clone(),
-    )
-    .await
-    .expect_err("unknown attempt must be rejected");
-    assert_ne!(planner.code, -32601, "Planner recovery tool must exist");
-    let worker = call_tool(&boot, "calm.plan.recover", worker_identity(&boot), args)
-        .await
-        .expect_err("worker cannot request recovery");
-    assert!(
-        worker.message.contains("role") || worker.code == -32403,
-        "{worker:?}"
-    );
-}
-
-use crate::mcp_track_report::{
-    Boot, boot, call_tool, planner_identity, upsert_block, worker_identity,
-};
+use crate::mcp_track_report::{Boot, boot, call_tool, planner_identity, upsert_block};
 use calm_server::db::sqlite::{
     TaskReporter, begin_immediate_tx, task_claim_pending_tx, task_fail_from_worker_tx,
     task_report_success_from_worker_tx,
 };
+use calm_server::error::CalmError;
 use calm_server::model::{Task, TaskStatus};
 use calm_server::task_context::TaskContextMonitor;
 use serde_json::Value;
@@ -118,19 +94,44 @@ pub(super) async fn current(boot: &Boot, key: &str) -> Task {
         .unwrap()
 }
 
-pub(super) fn recovery_args(task: &Task, request_key: &str) -> Value {
-    json!({"key": task.key, "expected_attempt_id": task.id, "idempotency_key": request_key, "reason": "Recover the failed task"})
+/// The production recovery the REST route runs, as the User.
+pub(super) async fn user_recovery(
+    boot: &Boot,
+    task: &Task,
+    request_key: &str,
+    reason: &str,
+) -> Result<Value, CalmError> {
+    let receipt = calm_server::task_recovery::recover_failed_task(
+        calm_server::task_recovery::RecoveryContext {
+            repo: boot.repo.as_ref(),
+            events: &boot.ctx.events,
+            write: &boot.ctx.write,
+        },
+        task.track_id.as_str(),
+        &task.key,
+        calm_types::task_recovery::TaskRecoveryRequest {
+            expected_attempt_id: task.id.clone(),
+            idempotency_key: request_key.into(),
+            reason: reason.into(),
+        },
+        calm_server::ids::ActorId::User,
+    )
+    .await?;
+    Ok(serde_json::to_value(receipt).unwrap())
 }
 
-async fn recover(boot: &Boot, task: &Task, request_key: &str) -> Value {
-    call_tool(
-        boot,
-        "calm.plan.recover",
-        planner_identity(boot),
-        recovery_args(task, request_key),
-    )
-    .await
-    .unwrap()
+pub(super) async fn recover(boot: &Boot, task: &Task, request_key: &str) -> Value {
+    user_recovery(boot, task, request_key, "Recover the failed task")
+        .await
+        .unwrap()
+}
+
+/// The `CalmError::Conflict` message of a refused recovery.
+fn conflict(result: Result<Value, CalmError>) -> String {
+    match result {
+        Err(CalmError::Conflict(message)) => message,
+        other => panic!("expected a conflict, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -211,18 +212,8 @@ async fn task_recovery_concurrent_replay_returns_original_receipt_after_completi
     let replacement = current(&boot, "b").await;
     finish(&boot, &replacement, true).await;
     assert_eq!(recover(&boot, &b, "request-b").await, left);
-    let mut conflict = recovery_args(&b, "request-b");
-    conflict["reason"] = json!("different request");
-    let error = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        conflict,
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32409);
-    assert!(error.message.contains("different request"));
+    let message = conflict(user_recovery(&boot, &b, "request-b", "different request").await);
+    assert!(message.contains("different request"), "{message}");
     assert_eq!(
         boot.repo
             .task_history_by_key(boot.track_id.as_str(), "b")
@@ -234,7 +225,7 @@ async fn task_recovery_concurrent_replay_returns_original_receipt_after_completi
 }
 
 #[tokio::test]
-async fn task_recovery_planner_limit_and_late_worker_result_are_fenced() {
+async fn task_recovery_late_worker_result_is_fenced() {
     let boot = boot().await;
     declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
@@ -256,17 +247,7 @@ async fn task_recovery_planner_limit_and_late_worker_result_are_fenced() {
     );
     tx.commit().await.unwrap();
     assert_eq!(current(&boot, "b").await.status, TaskStatus::Pending);
-    finish(&boot, &second, false).await;
-    let error = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&second, "second"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32403);
-    assert!(error.message.contains("limit reached"));
+    assert_eq!(current(&boot, "b").await.id, second.id);
 }
 
 #[tokio::test]
@@ -284,16 +265,8 @@ async fn task_recovery_contract_change_is_rejected_before_allocation() {
     )
     .await
     .unwrap();
-    let error = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&b, "changed"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32409);
-    assert!(error.message.contains("contract changed"));
+    let message = conflict(user_recovery(&boot, &b, "changed", "Recover the failed task").await);
+    assert!(message.contains("contract changed"), "{message}");
     assert_eq!(current(&boot, "b").await.id, b.id);
 }
 
@@ -310,7 +283,7 @@ async fn task_recovery_rest_user_can_authorize_another_attempt_and_history_is_ga
     declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
     finish(&boot, &b, false).await;
-    recover(&boot, &b, "planner-first").await;
+    recover(&boot, &b, "user-first").await;
     let second = current(&boot, "b").await;
     finish(&boot, &second, false).await;
     let app = calm_server::routes::task_recovery::router()
@@ -368,16 +341,8 @@ async fn task_recovery_unknown_freeze_and_unsettled_operation_fail_closed() {
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms) VALUES('uncertain','uncertain','terminal-worker',?1,'h','card','{}','{}','spawn_started',1,1)")
         .bind(&b.id).execute(&pool).await.unwrap();
-    let error = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&b, "request"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32409);
-    assert!(error.message.contains("uncertain external effects"));
+    let message = conflict(user_recovery(&boot, &b, "request", "Recover the failed task").await);
+    assert!(message.contains("uncertain external effects"), "{message}");
     sqlx::query("UPDATE operations SET phase='failed' WHERE id='uncertain'")
         .execute(&pool)
         .await
@@ -387,21 +352,13 @@ async fn task_recovery_unknown_freeze_and_unsettled_operation_fail_closed() {
         .execute(&pool)
         .await
         .unwrap();
-    let error = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&b, "request"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32409);
-    assert!(error.message.contains("no frozen contract"));
+    let message = conflict(user_recovery(&boot, &b, "request", "Recover the failed task").await);
+    assert!(message.contains("no frozen contract"), "{message}");
     assert_eq!(current(&boot, "b").await.id, b.id);
 }
 
 #[tokio::test]
-async fn task_recovery_closed_track_and_declared_wait_never_grant_planner_retry() {
+async fn task_recovery_on_a_closed_track_is_refused() {
     let boot = boot().await;
     declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
@@ -412,36 +369,12 @@ async fn task_recovery_closed_track_and_declared_wait_never_grant_planner_retry(
         .execute(&pool)
         .await
         .unwrap();
-    let error = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&b, "closed"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32409, "{error:?}");
+    let message = conflict(user_recovery(&boot, &b, "closed", "Recover the failed task").await);
     assert!(
-        error.message.contains("track is closed; reopen it first"),
-        "{error:?}"
+        message.contains("track is closed; reopen it first"),
+        "{message}"
     );
-    sqlx::query(
-        "UPDATE tracks SET closed_at=NULL,automation_policy='declare-and-wait' WHERE id=?1",
-    )
-    .bind(boot.track_id.as_str())
-    .execute(&pool)
-    .await
-    .unwrap();
-    let error = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&b, "wait"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32403);
-    assert!(error.message.contains("explicit User recovery"));
+    assert_eq!(current(&boot, "b").await.id, b.id);
 }
 
 #[tokio::test]
@@ -558,7 +491,7 @@ async fn task_recovery_spawn_rechecks_current_declaration_permission_after_claim
 }
 
 #[tokio::test]
-async fn task_recovery_cancel_targets_current_attempt_and_old_receipt_replay_is_authenticated() {
+async fn task_recovery_cancel_targets_current_attempt_and_the_receipt_replays() {
     let boot = boot().await;
     declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
@@ -578,24 +511,6 @@ async fn task_recovery_cancel_targets_current_attempt_and_old_receipt_replay_is_
         TaskStatus::Failed
     );
     assert_eq!(recover(&boot, &b, "request").await, receipt);
-    let pool = boot.repo.sqlite_pool().unwrap();
-    sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?1")
-        .bind(planner_identity(&boot).session_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let denied = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&b, "request"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        denied.code, -32403,
-        "an old receipt never bypasses current authentication"
-    );
 }
 
 #[tokio::test]
@@ -698,16 +613,9 @@ async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop()
             .terminal_set_exit("recovery-terminal", exit_code, signalled)
             .await
             .unwrap();
-        let denied = call_tool(
-            &boot,
-            "calm.plan.recover",
-            planner_identity(&boot),
-            recovery_args(&b, "known-exit"),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(denied.code, -32409);
-        assert!(denied.message.contains("no stop proof"));
+        let message =
+            conflict(user_recovery(&boot, &b, "known-exit", "Recover the failed task").await);
+        assert!(message.contains("no stop proof"), "{message}");
         let view = calm_server::task_recovery::task_recovery_view(
             boot.repo.as_ref(),
             boot.track_id.as_str(),
@@ -722,84 +630,13 @@ async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop()
     }
 }
 
-#[tokio::test]
-async fn task_recovery_of_legacy_attempt_states_its_actual_executor() {
-    let boot = boot().await;
-    declare(&boot, declaration("b", &[])).await;
-    let b = current(&boot, "b").await;
-    finish(&boot, &b, false).await;
-    let receipt = recover(&boot, &b, "request-b").await;
-    let replacement = current(&boot, "b").await;
-    assert_eq!(receipt["attempt_id"], replacement.id);
-    let (operation_kind, _) = calm_server::scheduler::build_worker_payload(&replacement).unwrap();
-    assert_eq!(operation_kind, "terminal-worker");
-    assert_eq!(
-        receipt["executor_environment"],
-        json!({
-            "executor": "terminal",
-            "note": "recovery re-runs on the same executor as the failed attempt; its environment is unchanged",
-        })
-    );
-    let changes = receipt["recover_changes"].as_str().unwrap();
-    assert!(changes.contains("same executor as the failed attempt"));
-    assert!(changes.contains("missing capability"));
-    assert!(!changes.contains("only the workspace is new"));
-    // Replays carry the same statement.
-    let replay = recover(&boot, &b, "request-b").await;
-    assert_eq!(replay, receipt);
-}
-
 pub(super) fn ordinary_codex_declaration(key: &str) -> Value {
     json!({"key": key, "kind": "codex", "goal": format!("do {key}"), "depends_on": [],
         "no_gate_reason": "ordinary worker timeout fixture",
         "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "ready": true})
 }
 
-/// Claims and prepares the current attempt of `key` with a held workspace lease, then hits the
-/// scheduler's liveness timeout. The lease is a per-card one from before #1830 S2, so `retained`
-/// names no branch until a `worktree.committed` event does.
-async fn time_out_prepared_ordinary_worker(
-    boot: &Boot,
-    key: &str,
-) -> (Task, String, tempfile::TempDir) {
-    let task = current(boot, key).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let card_id = boot.worker_card_id.as_str().to_string();
-    let track_id = boot.track_id.as_str().to_string();
-    let lease_dir = tempfile::Builder::new()
-        .prefix("neige-1727-lease-")
-        .tempdir()
-        .unwrap();
-    let lease_dir_path = lease_dir
-        .path()
-        .join(".claude")
-        .join("worktrees")
-        .join(&track_id)
-        .join(&card_id);
-    std::fs::create_dir_all(&lease_dir_path).unwrap();
-    let lease_path = lease_dir_path.display().to_string();
-    let now = calm_server::model::now_ms();
-    let lease_id = format!("lease-1727-{}", task.id);
-    sqlx::query(
-        "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, lease_owner, \
-         lease_until_ms, boot_id, created_at_ms, updated_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6)",
-    )
-    .bind(&lease_id)
-    .bind(&card_id)
-    .bind(&track_id)
-    .bind(&lease_path)
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(&pool)
-    .await
-    .unwrap();
-    let failed = time_out_claimed_worker_holding_lease(boot, key, &lease_id).await;
-    (failed, lease_path, lease_dir)
-}
-
-/// The second half of `time_out_prepared_ordinary_worker`, for a lease row
-/// the caller already wrote (a plain one above; a base-recording one through
+/// For a lease row the caller already wrote (a base-recording one through
 /// `test_seams::acquire_based_workspace_lease_for_test`): claim the current
 /// attempt of `key` onto `boot.worker_card_id`, mark it running, hit it with
 /// the scheduler's liveness timeout and release the lease row. Returns the
@@ -871,500 +708,4 @@ pub(super) async fn time_out_claimed_worker_holding_lease(
         Some("worker-timeout")
     );
     failed
-}
-
-fn listed_entry(list: &Value, key: &str) -> Value {
-    list["tasks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|task| task["key"] == key)
-        .unwrap()
-        .clone()
-}
-
-async fn append_worktree_event(boot: &Boot, event: calm_server::event::Event) {
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let mut tx = pool.begin().await.unwrap();
-    calm_server::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &calm_server::ids::ActorId::KernelDispatcher,
-        &calm_server::event::EventScope::Card {
-            card: boot.worker_card_id.clone(),
-            track: boot.track_id.clone(),
-            area: boot.area_id.clone(),
-        },
-        None,
-        &event,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-}
-
-#[tokio::test]
-async fn task_recovery_timed_out_ordinary_codex_worker_is_guided_to_a_new_task() {
-    let boot = boot().await;
-    declare(&boot, ordinary_codex_declaration("b")).await;
-    let track_id = boot.track_id.as_str().to_string();
-    let (_failed, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
-
-    let view = calm_server::task_recovery::task_recovery_view(
-        boot.repo.as_ref(),
-        &track_id,
-        "b",
-        calm_server::ids::ActorId::User,
-    )
-    .await
-    .unwrap();
-    assert!(!view.recovery.allowed);
-    assert_eq!(view.recovery.code, "predecessor_not_quiescent");
-    assert!(
-        view.recovery.reason.contains("new task"),
-        "{}",
-        view.recovery.reason
-    );
-
-    let entry = |list: &Value| listed_entry(list, "b");
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let recovery = &entry(&list)["recovery"];
-    assert_eq!(recovery["allowed"], false);
-    assert_eq!(recovery["code"], "predecessor_not_quiescent");
-    let guidance = &recovery["guidance"];
-    assert_eq!(guidance["supported_continuation"], "new_task");
-    assert!(
-        guidance["blocking_condition"]
-            .as_str()
-            .is_some_and(|text| !text.is_empty()),
-        "{guidance}"
-    );
-    assert_eq!(guidance["retained"]["workspace_path"], lease_path);
-    assert!(
-        guidance["retained"].get("branch").is_none(),
-        "no commit recorded on a per-card lease from before S2: no branch to name: {guidance}"
-    );
-    assert!(
-        guidance["retained"].get("last_commit").is_none(),
-        "{guidance}"
-    );
-
-    // Summary mode carries the same guidance paths.
-    let summary = call_tool(
-        &boot,
-        "calm.plan.list",
-        planner_identity(&boot),
-        json!({"detail": "summary", "key": "b"}),
-    )
-    .await
-    .unwrap();
-    let summary_guidance = &entry(&summary)["recovery"]["guidance"];
-    assert_eq!(summary_guidance["supported_continuation"], "new_task");
-    assert_eq!(summary_guidance["retained"]["workspace_path"], lease_path);
-
-    // A kernel-recorded commit for that card names the retained commit + branch.
-    append_worktree_event(
-        &boot,
-        calm_server::event::Event::WorktreeCommitted {
-            track_id: boot.track_id.clone(),
-            card_id: boot.worker_card_id.clone(),
-            commit_sha: "abc123def".into(),
-            branch: "neige/recorded-branch".into(),
-            delivery_id: None,
-            base_is_ancestor: None,
-        },
-    )
-    .await;
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let retained = &entry(&list)["recovery"]["guidance"]["retained"];
-    assert_eq!(retained["workspace_path"], lease_path);
-    assert_eq!(retained["last_commit"], "abc123def");
-    assert_eq!(retained["branch"], "neige/recorded-branch");
-
-    // REST serialisation of the wire type is unchanged: no `guidance` key.
-    let rest =
-        crate::task_recovery_reads::rest_attempts(&boot, "b", axum::http::StatusCode::OK).await;
-    assert_eq!(rest["recovery"]["code"], "predecessor_not_quiescent");
-    assert_eq!(
-        rest["recovery"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        vec!["allowed", "code", "reason"]
-    );
-}
-
-#[tokio::test]
-async fn task_recovery_guidance_does_not_advertise_a_user_recovery_the_predecessor_fence_refuses() {
-    let boot = boot().await;
-    declare(&boot, ordinary_codex_declaration("b")).await;
-    let first = current(&boot, "b").await;
-    finish(&boot, &first, false).await;
-    recover(&boot, &first, "planner-first").await;
-    let (second, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
-    assert_ne!(second.id, first.id);
-
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let entry = listed_entry(&list, "b");
-    assert_eq!(entry["generation"], 2);
-    let recovery = &entry["recovery"];
-    assert_eq!(recovery["allowed"], false);
-    assert_eq!(recovery["code"], "recovery_limit_reached", "{recovery}");
-    let guidance = &recovery["guidance"];
-    assert_eq!(guidance["supported_continuation"], "new_task", "{guidance}");
-    let condition = guidance["blocking_condition"].as_str().unwrap();
-    assert!(
-        condition.contains("User recovery") && condition.contains("no stop proof"),
-        "{condition}"
-    );
-    assert_eq!(guidance["retained"]["workspace_path"], lease_path);
-
-    // The User continuation the policy refusal alone would suggest is what
-    // the kernel refuses next, independently of the actor.
-    let user_view = calm_server::task_recovery::task_recovery_view(
-        boot.repo.as_ref(),
-        boot.track_id.as_str(),
-        "b",
-        calm_server::ids::ActorId::User,
-    )
-    .await
-    .unwrap();
-    assert!(!user_view.recovery.allowed);
-    assert_eq!(user_view.recovery.code, "predecessor_not_quiescent");
-}
-
-#[tokio::test]
-async fn task_recovery_summary_keeps_an_empty_retained_object_for_a_terminal_worker() {
-    let boot = boot().await;
-    declare(&boot, declaration("b", &[])).await;
-    let b = current(&boot, "b").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
-    sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE id=?2")
-        .bind(boot.worker_card_id.as_str())
-        .bind(&b.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    finish(&boot, &b, false).await;
-    for detail in ["full", "summary"] {
-        let list = call_tool(
-            &boot,
-            "calm.plan.list",
-            planner_identity(&boot),
-            json!({"detail": detail, "key": "b"}),
-        )
-        .await
-        .unwrap();
-        let recovery = &listed_entry(&list, "b")["recovery"];
-        assert_eq!(recovery["code"], "predecessor_not_quiescent", "{detail}");
-        assert!(
-            !recovery["reason"].as_str().unwrap().contains("worktree"),
-            "{detail}: {}",
-            recovery["reason"]
-        );
-        let guidance = &recovery["guidance"];
-        assert_eq!(guidance["supported_continuation"], "new_task", "{detail}");
-        assert_eq!(guidance["retained"], json!({}), "{detail}: {guidance}");
-        // The guidance sentence is the refusal's reason, verbatim.
-        assert_eq!(
-            guidance["blocking_condition"], recovery["reason"],
-            "{detail}: {guidance}"
-        );
-        assert!(
-            guidance["blocking_condition"]
-                .as_str()
-                .unwrap()
-                .starts_with("an ordinary worker was prepared"),
-            "{detail}: {guidance}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn task_recovery_guidance_names_verification_effects_when_no_worker_was_prepared() {
-    let boot = boot().await;
-    declare(&boot, declaration("b", &[])).await;
-    let b = current(&boot, "b").await;
-    finish(&boot, &b, false).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
-    sqlx::query("UPDATE tasks SET gate_attempt=1 WHERE id=?1")
-        .bind(&b.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let recovery = &listed_entry(&list, "b")["recovery"];
-    assert_eq!(recovery["code"], "predecessor_not_quiescent");
-    assert!(
-        recovery["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with("verification effects were recorded"),
-        "{}",
-        recovery["reason"]
-    );
-    let guidance = &recovery["guidance"];
-    assert_eq!(guidance["supported_continuation"], "new_task");
-    let condition = guidance["blocking_condition"].as_str().unwrap();
-    assert!(
-        !condition.contains("worker was prepared")
-            && condition.starts_with("verification effects were recorded"),
-        "{condition}"
-    );
-    assert_eq!(guidance["retained"], json!({}));
-}
-
-fn isolated_codex_declaration(key: &str) -> Value {
-    let mut declaration = ordinary_codex_declaration(key);
-    declaration["context"] =
-        json!({"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}});
-    declaration
-}
-
-/// Inserts a keyed `codex-isolated-worker` operation row with a preparation receipt in `phase`; returns its id.
-async fn insert_isolated_operation(boot: &Boot, task: &Task, phase: &str) -> String {
-    let id = format!("isolated-{phase}-{}", task.id);
-    sqlx::query(
-        "INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,\
-         target_type,target_id,target_json,payload_json,phase,tx_output_json,\
-         created_at_ms,updated_at_ms) VALUES(?1,?1,'codex-isolated-worker',?2,'h',\
-         'track',?3,'{}','{}',?4,'{}',1,1)",
-    )
-    .bind(&id)
-    .bind(&task.id)
-    .bind(boot.track_id.as_str())
-    .bind(phase)
-    .execute(&boot.repo.sqlite_pool().unwrap())
-    .await
-    .unwrap();
-    id
-}
-
-#[tokio::test]
-async fn task_recovery_guidance_follows_the_recorded_ordinary_predecessor_not_the_context_shape() {
-    use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
-    let boot = boot().await;
-    declare(&boot, isolated_codex_declaration("b")).await;
-    let task = current(&boot, "b").await;
-    // Historical pre-feature Operation: the context was opaque to its legacy producer.
-    let payload = serde_json::to_value(
-        calm_server::operation::codex_adapter::CodexWorkerOperationPayload {
-            actor: calm_server::ids::ActorId::KernelDispatcher,
-            track_id: task.track_id.clone(),
-            idempotency_key: task.id.clone(),
-            goal: task.goal.clone(),
-            cwd: None,
-            context: serde_json::from_str(&task.context_json).unwrap(),
-            acceptance_criteria: task.acceptance_criteria.clone(),
-        },
-    )
-    .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let op = SqlxOperationRepo::new(pool.clone())
-        .insert_operation(
-            "codex-worker",
-            OperationKey {
-                operation_key: "historical-worker".into(),
-                idempotency_key: Some(task.id.clone()),
-                payload_hash: calm_server::routes::terminal_cards::stable_payload_hash(&payload)
-                    .unwrap(),
-            },
-            payload,
-        )
-        .await
-        .unwrap();
-    let output = calm_server::operation::TxOutput::new(
-        "card",
-        Some(boot.worker_card_id.to_string()),
-        json!({"id":boot.worker_card_id}),
-    );
-    sqlx::query("UPDATE operations SET phase='succeeded',target_type='card',target_id=?1,tx_output_json=?2 WHERE id=?3")
-        .bind(boot.worker_card_id.as_str()).bind(serde_json::to_string(&output).unwrap()).bind(&op).execute(&pool).await.unwrap();
-    let (failed, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
-    assert!(calm_server::isolated_codex::selected(&failed).unwrap());
-
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let recovery = &listed_entry(&list, "b")["recovery"];
-    assert_eq!(recovery["allowed"], false);
-    assert_eq!(recovery["code"], "predecessor_not_quiescent", "{recovery}");
-    let guidance = &recovery["guidance"];
-    assert_eq!(guidance["supported_continuation"], "new_task", "{guidance}");
-    assert_eq!(guidance["blocking_condition"], recovery["reason"]);
-    assert!(
-        recovery["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with("an ordinary worker was prepared"),
-        "{recovery}"
-    );
-    assert_eq!(guidance["retained"]["workspace_path"], lease_path);
-}
-
-#[tokio::test]
-async fn task_recovery_guidance_waits_for_settlement_behind_the_planner_limit() {
-    let boot = boot().await;
-    declare(&boot, isolated_codex_declaration("b")).await;
-    let first = current(&boot, "b").await;
-    finish(&boot, &first, false).await;
-    recover(&boot, &first, "planner-first").await;
-    let second = current(&boot, "b").await;
-    assert_ne!(second.id, first.id);
-    finish(&boot, &second, false).await;
-    // Still running its stop: `parked` itself is CHECK-bound to a real run record.
-    insert_isolated_operation(&boot, &second, "spawn_succeeded").await;
-
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let entry = listed_entry(&list, "b");
-    assert_eq!(entry["generation"], 2);
-    let recovery = &entry["recovery"];
-    assert_eq!(recovery["code"], "recovery_limit_reached", "{recovery}");
-    let guidance = &recovery["guidance"];
-    assert_eq!(
-        guidance["supported_continuation"], "wait_for_settlement",
-        "{guidance}"
-    );
-    let condition = guidance["blocking_condition"].as_str().unwrap();
-    assert!(
-        condition.starts_with(recovery["reason"].as_str().unwrap())
-            && condition.contains("User recovery")
-            && condition.contains(". Independently of who asks: ")
-            && condition.contains("is in phase spawn_succeeded, not failed")
-            && condition.contains("the settlement that records its stop has not completed"),
-        "{condition}"
-    );
-}
-
-#[tokio::test]
-async fn task_recovery_guidance_names_the_new_task_behind_a_track_that_does_not_schedule() {
-    let boot = boot().await;
-    declare(&boot, ordinary_codex_declaration("b")).await;
-    let (_failed, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
-    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
-        .bind(boot.track_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
-
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let recovery = &listed_entry(&list, "b")["recovery"];
-    assert_eq!(recovery["code"], "track_not_ready", "{recovery}");
-    let guidance = &recovery["guidance"];
-    assert_eq!(guidance["supported_continuation"], "new_task", "{guidance}");
-    let condition = guidance["blocking_condition"].as_str().unwrap();
-    assert!(
-        condition.starts_with(recovery["reason"].as_str().unwrap())
-            && condition.contains("track is closed; reopen it first")
-            && condition.contains(". Independently of who asks: an ordinary worker was prepared")
-            && condition.contains("no stop proof"),
-        "{condition}"
-    );
-    assert_eq!(guidance["retained"]["workspace_path"], lease_path);
-}
-
-#[tokio::test]
-async fn task_recovery_guidance_has_no_continuation_for_a_withdrawn_user_owned_declaration() {
-    let boot = boot().await;
-    let (block_id, _) = declare(&boot, declaration("b", &[])).await;
-    let b = current(&boot, "b").await;
-    finish(&boot, &b, false).await;
-    // The Planner may not author a user-owned block: rewrite the report row directly.
-    let mut declared = declaration("b", &[]);
-    declared["declared_by"] = json!("user");
-    declared["ready"] = json!(false);
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let (card_id, bytes): (String, Vec<u8>) =
-        sqlx::query_as("SELECT id, body_crdt FROM cards WHERE track_id=?1 AND kind='track-report'")
-            .bind(boot.track_id.as_str())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    let mut doc = calm_server::track_report_doc::ReportDoc::from_bytes(&bytes).unwrap();
-    doc.upsert_block(
-        Some(&block_id),
-        "task",
-        &calm_types::report_blocks::render_fence("task", &declared),
-    )
-    .unwrap();
-    sqlx::query(
-        "UPDATE cards SET body_crdt=?1,payload=json_set(payload,'$.body',?2,'$.blocks',json(?3)) \
-         WHERE id=?4",
-    )
-    .bind(doc.to_bytes())
-    .bind(doc.project().unwrap().1)
-    .bind(serde_json::to_string(&doc.blocks_snapshot().unwrap()).unwrap())
-    .bind(&card_id)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query("UPDATE tasks SET declared_by='user' WHERE id=?1")
-        .bind(&b.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let recovery = &listed_entry(&list, "b")["recovery"];
-    assert_eq!(
-        recovery["code"], "user_authorization_required",
-        "{recovery}"
-    );
-    let guidance = &recovery["guidance"];
-    assert_eq!(guidance["supported_continuation"], "none", "{guidance}");
-    let condition = guidance["blocking_condition"].as_str().unwrap();
-    assert!(
-        condition.starts_with(recovery["reason"].as_str().unwrap())
-            && condition.contains(
-                ". Independently of who asks: task declaration `b` was withdrawn (ready is false)"
-            ),
-        "{condition}"
-    );
-    assert_eq!(guidance["retained"], json!({}));
-}
-
-#[tokio::test]
-async fn task_recovery_guidance_has_no_continuation_for_a_permanent_isolated_denial() {
-    let boot = boot().await;
-    declare(&boot, isolated_codex_declaration("b")).await;
-    let b = current(&boot, "b").await;
-    finish(&boot, &b, false).await;
-    insert_isolated_operation(&boot, &b, "failed").await;
-    sqlx::query("UPDATE tasks SET gate_attempt=1 WHERE id=?1")
-        .bind(&b.id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
-
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let recovery = &listed_entry(&list, "b")["recovery"];
-    assert_eq!(recovery["code"], "predecessor_not_quiescent", "{recovery}");
-    let guidance = &recovery["guidance"];
-    assert_eq!(guidance["supported_continuation"], "none", "{guidance}");
-    assert_eq!(guidance["blocking_condition"], recovery["reason"]);
-    let condition = guidance["blocking_condition"].as_str().unwrap();
-    assert!(
-        condition.contains("permanently unavailable")
-            && condition.contains("no settlement briefing re-opens it")
-            && !condition.contains("wait"),
-        "{condition}"
-    );
-    assert_eq!(guidance["retained"], json!({}));
 }

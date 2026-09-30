@@ -1,10 +1,7 @@
 //! Admission checks are read-only and run under the writer transaction. Every refusal is
 //! a typed [`RecoveryRefusal`] decided at its site, never from the message text or task shape.
 
-use super::refusal::{
-    Admission, AdmissionError, RecoveryRefusal, RecoveryRefusalCode, RefusalSite,
-    SupportedContinuation,
-};
+use super::refusal::{Admission, AdmissionError, RecoveryRefusal, RecoveryRefusalCode};
 use crate::db::sqlite::{task_attempt_current_tx, task_attempt_get_tx, task_get_tx};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
@@ -28,9 +25,7 @@ pub(super) async fn authorize_tx(
         ActorId::User | ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_)
     ) {
         return Err(RecoveryRefusal::forbidden(
-            RefusalSite::ActorNotUserOrPlanner,
             RecoveryRefusalCode::NotAuthorized,
-            SupportedContinuation::None,
             "task recovery requires a User or Planner",
         )
         .into());
@@ -38,13 +33,7 @@ pub(super) async fn authorize_tx(
     calm_truth::decision_gate::enforce_role_resolving_session_from_tx(tx, actor, event, scope)
         .await
         .map_err(|error| {
-            RecoveryRefusal::forbidden(
-                RefusalSite::PlannerSessionUnresolved,
-                RecoveryRefusalCode::NotAuthorized,
-                SupportedContinuation::None,
-                error.to_string(),
-            )
-            .into()
+            RecoveryRefusal::forbidden(RecoveryRefusalCode::NotAuthorized, error.to_string()).into()
         })
 }
 
@@ -52,15 +41,9 @@ fn conflict(reason: impl Into<String>) -> CalmError {
     CalmError::Conflict(reason.into())
 }
 
-/// A Conflict-kind refusal decided at `site`. `reason` is the complete
-/// sentence the wire carries.
-fn refuse(
-    site: RefusalSite,
-    code: RecoveryRefusalCode,
-    continuation: SupportedContinuation,
-    reason: impl Into<String>,
-) -> AdmissionError {
-    RecoveryRefusal::conflict(site, code, continuation, reason).into()
+/// A Conflict-kind refusal. `reason` is the complete sentence the wire carries.
+fn refuse(code: RecoveryRefusalCode, reason: impl Into<String>) -> AdmissionError {
+    RecoveryRefusal::conflict(code, reason).into()
 }
 
 pub(super) async fn recovery_policy(
@@ -72,17 +55,13 @@ pub(super) async fn recovery_policy(
 ) -> Admission<()> {
     if !track.is_open() {
         return Err(refuse(
-            RefusalSite::TrackNotReady,
             RecoveryRefusalCode::TrackNotReady,
-            SupportedContinuation::None,
             "track is closed; reopen it first",
         ));
     }
     if task.spawn != TASK_IN_TRACK_ROUTE {
         return Err(refuse(
-            RefusalSite::ChildTaskRoute,
             RecoveryRefusalCode::UnsupportedSpawn,
-            SupportedContinuation::None,
             "child-task recovery is not supported",
         ));
     }
@@ -94,18 +73,14 @@ pub(super) async fn recovery_policy(
                 .is_none_or(|policy| policy == "auto-declare")
         {
             return Err(RecoveryRefusal::forbidden(
-                RefusalSite::PlannerOutsideAutoDeclare,
                 RecoveryRefusalCode::UserAuthorizationRequired,
-                SupportedContinuation::UserRecovery,
                 "Planner recovery requires a Planner declaration under auto-declare; user-owned and declare-and-wait tasks require an explicit User recovery",
             )
             .into());
         }
         if generation >= 2 {
             return Err(RecoveryRefusal::forbidden(
-                RefusalSite::PlannerRetryLimit,
                 RecoveryRefusalCode::RecoveryLimitReached,
-                SupportedContinuation::UserRecovery,
                 "Planner recovery limit reached; an explicit User recovery is required",
             )
             .into());
@@ -125,21 +100,15 @@ pub(super) async fn admit_recovery_tx(
     admit_contract_and_predecessor_tx(tx, track, previous).await
 }
 
-/// Actor-independent and read-only, so `calm.plan.list` guidance re-runs it behind a policy refusal.
-pub(crate) async fn admit_contract_and_predecessor_tx(
+async fn admit_contract_and_predecessor_tx(
     tx: &mut Tx<'_>,
     track: &Track,
     previous: &Task,
 ) -> Admission<TaskRecoveryConstraint> {
     let constraint = claim_constraint_tx(tx, previous).await?;
-    constraint.validate(&previous.track_id).map_err(|reason| {
-        refuse(
-            RefusalSite::ConstraintShapeInvalid,
-            RecoveryRefusalCode::MissingFrozenContract,
-            SupportedContinuation::None,
-            reason,
-        )
-    })?;
+    constraint
+        .validate(&previous.track_id)
+        .map_err(|reason| refuse(RecoveryRefusalCode::MissingFrozenContract, reason))?;
     let (_, blocks) = crate::track_report::report_blocks_snapshot_tx(tx, track.id.as_str()).await?;
     check_constraint_tx(tx, track, &blocks, &previous.key, &constraint).await?;
     require_recoverable_predecessor_tx(tx, previous).await?;
@@ -183,25 +152,19 @@ async fn claim_constraint_tx(tx: &mut Tx<'_>, task: &Task) -> Admission<TaskReco
     .await?;
     if truncated != 0 {
         return Err(refuse(
-            RefusalSite::FrozenContextTruncated,
             RecoveryRefusalCode::MissingFrozenContract,
-            SupportedContinuation::None,
             "failed execution has incomplete frozen context; same-contract recovery is unavailable",
         ));
     }
     let refs = serde_json::from_str(json.as_deref().ok_or_else(|| {
         refuse(
-            RefusalSite::FrozenContextMissing,
             RecoveryRefusalCode::MissingFrozenContract,
-            SupportedContinuation::None,
             "failed execution has no frozen contract; same-contract recovery is unavailable",
         )
     })?)
     .map_err(|_| {
         refuse(
-            RefusalSite::FrozenContextMalformed,
             RecoveryRefusalCode::MissingFrozenContract,
-            SupportedContinuation::None,
             "failed execution has malformed frozen context; same-contract recovery is unavailable",
         )
     })?;
@@ -233,9 +196,7 @@ async fn declaration_tx(
     let mut matching = declarations.into_iter().filter(|decl| decl.key == key);
     let declaration = matching.next().ok_or_else(|| {
         refuse(
-            RefusalSite::DeclarationMissing,
             RecoveryRefusalCode::DeclarationWithdrawn,
-            SupportedContinuation::None,
             format!(
                 "task declaration `{key}` is no longer in the report or is unreadable; \
                  same-contract recovery has nothing current to honour"
@@ -252,9 +213,7 @@ async fn declaration_tx(
             "was withdrawn (ready is false)"
         };
         return Err(refuse(
-            RefusalSite::DeclarationNotCurrent,
             RecoveryRefusalCode::DeclarationWithdrawn,
-            SupportedContinuation::None,
             format!(
                 "task declaration `{key}` {state}; same-contract recovery has nothing current to honour"
             ),
@@ -266,9 +225,7 @@ async fn declaration_tx(
         .is_some_and(|diags| !diags.is_empty())
     {
         return Err(refuse(
-            RefusalSite::DeclarationInvalid,
             RecoveryRefusalCode::DeclarationWithdrawn,
-            SupportedContinuation::None,
             format!(
                 "task declaration `{key}` has validation errors; same-contract recovery has nothing current to honour"
             ),
@@ -279,9 +236,7 @@ async fn declaration_tx(
         && !declaration.released_by_user
     {
         return Err(refuse(
-            RefusalSite::ReleaseWithdrawn,
             RecoveryRefusalCode::DeclarationWithdrawn,
-            SupportedContinuation::None,
             format!(
                 "task execution release for `{key}` was withdrawn under declare-and-wait; \
                  same-contract recovery waits for a current User release"
@@ -299,31 +254,18 @@ pub(super) async fn check_constraint_tx(
     key: &str,
     constraint: &TaskRecoveryConstraint,
 ) -> Admission<()> {
-    constraint.validate(track.id.as_str()).map_err(|reason| {
-        refuse(
-            RefusalSite::InnerConstraintShapeInvalid,
-            RecoveryRefusalCode::MissingFrozenContract,
-            SupportedContinuation::None,
-            reason,
-        )
-    })?;
+    constraint
+        .validate(track.id.as_str())
+        .map_err(|reason| refuse(RecoveryRefusalCode::MissingFrozenContract, reason))?;
     let declaration = declaration_tx(tx, track, blocks, key).await?;
     let TaskRecoveryConstraint::V1 {
         refs,
         spawn,
         declared_by,
     } = constraint;
-    let changed = |site: RefusalSite, reason: String| {
-        refuse(
-            site,
-            RecoveryRefusalCode::ContractChanged,
-            SupportedContinuation::None,
-            reason,
-        )
-    };
+    let changed = |reason: String| refuse(RecoveryRefusalCode::ContractChanged, reason);
     if &declaration.spawn != spawn || &declaration.declared_by != declared_by {
         return Err(changed(
-            RefusalSite::RouteOrAuthorChanged,
             "recovery contract route or author changed; same-contract recovery is unavailable"
                 .into(),
         ));
@@ -333,7 +275,6 @@ pub(super) async fn check_constraint_tx(
             .await
             .map_err(|error| match error {
                 CalmError::NotFound(_) => changed(
-                    RefusalSite::FrozenTrackMissing,
                     format!(
                         "recovery frozen context track is missing: {}; same-contract recovery is unavailable",
                         frozen.track_id
@@ -348,7 +289,6 @@ pub(super) async fn check_constraint_tx(
                 .await?;
             if kind != "system" {
                 return Err(changed(
-                    RefusalSite::ContextMovedOutsideArea,
                     "recovery context moved outside its authorized area; same-contract recovery is unavailable".into(),
                 ));
             }
@@ -360,13 +300,10 @@ pub(super) async fn check_constraint_tx(
         .fetch_one(&mut **tx)
         .await?;
         if !report_exists {
-            return Err(changed(
-                RefusalSite::FrozenReportMissing,
-                format!(
-                    "recovery frozen context report is missing: {}; same-contract recovery is unavailable",
-                    frozen.track_id
-                ),
-            ));
+            return Err(changed(format!(
+                "recovery frozen context report is missing: {}; same-contract recovery is unavailable",
+                frozen.track_id
+            )));
         }
         let fetched;
         let frozen_blocks = if frozen.track_id == track.id {
@@ -382,13 +319,11 @@ pub(super) async fn check_constraint_tx(
             .find(|block| block.id == frozen.block_id)
             .ok_or_else(|| {
                 changed(
-                    RefusalSite::FrozenBlockMissing,
                     "recovery frozen context block is missing; same-contract recovery is unavailable".into(),
                 )
             })?;
         if frozen.is_root && declaration.block_id != frozen.block_id {
             return Err(changed(
-                RefusalSite::RootIdentityChanged,
                 "recovery declaration identity changed; same-contract recovery is unavailable"
                     .into(),
             ));
@@ -397,7 +332,6 @@ pub(super) async fn check_constraint_tx(
             crate::task_context::context_ref(frozen.track_id.as_str(), block, frozen.is_root);
         if current.hash != frozen.hash {
             return Err(changed(
-                RefusalSite::RootHashChanged,
                 "recovery contract changed; same-contract recovery is unavailable".into(),
             ));
         }
@@ -418,14 +352,7 @@ pub(super) async fn require_recoverable_predecessor_tx(
          FROM operations WHERE idempotency_key=?1 \
          OR (kind='task-verify' AND json_extract(payload_json,'$.task_id')=?1)",
     ).bind(&task.id).fetch_all(&mut **tx).await?;
-    let fence = |site: RefusalSite, continuation: SupportedContinuation, reason: &str| {
-        refuse(
-            site,
-            RecoveryRefusalCode::PredecessorNotQuiescent,
-            continuation,
-            reason,
-        )
-    };
+    let fence = |reason: &str| refuse(RecoveryRefusalCode::PredecessorNotQuiescent, reason);
     if operations.iter().any(|operation| {
         operation.kind == crate::isolated_codex::OPERATION_KIND
             && operation.tx_output_json.is_some()
@@ -435,29 +362,17 @@ pub(super) async fn require_recoverable_predecessor_tx(
             || task.gate_pid.is_some()
             || task.gate_result_json.is_some()
         {
-            return Err(fence(
-                RefusalSite::IsolatedAmbiguousOperations,
-                SupportedContinuation::None,
-                ISOLATED_AMBIGUOUS_OPERATIONS,
-            ));
+            return Err(fence(ISOLATED_AMBIGUOUS_OPERATIONS));
         }
         return crate::isolated_codex::recovery::require_stopped_tx(tx, task, &operations[0].id)
             .await;
     }
 
     if task.worker_card_id.is_some() {
-        return Err(fence(
-            RefusalSite::OrdinaryWorkerPrepared,
-            SupportedContinuation::NewTask,
-            ORDINARY_WORKER_PREPARED_NO_STOP_PROOF,
-        ));
+        return Err(fence(ORDINARY_WORKER_PREPARED_NO_STOP_PROOF));
     }
     if task.gate_attempt != 0 || task.gate_pid.is_some() || task.gate_result_json.is_some() {
-        return Err(fence(
-            RefusalSite::VerificationEffectsWithoutWorker,
-            SupportedContinuation::NewTask,
-            VERIFICATION_EFFECTS_NO_STOP_PROOF,
-        ));
+        return Err(fence(VERIFICATION_EFFECTS_NO_STOP_PROOF));
     }
     if task
         .status_detail
@@ -465,11 +380,7 @@ pub(super) async fn require_recoverable_predecessor_tx(
         .map(crate::db::sqlite::status_detail_class)
         != Some("spawn-failed")
     {
-        return Err(fence(
-            RefusalSite::NotSpawnFailedWithoutStopProof,
-            SupportedContinuation::NewTask,
-            NOT_SPAWN_FAILED_NO_STOP_PROOF,
-        ));
+        return Err(fence(NOT_SPAWN_FAILED_NO_STOP_PROOF));
     }
     for operation in operations {
         let worker_kind = matches!(
@@ -498,11 +409,7 @@ pub(super) async fn require_recoverable_predecessor_tx(
             || operation.spawn_artifacts_json.is_some()
             || operation.compensation_state.is_some()
         {
-            return Err(fence(
-                RefusalSite::OperationUncertainExternalEffects,
-                SupportedContinuation::NewTask,
-                OPERATION_UNCERTAIN_EXTERNAL_EFFECTS,
-            ));
+            return Err(fence(OPERATION_UNCERTAIN_EXTERNAL_EFFECTS));
         }
     }
     // A still-pending predecessor cannot race into a new process: prepare rechecks under this
@@ -512,7 +419,7 @@ pub(super) async fn require_recoverable_predecessor_tx(
 
 pub(crate) const ISOLATED_AMBIGUOUS_OPERATIONS: &str = "predecessor isolated execution has ambiguous operations or verification effects on its key; \
      the namespace stop proof cannot be attributed, so same-key recovery is permanently \
-     unavailable and no settlement briefing re-opens it";
+     unavailable and no settlement notice re-opens it";
 
 pub(crate) const ORDINARY_WORKER_PREPARED_NO_STOP_PROOF: &str = "an ordinary worker was prepared for this key and has no stop proof; same-key recovery is \
      unavailable. Continue by declaring a new task (new key).";
@@ -545,9 +452,7 @@ struct PredecessorOperation {
 pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) -> Admission<()> {
     let allocation = task_attempt_get_tx(tx, task_id).await?.ok_or_else(|| {
         refuse(
-            RefusalSite::AllocationMissing,
             RecoveryRefusalCode::RecoveryLineageMissing,
-            SupportedContinuation::None,
             "execution allocation is missing; the accepted recovery cannot start",
         )
     })?;
@@ -566,9 +471,7 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
         .await?
         .ok_or_else(|| {
             refuse(
-                RefusalSite::PredecessorRowMissing,
                 RecoveryRefusalCode::RecoveryLineageMissing,
-                SupportedContinuation::None,
                 "recovery predecessor row is missing; the accepted recovery cannot start",
             )
         })?;
@@ -579,17 +482,13 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
         ActorId::User | ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_)
     ) {
         return Err(refuse(
-            RefusalSite::ProvenanceUnsupported,
             RecoveryRefusalCode::NotAuthorized,
-            SupportedContinuation::None,
             "accepted recovery has unsupported authority provenance; it cannot start",
         ));
     }
     if !track.is_open() {
         return Err(refuse(
-            RefusalSite::TrackNoLongerSchedules,
             RecoveryRefusalCode::TrackNotReady,
-            SupportedContinuation::None,
             "track is closed; reopen it first",
         ));
     }

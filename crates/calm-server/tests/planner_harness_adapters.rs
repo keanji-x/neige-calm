@@ -535,6 +535,65 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
     );
 }
 
+/// #1893 S3: a Planner thread is started with no dynamic tool; the retired `Recover` offer is gone.
+#[tokio::test]
+async fn codex_planner_thread_offers_no_dynamic_tools() {
+    let _guard = ENV_LOCK.lock().await;
+    let tmp = TempDir::new().unwrap();
+    let capture_file = tmp.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
+
+    let (state, repo, role_cache) = state_with_live_daemon(&tmp).await;
+    let track = seed_track(&repo).await;
+    let card_id = new_id();
+    seed_planner_card(&repo, &role_cache, &track, &card_id).await;
+    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        track_id: track.id.to_string(),
+        planner_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: track.workspace.path.clone(),
+        goal: Some("adapter goal".into()),
+        reset_harness_items: false,
+        force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        opening_briefing: None,
+        first_message: None,
+        create_request_sha256: None,
+    })
+    .unwrap();
+    let op = state
+        .operation_runtime
+        .submit("planner-harness-start", key(), payload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        wait_op(&state, &op).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+
+    let rows = wait_for_requests(&capture_file, 2).await;
+    let starts = rows
+        .iter()
+        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/start"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        starts.len(),
+        1,
+        "anti-vacuity: the Planner thread was started"
+    );
+    assert!(
+        starts[0].pointer("/params/dynamicTools").is_none(),
+        "{}",
+        starts[0]
+    );
+}
+
 #[tokio::test]
 async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
     let _guard = ENV_LOCK.lock().await;

@@ -4,16 +4,13 @@ mod admission;
 mod refusal;
 mod view;
 pub(crate) use admission::{
-    admit_contract_and_predecessor_tx, check_recovery_attempt_tx, require_attempt_startable_tx,
-    validate_isolated_start_tx,
+    check_recovery_attempt_tx, require_attempt_startable_tx, validate_isolated_start_tx,
 };
 pub use calm_types::task_recovery::{TaskAttemptView, TaskRecoveryCapability, TaskRecoveryView};
-pub(crate) use refusal::{
-    AdmissionError, RecoveryRefusal, RecoveryRefusalCode, RefusalSite, SupportedContinuation,
-};
+pub(crate) use refusal::{AdmissionError, RecoveryRefusal, RecoveryRefusalCode};
 pub(crate) use view::current_blocking_reason_tx;
 pub use view::task_recovery_view;
-pub(crate) use view::{RefusedRecovery, task_recovery_view_tx, task_recovery_view_with_refusal_tx};
+pub(crate) use view::task_recovery_view_tx;
 
 use crate::db::sqlite::{
     task_attempt_current_tx, task_get_tx, task_recovery_allocate_tx, task_recovery_lookup_tx,
@@ -37,62 +34,28 @@ pub struct RecoveryContext<'a> {
     pub write: &'a WriteContext,
 }
 
-/// What a Planner may expect from the executor a recovered attempt runs on.
-pub(crate) struct ExecutorStatement {
-    pub environment: Value,
-    pub recover_changes: &'static str,
-}
-
 const LEGACY_ENVIRONMENT_NOTE: &str =
     "recovery re-runs on the same executor as the failed attempt; its environment is unchanged";
-const LEGACY_RECOVER_CHANGES: &str = "Recovery re-runs on the same executor as the failed attempt with its unchanged environment and capabilities. It cannot resolve a failure caused by a missing capability; change the task's goal or inputs instead.";
 
-/// Executor statement for the attempt `task` describes. The route is decided by
+/// The executor environment of the attempt `task` describes. The route is decided by
 /// `isolated_codex::selected`, the same predicate the scheduler branches on, so the statement
 /// cannot disagree with the adapter that will run the attempt.
-pub(crate) fn executor_statement(task: &Task) -> Result<ExecutorStatement> {
+pub(crate) fn executor_environment(task: &Task) -> Result<Value> {
     if crate::isolated_codex::selected(task)? {
-        return Ok(ExecutorStatement {
-            environment: {
-                let context = serde_json::from_str(&task.context_json)?;
-                let selection =
-                    calm_types::task_execution::IsolatedCodexSelection::from_context(&context)
-                        .map_err(CalmError::BadRequest)?
-                        .ok_or_else(|| {
-                            CalmError::Conflict("isolated recovery selection missing".into())
-                        })?;
-                crate::dedicated_codex::executor_environment_with_plugins(&selection.plugin_tools)
-            },
-            recover_changes: crate::dedicated_codex::RECOVER_CHANGES,
-        });
+        let context = serde_json::from_str(&task.context_json)?;
+        let selection = calm_types::task_execution::IsolatedCodexSelection::from_context(&context)
+            .map_err(CalmError::BadRequest)?
+            .ok_or_else(|| CalmError::Conflict("isolated recovery selection missing".into()))?;
+        return Ok(crate::dedicated_codex::executor_environment_with_plugins(
+            &selection.plugin_tools,
+        ));
     }
     let executor = match task.kind {
         TaskKind::Codex => "shared-codex",
         TaskKind::Claude => "claude",
         TaskKind::Terminal => "terminal",
     };
-    Ok(ExecutorStatement {
-        environment: json!({"executor": executor, "note": LEGACY_ENVIRONMENT_NOTE}),
-        recover_changes: LEGACY_RECOVER_CHANGES,
-    })
-}
-
-/// Statement for the replacement attempt a receipt names; when admission withheld the
-/// replacement row, the previous attempt carries the same frozen contract and route.
-pub(crate) async fn executor_statement_for_receipt(
-    repo: &dyn RepoEventWrite,
-    receipt: &TaskRecoveryReceipt,
-) -> Result<ExecutorStatement> {
-    let task = match repo.task_get(&receipt.attempt_id).await? {
-        Some(task) => task,
-        None => repo
-            .task_get(&receipt.previous_attempt_id)
-            .await?
-            .ok_or_else(|| {
-                CalmError::Internal("recovered attempt has no projected execution row".into())
-            })?,
-    };
-    executor_statement(&task)
+    Ok(json!({"executor": executor, "note": LEGACY_ENVIRONMENT_NOTE}))
 }
 
 pub async fn recover_failed_task(
@@ -101,28 +64,6 @@ pub async fn recover_failed_task(
     key: &str,
     request: TaskRecoveryRequest,
     actor: ActorId,
-) -> Result<TaskRecoveryReceipt> {
-    recover_with_binding(context, track_id, key, request, actor, None).await
-}
-
-pub(crate) async fn recover_failed_task_bound(
-    context: RecoveryContext<'_>,
-    track_id: &str,
-    key: &str,
-    request: TaskRecoveryRequest,
-    actor: ActorId,
-    binding: crate::semantic_recovery::BoundTurn,
-) -> Result<TaskRecoveryReceipt> {
-    recover_with_binding(context, track_id, key, request, actor, Some(binding)).await
-}
-
-async fn recover_with_binding(
-    context: RecoveryContext<'_>,
-    track_id: &str,
-    key: &str,
-    request: TaskRecoveryRequest,
-    actor: ActorId,
-    binding: Option<crate::semantic_recovery::BoundTurn>,
 ) -> Result<TaskRecoveryReceipt> {
     if !calm_types::report_blocks::tasks::key_is_valid(key)
         || request.expected_attempt_id.trim().is_empty()
@@ -156,9 +97,6 @@ async fn recover_with_binding(
         context.write,
         move |tx| {
             Box::pin(async move {
-                if let Some(binding) = &binding {
-                    crate::semantic_recovery::authenticate_tx(tx, binding).await?;
-                }
                 let track = crate::db::sqlite::track_get_tx(tx, &track_id).await?;
                 let scope = EventScope::Track {
                     track: track.id.clone(),

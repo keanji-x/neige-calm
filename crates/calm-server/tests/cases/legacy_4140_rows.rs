@@ -150,6 +150,15 @@ async fn legacy_4140_rows_load() {
         "{phases:?}"
     );
 
+    // The recovery binding tables are gone with their code (S3); their rows were history.
+    let bindings: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_master WHERE name LIKE 'planner_recovery_%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(bindings, 0);
+
     // Worker sessions and their cards.
     for (session, card) in [
         ("ws-op-a1", "worker-a1"),
@@ -179,6 +188,17 @@ async fn legacy_4140_rows_load() {
             .filter_map(|entry| entry["key"].as_str())
             .collect();
         assert_eq!(keys, [key], "{track}: {full}");
+        // A refused recovery carries only its capability; the Planner-only guidance is gone (S3).
+        let recovery = &full["tasks"][0]["recovery"];
+        assert_eq!(recovery["allowed"], false, "{track}: {full}");
+        let mut fields: Vec<&str> = recovery
+            .as_object()
+            .unwrap_or_else(|| panic!("{track}: {full}"))
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["allowed", "code", "reason"], "{track}: {full}");
         let summary = call_tool(
             &boot,
             "calm.plan.list",

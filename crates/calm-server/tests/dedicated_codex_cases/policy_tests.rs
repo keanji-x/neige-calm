@@ -164,6 +164,4 @@ async fn executor_environment_statement_matches_generated_policy_document() {
             .unwrap()
             .contains("not enumerated")
     );
-    assert!(RECOVER_CHANGES.contains("identical execution environment"));
-    assert!(RECOVER_CHANGES.contains("only the workspace is new"));
 }

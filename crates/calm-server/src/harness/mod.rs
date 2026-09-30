@@ -5,7 +5,6 @@ pub mod lock;
 pub mod observation;
 pub mod profile;
 pub mod queue;
-mod recovery_briefing;
 pub mod registry;
 mod result_receipt;
 pub mod run_loop;

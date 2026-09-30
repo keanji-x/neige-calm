@@ -352,7 +352,7 @@ pub(super) async fn snapshot_tx(
         None => None,
     };
     let executor_environment = match task.as_ref() {
-        Some(task) => crate::task_recovery::executor_statement(task)?.environment,
+        Some(task) => crate::task_recovery::executor_environment(task)?,
         None => {
             json!({"executor":"codex", "note":"No current execution allocation; original requested grants are in requested_executor_environment"})
         }

@@ -14,7 +14,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.area.outline",
         "calm.plan.cancel",
         "calm.plan.list",
-        "calm.plan.recover",
         "calm.preview.register",
         "calm.preview.unregister",
         "calm.ratify.request",

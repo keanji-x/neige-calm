@@ -58,7 +58,6 @@ pub(crate) async fn planner_with_daemon(
         events: fx.boot.ctx.events.clone(),
         card_role_cache: fx.boot.card_role_cache.clone(),
         track_area_cache: areas,
-        // The ordinary queue tests use a stub; briefing tests capture real turn input.
         backend: daemon.into(),
         config: HarnessConfig::default(),
         snapshot,
@@ -142,10 +141,6 @@ async fn planner_observes_failure_then_settled_isolated_recovery() {
     assert_eq!(refused["allowed"], false);
     // An isolated predecessor that has not settled: wait, do not re-key.
     assert_eq!(refused["code"], "predecessor_not_quiescent", "{refused}");
-    assert_eq!(
-        refused["guidance"]["supported_continuation"], "wait_for_settlement",
-        "{refused}"
-    );
     assert!(!handle.snapshot().await.pending_observations().iter().any(|observation|
         matches!(observation, Observation::SystemContext { text } if text.contains(&first.id) && text.contains("calm.plan.list"))));
     assert_eq!(owned.id, op_id);
@@ -153,8 +148,6 @@ async fn planner_observes_failure_then_settled_isolated_recovery() {
     finish(&fx, &first, &workspace, false).await;
     let allowed = planner_recovery(&fx).await;
     assert_eq!(allowed["allowed"], true);
-    // Guidance exists only for a refused recovery.
-    assert!(allowed.get("guidance").is_none(), "{allowed}");
     // Make the red assertion only after the owned fake process has been stopped.
     let settled = wait_observation(&handle, &first.id, true).await;
     assert!(early, "Planner must observe failure before cleanup");
@@ -210,24 +203,9 @@ async fn planner_observes_failure_then_settled_isolated_recovery() {
         1,
         "repeated Operation recovery must not duplicate settlement"
     );
-    let mut request = recovery(&first);
-    request["key"] = json!("retry");
-    let receipt = call_tool(
-        &fx.boot,
-        "calm.plan.recover",
-        planner_identity(&fx.boot),
-        request.clone(),
-    )
-    .await
-    .unwrap();
-    let replay = call_tool(
-        &fx.boot,
-        "calm.plan.recover",
-        planner_identity(&fx.boot),
-        request,
-    )
-    .await
-    .unwrap();
+    let (status, receipt) = rest(&fx, "POST", &route(&fx, "recover"), recovery(&first)).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    let (_, replay) = rest(&fx, "POST", &route(&fx, "recover"), recovery(&first)).await;
     assert_eq!(
         receipt, replay,
         "request replay must not allocate another attempt"
@@ -635,6 +613,3 @@ async fn settlement_catch_up_respects_recovered_harness_watermark() {
         "settlement must synchronize the recovered prefix so a delayed failure is not duplicated live or after persistence/replay"
     );
 }
-
-#[path = "isolated_codex_recovery_briefing.rs"]
-mod briefing;

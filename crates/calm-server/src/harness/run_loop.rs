@@ -3131,66 +3131,38 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     }
     *inner.debounce.lock().await = DebounceState::default();
     // Segments are built from the ENTRIES, not observations: an `Observation` cannot carry an attachment.
-    let prepared = async {
-        let semantic = match inner.thread_id.read().await.clone() {
-            Some(thread) => {
-                crate::semantic_recovery::registered(
-                    inner.repo.as_ref(),
-                    inner.card_id.as_str(),
-                    &thread,
-                )
-                .await?
-            }
-            None => false,
-        };
-        let mut prepared = super::recovery_briefing::input_segments(
-            inner.repo.as_ref(),
-            &inner.card_id,
-            &inner.track_id,
-            &inner.worker_session_id,
-            &drained,
-            semantic,
-        )
-        .await?;
-        super::result_receipt::enrich(
-            inner.repo.as_ref(),
-            &crate::state::WriteContext::new(
-                inner.card_role_cache.clone(),
-                inner.track_area_cache.clone(),
-            ),
-            &inner.track_id,
-            &drained,
-            &mut prepared.segments,
-        )
-        .await?;
-        crate::error::Result::Ok(prepared)
+    let mut segments = input_segments_for_entries(&inner.card_id, &drained);
+    if let Err(error) = super::result_receipt::enrich(
+        inner.repo.as_ref(),
+        &crate::state::WriteContext::new(
+            inner.card_role_cache.clone(),
+            inner.track_area_cache.clone(),
+        ),
+        &inner.track_id,
+        &drained,
+        &mut segments,
+    )
+    .await
+    {
+        // Receipt reads must not lose the drained notifications or leave the harness stuck
+        // Issuing. Rebuffering arms hard_fire, so use the existing pacing guard before another
+        // tick repeats reads and writes.
+        rebuffer_head(inner, drained).await;
+        *inner.state.lock().await = prior_turn
+            .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
+            .unwrap_or(HarnessState::Idle);
+        *inner.issuance_retry_after.lock().await = Some(Instant::now() + TRANSIENT_RETRY_DELAY);
+        *inner.issuance_block.lock().await = Some(
+            "Could not prepare the task result receipts. Your messages remain queued; the system will retry."
+                .into(),
+        );
+        persist_snapshot(inner).await?;
+        return Err(error);
     }
-    .await;
-    let prepared = match prepared {
-        Ok(segments) => segments,
-        Err(error) => {
-            // Briefing reads must not lose the drained notifications or leave
-            // the harness stuck Issuing. Rebuffering arms hard_fire, so use the
-            // existing pacing guard before another tick repeats reads and writes.
-            rebuffer_head(inner, drained).await;
-            *inner.state.lock().await = prior_turn
-                .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
-                .unwrap_or(HarnessState::Idle);
-            *inner.issuance_retry_after.lock().await = Some(Instant::now() + TRANSIENT_RETRY_DELAY);
-            *inner.issuance_block.lock().await = Some(
-                "Could not prepare the recovery decision briefing. Your messages remain queued; the system will retry."
-                    .into(),
-            );
-            persist_snapshot(inner).await?;
-            return Err(error);
-        }
-    };
 
-    let mut prepared = prepared;
     // The channel statement is the batch's, appended once here; same flag as `report_patch`.
-    append_report_edit_batch_channel_line(&mut prepared.segments, report_edits_carry_diffs);
-    let joined_observation_text = prepared
-        .segments
+    append_report_edit_batch_channel_line(&mut segments, report_edits_carry_diffs);
+    let joined_observation_text = segments
         .iter()
         .map(|segment| segment.text.as_str())
         .collect::<Vec<_>>()
@@ -3263,58 +3235,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         TurnStart(CalmError),
     }
     let issued = async {
-        if !prepared.actions.is_empty()
-            && let Some(problem) = crate::semantic_recovery::binding_problem(
-                &serde_json::to_string(&items)
-                    .map_err(|e| IssueFailure::TurnStart(CalmError::from(e)))?,
-                &prepared.actions,
-            )
-        {
-            // Known cosmetic gap: a fragment/value mismatch here (our bug) is worded as a codex
-            // turn/start refusal rather than the briefing preparation failure it is.
-            prepared
-                .use_exact_interface(problem)
-                .map_err(IssueFailure::TurnStart)?;
-            items[0] = InputItem::text(prepend_diff_block(
-                diff.block.clone(),
-                prepared
-                    .segments
-                    .iter()
-                    .map(|segment| segment.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ));
-        }
-        let issuance = if prepared.actions.is_empty() {
-            None
-        } else {
-            Some(
-                crate::semantic_recovery::prepare(
-                    inner.repo.as_ref(),
-                    &inner.worker_session_id,
-                    inner.track_id.as_str(),
-                    &thread_id,
-                    &items,
-                    std::mem::take(&mut prepared.actions),
-                )
-                .await
-                .map_err(IssueFailure::TurnStart)?,
-            )
-        };
-        // Written before `turn/start` goes out, and after the last edit to
-        // `prepared.segments` above, so the row says what codex is told.
-        write_projection_row(inner, &thread_id, client_id.as_str(), &prepared.segments)
+        // Written before `turn/start` goes out, so the row says what codex is told.
+        write_projection_row(inner, &thread_id, client_id.as_str(), &segments)
             .await
             .map_err(IssueFailure::ProjectionWrite)?;
         let turn = IssueTurnHandle::from_reconciliation(inner)
             .issue(&thread_id, items, &selection, client_id.as_str())
             .await
             .map_err(IssueFailure::TurnStart)?;
-        if let Some(issuance) = issuance {
-            crate::semantic_recovery::bind_turn(inner.repo.as_ref(), &issuance, &turn)
-                .await
-                .map_err(IssueFailure::TurnStart)?;
-        }
         Ok::<_, IssueFailure>(turn)
     }
     .await;
@@ -4287,9 +4215,6 @@ mod tests {
 
 #[cfg(test)]
 mod completed_commit_tests;
-
-#[cfg(test)]
-mod recovery_briefing_tests;
 
 #[cfg(test)]
 mod report_edit_replay_tests;

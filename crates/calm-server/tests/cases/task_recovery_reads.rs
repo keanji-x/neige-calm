@@ -1,7 +1,7 @@
 //! Public recovery reads retain logical identity and current blockers.
 use crate::mcp_track_report::{boot, call_tool, planner_identity, upsert_block};
 use crate::task_recovery::{
-    current, declaration, declare, finish, ordinary_codex_declaration, recovery_args,
+    current, declaration, declare, finish, ordinary_codex_declaration, recover,
     time_out_claimed_worker_holding_lease,
 };
 use calm_server::ids::ActorId;
@@ -98,14 +98,7 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
     let (block, _) = declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
     finish(&boot, &b, false).await;
-    let receipt = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&b, "read-b"),
-    )
-    .await
-    .unwrap();
+    let receipt = recover(&boot, &b, "read-b").await;
     let mut withdrawn = declaration("b", &[]);
     withdrawn["ready"] = json!(false);
     upsert_block(
@@ -534,14 +527,13 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
     );
 }
 
-/// `worktree.base_sha` and
-/// `recovery.guidance.retained.base_sha` come from the lease row's
+/// `worktree.base_sha` comes from the lease row's
 /// `base_sha`, which only a lease taken through the production
 /// `acquire_workspace_lease_tx` carries (the plain lease every other fixture
 /// takes writes the legacy all-NULL tuple, so those fixtures never see the
 /// key — and the assertions on them stay as they are). One base-recording
 /// lease: `plan.list` names the sha under `worktree` in full and summary
-/// detail; once the attempt has timed out, `retained` names the same sha.
+/// detail, and still names it once the attempt has timed out and released the lease.
 #[tokio::test]
 async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
     let boot = boot().await;
@@ -592,22 +584,11 @@ async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
     );
     assert_eq!(compact["worktree"], entry["worktree"], "{compact}");
 
-    // The attempt times out (the liveness timeout releases the row, the
-    // directory stays): a refused recovery now carries `retained`, and the
-    // base is one of the facts it retains.
+    // The attempt times out (the liveness timeout releases the row, the directory stays).
     time_out_claimed_worker_holding_lease(&boot, "b", &lease_id).await;
     for args in [json!({}), json!({"detail":"summary","key":"b"})] {
         let entry = list_entry(&boot, args.clone()).await;
         assert_eq!(entry["recovery"]["allowed"], false, "{args}: {entry}");
-        let retained = &entry["recovery"]["guidance"]["retained"];
-        assert_eq!(
-            retained["base_sha"], base_sha,
-            "{args}: retained names the recorded base: {retained}"
-        );
-        assert_eq!(
-            retained["workspace_path"],
-            json!(lease_path.to_string_lossy())
-        );
         assert_eq!(
             entry["worktree"]["base_sha"], base_sha,
             "{args}: the released lease still names its base: {entry}"
