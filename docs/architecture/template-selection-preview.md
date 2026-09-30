@@ -22,3 +22,5 @@ The URL converter is a platform-independent, fixed parser; templates cannot exec
 Issue information and merge authorization have separate labelled groups. Disclosure controls use the existing outline chevron with native keyboard interaction. The template picker supplies No template; duplicate removal buttons and default-status labels are removed.
 
 For one-field groups, show the field label once and retain the group name as an accessible label. Author one useful field description instead of repeating group introductions or required-state captions. Fields use ordinary controls and declared defaults; no additional card surfaces or sample values masquerading as defaults.
+
+Each target input key has one semantic writer. The canonical URL field and an explicit canonical-URL identity mapping may share that writer; different converter outputs cannot overwrite one target, even when they originate in the same field.

@@ -58,19 +58,20 @@ export function compileTemplateInputs(body: string, schemaValue: unknown, values
   const form = readTemplateInputForm(body);
   const schema = inputSchema.safeParse(schemaValue);
   if (form === null || !schema.success) return { status: 'unsupported', form: null };
-  const owners = new Map<string, string>();
-  const declare = (target: string, source: string, type: string) => {
+  const owners = new Map<string, Readonly<{ source: string; output: string }>>();
+  const declare = (target: string, source: string, type: string, output: string) => {
     const property = schema.data.properties[target];
     if (!Object.hasOwn(schema.data.properties, target)) return false;
     if (property.type !== type && !(type === 'integer' && property.type === 'number')) return false;
-    if (owners.has(target) && owners.get(target) !== source) return false;
-    owners.set(target, source);
+    const prior = owners.get(target);
+    if (prior !== undefined && (prior.source !== source || prior.output !== output)) return false;
+    owners.set(target, { source, output });
     return true;
   };
   const input = Object.create(null) as Record<string, unknown>;
   const errors = Object.create(null) as Record<string, string>;
   for (const group of form.groups) for (const field of group.fields) {
-    if (!declare(field.key, field.key, 'string')) return { status: 'unsupported', form: null };
+    if (!declare(field.key, field.key, 'string', field.kind === 'text' && field.format !== null ? 'issue_url' : 'value')) return { status: 'unsupported', form: null };
     const value = templateFieldValue(field, values);
     input[field.key] = value;
     if (field.kind === 'toggle') {
@@ -81,7 +82,7 @@ export function compileTemplateInputs(body: string, schemaValue: unknown, values
       if (field.required && value.trim() === '') errors[field.key] = `${field.label} is required.`;
       if (field.format !== null) {
         for (const [output, target] of Object.entries(field.format.outputs)) {
-          if (!['issue_url', 'repo', 'issue_number'].includes(output) || !declare(target, field.key, output === 'issue_number' ? 'integer' : 'string')) return { status: 'unsupported', form: null };
+          if (!['issue_url', 'repo', 'issue_number'].includes(output) || !declare(target, field.key, output === 'issue_number' ? 'integer' : 'string', output)) return { status: 'unsupported', form: null };
         }
         const parsed = parseGitHubIssueUrl(value);
         if (parsed === null) errors[field.key] = 'Not a GitHub issue URL — expected https://github.com/owner/repo/issues/123.';
@@ -94,11 +95,11 @@ export function compileTemplateInputs(body: string, schemaValue: unknown, values
   }
   for (const required of schema.data.required ?? []) {
     if (!owners.has(required)) return { status: 'unsupported', form: null };
-    if (!Object.hasOwn(input, required)) errors[owners.get(required)!] ??= 'Complete this field.';
+    if (!Object.hasOwn(input, required)) errors[owners.get(required)!.source] ??= 'Complete this field.';
   }
   for (const [key, value] of Object.entries(input)) {
     const property = schema.data.properties[key];
-    if (property.enum !== undefined && !property.enum.includes(value)) errors[owners.get(key)!] = 'Choose a value allowed by this template.';
+    if (property.enum !== undefined && !property.enum.includes(value)) errors[owners.get(key)!.source] = 'Choose a value allowed by this template.';
   }
   return { status: Object.keys(errors).length === 0 ? 'ready' : 'incomplete', form, input, errors };
 }

@@ -58,3 +58,28 @@ it('allows an integer converter output in a number-valued plugin field', () => {
   const numericSchema = { ...schema, properties: { ...schema.properties, number: { type: 'number' } } };
   expect(compileTemplateInputs(body, numericSchema, { ticket: 'https://github.com/owner/repo/issues/12' }).status).toBe('ready');
 });
+
+
+it.each([
+  { issue_url: 'ticket', repo: 'ticket' },
+  { repo: 'ticket' },
+  { issue_url: 'project', repo: 'project' },
+])('rejects conflicting outputs including the implicit canonical URL writer: %j', (outputs) => {
+  const { form, schema } = contract();
+  const body = `<!-- neige:input-form ${JSON.stringify({ ...form, groups: [{ ...form.groups[0], fields: [{
+    ...form.groups[0].fields[0], format: { kind: 'github-issue-url', outputs: { ...outputs, issue_number: 'number' } },
+  }] }, form.groups[1]] })} -->`;
+  const collisionSchema = { ...schema, required: schema.required.filter((key) => key !== 'project') };
+  expect(compileTemplateInputs(body, collisionSchema, { ticket: 'https://github.com/owner/repo/issues/12' }).status).toBe('unsupported');
+});
+
+it('accepts an explicit canonical URL identity mapping', () => {
+  const { form, schema } = contract();
+  const body = `<!-- neige:input-form ${JSON.stringify({ ...form, groups: [{ ...form.groups[0], fields: [{
+    ...form.groups[0].fields[0], format: { kind: 'github-issue-url', outputs: { issue_url: 'ticket', repo: 'project', issue_number: 'number' } },
+  }] }, form.groups[1]] })} -->`;
+  const result = compileTemplateInputs(body, schema, { ticket: 'https://github.com/owner/repo/issues/12' });
+  expect(result.status).toBe('ready');
+  if (result.status === 'unsupported') throw new Error('Identity mapping was refused');
+  expect(result.input.ticket).toBe('https://github.com/owner/repo/issues/12');
+});
