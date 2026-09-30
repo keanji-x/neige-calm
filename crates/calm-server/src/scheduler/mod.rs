@@ -2073,8 +2073,7 @@ impl Scheduler {
         // Admission (#1727 S4 D3, oracle 8) decides only whether a NEW op is submitted: a
         // candidate-bound attempt's gate waits for its delivery to settle as a candidate;
         // `Failed` / still pending → no `#gN`. An existing `#gN` (above) is always
-        // waited and reconciled — a terminal op beside a failed delivery (D12 (i)) must still
-        // flip its row.
+        // waited and reconciled.
         if !self.admit_gate(runtime, task).await? {
             return Ok(());
         }

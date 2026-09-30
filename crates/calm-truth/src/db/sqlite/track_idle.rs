@@ -1,6 +1,5 @@
 //! #1830 S2 D5: whether a track's checkout is free for its next codex or claude worker. The
-//! scheduler's claim, delivery retry admission and the `trackBusy` pending reason read this one
-//! predicate.
+//! scheduler's claim and the `trackBusy` pending reason read this one predicate.
 
 use sqlx::SqliteConnection;
 
