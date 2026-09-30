@@ -179,7 +179,7 @@
     reads a test. This row keeps only what its own test can falsify.
   source: fe/web/src/features/area/new-track/public.tsx:369-382;
     fe/tools/architecture/directory-picker-hosts.mjs:14-30,213-234
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:768-784
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:770-786
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features

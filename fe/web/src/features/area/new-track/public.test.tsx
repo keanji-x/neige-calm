@@ -525,9 +525,11 @@ describe('Start from — an unbound template is id-only', () => {
 });
 
 describe('Start from — issue development expands under the group', () => {
-  async function chooseIssueDev() {
+  async function chooseIssueDev(expectsFields = true) {
     await fillMessage();
     await chooseTemplate('Issue development');
+    if (expectsFields) await screen.findByLabelText('Issue URL');
+    else await screen.findByText('Author supplied description.');
   }
 
   it('blocks submit until the issue URL parses, and says why', async () => {
@@ -596,7 +598,7 @@ describe('Start from — issue development expands under the group', () => {
     const { props } = renderForm({
       templates: [{ id: 'issue-development', title: 'Issue development', tasks: ISSUE_DEV.tasks }],
     });
-    await chooseIssueDev();
+    await chooseIssueDev(false);
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
