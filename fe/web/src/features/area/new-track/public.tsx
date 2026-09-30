@@ -17,6 +17,7 @@ import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
+import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
 import {
   NO_STARTING_POINT, type StartingPoint,
 } from '../default-pills/public.tsx';
@@ -273,19 +274,13 @@ export function NewTrackForm({
             const target = event.target as HTMLElement | null;
             const field = target?.closest?.('[contenteditable="true"]') ?? null;
             if (field === null) return;
-            if (event.nativeEvent.isComposing) {
+            const route = triggerMenuKeyRoute(event.nativeEvent, field);
+            if (route === 'composing' || route === 'swallow') {
+              if (route === 'swallow') event.preventDefault();
               event.stopPropagation();
               return;
             }
-            /* The `@` menu takes the key only for a row it has rendered as highlighted: while it searches it
-               still holds the last query's rows, and with none it would pass Enter on to astryx's submit. */
-            const active = field.getAttribute('aria-activedescendant');
-            if (active !== null && document.getElementById(active) !== null) return;
-            /* Tab and Shift+Enter keep their default, focus and a new line; only astryx's menu is kept off them. */
-            if (event.key === 'Tab' || event.shiftKey) {
-              event.stopPropagation();
-              return;
-            }
+            if (route === 'menu' || event.key !== 'Enter' || event.shiftKey) return;
             if (target !== field) {
               /* A control inside the editable: Enter belongs to it, so this neither submits
                                nor `preventDefault`s, but it must stop propagation or the editable
