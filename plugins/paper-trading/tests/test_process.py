@@ -101,7 +101,7 @@ def test_real_plugin_handshake_tools_track_fence_and_report_callbacks(rig):
         assert {p["kind"] for p in host.overlays} == {
             "paper.strategy", "paper.portfolio", "paper.decisions", "paper.trades", "paper.alerts", "paper.journal", "paper.reviews",
             "paper.overview", "paper.activity", "paper.review_cards", "paper.strategy_details", "paper.order_details", "paper.trade_details", "paper.alert_details"}
-        assert next(p for p in host.overlays if p['kind'] == 'paper.overview')['payload']['view'] == 'overview'
+        assert next(p for p in host.overlays if p['kind'] == 'paper.overview')['payload']['rows'][0]['cells'][0]['kind'] == 'metrics'
         assert all(p["entity_id"] == "track-owner" for p in host.overlays)
         # A legitimate digest or filesystem path can contain the three digits.
         assert "confirmation_code" not in json.dumps(host.overlays)

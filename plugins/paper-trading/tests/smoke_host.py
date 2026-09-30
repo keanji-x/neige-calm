@@ -83,7 +83,7 @@ def main():
         temporary_id = temporary['id']
         temporary = next(block for block in request(report_path)['blocks'] if block['id'] == temporary_id)
         request(report_path + '/blocks/' + temporary_id, {
-            'kind': 'view.live', 'payload': reference | {'view': 'cards'}, 'ifBlockRev': temporary['rev']}, 'PATCH')
+            'kind': 'view.live', 'payload': reference | {'source': 'neige://plugin/dev-neige-paper-trading/paper.review_cards'}, 'ifBlockRev': temporary['rev']}, 'PATCH')
         after = request(report_path)
         try:
             request(report_path + '/blocks/' + temporary_id, {

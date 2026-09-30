@@ -66,17 +66,16 @@ def create_view(facts):
         facts.extend([{'label': '资料状态', 'value': item['data']}, {'label': '核验期限', 'value': item['deadline']},
                       {'label': '登记时间', 'value': item['registered']}, {'label': '依据', 'value': ('演示约束' if constraint else '预注册') + ' v1'},
                       {'label': '排期说明', 'value': '预设场景中的拟检查日期；没有实际调度、已执行检查或正式延期记录。'}])
-        return {'id': item['code'], 'category': '组合约束（演示）' if constraint else assets[item['asset']]['name'],
+        return {'id': item['code'], 'subtitle': '组合约束（演示）' if constraint else assets[item['asset']]['name'],
             'title': item['title'], 'summary': item['copy'],
-            'status': {'label': item['initial'], 'tone': tone},
-            'handling': {'label': item['processing'], 'tone': 'warning' if item['requires_human_decision'] else 'neutral'},
+            'badges': [{'label': '状态', 'value': item['initial'], 'tone': tone},
+                       {'label': '处理', 'value': item['processing'], 'tone': 'warning' if item['requires_human_decision'] else 'neutral'}],
             'facts': facts,
             'sections': [{'label': label, 'body': body} for label, body in [
                 ('原始规则', item['rule']), ('裁定 / 处理边界', item['fail']), ('持有或风险依据', item['why']),
                 ('价格与口径', item['pricing']), ('建议', item['recommend']),
                 ('关联持仓' if constraint else '关联订单', '\n'.join(item['orders']))]],
-            'evidence': [{'id': e['id'], 'label': e['label'],
-                          'date': datetime.strptime(e['at'], '%Y.%m.%d').date().isoformat(),
+            'disclosures': [{'id': e['id'], 'label': e['label'] + ' · ' + datetime.strptime(e['at'], '%Y.%m.%d').date().isoformat(),
                           'body': e['quote'], 'note': e['note'], 'tone': 'warning' if e['id'] == 'E04' else 'neutral'} for e in item['evidence']]}
     records = {'kind': 'records', 'id': 'theses', 'title': '', 'emptyText': '暂无事项',
         'datasets': [{'id': key, 'label': label,

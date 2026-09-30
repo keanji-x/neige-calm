@@ -17,8 +17,8 @@ def test_native_demo_uses_one_structured_payload_and_no_executable_components():
     assert metrics[0]['value']['amount'] == 1084620
     assert metrics[2]['value']['amount'] == 6040
     groups = view['rows'][2]['cells'][0]['datasets']
-    assert sum(item['handling']['label'] == '待人工决定' for item in groups[0]['items']) == 2
-    assert sum(item['handling']['label'] == '待人工决定' for item in groups[1]['items']) == 3
+    assert sum(next(badge['value'] for badge in item['badges'] if badge['label'] == '处理') == '待人工决定' for item in groups[0]['items']) == 2
+    assert sum(next(badge['value'] for badge in item['badges'] if badge['label'] == '处理') == '待人工决定' for item in groups[1]['items']) == 3
     assert all('actions' not in item for group in groups for item in group['items'])
     assert (EXAMPLES / 'native-demo.md').read_text().startswith('```neige-block view\n')
 
@@ -44,7 +44,11 @@ def test_compact_template_retains_complete_analytical_facts_for_planner():
             assert fields['核验期限'] == source['deadline']
             assert fields['登记时间'] == source['registered']
             assert fields['资料状态'] == source['data']
-            assert len(record['evidence']) == len(source['evidence'])
+            assert len(record['disclosures']) == len(source['evidence'])
+            assert [d['body'] for d in record['disclosures']] == [e['quote'] for e in source['evidence']]
+            assert [d['note'] for d in record['disclosures']] == [e['note'] for e in source['evidence']]
+            assert all(e['at'].replace('.', '-') in d['label'] for d, e in zip(record['disclosures'], source['evidence'], strict=True))
+            assert set(record) == {'id', 'subtitle', 'title', 'summary', 'badges', 'facts', 'sections', 'disclosures'}
             if source.get('type') != 'constraint':
                 asset = facts['portfolio']['assets'][source['asset']]
                 assert fields['标的代码'] == asset['symbol']

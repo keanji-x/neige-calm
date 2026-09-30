@@ -1,9 +1,46 @@
 """Read-only report hierarchy; no decisions, approvals, or broker operations."""
+from datetime import datetime
 from decimal import Decimal
+import hashlib
 from fractions import Fraction
+import json
 
 from .portfolio import TERMINAL, cost_exposure
-from .report_text import bounded, event_text, money_text, state_text
+from .report_text import event_text, money_text, state_text
+
+
+def native_view(state, title, rows):
+    """Publish inert composition data with an identity derived from this projection.
+
+    Event and reconciliation times describe our persisted knowledge. Rendering
+    does not invent a new observation or claim a broker refresh has occurred.
+    """
+    observed = state['snapshot']['at'] if state['snapshot'] else None
+    times = [event['at'] for event in state['journal']]
+    if observed is not None:
+        times.append(observed)
+    def milliseconds(value):
+        return int(datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp() * 1000) if value is not None else None
+    produced = max((milliseconds(value) for value in times), default=None)
+    observed = milliseconds(observed)
+    identity = hashlib.sha256(json.dumps([title, rows, observed, produced], ensure_ascii=False,
+                                         sort_keys=True, allow_nan=False).encode()).hexdigest()
+    return {'version': 1, 'title': title, 'description': '',
+            'snapshot': {'id': identity, 'observedAt': observed, 'producedAt': produced}, 'rows': rows}
+
+
+def row(identity, cells, title=''):
+    return {'id': identity, 'title': title, 'layout': {1: 'one', 2: 'two', 3: 'three'}[len(cells)], 'cells': cells}
+
+
+def record(identity, title, summary, subtitle='', badges=None, facts=None, sections=None):
+    return {'id': identity, 'subtitle': subtitle, 'title': title, 'summary': summary,
+            'badges': badges or [], 'facts': facts or [], 'sections': sections or [], 'disclosures': []}
+
+
+def records(identity, title, empty_text, items):
+    return {'kind': 'records', 'id': identity, 'title': title, 'emptyText': empty_text,
+            'datasets': [{'id': identity + '-items', 'label': title, 'description': '', 'items': items}]}
 
 
 def overview(state):
@@ -70,16 +107,27 @@ def overview(state):
     budget_detail = '持仓成本加未完成买单预留金额；不代表市值或最大亏损。'
     if over_budget:
         budget_detail = '已超过当前预算。' + budget_detail
-    return {'version': 1, 'view': 'overview',
-            'updated': {'label': '最近对账', 'at': snapshot['at']} if snapshot else None,
-            'metrics': metrics, 'notices': notices,
-            'charts': [
-                {'kind': 'bars', 'title': '逐笔已实现毛收益', 'unit': 'USD · 最近 12 笔有退出成交的交易 · 未计费用',
-                 'emptyText': '暂无退出成交，尚无已实现收益。', 'points': points},
-                {'kind': 'meter', 'title': '策略预算使用', 'unit': 'USD', 'used': used, 'limit': limit,
-                 'usedLabel': '已使用', 'limitLabel': '上限', 'emptyText': '暂无已确认的预算数据',
-                 'tone': 'negative' if over_budget else 'neutral', 'detail': budget_detail},
-            ]}
+    metrics = [metric | {'id': f'metric-{index}', 'value': {'state': 'text', 'text': metric['value']},
+                         'emphasis': 'normal'} for index, metric in enumerate(metrics)]
+    cells = [{'kind': 'metrics', 'id': 'account-metrics', 'title': '', 'items': metrics},
+             {'kind': 'bars', 'id': 'realized-results', 'title': '逐笔已实现毛收益',
+              'unit': 'USD · 最近 12 笔有退出成交的交易 · 未计费用',
+              'emptyText': '暂无退出成交，尚无已实现收益。', 'points': points},
+             {'kind': 'meter', 'id': 'strategy-budget', 'title': '策略预算使用', 'unit': 'USD',
+              'used': used, 'limit': limit, 'usedLabel': '已使用', 'limitLabel': '上限',
+              'emptyText': '暂无已确认的预算数据', 'tone': 'negative' if over_budget else 'neutral',
+              'detail': budget_detail}]
+    rows = [row('overview', cells)]
+    if notices:
+        items = [record(f'notice-{index}', notice['title'], notice['detail'],
+                        badges=[{'label': '提示', 'value': '需关注', 'tone': notice['tone']}])
+                 for index, notice in enumerate(notices)]
+        rows.append(row('notices', [records('account-notices', '账户与策略提示', '', items)]))
+    if snapshot:
+        # The publisher owns the semantic label; the platform renders plain facts.
+        rows.append(row('reconciliation', [records('reconciliation-time', '最近对账', '', [
+            record('last-reconciliation', '最近对账', '', facts=[{'label': '时间', 'value': snapshot['at']}])])]))
+    return native_view(state, '交易概览', rows)
 
 
 def activity(state):
@@ -89,7 +137,10 @@ def activity(state):
              for event in state['journal'] if event['kind'] in important or event['kind'] == 'decision_state' and
              (event['body']['state'] in ('canceled', 'rejected', 'expired') or
               event['body']['state'] == 'queued' and event['body'].get('error'))][:100]
-    return {'version': 1, 'view': 'activity', 'emptyText': '暂无交易动态。', 'items': items}
+    items = [record(item['id'], item['title'], item['detail'],
+                    badges=[{'label': '动态', 'value': item['title'], 'tone': item['tone']}],
+                    facts=[{'label': '时间', 'value': item['at']}]) for item in items]
+    return native_view(state, '交易动态', [row('activity', [records('activity-events', '', '暂无交易动态。', items)])])
 
 
 def reviews(state):
@@ -98,14 +149,14 @@ def reviews(state):
     items = []
     for review in reversed(state['reviews'][-50:]):
         trade = trades.get(review['trade_id'])
-        items.append({'id': review['review_id'], 'title': f"{trade['symbol']} · 交易{numbers[review['trade_id']]}复盘" if trade else '交易复盘',
-                      'body': bounded(review['analysis'], 8000),
-                      'sections': [{'label': '下一步', 'body': bounded(review['next_action'], 8000)}] if review['next_action'] else [],
-                      'footer': f"已实现毛收益 {money_text(trade['realized_gross_usd'], signed=True)} · 未计费用" if trade else ''})
-    return {'version': 1, 'view': 'cards', 'emptyText': '交易完成后，复盘会显示在这里。', 'items': items}
+        items.append(record(review['review_id'],
+                            f"{trade['symbol']} · 交易{numbers[review['trade_id']]}复盘" if trade else '交易复盘',
+                            review['analysis'], sections=[{'label': '下一步', 'body': review['next_action']}] if review['next_action'] else [],
+                            facts=[{'label': '已实现毛收益', 'value': money_text(trade['realized_gross_usd'], signed=True) + ' · 未计费用'}] if trade else []))
+    return native_view(state, '交易复盘', [row('reviews', [records('trade-reviews', '', '交易完成后，复盘会显示在这里。', items)])])
 
 
-def details(title, payload, labels):
+def details(state, identity, title, payload, labels):
     settings = {'Status': '策略状态', 'Paper account': '模拟账户', 'Revision (short)': '版本摘要',
                 'Research': '研究来源', 'Symbols': '允许交易标的', 'Order limit / USD': '单笔订单上限 / USD',
                 'Cost limit / USD': '组合成本上限 / USD', 'Price risk / USD': '单笔计划风险 / USD',
@@ -122,9 +173,13 @@ def details(title, payload, labels):
             if row['setting'] == 'Status':
                 display['approved'] = state_text(row['approved'])
         rows.append(display)
-    return {'version': 1, 'view': 'details', 'title': title,
-            'table': payload | {'rows': rows, 'columns': [column | {'label': labels.get(column['key'], column['label'])}
-                                           for column in payload['columns']]}}
+    table = payload | {'rows': rows, 'columns': [column | {'label': labels.get(column['key'], column['label'])}
+                                                for column in payload['columns']]}
+    return table_view(state, identity, title, table)
+
+
+def table_view(state, identity, title, table):
+    return native_view(state, '', [row(identity + '-row', [{'kind': 'table', 'id': identity, 'title': title, 'table': table}])])
 
 
 def view_payloads(state, legacy):
@@ -141,13 +196,13 @@ def view_payloads(state, legacy):
         'paper.overview': overview(state),
         'paper.activity': activity(state),
         'paper.review_cards': reviews(state),
-        'paper.alert_details': {'version': 1, 'view': 'details', 'title': f"全部持仓提醒（{len(state['alerts'])}）", 'table': alerts},
-        'paper.strategy_details': details('策略参数与待确认修改', legacy['paper.strategy'],
+        'paper.alert_details': table_view(state, 'alert-details', f"全部持仓提醒（{len(state['alerts'])}）", alerts),
+        'paper.strategy_details': details(state, 'strategy-details', '策略参数与待确认修改', legacy['paper.strategy'],
                                          {'setting': '参数', 'approved': '当前已确认', 'proposed': '待确认'}),
-        'paper.order_details': details('订单明细', legacy['paper.decisions'],
+        'paper.order_details': details(state, 'order-details', '订单明细', legacy['paper.decisions'],
                                       {'id': '计划', 'symbol': '标的', 'action': '方向', 'quantity': '股数',
                                        'price': '限价', 'state': '状态', 'order': '券商订单', 'error': '需关注'}),
-        'paper.trade_details': details('持仓与历史交易', legacy['paper.trades'],
+        'paper.trade_details': details(state, 'trade-details', '持仓与历史交易', legacy['paper.trades'],
                                       {'trade_id': '交易', 'symbol': '标的', 'quantity': '剩余股数',
                                        'average_entry': '买入均价', 'realized_gross_usd': '已实现毛收益 / USD', 'state': '状态'}),
     }

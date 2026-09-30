@@ -48,8 +48,8 @@ def test_every_position_alert_remains_accessible_after_summary_limit(portfolio, 
     status = portfolio.call('track-owner', 'paper.status', {})
     assert len(status['alerts']) == 4 and status['alerts'][3]['reason'] == 'stop_crossed'
     view = tables(status)['paper.alert_details']
-    assert len(view['table']['rows']) == 4
-    assert any(row['symbol'] == 'DDD.US' and '止损' in row['reason'] for row in view['table']['rows'])
+    assert len(view['rows'][0]['cells'][0]['table']['rows']) == 4
+    assert any(row['symbol'] == 'DDD.US' and '止损' in row['reason'] for row in view['rows'][0]['cells'][0]['table']['rows'])
 
 
 def closed_review_parameters(portfolio, policy, rig):
@@ -77,7 +77,7 @@ def test_newest_review_is_not_selected_by_its_identifier(portfolio, policy, rig)
         rig.engine.call('track-owner', 'paper.review', review | {'review_id': f'z-{index:03}'})
     rig.engine.call('track-owner', 'paper.review', review | {'review_id': 'a-newest'})
     status = portfolio.call('track-owner', 'paper.status', {})
-    cards = tables(status)['paper.review_cards']['items']
+    cards = tables(status)['paper.review_cards']['rows'][0]['cells'][0]['datasets'][0]['items']
     assert len(cards) == 50
     assert cards[0]['id'] == 'a-newest'
     assert status['reviews'][-1]['review_id'] == 'a-newest'
@@ -108,7 +108,7 @@ def test_terminal_order_outcomes_are_present_in_activity(portfolio, policy, rig,
     rig.write(state)
     rig.engine.process_once()
     status = portfolio.call('track-owner', 'paper.status', {})
-    assert any(item['title'] == title for item in tables(status)['paper.activity']['items'])
+    assert any(item['title'] == title for item in tables(status)['paper.activity']['rows'][0]['cells'][0]['datasets'][0]['items'])
 
 
 def test_unsubmitted_plan_expiry_is_present_in_activity(portfolio, policy, rig):
@@ -118,7 +118,7 @@ def test_unsubmitted_plan_expiry_is_present_in_activity(portfolio, policy, rig):
     portfolio.process_once()
     status = portfolio.call('track-owner', 'paper.status', {})
     assert status['decisions'][0]['state'] == 'expired'
-    assert any(item['title'] == '计划已过期' for item in tables(status)['paper.activity']['items'])
+    assert any(item['title'] == '计划已过期' for item in tables(status)['paper.activity']['rows'][0]['cells'][0]['datasets'][0]['items'])
 
 
 def test_failed_risk_check_is_present_in_activity(portfolio, policy, rig):
@@ -127,4 +127,4 @@ def test_failed_risk_check_is_present_in_activity(portfolio, policy, rig):
     portfolio.process_once()
     status = portfolio.call('track-owner', 'paper.status', {})
     assert 'price risk' in status['decisions'][0]['error']
-    assert any(item['title'] == '计划暂未通过检查' for item in tables(status)['paper.activity']['items'])
+    assert any(item['title'] == '计划暂未通过检查' for item in tables(status)['paper.activity']['rows'][0]['cells'][0]['datasets'][0]['items'])

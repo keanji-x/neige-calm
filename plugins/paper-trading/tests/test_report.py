@@ -59,7 +59,7 @@ def test_journal_bounds_readable_text_without_changing_decision(rig, text):
                 if event['kind'] == 'decision_recorded') == text
 
 
-@pytest.mark.parametrize('text', ['Review ' + 'x' * 2500, '\U0001f642' * 2500], ids=['ascii', 'unicode'])
+@pytest.mark.parametrize('text', ['Review ' + 'x' * 5993, '\U0001f642' * 6000], ids=['ascii', 'unicode'])
 def test_long_review_display_is_bounded_and_original_is_retained(rig, text):
     rig.decide()
     rig.submit(rig.plan())
@@ -82,6 +82,11 @@ def test_long_review_display_is_bounded_and_original_is_retained(rig, text):
         assert all(len(value) <= 2048 for row in tables(status)[kind]['rows']
                    for value in row.values() if isinstance(value, str))
     assert tables(status)['paper.reviews']['rows'][0]['analysis'].endswith('[truncated]')
+    from paper_trading.report_views import reviews
+    displayed = reviews(status)['rows'][0]['cells'][0]['datasets'][0]['items'][0]
+    assert displayed['summary'] == text
+    assert displayed['sections'] == [{'label': '下一步', 'body': text}]
+    assert displayed['facts'][0]['value'] == '+$50.00 · 未计费用'
     assert status['reviews'][0]['analysis'] == text
     assert next(event['body']['analysis'] for event in status['journal'] if event['kind'] == 'review_added') == text
 

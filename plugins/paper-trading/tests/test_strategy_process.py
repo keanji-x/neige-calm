@@ -37,7 +37,7 @@ def test_stdio_account_only_startup_and_unapproved_proposal_reports(rig, tmp_pat
         assert strategy['entity_id'] == 'track-owner'
         assert any(row['approved'] == 'awaiting_approval' for row in strategy['payload']['rows'])
         overview = next(p for p in host.overlays if p['kind'] == 'paper.overview')['payload']
-        assert overview['metrics'][0]['value'] == '—'
+        assert overview['rows'][0]['cells'][0]['items'][0]['value'] == {'state': 'text', 'text': '—'}
         assert rig.calls() == []
     finally:
         host.close()

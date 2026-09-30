@@ -118,10 +118,10 @@ agreement, Recipe edits and Report edits are not approval, and there is no
 browser confirmation route. Strategy approval is a local policy approval,
 **not** the broker's native order confirmation and not an order submission.
 
-5. Verify the approved revision/settings under the Report's collapsed strategy
+5. Verify the approved revision/settings under the Report's native strategy
    details before starting a paper cycle. The Recipe prioritizes account/return
    KPI cards, per-trade gross P/L bars and a cost-budget meter, followed by readable
-   activity and review cards. Strategy, order and trade details start collapsed.
+   activity and review cards. Strategy, order and trade details use native table components.
    Existing paper tools retain their signatures.
    `paper.status` and `paper.journal` can inspect setup before approval; all
    other existing tools require an approved strategy for the host-provided owner Track.
@@ -140,22 +140,22 @@ alongside the existing `ledger.sqlite3`, independently of mutable Recipe and
 Report prose. Preserve both databases and research snapshots.
 
 Deploy this Recipe with the matching server and frontend supporting the
-first-class `view.live` block. Every reference declares its source, version and
-view; tables remain table-only. The renderer accepts bounded data, not HTML,
+first-class `view.live` block. Every reference declares only its source and
+version; legacy table sources remain table-only. The renderer accepts bounded data, not HTML,
 script, styles or action URLs. The plugin owns labels, business calculations,
 and semantic tones; the platform owns validation, layout and interaction.
 The original seven table source IDs remain available to previously saved
 Reports; seven additional source IDs carry the new visual views. Updating a saved
 Recipe does not rewrite existing Track reports or approved strategy settings.
 
-Native table cells and activity details show at most 2,048 Unicode code points;
+Native table cells and activity summaries show at most 2,048 Unicode code points;
 long values end with `[truncated]`. Review cards retain the complete validated
 review text. Full original facts remain in the ledger and tool responses.
 Journal text is presented as readable event summaries instead of serialized JSON.
 Report rows contain only their declared columns. Charts use existing executions
 and cost accounting: account equity is not attributed strategy return, gross
 P/L excludes fees, and no historical balance curve is fabricated.
-Every holding alert remains accessible in the collapsed alert details. Review
+Every holding alert remains accessible in the native alert table. Review
 cards are ordered by their recorded journal sequence, not their arbitrary IDs;
 missing or inconsistent review audit evidence is refused instead of silently
 dropping a review. Expiration, rejection and confirmed cancellation remain in
@@ -307,7 +307,17 @@ python3 plugins/paper-trading/tests/smoke_host.py \
 
 This creates fresh data, a fixture-only account, disabled real agent binaries,
 a random loopback port and native Report views (plus the seven legacy table
-projections); Playwright checks overview, unknown/approved states, collapsed
-details and account settings at both viewports. The temporary server is stopped
+projections); Playwright checks overview, unknown/approved states, native
+tables and account settings at both viewports. The temporary server is stopped
 afterwards. It does not touch 4140
 or prove that an actual Longbridge account has filled an order.
+
+The unmerged native view contract uses one composition for both inline Demo and
+live overlays: rows of metrics, bars, meter, tables and generic records. Paper
+trading owns all semantic badges, risk/approval labels and budget calculations.
+The host only validates and renders these inert fields. Live references have no
+preset selector; existing saved recipes on this development branch must be
+updated from `recipe.md` before release. Snapshot identity hashes the projection
+and its persisted observation/event timestamps. A missing observation remains
+explicitly null; rendering never fabricates a refresh time. Legacy table source
+IDs and their payloads are unchanged.

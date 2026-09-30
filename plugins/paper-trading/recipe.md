@@ -83,35 +83,35 @@ scheduler; decisions and reviews run when an agent is invoked.
 # 交易概览
 
 ```neige-block view.live
-{"source":"neige://plugin/dev-neige-paper-trading/paper.overview","version":1,"view":"overview"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.overview","version":1}
 ```
 
 # 交易动态
 
 ```neige-block view.live
-{"source":"neige://plugin/dev-neige-paper-trading/paper.activity","version":1,"view":"activity"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.activity","version":1}
 ```
 
 # 交易复盘
 
 ```neige-block view.live
-{"source":"neige://plugin/dev-neige-paper-trading/paper.review_cards","version":1,"view":"cards"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.review_cards","version":1}
 ```
 
 # 更多明细
 
 ```neige-block view.live
-{"source":"neige://plugin/dev-neige-paper-trading/paper.alert_details","version":1,"view":"details"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.alert_details","version":1}
 ```
 
 ```neige-block view.live
-{"source":"neige://plugin/dev-neige-paper-trading/paper.strategy_details","version":1,"view":"details"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.strategy_details","version":1}
 ```
 
 ```neige-block view.live
-{"source":"neige://plugin/dev-neige-paper-trading/paper.order_details","version":1,"view":"details"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.order_details","version":1}
 ```
 
 ```neige-block view.live
-{"source":"neige://plugin/dev-neige-paper-trading/paper.trade_details","version":1,"view":"details"}
+{"source":"neige://plugin/dev-neige-paper-trading/paper.trade_details","version":1}
 ```
