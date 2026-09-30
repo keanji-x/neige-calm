@@ -218,7 +218,7 @@ Provider 内部推理来实现工作笔记。该项单独设计存储/访问契�
   系统保存精确执行与稳定操作身份，并复用内核恢复事务。真实演练只恢复一次且正确
   呈现额度限制，没有旧恢复 MCP 或 plan.list 调用。后续无绑定决定、旧线程和
   超限/歧义批次保留明确的精确接口，不宣称所有恢复操作都已隐藏协议字段。
-  [具体绑定契约与验收边界](design-1501-semantic-recovery-binding.md)继续适用。
+  #1893 S3 已删除 F1 简报、F2 语义恢复与 `calm.plan.recover`（迁移 0127 删除绑定表）；Planner 不再恢复任务。
 - [x] F3 长任务近况首版：[#1576](https://github.com/keanji-x/neige-calm/pull/1576)
   （本条随实现 PR 合入生效）。已有 plan.list 返回隔离 Codex 当前 attempt 的
   有界活动证据，分开源/采集/查询时间及任务结果，明确采集健康未知。

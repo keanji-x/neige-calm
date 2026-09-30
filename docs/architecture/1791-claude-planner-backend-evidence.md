@@ -1,5 +1,9 @@
 # Claude Planner backend (#1791) — evidence companion
 
+> **#1893 S3 (2026-09-30)**: the Codex `Recover` dynamic tool, the recovery briefing and
+> `calm.plan.recover` are deleted (migration 0127 drops the binding tables). Passages below that
+> name them are history.
+
 Companion to [1791-claude-planner-backend.md](1791-claude-planner-backend.md). It holds the fact
 table, the 4140 queries, the probe log and the review dispositions so the design stays readable.
 Base `origin/main` = `c5abb3c3d`. Paths without a prefix are under `crates/calm-server/src/`.

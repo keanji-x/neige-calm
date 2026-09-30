@@ -4,6 +4,10 @@ Status: design in progress for #1501. This document does not claim that the
 behavior below is implemented. Implementation and validation status are recorded
 in the delivery ledger at the end. Baseline: `4360896b`.
 
+> **#1893 S3 (2026-09-30)**: Planner recovery is deleted: `calm.plan.recover`, the Codex `Recover`
+> tool, the recovery briefing and `calm.plan.list` recovery guidance. Only the User recovers a
+> task. Passages below that grant the Planner a recovery are history.
+
 ## Outcome
 
 Planner-facing functionality and the ordered implementation backlog are tracked

@@ -1,6 +1,8 @@
 # attached 仓库的候选绑定（#1727 S4）— 设计 v9
 
 > **#1893 S6（2026-09-30）**：`calm.task.delivery{retry|abandon}` 与 `task_git_delivery_abandonments`（迁移 0126 删表）已删除。失败的交付在结算事务里把仍在 `verifying` 的 gated 行翻成 `failed/delivery-failed`，ungated 行保持 `done`；读面没有 `abandoned` 状态与 `failure.retry_allowed`。下文涉及 retry / abandon 的段落是历史记录。
+>
+> **#1893 S3（2026-09-30）**：`calm.plan.list` 的 `recovery.guidance`（含 `retained`）已删除，下文涉及它的段落是历史记录。
 
 > **状态（2026-09-19）**：设计稿 v9，折入第 1 轮（A 1/4/12；B 6/13/1）、第 2 轮（A 0/3/12；B 3/12/1）、第 3 轮（A 0/2/7；B 1/7/4）、第 4 轮（A 0/0/6；B 0/4/3）、第 5 轮（A 0/0/7；B 0/4/3）、第 6 轮（A 0/1/5；B 0/2/3）、第 7 轮（A 0/2/5；B 0/2/0）与第 8 轮双通道设计评审（A：subagent APPROVE，0 BLOCKER / 0 MAJOR / 8 MINOR；B：codex REVISE，0 BLOCKER / 1 MAJOR / 2 MINOR）。**第 8 轮封顶：A APPROVE（8 MINOR 折入），B 1 MAJOR + 2 MINOR 折入；实现前不再开设计评审轮，实现 PR 走双通道代码评审**；无切片合入。基线 `origin/main` = `231845fd5`（工作树 `1727-s4-design`）。所有 file:line 在该基线上实测（[实测]），未核实的写 `未核实`。路径省略 `crates/calm-server/src/` 前缀；`calm-types`、`calm-truth`、`fe/`、`crates/calm-server/{prompts,templates,tests}/` 写全。每条评审发现的处置在 §11。
 
