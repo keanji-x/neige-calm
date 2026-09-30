@@ -60,13 +60,12 @@ pub(crate) enum DeliverySettled {
         settled_event_id: i64,
         code: DeliveryFailureCode,
         reason: String,
-        retry_allowed: bool,
         wake_reason: DeliveryWakeReason,
     },
 }
 
 /// `task_git_deliveries.outcome` (#1830 S2): how the attempt the row commits ended. The release
-/// that ends the attempt writes it on the first row; a retry row copies its predecessor's.
+/// that ends the attempt writes it on the row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AttemptOutcome {
     /// `calm.task.complete`.
@@ -117,9 +116,6 @@ pub(crate) struct DeliveryRow {
     pub ordinal: i64,
     pub operation_key: String,
     pub forge_idempotency_key: String,
-    pub predecessor_delivery_id: Option<String>,
-    pub request_idempotency_key: Option<String>,
-    pub reason: Option<String>,
     /// `None` only on a row settled before migration 0122; every row S2 writes has one.
     pub outcome: Option<AttemptOutcome>,
     pub created_at_ms: i64,
@@ -137,9 +133,9 @@ pub(crate) struct UnsettledDelivery {
 }
 
 const DELIVERY_COLUMNS: &str = "d.delivery_id, d.track_id, d.producer_attempt_id, d.card_id, \
-     d.lease_id, d.ordinal, d.operation_key, d.forge_idempotency_key, d.predecessor_delivery_id, \
-     d.request_idempotency_key, d.reason, d.outcome, d.created_at_ms, d.settlement, \
-     d.settled_event_id, d.failure_code, d.failure_reason, d.retry_allowed, d.wake_reason";
+     d.lease_id, d.ordinal, d.operation_key, d.forge_idempotency_key, d.outcome, \
+     d.created_at_ms, d.settlement, d.settled_event_id, d.failure_code, d.failure_reason, \
+     d.retry_allowed, d.wake_reason";
 
 /// The forge `idem_key` of one delivery; the full idempotency key is
 /// `<plugin>:<track>:<card>:<this>` (`submit_forge_action_with_key`).
@@ -308,18 +304,14 @@ pub(crate) async fn insert_initial_delivery_tx(
             "{GIT_FORGE_PLUGIN_ID}:{track_id}:{card_id}:{}",
             delivery_idem_key(&delivery_id)
         ),
-        predecessor_delivery_id: None,
-        request_idempotency_key: None,
-        reason: None,
         outcome: Some(outcome),
         created_at_ms: now_ms,
         settlement: None,
     };
     sqlx::query(
         "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, card_id, \
-         lease_id, ordinal, operation_key, forge_idempotency_key, predecessor_delivery_id, \
-         request_idempotency_key, reason, outcome, created_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, ?9, ?10)",
+         lease_id, ordinal, operation_key, forge_idempotency_key, outcome, created_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )
     .bind(&row.delivery_id)
     .bind(&row.track_id)
@@ -330,64 +322,6 @@ pub(crate) async fn insert_initial_delivery_tx(
     .bind(&row.operation_key)
     .bind(&row.forge_idempotency_key)
     .bind(outcome.as_column())
-    .bind(row.created_at_ms)
-    .execute(&mut **tx)
-    .await?;
-    Ok(row)
-}
-
-/// Insert the retry row of one attempt (`calm.task.delivery{action:"retry"}`, slice 3): the
-/// predecessor's `ordinal + 1`, `predecessor_delivery_id` naming it, the request key and reason
-/// the Planner sent (the replay key). Fresh `delivery_id` and `operation_key`; same lease, card
-/// and `outcome` as the predecessor. The caller has admitted the retry (predecessor failed, retryable,
-/// workspace present) in the same transaction.
-pub(crate) async fn insert_retry_delivery_tx(
-    tx: &mut Tx<'_>,
-    predecessor: &DeliveryRow,
-    request_idempotency_key: &str,
-    reason: Option<&str>,
-    now_ms: i64,
-) -> Result<DeliveryRow> {
-    let delivery_id = new_id();
-    let row = DeliveryRow {
-        delivery_id: delivery_id.clone(),
-        track_id: predecessor.track_id.clone(),
-        producer_attempt_id: predecessor.producer_attempt_id.clone(),
-        card_id: predecessor.card_id.clone(),
-        lease_id: predecessor.lease_id.clone(),
-        ordinal: predecessor.ordinal + 1,
-        operation_key: new_id(),
-        forge_idempotency_key: format!(
-            "{GIT_FORGE_PLUGIN_ID}:{}:{}:{}",
-            predecessor.track_id,
-            predecessor.card_id,
-            delivery_idem_key(&delivery_id)
-        ),
-        predecessor_delivery_id: Some(predecessor.delivery_id.clone()),
-        request_idempotency_key: Some(request_idempotency_key.to_string()),
-        reason: reason.map(str::to_string),
-        outcome: predecessor.outcome,
-        created_at_ms: now_ms,
-        settlement: None,
-    };
-    sqlx::query(
-        "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, card_id, \
-         lease_id, ordinal, operation_key, forge_idempotency_key, predecessor_delivery_id, \
-         request_idempotency_key, reason, outcome, created_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-    )
-    .bind(&row.delivery_id)
-    .bind(&row.track_id)
-    .bind(&row.producer_attempt_id)
-    .bind(&row.card_id)
-    .bind(&row.lease_id)
-    .bind(row.ordinal)
-    .bind(&row.operation_key)
-    .bind(&row.forge_idempotency_key)
-    .bind(&row.predecessor_delivery_id)
-    .bind(&row.request_idempotency_key)
-    .bind(&row.reason)
-    .bind(row.outcome.map(AttemptOutcome::as_column))
     .bind(row.created_at_ms)
     .execute(&mut **tx)
     .await?;
@@ -494,29 +428,6 @@ pub(crate) async fn delivery_latest_for_attempt_tx(
     );
     let row = sqlx::query(&sql)
         .bind(producer_attempt_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    row.map(row_to_delivery).transpose()
-}
-
-/// The retry row one request key already produced for this attempt in this Track (the replay
-/// key of `calm.task.delivery{retry}`, Track-scoped: another Track's Planner quoting this
-/// attempt id and key finds nothing and falls through to admission); `ordinal = 1` rows carry
-/// no key and are never returned.
-pub(crate) async fn delivery_by_request_key_tx(
-    tx: &mut Tx<'_>,
-    track_id: &str,
-    producer_attempt_id: &str,
-    request_idempotency_key: &str,
-) -> Result<Option<DeliveryRow>> {
-    let sql = format!(
-        "SELECT {DELIVERY_COLUMNS} FROM task_git_deliveries d \
-         WHERE d.track_id = ?1 AND d.producer_attempt_id = ?2 AND d.request_idempotency_key = ?3"
-    );
-    let row = sqlx::query(&sql)
-        .bind(track_id)
-        .bind(producer_attempt_id)
-        .bind(request_idempotency_key)
         .fetch_optional(&mut **tx)
         .await?;
     row.map(row_to_delivery).transpose()
@@ -685,13 +596,12 @@ fn row_to_delivery(row: sqlx::sqlite::SqliteRow) -> Result<DeliveryRow> {
             Some(settled_event_id),
             Some(code),
             Some(reason),
-            Some(retry_allowed),
+            Some(_retry_allowed),
             Some(wake_reason),
         ) => Some(DeliverySettled::Failed {
             settled_event_id,
             code: failure_code_from_column(&code)?,
             reason,
-            retry_allowed: retry_allowed != 0,
             wake_reason: wake_reason_from_column(&wake_reason)?,
         }),
         _ => {
@@ -709,9 +619,6 @@ fn row_to_delivery(row: sqlx::sqlite::SqliteRow) -> Result<DeliveryRow> {
         ordinal: row.try_get("ordinal")?,
         operation_key: row.try_get("operation_key")?,
         forge_idempotency_key: row.try_get("forge_idempotency_key")?,
-        predecessor_delivery_id: row.try_get("predecessor_delivery_id")?,
-        request_idempotency_key: row.try_get("request_idempotency_key")?,
-        reason: row.try_get("reason")?,
         outcome: row
             .try_get::<Option<String>, _>("outcome")?
             .as_deref()
@@ -727,6 +634,8 @@ fn row_to_delivery(row: sqlx::sqlite::SqliteRow) -> Result<DeliveryRow> {
 /// fail without a class, which would otherwise read as `unresolved`); then the script's own exit
 /// code from the result file; then the class of an action that left no file; everything else is
 /// `unresolved` — a class this table does not name is never read as something it is not.
+/// `retry_allowed` is written only because the 0113 row CHECK and the settlement event require
+/// it: nothing retries a delivery since #1893 S6, and nothing reads it.
 pub(crate) fn classify_failure(
     result: Option<&ForgeActionResultFile>,
     last_error_class: Option<&str>,

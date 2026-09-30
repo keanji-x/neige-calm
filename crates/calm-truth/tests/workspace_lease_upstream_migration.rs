@@ -189,7 +189,13 @@ async fn upstream_base_rebuild_preserves_rows_references_and_constraints() {
     let indexes = index_sql(&mut db).await;
     assert_eq!(indexes.len(), 5, "{indexes:?}");
 
-    MIGRATOR.run(&mut db).await.unwrap();
+    // Only 0115: a later migration drops `task_git_delivery_abandonments` (0126).
+    for migration in MIGRATOR
+        .iter()
+        .filter(|m| m.version == 115 && !m.migration_type.is_down_migration())
+    {
+        db.apply(migration).await.unwrap();
+    }
 
     for (table, columns, rows) in &before {
         assert_eq!(&all_rows(&mut db, table, columns).await, rows, "{table}");

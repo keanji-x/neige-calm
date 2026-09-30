@@ -135,8 +135,6 @@ pub fn require_role_any(identity: &ToolCallIdentity, allowed: &[CardRole]) -> Re
 
 /// The scheduler triggers a tool may fire after its commit (see [`AppContext::scheduler_poke`]).
 pub trait SchedulerPokes: Send + Sync {
-    /// Schedule `track` now (`Scheduler::poke`).
-    fn poke(&self, track: TrackId);
     /// Reap now the workers whose cleanup marker was just committed
     /// (`Scheduler::poke_worker_cleanups`).
     fn poke_worker_cleanups(&self);
@@ -146,10 +144,6 @@ pub trait SchedulerPokes: Send + Sync {
 pub type SchedulerPoke = Arc<dyn SchedulerPokes>;
 
 impl SchedulerPokes for Arc<crate::scheduler::Scheduler> {
-    fn poke(&self, track: TrackId) {
-        crate::scheduler::Scheduler::poke(self, track);
-    }
-
     fn poke_worker_cleanups(&self) {
         crate::scheduler::Scheduler::poke_worker_cleanups(self);
     }
@@ -179,10 +173,8 @@ pub struct AppContext {
     /// Late-bound: MCP boot precedes runtime construction.
     pub operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
     /// Late-bound (the Dispatcher is spawned after the MCP context): the scheduler's triggers.
-    /// A Planner action that submits kernel work without writing an event
-    /// (`calm.task.delivery{retry}`) pokes through it so the scheduler drives the work now, and a
-    /// running-task cancel pokes the worker reap; unbound (fixtures without a Dispatcher) means
-    /// the reconcile sweep drives it instead.
+    /// A running-task cancel pokes the worker reap through it; unbound (fixtures without a
+    /// Dispatcher) means the reconcile sweep reaps instead.
     pub scheduler_poke: Arc<tokio::sync::OnceCell<SchedulerPoke>>,
     /// The `chart.series` background resolver; `calm.report.read` enqueues into it.
     pub series_resolver: Arc<crate::report_series::SeriesResolver>,

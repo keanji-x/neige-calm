@@ -55,7 +55,6 @@ pub enum UnboundReason {
 pub enum NoCandidateReason {
     DeliveryPending { delivery_id: String },
     DeliveryFailed { delivery_id: String },
-    DeliveryAbandoned { delivery_id: String },
     NoDeliveryRow,
 }
 
@@ -365,7 +364,7 @@ mod tests {
             );
         }
 
-        // `NoCandidate`: the four delivery states.
+        // `NoCandidate`: the three delivery states.
         for (reason, wire) in [
             (
                 NoCandidateReason::DeliveryPending {
@@ -378,12 +377,6 @@ mod tests {
                     delivery_id: "d-1".into(),
                 },
                 json!({"kind": "delivery_failed", "delivery_id": "d-1"}),
-            ),
-            (
-                NoCandidateReason::DeliveryAbandoned {
-                    delivery_id: "d-1".into(),
-                },
-                json!({"kind": "delivery_abandoned", "delivery_id": "d-1"}),
             ),
             (
                 NoCandidateReason::NoDeliveryRow,

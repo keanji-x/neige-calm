@@ -1310,9 +1310,8 @@ impl AppState {
                 gate_logs_dir.clone(),
             ),
         );
-        // The MCP tools' late-bound scheduler triggers (`calm.task.delivery{retry}` submits work
-        // without an event; a running-task cancel reaps its worker): bound once the Dispatcher's
-        // scheduler exists.
+        // The MCP tools' late-bound scheduler trigger (a running-task cancel reaps its worker):
+        // bound once the Dispatcher's scheduler exists.
         let _ = mcp_context
             .scheduler_poke
             .set(Arc::new(dispatcher.scheduler()));

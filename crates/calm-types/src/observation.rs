@@ -87,17 +87,12 @@ pub enum Observation {
     },
     /// One Git delivery settled (#1727 S4). Hard-fired: it is the wake the suppressed worker
     /// self-report would have been. `retained_path` is the lease worktree while it still exists.
-    /// `delivery_id` (slice 3) is what a failed delivery's `calm.task.delivery` decision names;
-    /// an observation persisted before it existed carries `None` and its sentence names no
-    /// decision.
     TaskGitDeliverySettled {
         key: String,
         attempt_id: String,
         result: DeliverySettlement,
         #[serde(default)]
         retained_path: Option<String>,
-        #[serde(default)]
-        delivery_id: Option<String>,
     },
     WorkspaceLeased {
         track_id: TrackId,
@@ -344,7 +339,6 @@ impl Observation {
                     "{head} Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
                 )
             }
-            // Slice 2 wording: no delivery tool yet (slice 3 appends it).
             Observation::TaskGitDeliverySettled {
                 key,
                 attempt_id,
@@ -370,14 +364,8 @@ impl Observation {
             Observation::TaskGitDeliverySettled {
                 key,
                 attempt_id,
-                result:
-                    DeliverySettlement::Failed {
-                        code,
-                        reason,
-                        retry_allowed,
-                    },
+                result: DeliverySettlement::Failed { code, reason, .. },
                 retained_path,
-                delivery_id,
             } => {
                 // `workspace_missing` is the kernel's proof the lease directory is gone; the lease
                 // row can still carry a path, so that code never names one.
@@ -387,22 +375,6 @@ impl Observation {
                     }
                     _ => "Read".to_string(),
                 };
-                // The decision clause (slice 3): only the actions the row admits are offered.
-                // When a retry is offered, G4 is stated with it: the retry delivers the branch
-                // tip as it is now, nothing is checked for drift.
-                let decide = match delivery_id.as_deref() {
-                    Some(id) if *retry_allowed => format!(
-                        " Decide: calm.task.delivery{{action:\"retry\"|\"abandon\", \
-                         expected_delivery_id:\"{id}\"}}. Retry delivers the branch tip as it \
-                         stands now; commits and files added after the base by anyone are \
-                         included."
-                    ),
-                    Some(id) => format!(
-                        " Decide: calm.task.delivery{{action:\"abandon\", \
-                         expected_delivery_id:\"{id}\"}}."
-                    ),
-                    None => String::new(),
-                };
                 // No period after `reason`: every fixed sentence ends with one and
                 // `unresolved_failure` terminates its detail line. The raw evidence lines of
                 // 10/12/15 are copied as the script printed them and carry no period, so the
@@ -410,7 +382,9 @@ impl Observation {
                 // them (the `unresolved` reason already breaks a line before its detail).
                 format!(
                     "Task {key} Git delivery FAILED ({}): {reason}\n\
-                     {read} the worker output at runs/{attempt_id}.md.{decide}",
+                     {read} the worker output at runs/{attempt_id}.md. No candidate will come: \
+                     a gated task failed with it (delivery-failed). Declare a new task for \
+                     another round.",
                     code.wire_str()
                 )
             }
@@ -554,9 +528,6 @@ fn gate_result_text(
                 }
                 NoCandidateReason::DeliveryFailed { delivery_id } => {
                     format!("delivery {delivery_id} is failed")
-                }
-                NoCandidateReason::DeliveryAbandoned { delivery_id } => {
-                    format!("delivery {delivery_id} is abandoned")
                 }
                 NoCandidateReason::NoDeliveryRow => "no delivery row".to_string(),
             };

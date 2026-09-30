@@ -577,30 +577,7 @@ async fn gate_prepare_refuses_unsettled_delivery() {
     remove_pre_commit(&lease);
     std::fs::remove_file(&flag).unwrap();
 
-    // 2. The delivery failed.
-    let worker = fx.new_worker("failed-worker", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
-    install_pre_commit(&lease, HOOK_EXIT_1);
-    let task = fx
-        .running_task("failed", "codex", &worker.card_id, gated("true"))
-        .await;
-    std::fs::write(lease.path.join("worker.txt"), "failed\n").unwrap();
-    fx.complete(&worker, &task.id).await;
-    let row = settle_by_hand(&fx, &task.id).await;
-    assert_eq!(row.settlement.as_deref(), Some("failed"));
-    remove_pre_commit(&lease);
-    undo_worker_changes(&lease.path);
-    let gate_failed = assert_refused_without_candidate(&fx, &task, "failed").await;
-    assert_eq!(
-        gate_failed.target,
-        Some(VerifyTarget::NoCandidate {
-            reason: NoCandidateReason::DeliveryFailed {
-                delivery_id: row.delivery_id.clone()
-            }
-        })
-    );
-
-    // 3. No delivery row at all (deleted while the hook holds the commit).
+    // 2. No delivery row at all (deleted while the hook holds the commit).
     let worker = fx.new_worker("rowless-worker", AgentProvider::Codex).await;
     let lease = fx.kernel_lease(&worker.card_id).await;
     install_pre_commit(&lease, &hook_waiting_for(&flag, 0));
@@ -1418,18 +1395,26 @@ async fn gate_prepare_times_out_as_stuck_not_hang() {
 
 // ---------------------------------------------------------------------------
 // Review round 1 (2): an existing `#gN` is waited and reconciled before admission — the
-// D12 (i) window (a pre-slice-4 gate terminal beside a failed delivery) still flips its row.
+// D12 (i) window (a pre-slice-4 gate terminal beside an unsettled delivery) still flips its row.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn existing_terminal_gate_op_is_reconciled_before_admission() {
     let fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
-    // A failed delivery under a `verifying` row ...
-    let (_, task, lease) = fx.hook_failing_task("upgraded", gated("true")).await;
-    let row = settle_by_hand(&fx, &task.id).await;
-    assert_eq!(row.settlement.as_deref(), Some("failed"), "{row:?}");
-    remove_pre_commit(&lease);
+    // A delivery held in its hook under a `verifying` row (a failed one would have failed the
+    // row since #1893 S6) ...
+    let flag = fx.track_root.parent().unwrap().join("commit-may-proceed");
+    let worker = fx.codex_worker();
+    let lease = fx.kernel_lease(&worker.card_id).await;
+    install_pre_commit(&lease, &hook_waiting_for(&flag, 0));
+    let task = fx
+        .running_task("upgraded", "codex", &worker.card_id, gated("true"))
+        .await;
+    std::fs::write(lease.path.join("worker.txt"), "held\n").unwrap();
+    fx.complete(&worker, &task.id).await;
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    assert!(row.settlement.is_none(), "{row:?}");
     assert_eq!(
         current(&fx.boot, "upgraded").await.status,
         TaskStatus::Verifying
@@ -1508,9 +1493,12 @@ async fn existing_terminal_gate_op_is_reconciled_before_admission() {
             .await
             .unwrap()
             .is_none(),
-        "no second gate on a failed delivery"
+        "no second gate while the delivery is unsettled"
     );
     assert_eq!(task_verify_op_count(&fx).await, 1);
+    std::fs::write(&flag, b"").unwrap();
+    fx.wait_forge_op(&task.id).await;
+    remove_pre_commit(&lease);
 }
 
 // ---------------------------------------------------------------------------
@@ -1938,22 +1926,28 @@ async fn plan_list_reads_gate_verification() {
     assert_eq!(v["target"]["evidence"]["kind"], "refused");
     assert_eq!(v["target"]["evidence"]["reasons"], json!(["head"]));
 
-    // infra (no candidate: admitted before settlement)
+    // infra (no candidate: admitted before settlement, the delivery held in its hook)
+    let infra_flag = fx
+        .track_root
+        .parent()
+        .unwrap()
+        .join("infra-commit-may-proceed");
     let worker = fx.new_worker("v-infra-w", AgentProvider::Codex).await;
     let lease = fx.kernel_lease(&worker.card_id).await;
-    install_pre_commit(&lease, HOOK_EXIT_1);
+    install_pre_commit(&lease, &hook_waiting_for(&infra_flag, 0));
     let task = fx
         .running_task("v-infra", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "x\n").unwrap();
     fx.complete(&worker, &task.id).await;
-    settle_by_hand(&fx, &task.id).await;
-    remove_pre_commit(&lease);
-    undo_worker_changes(&lease.path);
     submit_gate_bypassing_admission(&fx, &task).await;
     let v = verification(&fx.plan_entry("v-infra").await);
     assert_eq!(v["state"], "infra", "{v}");
     assert_eq!(v["target"]["kind"], "no_candidate");
+    // Let the held commit finish before the next attempt uses the checkout.
+    std::fs::write(&infra_flag, b"").unwrap();
+    fx.wait_forge_op(&task.id).await;
+    remove_pre_commit(&lease);
 
     // running (a gate Operation exists, parked)
     let gate_flag = fx.track_root.parent().unwrap().join("gate-may-finish");
@@ -2620,8 +2614,8 @@ async fn recovered_gate_stops_the_group_before_sampling() {
 
 // ---------------------------------------------------------------------------
 // Review round 1 (5c): the boot-reattach observer (the wrapper alive at reboot) samples after
-// too. Out of process, as above. The row is terminal before boot#2 (the D12 (i) shape: a
-// Planner flipped it while the gate was parked), so boot#2's scheduler drives no gate — its
+// too. Out of process, as above. The row is terminal before boot#2 (flipped by hand while the
+// gate was parked, the D12 (i) shape), so boot#2's scheduler drives no gate — its
 // 25 ms `wait` loop would otherwise run the driver's dead-work probe, which completes a dead
 // leader through `recover_parked`'s `!alive` arm ahead of the 2 s re-attach poll (A12b pins
 // that arm). With no waiter, the re-attached observer is the one completion path, and the op
@@ -2674,7 +2668,7 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
     // The row is flipped by hand while the gate is parked (see the header): boot#2 has no
     // `verifying` row to drive, so nothing waits on `#g1` and nothing probes it.
     sqlx::query(
-        "UPDATE tasks SET status = 'failed', status_detail = 'delivery-abandoned', finished_at_ms = ?1 WHERE id = ?2",
+        "UPDATE tasks SET status = 'failed', status_detail = 'delivery-failed', finished_at_ms = ?1 WHERE id = ?2",
     )
     .bind(now_ms())
     .bind(&task.id)

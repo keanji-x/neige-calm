@@ -841,7 +841,6 @@ export const verifyTargetEvidenceSchema = z.discriminatedUnion('kind', [
 export const noCandidateReasonSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('delivery_pending'), delivery_id: z.string() }),
   z.object({ kind: z.literal('delivery_failed'), delivery_id: z.string() }),
-  z.object({ kind: z.literal('delivery_abandoned'), delivery_id: z.string() }),
   z.object({ kind: z.literal('no_delivery_row') }),
 ]);
 

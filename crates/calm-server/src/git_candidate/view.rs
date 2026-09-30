@@ -7,7 +7,6 @@ use calm_types::task_execution::IsolatedCodexSelection;
 use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 use serde::Serialize;
 
-use super::abandonment::abandonment_for_delivery_tx;
 use super::candidate::{CandidateRow, candidate_for_attempt_tx};
 use super::delivery::{DeliveryRow, DeliverySettled, delivery_latest_for_attempt_tx};
 use super::verification::{VerificationView, verification_state};
@@ -22,7 +21,6 @@ use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
 
 /// The `integrity.mismatches` entries the delivery derivation can name.
 pub(crate) const MISMATCH_DELIVERY_ROW_MISSING: &str = "delivery_row_missing";
-pub(crate) const MISMATCH_ABANDONMENT_WITH_CANDIDATE: &str = "abandonment_with_candidate";
 /// A `candidate` settlement without its candidate row, or a candidate row on a `failed`
 /// settlement: both are impossible by construction (one transaction writes both) and are
 /// reported as inconsistent rather than read as anything else.
@@ -30,26 +28,14 @@ pub(crate) const MISMATCH_CANDIDATE_ROW_MISSING: &str = "candidate_row_missing";
 pub(crate) const MISMATCH_CANDIDATE_WITH_FAILED_SETTLEMENT: &str =
     "candidate_with_failed_settlement";
 
-/// The three failure facts the delivery row carries (`failure_code`, `failure_reason`,
-/// `retry_allowed`).
+/// The failure facts the Planner reads from the delivery row (`failure_code`, `failure_reason`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct DeliveryFailure {
     pub code: DeliveryFailureCode,
     pub reason: String,
-    pub retry_allowed: bool,
 }
 
-/// What an abandonment row says (`task_git_delivery_abandonments`, slice 3): the Planner's
-/// reason, what the abandonment did to the tasks row and the status it observed
-/// (`abandonment::AbandonmentRow::facts`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AbandonmentFacts {
-    pub reason: Option<String>,
-    pub task_outcome: String,
-    pub task_status: String,
-}
-
-/// `delivery.state` — the eight-value effective state of one attempt's delivery.
+/// `delivery.state` — the seven-value effective state of one attempt's delivery.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum DeliveryState {
@@ -83,20 +69,12 @@ pub(crate) enum DeliveryState {
         r#ref: String,
         base_is_ancestor: bool,
     },
-    /// The latest delivery failed and no candidate exists.
+    /// The latest delivery failed; no candidate exists and none will (a gated attempt still
+    /// verifying failed with it, `delivery-failed`).
     Failed {
         delivery_id: String,
         ordinal: i64,
         failure: DeliveryFailure,
-    },
-    /// The Planner abandoned the failed delivery; there will be no candidate.
-    Abandoned {
-        delivery_id: String,
-        ordinal: i64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-        task_outcome: String,
-        task_status: String,
     },
 }
 
@@ -108,7 +86,6 @@ pub(crate) fn delivery_state(
     status_detail: Option<&str>,
     delivery: Option<&DeliveryRow>,
     candidate: Option<&CandidateRow>,
-    abandonment: Option<&AbandonmentFacts>,
 ) -> DeliveryState {
     let Some(delivery) = delivery else {
         return match task_status {
@@ -127,12 +104,12 @@ pub(crate) fn delivery_state(
     };
     let delivery_id = delivery.delivery_id.clone();
     let ordinal = delivery.ordinal;
-    match (&delivery.settlement, candidate, abandonment) {
-        (None, _, _) => DeliveryState::Pending {
+    match (&delivery.settlement, candidate) {
+        (None, _) => DeliveryState::Pending {
             delivery_id,
             ordinal,
         },
-        (Some(DeliverySettled::Candidate { .. }), Some(candidate), None) => {
+        (Some(DeliverySettled::Candidate { .. }), Some(candidate)) => {
             let fields = (
                 delivery_id,
                 ordinal,
@@ -162,42 +139,18 @@ pub(crate) fn delivery_state(
                 }
             }
         }
-        (Some(DeliverySettled::Candidate { .. }), Some(_), Some(_)) => {
-            DeliveryState::Inconsistent {
-                mismatches: vec![MISMATCH_ABANDONMENT_WITH_CANDIDATE],
-            }
-        }
-        (Some(DeliverySettled::Candidate { .. }), None, _) => DeliveryState::Inconsistent {
+        (Some(DeliverySettled::Candidate { .. }), None) => DeliveryState::Inconsistent {
             mismatches: vec![MISMATCH_CANDIDATE_ROW_MISSING],
         },
-        (
-            Some(DeliverySettled::Failed {
-                code,
-                reason,
-                retry_allowed,
-                ..
-            }),
-            None,
-            None,
-        ) => DeliveryState::Failed {
+        (Some(DeliverySettled::Failed { code, reason, .. }), None) => DeliveryState::Failed {
             delivery_id,
             ordinal,
             failure: DeliveryFailure {
                 code: *code,
                 reason: reason.clone(),
-                retry_allowed: *retry_allowed,
             },
         },
-        (Some(DeliverySettled::Failed { .. }), None, Some(abandonment)) => {
-            DeliveryState::Abandoned {
-                delivery_id,
-                ordinal,
-                reason: abandonment.reason.clone(),
-                task_outcome: abandonment.task_outcome.clone(),
-                task_status: abandonment.task_status.clone(),
-            }
-        }
-        (Some(DeliverySettled::Failed { .. }), Some(_), _) => DeliveryState::Inconsistent {
+        (Some(DeliverySettled::Failed { .. }), Some(_)) => DeliveryState::Inconsistent {
             mismatches: vec![MISMATCH_CANDIDATE_WITH_FAILED_SETTLEMENT],
         },
     }
@@ -367,19 +320,12 @@ pub(crate) async fn candidate_view_tx(
         Some(lease) if lease.delivery_policy == Some(DeliveryPolicy::Kernel) => {
             let delivery = delivery_latest_for_attempt_tx(tx, &task.id).await?;
             let candidate = candidate_for_attempt_tx(tx, &task.id).await?;
-            let abandonment = match delivery.as_ref() {
-                Some(delivery) => abandonment_for_delivery_tx(tx, &delivery.delivery_id)
-                    .await?
-                    .map(|row| row.facts()),
-                None => None,
-            };
             Some(BoundFacts {
                 delivery: delivery_state(
                     task.status,
                     task.status_detail.as_deref(),
                     delivery.as_ref(),
                     candidate.as_ref(),
-                    abandonment.as_ref(),
                 ),
                 verification: verification_view_tx(tx, task).await?,
             })

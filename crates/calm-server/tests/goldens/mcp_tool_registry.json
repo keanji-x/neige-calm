@@ -139,7 +139,7 @@
   },
   {
     "name": "calm.plan.list",
-    "description_sha256": "1d01463aa8decc24749ce3cbc1f7a6f152637e492592d7d395c655d33704825e",
+    "description_sha256": "d1282b78babd9bd2c9ad48c3f9ce2bf73c890238efd82d58b744988f2b4d5792",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -950,52 +950,6 @@
     },
     "visible_to_roles": [
       "worker"
-    ]
-  },
-  {
-    "name": "calm.task.delivery",
-    "description_sha256": "e3f544d8e58e813eab4db551d03ded837c20dba2ce2c6921764e901c27088c49",
-    "input_schema": {
-      "properties": {
-        "action": {
-          "enum": [
-            "retry",
-            "abandon"
-          ],
-          "type": "string"
-        },
-        "expected_attempt_id": {
-          "type": "string"
-        },
-        "expected_delivery_id": {
-          "type": "string"
-        },
-        "idempotency_key": {
-          "type": "string"
-        },
-        "key": {
-          "type": "string"
-        },
-        "reason": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "key",
-        "expected_attempt_id",
-        "expected_delivery_id",
-        "idempotency_key",
-        "action"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
     ]
   },
   {

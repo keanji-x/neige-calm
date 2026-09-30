@@ -4,16 +4,19 @@
 //! row whose forge Operation is missing (same `operation_key`, so the runtime dedups the report
 //! handler's own submission), waits for the Operation off the Track lock, and settles the row
 //! once — a candidate row or the failure columns, plus one `task.git_delivery_settled` event —
-//! guarded by `WHERE settlement IS NULL`.
+//! guarded by `WHERE settlement IS NULL`. A failed settlement also fails a gated attempt still
+//! `verifying` (#1893 S6): with no candidate there is nothing to gate.
 use std::path::Path;
 
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 
 use super::*;
-use crate::db::sqlite::{append_decision_event_in_tx, task_get_tx};
+use crate::db::sqlite::{
+    TASK_STATUS_DETAIL_DELIVERY_FAILED, append_decision_event_in_tx, task_fail_delivery_tx,
+    task_get_tx,
+};
 use crate::db::write_in_tx_typed;
 use crate::event::{BroadcastEnvelope, SYNC_EVENT_VERSION};
-use crate::git_candidate::abandonment::abandonment_for_delivery_tx;
 use crate::git_candidate::candidate::{CandidateRow, from_operation_result, resolve_ref_commit};
 use crate::git_candidate::delivery::{
     DeliveryRow, UnsettledDelivery, classify_failure, delivery_by_id_tx, lease_for_delivery_tx,
@@ -75,7 +78,7 @@ impl Scheduler {
     /// idempotent settlement step here rather than return and wait for a poke that the held
     /// `gate:<task>` single-flight key would swallow (`InflightGuard::acquire` has no re-drive
     /// flag). Then the effective delivery state decides: `committed` / `no_change` → admitted;
-    /// `failed` / `abandoned` / `pending` / `inconsistent` → not.
+    /// `failed` / `pending` / `inconsistent` → not.
     pub(super) async fn admit_gate(
         self: &Arc<Self>,
         runtime: &Arc<OperationRuntime>,
@@ -126,25 +129,13 @@ impl Scheduler {
                         VerifyIdentity::Bound {
                             delivery,
                             candidate,
-                            abandoned,
                             ..
-                        } => {
-                            let abandonment = match delivery.as_ref() {
-                                Some(delivery) if abandoned => {
-                                    abandonment_for_delivery_tx(tx, &delivery.delivery_id)
-                                        .await?
-                                        .map(|row| row.facts())
-                                }
-                                _ => None,
-                            };
-                            Some(delivery_state(
-                                current.status,
-                                current.status_detail.as_deref(),
-                                delivery.as_ref(),
-                                candidate.as_ref(),
-                                abandonment.as_ref(),
-                            ))
-                        }
+                        } => Some(delivery_state(
+                            current.status,
+                            current.status_detail.as_deref(),
+                            delivery.as_ref(),
+                            candidate.as_ref(),
+                        )),
                     };
                     Ok(state)
                 })
@@ -326,24 +317,28 @@ impl Scheduler {
             }
         };
         let settled = match self.settle_tx(delivery, settlement).await {
-            Ok(envelope) => envelope,
+            Ok(envelopes) => envelopes,
             Err(error) if is_race_lost(&error) => return Ok(()),
             Err(error) => return Err(error),
         };
         // The live arm of `task.git_delivery_settled` pushes the planner and pokes this scheduler;
         // no second poke here (a second pass must be a no-op, and one is enough to prove it).
-        self.events.emit_envelope(settled);
+        for envelope in settled {
+            self.events.emit_envelope(envelope);
+        }
         Ok(())
     }
 
     /// One immediate transaction: the wake disposition from the tasks row, the settlement event
     /// through the authorized append seam, then the guarded settlement UPDATE (and the candidate
-    /// row). A guard miss is the concurrent second executor: the transaction rolls back.
+    /// row). A failed settlement of a gated row still `verifying` flips it to
+    /// `failed/delivery-failed` and appends its kernel `task.failed` after the settlement event.
+    /// A guard miss is the concurrent second executor: the transaction rolls back.
     async fn settle_tx(
         self: &Arc<Self>,
         delivery: DeliveryRow,
         settlement: Settlement,
-    ) -> Result<BroadcastEnvelope> {
+    ) -> Result<Vec<BroadcastEnvelope>> {
         write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
                 let task = task_get_tx(tx, &delivery.producer_attempt_id)
@@ -399,7 +394,7 @@ impl Scheduler {
                 };
                 let event = Event::TaskGitDeliverySettled {
                     task_id: task.id.clone(),
-                    idempotency_key: task.id,
+                    idempotency_key: task.id.clone(),
                     track_id: TrackId::from(delivery.track_id.clone()),
                     card_id: crate::ids::CardId::from(delivery.card_id.clone()),
                     delivery_id: delivery.delivery_id.clone(),
@@ -439,13 +434,35 @@ impl Scheduler {
                 if rows == 0 {
                     return Err(race_lost_err());
                 }
-                Ok(BroadcastEnvelope {
+                let fails_task = matches!(settlement, Settlement::Failed { .. })
+                    && task.gate_json.is_some()
+                    && task_fail_delivery_tx(tx, &task.id, &delivery.track_id, now_ms()).await?
+                        == 1;
+                let mut envelopes = vec![BroadcastEnvelope {
                     id: event_id,
                     event_version: SYNC_EVENT_VERSION,
                     actor,
-                    scope,
+                    scope: scope.clone(),
                     event,
-                })
+                }];
+                if fails_task {
+                    let actor = ActorId::KernelDispatcher;
+                    let event = Event::TaskFailed {
+                        idempotency_key: task.id.clone(),
+                        reason: TASK_STATUS_DETAIL_DELIVERY_FAILED.to_string(),
+                        details: None,
+                        agent_message: None,
+                    };
+                    let id = append_decision_event_in_tx(tx, &actor, &scope, None, &event).await?;
+                    envelopes.push(BroadcastEnvelope {
+                        id,
+                        event_version: SYNC_EVENT_VERSION,
+                        actor,
+                        scope,
+                        event,
+                    });
+                }
+                Ok(envelopes)
             })
         })
         .await

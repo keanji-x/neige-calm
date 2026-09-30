@@ -3,10 +3,8 @@
 //! into `task_candidates` + `task.git_delivery_settled`, the deferred self-report and the
 //! `calm.plan.list.candidate` read surface. Design §6 rows A3–A7, A23–A23c, A25–A31.
 //!
-//! Slice 3 (`calm.task.delivery{retry|abandon}`, the abandonment table, the candidate-ref
-//! cleanup on Track delete, the decision clause of the failed wake): §6 rows A8a–A8d, A9–A9d,
-//! A23b (first fixture), A25b (positive case), A6c (deletion assertion) — the second half of
-//! this file.
+//! #1893 S6 (the second half of this file): a failed delivery fails its gated task; Track and
+//! Area deletion take the delivery tables and candidate refs with them (A9d, A6c).
 //!
 //! One process per test (nextest): the PATH mutation in `observation_failure_settles_as_commit_failed`
 //! relies on that.
@@ -17,8 +15,7 @@ use std::time::Duration;
 use crate::mcp_track_report::{Boot, boot, call_tool, planner_identity, worker_identity};
 use crate::task_recovery::{current, declare};
 use calm_server::db::sqlite::{
-    begin_immediate_tx, card_create_with_id_tx, session_set_handle_state_tx,
-    session_start_runtime_tx,
+    card_create_with_id_tx, session_set_handle_state_tx, session_start_runtime_tx,
 };
 use calm_server::decision_sink::CardDecisionSink;
 use calm_server::dispatcher::{Dispatcher, TaskFailurePushTestHook};
@@ -31,13 +28,12 @@ use calm_server::harness::{
 };
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::registry::ToolCallIdentity;
-use calm_server::model::{CardRole, NewCard, NewTrack, Task, TaskStatus, now_ms};
+use calm_server::model::{CardRole, NewCard, Task, TaskStatus, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
 use calm_server::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskVerifyAdapter};
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
 };
-use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::scheduler::Scheduler;
 use calm_server::session_projection_repo::{
@@ -54,7 +50,6 @@ use serde_json::{Value, json};
 pub(super) const SETTLED_KIND: &str = "task.git_delivery_settled";
 pub(super) const TASK_FAILED_KIND: &str = "task.failed";
 pub(super) const GATE_RESULT_KIND: &str = "task.gate_result";
-pub(super) const TOOL_TASK_DELIVERY: &str = "calm.task.delivery";
 pub(super) const HOOK_EXIT_1: &str = "#!/bin/sh\nexit 1\n";
 pub(super) const WAIT: Duration = Duration::from_secs(30);
 /// The fixed failure sentences the settlement writes (`prompts/delivery/git-delivery-failures.md`).
@@ -170,9 +165,6 @@ pub(super) struct DeliveryRowView {
     pub(super) ordinal: i64,
     pub(super) operation_key: String,
     pub(super) forge_idempotency_key: String,
-    pub(super) predecessor_delivery_id: Option<String>,
-    pub(super) request_idempotency_key: Option<String>,
-    pub(super) reason: Option<String>,
     pub(super) settlement: Option<String>,
     pub(super) settled_event_id: Option<i64>,
     pub(super) failure_code: Option<String>,
@@ -279,8 +271,8 @@ pub(super) async fn fixture_on_with_runtime(
     assert!(boot.ctx.operation_runtime.set(runtime.clone()).is_ok());
     let harness = HarnessRegistry::new();
     let dispatcher = spawn_dispatcher(&boot, &runtime, &harness, terminal_renderer, daemon);
-    // The tool-side scheduler poke (`calm.task.delivery{retry}`), as `AppState::new` binds it;
-    // `respawn_dispatcher` repoints it at the new scheduler.
+    // The tool-side scheduler trigger (a running-task cancel reaps its worker), as
+    // `AppState::new` binds it; `respawn_dispatcher` repoints it at the new scheduler.
     let poke_target = Arc::new(std::sync::RwLock::new(dispatcher.scheduler()));
     assert!(
         boot.ctx
@@ -317,10 +309,6 @@ pub(super) async fn attach_track_worktree(
 struct RepointablePoke(Arc<std::sync::RwLock<Arc<calm_server::scheduler::Scheduler>>>);
 
 impl calm_server::mcp_server::registry::SchedulerPokes for RepointablePoke {
-    fn poke(&self, track: calm_server::ids::TrackId) {
-        self.0.read().unwrap().poke(track);
-    }
-
     fn poke_worker_cleanups(&self) {
         self.0.read().unwrap().poke_worker_cleanups();
     }
@@ -541,31 +529,11 @@ impl Fx {
 
     pub(super) async fn delivery_row(&self, attempt: &str) -> Option<DeliveryRowView> {
         sqlx::query_as(
-            "SELECT delivery_id, ordinal, operation_key, forge_idempotency_key, \
-             predecessor_delivery_id, request_idempotency_key, reason, settlement, \
+            "SELECT delivery_id, ordinal, operation_key, forge_idempotency_key, settlement, \
              settled_event_id, failure_code, failure_reason, retry_allowed, wake_reason \
              FROM task_git_deliveries WHERE producer_attempt_id = ?1 ORDER BY ordinal DESC LIMIT 1",
         )
         .bind(attempt)
-        .fetch_optional(&self.pool())
-        .await
-        .unwrap()
-    }
-
-    /// The delivery row of one attempt at `ordinal`.
-    pub(super) async fn delivery_row_at(
-        &self,
-        attempt: &str,
-        ordinal: i64,
-    ) -> Option<DeliveryRowView> {
-        sqlx::query_as(
-            "SELECT delivery_id, ordinal, operation_key, forge_idempotency_key, \
-             predecessor_delivery_id, request_idempotency_key, reason, settlement, \
-             settled_event_id, failure_code, failure_reason, retry_allowed, wake_reason \
-             FROM task_git_deliveries WHERE producer_attempt_id = ?1 AND ordinal = ?2",
-        )
-        .bind(attempt)
-        .bind(ordinal)
         .fetch_optional(&self.pool())
         .await
         .unwrap()
@@ -706,64 +674,6 @@ impl Fx {
         list["tasks"][0].clone()
     }
 
-    // -- slice 3 ---------------------------------------------------------------------------
-
-    /// `calm.task.delivery` as the Planner.
-    pub(super) async fn delivery_action(&self, args: Value) -> Result<Value, RpcError> {
-        call_tool(
-            &self.boot,
-            TOOL_TASK_DELIVERY,
-            planner_identity(&self.boot),
-            args,
-        )
-        .await
-    }
-
-    pub(super) async fn retry(
-        &self,
-        task: &Task,
-        delivery_id: &str,
-        idempotency_key: &str,
-        reason: Option<&str>,
-    ) -> Result<Value, RpcError> {
-        self.delivery_action(action_args(
-            task,
-            delivery_id,
-            idempotency_key,
-            "retry",
-            reason,
-        ))
-        .await
-    }
-
-    pub(super) async fn abandon(
-        &self,
-        task: &Task,
-        delivery_id: &str,
-        idempotency_key: &str,
-        reason: Option<&str>,
-    ) -> Result<Value, RpcError> {
-        self.delivery_action(action_args(
-            task,
-            delivery_id,
-            idempotency_key,
-            "abandon",
-            reason,
-        ))
-        .await
-    }
-
-    pub(super) async fn abandonment_row(&self, delivery_id: &str) -> Option<AbandonmentRowView> {
-        sqlx::query_as(
-            "SELECT delivery_id, producer_attempt_id, request_idempotency_key, reason, \
-             task_outcome, task_status FROM task_git_delivery_abandonments WHERE delivery_id = ?1",
-        )
-        .bind(delivery_id)
-        .fetch_optional(&self.pool())
-        .await
-        .unwrap()
-    }
-
     pub(super) async fn task_columns(&self, attempt: &str) -> TaskColumns {
         sqlx::query_as(
             "SELECT status, status_detail, gate_json IS NOT NULL AS gated, gate_pid, \
@@ -797,47 +707,8 @@ impl Fx {
             .collect()
     }
 
-    /// Wait until the attempt has `n` settlement events; return the `n`-th (1-based).
-    pub(super) async fn wait_settled_nth(
-        &self,
-        attempt: &str,
-        n: usize,
-    ) -> calm_server::db::TrackEvent {
-        tokio::time::timeout(WAIT, async {
-            loop {
-                let rows = self.settled_events_for(attempt).await;
-                if rows.len() >= n {
-                    break rows.into_iter().nth(n - 1).unwrap();
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("attempt {attempt} never reached settlement {n}"))
-    }
-
-    /// The gate Operation of `attempt` (`<attempt>#g1`), once it exists.
-    pub(super) async fn wait_gate_op(&self, attempt: &str) -> calm_server::operation::Operation {
-        let key = format!("{attempt}#g1");
-        tokio::time::timeout(WAIT, async {
-            loop {
-                if let Some(op) = self
-                    .runtime
-                    .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &key)
-                    .await
-                    .unwrap()
-                {
-                    break op;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("gate op submitted")
-    }
-
-    /// Slice 4: a gate is admitted only after a `candidate` settlement — on a failed or
-    /// abandoned delivery no `#g1` is ever submitted. The admission decision is run by hand
+    /// Slice 4: a gate is admitted only after a `candidate` settlement — on a failed delivery no
+    /// `#g1` is ever submitted. The admission decision is run by hand
     /// (`drive_gate_for_test`, retried while a live drive still holds `gate:<task>`) and only
     /// then is the absence read: the decision has run, nothing is timed.
     pub(super) async fn assert_no_gate_op(&self, attempt: &str) {
@@ -867,27 +738,8 @@ impl Fx {
                 .await
                 .unwrap()
                 .is_none(),
-            "no gate is admitted on a failed or abandoned delivery (slice 4)"
+            "no gate is admitted on a failed delivery (slice 4)"
         );
-    }
-
-    /// Let a gate blocked on `flag` finish and wait for its Operation to settle.
-    pub(super) async fn release_gate(
-        &self,
-        flag: &Path,
-        attempt: &str,
-    ) -> calm_server::operation::Operation {
-        std::fs::write(flag, b"").unwrap();
-        let op = self.wait_gate_op(attempt).await;
-        tokio::time::timeout(WAIT, self.runtime.wait(&op.id))
-            .await
-            .expect("gate op terminal")
-            .unwrap();
-        self.runtime
-            .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{attempt}#g1"))
-            .await
-            .unwrap()
-            .unwrap()
     }
 
     /// A task whose worker completed against a pre-commit hook that exits 1: the delivery
@@ -962,56 +814,6 @@ impl Fx {
             .fetch_one(&self.pool())
             .await
             .unwrap()
-    }
-
-    /// A second Track in the same Area with its own Planner card: the caller identity of "another
-    /// Track's Planner".
-    pub(super) async fn other_track_planner(&self) -> ToolCallIdentity {
-        let track = self
-            .boot
-            .repo
-            .track_create(NewTrack {
-                template_input: None,
-                area_id: self.boot.area_id.clone(),
-                title: "other track".into(),
-                sort: None,
-                cwd: String::new(),
-                template_id: None,
-                plugin_scope: None,
-                attach_folder: false,
-                theme: calm_server::routes::theme::RequestTheme::default_dark(),
-            })
-            .await
-            .unwrap();
-        let card_id = format!("planner-of-{}", track.id.as_str());
-        // `card_create_with_id_tx` reads then writes: an immediate transaction, never a deferred
-        // one that would upgrade under the read.
-        let pool = self.pool();
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        card_create_with_id_tx(
-            &mut tx,
-            card_id.clone(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: serde_json::json!({"planner_provider": "codex"}),
-            },
-            CardRole::Planner,
-            true,
-            &self.boot.card_role_cache,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        ToolCallIdentity {
-            card_id,
-            track_id: Some(track.id.as_str().to_string()),
-            session_id: "other-planner-session".into(),
-            thread_id: "other-planner-thread".into(),
-            ..planner_identity(&self.boot)
-        }
     }
 
     /// Arm the Dispatcher's `task.failed` hook for `task_id` without holding the handler: the
@@ -1197,16 +999,6 @@ pub(super) async fn result_code(fx: &Fx, attempt: &str) -> Option<i32> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub(super) struct AbandonmentRowView {
-    pub(super) delivery_id: String,
-    pub(super) producer_attempt_id: String,
-    pub(super) request_idempotency_key: String,
-    pub(super) reason: Option<String>,
-    pub(super) task_outcome: String,
-    pub(super) task_status: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub(super) struct TaskColumns {
     pub(super) status: TaskStatus,
     pub(super) status_detail: Option<String>,
@@ -1215,45 +1007,6 @@ pub(super) struct TaskColumns {
     pub(super) gate_pid_starttime: Option<i64>,
     pub(super) gate_pid_boot_id: Option<String>,
     pub(super) finished_at_ms: Option<i64>,
-}
-
-pub(super) fn action_args(
-    task: &Task,
-    delivery_id: &str,
-    idempotency_key: &str,
-    action: &str,
-    reason: Option<&str>,
-) -> Value {
-    let mut args = json!({
-        "key": task.key, "expected_attempt_id": task.id, "expected_delivery_id": delivery_id,
-        "idempotency_key": idempotency_key, "action": action,
-    });
-    if let Some(reason) = reason {
-        args["reason"] = json!(reason);
-    }
-    args
-}
-
-/// A state refusal: `-32409` (the repository's Conflict code) and the `refused:` sentence
-/// verbatim — no `task_delivery:` prefix (5.1.11).
-pub(super) fn assert_refused(result: &Result<Value, RpcError>, needle: &str) {
-    let error = match result {
-        Err(error) => error,
-        Ok(receipt) => panic!("expected a refusal containing {needle:?}, got {receipt}"),
-    };
-    assert_eq!(error.code, -32409, "{error:?}");
-    assert!(error.message.starts_with("refused:"), "{error:?}");
-    assert!(error.message.contains(needle), "{error:?}");
-}
-
-/// A malformed argument: `-32602`.
-pub(super) fn assert_invalid_params(result: &Result<Value, RpcError>, needle: &str) {
-    let error = match result {
-        Err(error) => error,
-        Ok(receipt) => panic!("expected -32602 containing {needle:?}, got {receipt}"),
-    };
-    assert_eq!(error.code, RpcError::INVALID_PARAMS, "{error:?}");
-    assert!(error.message.contains(needle), "{error:?}");
 }
 
 pub(super) fn install_pre_commit(lease: &KernelWorkspaceLease, body: &str) {
@@ -1691,18 +1444,17 @@ async fn failed_settlement_row_carries_code_reason_retry() {
         entry["candidate"]["delivery"]["failure"]["code"],
         "commit_failed"
     );
-    assert_eq!(
-        entry["candidate"]["delivery"]["failure"]["retry_allowed"],
-        true
+    // The row keeps `retry_allowed` (0113); the Planner read surface does not show it (#1893 S6).
+    assert!(
+        entry["candidate"]["delivery"]["failure"]
+            .get("retry_allowed")
+            .is_none(),
+        "{entry}"
     );
     let summary = fx.plan_summary_entry("crash-noref").await;
     assert_eq!(
         summary["candidate"]["delivery"]["failure"]["code"], "commit_failed",
         "{summary}"
-    );
-    assert_eq!(
-        summary["candidate"]["delivery"]["failure"]["retry_allowed"],
-        true
     );
 }
 
@@ -2401,7 +2153,7 @@ async fn observation_failure_settles_as_commit_failed() {
 }
 
 // ---------------------------------------------------------------------------
-// The workspace is gone: `workspace_missing`, never retryable, no retained path in the wake.
+// The workspace is gone: `workspace_missing`, recorded not retryable, no retained path in the wake.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2439,20 +2191,8 @@ async fn workspace_missing_delivery_is_not_retryable() {
     let text = pending[0].to_turn_text();
     assert!(!text.contains("Files retained at"), "{text}");
     assert!(text.contains("(workspace_missing)"), "{text}");
-    // Slice 3: the decision clause offers `abandon` alone and quotes the row's delivery id.
-    assert!(
-        text.ends_with(&format!(
-            "Decide: calm.task.delivery{{action:\"abandon\", expected_delivery_id:\"{}\"}}.",
-            row.delivery_id
-        )),
-        "{text}"
-    );
-    assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
-    let entry = fx.plan_entry("gone").await;
-    assert_eq!(
-        entry["candidate"]["delivery"]["failure"]["retry_allowed"], false,
-        "{entry}"
-    );
+    assert!(!text.contains("calm.task.delivery"), "{text}");
+    assert!(!text.to_ascii_lowercase().contains("retr"), "{text}");
 }
 
 // ---------------------------------------------------------------------------
@@ -3061,621 +2801,69 @@ async fn candidate_view_is_total_over_task_status() {
 }
 
 // ===========================================================================
-// Slice 3: `calm.task.delivery{retry|abandon}`.
+// #1893 S6: a failed delivery fails its gated task; nothing retries or abandons it.
 // ===========================================================================
 
-// ---------------------------------------------------------------------------
-// A8a: a retry after a failed delivery mints the candidate; a candidate refuses a retry.
-// ---------------------------------------------------------------------------
-
+/// The delivery of a gated attempt fails: the settlement flips the `verifying` row to
+/// `failed/delivery-failed` in its own transaction and appends one kernel `task.failed` after the
+/// settlement event. The Track's budget is free, no gate is admitted, and the Planner wakes once
+/// — with the settlement, not the `task.failed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_after_failed_delivery_mints_candidate() {
+async fn failed_delivery_fails_the_gated_task() {
     let fx = fixture().await;
     let planner = fx.planner().await;
-    let (worker, task, lease) = fx.hook_failing_task("retry-ok", json!({})).await;
-    let first_settled = fx.wait_settled(&task.id).await;
-    failure_of(settled_result(&first_settled).0);
-    let first = fx.delivery_row(&task.id).await.unwrap();
-    assert_eq!(first.ordinal, 1);
-    wait_observations(&planner, 1).await;
-
-    remove_pre_commit(&lease);
-    let receipt = fx
-        .retry(&task, &first.delivery_id, "req-1", Some("hook removed"))
-        .await
-        .expect("retry admitted");
-    let new_id = receipt["delivery_id"].as_str().unwrap().to_string();
-    assert_ne!(new_id, first.delivery_id);
-    // D2's retry receipt: the new delivery and the action, no task key (nothing about the tasks
-    // row is persisted by a retry).
-    assert_eq!(
-        receipt,
-        json!({"delivery_id": new_id, "ordinal": 2, "action": "retry"})
-    );
-
-    let second_settled = fx.wait_settled_nth(&task.id, 2).await;
-    let (result, wake_reason) = settled_result(&second_settled);
-    let (candidate_id, commit_sha, _, _) = candidate_of(result);
-    assert_eq!(candidate_id, new_id);
-    assert_eq!(wake_reason, DeliveryWakeReason::UngatedCandidate);
-    let second = fx.delivery_row(&task.id).await.unwrap();
-    assert_eq!(second.delivery_id, new_id);
-    assert_eq!(second.ordinal, 2);
-    assert_eq!(
-        second.predecessor_delivery_id.as_deref(),
-        Some(first.delivery_id.as_str())
-    );
-    assert_eq!(second.request_idempotency_key.as_deref(), Some("req-1"));
-    assert_eq!(second.reason.as_deref(), Some("hook removed"));
-    assert_eq!(second.settlement.as_deref(), Some("candidate"));
-    // The first row keeps its failure.
-    let first_now = fx.delivery_row_at(&task.id, 1).await.unwrap();
-    assert_eq!(first_now.settlement.as_deref(), Some("failed"));
-    let candidate = fx.candidate_row(&task.id).await.expect("candidate");
-    assert_eq!(candidate.candidate_id, new_id);
-    assert_eq!(candidate.commit_sha, commit_sha);
-    assert_eq!(
-        candidate.ref_name,
-        format!(
-            "refs/neige/candidates/{}/{}/{new_id}",
-            fx.track(),
-            worker.card_id
+    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
+    let worker = fx.codex_worker();
+    let lease = fx.kernel_lease(&worker.card_id).await;
+    install_pre_commit(&lease, HOOK_EXIT_1);
+    let task = fx
+        .running_task(
+            "first",
+            "codex",
+            &worker.card_id,
+            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
         )
-    );
-    assert_eq!(
-        ref_target(&lease.git_common_dir, &candidate.ref_name).as_deref(),
-        Some(commit_sha)
-    );
-    assert_eq!(fx.delivery_count(&task.id).await, 2);
-    assert_eq!(fx.forge_op_count().await, 2);
+        .await;
+    let task_failed_handled = fx.arm_task_failed_barrier(&task.id);
+    std::fs::write(lease.path.join("worker.txt"), "rejected\n").unwrap();
+    fx.complete(&worker, &task.id).await;
 
-    // Read surface: the latest row is what `delivery` shows, with its ordinal.
-    let entry = fx.plan_entry("retry-ok").await;
+    let settled = fx.wait_settled(&task.id).await;
+    let (code, _, _) = failure_of(settled_result(&settled).0);
+    assert_eq!(code, DeliveryFailureCode::CommitFailed);
+    let columns = fx.task_columns(&task.id).await;
+    assert_eq!(columns.status, TaskStatus::Failed, "{columns:?}");
+    assert_eq!(columns.status_detail.as_deref(), Some("delivery-failed"));
+    assert!(columns.finished_at_ms.is_some());
+    let failed = fx.events_for(TASK_FAILED_KIND, &task.id).await;
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(
+        matches!(
+            &failed[0].actor,
+            calm_server::ids::ActorId::KernelDispatcher
+        ),
+        "{:?}",
+        failed[0].actor
+    );
+    assert!(
+        matches!(&failed[0].event, Event::TaskFailed { reason, .. } if reason == "delivery-failed"),
+        "{:?}",
+        failed[0].event
+    );
+    assert!(
+        failed[0].id > settled.id,
+        "the task.failed follows the settlement"
+    );
+    fx.assert_no_gate_op(&task.id).await;
+    let entry = fx.plan_entry("first").await;
+    assert_eq!(entry["candidate"]["delivery"]["state"], "failed", "{entry}");
     assert_eq!(
-        entry["candidate"]["delivery"]["state"], "committed",
+        entry["candidate"]["verification"]["state"], "not_reached",
         "{entry}"
     );
-    assert_eq!(entry["candidate"]["delivery"]["ordinal"], 2);
-    assert_eq!(entry["candidate"]["delivery"]["delivery_id"], new_id);
 
-    // Turns: the failed settlement, then the candidate settlement — one turn for the retry.
-    let pending = wait_observations(&planner, 2).await;
-    assert!(
-        matches!(&pending[1], Observation::TaskGitDeliverySettled { result: DeliverySettlement::Candidate { .. }, delivery_id: Some(id), .. } if id == &new_id),
-        "{pending:?}"
-    );
-    assert_observations_settle_at(&planner, 2).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_refused_when_candidate_exists() {
-    let fx = fixture().await;
-    let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
-    let task = fx
-        .running_task("has-candidate", "codex", &worker.card_id, json!({}))
-        .await;
-    std::fs::write(lease.path.join("worker.txt"), "delivered\n").unwrap();
-    fx.complete(&worker, &task.id).await;
-    let settled = fx.wait_settled(&task.id).await;
-    candidate_of(settled_result(&settled).0);
-    let first = fx.delivery_row(&task.id).await.unwrap();
-    assert!(fx.candidate_row(&task.id).await.is_some());
-
-    // A hand-made later delivery that failed: the latest row is `failed`, the candidate exists.
-    sqlx::query(
-        "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, card_id, \
-         lease_id, ordinal, operation_key, forge_idempotency_key, predecessor_delivery_id, \
-         request_idempotency_key, reason, created_at_ms, settlement, settled_event_id, \
-         failure_code, failure_reason, retry_allowed, wake_reason) \
-         VALUES ('forged-2', ?1, ?2, ?3, ?4, 2, 'forged-key', 'forged-idem', ?5, NULL, NULL, ?6, \
-         'failed', ?7, 'commit_failed', 'forged failure', 1, 'failed')",
-    )
-    .bind(fx.track())
-    .bind(&task.id)
-    .bind(&worker.card_id)
-    .bind(&lease.lease_id)
-    .bind(&first.delivery_id)
-    .bind(now_ms())
-    .bind(settled.id)
-    .execute(&fx.pool())
-    .await
-    .unwrap();
-    assert_eq!(fx.delivery_count(&task.id).await, 2);
-
-    for (action, key) in [("retry", "req-r"), ("abandon", "req-a")] {
-        let result = fx
-            .delivery_action(action_args(&task, "forged-2", key, action, None))
-            .await;
-        assert_refused(&result, "refused: delivery forged-2 rows are inconsistent");
-        assert!(
-            result
-                .as_ref()
-                .unwrap_err()
-                .message
-                .contains("candidate_with_failed_settlement"),
-            "{result:?}"
-        );
-    }
-    assert_eq!(fx.delivery_count(&task.id).await, 2, "no ordinal 3");
-    assert!(fx.abandonment_row("forged-2").await.is_none());
-    assert_eq!(fx.forge_op_count().await, 1);
-    // The plain candidate (no forged row) refuses with the candidate sentence.
-    sqlx::query("DELETE FROM task_git_deliveries WHERE delivery_id = 'forged-2'")
-        .execute(&fx.pool())
-        .await
-        .unwrap();
-    let result = fx.retry(&task, &first.delivery_id, "req-c", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: attempt already has candidate {}; accept it with calm.task.verdict",
-            first.delivery_id
-        ),
-    );
-    assert_eq!(fx.delivery_count(&task.id).await, 1);
-}
-
-// ---------------------------------------------------------------------------
-// A8b / A8c: the expected delivery must be the latest; a pending delivery refuses.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_refused_when_expected_delivery_is_not_latest() {
-    let fx = fixture().await;
-    let (_, task, _) = fx.hook_failing_task("stale-expected", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let first = fx.delivery_row(&task.id).await.unwrap();
-    // The hook stays: the retry fails too, leaving two failed deliveries.
-    fx.retry(&task, &first.delivery_id, "req-1", None)
-        .await
-        .expect("first retry admitted");
-    let second_settled = fx.wait_settled_nth(&task.id, 2).await;
-    failure_of(settled_result(&second_settled).0);
-    let second = fx.delivery_row(&task.id).await.unwrap();
-    assert_eq!(second.ordinal, 2);
-    assert_eq!(second.settlement.as_deref(), Some("failed"));
-
-    let result = fx.retry(&task, &first.delivery_id, "req-2", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: expected_delivery_id {} is not the latest delivery of attempt {} (latest: {})",
-            first.delivery_id, task.id, second.delivery_id
-        ),
-    );
-    let result = fx.abandon(&task, &first.delivery_id, "req-3", None).await;
-    assert_refused(&result, &second.delivery_id);
-    assert_eq!(fx.delivery_count(&task.id).await, 2, "no ordinal 3");
-    assert!(fx.abandonment_row(&first.delivery_id).await.is_none());
-    assert!(fx.abandonment_row(&second.delivery_id).await.is_none());
-
-    // A stale attempt id is refused too, naming the current one.
-    let mut stale = task.clone();
-    stale.id = "not-the-current-attempt".into();
-    let result = fx.retry(&stale, &second.delivery_id, "req-4", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: expected_attempt_id not-the-current-attempt is not the current attempt of task stale-expected (current: {})",
-            task.id
-        ),
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_refused_while_delivery_pending() {
-    let fx = fixture().await;
-    // No listener, no submission: the row exists and nothing will ever settle it here.
-    fx.dispatcher.abort_event_listener_for_test();
-    let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
-    let task = fx
-        .running_task("still-pending", "codex", &worker.card_id, json!({}))
-        .await;
-    std::fs::write(lease.path.join("worker.txt"), "pending\n").unwrap();
-    fx.report_only(&worker, &task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    assert!(row.settlement.is_none());
-    assert!(lease.path.is_dir(), "every other admission fact holds");
-
-    let result = fx.retry(&task, &row.delivery_id, "req-1", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: delivery {} is pending; wait for task.git_delivery_settled",
-            row.delivery_id
-        ),
-    );
-    let result = fx.abandon(&task, &row.delivery_id, "req-2", None).await;
-    assert_refused(&result, "is pending");
-    assert_eq!(fx.delivery_count(&task.id).await, 1, "no ordinal 2");
-    assert_eq!(fx.forge_op_count().await, 0);
-    assert!(fx.abandonment_row(&row.delivery_id).await.is_none());
-}
-
-// ---------------------------------------------------------------------------
-// Retry-only refusals: `retry_allowed = 0` (the row, not the directory) and a missing workspace.
-// ---------------------------------------------------------------------------
-
-/// A `workspace_missing` settlement (`retry_allowed = 0`); the lease directory is RE-CREATED
-/// before the retry so the directory check cannot stand in for the row check.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_refused_when_not_retryable() {
-    let mut fx = fixture().await;
-    fx.dispatcher.abort_event_listener_for_test();
-    let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
-    let task = fx
-        .running_task("not-retryable", "codex", &worker.card_id, json!({}))
-        .await;
-    std::fs::write(lease.path.join("worker.txt"), "gone\n").unwrap();
-    fx.report_only(&worker, &task.id).await;
-    std::fs::remove_dir_all(&lease.path).unwrap();
-    fx.reboot().await;
-    let settled = fx.wait_settled(&task.id).await;
-    let (code, _, retry_allowed) = failure_of(settled_result(&settled).0);
-    assert_eq!(code, DeliveryFailureCode::WorkspaceMissing);
-    assert!(!retry_allowed);
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    assert_eq!(row.retry_allowed, Some(0));
-    let ops_before = fx.forge_op_count().await;
-
-    std::fs::create_dir_all(&lease.path).unwrap();
-    assert!(lease.path.is_dir(), "the directory check passes again");
-    let result = fx.retry(&task, &row.delivery_id, "req-1", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: delivery {} is not retryable (workspace_missing)",
-            row.delivery_id
-        ),
-    );
-    assert_eq!(fx.delivery_count(&task.id).await, 1, "no ordinal 2");
-    assert_eq!(fx.forge_op_count().await, ops_before);
-    // The way out is offered and still open.
-    let receipt = fx
-        .abandon(&task, &row.delivery_id, "req-2", None)
-        .await
-        .expect("abandon admitted");
-    assert_eq!(receipt["action"], "abandon", "{receipt}");
-}
-
-/// A retryable failure (`commit_failed`, `retry_allowed = 1`) whose workspace was removed after
-/// the settlement: refused by the directory check, no row, no Operation.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_refused_when_workspace_is_gone() {
-    let fx = fixture().await;
-    let (_, task, lease) = fx.hook_failing_task("workspace-gone", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    assert_eq!(row.failure_code.as_deref(), Some("commit_failed"));
-    assert_eq!(row.retry_allowed, Some(1));
-    let ops_before = fx.forge_op_count().await;
-
-    std::fs::remove_dir_all(&lease.path).unwrap();
-    let result = fx.retry(&task, &row.delivery_id, "req-1", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: delivery {} cannot be retried, workspace {} is missing",
-            row.delivery_id,
-            lease.path.display()
-        ),
-    );
-    assert!(
-        fx.delivery_row_at(&task.id, 2).await.is_none(),
-        "no ordinal 2"
-    );
-    assert_eq!(fx.delivery_count(&task.id).await, 1);
-    assert_eq!(fx.forge_op_count().await, ops_before);
-}
-
-// ---------------------------------------------------------------------------
-// Wire codes: malformed arguments are `-32602` and commit nothing; refusals are `-32409`.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn delivery_action_rejects_malformed_arguments() {
-    let fx = fixture().await;
-    let (_, task, _) = fx.hook_failing_task("malformed", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    let ops_before = fx.forge_op_count().await;
-
-    // A present `reason` that is not a string.
-    let mut args = action_args(&task, &row.delivery_id, "req-1", "abandon", None);
-    args["reason"] = json!(123);
-    let result = fx.delivery_action(args).await;
-    assert_invalid_params(&result, "`reason` must be a string");
-    assert!(
-        fx.abandonment_row(&row.delivery_id).await.is_none(),
-        "nothing committed"
-    );
-    assert_eq!(fx.task_columns(&task.id).await.status, TaskStatus::Done);
-
-    // An unknown action; a missing and an empty required string.
-    let result = fx
-        .delivery_action(action_args(&task, &row.delivery_id, "req-2", "skip", None))
-        .await;
-    assert_invalid_params(&result, "unknown action `skip`");
-    let mut args = action_args(&task, &row.delivery_id, "req-3", "retry", None);
-    args.as_object_mut().unwrap().remove("expected_delivery_id");
-    let result = fx.delivery_action(args).await;
-    assert_invalid_params(&result, "missing `expected_delivery_id`");
-    let mut args = action_args(&task, &row.delivery_id, "req-4", "retry", None);
-    args["idempotency_key"] = json!("  ");
-    let result = fx.delivery_action(args).await;
-    assert_invalid_params(&result, "missing `idempotency_key`");
-    assert_eq!(fx.delivery_count(&task.id).await, 1);
-    assert_eq!(fx.forge_op_count().await, ops_before);
-    for key in ["req-1", "req-2", "req-3", "req-4"] {
-        let used: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM task_git_deliveries WHERE request_idempotency_key = ?1",
-        )
-        .bind(key)
-        .fetch_one(&fx.pool())
-        .await
-        .unwrap();
-        assert_eq!(used, 0, "{key} was never persisted");
-    }
-
-    // A state refusal, for contrast: `-32409` and the sentence verbatim.
-    let result = fx.retry(&task, "not-the-latest", "req-5", None).await;
-    assert_refused(&result, "refused: expected_delivery_id not-the-latest");
-    assert!(
-        !result.unwrap_err().message.contains("task_delivery:"),
-        "no handler prefix on a refusal"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// No delivery row: the refusal names why (legacy lease, not reported, ended without delivery).
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn no_delivery_row_refusals_name_the_reason() {
-    let fx = fixture().await;
-    fx.dispatcher.abort_event_listener_for_test();
-
-    // A legacy lease (slice 1: base recorded, no delivery policy): no kernel delivery exists.
-    let legacy = fx.new_worker("legacy", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&legacy.card_id).await;
-    sqlx::query("UPDATE workspace_leases SET delivery_policy = NULL WHERE lease_id = ?1")
-        .bind(&lease.lease_id)
-        .execute(&fx.pool())
-        .await
-        .unwrap();
-    let task = fx
-        .running_task("legacy", "codex", &legacy.card_id, json!({}))
-        .await;
-    let result = fx.retry(&task, "none", "req-1", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: attempt {} has a legacy lease (no kernel delivery); nothing to retry or abandon",
-            task.id
-        ),
-    );
-    fx.release_lease_by_hand(&legacy.card_id).await;
-
-    // A kernel lease whose worker is still running: no report yet.
-    let worker = fx.codex_worker();
-    fx.kernel_lease(&worker.card_id).await;
-    let task = fx
-        .running_task("unreported", "codex", &worker.card_id, json!({}))
-        .await;
-    let result = fx.abandon(&task, "none", "req-2", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: attempt {} has not reported yet; wait for the worker's report",
-            task.id
-        ),
-    );
-
-    // The same attempt ended `failed` without ever reporting (a worker timeout).
-    sqlx::query(
-        "UPDATE tasks SET status = 'failed', status_detail = 'worker-timeout', \
-         finished_at_ms = ?2, updated_at_ms = ?2 WHERE id = ?1",
-    )
-    .bind(&task.id)
-    .bind(now_ms())
-    .execute(&fx.pool())
-    .await
-    .unwrap();
-    let result = fx.retry(&task, "none", "req-3", None).await;
-    assert_refused(
-        &result,
-        &format!(
-            "refused: attempt {} ended without a delivery (worker-timeout); declare a new task",
-            task.id
-        ),
-    );
-    assert_eq!(fx.delivery_count(&task.id).await, 0);
-    assert_eq!(fx.forge_op_count().await, 0);
-}
-
-// ---------------------------------------------------------------------------
-// A8d: replay first.
-// ---------------------------------------------------------------------------
-
-/// A gated task: the gate finishes (the row flips `verifying → done`) between the first call and
-/// the replay, and the replay is the original receipt whole — a retry receipt carries nothing
-/// observed at call time.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_replay_after_success_returns_original_receipt() {
-    let fx = fixture().await;
-    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
-    let (_, task, lease) = fx
-        .hook_failing_task(
-            "replay",
-            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
-        )
-        .await;
-    fx.wait_settled(&task.id).await;
-    assert_eq!(
-        fx.task_columns(&task.id).await.status,
-        TaskStatus::Verifying
-    );
-    let first = fx.delivery_row(&task.id).await.unwrap();
-    remove_pre_commit(&lease);
-    let receipt = fx
-        .retry(&task, &first.delivery_id, "req-1", Some("again"))
-        .await
-        .unwrap();
-    assert_eq!(
-        receipt,
-        json!({"delivery_id": receipt["delivery_id"], "ordinal": 2, "action": "retry"}),
-        "the retry receipt has no task key"
-    );
-    let settled = fx.wait_settled_nth(&task.id, 2).await;
-    candidate_of(settled_result(&settled).0);
-    assert!(fx.candidate_row(&task.id).await.is_some());
-
-    // The gate finishes between the two calls: the row is `done` now, the state `committed`.
-    fx.release_gate(&flag, &task.id).await;
-    wait_gate_result(&fx, &task.id).await;
-    assert_eq!(fx.task_columns(&task.id).await.status, TaskStatus::Done);
-
-    // The same key with the same fingerprint replays anyway, and the receipt is identical.
-    let replay = fx
-        .retry(&task, &first.delivery_id, "req-1", Some("again"))
-        .await
-        .expect("replay is not admission");
-    assert_eq!(replay, receipt, "the original receipt, whole");
-    assert_eq!(fx.delivery_count(&task.id).await, 2, "no third row");
-    assert_eq!(fx.forge_op_count().await, 2);
-    assert_eq!(fx.settled_events_for(&task.id).await.len(), 2);
-}
-
-/// The replay key is Track-scoped: another Track's Planner quoting this Track's attempt, request
-/// key and fingerprint is refused (no current attempt in its Track), never handed this Track's
-/// receipt — for a retry and for an abandon.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn delivery_action_replay_is_track_scoped() {
-    let fx = fixture().await;
-    let other_planner = fx.other_track_planner().await;
-    let (_, task, lease) = fx.hook_failing_task("scoped", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let first = fx.delivery_row(&task.id).await.unwrap();
-    remove_pre_commit(&lease);
-    let receipt = fx
-        .retry(&task, &first.delivery_id, "req-1", Some("mine"))
-        .await
-        .unwrap();
-    fx.wait_settled_nth(&task.id, 2).await;
-    let refused_sentence =
-        "refused: task scoped has no current attempt in this Track; declare a new task";
-
-    // Track B's Planner, Track A's attempt + key + fingerprint: not A's receipt.
-    let foreign = call_tool(
-        &fx.boot,
-        TOOL_TASK_DELIVERY,
-        other_planner.clone(),
-        action_args(&task, &first.delivery_id, "req-1", "retry", Some("mine")),
-    )
-    .await;
-    assert_refused(&foreign, refused_sentence);
-    assert_eq!(fx.delivery_count(&task.id).await, 2, "no third row");
-    // A's own replay still answers.
-    assert_eq!(
-        fx.retry(&task, &first.delivery_id, "req-1", Some("mine"))
-            .await
-            .unwrap(),
-        receipt
-    );
-
-    // The abandonment key on another fixture, the same way.
-    let fx = fixture().await;
-    let other_planner = fx.other_track_planner().await;
-    let (_, task, _) = fx.hook_failing_task("scoped", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    let receipt = fx
-        .abandon(&task, &row.delivery_id, "req-a", Some("mine"))
-        .await
-        .unwrap();
-    assert_eq!(receipt["task_outcome"], "done_unchanged", "{receipt}");
-    let foreign = call_tool(
-        &fx.boot,
-        TOOL_TASK_DELIVERY,
-        other_planner,
-        action_args(&task, &row.delivery_id, "req-a", "abandon", Some("mine")),
-    )
-    .await;
-    assert_refused(&foreign, refused_sentence);
-    assert_eq!(
-        fx.abandon(&task, &row.delivery_id, "req-a", Some("mine"))
-            .await
-            .unwrap(),
-        receipt
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_replay_same_key_different_fingerprint_conflicts() {
-    let fx = fixture().await;
-    let (_, task, lease) = fx.hook_failing_task("fingerprint", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let first = fx.delivery_row(&task.id).await.unwrap();
-    remove_pre_commit(&lease);
-    fx.retry(&task, &first.delivery_id, "req-1", Some("fix"))
-        .await
-        .unwrap();
-    fx.wait_settled_nth(&task.id, 2).await;
-
-    // Same key, different reason / different expected delivery / different action.
-    let second = fx.delivery_row(&task.id).await.unwrap();
-    for args in [
-        action_args(&task, &first.delivery_id, "req-1", "retry", Some("other")),
-        action_args(&task, &first.delivery_id, "req-1", "retry", None),
-        action_args(&task, &second.delivery_id, "req-1", "retry", Some("fix")),
-        action_args(&task, &first.delivery_id, "req-1", "abandon", Some("fix")),
-    ] {
-        let result = fx.delivery_action(args.clone()).await;
-        assert_refused(
-            &result,
-            &format!(
-                "refused: idempotency_key req-1 was already used for attempt {}",
-                task.id
-            ),
-        );
-        let _ = args;
-    }
-    assert_eq!(fx.delivery_count(&task.id).await, 2);
-    assert!(fx.abandonment_row(&first.delivery_id).await.is_none());
-    assert!(fx.abandonment_row(&second.delivery_id).await.is_none());
-}
-
-// ---------------------------------------------------------------------------
-// A9: abandon releases the Track budget; the row flips through its own guard; no wake.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn abandon_frees_track_budget() {
-    let fx = fixture().await;
-    let planner = fx.planner().await;
-    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
-    let (_, first_task, _) = fx
-        .hook_failing_task(
-            "first",
-            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
-        )
-        .await;
-    assert_eq!(
-        current(&fx.boot, "first").await.status,
-        TaskStatus::Verifying
-    );
-    let settled = fx.wait_settled(&first_task.id).await;
-    let (code, _, retry_allowed) = failure_of(settled_result(&settled).0);
-    assert_eq!(code, DeliveryFailureCode::CommitFailed);
-    assert!(retry_allowed);
-    let row = fx.delivery_row(&first_task.id).await.unwrap();
-    wait_observations(&planner, 1).await;
-    fx.assert_no_gate_op(&first_task.id).await;
-
-    // The default budget is 1: a second ready task stays pending behind the `verifying` row.
+    // The default budget is 1 and the failed row no longer holds it: the next task is claimed
+    // (the spawn itself has no adapter here).
     declare(
         &fx.boot,
         json!({"key": "second", "kind": "codex", "goal": "next", "declared_by": PLANNER_DECLARATION_AUTHOR,
@@ -3685,26 +2873,6 @@ async fn abandon_frees_track_budget() {
     fx.scheduler()
         .schedule_track(fx.boot.track_id.clone())
         .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(
-        current(&fx.boot, "second").await.status,
-        TaskStatus::Pending,
-        "budget 1 is held by the gated row"
-    );
-
-    let task_failed_handled = fx.arm_task_failed_barrier(&first_task.id);
-    let receipt = fx
-        .abandon(&first_task, &row.delivery_id, "req-a", Some("hook rejects"))
-        .await
-        .expect("abandon admitted");
-    assert_eq!(
-        receipt,
-        json!({
-            "delivery_id": row.delivery_id, "ordinal": 1, "action": "abandon",
-            "task_outcome": "failed", "task_status": "failed",
-        })
-    );
-    // The budget slot is free: the second task is claimed (the spawn itself has no adapter here).
     let second = tokio::time::timeout(WAIT, async {
         loop {
             let task = current(&fx.boot, "second").await;
@@ -3718,484 +2886,40 @@ async fn abandon_frees_track_budget() {
     .expect("the second task leaves pending");
     assert_eq!(second.status, TaskStatus::Dispatched, "{second:?}");
 
-    let columns = fx.task_columns(&first_task.id).await;
-    assert_eq!(columns.status, TaskStatus::Failed);
-    assert_eq!(columns.status_detail.as_deref(), Some("delivery-abandoned"));
-    assert!(columns.finished_at_ms.is_some());
-    let failed = fx.events_for(TASK_FAILED_KIND, &first_task.id).await;
-    assert_eq!(failed.len(), 1, "{failed:?}");
-    assert!(
-        matches!(
-            &failed[0].actor,
-            calm_server::ids::ActorId::KernelDispatcher
-        ),
-        "{:?}",
-        failed[0].actor
-    );
-    assert!(
-        matches!(&failed[0].event, Event::TaskFailed { reason, .. } if reason == "delivery-abandoned: hook rejects"),
-        "{:?}",
-        failed[0].event
-    );
-    assert_eq!(
-        fx.abandonment_row(&row.delivery_id).await,
-        Some(AbandonmentRowView {
-            delivery_id: row.delivery_id.clone(),
-            producer_attempt_id: first_task.id.clone(),
-            request_idempotency_key: "req-a".into(),
-            reason: Some("hook rejects".into()),
-            task_outcome: "failed".into(),
-            task_status: "failed".into(),
-        })
-    );
-    assert_eq!(
-        fx.delivery_row(&first_task.id)
-            .await
-            .unwrap()
-            .settlement
-            .as_deref(),
-        Some("failed"),
-        "the settlement is not touched"
-    );
-
-    // Zero turns for the abandon: the tool receipt is the answer. The Dispatcher has handled the
-    // `task.failed` (barrier) and the harness ingress is drained before the count is read.
+    // One turn: the settlement. The Dispatcher has handled the `task.failed` (barrier) and the
+    // harness ingress is drained before the count is read.
+    wait_observations(&planner, 1).await;
     wait_task_failed_handled(&task_failed_handled).await;
     let pending = assert_observations_exactly(&planner, 1).await;
     assert!(
-        matches!(&pending[0], Observation::TaskGitDeliverySettled { .. }),
+        matches!(
+            &pending[0],
+            Observation::TaskGitDeliverySettled {
+                result: DeliverySettlement::Failed { .. },
+                ..
+            }
+        ),
         "{pending:?}"
     );
-    // No gate was ever admitted for the failed delivery, so none reports on the row.
-    fx.assert_no_gate_op(&first_task.id).await;
-    assert!(
-        fx.events_for(GATE_RESULT_KIND, &first_task.id)
-            .await
-            .is_empty()
-    );
-    assert_eq!(
-        fx.task_columns(&first_task.id)
-            .await
-            .status_detail
-            .as_deref(),
-        Some("delivery-abandoned")
-    );
-    // Nothing was emitted since the barrier (the discarded verdict appended no event, asserted
-    // above): the drained count is the whole answer.
-    assert_observations_exactly(&planner, 1).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn abandon_flips_verifying_row() {
-    let fx = fixture().await;
-    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
-    let (_, task, _) = fx
-        .hook_failing_task(
-            "flip",
-            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
-        )
-        .await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    assert_eq!(
-        fx.task_columns(&task.id).await.status,
-        TaskStatus::Verifying
-    );
-
-    let receipt = fx
-        .abandon(&task, &row.delivery_id, "req-a", Some("give up"))
-        .await
-        .expect("the verifying row admits the abandon");
-    assert_eq!(receipt["task_outcome"], "failed", "{receipt}");
-    assert_eq!(receipt["task_status"], "failed");
-    let columns = fx.task_columns(&task.id).await;
-    assert_eq!(columns.status, TaskStatus::Failed, "{columns:?}");
-    assert_eq!(columns.status_detail.as_deref(), Some("delivery-abandoned"));
-    assert_eq!(fx.events_for(TASK_FAILED_KIND, &task.id).await.len(), 1);
-    let abandonment = fx.abandonment_row(&row.delivery_id).await.unwrap();
-    assert_eq!(abandonment.task_outcome, "failed");
-    assert_eq!(abandonment.task_status, "failed");
-
-    // Replay: the same key and fingerprint returns the same receipt and writes nothing more.
-    let replay = fx
-        .abandon(&task, &row.delivery_id, "req-a", Some("give up"))
-        .await
-        .unwrap();
-    assert_eq!(replay, receipt);
-    assert_eq!(fx.events_for(TASK_FAILED_KIND, &task.id).await.len(), 1);
-    // A different fingerprint under the same key, and a new key on the abandoned delivery.
-    let result = fx
-        .abandon(&task, &row.delivery_id, "req-a", Some("other"))
-        .await;
-    assert_refused(&result, "refused: idempotency_key req-a was already used");
-    let result = fx.abandon(&task, &row.delivery_id, "req-b", None).await;
-    assert_refused(
-        &result,
-        &format!("refused: delivery {} was abandoned", row.delivery_id),
-    );
-    let result = fx.retry(&task, &row.delivery_id, "req-c", None).await;
-    assert_refused(&result, "was abandoned");
-    assert_eq!(fx.delivery_count(&task.id).await, 1);
-
-    // Read surface.
-    let entry = fx.plan_entry("flip").await;
-    assert_eq!(
-        entry["candidate"]["delivery"],
-        json!({
-            "state": "abandoned", "delivery_id": row.delivery_id, "ordinal": 1,
-            "reason": "give up", "task_outcome": "failed", "task_status": "failed",
-        }),
-        "{entry}"
-    );
-    fx.assert_no_gate_op(&task.id).await;
 }
 
 // ---------------------------------------------------------------------------
-// Abandon writes one `task.failed` and touches no track state.
+// A9d / A6c: Track and Area deletion after a failed delivery; candidate refs go with the Track.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn abandon_broadcasts_its_task_failed() {
-    let fx = fixture().await;
-    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
-    let (_, task, _) = fx
-        .hook_failing_task(
-            "promote",
-            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
-        )
-        .await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    let mut bus = fx.boot.ctx.events.subscribe();
-
-    let receipt = fx
-        .abandon(&task, &row.delivery_id, "req-a", Some("give up"))
-        .await
-        .expect("admitted");
-    assert_eq!(receipt["task_outcome"], "failed", "{receipt}");
-
-    // The one event of the transaction, broadcast with its id; the track row is not touched.
-    let persisted = fx
-        .boot
-        .repo
-        .events_for_track(fx.track(), &[TASK_FAILED_KIND, "track.updated"], None)
-        .await
-        .unwrap();
-    let kinds: Vec<&str> = persisted.iter().map(|row| row.event.kind_tag()).collect();
-    assert_eq!(kinds, vec![TASK_FAILED_KIND], "{persisted:?}");
-    let mut broadcast = Vec::new();
-    while broadcast.is_empty() {
-        let envelope = tokio::time::timeout(WAIT, bus.recv())
-            .await
-            .expect("the abandon's event is broadcast")
-            .unwrap();
-        if [TASK_FAILED_KIND, "track.updated"].contains(&envelope.event.kind_tag()) {
-            broadcast.push((envelope.id, envelope.event.kind_tag()));
-        }
-    }
-    assert_eq!(
-        broadcast,
-        persisted
-            .iter()
-            .map(|row| (row.id, row.event.kind_tag()))
-            .collect::<Vec<_>>(),
-        "broadcast in append order under the persisted ids"
-    );
-    fx.assert_no_gate_op(&task.id).await;
-}
-
-// ---------------------------------------------------------------------------
-// A9b: the gate flipped the row first — `already_terminal`, nothing written to the row.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn abandon_on_terminal_row_reports_already_terminal() {
-    for (name, gate_cmd, expected_status) in [
-        ("gate-passed", "true", TaskStatus::Done),
-        ("gate-failed", "exit 1", TaskStatus::Failed),
-    ] {
-        let fx = fixture().await;
-        let planner = fx.planner().await;
-        let worker = fx.codex_worker();
-        let lease = fx.kernel_lease(&worker.card_id).await;
-        // The commit blocks in the hook until the gate has flipped the row, then fails.
-        let flag = fx.track_root.parent().unwrap().join("commit-may-fail");
-        install_pre_commit(&lease, &hook_waiting_for(&flag, 1));
-        let task = fx
-            .running_task(
-                name,
-                "codex",
-                &worker.card_id,
-                json!({"gate": {"steps": [{"name": "g", "cmd": gate_cmd}]}, "no_gate_reason": null}),
-            )
-            .await;
-        std::fs::write(lease.path.join("worker.txt"), "gated\n").unwrap();
-        fx.complete(&worker, &task.id).await;
-        // Slice 4 admits no gate while the delivery is pending (the decision is pinned by
-        // `gate_is_not_submitted_while_delivery_pending`; this is a state read, the live drive
-        // holds `gate:<task>` while it waits on the held delivery): the terminal row beside a
-        // pending delivery is the D12 (i) window, played by hand with the verdict a slice 2/3
-        // gate would have recorded.
-        assert!(
-            fx.runtime
-                .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{}#g1", task.id))
-                .await
-                .unwrap()
-                .is_none()
-        );
-        sqlx::query(
-            "UPDATE tasks SET status = ?1, status_detail = ?2, gate_attempt = 1, \
-             gate_result_json = ?3, finished_at_ms = ?4 WHERE id = ?5",
-        )
-        .bind(expected_status)
-        .bind((expected_status == TaskStatus::Failed).then_some("gate-red"))
-        .bind(
-            json!({"passed": expected_status == TaskStatus::Done, "log_tail": "", "log_path": "/l", "attempt": 1})
-                .to_string(),
-        )
-        .bind(now_ms())
-        .bind(&task.id)
-        .execute(&fx.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            current(&fx.boot, name).await.status,
-            expected_status,
-            "{name}"
-        );
-        assert!(fx.settled_events_for(&task.id).await.is_empty(), "{name}");
-        std::fs::write(&flag, b"").unwrap();
-        let settled = fx.wait_settled(&task.id).await;
-        failure_of(settled_result(&settled).0);
-        let row = fx.delivery_row(&task.id).await.unwrap();
-        let before = fx.task_columns(&task.id).await;
-        assert_eq!(before.status, expected_status);
-        // One turn so far: the failed settlement (the hand-flipped verdict pushed nothing).
-        wait_observations(&planner, 1).await;
-
-        let receipt = fx
-            .abandon(&task, &row.delivery_id, "req-a", Some("late"))
-            .await
-            .expect("admitted on a terminal row");
-        assert_eq!(
-            receipt["task_outcome"], "already_terminal",
-            "{name}: {receipt}"
-        );
-        assert_eq!(
-            receipt["task_status"],
-            json!(expected_status),
-            "{name}: {receipt}"
-        );
-        assert_eq!(receipt["delivery_id"], row.delivery_id);
-        let abandonment = fx.abandonment_row(&row.delivery_id).await.unwrap();
-        assert_eq!(abandonment.task_outcome, "already_terminal", "{name}");
-        assert_eq!(
-            abandonment.task_status,
-            json!(expected_status).as_str().unwrap(),
-            "{name}"
-        );
-        assert_eq!(
-            fx.task_columns(&task.id).await,
-            before,
-            "{name}: the row is not touched"
-        );
-        assert!(
-            fx.events_for(TASK_FAILED_KIND, &task.id).await.is_empty(),
-            "{name}: no task.failed"
-        );
-        assert!(fx.events_for(GATE_RESULT_KIND, &task.id).await.is_empty());
-        // The replay is the persisted row's receipt, whole.
-        assert_eq!(
-            fx.abandon(&task, &row.delivery_id, "req-a", Some("late"))
-                .await
-                .unwrap(),
-            receipt,
-            "{name}"
-        );
-        // An `already_terminal` abandon appends no event at all (asserted above), so there is no
-        // envelope to barrier on: the one handled turn (the failed settlement) is the count and
-        // this is the timing check that nothing else arrives.
-        assert_observations_settle_at(&planner, 1).await;
-        let entry = fx.plan_entry(name).await;
-        assert_eq!(
-            entry["candidate"]["delivery"]["state"], "abandoned",
-            "{name}: {entry}"
-        );
-        assert_eq!(
-            entry["candidate"]["delivery"]["task_outcome"],
-            "already_terminal"
-        );
-    }
-
-    // The positive case: a row still `verifying` reads `failed`.
-    let fx = fixture().await;
-    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
-    let (_, task, _) = fx
-        .hook_failing_task(
-            "still-verifying",
-            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
-        )
-        .await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    let receipt = fx
-        .abandon(&task, &row.delivery_id, "req-a", None)
-        .await
-        .unwrap();
-    assert_eq!(receipt["task_outcome"], "failed", "{receipt}");
-    assert_eq!(receipt["task_status"], "failed");
-    assert_eq!(fx.task_columns(&task.id).await.status, TaskStatus::Failed);
-    fx.assert_no_gate_op(&task.id).await;
-}
-
-// ---------------------------------------------------------------------------
-// A9c: abandon clears the gate-process triple. Since slice 4 no gate runs beside a failed
-// delivery (admission waits for a candidate), so the triple a slice 2/3 build recorded for a
-// parked gate is set by hand — the D12 (i) window — and the abandon must still clear it.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn abandon_clears_gate_pid_triple() {
-    let fx = fixture().await;
-    let planner = fx.planner().await;
-    let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
-    let (_, task, _) = fx
-        .hook_failing_task(
-            "pid-triple",
-            json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
-        )
-        .await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    // No gate is admitted on the failed delivery; the triple of a pre-slice-4 parked gate is
-    // recorded by hand.
-    fx.assert_no_gate_op(&task.id).await;
-    sqlx::query(
-        "UPDATE tasks SET gate_pid = 4242, gate_pid_starttime = 1, gate_pid_boot_id = 'stale-boot' WHERE id = ?1",
-    )
-    .bind(&task.id)
-    .execute(&fx.pool())
-    .await
-    .unwrap();
-    let before = fx.task_columns(&task.id).await;
-    assert_eq!(before.status, TaskStatus::Verifying);
-    assert!(before.gate_pid_starttime.is_some() && before.gate_pid_boot_id.is_some());
-    assert!(before.finished_at_ms.is_none());
-    wait_observations(&planner, 1).await;
-
-    let task_failed_handled = fx.arm_task_failed_barrier(&task.id);
-    fx.abandon(&task, &row.delivery_id, "req-a", None)
-        .await
-        .expect("admitted");
-    let after = fx.task_columns(&task.id).await;
-    assert_eq!(after.status, TaskStatus::Failed, "{after:?}");
-    assert_eq!(after.status_detail.as_deref(), Some("delivery-abandoned"));
-    assert_eq!(after.gate_pid, None, "{after:?}");
-    assert_eq!(after.gate_pid_starttime, None, "{after:?}");
-    assert_eq!(after.gate_pid_boot_id, None, "{after:?}");
-    assert!(after.finished_at_ms.is_some(), "{after:?}");
-
-    // Still no gate, and no gate result on the abandoned row.
-    fx.assert_no_gate_op(&task.id).await;
-    assert!(
-        fx.events_for(GATE_RESULT_KIND, &task.id).await.is_empty(),
-        "no task.gate_result"
-    );
-    assert_eq!(
-        fx.task_columns(&task.id).await,
-        after,
-        "the row is unchanged"
-    );
-    // Zero turns: the Dispatcher handled the abandon's `task.failed` (barrier), the discarded
-    // verdict appended nothing (asserted above), and the drained ingress holds the one settlement.
-    wait_task_failed_handled(&task_failed_handled).await;
-    assert_observations_exactly(&planner, 1).await;
-
-    // The gate-flip path clears the same triple (A9b's `done` fixture, on the same fixture).
-    let fx = fixture().await;
-    let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
-    let task = fx
-        .running_task(
-            "gate-clears",
-            "codex",
-            &worker.card_id,
-            json!({"gate": {"steps": [{"name": "g", "cmd": "true"}]}, "no_gate_reason": null}),
-        )
-        .await;
-    std::fs::write(lease.path.join("worker.txt"), "gated\n").unwrap();
-    fx.complete(&worker, &task.id).await;
-    wait_gate_result(&fx, &task.id).await;
-    let columns = fx.task_columns(&task.id).await;
-    assert_eq!(columns.status, TaskStatus::Done);
-    assert!(
-        columns.gate_pid.is_none()
-            && columns.gate_pid_starttime.is_none()
-            && columns.gate_pid_boot_id.is_none(),
-        "{columns:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Retry admission reads the delivery row, not the result file.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_admission_reads_delivery_row_not_result_file() {
-    let fx = fixture().await;
-    let (_, task, lease) = fx.hook_failing_task("no-result-file", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    assert_eq!(row.retry_allowed, Some(1));
-    // The wrapper's files are gone before the retry is asked for.
-    let op = fx.wait_forge_op(&task.id).await;
-    let result_path = PathBuf::from(op.payload["result_path"].as_str().unwrap());
-    for suffix in ["", ".code", ".stdout"] {
-        let mut path = result_path.clone().into_os_string();
-        path.push(suffix);
-        let _ = std::fs::remove_file(path);
-    }
-    assert_eq!(result_code(&fx, &task.id).await, None);
-    // And the settlement event is gone too: only the row can say `retry_allowed`.
-    sqlx::query("DELETE FROM events WHERE kind = ?1")
-        .bind(SETTLED_KIND)
-        .execute(&fx.pool())
-        .await
-        .unwrap();
-    assert!(fx.settled_events_for(&task.id).await.is_empty());
-
-    remove_pre_commit(&lease);
-    let receipt = fx
-        .retry(&task, &row.delivery_id, "req-1", None)
-        .await
-        .expect("admitted from the row alone");
-    assert_eq!(receipt["ordinal"], 2, "{receipt}");
-    let settled = fx.wait_settled(&task.id).await;
-    candidate_of(settled_result(&settled).0);
-    assert!(fx.candidate_row(&task.id).await.is_some());
-}
-
-// ---------------------------------------------------------------------------
-// A9d / A6c: Track and Area deletion after an abandonment; candidate refs go with the Track.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn track_and_area_delete_after_abandonment() {
+async fn track_and_area_delete_after_a_failed_delivery() {
     for delete_area in [false, true] {
         let fx = fixture().await;
         let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
         let (_, task, lease) = fx
             .hook_failing_task(
-                "abandon-then-delete",
+                "fail-then-delete",
                 json!({"gate": gate_waiting_for(&flag), "no_gate_reason": null}),
             )
             .await;
         fx.wait_settled(&task.id).await;
-        let row = fx.delivery_row(&task.id).await.unwrap();
-        fx.abandon(&task, &row.delivery_id, "req-a", Some("bye"))
-            .await
-            .unwrap();
-        assert!(fx.abandonment_row(&row.delivery_id).await.is_some());
+        assert_eq!(fx.task_columns(&task.id).await.status, TaskStatus::Failed);
         fx.assert_no_gate_op(&task.id).await;
         // A second worker delivers a candidate on the same Track: its ref must go with the Track.
         remove_pre_commit(&lease);
@@ -4209,11 +2933,7 @@ async fn track_and_area_delete_after_abandonment() {
         fx.complete(&other, &other_task.id).await;
         candidate_of(settled_result(&fx.wait_settled(&other_task.id).await).0);
         assert_eq!(candidate_refs(&lease.git_common_dir, fx.track()).len(), 1);
-        for table in [
-            "task_git_deliveries",
-            "task_git_delivery_abandonments",
-            "task_candidates",
-        ] {
+        for table in ["task_git_deliveries", "task_candidates"] {
             assert!(fx.table_count(table).await > 0, "{table}");
         }
         let events_before: i64 =
@@ -4231,13 +2951,8 @@ async fn track_and_area_delete_after_abandonment() {
         };
         let (status, body) = fx.http_delete(&path).await;
         assert_eq!(status, axum::http::StatusCode::NO_CONTENT, "{path}: {body}");
-        // (`task_git_candidate_decisions` is slice 6; the three slice-2/3 tables and the leases.)
-        for table in [
-            "task_git_deliveries",
-            "task_git_delivery_abandonments",
-            "task_candidates",
-            "workspace_leases",
-        ] {
+        // The two delivery tables and the leases.
+        for table in ["task_git_deliveries", "task_candidates", "workspace_leases"] {
             assert_eq!(fx.table_count(table).await, 0, "{path}: {table}");
         }
         let events_after: i64 =
@@ -4299,392 +3014,4 @@ async fn candidate_refs_are_deleted_with_the_track() {
     );
     assert_eq!(ref_target(&main_git, &candidate.ref_name), None);
     assert_eq!(fx.table_count("task_candidates").await, 0);
-}
-
-// ---------------------------------------------------------------------------
-// A25b positive: `git merge --abort`, then a retry succeeds.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_after_merge_abort_succeeds() {
-    let fx = fixture().await;
-    let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
-    let task = fx
-        .running_task("merge-abort", "codex", &worker.card_id, json!({}))
-        .await;
-    let slice = fx.worker_branch();
-    git(&lease.path, &["checkout", "-q", "-b", "other"]);
-    commit_file(&lease.path, "README.md", "other\n", "other");
-    git(&lease.path, &["checkout", "-q", &slice]);
-    let mine = commit_file(&lease.path, "README.md", "mine\n", "mine");
-    assert!(
-        !git_output(&lease.path, &["merge", "--no-commit", "other"])
-            .status
-            .success()
-    );
-    fx.complete(&worker, &task.id).await;
-    let settled = fx.wait_settled(&task.id).await;
-    let (code, reason, retry_allowed) = failure_of(settled_result(&settled).0);
-    assert_eq!(code, DeliveryFailureCode::ProvenanceMismatch);
-    assert!(reason.starts_with(&failure_sentence("15")), "{reason}");
-    assert!(retry_allowed);
-    let first = fx.delivery_row(&task.id).await.unwrap();
-
-    // The Planner (through a terminal task, in production) aborts the merge, then retries.
-    git(&lease.path, &["merge", "--abort"]);
-    assert_eq!(git(&lease.path, &["rev-parse", "HEAD"]), mine);
-    assert_eq!(git(&lease.path, &["status", "--porcelain"]), "");
-    let receipt = fx
-        .retry(&task, &first.delivery_id, "req-1", Some("merge aborted"))
-        .await
-        .expect("admitted");
-    let settled = fx.wait_settled_nth(&task.id, 2).await;
-    let (candidate_id, commit_sha, _, base_is_ancestor) = candidate_of(settled_result(&settled).0);
-    assert_eq!(candidate_id, receipt["delivery_id"]);
-    assert_eq!(commit_sha, mine, "the branch tip as it stands now");
-    assert!(base_is_ancestor);
-    let candidate = fx.candidate_row(&task.id).await.unwrap();
-    assert_eq!(candidate.commit_sha, mine);
-    assert_eq!(
-        ref_target(&lease.git_common_dir, &candidate.ref_name).as_deref(),
-        Some(mine.as_str())
-    );
-}
-
-// ---------------------------------------------------------------------------
-// A23b first fixture (slice 4 shape): the delivery fails, the retry succeeds, and only then is
-// the gate admitted — two turns over the whole lifecycle: the `failed` settlement and the
-// gate result; the retry's `candidate` settlement is `deferred_to_gate` and silent.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retry_then_gate_wakes_twice() {
-    let fx = fixture().await;
-    let planner = fx.planner().await;
-    let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
-    let flag = fx.track_root.parent().unwrap().join("commit-may-fail");
-    install_pre_commit(&lease, &hook_waiting_for(&flag, 1));
-    let task = fx
-        .running_task(
-            "gate-then-retry",
-            "codex",
-            &worker.card_id,
-            json!({"gate": {"steps": [{"name": "t", "cmd": "true"}]}, "no_gate_reason": null}),
-        )
-        .await;
-    std::fs::write(lease.path.join("worker.txt"), "gated\n").unwrap();
-
-    fx.complete(&worker, &task.id).await;
-    // No gate while the delivery is held: admission waits for settlement (the decision is
-    // pinned by `gate_is_not_submitted_while_delivery_pending`; here the harness ingress is
-    // drained and the absence read).
-    assert_observations_exactly(&planner, 0).await;
-    assert!(
-        fx.runtime
-            .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{}#g1", task.id))
-            .await
-            .unwrap()
-            .is_none()
-    );
-    // Turn 1: the delivery fails; the gate is not admitted on a failed delivery.
-    std::fs::write(&flag, b"").unwrap();
-    let failed = fx.wait_settled(&task.id).await;
-    failure_of(settled_result(&failed).0);
-    let first = fx.delivery_row(&task.id).await.unwrap();
-    let pending = wait_observations(&planner, 1).await;
-    assert!(
-        matches!(
-            &pending[0],
-            Observation::TaskGitDeliverySettled {
-                result: DeliverySettlement::Failed { .. },
-                ..
-            }
-        ),
-        "{pending:?}"
-    );
-    assert_eq!(
-        current(&fx.boot, "gate-then-retry").await.status,
-        TaskStatus::Verifying
-    );
-    assert!(
-        fx.runtime
-            .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{}#g1", task.id))
-            .await
-            .unwrap()
-            .is_none(),
-        "no gate on a failed delivery"
-    );
-    // The retry settles as a candidate on the still-verifying row: deferred to the gate, silent.
-    remove_pre_commit(&lease);
-    let receipt = fx
-        .retry(&task, &first.delivery_id, "req-1", None)
-        .await
-        .expect("admitted");
-    assert_eq!(
-        receipt,
-        json!({"delivery_id": receipt["delivery_id"], "ordinal": 2, "action": "retry"}),
-        "{receipt}"
-    );
-    let settled = fx.wait_settled_nth(&task.id, 2).await;
-    let (result, wake_reason) = settled_result(&settled);
-    let (candidate_id, ..) = candidate_of(result);
-    assert_eq!(wake_reason, DeliveryWakeReason::DeferredToGate);
-    assert_eq!(
-        fx.delivery_row(&task.id)
-            .await
-            .unwrap()
-            .wake_reason
-            .as_deref(),
-        Some("deferred_to_gate")
-    );
-    // Turn 2: the gate, admitted after the retry's candidate, verifies that candidate.
-    let gate = wait_gate_result(&fx, &task.id).await;
-    let Event::TaskGateResult { passed, target, .. } = &gate.event else {
-        panic!("{gate:?}");
-    };
-    assert!(passed);
-    assert!(
-        matches!(target, Some(calm_types::verify_target::VerifyTarget::Candidate { candidate_id: id, .. }) if id == candidate_id),
-        "{target:?}"
-    );
-    let pending = wait_observations(&planner, 2).await;
-    assert!(
-        matches!(
-            &pending[1],
-            Observation::TaskGateResult { passed: true, .. }
-        ),
-        "{pending:?}"
-    );
-    // The gate result is handled (its observation is the second turn); the drained ingress
-    // holds exactly the two.
-    assert_observations_exactly(&planner, 2).await;
-    assert_eq!(fx.events_for(GATE_RESULT_KIND, &task.id).await.len(), 1);
-    assert_eq!(
-        current(&fx.boot, "gate-then-retry").await.status,
-        TaskStatus::Done
-    );
-}
-
-// ---------------------------------------------------------------------------
-// After a retry the latest row is `ordinal 2`: a repeated `task.complete` resubmits it under
-// its own key and the runtime dedups.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeated_completion_after_retry_resubmits_latest_row_idempotently() {
-    let fx = fixture().await;
-    let (worker, task, lease) = fx.hook_failing_task("repeat-complete", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let first = fx.delivery_row(&task.id).await.unwrap();
-    remove_pre_commit(&lease);
-    fx.retry(&task, &first.delivery_id, "req-1", None)
-        .await
-        .unwrap();
-    fx.wait_settled_nth(&task.id, 2).await;
-    let second = fx.delivery_row(&task.id).await.unwrap();
-    assert_eq!(second.ordinal, 2);
-    assert_eq!(fx.forge_op_count().await, 2);
-
-    // REPEATED: the handler reads the latest row (ordinal 2) and resubmits under its key.
-    fx.complete(&worker, &task.id).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(
-        fx.forge_op_count().await,
-        2,
-        "the runtime dedups the same key"
-    );
-    assert_eq!(fx.delivery_count(&task.id).await, 2);
-    assert_eq!(fx.settled_events_for(&task.id).await.len(), 2);
-    let (key, idem): (String, String) = sqlx::query_as(
-        "SELECT operation_key, idempotency_key FROM operations WHERE kind = ?1 ORDER BY created_at_ms DESC, id DESC LIMIT 1",
-    )
-    .bind(FORGE_ACTION_KIND)
-    .fetch_one(&fx.pool())
-    .await
-    .unwrap();
-    assert_eq!(key, second.operation_key);
-    assert_eq!(idem, second.forge_idempotency_key);
-    assert_eq!(fx.delivery_row(&task.id).await.unwrap(), second);
-}
-
-// ---------------------------------------------------------------------------
-// The failed wake names the decision; the read surface reads the abandonment.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn failed_wake_text_names_the_delivery_action() {
-    let fx = fixture().await;
-    let planner = fx.planner().await;
-    let (_, task, _) = fx.hook_failing_task("wake-decide", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    let pending = wait_observations(&planner, 1).await;
-    let Observation::TaskGitDeliverySettled { delivery_id, .. } = &pending[0] else {
-        panic!("{pending:?}");
-    };
-    assert_eq!(delivery_id.as_deref(), Some(row.delivery_id.as_str()));
-    let text = pending[0].to_turn_text();
-    assert!(text.contains("Decide: calm.task.delivery{"), "{text}");
-    assert!(text.contains("action:\"retry\"|\"abandon\""), "{text}");
-    assert!(
-        text.contains(&format!("expected_delivery_id:\"{}\"", row.delivery_id)),
-        "{text}"
-    );
-    assert!(
-        text.contains(&format!("runs/{}.md. Decide:", task.id)),
-        "the decision follows the worker-output pointer: {text}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn plan_list_reads_abandoned_delivery() {
-    let fx = fixture().await;
-    let (_, task, _) = fx.hook_failing_task("read-abandoned", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    let before = fx.plan_entry("read-abandoned").await;
-    assert_eq!(
-        before["candidate"]["delivery"]["state"], "failed",
-        "{before}"
-    );
-    assert_eq!(before["candidate"]["delivery"]["ordinal"], 1);
-    let before_summary = fx.plan_summary_entry("read-abandoned").await;
-    assert_eq!(
-        before_summary["candidate"]["delivery"]["ordinal"], 1,
-        "{before_summary}"
-    );
-
-    // Ungated: the `done` row is left alone.
-    let receipt = fx
-        .abandon(&task, &row.delivery_id, "req-a", Some("not worth it"))
-        .await
-        .unwrap();
-    assert_eq!(
-        receipt,
-        json!({
-            "delivery_id": row.delivery_id, "ordinal": 1, "action": "abandon",
-            "task_outcome": "done_unchanged", "task_status": "done",
-        })
-    );
-    assert_eq!(
-        current(&fx.boot, "read-abandoned").await.status,
-        TaskStatus::Done
-    );
-    assert!(fx.events_for(TASK_FAILED_KIND, &task.id).await.is_empty());
-    let entry = fx.plan_entry("read-abandoned").await;
-    assert_eq!(entry["candidate"]["binding"], "bound", "{entry}");
-    assert_eq!(
-        entry["candidate"]["delivery"],
-        json!({
-            "state": "abandoned", "delivery_id": row.delivery_id, "ordinal": 1,
-            "reason": "not worth it", "task_outcome": "done_unchanged", "task_status": "done",
-        }),
-        "{entry}"
-    );
-    let summary = fx.plan_summary_entry("read-abandoned").await;
-    assert_eq!(
-        summary["candidate"]["delivery"],
-        json!({
-            "state": "abandoned", "delivery_id": row.delivery_id, "ordinal": 1,
-            "task_outcome": "done_unchanged", "task_status": "done",
-        }),
-        "the summary keeps the decision facts, not the reason: {summary}"
-    );
-    // Without a reason the key is absent, not null.
-    let fx = fixture().await;
-    let (_, task, _) = fx.hook_failing_task("no-reason", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    fx.abandon(&task, &row.delivery_id, "req-a", None)
-        .await
-        .unwrap();
-    let entry = fx.plan_entry("no-reason").await;
-    assert!(
-        entry["candidate"]["delivery"].get("reason").is_none(),
-        "{entry}"
-    );
-    assert_eq!(entry["candidate"]["delivery"]["state"], "abandoned");
-}
-
-// ---------------------------------------------------------------------------
-// G11: the closed-Track rule is `calm.task.verdict`'s — a closed Track admits both.
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn delivery_action_on_done_track_follows_verdict_rule() {
-    let fx = fixture().await;
-    let (_, task, lease) = fx.hook_failing_task("done-track", json!({})).await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    fx.boot
-        .repo
-        .track_update(
-            fx.track(),
-            calm_server::model::TrackPatch {
-                closed: Some(true),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert!(
-        !fx.boot
-            .repo
-            .track_get(fx.track())
-            .await
-            .unwrap()
-            .unwrap()
-            .is_open()
-    );
-
-    // The rule as verified: `calm.task.verdict` consults no open state on a closed Track.
-    call_tool(
-        &fx.boot,
-        "calm.task.verdict",
-        planner_identity(&fx.boot),
-        json!({"idempotency_key": task.id, "status": "rejected", "reason": "late", "message": "verdict on a Done Track"}),
-    )
-    .await
-    .expect("calm.task.verdict is admitted on a Done Track");
-    // So is `calm.task.delivery`, both actions.
-    remove_pre_commit(&lease);
-    let receipt = fx
-        .retry(&task, &row.delivery_id, "req-1", None)
-        .await
-        .expect("retry admitted on a Done Track");
-    assert_eq!(receipt["ordinal"], 2, "{receipt}");
-    let settled = fx.wait_settled_nth(&task.id, 2).await;
-    candidate_of(settled_result(&settled).0);
-    let fx2 = fixture().await;
-    let (_, task2, _) = fx2.hook_failing_task("done-track-abandon", json!({})).await;
-    fx2.wait_settled(&task2.id).await;
-    let row2 = fx2.delivery_row(&task2.id).await.unwrap();
-    fx2.boot
-        .repo
-        .track_update(
-            fx2.track(),
-            calm_server::model::TrackPatch {
-                closed: Some(true),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    let receipt = fx2
-        .abandon(&task2, &row2.delivery_id, "req-1", None)
-        .await
-        .expect("abandon admitted on a Done Track");
-    assert_eq!(receipt["task_outcome"], "done_unchanged", "{receipt}");
-    assert!(
-        !fx2.boot
-            .repo
-            .track_get(fx2.track())
-            .await
-            .unwrap()
-            .unwrap()
-            .is_open(),
-        "the action does not reopen the track"
-    );
 }

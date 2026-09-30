@@ -11,5 +11,5 @@
 15	The worktree has an operation in progress (a merge, cherry-pick, revert, rebase or am, or unmerged index entries — evidence below: the unmerged paths, or the pseudo-ref or state directory git left, e.g. `REBASE_HEAD` / `rebase-apply`); nothing was staged or committed. Finish or abort it first.
 git	git exited with status {code} before a candidate ref was pinned (a hook, index.lock, disk or permission failure); no candidate exists for this delivery.
 no_result	The delivery action ended without a result file and the probe found no candidate ref; no candidate exists for this delivery.
-workspace_missing	The lease directory no longer exists; this delivery cannot be retried. Abandon it or declare a new task.
-unresolved	The kernel cannot prove what happened to this delivery (an infrastructure failure, a timeout or an unknown probe verdict). A retry runs the script's own checks again.
+workspace_missing	The lease directory no longer exists.
+unresolved	The kernel cannot prove what happened to this delivery (an infrastructure failure, a timeout or an unknown probe verdict).

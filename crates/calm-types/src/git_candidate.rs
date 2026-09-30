@@ -22,7 +22,8 @@ pub enum DeliverySettlement {
         base_is_ancestor: bool,
     },
     /// No candidate exists for this delivery. `code` is the kernel's classification, `reason` the
-    /// evidence line written on the delivery row, `retry_allowed` whether a retry is admissible.
+    /// evidence line written on the delivery row. `retry_allowed` copies the row column the 0113
+    /// CHECK requires; nothing retries a delivery since #1893 S6.
     Failed {
         code: DeliveryFailureCode,
         reason: String,
@@ -35,14 +36,14 @@ pub enum DeliverySettlement {
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum DeliveryFailureCode {
-    /// The lease directory no longer exists; never retryable.
+    /// The lease directory no longer exists.
     WorkspaceMissing,
     /// The worktree is not the registered lease worktree, HEAD left the slice branch, or an
-    /// operation is in progress; retryable once the Planner repairs the worktree.
+    /// operation is in progress.
     ProvenanceMismatch,
-    /// The script exited before pinning a ref (hook, lock, disk, unreadable base); retryable.
+    /// The script exited before pinning a ref (hook, lock, disk, unreadable base).
     CommitFailed,
-    /// The kernel cannot prove what happened (infra class, timeout, probe unknown); retryable.
+    /// The kernel cannot prove what happened (infra class, timeout, probe unknown).
     Unresolved,
 }
 

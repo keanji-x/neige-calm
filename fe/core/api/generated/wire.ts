@@ -310,7 +310,7 @@ export type MobileStatus = { provider: MobileProvider, tailnet: TailnetStatus | 
  * The delivery state the gate found instead of a candidate. Each variant carries only facts
  * that exist: no `candidate_id` / `commit_sha` is minted for a delivery that produced none.
  */
-export type NoCandidateReason = { "kind": "delivery_pending", delivery_id: string, } | { "kind": "delivery_failed", delivery_id: string, } | { "kind": "delivery_abandoned", delivery_id: string, } | { "kind": "no_delivery_row" };
+export type NoCandidateReason = { "kind": "delivery_pending", delivery_id: string, } | { "kind": "delivery_failed", delivery_id: string, } | { "kind": "no_delivery_row" };
 
 export type Overlay = { id: string, plugin_id: string, 
 /**

@@ -1022,12 +1022,6 @@ fn turn_text_names_target_mismatch() {
             },
             "delivery del-1 is failed",
         ),
-        (
-            NoCandidateReason::DeliveryAbandoned {
-                delivery_id: "del-1".into(),
-            },
-            "delivery del-1 is abandoned",
-        ),
         (NoCandidateReason::NoDeliveryRow, "no delivery row"),
     ] {
         let no_candidate = text(&event(
@@ -3147,18 +3141,8 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     );
     assert!(
         text.contains(&format!(
-            "read the worker output at runs/{task_id}.md. Decide: "
+            "read the worker output at runs/{task_id}.md. No candidate will come: "
         )),
-        "{text}"
-    );
-    // Slice 3: the decision clause names the delivery the event carried; a retryable failure
-    // states G4 with it (the retry delivers the branch tip as it stands now).
-    assert!(
-        text.ends_with(
-            "Decide: calm.task.delivery{action:\"retry\"|\"abandon\", expected_delivery_id:\"delivery-2\"}. \
-             Retry delivers the branch tip as it stands now; commits and files added after the \
-             base by anyone are included."
-        ),
         "{text}"
     );
 
@@ -3202,18 +3186,11 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     assert!(!text.contains("Files retained at"), "{text}");
     assert!(
         text.contains(&format!(
-            "absent at settlement.\nRead the worker output at runs/{task_id}.md. Decide: "
+            "absent at settlement.\nRead the worker output at runs/{task_id}.md. No candidate will \
+             come: "
         )),
         "{text}"
     );
-    // `retry_allowed: false`: only `abandon` is offered.
-    assert!(
-        text.ends_with(
-            "Decide: calm.task.delivery{action:\"abandon\", expected_delivery_id:\"delivery-3\"}."
-        ),
-        "{text}"
-    );
-    assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
 
     // No tasks row → no observation (the same outcome as the other row-backed settlements).
     let orphan = git_delivery_settled_event("no-such-attempt", DeliveryWakeReason::Failed);
@@ -3232,11 +3209,10 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     );
 }
 
-/// Slice 3: the failed wake sentence names the decision — `retry`|`abandon` when the row admits
-/// a retry, `abandon` alone when it does not (`workspace_missing`) — and the `delivery_id` the
-/// decision must quote. An observation persisted before `delivery_id` existed names no decision.
+/// #1893 S6: the failed wake sentence offers no decision tool — no candidate will come, a gated
+/// task failed with the delivery, and another round is a new task — whatever the failure code.
 #[tokio::test]
-async fn failed_wake_text_names_the_delivery_action() {
+async fn failed_wake_text_offers_no_delivery_decision() {
     use crate::git_candidate::delivery::{classify_failure, unresolved_failure};
     use crate::operation::forge_action_adapter::ForgeActionResultFile;
     let (repo, _) = planner_push_delivery_fixture().await;
@@ -3258,70 +3234,30 @@ async fn failed_wake_text_names_the_delivery_action() {
                 wake_reason: DeliveryWakeReason::Failed,
             }
         };
+    const TAIL: &str = "No candidate will come: a gated task failed with it (delivery-failed). \
+                        Declare a new task for another round.";
 
-    let observation = resolve_harness_observation(
-        &repo,
-        &track,
-        &failed(
-            "d-retryable",
-            DeliveryFailureCode::CommitFailed,
-            "hook.",
-            true,
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(
-        matches!(&observation, HarnessObservation::TaskGitDeliverySettled { delivery_id: Some(id), .. } if id == "d-retryable"),
-        "{observation:?}"
-    );
-    let text = observation.to_turn_text();
-    assert!(text.contains("Decide: calm.task.delivery{"), "{text}");
-    assert!(text.contains("action:\"retry\"|\"abandon\""), "{text}");
-    assert!(
-        text.contains("expected_delivery_id:\"d-retryable\""),
-        "{text}"
-    );
-    // G4 rides with the retry offer, after the decision sentence.
-    assert!(
-        text.ends_with(
-            "expected_delivery_id:\"d-retryable\"}. Retry delivers the branch tip as it stands \
-             now; commits and files added after the base by anyone are included."
-        ),
-        "{text}"
-    );
-
-    let text = resolve_harness_observation(
-        &repo,
-        &track,
-        &failed(
-            "d-gone",
-            DeliveryFailureCode::WorkspaceMissing,
-            "hook.",
-            false,
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap()
-    .to_turn_text();
-    assert!(text.contains("Decide: calm.task.delivery{"), "{text}");
-    assert!(text.contains("action:\"abandon\""), "{text}");
-    // No retry offer, no G4 clause (the sentence would say "Retry").
-    assert!(!text.to_ascii_lowercase().contains("retry"), "{text}");
-    assert!(
-        text.ends_with("expected_delivery_id:\"d-gone\"}."),
-        "{text}"
-    );
+    for (id, code, retry_allowed) in [
+        ("d-commit", DeliveryFailureCode::CommitFailed, true),
+        ("d-gone", DeliveryFailureCode::WorkspaceMissing, false),
+    ] {
+        let text =
+            resolve_harness_observation(&repo, &track, &failed(id, code, "hook.", retry_allowed))
+                .await
+                .unwrap()
+                .unwrap()
+                .to_turn_text();
+        assert!(text.ends_with(TAIL), "{text}");
+        assert!(!text.contains("calm.task.delivery"), "{text}");
+        assert!(!text.contains(id), "no delivery id to quote: {text}");
+        assert!(!text.to_ascii_lowercase().contains("retr"), "{text}");
+    }
 
     // The production reasons end with their own period and the renderer adds none: no `..` in
     // the wake text for a code-11 reason (the fixed sentence alone) or an `unresolved` one (the
     // sentence plus the kernel's detail line, which `unresolved_failure` terminates). A code-10
     // reason ends with the script's evidence line, copied without a period: the retained/Read
     // clause starts on its own line after every reason, so the evidence never runs on into it.
-    // G4 appears exactly once, after the decision sentence — the fixed sentences no longer
-    // carry it.
     let code_11 = ForgeActionResultFile {
         exit_code: 11,
         stdout: String::new(),
@@ -3365,56 +3301,27 @@ async fn failed_wake_text_names_the_delivery_action() {
             text.contains(&format!("{reason}\nFiles retained at ")),
             "{text}"
         );
-        assert_eq!(text.matches("Retry delivers").count(), 1, "{text}");
+        assert!(text.ends_with(TAIL), "{text}");
     }
     assert!(
         unresolved_reason.ends_with("reported commit abc123."),
         "{unresolved_reason}"
     );
-
-    // Pre-slice-3 snapshot shape: no `delivery_id`, no decision clause, the rest intact.
-    let legacy = HarnessObservation::TaskGitDeliverySettled {
-        key: "deliver".into(),
-        attempt_id: "delivery-source-attempt".into(),
-        result: DeliverySettlement::Failed {
-            code: DeliveryFailureCode::CommitFailed,
-            reason: "hook.".into(),
-            retry_allowed: true,
-        },
-        retained_path: None,
-        delivery_id: None,
-    };
-    let text = legacy.to_turn_text();
-    assert!(!text.contains("calm.task.delivery"), "{text}");
-    assert!(
-        text.ends_with("Read the worker output at runs/delivery-source-attempt.md."),
-        "{text}"
-    );
-    // A snapshot written by slice 2 has no `delivery_id` key at all; it decodes to `None`.
-    let mut wire = serde_json::to_value(&legacy).unwrap();
-    assert!(
-        wire.as_object_mut()
-            .unwrap()
-            .remove("delivery_id")
-            .is_some()
-    );
-    let decoded: HarnessObservation = serde_json::from_value(wire).unwrap();
-    assert_eq!(decoded, legacy);
 }
 
-/// A9 / slice 3: the `task.failed` that `calm.task.delivery{abandon}` appends for a gated row
-/// (`status_detail = delivery-abandoned`, with or without a reason tail) is not a Planner wake —
-/// the tool receipt is the answer. `delivery-abandoned` is not in the pre-gate class table, so
-/// the gated `task.failed` rule suppresses it; adding it there would push it.
+/// #1893 S6: the `task.failed` a failed delivery settlement appends for a gated row
+/// (`status_detail = delivery-failed`, with or without a reason tail) is not a Planner wake —
+/// the settlement's own wake is. `delivery-failed` is not in the pre-gate class table, so the
+/// gated `task.failed` rule suppresses it; adding it there would push it.
 #[tokio::test]
-async fn abandon_task_failed_is_not_a_wake() {
+async fn delivery_failed_task_failed_is_not_a_wake() {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .expect("in-memory sqlite");
-    let mut abandoned = crate::model::Task {
-        id: "w:abandoned".into(),
+    let mut delivery_failed = crate::model::Task {
+        id: "w:delivery_failed".into(),
         track_id: "w".into(),
-        key: "abandoned".into(),
+        key: "delivery_failed".into(),
         kind: crate::model::TaskKind::Codex,
         goal: "g".into(),
         context_json: "null".into(),
@@ -3424,7 +3331,7 @@ async fn abandon_task_failed_is_not_a_wake() {
         priority: 0,
         gate_json: Some("{\"steps\":[{\"name\":\"t\",\"cmd\":\"true\"}]}".to_string()),
         status: crate::model::TaskStatus::Failed,
-        status_detail: Some(crate::db::sqlite::TASK_STATUS_DETAIL_DELIVERY_ABANDONED.into()),
+        status_detail: Some(crate::db::sqlite::TASK_STATUS_DETAIL_DELIVERY_FAILED.into()),
         worker_card_id: None,
         gate_result_json: None,
         gate_attempt: 1,
@@ -3439,17 +3346,17 @@ async fn abandon_task_failed_is_not_a_wake() {
         updated_at_ms: 1,
         finished_at_ms: Some(2),
     };
-    let mut with_reason = abandoned.clone();
-    with_reason.id = "w:abandoned-reason".into();
-    with_reason.key = "abandoned-reason".into();
+    let mut with_reason = delivery_failed.clone();
+    with_reason.id = "w:delivery_failed-reason".into();
+    with_reason.key = "delivery_failed-reason".into();
     with_reason.status_detail = Some(crate::db::sqlite::status_detail_with_reason(
-        crate::db::sqlite::TASK_STATUS_DETAIL_DELIVERY_ABANDONED,
+        crate::db::sqlite::TASK_STATUS_DETAIL_DELIVERY_FAILED,
         "hook keeps rejecting the commit",
     ));
-    abandoned.status_detail = Some("delivery-abandoned".into());
+    delivery_failed.status_detail = Some("delivery-failed".into());
     crate::db::write_in_tx_typed(&repo, move |tx| {
         Box::pin(async move {
-            crate::test_support::insert_task_tx(tx, &abandoned).await?;
+            crate::test_support::insert_task_tx(tx, &delivery_failed).await?;
             crate::test_support::insert_task_tx(tx, &with_reason).await?;
             Ok(())
         })
@@ -3462,21 +3369,21 @@ async fn abandon_task_failed_is_not_a_wake() {
         details: None,
         agent_message: None,
     };
-    let event = failed("abandoned", "delivery-abandoned");
+    let event = failed("delivery_failed", "delivery-failed");
     assert!(
         event_warrants_planner_push_with_role(&event, &ActorId::KernelDispatcher, |_| None),
         "absent the deferral rule the kernel-authored task.failed would be pushed"
     );
     assert!(
         is_deferred_self_report(&repo, &event).await,
-        "the abandon's task.failed is suppressed: the tool receipt already answered the Planner"
+        "the settlement's task.failed is suppressed: the settlement already woke the Planner"
     );
     assert!(
         is_deferred_self_report(
             &repo,
             &failed(
-                "abandoned-reason",
-                "delivery-abandoned: hook keeps rejecting the commit"
+                "delivery_failed-reason",
+                "delivery-failed: hook keeps rejecting the commit"
             )
         )
         .await,

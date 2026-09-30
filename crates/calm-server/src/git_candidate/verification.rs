@@ -32,7 +32,7 @@ pub(crate) enum VerificationState {
     TargetMismatch,
     /// The verdict checked nothing against a candidate (legacy lease, pre-upgrade freeze or verdict).
     Unbound,
-    /// The attempt ended before a gate ran (worker timeout, spawn failure, abandoned delivery).
+    /// The attempt ended before a gate ran (worker timeout, spawn failure, failed delivery).
     NotReached {
         #[serde(skip_serializing_if = "Option::is_none")]
         status_detail: Option<String>,

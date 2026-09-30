@@ -1,6 +1,6 @@
 //! #1830 S2 — how each attempt in the track's checkout ends
 //! (`docs/architecture/1830-s2-worker-in-track-worktree.md` §3, §6 T6–T11): a managed track's
-//! worker on `main` in its directory, the retry fence, the release a timeout flip, a boot reclaim,
+//! worker on `main` in its directory, the release a timeout flip, a boot reclaim,
 //! a failed Codex interrupt and a stuck owner make. The world is [`crate::track_worker_cwd`]'s.
 use std::path::Path;
 
@@ -8,7 +8,7 @@ use calm_server::model::TaskStatus;
 use calm_server::session_projection_repo::AgentProvider;
 use serde_json::json;
 
-use crate::git_delivery::{assert_refused, git, ref_target, write_executable};
+use crate::git_delivery::git;
 use crate::mcp_track_report::{call_tool, planner_identity};
 use crate::task_recovery::current;
 use crate::track_worker_cwd::{
@@ -54,74 +54,6 @@ async fn a_managed_track_worker_commits_on_main_in_its_directory() {
     let commit = candidate_commit(fx, &a.task.id).await;
     assert_eq!(git(&path, &["rev-parse", "refs/heads/main"]), commit);
     assert_eq!(worktree_entries(&path), 1, "no worktree is registered");
-}
-
-/// T7 (D5 retry) — `a`'s delivery settled `failed`; while `b` runs in the checkout the retry is
-/// refused as another attempt running, and after `b` settles as a later attempt having run there;
-/// `a` never gets a candidate ref.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn delivery_retry_is_refused_once_the_track_moved_on() {
-    let w = world().await;
-    let fx = &w.fx;
-    declare_task(fx, "a", json!({})).await;
-    let a = wait_running(fx, "a").await;
-    std::fs::write(a.cwd.join("worker.txt"), "a\n").unwrap();
-    // The observation-failure setup (`git_delivery.rs`): `git worktree list` exits 128, so the
-    // delivery script settles `commit_failed`, retryable, with nothing staged.
-    let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .map(|dir| dir.join("git"))
-        .find(|candidate| candidate.is_file())
-        .expect("git on PATH");
-    let bin = fx.track_root.parent().unwrap().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    write_executable(
-        &bin.join("git"),
-        &format!(
-            "#!/bin/sh\nREAL='{}'\nif [ \"$1\" = worktree ] && [ \"$2\" = list ]; then \"$REAL\" \"$@\"; exit 128; fi\nexec \"$REAL\" \"$@\"\n",
-            real_git.display()
-        ),
-    );
-    let original_path = std::env::var_os("PATH").unwrap();
-    let mut dirs = vec![bin];
-    dirs.extend(std::env::split_paths(&original_path));
-    // One process per test under nextest.
-    unsafe { std::env::set_var("PATH", std::env::join_paths(dirs).unwrap()) };
-    a.complete(fx).await;
-    fx.wait_settled(&a.task.id).await;
-    unsafe { std::env::set_var("PATH", original_path) };
-    let failed = fx.delivery_row(&a.task.id).await.unwrap();
-    assert_eq!(failed.settlement.as_deref(), Some("failed"));
-    std::fs::remove_file(a.cwd.join("worker.txt")).unwrap();
-
-    declare_task(fx, "b", json!({})).await;
-    let b = wait_running(fx, "b").await;
-    let a_task = current(&fx.boot, "a").await;
-    assert_refused(
-        &fx.retry(&a_task, &failed.delivery_id, "retry-1", None)
-            .await,
-        "refused: the track is running another attempt; wait for it, then retry",
-    );
-
-    std::fs::write(b.cwd.join("b.txt"), "b\n").unwrap();
-    b.complete(fx).await;
-    candidate_commit(fx, &b.task.id).await;
-    assert_refused(
-        &fx.retry(&a_task, &failed.delivery_id, "retry-2", None)
-            .await,
-        "refused: a later attempt ran in this checkout; declare a new task",
-    );
-    let ref_name = format!(
-        "refs/neige/candidates/{}/{}/{}",
-        fx.track(),
-        a.identity.card_id,
-        failed.delivery_id
-    );
-    let common_dir = fx.track_root.join(".git");
-    assert_eq!(
-        ref_target(&common_dir, &ref_name),
-        None,
-        "no candidate for a"
-    );
 }
 
 /// T8 (D7, `mark_running_timeout_cleanup_tx`) — the worker's session already `exited` when its

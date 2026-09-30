@@ -455,19 +455,18 @@ pub async fn task_apply_gate_result_tx(
     Ok(res.rows_affected())
 }
 
-/// The `status_detail` classifier of a gated row the Planner released by abandoning its failed
-/// Git delivery (#1727 S4 slice 3). Not a pre-gate class: the dispatcher does not push the
-/// `task.failed` that carries it (the tool receipt is the Planner's answer).
-pub const TASK_STATUS_DETAIL_DELIVERY_ABANDONED: &str = "delivery-abandoned";
+/// The `status_detail` classifier of a gated row whose Git delivery failed (#1893 S6): without a
+/// candidate there is nothing to gate. Not a pre-gate class: the dispatcher does not push the
+/// `task.failed` that carries it (the `task.git_delivery_settled` failure wakes the Planner).
+pub const TASK_STATUS_DETAIL_DELIVERY_FAILED: &str = "delivery-failed";
 
-/// `verifying → failed/delivery-abandoned` for a gated row whose Git delivery the Planner gave
-/// up (#1727 S4 slice 3): the budget release of `calm.task.delivery{abandon}`. Clears the same
-/// gate-process columns as `task_apply_gate_result_tx` so a gate still running is orphaned from
-/// the row (its late verdict misses the `verifying` guard and writes nothing). Guarded on
-/// `verifying` alone — not on `gate_attempt`, which a still-running gate holds — and never on
-/// `dispatched | running`, which `task_fail_from_worker_tx` owns. `0` rows = the gate already
-/// flipped the row (`already_terminal` to the caller).
-pub async fn task_abandon_delivery_tx(
+/// `verifying → failed/delivery-failed` for a gated row whose Git delivery settled `failed`, in the
+/// settlement transaction. Clears the same gate-process columns as `task_apply_gate_result_tx` so
+/// a gate still running is orphaned from the row (its late verdict misses the `verifying` guard
+/// and writes nothing). Guarded on `verifying` alone — not on `gate_attempt`, which a still-running
+/// gate holds — and never on `dispatched | running`, which `task_fail_from_worker_tx` owns. `0`
+/// rows = the row already left `verifying`.
+pub async fn task_fail_delivery_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     track_id: &str,
@@ -484,7 +483,7 @@ pub async fn task_abandon_delivery_tx(
                finished_at_ms = ?2
            WHERE id = ?3 AND track_id = ?4 AND status = 'verifying'"#,
     )
-    .bind(TASK_STATUS_DETAIL_DELIVERY_ABANDONED)
+    .bind(TASK_STATUS_DETAIL_DELIVERY_FAILED)
     .bind(now)
     .bind(id)
     .bind(track_id)

@@ -1,9 +1,8 @@
 //! Planner wake for `task.git_delivery_settled` (#1727 S4 slice 2 PR-A).
 //!
-//! The event carries the settlement and the `delivery_id` the decision clause names; the
-//! observation adds the two things only rows know: the task `key` the Planner addresses (looked
-//! up by `task_id`, like `task.gate_result`) and the
-//! lease worktree path while it still exists (`retained_path`, `None` once removed, and `None`
+//! The event carries the settlement; the observation adds the two things only rows know: the task
+//! `key` the Planner addresses (looked up by `task_id`, like `task.gate_result`) and the lease
+//! worktree path while it still exists (`retained_path`, `None` once removed, and `None`
 //! for a `workspace_missing` failure — the settlement's proof that the directory is gone, whatever
 //! path the lease row still names). Live push and boot catch-up share this one mapping. No tasks
 //! row, or a row on another track, means no observation — the same outcome the other row-backed
@@ -24,7 +23,6 @@ pub(crate) async fn observation(
     let Event::TaskGitDeliverySettled {
         task_id,
         track_id: event_track_id,
-        delivery_id,
         result,
         ..
     } = event
@@ -36,7 +34,6 @@ pub(crate) async fn observation(
     }
     let track_id = track_id.clone();
     let task_id = task_id.clone();
-    let delivery_id = delivery_id.clone();
     let result = result.clone();
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
@@ -70,7 +67,6 @@ pub(crate) async fn observation(
                 attempt_id: task_id,
                 result,
                 retained_path,
-                delivery_id: Some(delivery_id),
             }))
         })
     })

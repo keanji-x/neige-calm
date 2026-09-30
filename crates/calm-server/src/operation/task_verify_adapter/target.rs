@@ -22,7 +22,6 @@ use serde_json::Value;
 
 use super::{FrozenVerify, GateSpec, GateVerdict, gate_attempt_key};
 use crate::error::{CalmError, Result};
-use crate::git_candidate::abandonment::abandonment_for_delivery_tx;
 use crate::git_candidate::candidate::{CandidateRow, candidate_for_attempt_tx};
 use crate::git_candidate::delivery::{
     DeliveryRow, DeliverySettled, delivery_latest_for_attempt_tx, lease_for_delivery_tx,
@@ -194,7 +193,6 @@ pub(crate) enum VerifyIdentity {
         lease: WorkspaceLease,
         delivery: Option<DeliveryRow>,
         candidate: Option<CandidateRow>,
-        abandoned: bool,
     },
 }
 
@@ -221,27 +219,17 @@ pub(crate) async fn verify_target_identity(tx: &mut Tx<'_>, task: &Task) -> Resu
         });
     }
     let candidate = candidate_for_attempt_tx(tx, &task.id).await?;
-    let abandoned = match &delivery {
-        Some(delivery) => abandonment_for_delivery_tx(tx, &delivery.delivery_id)
-            .await?
-            .is_some(),
-        None => false,
-    };
     Ok(VerifyIdentity::Bound {
         lease,
         delivery,
         candidate,
-        abandoned,
     })
 }
 
 /// The delivery state a candidate-bound attempt without a candidate row is in. A `candidate`
 /// settlement without its row cannot be verified against and is impossible by construction (one
 /// transaction writes both); it is read as still pending — nothing is minted for it.
-pub(crate) fn no_candidate_reason(
-    delivery: Option<&DeliveryRow>,
-    abandoned: bool,
-) -> NoCandidateReason {
+pub(crate) fn no_candidate_reason(delivery: Option<&DeliveryRow>) -> NoCandidateReason {
     let Some(delivery) = delivery else {
         return NoCandidateReason::NoDeliveryRow;
     };
@@ -249,9 +237,6 @@ pub(crate) fn no_candidate_reason(
     match &delivery.settlement {
         None | Some(DeliverySettled::Candidate { .. }) => {
             NoCandidateReason::DeliveryPending { delivery_id }
-        }
-        Some(DeliverySettled::Failed { .. }) if abandoned => {
-            NoCandidateReason::DeliveryAbandoned { delivery_id }
         }
         Some(DeliverySettled::Failed { .. }) => NoCandidateReason::DeliveryFailed { delivery_id },
     }
@@ -539,9 +524,6 @@ fn no_candidate_sentence(reason: &NoCandidateReason) -> String {
         NoCandidateReason::DeliveryFailed { delivery_id } => {
             format!("delivery {delivery_id} is failed")
         }
-        NoCandidateReason::DeliveryAbandoned { delivery_id } => {
-            format!("delivery {delivery_id} is abandoned")
-        }
         NoCandidateReason::NoDeliveryRow => "no delivery row".to_string(),
     };
     format!("refused: no candidate to verify: {found}; gate admitted before settlement")
@@ -566,7 +548,7 @@ pub(crate) async fn prepare_target_tx(
     attempt: i64,
     log_path: &Path,
 ) -> Result<PreparedTarget> {
-    let (lease, delivery, candidate, abandoned) = match verify_target_identity(tx, task).await? {
+    let (lease, delivery, candidate) = match verify_target_identity(tx, task).await? {
         VerifyIdentity::Unbound { reason } => {
             return Ok(PreparedTarget {
                 target: FrozenTarget::Unbound { reason },
@@ -577,8 +559,7 @@ pub(crate) async fn prepare_target_tx(
             lease,
             delivery,
             candidate,
-            abandoned,
-        } => (lease, delivery, candidate, abandoned),
+        } => (lease, delivery, candidate),
     };
     if gate.cwd.is_some() {
         return Err(CalmError::Conflict(format!(
@@ -590,7 +571,7 @@ pub(crate) async fn prepare_target_tx(
         )));
     }
     let Some(candidate) = candidate else {
-        let reason = no_candidate_reason(delivery.as_ref(), abandoned);
+        let reason = no_candidate_reason(delivery.as_ref());
         let line = no_candidate_sentence(&reason);
         append_log_line(log_path, &line).await;
         let refusal = TaskGateResult {
@@ -908,11 +889,10 @@ fn derived_target(identity: VerifyIdentity, reason: &str) -> VerifyTarget {
         },
         VerifyIdentity::Bound {
             delivery,
-            abandoned,
             candidate: None,
             ..
         } => VerifyTarget::NoCandidate {
-            reason: no_candidate_reason(delivery.as_ref(), abandoned),
+            reason: no_candidate_reason(delivery.as_ref()),
         },
     }
 }
