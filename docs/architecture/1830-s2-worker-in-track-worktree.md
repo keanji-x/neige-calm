@@ -197,8 +197,8 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
 | dirty tree or no worktree at prepare | `fail_spawn` | never ran | no lease, no row |
 
 A delivery that runs and fails (merge in progress, switched branch, git error) settles `failed`
-and wakes the Planner; the dirty tree then refuses the next start until `calm.task.delivery
-retry` (D5-fenced) or the Planner's `git.commit`.
+and wakes the Planner; the dirty tree then refuses the next start until the Planner commits or
+undoes it. (#1893 S6 deleted the `calm.task.delivery` retry this sentence first named.)
 
 ## 4. S2 change list
 

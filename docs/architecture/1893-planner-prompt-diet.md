@@ -318,6 +318,13 @@ Each slice is independently mergeable and green. Migration numbers are assigned 
 - Must-red:
   - new `failed_delivery_fails_the_gated_task` (`tests/cases/git_delivery.rs`) ← `dispatcher/git_delivery_settled.rs` ← leave the task `verifying`.
   - `planner_tool_surface_fits_its_byte_budget` ← re-register `task_delivery`.
+- As built:
+  - The flip lives in the settlement transaction, `scheduler/git_delivery.rs::settle_tx`: `dispatcher/git_delivery_settled.rs` only maps the event to an observation. A failed settlement of a gated `verifying` row sets `failed/delivery-failed` (`task_fail_delivery_tx`, the old abandon UPDATE renamed) and appends one kernel `task.failed` after the settlement event. The gated `task.failed` rule already suppresses it, so the settlement stays the one wake. The must-red mutation is therefore in `settle_tx`.
+  - Migration `0126_drop_task_git_delivery_abandonments.sql` drops the one table (0 rows on 4140).
+  - Deleted with the tool: `git_candidate/{action,abandonment}.rs`, the retry-row insert and request-key reader, `DeliveryState::Abandoned`, `NoCandidateReason::DeliveryAbandoned`, `Observation::TaskGitDeliverySettled.delivery_id`, `SchedulerPokes::poke`, the wake text's `Decide:` clause, and `failure.retry_allowed` on the read surface.
+  - Kept: the `task_git_deliveries` columns `retry_allowed`, `ordinal`, `predecessor_delivery_id`, `request_idempotency_key` and `reason`. The 0113 CHECK and trigger name them, so dropping them needs a table rebuild. `retry_allowed` also stays on the persisted `task.git_delivery_settled` event (`deny_unknown_fields`). The settlement still writes it; nothing reads it.
+  - A `verifying` row beside a failed delivery can no longer exist, so the gate's `NoCandidateReason::DeliveryFailed` is kept only to keep the mapping total. The `gate_binding` tests that built that state now use a delivery held in its hook, and the case that pinned `DeliveryFailed` is gone.
+  - Tool surface 33,980 B (after S5) → 32,564 B, cap 34,000 → 33,000. The ≤ 29,000 target needs S2–S4 too. `planner.md` is unchanged (6,747 B): it never named the tool.
 
 Dependencies: S2 and S3 are independent. S4 needs both. S5 and S6 are independent of S2–S4.
 
