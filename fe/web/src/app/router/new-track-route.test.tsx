@@ -550,7 +550,7 @@ describe('Track creation drafts survive navigation', () => {
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Unsent intent');
     await userEvent.click(screen.getByRole('button', { name: 'Template: No template' }));
     await userEvent.click(screen.getByRole('menuitem', { name: /Issue development/ }));
-    await userEvent.type(screen.getByLabelText('Issue URL'), 'unfinished-url');
+    await userEvent.type(await screen.findByLabelText('Issue URL'), 'unfinished-url');
     await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     expect(composerText()).toBe('');
@@ -1046,7 +1046,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /^Issue development/ }));
     await userEvent.type(
-      screen.getByLabelText('Issue URL'),
+      await screen.findByLabelText('Issue URL'),
       'https://github.com/keanji-x/neige-calm/issues/1209',
     );
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
