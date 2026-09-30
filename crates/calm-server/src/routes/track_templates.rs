@@ -7,13 +7,19 @@ use crate::error::{ErrorBody, Result};
 use crate::routes::tracks::{compile_template, resolve_template_binding};
 use crate::state::{AppState, RouteState};
 use crate::templates::{Template, task_payload_key_and_instruction};
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    routing::get,
+};
 use serde::Serialize;
 use serde_json::Value;
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/track-templates", get(list_track_templates))
+    Router::new()
+        .route("/api/track-templates", get(list_track_templates))
+        .route("/api/track-templates/{id}", get(get_track_template))
 }
 
 /// One selectable starting point for a new track. "Blank" is not in this list: it is
@@ -100,4 +106,41 @@ fn current_definition(template: &Template) -> Result<Definition> {
             .cloned()
             .collect(),
     })
+}
+
+/// Author-owned display metadata and the byte-exact report body. This read grants no authority.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TrackTemplateDetail {
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub instructions: Option<String>,
+    pub body: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/track-templates/{id}",
+    tag = "tracks",
+    params(("id" = String, Path, description = "Template key; encode a site/ prefix as part of this segment")),
+    responses(
+        (status = 200, description = "Selected template content", body = TrackTemplateDetail),
+        (status = 404, description = "Unknown template", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn get_track_template(
+    State(s): State<RouteState>,
+    Path(id): Path<String>,
+) -> Result<Json<TrackTemplateDetail>> {
+    let template = s
+        .templates
+        .get(&id)
+        .ok_or_else(|| crate::error::CalmError::NotFound(format!("template {id}")))?;
+    Ok(Json(TrackTemplateDetail {
+        id: template.key().to_string(),
+        title: template.title().to_string(),
+        description: template.description().map(str::to_string),
+        instructions: template.instructions().map(str::to_string),
+        body: template.recipe().body,
+    }))
 }

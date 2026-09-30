@@ -1,6 +1,12 @@
 +++
 id = "investment-research"
 title = "Investment research"
+description = "Build a sourced investment research report with assumptions and risks."
+instructions = """
+Gather and cite evidence for the research question.
+Explain the thesis, key assumptions and evidence that could disprove it.
+Record data limitations and the events to follow.
+"""
 +++
 <!-- neige:contract {"version":1,"sections":[{"h1":"结论"},{"h1":"待你定","omit_if_empty":true},{"h1":"核心逻辑"},{"h1":"关键数据"},{"h1":"风险与证伪"},{"h1":"催化剂与跟踪"},{"h1":"来源与边界"}]} -->
 <!-- 报告维护契约（投研报告版）

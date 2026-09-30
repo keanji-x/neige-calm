@@ -1,0 +1,35 @@
+@layer features {
+  .groups { display: grid; gap: var(--space-8); }
+  .group {
+    display: grid;
+    gap: var(--space-5);
+    min-inline-size: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .group + .group {
+    padding-block-start: var(--space-8);
+    border-block-start: 1px solid var(--hairline);
+  }
+  .group legend {
+    padding-inline: var(--space-2);
+    color: var(--text);
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+  }
+  /* CheckboxInput owns its appearance. Move its native control to the trailing
+     edge so its existing label and description share the text field's axis. */
+  .toggle > [data-size] > :first-child { flex-direction: row-reverse; }
+  .toggle > [data-size] > :first-child > :last-child {
+    flex: 1;
+    gap: var(--space-2);
+    text-align: start;
+  }
+  .description {
+    color: var(--text-2);
+    font-size: var(--text-base);
+    line-height: var(--leading-base);
+  }
+  .error { color: var(--error-text); font-size: var(--text-base); }
+}

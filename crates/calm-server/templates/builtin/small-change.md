@@ -1,6 +1,12 @@
 +++
 id = "small-change"
 title = "Small change"
+description = "Make a focused change in an existing repository."
+instructions = """
+Read the requested change and the affected code path.
+Implement the smallest appropriate change and run relevant verification.
+Report the result and the checks that actually ran.
+"""
 +++
 <!-- neige:contract {"version":1,"sections":[{"h1":"概要"},{"h1":"待你定","omit_if_empty":true},{"h1":"已完成"},{"h1":"决策"}]} -->
 <!-- 报告维护契约

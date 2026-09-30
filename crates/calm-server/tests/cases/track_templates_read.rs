@@ -337,16 +337,16 @@ async fn put_is_not_routed_and_writes_nothing() {
         let status = resp.status();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
 
-        // 404 with an empty body: axum's fallback carries no body, while every handler refusal renders a JSON `ErrorBody`.
+        // The detail endpoint is read-only: the router refuses PUT before a handler runs.
         assert_eq!(
             status,
-            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
             "PUT /api/track-templates/{id} must not be routed; body={:?}",
             String::from_utf8_lossy(&body)
         );
         assert!(
             body.is_empty(),
-            "a 404 with a body came from a handler, not from the router; body={:?}",
+            "a refusal with a body came from a handler, not from the router; body={:?}",
             String::from_utf8_lossy(&body)
         );
 
@@ -394,4 +394,54 @@ async fn db_digest(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
         digest.push((table, rows));
     }
     digest
+}
+
+#[tokio::test]
+async fn selected_template_detail_is_exact_and_read_only() {
+    let boot = boot(false).await;
+    let before = db_digest(&boot.repo).await;
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/track-templates/small-change")
+                .header("X-Calm-Actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let template = calm_server::templates::TemplateRoster::builtin()
+        .get(SMALL_CHANGE)
+        .unwrap();
+    assert_eq!(body["id"], SMALL_CHANGE);
+    assert_eq!(body["title"], template.title());
+    assert_eq!(body["body"], template.recipe().body);
+    assert_eq!(
+        body["description"],
+        "Make a focused change in an existing repository."
+    );
+    assert!(
+        body["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("relevant verification")
+    );
+    assert_eq!(db_digest(&boot.repo).await, before);
+    let response = boot
+        .app
+        .oneshot(
+            Request::builder()
+                .uri("/api/track-templates/unknown-template")
+                .header("X-Calm-Actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

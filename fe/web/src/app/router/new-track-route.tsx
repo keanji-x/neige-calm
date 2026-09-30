@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { templateDetailOperation } from '../../../../core/domain/template.ts';
 import { availabilityOf } from '../../../../core/domain/agent-providers.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { isBlankForKernel, trackCreateKeyAction, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
@@ -13,7 +14,7 @@ import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { agentProvidersQueryOptions } from '../providers/agent-providers.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
 import { useMentionSearch } from '../providers/mentions.ts';
-import { ApiError, OfflineSubmissionError, folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
+import { ApiError, OfflineSubmissionError, runOperation, folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { useGo, useRouteParam } from './navigation.ts';
@@ -153,6 +154,8 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     : !available ? 'Area unavailable. Your draft is kept here; select and copy it to use elsewhere.' : null;
   const createdTrackId = session.createdTrackId;
   const configurationLocked = session.creating || session.request !== null || !available || createdTrackId !== null;
+  const loadTemplate = useCallback((id: string) => runOperation(transport, templateDetailOperation(id), unauthorized), [transport, unauthorized]);
+
   return <NewTrackForm
     mentionTrigger={mentionTrigger}
     modelControls={
@@ -176,6 +179,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     submitting={session.creating}
     error={areaFailure ?? (createdTrackId !== null ? 'Your track was created while you were away.' : session.error)}
     templates={templates.templates}
+    loadTemplate={loadTemplate}
     templatesLoaded={templates.loaded}
     templatesError={templates.error}
     recipes={recipes.recipes}

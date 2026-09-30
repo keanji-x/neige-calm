@@ -32,6 +32,7 @@ afterEach(() => { document.body.replaceChildren(); });
 function renderForm() {
   return render(
     <NewTrackForm
+      loadTemplate={(id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Run relevant verification.', body: '# Template source\n' })}
       submitting={false}
       error={null}
       templates={TEMPLATES}

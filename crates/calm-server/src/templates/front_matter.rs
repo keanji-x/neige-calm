@@ -3,11 +3,13 @@
 
 use serde::Deserialize;
 
-/// The two facts a template file declares about itself.
+/// Identity and optional author-owned display text declared by a template.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrontMatter {
     pub id: String,
     pub title: String,
+    pub description: Option<String>,
+    pub instructions: Option<String>,
 }
 
 /// `deny_unknown_fields`: a typo'd key is a broken file, not a file with one fewer fact.
@@ -16,6 +18,8 @@ pub struct FrontMatter {
 struct RawFrontMatter {
     id: String,
     title: String,
+    description: Option<String>,
+    instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +90,8 @@ pub fn parse(text: &str) -> Result<(FrontMatter, &str), FrontMatterError> {
         FrontMatter {
             id: raw.id,
             title: raw.title,
+            description: raw.description,
+            instructions: raw.instructions,
         },
         body,
     ))
@@ -116,6 +122,8 @@ mod tests {
             FrontMatter {
                 id: "small-change".into(),
                 title: "Small change".into(),
+                description: None,
+                instructions: None,
             }
         );
         // Byte-exact: the returned slice is the input's own bytes (pointer identity), not a copy.

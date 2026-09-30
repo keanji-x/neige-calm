@@ -38,6 +38,8 @@ static BUILTIN_SOURCES: [&str; 4] = [
 pub struct Template {
     key: &'static str,
     title: &'static str,
+    description: Option<&'static str>,
+    instructions: Option<&'static str>,
     /// The report body exactly as the file has it after the closing `+++`
     /// line: `Template::recipe` hands it out uncompiled and unmodified.
     body: &'static str,
@@ -53,6 +55,14 @@ impl Template {
     /// starts with.
     pub fn title(&self) -> &'static str {
         self.title
+    }
+
+    pub fn description(&self) -> Option<&'static str> {
+        self.description
+    }
+
+    pub fn instructions(&self) -> Option<&'static str> {
+        self.instructions
     }
 
     /// The uncompiled recipe; a fresh `TrackReportPayload` on every call.
@@ -175,6 +185,8 @@ impl TemplateRoster {
             entries.push(Template {
                 key: String::leak(front.id),
                 title: String::leak(front.title),
+                description: front.description.map(|value| &*String::leak(value)),
+                instructions: front.instructions.map(|value| &*String::leak(value)),
                 body,
             });
         }
@@ -209,6 +221,8 @@ impl TemplateRoster {
                 .map(|template| Template {
                     key: template.key,
                     title: template.title,
+                    description: template.description,
+                    instructions: template.instructions,
                     body: template.body,
                 })
                 .collect(),
@@ -281,6 +295,8 @@ impl TemplateRoster {
         let template = Template {
             key: String::leak(format!("{SITE_PREFIX}{stem}")),
             title: String::leak(front.title),
+            description: front.description.map(|value| &*String::leak(value)),
+            instructions: front.instructions.map(|value| &*String::leak(value)),
             body,
         };
         let compiled = crate::routes::tracks::compile_template(&template)

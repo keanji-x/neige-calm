@@ -2,16 +2,13 @@
 // plus local form state; the caller owns `POST /api/tracks`, `submitting`, `error` and
 // the template list, and puts the sentence on the create as `first_message`, verbatim.
 
-import { useEffect, useMemo, useRef, useId, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useId, useCallback, type ReactNode } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { ChatComposer, ChatComposerInput, type ChatComposerTrigger } from '@astryxdesign/core/Chat';
-import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { Icon } from '@astryxdesign/core/Icon';
-import { TextInput } from '@astryxdesign/core/TextInput';
 import { VStack } from '@astryxdesign/core/VStack';
 
-import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
 import { isBlankForKernel, type TrackRecipe, type TrackTemplate } from '../../../../../core/domain/track.ts';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
@@ -22,7 +19,10 @@ import { useTriggerFieldAria } from '../../../ui/trigger-menu-keys/field-aria.ts
 import {
   NO_STARTING_POINT, type StartingPoint,
 } from '../default-pills/public.tsx';
-import { AreaDefaultNotice } from './area-default-notice.tsx';
+import { compileTemplateInputs } from '../../../../../core/domain/template-input.ts';
+import { TemplateInputs } from './template-inputs.tsx';
+import type { LoadTemplate, TemplateDetail } from '../../../../../core/domain/template.ts';
+import { TemplatePreview } from './template-preview.tsx';
 import styles from './new-track.module.css';
 import { ComposerPreferences } from './composer-preferences.tsx';
 
@@ -75,6 +75,8 @@ export type NewTrackFormProps = Readonly<{
   }>;
   /** An empty roster is usable when the Area has no saved template; an unresolved Area preference blocks Create until the roster resolves or the reader picks No template. */
   templates: readonly TrackTemplate[];
+  /** Read the selected author-owned template; the app supplies transport and authorization. */
+  loadTemplate: LoadTemplate;
   /** Distinguishes an empty canonical roster from a read still in flight. */
   templatesLoaded: boolean;
   /** Set when the template read failed: a roster notice, not the create-error channel. */
@@ -91,17 +93,6 @@ export type NewTrackFormProps = Readonly<{
   onSubmit: (draft: NewTrackDraft) => void;
 }>;
 
-/** The one template whose inputs this form knows how to collect. */
-const ISSUE_DEVELOPMENT = 'issue-development';
-
-/** The greeting, by the reader's own clock; taken as an argument so the boundaries are testable. */
-export function greetingFor(now: Date): string {
-  const hour = now.getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 18) return 'Good afternoon';
-  return 'Good evening';
-}
-
 /** The composer field's accessible name; hidden, not absent, since an unnamed textbox is unusable by screen reader. */
 const TASK_LABEL = 'What this track should do';
 
@@ -113,13 +104,9 @@ const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
 export type NewTrackFormState = Readonly<{
   message: string;
   selected: StartingPoint;
-  issueUrl: string;
-  autoMerge: boolean;
+  templateValues: Readonly<Record<string, Readonly<Record<string, string>>>>;
   cwd: string;
 }>;
-
-/** Mirrors the enum in the bound plugin's `input_schema`. */
-type MergePolicy = 'hold-for-ratify' | 'auto-merge';
 
 /** A template takes input iff a running trusted plugin is bound to it, i.e. the read returned an `input_schema`; with the plugin stopped the kernel would reject the fields. */
 function needsInput(template: TrackTemplate | undefined): boolean {
@@ -128,7 +115,7 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 
 export function NewTrackForm({
   modelControls, submitting, error, templates, templatesLoaded, templatesError = null,
-  initialTemplateId, initialCwd, recipes = [], onManageRecipes, listDirectory, onSubmit,
+  initialTemplateId, initialCwd, loadTemplate, recipes = [], onManageRecipes, listDirectory, onSubmit,
   errorAction, initialDraft, onDraftChange, submitBlocked = false, locked = false, mentionTrigger,
 }: NewTrackFormProps) {
   const fieldId = useId();
@@ -140,8 +127,17 @@ export function NewTrackForm({
   const [selected, setSelected] = useState<StartingPoint>(initialDraft?.selected ?? (openingTemplateId === null
     ? NO_STARTING_POINT
     : { kind: 'template', id: openingTemplateId }));
-  const [issueUrl, setIssueUrl] = useState(initialDraft?.issueUrl ?? '');
-  const [autoMerge, setAutoMerge] = useState(initialDraft?.autoMerge ?? false);
+  const [templateValues, setTemplateValues] = useState(initialDraft?.templateValues ?? {});
+  const [templateDetails, setTemplateDetails] = useState<Readonly<{ source: LoadTemplate; detail: TemplateDetail }> | null>(null);
+  const receiveTemplateDetails = useCallback((detail: TemplateDetail | null) => {
+    setTemplateDetails(detail === null ? null : { source: loadTemplate, detail });
+  }, [loadTemplate]);
+  const selectStartingPoint = (next: StartingPoint) => {
+    if (next.kind === 'none' && selected.kind === 'none') return;
+    if (next.kind !== 'none' && selected.kind !== 'none' && next.kind === selected.kind && next.id === selected.id) return;
+    setTemplateDetails(null);
+    setSelected(next);
+  };
   const [cwd, setCwd] = useState(initialDraft?.cwd ?? initialCwd ?? '');
   const [browsing, setBrowsing] = useState(false);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
@@ -152,8 +148,8 @@ export function NewTrackForm({
   const triggerId = `${fieldId}-start-from-trigger`;
 
   useEffect(() => {
-    onDraftChange?.({ message, selected, issueUrl, autoMerge, cwd });
-  }, [message, selected, issueUrl, autoMerge, cwd, onDraftChange]);
+    onDraftChange?.({ message, selected, templateValues, cwd });
+  }, [message, selected, templateValues, cwd, onDraftChange]);
 
   /* The caret starts in the field. Found by query, not ref: `ChatComposerInput`
    * forwards its DOM `ref` to the wrapper, which is not focusable. Mount-only, so
@@ -169,9 +165,6 @@ export function NewTrackForm({
   const chosen = selected.kind === 'template'
     ? templates.find((template) => template.id === selected.id)
     : undefined;
-  const inheritedAreaDefault = openingTemplateId !== null
-    && selected.kind === 'template'
-    && selected.id === openingTemplateId;
   const chosenRecipe = selected.kind === 'recipe'
     ? recipes.find((recipe) => recipe.id === selected.id)
     : undefined;
@@ -185,19 +178,15 @@ export function NewTrackForm({
     || unresolvedAreaDefault
     ? selected
     : NO_STARTING_POINT;
+  const preview = chosen ?? chosenRecipe;
   const wantsInput = needsInput(chosen);
-  const issueDev = wantsInput
-    && effectiveSelection.kind === 'template'
-    && effectiveSelection.id === ISSUE_DEVELOPMENT;
+  const currentDetails = templateDetails?.source === loadTemplate && templateDetails.detail.id === chosen?.id ? templateDetails.detail : null;
+  const fieldValues = chosen === undefined ? {} : templateValues[chosen.id] ?? {};
+  const compiledInputs = wantsInput && currentDetails !== null
+    ? compileTemplateInputs(currentDetails.body, chosen?.input_schema, fieldValues) : null;
   const templatePending = unresolvedAreaDefault && !templatesLoaded && templatesError === null;
-  const parsedIssue = issueDev ? parseGitHubIssueUrl(issueUrl) : null;
-
-  // Fail-closed: the kernel requires the input a bound template's schema declares,
-  // and guessing would trade a readable block for a 400.
-  const unsupportedInput = wantsInput && !issueDev;
-  const issueUrlTouched = issueUrl.trim() !== '';
-  const issueUrlBad = issueDev && issueUrlTouched && parsedIssue === null;
-  const inputBlocker = unresolvedAreaDefault || unsupportedInput || (issueDev && parsedIssue === null);
+  const unsupportedInput = compiledInputs?.status === 'unsupported';
+  const inputBlocker = unresolvedAreaDefault || (wantsInput && compiledInputs?.status !== 'ready');
   /* Blank by the kernel's rule, not JS `trim()`: the two disagree on a code point. */
   const valid = !isBlankForKernel(message) && (locked || !inputBlocker);
   /* One status slot; `templatesError` means the list is empty, so it never coexists
@@ -230,14 +219,10 @@ export function NewTrackForm({
     if (effectiveSelection.kind === 'recipe') {
       return { ...base, recipe_id: effectiveSelection.id };
     }
-    if (parsedIssue === null) return { ...base, template_id: effectiveSelection.id };
-    // The kernel applies no schema defaults, so `merge_policy` always travels
-    // explicitly; unchecked is `hold-for-ratify`.
-    const mergePolicy: MergePolicy = autoMerge ? 'auto-merge' : 'hold-for-ratify';
     return {
-      ...base,
-      template_id: effectiveSelection.id,
-      template_input: { ...parsedIssue, merge_policy: mergePolicy },
+      ...base, template_id: effectiveSelection.id,
+      ...(wantsInput && compiledInputs !== null && compiledInputs.status !== 'unsupported'
+        ? { template_input: compiledInputs.input } : {}),
     };
   }
 
@@ -259,10 +244,10 @@ export function NewTrackForm({
 
 
         <div className={styles.masthead}>
-          {/* Decorative: the greeting names the page. The asset carries its own `<title>`,
+          {/* Decorative: the prompt names the page. The asset carries its own `<title>`,
                         which is why it is a CSS mask rather than an inlined `<svg>`. */}
           <span className={styles.mark} role="presentation" />
-          <h1 className={styles.greeting}>{greetingFor(new Date())}</h1>
+          <h1 className={styles.greeting}>What would you like to work on?</h1>
         </div>
 
         <div
@@ -308,7 +293,7 @@ export function NewTrackForm({
               {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />}
             footerActions={<ComposerPreferences browsing={browsing}
               startingPoint={{ templates, templatesLoaded, recipes, value: effectiveSelection,
-                onChange: setSelected, onManageRecipes, placement: 'above', triggerId,
+                onChange: selectStartingPoint, onManageRecipes, placement: 'above', triggerId,
                 isDisabled: submitting || locked }}
               folder={{ buttonId: folderId, value: cwd, clearLabel: FOLDER_CLEAR_LABEL,
                 onBrowse: () => setBrowsing(true), onClear: () => setCwd(''),
@@ -362,45 +347,20 @@ export function NewTrackForm({
           />
         )}
 
-        {!locked && inheritedAreaDefault && chosen !== undefined && (
-          <AreaDefaultNotice
-            template={chosen}
-            onClear={() => {
-              setSelected(NO_STARTING_POINT);
-            }}
-          />
-        )}
 
-        {issueDev && (
-          /* The group needs a name, not a second visible heading: the trigger already reads the title. */
-          <div className={styles.panel} role="group" aria-label={chosen?.title ?? ''}>
-            <TextInput
-              label="Issue URL"
-              isDisabled={submitting || locked}
-              value={issueUrl}
-              width="100%"
-              placeholder="https://github.com/owner/repo/issues/123"
-              /* An unfinished field is not an error: only a value that cannot be parsed turns
-                               into `status`, which sets `aria-invalid`. */
-              description={issueUrlBad ? undefined : parsedIssue === null
-                ? 'Paste the GitHub issue this track works on.'
-                : `Issue #${parsedIssue.issue_number} in ${parsedIssue.repo}.`}
-              status={issueUrlBad
-                ? {
-                  type: 'error',
-                  message: 'Not a GitHub issue URL — expected https://github.com/owner/repo/issues/123.',
-                }
-                : undefined}
-              onChange={(value) => setIssueUrl(value)}
-            />
-            <CheckboxInput
-              label="Merge automatically once the gates converge"
-              description="Off: the track waits for you to approve the merge."
-              value={autoMerge}
-              onChange={(checked) => setAutoMerge(checked)}
-              isDisabled={submitting || locked}
-            />
-          </div>
+        {preview !== undefined && (
+          <TemplatePreview key={`${effectiveSelection.kind}:${preview.id}`}
+            id={preview.id} title={preview.title}
+            recipeBody={chosenRecipe?.body} loadTemplate={loadTemplate}
+            onDetail={receiveTemplateDetails}>
+            {compiledInputs !== null && compiledInputs.status !== 'unsupported' ? <TemplateInputs
+              form={compiledInputs.form} values={fieldValues} errors={compiledInputs.errors}
+              disabled={submitting || locked}
+              onChange={(key, value) => {
+                if (chosen === undefined) return;
+                setTemplateValues((current) => ({ ...current, [chosen.id]: { ...current[chosen.id], [key]: value } }));
+              }} /> : undefined}
+          </TemplatePreview>
         )}
       </VStack>
 

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { compileTemplateInputs } from '../../core/domain/template-input.ts';
 import { describe, expect, it } from 'vitest';
 
 type JsonObject = Record<string, unknown>;
@@ -22,6 +23,8 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'TaskArtifactFileResponse',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
   'TrackReportReadResponse', 'TrackTemplate',
+  // Read-only server DTO, decoded by core/domain/template.ts; its shape is pinned below.
+  'TrackTemplateDetail',
   'ReportSeriesResolved', 'ReportSeriesRevConflict', 'TrackPreviews',
 ]);
 
@@ -209,4 +212,23 @@ describe('generated OpenAPI integrity', () => {
     };
     expect(() => validateDocument(document, '')).toThrow('response schema wire types missing: MissingWire');
   });
+});
+
+it('pins the server DTO outside the generated wire type roster', () => {
+  const document = JSON.parse(readFileSync(new URL('../../core/api/generated/openapi.json', import.meta.url), 'utf8')) as {
+    components: { schemas: { TrackTemplateDetail: { properties: Record<string, unknown>; required: string[] } } };
+  };
+  const schema = document.components.schemas.TrackTemplateDetail;
+  expect(Object.keys(schema.properties).sort()).toEqual(['body', 'description', 'id', 'instructions', 'title']);
+  expect(schema.required.sort()).toEqual(['body', 'id', 'title']);
+});
+
+
+it('the shipped template form binds to its plugin and keeps merge approval by default', () => {
+  const body = readFileSync(new URL('../../../crates/calm-server/templates/builtin/issue-development.md', import.meta.url), 'utf8');
+  const plugin = JSON.parse(readFileSync(new URL('../../../plugins/git-forge/manifest.json', import.meta.url), 'utf8')) as { input_schema: unknown };
+  const result = compileTemplateInputs(body, plugin.input_schema, { issue_url: 'https://github.com/owner/repo/issues/12' });
+  expect(result.status).toBe('ready');
+  if (result.status === 'unsupported') throw new Error('Shipped form is unsupported');
+  expect(result.input).toEqual({ issue_url: 'https://github.com/owner/repo/issues/12', repo: 'owner/repo', issue_number: 12, merge_policy: 'hold-for-ratify' });
 });

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DirectoryListing } from '../../../ui/directory-browser/public.tsx';
 import type { TrackTemplate } from '../../../../../core/domain/track.ts';
+import { ISSUE_INPUT_BODY, ISSUE_INPUT_SCHEMA } from './template-input-fixture.ts';
 import { NewTrackForm } from './public.tsx';
 
 afterEach(cleanup);
@@ -32,11 +33,7 @@ const TEMPLATE_CHIP = /^Template: /;
 const ISSUE_DEV: TrackTemplate = {
   id: 'issue-development',
   title: 'Issue development',
-  input_schema: {
-    type: 'object',
-    properties: { issue_url: { type: 'string' } },
-    required: ['issue_url', 'repo', 'issue_number'],
-  },
+  input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown,
   tasks: [
     { key: 'inspect-issue', goal: 'Read the bound template input and view the source issue.' },
     { key: 'review-design-a', goal: 'Review the proposed design for correctness.' },
@@ -76,6 +73,7 @@ function renderForm(overrides: Partial<Parameters<typeof NewTrackForm>[0]> = {})
     error: null,
     templates: TEMPLATES,
     templatesLoaded: true,
+    loadTemplate: vi.fn((id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Inspect the requested change.\nRun relevant verification.', body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source\n' })),
     initialTemplateId: null,
     initialCwd: null,
     /* Required, so a call site that forgot it cannot render a dead menu row. */
@@ -397,8 +395,9 @@ describe('Area creation defaults', () => {
       .toContain('area-default');
     await fillMessage();
     expect(submitButton().disabled).toBe(false);
-    const notice = screen.getByRole('group', { name: 'Area default template' });
-    expect(notice.textContent).toContain('Area default: Small change');
+    const notice = screen.getByRole('region', { name: 'Selected template' });
+    expect(notice.textContent).not.toContain('Area default');
+    expect(within(notice).getByRole('heading', { name: 'Small change' })).toBeTruthy();
     expect(notice.textContent).not.toContain('preset tasks');
     expect(within(notice).queryByRole('button', { name: 'Use Small change' })).toBeNull();
     await userEvent.keyboard('{Enter}');
@@ -407,11 +406,10 @@ describe('Area creation defaults', () => {
     });
   });
 
-  it('lets one Track reject the Area template without opening the picker', async () => {
+  it('lets one Track reject the Area template through the picker', async () => {
     const { onSubmit } = renderForm({ initialTemplateId: 'small-change' });
     await fillMessage();
-    const notice = screen.getByRole('group', { name: 'Area default template' });
-    await userEvent.click(within(notice).getByRole('button', { name: 'Start without template' }));
+    await chooseTemplate('No template');
     expect(screen.getByRole('button', { name: 'Template: No template' })).toBeTruthy();
     await userEvent.click(submitButton());
     expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
@@ -468,6 +466,7 @@ describe('Area creation defaults', () => {
     const { onSubmit } = renderForm({
       templates: [],
       templatesLoaded: true,
+    loadTemplate: vi.fn((id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Inspect the requested change.\nRun relevant verification.', body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source\n' })),
       initialTemplateId: 'retired-template',
     });
     await fillMessage();
@@ -535,7 +534,7 @@ describe('Start from — issue development expands under the group', () => {
     renderForm();
     await chooseIssueDev();
     expect(submitButton().disabled).toBe(true);
-    expect(screen.getByText(/Paste the GitHub issue/)).toBeTruthy();
+    expect(screen.getByText('The GitHub issue this track should resolve.')).toBeTruthy();
     // An untouched field is not yet wrong, and must not be announced as such.
     expect(screen.getByLabelText('Issue URL').getAttribute('aria-invalid')).toBeNull();
 
@@ -579,12 +578,13 @@ describe('Start from — issue development expands under the group', () => {
 
   /* Adjacency is not an association, so the panel is a `group` named after the
    * template; it carries no visible heading, the trigger already says it. */
-  it('names the expanded panel after the template that opened it', async () => {
+  it('groups issue information and merge approval separately', async () => {
     renderForm();
     await chooseIssueDev();
-    const panel = screen.getByRole('group', { name: 'Issue development' });
+    const panel = await screen.findByRole('group', { name: 'Source issue' });
     expect(within(panel).getByLabelText('Issue URL')).toBeTruthy();
-    expect(within(panel).getByRole('checkbox')).toBeTruthy();
+    expect(within(panel).queryByRole('checkbox')).toBeNull();
+    expect(within(screen.getByRole('group', { name: 'Merge approval' })).getByRole('checkbox')).toBeTruthy();
     // Directly under the control it belongs to, not after the whole picker.
     expect(templateTrigger().compareDocumentPosition(panel))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);

@@ -1,6 +1,12 @@
 +++
 id = "investigation"
 title = "Investigation"
+description = "Investigate a question and produce findings without changing the repository."
+instructions = """
+Read the relevant code, documentation and history.
+Separate observed facts from inference and identify unresolved questions.
+Report sources and recommended next steps. Do not open or merge a PR.
+"""
 +++
 <!-- neige:contract {"version":1,"sections":[{"h1":"概要"},{"h1":"待你定","omit_if_empty":true},{"h1":"已完成"},{"h1":"决策"}]} -->
 <!-- 报告维护契约

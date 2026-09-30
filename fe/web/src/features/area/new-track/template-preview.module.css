@@ -1,0 +1,107 @@
+@layer features {
+  .preview {
+    margin-block-start: var(--space-8);
+    padding-block-start: var(--space-8);
+    border-block-start: 1px solid var(--hairline);
+    min-inline-size: 0;
+  }
+
+  .title {
+    margin-block: 0 var(--space-6);
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
+  }
+
+  .body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-10);
+  }
+
+  .body:not(:has(> .inputs)) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overview {
+    min-inline-size: 0;
+  }
+
+  .status,
+  .description {
+    color: var(--text-2);
+    font-size: var(--text-md);
+    line-height: var(--leading-base);
+  }
+
+  .description {
+    margin-block: 0 var(--space-5);
+    max-inline-size: 52ch;
+  }
+
+  .method,
+  .source {
+    font-size: var(--text-base);
+    color: var(--text-2);
+    line-height: var(--leading-base);
+  }
+
+  .method summary,
+  .source summary {
+    padding-block: var(--space-3);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    list-style: none;
+    border-radius: var(--radius-sm);
+  }
+
+  .method summary::-webkit-details-marker,
+  .source summary::-webkit-details-marker { display: none; }
+
+  .method summary:hover,
+  .source summary:hover { color: var(--text); }
+
+  .chevron { display: inline-flex; flex: none; }
+
+  .method[open] .chevron,
+  .source[open] .chevron { transform: rotate(90deg); }
+
+  .method ol {
+    display: grid;
+    gap: var(--space-4);
+    margin-block: var(--space-3) var(--space-5);
+    padding-inline-start: var(--space-7);
+    list-style-type: decimal;
+  }
+
+  .source pre {
+    margin-block-start: var(--space-3);
+    padding: var(--space-5);
+    max-block-size: 24rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-base);
+    background: var(--surface-code);
+    border-radius: var(--radius-sm);
+  }
+
+  .inputs {
+    min-inline-size: 0;
+
+  }
+
+  @media (width < 60rem) {
+    .body { grid-template-columns: minmax(0, 1fr); }
+    .inputs {
+      padding-inline-start: 0;
+      border-inline-start: 0;
+      padding-block-start: var(--space-5);
+      border-block-start: 1px solid var(--hairline);
+    }
+  }
+}

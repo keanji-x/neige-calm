@@ -11,6 +11,7 @@ import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../.
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { ISSUE_INPUT_BODY, ISSUE_INPUT_SCHEMA } from '../../features/area/new-track/template-input-fixture.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
@@ -59,7 +60,7 @@ const TEMPLATES = [
   {
     id: 'issue-development',
     title: 'Issue development',
-    input_schema: { type: 'object', required: ['issue_url', 'repo', 'issue_number'] },
+    input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown,
     tasks: [{ key: 'inspect-issue', goal: 'Read the bound issue.' }],
   },
 ];
@@ -205,6 +206,12 @@ function harness(options: {
         return templates === undefined
           ? Promise.resolve({ status: 500, statusText: 'Server Error', body: { message: 'boom' } })
           : Promise.resolve({ status: 200, statusText: 'OK', body: templates });
+      }
+      if (request.method === 'GET' && request.path.startsWith('/api/track-templates/')) {
+        const id = decodeURIComponent(request.path.slice('/api/track-templates/'.length));
+        if (id !== 'issue-development' && id !== 'small-change') return Promise.resolve({ status: 404, statusText: 'Not Found', body: {} });
+        return Promise.resolve({ status: 200, statusText: 'OK', body: { id, title: id, description: null, instructions: null,
+          body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source' } });
       }
       /* Served rather than left to fall through to `[]`: a decode failure would look
                identical to "the feature did not run". */

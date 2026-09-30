@@ -4655,6 +4655,47 @@
         }
       }
     },
+    "/api/track-templates/{id}": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "get_track_template",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Template key; encode a site/ prefix as part of this segment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Selected template content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackTemplateDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks": {
       "get": {
         "tags": [
@@ -12501,6 +12542,38 @@
               "$ref": "#/components/schemas/TrackTemplateTask"
             },
             "description": "The tasks this template pre-sets, in plan order. Always present; not always non-empty."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "TrackTemplateDetail": {
+        "type": "object",
+        "description": "Author-owned display metadata and the byte-exact report body. This read grants no authority.",
+        "required": [
+          "id",
+          "title",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "title": {
             "type": "string"

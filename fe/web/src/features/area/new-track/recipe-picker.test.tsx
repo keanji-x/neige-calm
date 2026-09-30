@@ -35,6 +35,7 @@ function renderForm(overrides: Partial<Parameters<typeof NewTrackForm>[0]> = {})
     error: null,
     templates: [SMALL_CHANGE],
     templatesLoaded: true,
+    loadTemplate: vi.fn((id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Inspect the requested change.\nRun relevant verification.', body: '# Template source\n' })),
     initialTemplateId: null,
     initialCwd: null,
     onManageRecipes: vi.fn(),

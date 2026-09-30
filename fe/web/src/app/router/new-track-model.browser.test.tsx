@@ -8,6 +8,7 @@ import { page } from 'vitest/browser';
 import type { TrackTemplate } from '../../../../core/domain/track.ts';
 import { FOLLOW_INSTALLATION_DEFAULT, type ModelCatalog, type ModelSelection } from '../../../../core/domain/conversation.ts';
 import type { ListDirectory } from '../../ui/directory-browser/public.tsx';
+import { ISSUE_INPUT_BODY, ISSUE_INPUT_SCHEMA } from '../../features/area/new-track/template-input-fixture.ts';
 import { NewTrackForm } from '../../features/area/new-track/public.tsx';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -36,7 +37,8 @@ function ModelForm({
     default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null }, default_source: 'unknown',
     source: 'live', fetched_at_ms: 1,
   };
-  return <NewTrackForm submitting={submitting} locked={locked} error={null} templates={templates} templatesLoaded
+  return <NewTrackForm
+      loadTemplate={(id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Run relevant verification.', body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source\n' })} submitting={submitting} locked={locked} error={null} templates={templates} templatesLoaded
     initialTemplateId={initialTemplateId} initialCwd={initialCwd} onManageRecipes={vi.fn()}
     listDirectory={listDirectory} onSubmit={vi.fn()}
     modelControls={<ModelPill provider="codex" groups={[{ provider: 'codex', catalog, availability: null }]} selection={selection} effortControl="in-menu" onChange={(next) => { setSelection(next); onChange(next); }} />}
@@ -342,4 +344,52 @@ it('uses the card radius for the composer while retaining full pill and send con
     view.unmount();
     await page.viewport(1280, 720);
   }
+});
+
+
+it('keeps the selected template and required inputs readable on a narrow screen', async () => {
+  const template: TrackTemplate = { id: 'issue-development', title: 'Issue development', tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
+  await page.viewport(320, 700);
+  const view = render(<ModelForm templates={[template]} initialTemplateId="issue-development" />);
+  try {
+    expect(await screen.findByText('Author supplied description.')).toBeTruthy();
+    const preview = screen.getByRole('region', { name: 'Selected template' });
+    expect(preview.getBoundingClientRect().width).toBeLessThanOrEqual(320);
+    expect(preview.scrollWidth).toBeLessThanOrEqual(preview.clientWidth);
+    expect(getComputedStyle(screen.getByText('Working method')).fontSize).toBe('13px');
+    await userEvent.click(await screen.findByLabelText('Issue URL'));
+    await userEvent.type(screen.getByLabelText('Issue URL'), 'https://github.com/owner/repo/issues/123');
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Merge automatically' }).checked).toBe(false);
+    await userEvent.click(screen.getByText('View full template'));
+    expect(screen.getByText(/neige:input-form/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Track options' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Template:/ }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'No template' }));
+    expect(screen.queryByRole('region', { name: 'Selected template' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByLabelText('What this track should do'));
+  } finally {
+    view.unmount();
+    await page.viewport(1280, 720);
+  }
+});
+
+
+it('aligns template field labels and descriptions on the same desktop axis', async () => {
+  await page.viewport(1280, 900);
+  const template: TrackTemplate = { id: 'issue-development', title: 'Issue development', tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
+  const view = render(<ModelForm templates={[template]} initialTemplateId="issue-development" />);
+  try {
+    const issue = await screen.findByLabelText<HTMLInputElement>('Issue URL');
+    const merge = screen.getByRole<HTMLInputElement>('checkbox', { name: 'Merge automatically' });
+    const issueLabel = issue.labels?.[0];
+    const mergeLabel = merge.labels?.[0];
+    const issueHelp = document.getElementById(issue.getAttribute('aria-describedby') ?? '');
+    const mergeHelp = document.getElementById(merge.getAttribute('aria-describedby') ?? '');
+    if (!issueLabel || !mergeLabel || !issueHelp || !mergeHelp) throw new Error('Label or description association missing');
+    expect(Math.abs(issueLabel.getBoundingClientRect().left - mergeLabel.getBoundingClientRect().left)).toBeLessThan(1);
+    expect(Math.abs(issueHelp.getBoundingClientRect().left - mergeHelp.getBoundingClientRect().left)).toBeLessThan(1);
+    const issueGap = issueHelp.getBoundingClientRect().top - issueLabel.getBoundingClientRect().bottom;
+    const mergeGap = mergeHelp.getBoundingClientRect().top - mergeLabel.getBoundingClientRect().bottom;
+    expect(Math.abs(issueGap - mergeGap)).toBeLessThan(1);
+  } finally { view.unmount(); }
 });

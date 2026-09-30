@@ -62,25 +62,12 @@
     font-family: var(--font-sans);
   }
 
-  /*
-   * The masthead: mark and greeting, on one line.
-   *
-   * The mark is here for the reason a landing page has one — this is the only
-   * screen in the product that is otherwise empty, and an empty screen with one
-   * box on it needs something to be the top of. Beside the greeting rather than
-   * stacked above it: a mark and three words are one object, and stacking them
-   * spent two rows and a vertical rhythm on a two-word phrase.
-   *
-   * What used to sit under it — "New track in <area>" — is gone. The rail
-   * already shows which area is current, and the line was answering a question
-   * asked by the modal this page replaced: you arrive here from that area, so
-   * being told where you are is telling you what you just did.
-   */
+  /* The page prompt shares the composer's left edge, keeping one reading axis. */
   .masthead {
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     gap: var(--space-4);
     margin-block-end: var(--space-8);
   }
@@ -94,32 +81,15 @@
    */
   .mark {
     flex: 0 0 auto;
-    inline-size: 32px;
-    block-size: 32px;
+    inline-size: 24px;
+    block-size: 24px;
     color: var(--text-3);
     background: currentcolor;
     -webkit-mask: url('../../../ui/brand/neige-mark.svg') center / contain no-repeat;
     mask: url('../../../ui/brand/neige-mark.svg') center / contain no-repeat;
   }
 
-  /*
-   * Serif, at the page rank.
-   *
-   * Both halves are the token specification's own vocabulary rather than a choice made
-   * here. `--text-xl` is documented in `tokens.css` as "the one title a route
-   * gets — §3.3 allows exactly one P0 per surface; this is it", and on this
-   * route it is: there is no other title, and the line it replaced was sitting
-   * a rank below the job it was doing.
-   *
-   * `--font-serif` is the *document* voice — `base.css` gives it to
-   * `.calm-prose` and its headings, and to nothing else; everything you
-   * operate is `--font-sans`. Borrowing it here is deliberate and worth stating
-   * plainly, because it is the one place outside a report that does: the
-   * greeting is not a control and not a label, it is the only editorial line in
-   * the product, and the composer under it is where a document starts. If the
-   * serif rank ever gets a written rule beyond "prose", this is the call site
-   * that has to be re-checked against it.
-   */
+  /* The prompt is the main editorial heading; template context stays in interface type. */
   .greeting {
     color: var(--text);
     font-family: var(--font-serif);
@@ -127,7 +97,7 @@
     font-weight: var(--weight-semibold);
     line-height: var(--leading-tight);
     letter-spacing: var(--tracking-tight);
-    text-align: center;
+    text-align: start;
   }
 
   /*
@@ -208,28 +178,10 @@
     box-shadow: inset 0 0 0 2px var(--accent);
   }
 
-  /*
-   * Three lines tall before you have typed anything.
-   *
-   * `ChatComposerInput` floors itself at one line (`minHeight: LINE_HEIGHT_PX`,
-   * 22px) — right for a composer docked under a transcript, where every pixel
-   * it takes is a pixel of conversation. Here it is the only object on the
-   * page, and a one-line slot invites one line: the field's height is the
-   * clearest thing on screen saying how much you are expected to say.
-   *
-   * Declared twice on purpose. `lh` resolves against the element's own computed
-   * line-height, so the second declaration stays three lines if astryx ever
-   * changes what a line is — but a browser without `lh` support drops the whole
-   * declaration, and with only that one the field would fall back to astryx's
-   * 22px single-line floor, i.e. silently lose the feature. The `px` line ahead
-   * of it is that fallback, at today's line-height; a browser that understands
-   * `lh` overrides it.
-   *
-   * It still grows past three as you type — this is a floor, not a size.
-   */
+  /* The desktop request gets four lines so it remains the primary writing surface. */
   .composer [contenteditable="true"] {
-    min-block-size: 66px;
-    min-block-size: 3lh;
+    min-block-size: 88px;
+    min-block-size: 4lh;
   }
 
   /*
@@ -259,40 +211,9 @@
     inset-inline-end: anchor(right);
   }
 
-  .areaDefault {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-6);
-    padding: var(--space-4) var(--space-5);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-    background: var(--accent-soft);
-  }
 
-  .areaDefaultCopy {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    min-inline-size: 0;
-    font-size: var(--text-sm);
-    line-height: var(--leading-snug);
-    color: var(--text-2);
-  }
 
-  .areaDefaultCopy strong {
-    font-weight: var(--weight-medium);
-    color: var(--text);
-  }
 
-  .areaDefaultActions {
-    display: flex;
-    flex-wrap: wrap;
-    flex: none;
-    align-items: center;
-    gap: var(--space-2);
-  }
 
   /* Preserve ChatComposer's desktop footer slots. */
   .composer :has(> :first-child > [data-nc-composer-preferences]) {
@@ -301,16 +222,6 @@
 
   .composer :has(> :first-child > [data-nc-composer-preferences]) > :last-child {
     margin-inline-start: auto;
-  }
-
-  /* Indented and rule-led: the fields belong to the template named above them,
-     and the inset rule carries that without a second box around them. */
-  .panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-    padding-inline-start: var(--space-6);
-    border-inline-start: 1px solid var(--hairline);
   }
 
   /* These wrappers leave the desktop footer's existing two slots intact. */
