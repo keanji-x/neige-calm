@@ -127,6 +127,36 @@ it.each([
   expect(sends()).toEqual([text]);
 });
 
+/** axe aria-allowed-attr: a combobox may not carry `aria-multiline` (#1891 drops the workaround). */
+async function expectComboboxWithoutMultiline(name: string) {
+  const field = await page.getByRole('combobox', { name }).findElement();
+  await expect.poll(() => field.hasAttribute('aria-multiline')).toBe(false);
+}
+
+it('keeps aria-multiline off both trigger-bearing fields through mount, typing and a send', async () => {
+  await page.viewport(1440, 900);
+  const { requests } = mount('/track/w1');
+  await openConversation(/Conversation Planner chat/);
+  await expectComboboxWithoutMultiline('Message');
+  await userEvent.keyboard('ask @dep');
+  await expect.element(menu().getByRole('option').first()).toBeVisible();
+  await expectComboboxWithoutMultiline('Message');
+  await userEvent.keyboard('{Escape}{Enter}');
+  await expect.poll(() => requests.filter((request) => request.path.endsWith('/planner/input')).length).toBe(1);
+  await expectComboboxWithoutMultiline('Message');
+  cleanup();
+
+  mount('/area/c1/new');
+  const sentence = page.getByRole('combobox', { name: 'What this track should do' });
+  await expectComboboxWithoutMultiline('What this track should do');
+  await sentence.click();
+  await userEvent.keyboard('Continue @roll');
+  await expect.element(menu().getByRole('option').first()).toBeVisible();
+  await expectComboboxWithoutMultiline('What this track should do');
+  await page.getByRole('button', { name: 'Create track' }).click();
+  await expectComboboxWithoutMultiline('What this track should do');
+});
+
 it('offers no @ menu in a track\'s assistant conversation', async () => {
   const { mentionReads } = mount('/track/w1');
   await openConversation(/Conversation Side chat/);

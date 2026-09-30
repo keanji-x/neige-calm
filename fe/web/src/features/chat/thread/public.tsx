@@ -22,6 +22,7 @@ import { observeResize } from '../../../ui/edge-navigation/resize.ts';
 import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
+import { useTriggerFieldAria } from '../../../ui/trigger-menu-keys/field-aria.ts';
 import { useState } from '../../../ui/state/public.ts';
 
 import { activityLabelOf, cardActivityOf, type CardActivity } from '../../../../../core/domain/activity.ts';
@@ -539,6 +540,7 @@ export function ChatComposer({
   newConversationRef.current = onNewConversation;
 
   const rootRef = useRef<HTMLDivElement>(null);
+  useTriggerFieldAria(rootRef);
   const [sendCount, setSendCount] = useState(0);
   const wantsFieldFocus = useRef(focusOnMount);
   /** The element this component last put focus on; `null` while no restore is in flight. */
