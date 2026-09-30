@@ -245,12 +245,13 @@ Each slice is independently mergeable and green. Migration numbers are assigned 
   - cut descriptions (§6) and fix the stale `usage` (F24);
   - add the four ratchets;
   - delete `planner_candidate_examples_…`; update the fork sentence; regenerate both goldens.
-- Must-red:
+- Must-red (each confirmed by running `-p calm-server --lib` plus `mcp_integration_suite`, `track_suite` and `mcp_core_suite`; the red set was exactly this):
   - `planner_prompt_fits_its_byte_budget` + `shipped_issue_development_rendered_prompt_matches_full_golden` ← `planner.md` ← re-append main's Terminal section.
-  - `every_guide_named_in_planner_md_is_served` ← `track_file.rs` `GUIDES` ← drop the `gates.md` row.
+  - `every_guide_named_in_planner_md_is_served` + `every_guide_fits_its_byte_budget` (its `GUIDES.len() >= 4` floor) ← `track_file.rs` `GUIDES` ← drop the `gates.md` row.
   - `every_guide_fits_its_byte_budget` ← `prompts/guides/terminal.md` ← append main's L30 twice.
-  - `planner_tool_surface_fits_its_byte_budget` ← `calm.terminal.input.md` ← restore main's text.
-  - `planner_prompt_pins_callable_task_block_protocol` ← `planner.md` §3 ← `ready: true` → `ready: false`.
+  - `planner_tool_surface_fits_its_byte_budget` + `default_registry_matches_full_golden` ← `calm.terminal.input.md` ← restore main's text.
+  - `planner_prompt_pins_callable_task_block_protocol` + `planner_prompt_contract_rejects_negative_context` + `shipped_git_forge_give_up_uses_the_track_close_tool` + `shipped_issue_development_rendered_prompt_matches_full_golden` ← `planner.md` §3 ← `ready: true` → `ready: false`.
+- As built: `planner.md` 7,120 B; guides 1,751 + 2,011 + 1,650 + 2,033 = 7,445 B; tool surface 35,888 B. The terminal.input schema keeps its 2,126 B: every byte there is a live action shape or switch, so its cut waits for S5's deletions.
 
 **S2**
 - Content:
@@ -281,6 +282,9 @@ Each slice is independently mergeable and green. Migration numbers are assigned 
   - `legacy_4140_rows_load` ← the `TaskAttemptOrigin` enum ← delete the `Recovery` variant.
   - new `neige_execution_context_is_not_projected` ← `report_blocks/tasks.rs` validator ← remove the diagnostic arm.
   - `plan_list_ordinary_entry_has_exactly_the_kept_fields` ← `plan.rs:674` ← re-add `activity`.
+- Open items, resolved before S4 starts:
+  - (a) Deleting recovery admission leaves a read-path hole. `GET /attempts` and `calm.plan.list` reach `admit_recovery_tx` for every failed task (`task_recovery/view.rs:169`, called from `plan.rs:650`), and the history view has a required `recovery` field (`task_recovery/view.rs:165`). S4 needs an explicit replacement read path and wire shape. 4140 has 1 `recovery` allocation and 4 failed isolated task rows, 3 of them current.
+  - (b) "Task artifacts" means only the isolated attempt report REST route (`routes/isolated_tasks.rs:167`). The shared `task.completed.artifacts` field and the ordinary result views stay: 4140 has 23 current ordinary tasks whose `task.completed` carries non-empty artifacts (50 events, 0 isolated).
 
 **S5**
 - Content: terminal cuts (§4), with a migration dropping `tracks.claude_permissions_policy`.
