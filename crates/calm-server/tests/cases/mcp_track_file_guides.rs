@@ -24,13 +24,9 @@ fn named_guides(prompt: &str) -> Vec<String> {
 #[tokio::test]
 async fn every_guide_named_in_planner_md_is_served() {
     let boot = boot().await;
-    let prompt =
-        render_planner_developer_instructions_for_test(boot.track_id.as_str(), None, None);
+    let prompt = render_planner_developer_instructions_for_test(boot.track_id.as_str(), None, None);
     let named = named_guides(&prompt);
-    assert!(
-        named.len() >= 4,
-        "anti-vacuity: the prompt names {named:?}"
-    );
+    assert!(named.len() >= 4, "anti-vacuity: the prompt names {named:?}");
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts/guides");
     for name in &named {
@@ -69,10 +65,16 @@ async fn every_guide_named_in_planner_md_is_served() {
         .iter()
         .map(|entry| entry["name"].as_str().expect("entry name").to_string())
         .collect();
-    assert_eq!(listed, named, "guide/ must list exactly the guides the prompt names");
+    assert_eq!(
+        listed, named,
+        "guide/ must list exactly the guides the prompt names"
+    );
     let on_disk: BTreeSet<String> = std::fs::read_dir(&dir)
         .expect("read prompts/guides")
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
-    assert_eq!(on_disk, named, "every file in prompts/guides must be named by the prompt");
+    assert_eq!(
+        on_disk, named,
+        "every file in prompts/guides must be named by the prompt"
+    );
 }

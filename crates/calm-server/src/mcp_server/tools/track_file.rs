@@ -185,7 +185,10 @@ pub(crate) const GUIDES: &[(&str, &str)] = &[
         include_str!("../../../prompts/guides/terminal.md"),
     ),
     ("gates.md", include_str!("../../../prompts/guides/gates.md")),
-    ("report.md", include_str!("../../../prompts/guides/report.md")),
+    (
+        "report.md",
+        include_str!("../../../prompts/guides/report.md"),
+    ),
     (
         "outputs.md",
         include_str!("../../../prompts/guides/outputs.md"),
