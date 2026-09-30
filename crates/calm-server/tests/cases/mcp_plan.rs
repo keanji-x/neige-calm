@@ -856,6 +856,48 @@ async fn list_returns_plan_shape_without_gate_commands() {
     assert_eq!(b["worker_card_id"], Value::Null);
 }
 
+/// The exact field set of an ordinary (non-isolated) entry: a field only a deleted or isolated
+/// mechanism fills must not reach it (#1893 §3.2).
+#[tokio::test]
+async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
+    let boot = boot().await;
+    write_task_block(&boot, json!({"key": "a", "kind": "codex", "goal": "g"})).await;
+    let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), json!({}))
+        .await
+        .expect("list ok");
+    let fields: std::collections::BTreeSet<&str> = out["tasks"][0]
+        .as_object()
+        .expect("one entry")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        fields,
+        std::collections::BTreeSet::from([
+            "activity",
+            "attempt_id",
+            "blocking_reason",
+            "candidate",
+            "created_at_ms",
+            "depends_on",
+            "finished_at_ms",
+            "gate",
+            "gate_result",
+            "generation",
+            "goal",
+            "id",
+            "key",
+            "kind",
+            "priority",
+            "recovery",
+            "status",
+            "status_detail",
+            "worker_card_id",
+        ]),
+        "{out}"
+    );
+}
+
 #[tokio::test]
 async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
     let boot = boot().await;

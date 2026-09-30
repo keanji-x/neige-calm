@@ -82,6 +82,9 @@ mod isolated_codex_smoke;
 #[path = "cases/isolated_activity.rs"]
 mod isolated_activity;
 
+#[path = "cases/legacy_4140_rows.rs"]
+mod legacy_4140_rows;
+
 #[path = "cases/candidate_upstream.rs"]
 mod candidate_upstream;
 #[path = "cases/gate_binding.rs"]
