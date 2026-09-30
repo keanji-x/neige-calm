@@ -354,7 +354,7 @@ pub(super) fn kinds_table() -> Value {
                     },
                     "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
                 },
-                "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
+                "usage": "Task declaration block. `ready: true` lets the kernel project and schedule it. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
             }
         ]
     });
@@ -447,24 +447,23 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
             "additionalProperties": false,
             "properties": {
                 "message": message_schema(),
-                "summary": { "type": "string", "description": "New sidebar summary (~80 chars). Omit to keep the existing one." },
+                "summary": { "type": "string" },
                 "ops": {
                     "type": "array",
                     "maxItems": MAX_BATCH_OPS,
-                    "description": "Ordered block ops; may be omitted or empty.",
                     "items": {
                         "type": "object",
                         "required": ["op"],
                         "additionalProperties": false,
                         "properties": {
                             "op": { "type": "string", "enum": ["replace", "upsert", "move", "delete"] },
-                            "section": { "type": "string", "description": "replace / delete: the section's H1 text; replace's `markdown` is the whole section, heading first." },
-                            "id": { "type": "string", "description": "upsert (replace) / move / delete: the existing block id. Omit on upsert to create." },
-                            "kind": { "type": "string", "enum": block_kind_enum(), "description": "upsert: block kind." },
-                            "markdown": { "type": "string", "description": "upsert, kind=prose: the content. replace: the whole section." },
-                            "payload": { "type": "object", "description": "upsert, data kinds: the schema-validated payload (see calm.report.blocks.kinds)." },
-                            "position": { "type": "integer", "minimum": 0, "description": "upsert-create only: insertion index (default append)." },
-                            "to_index": { "type": "integer", "minimum": 0, "description": "move: final 0-based index." }
+                            "section": { "type": "string" },
+                            "id": { "type": "string" },
+                            "kind": { "type": "string", "enum": block_kind_enum() },
+                            "markdown": { "type": "string" },
+                            "payload": { "type": "object", "description": "Data kinds: see calm.report.blocks.kinds." },
+                            "position": { "type": "integer", "minimum": 0 },
+                            "to_index": { "type": "integer", "minimum": 0 }
                         }
                     }
                 }

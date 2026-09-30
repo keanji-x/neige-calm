@@ -86,14 +86,6 @@ fn read_descriptor() -> ToolDescriptor {
             "type": "object",
             "properties": {
                 "select": {
-                    "description": concat!(
-                        "What to return: \"full\" (default; `text` + index), \"index\" ",
-                        "(`docRev`, `summary`, `blocks`, `taskDiagnostics` — no `text`), or ",
-                        "`{ \"blocks\": [\"b_x\", …] }` (index + `text` holding only those blocks ",
-                        "in document order, each preceded by its `<!-- neige:b_x -->` marker line; ",
-                        "an unknown id is an error), or `{ \"sections\": [\"H1 text\", …] }` (the same ",
-                        "for every block of those H1 sections; an unknown section is an error)."
-                    ),
                     "oneOf": [
                         { "type": "string", "enum": ["full", "index"] },
                         {
@@ -114,20 +106,9 @@ fn read_descriptor() -> ToolDescriptor {
                         }
                     ]
                 },
-                "with_markers": {
-                    "type": "boolean",
-                    "description": concat!(
-                        "Inject a `<!-- neige:b_xxxx -->` marker line before each block in ",
-                        "`text` (default false; always on for `select.blocks` / `select.sections`)."
-                    )
-                },
+                "with_markers": { "type": "boolean" },
                 "resolve": {
                     "type": "object",
-                    "description": concat!(
-                        "Per-block hydration override for `chart.series` and live `table` ",
-                        "blocks: `{ [block_id]: \"full\" | \"none\" }`. ",
-                        "Default (no entry) is the summary."
-                    ),
                     "additionalProperties": { "type": "string", "enum": ["full", "none"] }
                 }
             }

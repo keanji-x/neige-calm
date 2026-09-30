@@ -1,1 +1,1 @@
-Planner-only: list report links from tracks in the same area to the caller's own track. Takes no parameters. Link syntax is `[label](neige://wave/<track_id>#<block_id>)`; the fragment is optional, and block ids come from `calm.area.outline` or `calm.report.read`. Links resolve only within the area. An anchor whose block no longer exists degrades to a whole-report link rather than breaking.
+Planner-only: list links to your track's report from other reports in the area; no parameters. The link syntax is calm.area.outline's.

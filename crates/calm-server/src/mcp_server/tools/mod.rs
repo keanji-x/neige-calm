@@ -171,6 +171,38 @@ mod tests {
         );
     }
 
+    /// What Codex loads up front for a Planner (#1893): every visible tool's description plus its
+    /// compact input schema. One-sided caps; a change that shrinks the surface lowers them.
+    #[test]
+    fn planner_tool_surface_fits_its_byte_budget() {
+        const SURFACE_MAX_BYTES: usize = 40_000;
+        const DESCRIPTION_MAX_BYTES: usize = 2_048;
+
+        let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
+        assert!(
+            descriptors.len() >= 20,
+            "anti-vacuity: the Planner sees {} tools",
+            descriptors.len()
+        );
+        let mut total = 0;
+        for descriptor in &descriptors {
+            let description = descriptor.description.len();
+            assert!(
+                description <= DESCRIPTION_MAX_BYTES,
+                "{}: description is {description} bytes, over {DESCRIPTION_MAX_BYTES}",
+                descriptor.name
+            );
+            let schema = serde_json::to_string(&descriptor.input_schema)
+                .expect("serialize input schema")
+                .len();
+            total += description + schema;
+        }
+        assert!(
+            total <= SURFACE_MAX_BYTES,
+            "the Planner tool surface is {total} bytes, over its {SURFACE_MAX_BYTES} byte budget"
+        );
+    }
+
     /// A plain `Option<Value>` serialisation would render `None` and `Some(Value::Null)` both as `null`.
     #[test]
     fn golden_row_encodes_annotations_presence_like_the_wire() {
