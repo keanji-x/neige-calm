@@ -169,7 +169,7 @@ async fn removed_revision_params_are_refused_as_unknown_parameters() {
 }
 
 #[tokio::test]
-async fn kinds_returns_all_seven_schemas() {
+async fn kinds_returns_all_supported_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -196,7 +196,9 @@ async fn kinds_returns_all_seven_schemas() {
             "table",
             "app",
             "task",
-            "preview"
+            "preview",
+            "view.live",
+            "view"
         ]
     );
     for kind in kinds {

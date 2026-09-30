@@ -362,7 +362,7 @@ pub(super) fn kinds_table() -> Value {
     kinds["kinds"]
         .as_array_mut()
         .expect("kinds array literal")
-        .push(preview_kind());
+        .extend([preview_kind(), live_view_kind(), native_view_kind()]);
     kinds
 }
 
@@ -433,6 +433,33 @@ fn optional_message_schema() -> Value {
         "description": "Optional human-readable rationale for this write, persisted as \
             agent_message on the emitted event."
     })
+}
+
+fn live_view_kind() -> Value {
+    json!({
+        "kind": "view.live",
+        "schema": {
+            "type": "object", "required": ["source", "version", "view"],
+            "additionalProperties": false,
+            "properties": {
+                "source": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS,
+                    "pattern": "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" },
+                "version": { "type": "integer", "const": 1 },
+                "view": { "enum": ["overview", "activity", "cards", "details"] }
+            }
+        },
+        "usage": include_str!("../../../../prompts/tools/calm.report.kind.view.live.md").trim_end()
+    })
+}
+
+fn native_view_kind() -> Value {
+    let schema: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fe/core/domain/report-view.schema.json"
+    )))
+    .expect("generated native-view JSON Schema");
+    json!({"kind":"view", "schema":schema,
+        "usage": include_str!("../../../../prompts/tools/calm.report.kind.view.md").trim_end()})
 }
 
 pub(super) fn commit_descriptor() -> ToolDescriptor {

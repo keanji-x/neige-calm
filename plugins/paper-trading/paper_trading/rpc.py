@@ -8,9 +8,9 @@ import threading
 
 from . import VERSION
 from .broker import Broker
-from .config import Config
-from .engine import Engine
+from .config import AccountConfig
 from .runtime import Runtime
+from .strategy import Portfolio
 
 
 class Rpc:
@@ -70,7 +70,7 @@ def serve():
                 if not isinstance(track, str) or not track:
                     raise ValueError("host-provided Track context required")
                 args = params.get("arguments", {})
-                result = runtime.engine.call(track, params.get("name"), args)
+                result = runtime.portfolio.call(track, params.get("name"), args)
                 if params.get("name") not in ("paper.status", "paper.journal"):
                     runtime.wake.set()
                 reply(frame["id"], {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=True)}],
@@ -104,9 +104,9 @@ def serve():
                     if runtime is not None:
                         raise ValueError("already initialized")
                     meta = params.get("_meta", {})
-                    config = Config.parse(meta.get("dev.neige/config", {}).get("values", {}))
-                    engine = Engine(root, config, Broker(config.cli_path, config.broker_home, str(root)))
-                    runtime = Runtime(engine, lambda track, kind, payload: rpc.call("neige.overlay.set", {
+                    config = AccountConfig.parse(meta.get("dev.neige/config", {}).get("values", {}))
+                    portfolio = Portfolio(root, config, Broker(config.cli_path, config.broker_home, str(root)))
+                    runtime = Runtime(portfolio, lambda track, kind, payload: rpc.call("neige.overlay.set", {
                         "entity_kind": "track", "entity_id": track, "kind": kind, "payload": payload}))
                     result = {"protocolVersion": params.get("protocolVersion", "2025-11-25"),
                               "serverInfo": {"name": "paper-trading", "version": VERSION},

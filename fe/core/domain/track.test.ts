@@ -7,7 +7,7 @@ import {
   sortAreaTracksByRecent, trackRecentAt, limitAreaTracks, railAreaTracks, AREA_TRACK_LIMIT,
   trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackWireSchema, tracksInAreaOperation,
-  trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload, plannerProviderOf,
+  trackCreateKeyAction, userVisibleTracks, trackOverlayPayload, plannerProviderOf,
   type Track, type OverlayWire,
 } from './track.js';
 import type { Area } from './area.js';
@@ -504,7 +504,7 @@ describe('isBlankForKernel', () => {
   });
 });
 
-describe('liveTableOverlayPayload', () => {
+describe('trackOverlayPayload', () => {
   const overlay = (over: Partial<OverlayWire>): OverlayWire => ({
     id: 'o1',
     plugin_id: 'dev-neige-binance',
@@ -518,7 +518,7 @@ describe('liveTableOverlayPayload', () => {
   const SOURCE = 'neige://plugin/dev-neige-binance/portfolio.holdings';
 
   it('returns the payload of the overlay the source addresses', () => {
-    expect(liveTableOverlayPayload('t1', [overlay({})], SOURCE))
+    expect(trackOverlayPayload('t1', [overlay({})], SOURCE))
       .toEqual({ columns: [], rows: [] });
   });
 
@@ -531,9 +531,9 @@ describe('liveTableOverlayPayload', () => {
       overlay({ entity_kind: 'card' }),
     ];
     for (const row of wrong) {
-      expect(liveTableOverlayPayload('t1', [row], SOURCE)).toBeUndefined();
+      expect(trackOverlayPayload('t1', [row], SOURCE)).toBeUndefined();
     }
-    expect(liveTableOverlayPayload('t1', [...wrong, overlay({})], SOURCE))
+    expect(trackOverlayPayload('t1', [...wrong, overlay({})], SOURCE))
       .toEqual({ columns: [], rows: [] });
   });
 
@@ -546,7 +546,7 @@ describe('liveTableOverlayPayload', () => {
       'neige://plugin//portfolio.holdings',
       'neige://plugin/dev-neige-binance/',
     ]) {
-      expect(liveTableOverlayPayload('t1', [overlay({})], source)).toBeUndefined();
+      expect(trackOverlayPayload('t1', [overlay({})], source)).toBeUndefined();
     }
   });
 });

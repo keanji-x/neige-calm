@@ -378,6 +378,22 @@ describe('ReportDocument', () => {
   });
 
   describe('typed blocks', () => {
+    it('routes view.live through the overlay resolver without the table renderer', () => {
+      const source = 'neige://plugin/operations/capacity';
+      const asked: string[] = [];
+      const { container } = render(<ReportDocument report={blocked({ id: 'b-view', kind: 'view.live',
+        payload: { source, version: 1, view: 'overview' },
+      })} empty={EMPTY} resolveOverlay={(value) => {
+        asked.push(value);
+        return { version: 1, view: 'overview', updated: null, notices: [], charts: [],
+          metrics: [{ label: 'Available capacity', value: '512 GB', detail: '', tone: 'neutral' }] };
+      }} />);
+      expect(asked).toEqual([source]);
+      expect(screen.getByText('512 GB')).toBeTruthy();
+      expect(container.querySelector('#b-view')).toBeTruthy();
+      expect(screen.queryByRole('table')).toBeNull();
+    });
+
     it('gives each block its id, so a citation has something to land on', () => {
       const { container } = render(<ReportDocument report={blocked(
         prose('b-1', '# One'),

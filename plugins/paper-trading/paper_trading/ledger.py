@@ -97,6 +97,19 @@ class Ledger:
     def fills(db):
         return [json.loads(row[0]) for row in db.execute("SELECT body FROM fills ORDER BY id")]
 
+    @staticmethod
+    def reviews(db):
+        stored = {row['id']: row['body'] for row in db.execute('SELECT id,body FROM reviews')}
+        result = []
+        for row in db.execute("SELECT body FROM journal WHERE kind='review_added' ORDER BY seq"):
+            review = json.loads(row[0])
+            if stored.pop(review['review_id'], None) != row[0]:
+                raise ValueError('review audit history does not match stored reviews')
+            result.append(review)
+        if stored:
+            raise ValueError('stored review has no recorded audit chronology')
+        return result
+
     def change(self, db, key, state, error=None, broker_id=None, broker_status=None):
         row = self.decision(db, key)
         identity = broker_id or row["broker_id"]

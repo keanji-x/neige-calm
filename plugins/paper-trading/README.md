@@ -3,7 +3,7 @@
 One investment Area, one long-lived strategy Track, one dedicated paper account.
 Weekly reports are versioned inputs, not new accounts or new execution Tracks.
 The plugin records decisions, reconciles broker orders and executions, maintains
-a durable trading journal and renders native Report tables. AI research and
+a durable trading journal and renders native Report views. AI research and
 review run in the existing Neige agent, not inside another model client.
 
 **This is supervised paper execution, not unattended trading or a shadow
@@ -28,62 +28,176 @@ codes. The separate interactive operator command preserves that contract.
   are deliberately unavailable. Account equity includes activity outside the
   strategy's tracked fills; it is not presented as attributed strategy return.
 
-## Install and bind
+## Account-only setup
 
 Runtime: Linux, Python 3.11+ at `/usr/bin/python3`, the Longbridge CLI, and an
 operator-created paper login. The plugin has no third-party Python dependencies.
 Protect installed code, configuration, ledger and broker HOME from unintended
 writers; local plugins share the service OS identity, not an OS sandbox.
 
-1. Create an investment Area. Save `recipe.md` as a user Recipe, and create one
-   strategy Track from it. Record the actual Track ID. No core migration needed.
-2. Install this directory via Settings -> Plugins -> Server directory. Leave it
-   disabled until fully configured. Installing files alone does not enable it.
-3. Configure all required fields. Example values below are illustrative limits,
-   not defaults, investment advice or an authorization to place orders:
+1. Install this directory via Settings -> Plugins -> Server directory. Leave it
+   disabled until the account connection is configured. Installing files alone
+   does not enable it. Existing 0.1.0 installations must first follow the explicit
+   legacy migration below, retaining their original data directory.
+2. Configure only the account connection. Replace the placeholders with the
+   operator-verified paper account and its dedicated broker HOME:
 
 ```json
 {
   "account_no": "YOUR_VERIFIED_PAPER_ACCOUNT",
-  "owner_track_id": "YOUR_STRATEGY_TRACK_ID",
   "broker_home": "/home/operator/paper-home",
-  "research_root": "/home/operator/financial_agent",
-  "symbols_json": "[\"SOXX.US\",\"GLD.US\"]",
-  "max_order_usd": "500",
-  "max_portfolio_usd": "1000",
-  "max_trade_risk_usd": "20",
   "cli_path": "/usr/local/bin/longbridge",
-  "poll_seconds": 60,
-  "quote_max_age_seconds": 180,
-  "max_price_deviation_bps": 100
+  "poll_seconds": 60
 }
 ```
 
-`symbols_json` is a JSON-encoded array because the host config schema supports
-scalar fields only. The plugin strictly validates the parsed list and numeric
-limits. Monetary amounts are decimal strings. Use a dedicated broker HOME and
-do not switch its login or modify Longbridge authentication during a session.
+Only `account_no` and `broker_home` are required. The optional `cli_path` defaults
+to `/usr/local/bin/longbridge`; `poll_seconds` defaults to 60 (range 5-3600).
+There are no global strategy fields, risk defaults or owner Track input. Use a
+dedicated broker HOME and do not switch its login or modify Longbridge
+authentication during a session.
 The child environment inherits only PATH/LANG and an explicit proxy allowlist;
 HOME is pinned. Longbridge endpoint overrides and unrelated credentials are not
 inherited. A broker failure is never replaced with synthetic prices or fills.
 
-4. Enable the plugin, then start a new agent conversation to discover its tools.
-   Confirm a successful account snapshot in the Report before recording orders.
-5. Retain the exact same operator-managed configuration JSON for the interactive
-   command below. The plugin data directory is
+3. Retain the same account-only values in an operator-managed `ACCOUNT_JSON` for
+   the interactive commands below. The plugin data directory is
    `<plugins-data-dir>/dev-neige-paper-trading`; do not use a second ledger for
-   the same account. This first version assumes exclusive use of that account.
+   the same account. `EXISTING_ROOT` below means this exact plugin data directory,
+   not a new directory or the parent `plugins-data-dir`.
+4. Enable the plugin. Account-only initialization needs no strategy and grants
+   no trading authority. A fresh installation remains unapproved until the
+   following proposal and human approval steps are complete.
 
-The account/Track ledger binding cannot be changed. Rebinding requires a new
-portfolio after all old orders and holdings are resolved, not deleting its data.
-Do not point this at a shared account or a pre-existing untracked position:
-external positions and unknown active orders block trading.
+## Saved Recipe and strategy approval
+
+1. Create an investment Area, save [recipe.md](recipe.md) as a user Recipe with
+   its HTML comments intact, and create one long-lived strategy Track from it.
+   This is the sole shipped Recipe source. Plugin installation does not add a
+   selectable template: the host template roster is not dynamically extensible
+   through this manifest, so no `templates` entry is declared.
+2. Start a new agent conversation in that Track. Discuss the method and supply
+   the required choices below. The Recipe contains the research, sizing,
+   decision and review instructions; it contains no example risk limits to
+   activate. Missing choices must be collected, not inferred.
+
+| `paper.strategy` argument | Required choice or optional default |
+| --- | --- |
+| `research_root` | Absolute path to the read-only `financial_agent` repository. |
+| `symbols` | JSON array of 1-30 unique allowed US stock/ETF ticker strings in `SYMBOL.US` form, not `symbols_json`. |
+| `max_order_usd` | Positive decimal USD string; no default. Must not exceed `max_portfolio_usd`. |
+| `max_portfolio_usd` | Positive decimal USD string; no default. Caps entry-cost exposure plus reserved buy notional, not market value or loss. |
+| `max_trade_risk_usd` | Positive decimal USD string; no default. Caps entry-limit minus stop distance times shares, not actual maximum loss. |
+| `quote_max_age_seconds` | Integer 30-300; 180 only if absent. |
+| `max_price_deviation_bps` | Integer 1-500; 100 only if absent. |
+
+3. The agent calls `paper.strategy`, which never calls the broker, and reads
+   `state.strategy`: `phase` is `unconfigured`, `awaiting_approval`, `approved` or
+   `migration_required`; `account_no` identifies the configured account;
+   `active` and `proposal` are each null or contain `revision`, `track_id` and
+   `settings`. Report the exact proposal revision, Track, effective settings
+   (including optional defaults) and phase, distinguishing the proposal from
+   active settings. Account connection comes from trusted plugin settings;
+   Track identity comes exclusively from the host. No account, owner or approval arguments are
+   accepted. Repeating identical settings is idempotent; changes create a new
+   proposal revision. **A proposal is never approval.**
+4. From the installed plugin's release directory, the human operator runs:
+
+```sh
+python3 -m paper_trading.operator \
+  --config ACCOUNT_JSON \
+  --data-dir EXISTING_ROOT \
+  --approve-strategy PROPOSAL_REVISION
+```
+
+The interactive operator displays JSON with the exact account, Track, proposal
+revision and limits, then requires the human to type literal `APPROVE`.
+Blank or noninteractive input cannot approve.
+Agents must never invoke this command or approve on the user's behalf. Chat
+agreement, Recipe edits and Report edits are not approval, and there is no
+browser confirmation route. Strategy approval is a local policy approval,
+**not** the broker's native order confirmation and not an order submission.
+
+5. Verify the approved revision/settings under the Report's collapsed strategy
+   details before starting a paper cycle. The Recipe prioritizes account/return
+   KPI cards, per-trade gross P/L bars and a cost-budget meter, followed by readable
+   activity and review cards. Strategy, order and trade details start collapsed.
+   Existing paper tools retain their signatures.
+   `paper.status` and `paper.journal` can inspect setup before approval; all
+   other existing tools require an approved strategy for the host-provided owner Track.
+
+One dedicated paper account can have only one approved Track. It cannot be
+rebound to another Track, even after closing its trades; never delete data or
+create another independent ledger to bypass this binding. Multi-strategy shared
+accounts are not supported. Same-Track settings changes require a new proposal
+and explicit approval, no unresolved decisions or open shares, and a broker
+identity/position/order reconciliation before approval. External positions and
+unknown active orders block operation. Stale previews cannot cross an approved
+strategy revision.
+
+Approved typed settings and proposal history persist in `strategy.sqlite3`
+alongside the existing `ledger.sqlite3`, independently of mutable Recipe and
+Report prose. Preserve both databases and research snapshots.
+
+Deploy this Recipe with the matching server and frontend supporting the
+first-class `view.live` block. Every reference declares its source, version and
+view; tables remain table-only. The renderer accepts bounded data, not HTML,
+script, styles or action URLs. The plugin owns labels, business calculations,
+and semantic tones; the platform owns validation, layout and interaction.
+The original seven table source IDs remain available to previously saved
+Reports; seven additional source IDs carry the new visual views. Updating a saved
+Recipe does not rewrite existing Track reports or approved strategy settings.
+
+Native table cells and activity details show at most 2,048 Unicode code points;
+long values end with `[truncated]`. Review cards retain the complete validated
+review text. Full original facts remain in the ledger and tool responses.
+Journal text is presented as readable event summaries instead of serialized JSON.
+Report rows contain only their declared columns. Charts use existing executions
+and cost accounting: account equity is not attributed strategy return, gross
+P/L excludes fees, and no historical balance curve is fabricated.
+Every holding alert remains accessible in the collapsed alert details. Review
+cards are ordered by their recorded journal sequence, not their arbitrary IDs;
+missing or inconsistent review audit evidence is refused instead of silently
+dropping a review. Expiration, rejection and confirmed cancellation remain in
+the activity feed alongside fills and proposals.
+
+## Explicit legacy migration
+
+For an existing 0.1.0 installation, do not replace or reset its ledger, infer
+previous limits, create a new Track, or start a second ledger for the account.
+Stop the old plugin process and make a consistent backup of its data and saved
+full configuration before upgrading the installed files.
+
+Keep the original full JSON as `LEGACY_FULL_CONFIG_JSON`, including its exact
+`owner_track_id`, `research_root`, `symbols_json`, risk limits and optional
+settings. Create a separate account-only `ACCOUNT_JSON` with the same verified
+connection values, and use those account-only values in plugin settings.
+From the upgraded plugin's release directory, the human runs:
+
+```sh
+python3 -m paper_trading.operator \
+  --config ACCOUNT_JSON \
+  --data-dir EXISTING_ROOT \
+  --import-legacy LEGACY_FULL_CONFIG_JSON
+```
+
+This explicit interactive migration requires the human to type literal `IMPORT`,
+matches the account connection and original account/Track binding against the
+legacy settings, retains the existing ledger bytes/history and research
+snapshots, and records strategy state separately. Missing or mismatched legacy
+configuration must be resolved, never guessed or backfilled. Import is not an
+agent action, browser action or an authorization to submit orders. Successful
+import establishes the approved legacy strategy snapshot; inspect the operator's
+result and approved settings before resuming. Later changes still need a new
+proposal and exact-revision human approval as above.
+Continue in the original Track, retaining its other Recipe customizations when
+adopting the visual report references and updated instructions from `recipe.md`.
 
 ## Run the first real paper cycle
 
-Ask the Track agent to ingest the requested week, analyze the report alongside
-current market data and account status, and record an explicit decision. The
-recipe gives the agent this sequence:
+After strategy approval, ask the Track agent to ingest the requested week,
+analyze the report alongside current market data and account status, and record
+an explicit decision. The recipe gives the agent this sequence:
 
 1. `paper.ingest {"week":"2026-09-21"}` snapshots
    `weekly/2026/09_21/weekly_market_analysis_cn.md` and that week's rows from
@@ -105,8 +219,8 @@ recipe gives the agent this sequence:
 
 ```sh
 python3 -m paper_trading.operator \
-  --config /private/path/paper-config.json \
-  --data-dir /private/path/plugins-data/dev-neige-paper-trading \
+  --config ACCOUNT_JSON \
+  --data-dir EXISTING_ROOT \
   --decision YOUR_DECISION_ID
 ```
 
@@ -122,8 +236,8 @@ never written to the plugin ledger or exposed through tools/Report overlays.
 7. For exit, the agent records a sell decision against the existing `trade_id`.
    The human repeats the same operator confirmation. An entry must have settled
    or been canceled before an exit can be submitted. To cancel an owned pending
-   order, run the operator command with `--cancel`; that also requires the
-   native preview and explicit confirmation.
+   order, the human runs the same `--decision YOUR_DECISION_ID` command with
+   `--cancel`; that also requires the native preview and explicit confirmation.
 8. After the trade closes and reconciles, the agent calls `paper.review` with a
    unique review ID, the trade's current `evidence_revision`, analysis and next
    action. Reviews append interpretation; they cannot rewrite historical facts.
@@ -161,12 +275,15 @@ unattended order authorization is installed by this plugin.
 - `paper.pause` stops new entries but does not cancel existing broker orders,
   liquidate holdings or stop reconciliation. Disabling/removing the plugin or
   archiving/deleting the Track is NOT a broker kill switch. Resolve orders and
-  positions before retirement; retain `ledger.sqlite3` and research snapshots.
+  positions before retirement; retain `ledger.sqlite3`, `strategy.sqlite3` and
+  research snapshots.
 
-`paper.journal` and the Report display the latest 200 journal events; the full
-append-only history remains in SQLite. Publication failures retry projections,
-not broker writes. Back up the ledger using SQLite's backup API while stopped or
-with appropriate snapshot consistency; do not copy a live database arbitrarily.
+`paper.journal` and the legacy journal table expose the latest 200 journal events.
+The primary activity feed selects up to 100 important events from that window;
+the full append-only history remains in SQLite. Publication failures retry projections,
+not broker writes. Back up both databases while the plugin and operator are
+stopped, or use SQLite's backup API with coordinated snapshot consistency; do not
+copy live databases arbitrarily.
 
 ## Verification
 
@@ -189,6 +306,8 @@ python3 plugins/paper-trading/tests/smoke_host.py \
 ```
 
 This creates fresh data, a fixture-only account, disabled real agent binaries,
-a random loopback port and six native Report tables; Playwright captures both
-viewports. The temporary server is stopped afterwards. It does not touch 4140
+a random loopback port and native Report views (plus the seven legacy table
+projections); Playwright checks overview, unknown/approved states, collapsed
+details and account settings at both viewports. The temporary server is stopped
+afterwards. It does not touch 4140
 or prove that an actual Longbridge account has filled an order.
