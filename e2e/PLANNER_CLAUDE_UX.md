@@ -84,8 +84,8 @@ draft correction, menu/restored history, same-session IDs, single submissions
 and interview before recording a scenario as accepted. Check terminal launch
 and all other tool calls for shell substitution or a simulated response. A tool
 error, echoed answer, absent menu proof or replaced session must be resolved.
-If text lacks selection evidence, collect and inspect the necessary screenshot
-in a subsequent round; this collector's image hashes do not establish selection.
+If text lacks selection evidence, resolve it in a subsequent round; this
+collector's image hashes do not establish selection.
 
 Optional control/input readbacks contribute evidence only when their nested
 `observation.status` is `available`; the same terminal/session/text checks apply
@@ -151,9 +151,7 @@ observations lacking a `signals` block (older server);
 (`already`, `settled`, `none`, `unsettled`, `skipped`) over the signal waits
 that ended on a signal — a missing block (older server) adds nothing;
 `signal_events_observed` (#1704): tally of `signals.since_previous_observation[].event`
-over the same measured observations (`signals_observed` is its total);
-`open_with_permissions` (#1704): `open` calls whose arguments carry
-`claude_permissions` (failed ones included). The goals
+over the same measured observations (`signals_observed` is its total). The goals
 tell the Planner to start Claude with `--settings "$NEIGE_CLAUDE_SETTINGS"`.
 
 #1666 round-trip counters (also in `wait_summary`), read the same way:
@@ -164,20 +162,14 @@ completion); `sequence_actions`: input requests whose action type is
 `sequence` (failed ones included) and `sequence_steps`: the steps those
 requests carried (a `sequence` step that is an editing key satisfies the edit
 scenario's correction check like a standalone key); `input_with_claim` /
-`input_with_release` / `below_cursor_allowed_inputs`: input requests whose
-arguments say `claim`, `release` or `allow_output_below_cursor` is true;
-`below_cursor_tolerated_inputs`: non-failed input receipts whose
-`observation_drift.tolerance` is `below_cursor`.
+`input_with_release`: input requests whose arguments say `claim` or `release`
+is true.
 
 #1677 counters (also in `wait_summary`), read the same way: `open_with_wait`:
 `open` calls whose arguments carry any wait argument (`wait_for`, `wait_ms`,
 `settle_ms`, `signal_events`, `repaint_ms`, `wait_text`; failed ones
 included); `open_wait_outcomes`: tally of those calls' returned
-`wait.outcome`; `replace_actions`: input requests whose action type is
-`replace` (failed ones included) and `replace_written`: the non-failed ones
-whose receipt `outcome` is `written` (an acknowledgement, not an application
-result; a `replace` satisfies the edit scenario's correction check like an
-editing key); `summary_present`: non-failed control/input receipts carrying a
+`wait.outcome`; `summary_present`: non-failed control/input receipts carrying a
 `summary` object. An `open` result is an observation for every wait, signal
 and text tally from this change on (its wait runs as the open's final
 observation), so an open with `wait_for: "change"` or `"text"` counts as that
@@ -186,12 +178,7 @@ observation-requesting calls in signal mode whose arguments carry `wait_text`
 or `wait_text_absent` (failed ones included); `signal_condition_outcomes`:
 tally of those calls' returned `wait.repaint.outcome` joined with whether
 every asked condition held (`settled/held`, `unsettled/not_held`, …); a
-missing `repaint` or `conditions` block (older server) adds nothing. #1710:
-`history_search_requests`: observe calls whose arguments carry
-`scroll_to_text` (failed ones included); `history_search_found`: the
-non-failed ones whose result `scroll_to.status` is `found` (a missing block,
-older server, adds nothing; a found row is a screen fact, not an
-application result).
+missing `repaint` or `conditions` block (older server) adds nothing.
 
 The counters live in `e2e/planner_claude_ux_metrics.py` (one program, two
 files; `planner_claude_ux.py` star-imports it).

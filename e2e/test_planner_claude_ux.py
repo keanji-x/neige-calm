@@ -347,21 +347,17 @@ class CollectorTests(unittest.TestCase):
                                    "drift_observed_inputs": 0, "implicit_observation_inputs": 0,
                                    "signal_wait_requests": 0, "signal_wait_outcomes": {},
                                    "signal_repaint_outcomes": {}, "submit_actions": 0,
-                                   "open_with_claim": 0, "open_with_permissions": 0,
+                                   "open_with_claim": 0,
                                    "hooks_seen_observations": 0, "signals_observed": 0,
                                    "signal_events_observed": {}, "unmeasured_signal_observations": 1,
                                    "text_wait_requests": 0, "text_wait_outcomes": {}, "sequence_actions": 0,
                                    "sequence_steps": 0, "input_with_claim": 0, "input_with_release": 0,
-                                   "below_cursor_allowed_inputs": 0, "below_cursor_tolerated_inputs": 0,
-                                   "open_with_wait": 0, "open_wait_outcomes": {}, "replace_actions": 0,
-                                   "replace_written": 0, "summary_present": 0,
-                                   "text_condition_requests": 0, "signal_condition_outcomes": {},
-                                   "history_search_requests": 0, "history_search_found": 0})
+                                   "open_with_wait": 0, "open_wait_outcomes": {}, "summary_present": 0,
+                                   "text_condition_requests": 0, "signal_condition_outcomes": {}})
         self.assertEqual(json.loads(json.dumps(summary)), summary)
         self.assertEqual(ux.SUMMARY_METRIC_KEYS,
                          ux.WAIT_METRIC_KEYS + ux.SIGNAL_METRIC_KEYS + ux.ROUND_TRIP_METRIC_KEYS
-                         + ux.OPEN_REPLACE_SUMMARY_METRIC_KEYS + ux.TEXT_CONDITION_METRIC_KEYS
-                         + ux.HISTORY_SEARCH_METRIC_KEYS)
+                         + ux.OPEN_SUMMARY_METRIC_KEYS + ux.TEXT_CONDITION_METRIC_KEYS)
 
     def test_text_wait_requests_and_outcomes_are_read_from_arguments_and_observations(self):
         def text_state(outcome):
@@ -408,7 +404,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["text_wait_outcomes"], {})
         self.assertEqual(result["unmeasured_wait_observations"], 1)
 
-    def test_sequence_claim_release_and_below_cursor_counters_are_read_from_arguments_and_receipts(self):
+    def test_sequence_claim_and_release_counters_are_read_from_arguments_and_receipts(self):
         def input_call(identifier, arguments, receipt=None, failed=False):
             call = row(identifier, "calm.terminal.input")
             item = call["params"]["item"]
@@ -426,14 +422,7 @@ class CollectorTests(unittest.TestCase):
                        {"steps": 3, "claim": {"status": "claimed", "control_id": "o1"}, "control_id": "o1"}),
             input_call(2, {"action": {"type": "sequence", "steps": [{"type": "text", "text": "x"}]}}, failed=True),
             input_call(3, {"action": {"type": "sequence", "steps": "Left"}}, failed=True),
-            input_call(4, {"action": {"type": "text", "text": "hello"}, "allow_output_below_cursor": True},
-                       {"output_since_observation": True,
-                        "observation_drift": {"observed_revision": 7, "input_revision": 9, "tolerance": "below_cursor",
-                                              "rows_changed_below_cursor": [3], "rows_changed_total": 1, "truncated": False}}),
-            input_call(5, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True},
-                       {"output_since_observation": False}),
-            input_call(6, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True,
-                           "allow_output_since_observation": True},
+            input_call(6, {"action": {"type": "text", "text": "x"}, "allow_output_since_observation": True},
                        {"output_since_observation": True,
                         "observation_drift": {"observed_revision": 1, "input_revision": 2,
                                               "tolerance": "output_since_observation",
@@ -451,16 +440,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["sequence_steps"], 4)
         self.assertEqual(result["input_with_claim"], 1)
         self.assertEqual(result["input_with_release"], 1)
-        self.assertEqual(result["below_cursor_allowed_inputs"], 3)
-        self.assertEqual(result["below_cursor_tolerated_inputs"], 1)
         self.assertEqual(result["drift_allowed_inputs"], 1)
-        self.assertEqual(result["drift_observed_inputs"], 2)
+        self.assertEqual(result["drift_observed_inputs"], 1)
         self.assertEqual(result["tool_errors"], 2)
         self.assertEqual(calls, original)
-        failed = input_call(9, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True},
-                            {"observation_drift": {"tolerance": "below_cursor"}}, failed=True)
-        self.assertEqual(ux.metrics([failed])["below_cursor_tolerated_inputs"], 0)
-        self.assertEqual(ux.metrics([failed])["below_cursor_allowed_inputs"], 1)
 
     def test_sequence_correction_step_satisfies_the_edit_scenario_check(self):
         edited = row(1, "calm.terminal.input", text=("7219",))
@@ -517,7 +500,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["tool_errors"], 1)
         self.assertEqual(calls, original)
 
-    def test_replace_actions_written_receipts_and_summaries_are_counted_from_arguments_and_results(self):
+    def test_summaries_are_counted_from_control_and_input_results(self):
         def input_call(identifier, action, receipt=None, failed=False, **arguments):
             call = row(identifier, "calm.terminal.input")
             item = call["params"]["item"]
@@ -526,12 +509,11 @@ class CollectorTests(unittest.TestCase):
                                                     "outcome": "written", "application_result": "unverified",
                                                     "observation_id_used": "obs-1", **(receipt or {})}}
             if failed:
-                item["status"], item["error"] = "failed", {"message": "replace: \"11\" occurs 2 times on the cursor row"}
+                item["status"], item["error"] = "failed", {"message": "text must be nonempty printable text"}
             return call
         summary = {"action": "written", "readback": "available", "screen": "changed", "settled": True,
                    "signal": None, "repaint": None, "matched": None, "role": "owner", "control_id": "c1",
                    "exited": False, "claim": None, "release": None}
-        plan = {"row": 5, "cursor_index": 16, "moves": {"key": "Left", "repeat": 5}, "erased": 2, "inserted": "19"}
         control = row(6, "calm.terminal.control")
         control["params"]["item"]["arguments"].update({"action": "claim"})
         control["params"]["item"]["result"] = {"structuredContent": {
@@ -542,38 +524,21 @@ class CollectorTests(unittest.TestCase):
         detach["params"]["item"]["arguments"].update({"action": "detach"})
         detach["params"]["item"]["result"] = {"structuredContent": {"detached": True, "had_client": True, "terminal_id": "t1"}}
         calls = [
-            input_call(1, {"type": "replace", "from": "11", "to": "19"}, {"replace": plan, "summary": summary}),
-            input_call(2, {"type": "replace", "from": "11", "to": "19"}, failed=True),
-            input_call(3, {"type": "replace", "from": "11", "to": "19"},
+            input_call(1, {"type": "text", "text": "19"}, {"summary": summary}),
+            input_call(2, {"type": "text", "text": ""}, failed=True),
+            input_call(3, {"type": "text", "text": "19"},
                        {"outcome": "stale_observation", "summary": {**summary, "action": "stale_observation"}}),
             input_call(4, {"type": "text", "text": "x"}),
             control, detach,
         ]
         original = copy.deepcopy(calls)
         result = ux.metrics(calls)
-        self.assertEqual(result["replace_actions"], 3)
-        self.assertEqual(result["replace_written"], 1)
         self.assertEqual(result["summary_present"], 3)
         self.assertEqual(result["tool_errors"], 1)
         self.assertEqual(result["observation_refusals"], 1)
         self.assertEqual(calls, original)
         odd = input_call(8, {"type": "text", "text": "x"}, {"summary": "written"})
         self.assertEqual(ux.metrics([odd])["summary_present"], 0)
-
-    def test_replace_action_satisfies_the_edit_scenario_check(self):
-        edited = row(1, "calm.terminal.input", text=("7219",))
-        edited["params"]["item"]["arguments"].update({
-            "action": {"type": "replace", "from": "11", "to": "19"}, "observe": True, "request_id": "fix-1"})
-        edited["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "fix-1", "outcome": "written", "application_result": "unverified",
-            "replace": {"row": 5, "cursor_index": 16, "moves": {"key": "Left", "repeat": 5}, "erased": 2, "inserted": "19"},
-            "observation": {"status": "available", "state": row(1, text=("7219",))["params"]["item"]["result"]["structuredContent"]}}}
-        _, evidence = ux.check_scenario("edit", [edited], None)
-        self.assertEqual(evidence["status"], "review_required")
-        typed = copy.deepcopy(edited)
-        typed["params"]["item"]["arguments"]["action"] = {"type": "text", "text": "19"}
-        with self.assertRaises(ux.EvidenceError):
-            ux.check_scenario("edit", [typed], None)
 
     def test_text_condition_requests_and_outcomes_are_read_from_arguments_and_results(self):
         def signal_state(repaint, conditions):
@@ -640,43 +605,6 @@ class CollectorTests(unittest.TestCase):
         result = ux.metrics([skipped, untested])
         self.assertEqual(result["text_condition_requests"], 2)
         self.assertEqual(result["signal_condition_outcomes"], {"settled/untested": 1, "skipped/untested": 1})
-
-    def test_history_search_requests_and_found_are_read_from_arguments_and_results(self):
-        def search(identifier, pattern, scroll_to, occurrence=None):
-            call = row(identifier)
-            call["params"]["item"]["arguments"]["scroll_to_text"] = pattern
-            if occurrence is not None:
-                call["params"]["item"]["arguments"]["scroll_to_occurrence"] = occurrence
-            if scroll_to is not None:
-                call["params"]["item"]["result"]["structuredContent"]["scroll_to"] = scroll_to
-            return call
-        found = {"pattern": "MARK", "occurrence": "latest", "status": "found", "row_absolute": 30, "row": 0}
-        missing = {"pattern": "MARK", "occurrence": "earliest", "status": "not_found",
-                   "row_absolute": None, "row": None}
-        calls = [
-            search(1, "MARK", found),
-            search(2, "MARK", missing, "earliest"),
-            search(3, "MARK", dict(found, row_absolute=45, row=5), "latest"),
-            search(4, "MARK", None),
-            row(5),
-        ]
-        refused = search(6, "MARK", None)
-        refused["params"]["item"]["arguments"]["scroll_offset"] = 4
-        refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {
-            "message": "scroll_to_text needs scroll_offset 0"}
-        calls.append(refused)
-        opened = row(7, "calm.terminal.open")
-        opened["params"]["item"]["arguments"] = {"request_id": "o1", "scroll_to_text": "MARK"}
-        opened["params"]["item"]["result"]["structuredContent"]["scroll_to"] = found
-        calls.append(opened)
-        original = copy.deepcopy(calls)
-        result = ux.metrics(calls)
-        self.assertEqual(result["history_search_requests"], 5)
-        self.assertEqual(result["history_search_found"], 2)
-        self.assertEqual(result["tool_errors"], 1)
-        self.assertEqual(calls, original)
-        with self.assertRaises(ux.EvidenceError):
-            ux.metrics([search(8, "MARK", "found")])
 
     @staticmethod
     def signals(hooks_seen=True, events=()):
@@ -807,27 +735,8 @@ class CollectorTests(unittest.TestCase):
         calls.append(unavailable)
         result = ux.metrics(calls)
         self.assertEqual(result["open_with_claim"], 2)
-        self.assertEqual(result["open_with_permissions"], 0)
         self.assertEqual(result["terminal_tool_calls"], 5)
         self.assertEqual(result["tool_errors"], 0)
-
-    def test_open_with_permissions_counts_requests_carrying_the_argument(self):
-        calls = []
-        scope = {"edit": ["**"], "bash": ["python3 -m unittest"], "deny": ["git push"]}
-        for identifier, arguments in enumerate(({"claude_permissions": scope}, {"claim": True},
-                                                {"claude_permissions": {}}, {}), start=1):
-            opened = row(identifier, "calm.terminal.open")
-            opened["params"]["item"]["arguments"] = {"request_id": f"r{identifier}", **arguments}
-            calls.append(opened)
-        refused = row(5, "calm.terminal.open")
-        refused["params"]["item"]["arguments"] = {"request_id": "r5", "claude_permissions": {"allow": ["x"]}}
-        refused["params"]["item"]["result"] = {"isError": True, "content": [{"type": "text", "text": "invalid params"}]}
-        calls.append(refused)
-        result = ux.metrics(calls)
-        self.assertEqual(result["open_with_permissions"], 3)
-        self.assertEqual(result["open_with_claim"], 1)
-        self.assertEqual(result["terminal_tool_calls"], 5)
-        self.assertEqual(result["tool_errors"], 1)
 
     def test_hooks_seen_and_signals_observed_are_read_from_observation_signals(self):
         seen = row(1)

@@ -43,19 +43,15 @@ WAIT_METRIC_KEYS = ("change_wait_requests", "change_wait_outcomes", "unsettled_c
                     "elapsed_wait_requests", "unmeasured_wait_observations", "drift_allowed_inputs",
                     "drift_observed_inputs", "implicit_observation_inputs")
 SIGNAL_METRIC_KEYS = ("signal_wait_requests", "signal_wait_outcomes", "signal_repaint_outcomes", "submit_actions",
-                      "open_with_claim", "open_with_permissions", "hooks_seen_observations", "signals_observed",
+                      "open_with_claim", "hooks_seen_observations", "signals_observed",
                       "signal_events_observed", "unmeasured_signal_observations")
 SIGNAL_METRIC_TALLIES = ("signal_wait_outcomes", "signal_repaint_outcomes", "signal_events_observed")
 ROUND_TRIP_METRIC_KEYS = ("text_wait_requests", "text_wait_outcomes", "sequence_actions", "sequence_steps",
-                          "input_with_claim", "input_with_release", "below_cursor_allowed_inputs",
-                          "below_cursor_tolerated_inputs")
-OPEN_REPLACE_SUMMARY_METRIC_KEYS = ("open_with_wait", "open_wait_outcomes", "replace_actions", "replace_written",
-                                    "summary_present")
+                          "input_with_claim", "input_with_release")
+OPEN_SUMMARY_METRIC_KEYS = ("open_with_wait", "open_wait_outcomes", "summary_present")
 TEXT_CONDITION_METRIC_KEYS = ("text_condition_requests", "signal_condition_outcomes")
-HISTORY_SEARCH_METRIC_KEYS = ("history_search_requests", "history_search_found")
 SUMMARY_METRIC_KEYS = (WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS + ROUND_TRIP_METRIC_KEYS
-                       + OPEN_REPLACE_SUMMARY_METRIC_KEYS + TEXT_CONDITION_METRIC_KEYS
-                       + HISTORY_SEARCH_METRIC_KEYS)
+                       + OPEN_SUMMARY_METRIC_KEYS + TEXT_CONDITION_METRIC_KEYS)
 # The observe wait arguments every wait carrier accepts.
 WAIT_ARGUMENT_KEYS = ("wait_for", "wait_ms", "settle_ms", "signal_events", "repaint_ms", "wait_text",
                       "wait_text_absent")
@@ -126,8 +122,6 @@ def signal_metrics(terminal):
     observations lacking it (older server) are `unmeasured_signal_observations`.
     `signal_repaint_outcomes` (#1628) tallies `wait.repaint.outcome` of the
     signal waits that ended on a signal; a missing block is tolerated.
-    `open_with_permissions` (#1704) counts open requests whose arguments carry
-    `claude_permissions`, failed ones included.
     """
     counts = collections.Counter()
     outcomes = collections.Counter()
@@ -142,8 +136,6 @@ def signal_metrics(terminal):
             counts["submit_actions"] += 1
         if tool == "calm.terminal.open" and args.get("claim") is True:
             counts["open_with_claim"] += 1
-        if tool == "calm.terminal.open" and "claude_permissions" in args:
-            counts["open_with_permissions"] += 1
         signal_wait = requests_observation(call) and args.get("wait_for") == "signal"
         if signal_wait:
             counts["signal_wait_requests"] += 1
@@ -182,12 +174,9 @@ def round_trip_metrics(terminal):
     application completion). `sequence_actions` counts input requests whose
     action type is `sequence` (failed ones included) and `sequence_steps`
     the steps those requests carried (a non-list `steps` adds none).
-    `input_with_claim` / `input_with_release` / `below_cursor_allowed_inputs`
-    count input requests whose arguments say `claim`, `release` or
-    `allow_output_below_cursor` is true; `below_cursor_tolerated_inputs`
-    counts non-failed input receipts whose `observation_drift.tolerance` is
-    `below_cursor` (the server admitted the write through the row
-    comparison). Nothing is inferred from screen text.
+    `input_with_claim` / `input_with_release` count input requests whose
+    arguments say `claim` or `release` is true. Nothing is inferred from
+    screen text.
     """
     counts = collections.Counter()
     outcomes = collections.Counter()
@@ -204,17 +193,12 @@ def round_trip_metrics(terminal):
                 counts["sequence_actions"] += 1
                 if isinstance(action.get("steps"), list):
                     counts["sequence_steps"] += len(action["steps"])
-            for flag, key in (("claim", "input_with_claim"), ("release", "input_with_release"),
-                              ("allow_output_below_cursor", "below_cursor_allowed_inputs")):
+            for flag, key in (("claim", "input_with_claim"), ("release", "input_with_release")):
                 if args.get(flag) is True:
                     counts[key] += 1
         if tool_failed(call):
             continue
         data = metadata(call)
-        if tool == "calm.terminal.input":
-            drift = data.get("observation_drift")
-            if isinstance(drift, dict) and drift.get("tolerance") == "below_cursor":
-                counts["below_cursor_tolerated_inputs"] += 1
         state = observed_state(call, data)
         if state is None:
             continue
@@ -225,16 +209,13 @@ def round_trip_metrics(terminal):
             "text_wait_outcomes": dict(sorted(outcomes.items()))}
 
 
-def open_replace_summary_metrics(terminal):
+def open_summary_metrics(terminal):
     """#1677 counters, each read from a completed call's own arguments or result.
 
     `open_with_wait` counts `open` calls whose arguments carry any wait
     argument (failed ones included); `open_wait_outcomes` tallies those
     calls' returned `wait.outcome` (a missing block, older server, adds
-    none). `replace_actions` counts input requests whose action type is
-    `replace` (failed ones included) and `replace_written` the non-failed
-    ones whose receipt `outcome` is `written` (an acknowledgement, not an
-    application result). `summary_present` counts non-failed control/input
+    none). `summary_present` counts non-failed control/input
     receipts carrying a `summary` object. Nothing is inferred from screen
     text.
     """
@@ -247,22 +228,16 @@ def open_replace_summary_metrics(terminal):
         open_wait = tool == "calm.terminal.open" and any(key in args for key in WAIT_ARGUMENT_KEYS)
         if open_wait:
             counts["open_with_wait"] += 1
-        action = args.get("action")
-        replace = tool == "calm.terminal.input" and isinstance(action, dict) and action.get("type") == "replace"
-        if replace:
-            counts["replace_actions"] += 1
         if tool_failed(call):
             continue
         data = metadata(call)
-        if replace and data.get("outcome") == "written":
-            counts["replace_written"] += 1
         if tool in ("calm.terminal.control", "calm.terminal.input") and isinstance(data.get("summary"), dict):
             counts["summary_present"] += 1
         if open_wait:
             wait = wait_outcome(data)
             if wait is not None:
                 outcomes[wait["outcome"]] += 1
-    return {**{key: counts[key] for key in OPEN_REPLACE_SUMMARY_METRIC_KEYS if key != "open_wait_outcomes"},
+    return {**{key: counts[key] for key in OPEN_SUMMARY_METRIC_KEYS if key != "open_wait_outcomes"},
             "open_wait_outcomes": dict(sorted(outcomes.items()))}
 
 
@@ -329,32 +304,6 @@ def text_condition_metrics(terminal):
         outcomes[f"{repaint['outcome']}/{verdict}"] += 1
     return {"text_condition_requests": counts["text_condition_requests"],
             "signal_condition_outcomes": dict(sorted(outcomes.items()))}
-
-
-def history_search_metrics(terminal):
-    """#1710 counters, each read from a completed call's own arguments or result.
-
-    `history_search_requests` counts observe calls whose arguments carry
-    `scroll_to_text` (failed ones included); `history_search_found` the
-    non-failed ones whose result carries a `scroll_to` block with `status`
-    `"found"` (a missing block, older server, adds none). A found row is a
-    screen fact, never an application result.
-    """
-    counts = collections.Counter()
-    for call in terminal:
-        if not call.get("completed") or call["tool"] != "calm.terminal.observe":
-            continue
-        if "scroll_to_text" not in call.get("arguments", {}):
-            continue
-        counts["history_search_requests"] += 1
-        if tool_failed(call):
-            continue
-        scroll_to = metadata(call).get("scroll_to")
-        if scroll_to is None:
-            continue
-        if require_object(scroll_to, "observation scroll_to").get("status") == "found":
-            counts["history_search_found"] += 1
-    return {key: counts[key] for key in HISTORY_SEARCH_METRIC_KEYS}
 
 
 def wait_metrics(terminal):

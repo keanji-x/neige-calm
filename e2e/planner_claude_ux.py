@@ -236,8 +236,7 @@ def metrics(rows):
             "unmeasured_key_press_requests": unmeasured_requests,
             "observation_refusals": sum(observation_refused(call) for call in terminal),
             **wait_metrics(terminal), **signal_metrics(terminal), **round_trip_metrics(terminal),
-            **open_replace_summary_metrics(terminal), **text_condition_metrics(terminal),
-            **history_search_metrics(terminal),
+            **open_summary_metrics(terminal), **text_condition_metrics(terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 
@@ -290,12 +289,10 @@ def check_scenario(name, rows, binding):
     answer = {"short": "3141", "edit": "7219", "rewind": "9123"}[name]
     if not any(re.search(rf"(?<!\d){answer}(?!\d)", view["text"]) for view in observations):
         raise EvidenceError(f"{name}: actual terminal answer absent")
-    # A correction is an editing key, sent on its own, as a step of a `sequence`, or as a `replace`.
+    # A correction is an editing key, sent on its own or as a step of a `sequence`.
     def corrects(action):
         if action.get("type") == "sequence" and isinstance(action.get("steps"), list):
             return any(isinstance(step, dict) and corrects(step) for step in action["steps"])
-        if action.get("type") == "replace":
-            return True
         return action.get("type") == "key" and action.get("key") in ("Backspace", "Delete", "Ctrl+U")
     if name == "edit" and not any(corrects(action) for action in actions):
         raise EvidenceError("edit: no actual input correction action")
@@ -395,8 +392,7 @@ class Round:
                   "(the variable is set in the terminal). "
                   f"You may approve Claude's workspace-trust dialog only for this disposable workspace: {args.workspace!r}. "
                   "Do not trust another folder or change account permissions. If Claude "
-                  "needs login or unsupported access, stop and explain. Observe text by default; use "
-                  "an image only when visual highlighting is necessary. A write receipt is not an "
+                  "needs login or unsupported access, stop and explain. A write receipt is not an "
                   "application result. Finish each scenario with an honest final report, recording "
                   "terminal identity, actual evidence, ambiguity and friction. ")
         goals = {
