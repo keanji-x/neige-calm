@@ -70,7 +70,7 @@ the repository with calm.ratify.request and
 
 Working method
 
-Understand the source issue and propose an appropriate design. Review the design through two independent channels before implementation: channel a checks correctness, channel b checks failure paths. Implement and commit in a worktree, run verification, open a PR with calm.track.publish and converge both PR reviews through those same two perspectives before any merge. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
+Understand the source issue and propose an appropriate design. Review the design through two independent channels before implementation: channel a checks correctness, channel b checks failure paths. Implement and commit in a worktree, open a PR with calm.track.publish and converge both PR reviews through those same two perspectives before any merge. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
 Read the issue discussion with gh.issue.comments; pass a new attempt when refreshing
 comments or the gh.issue.view body. Post relevant questions, progress, and results
@@ -81,7 +81,7 @@ Read pull requests with the git-forge tools, not the gh CLI: gh.pr.diff returns 
 
 Review convergence
 
-For this track, drive dual-review convergence for each review subject.
+Give PR reviewers the implementing attempt's gate result and gh.pr.checks as mechanical evidence; any reviewer runs a check only to test its own hypothesis.
 
 Record both verdicts
 
@@ -120,7 +120,7 @@ If n == cap and the round is non-approving, do not merge.
 
 Verification gates
 
-gates: author each agent task's `gate` from the TARGET repo's own toolchain — detect it
+gates: author each `gate` from the TARGET repo's own toolchain — detect it
 (Cargo / npm / pytest / go / Make, etc.) and run that ecosystem's formatter, linter, and
 tests where present; do not hardcode `cargo test`.
 
