@@ -369,7 +369,11 @@ pub(crate) async fn owned_write_root_tx(
          JOIN workspace_leases origin ON origin.lease_id=descendant.write_root_id \
          WHERE descendant.state IN ('held','releasing') AND descendant.access_mode='read_write' \
          AND origin.card_id=?1 AND origin.access_mode='read_write' \
-         AND origin.holder_kind IN ('task','native') AND COALESCE(origin.canonical_path,origin.path)=?2 \
+         AND (origin.holder_kind IN ('task','native') OR (origin.holder_kind='terminal' AND EXISTS( \
+         SELECT 1 FROM operations prepared WHERE prepared.kind='codex-create' \
+         AND json_extract(prepared.tx_output_json,'$.data.terminal_id')=origin.holder_id \
+         AND json_extract(prepared.tx_output_json,'$.data.card_id')=origin.card_id))) \
+         AND COALESCE(origin.canonical_path,origin.path)=?2 \
          AND (COALESCE(descendant.canonical_path,descendant.path)=?2 OR ?2='/' \
          OR COALESCE(descendant.canonical_path,descendant.path)='/' \
          OR substr(COALESCE(descendant.canonical_path,descendant.path),1,length(?2)+1)=?2||'/' \

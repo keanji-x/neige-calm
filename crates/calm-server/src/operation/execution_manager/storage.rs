@@ -98,13 +98,20 @@ impl Reservation {
 }
 
 pub(super) async fn load(pool: &SqlitePool, execution: &str) -> Result<Option<Record>> {
+    let mut connection = pool.acquire().await?;
+    load_in(&mut connection, execution).await
+}
+pub(super) async fn load_in(
+    connection: &mut sqlx::SqliteConnection,
+    execution: &str,
+) -> Result<Option<Record>> {
     let row: Option<(String,String,Option<String>,Option<String>,String,String,String)> = sqlx::query_as(
         "SELECT holder_id,holder_phase,native_client_id,native_observed_turn_id,path,access_mode,holder_kind \
          FROM workspace_leases WHERE lease_id=?1 AND state='held' AND ( \
          (holder_kind='native' AND native_provider='codex') OR (holder_kind='terminal' AND EXISTS( \
          SELECT 1 FROM operations o WHERE o.kind IN ('codex-create','codex-worker') \
          AND json_extract(o.tx_output_json,'$.data.terminal_id')=workspace_leases.holder_id)))"
-    ).bind(execution).fetch_optional(pool).await?;
+    ).bind(execution).fetch_optional(connection).await?;
     row.map(|(holder, phase, nonce, observed, cwd, access, kind)| {
         let backend = if kind == "native" {
             BackendKind::NativeTurn
@@ -167,6 +174,16 @@ pub(super) async fn release_confirmed(
     now: i64,
 ) -> Result<bool> {
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let released = release_confirmed_tx(&mut tx, record, identity, now).await?;
+    tx.commit().await?;
+    Ok(released)
+}
+pub(super) async fn release_confirmed_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    record: &Record,
+    identity: &str,
+    now: i64,
+) -> Result<bool> {
     let changed = sqlx::query(
         "UPDATE workspace_leases SET state='released',holder_phase='stopped', \
         released_at_ms=?2,updated_at_ms=?2 WHERE lease_id=?1 AND state='held' AND ( \
@@ -176,7 +193,7 @@ pub(super) async fn release_confirmed(
     .bind(&record.id)
     .bind(now)
     .bind(identity)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?
     .rows_affected();
     if changed == 1 && record.access == WorkspaceAccess::ReadOnly {
@@ -187,23 +204,22 @@ pub(super) async fn release_confirmed(
             WHERE native.lease_id=?1 AND native.card_id=task.card_id \
             AND COALESCE(native.canonical_path,native.path)=COALESCE(task.canonical_path,task.path) \
             AND current.status IN ('done','failed','canceled'))")
-            .bind(&record.id).bind(now).execute(&mut *tx).await?;
+            .bind(&record.id).bind(now).execute(&mut **tx).await?;
     }
     if changed == 1 {
         let card: String =
             sqlx::query_scalar("SELECT card_id FROM workspace_leases WHERE lease_id=?1")
                 .bind(&record.id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
         let events = task_ended_tx(
-            &mut tx,
+            tx,
             &card,
             crate::operation::workspace_lease::ReleaseDelivery::CommitAsTaskEnded,
         )
         .await?;
-        crate::operation::workspace_lease::append_workspace_events_tx(&mut tx, events).await?;
+        crate::operation::workspace_lease::append_workspace_events_tx(tx, events).await?;
     }
-    tx.commit().await?;
     Ok(changed == 1)
 }
 
