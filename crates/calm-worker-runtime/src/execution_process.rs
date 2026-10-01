@@ -1,7 +1,6 @@
 //! Stop evidence for an owned execution, including descendants that changed process group.
 use crate::{Error, Result, proc_entry_vanished};
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub const MARKER_KEY: &str = "NEIGE_EXECUTION_OP";
@@ -82,8 +81,6 @@ fn scan_stop(group: Option<i32>, marker: &str) -> Result<bool> {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
             continue;
         };
-        // A same-user opaque process might be an escaped descendant, so cannot prove it foreign.
-        let same_user = entry.metadata()?.uid() == unsafe { libc::geteuid() };
         let m = match member(&entry.path(), pid) {
             Ok(m) => m,
             Err(Error::Io(e)) if proc_entry_vanished(&e) => continue,
@@ -96,7 +93,7 @@ fn scan_stop(group: Option<i32>, marker: &str) -> Result<bool> {
             Ok(env) if !env.is_empty() => env,
             Err(e) if proc_entry_vanished(&e) => continue,
             _ => {
-                if same_user || Some(m.group) == group {
+                if Some(m.group) == group {
                     stopped = false;
                 }
                 continue;
