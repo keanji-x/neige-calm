@@ -64,6 +64,17 @@ impl Drop for EvidenceTempDir {
     }
 }
 
+/// The persisted Planner transcript, shared by diagnostics and real-call assertions.
+pub async fn planner_transcript_rows(
+    repo: &SqlxRepo,
+) -> Result<Vec<HarnessItemDiagRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, turn_id, item_type, method, params FROM harness_items ORDER BY id ASC",
+    )
+    .fetch_all(repo.pool())
+    .await
+}
+
 pub async fn panic_with_agent_diag(fx: &Fixture, reason: String) -> ! {
     let dump = agent_failure_dump(fx).await;
     panic!("{reason}\n{dump}");
@@ -110,7 +121,7 @@ async fn operations_diag(repo: &SqlxRepo) -> String {
 }
 
 /// `(id, turn_id, item_type, method, params)` for the harness-item diagnostic.
-type HarnessItemDiagRow = (i64, Option<String>, Option<String>, String, String);
+pub type HarnessItemDiagRow = (i64, Option<String>, Option<String>, String, String);
 
 async fn events_diag(repo: &SqlxRepo) -> String {
     let mut out = String::new();
@@ -149,14 +160,7 @@ async fn events_diag(repo: &SqlxRepo) -> String {
         }
     }
 
-    let items: Option<Vec<HarnessItemDiagRow>> = diag_rows(
-        sqlx::query_as(
-            "SELECT id, turn_id, item_type, method, substr(params,1,360) \
-             FROM harness_items ORDER BY id ASC",
-        )
-        .fetch_all(repo.pool()),
-    )
-    .await;
+    let items = diag_rows(planner_transcript_rows(repo)).await;
     match &items {
         None => {
             let _ = writeln!(out, "-- harness_items --\n  <section timed out>");
@@ -168,6 +172,7 @@ async fn events_diag(repo: &SqlxRepo) -> String {
                 items.len()
             );
             for (id, turn, ty, method, params) in items {
+                let params: String = params.chars().take(360).collect();
                 let _ = writeln!(
                     out,
                     "  #{id} turn={turn:?} type={ty:?} method={method} {params}"

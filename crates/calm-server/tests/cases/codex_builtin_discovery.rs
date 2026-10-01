@@ -52,14 +52,13 @@ async fn real_planner_discovers_builtin_tools_on_first_turn() {
                 matches!(actor, ActorId::AiPlannerSession(_))
                     && payload["subject"]["slice_id"] == "bootstrap-discovery-probe"
             });
-        let completed: Vec<(String,)> =
-            sqlx::query_as("SELECT params FROM harness_items WHERE method = 'item/completed'")
-                .fetch_all(fx.repo.pool())
-                .await
-                .unwrap();
+        let completed = support::agent_diag::planner_transcript_rows(&fx.repo)
+            .await
+            .unwrap();
         let publish = completed
             .into_iter()
-            .map(|(params,)| serde_json::from_str::<Value>(&params).unwrap())
+            .filter(|(_, _, _, method, _)| method == "item/completed")
+            .map(|(_, _, _, _, params)| serde_json::from_str::<Value>(&params).unwrap())
             .find(|params| {
                 params["item"]["type"] == "mcpToolCall"
                     && params["item"]["server"] == "calm"
