@@ -315,3 +315,26 @@ pub(super) async fn reject_session(pool: &SqlitePool, execution: &str) -> Result
     .await?;
     Ok(())
 }
+
+/// The manager records the same positive session proof in the owning operation checkpoint.
+pub(super) async fn session_stop_record_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    record: &Record,
+    supervisor_socket: &std::path::Path,
+) -> Result<()> {
+    if record.backend != BackendKind::NativeSession {
+        return Err(crate::error::CalmError::Conflict(
+            "terminal checkpoint belongs to a session backend".into(),
+        ));
+    }
+    let stopped =
+        serde_json::to_string(&crate::operation::terminal_launch::RequestState::Stopped {
+            version: 1,
+            terminal_id: record.holder.clone(),
+            supervisor_sock: supervisor_socket.to_owned(),
+        })?;
+    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch',json(?1)) \
+        WHERE kind IN ('codex-create','codex-worker') AND json_extract(tx_output_json,'$.data.terminal_id')=?2")
+        .bind(stopped).bind(&record.holder).execute(&mut **tx).await?;
+    Ok(())
+}
