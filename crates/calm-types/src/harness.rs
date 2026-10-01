@@ -50,3 +50,15 @@ pub struct HarnessInterruptionIntent {
     pub turn_id: String,
     pub reason: HarnessInterruptionReason,
 }
+
+impl HarnessInterruptionIntent {
+    pub fn from_request(turn_id: &str, reason: &str) -> Option<Self> {
+        if reason != "max_turn_duration" {
+            return None;
+        }
+        Some(Self {
+            turn_id: turn_id.into(),
+            reason: HarnessInterruptionReason::MaxTurnDuration,
+        })
+    }
+}

@@ -198,12 +198,10 @@ impl HarnessSnapshot {
                             reason,
                         },
                     ..
-                } if reason == "max_turn_duration" => {
-                    Some(calm_types::harness::HarnessInterruptionIntent {
-                        turn_id: target_turn_id.clone(),
-                        reason: calm_types::harness::HarnessInterruptionReason::MaxTurnDuration,
-                    })
-                }
+                } => calm_types::harness::HarnessInterruptionIntent::from_request(
+                    target_turn_id,
+                    reason,
+                ),
                 _ => None,
             },
         };

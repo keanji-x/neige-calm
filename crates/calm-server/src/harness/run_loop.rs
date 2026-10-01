@@ -198,6 +198,9 @@ pub(super) struct Inner {
     token_usage: Mutex<Option<TokenUsage>>,
     debounce: Mutex<DebounceState>,
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
+    /// Durable causal evidence outlives an interrupt RPC and the recovery phase.
+    /// Clear it only after its outcome is stored or a new batch supersedes the turn.
+    interruption_intent: Mutex<Option<calm_types::harness::HarnessInterruptionIntent>>,
     /// Do not re-attempt turn issuance before this instant. Without it a re-buffered batch re-arms
     /// `hard_fire` and the loop spins at twenty write transactions a second while codex is unreachable.
     issuance_retry_after: Mutex<Option<Instant>>,
@@ -1023,6 +1026,7 @@ fn inner_from_params(
         push_watermark: Mutex::new(snapshot.push_watermark),
         last_turn_id: Mutex::new(snapshot.last_turn_id),
         issued_turn_id: Mutex::new(None),
+        interruption_intent: Mutex::new(snapshot.interruption_intent),
         issued_turn_head: Mutex::new(snapshot.issued_turn_head),
         projection_client_id: Mutex::new(snapshot.projection_client_id),
         legacy_issued_input_segments: Mutex::new(snapshot.issued_input_segments),
@@ -2020,6 +2024,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: target_turn_id,
             };
             *inner.interrupt_deadline.lock().await = None;
+            clear_interruption_intent(inner, &aborted_turn_id).await;
             let restored = restore_steered_entries_codex_dropped(inner, &aborted_turn_id).await;
             persist_snapshot_stamping_issued_head(inner).await?;
             announce_restored_entries(inner, restored).await;
@@ -3095,6 +3100,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     *inner.issued_turn_id.lock().await = None;
     *inner.issued_turn_head.lock().await = None;
+    *inner.interruption_intent.lock().await = None;
     // A new batch supersedes the legacy slot: by now that turn's echo has either consumed the slot
     // or is not coming.
     *inner.legacy_issued_input_segments.lock().await = None;
@@ -3609,6 +3615,11 @@ async fn issue_interrupt_for_turn(
             return Ok(());
         }
         *inner.issued_turn_id.lock().await = None;
+        if let Some(intent) =
+            calm_types::harness::HarnessInterruptionIntent::from_request(&target_turn_id, &reason)
+        {
+            *inner.interruption_intent.lock().await = Some(intent);
+        }
         *state = HarnessState::Issuing {
             since: Instant::now(),
             kind: IssuingKind::Interrupt {
@@ -3661,6 +3672,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     snapshot.issued_turn_head = issued_turn_head;
     snapshot.projection_client_id = projection_client_id;
     snapshot.token_usage = token_usage;
+    snapshot.interruption_intent = inner.interruption_intent.lock().await.clone();
     snapshot
 }
 
@@ -3721,6 +3733,16 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
+async fn clear_interruption_intent(inner: &Arc<Inner>, turn_id: &str) {
+    let mut intent = inner.interruption_intent.lock().await;
+    if intent
+        .as_ref()
+        .is_some_and(|intent| intent.turn_id == turn_id)
+    {
+        *intent = None;
+    }
+}
+
 /// Make a turn's terminal status durable: one `turn/completed` row per finished turn, written
 /// AFTER the arm's gates and BEFORE `persist_snapshot_stamping_issued_head`, so the phase event
 /// doubles as the delivery signal (no item-added event). Best-effort: a failed insert is logged.
@@ -3747,7 +3769,10 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -
     )
     .await
     {
-        Ok(id) => Some(id),
+        Ok(id) => {
+            clear_interruption_intent(inner, turn_id).await;
+            Some(id)
+        }
         Err(error) => {
             tracing::warn!(
                 worker_session_id = %inner.worker_session_id,

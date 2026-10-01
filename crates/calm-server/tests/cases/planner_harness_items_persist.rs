@@ -33,6 +33,19 @@ async fn seed_harness_with_pending(
     events: EventBus,
     pending: Vec<Observation>,
 ) -> (PlannerHarness, Arc<SharedCodexAppServer>, String, String) {
+    let mut snapshot =
+        HarnessSnapshot::initial(0, QueueEntry::entries_from_observations_for_test(pending));
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(SEED_THREAD_ID.into());
+    seed_harness_with_snapshot(repo, events, snapshot).await
+}
+
+async fn seed_harness_with_snapshot(
+    repo: Arc<SqlxRepo>,
+    events: EventBus,
+    snapshot: HarnessSnapshot,
+) -> (PlannerHarness, Arc<SharedCodexAppServer>, String, String) {
+    assert_eq!(snapshot.last_thread_id.as_deref(), Some(SEED_THREAD_ID));
     let area = repo
         .area_create(NewArea {
             name: "items-persist".into(),
@@ -67,10 +80,6 @@ async fn seed_harness_with_pending(
         .unwrap();
     let runtime_id = new_id();
     let thread_id = SEED_THREAD_ID.to_string();
-    let mut snapshot =
-        HarnessSnapshot::initial(0, QueueEntry::entries_from_observations_for_test(pending));
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(thread_id.clone());
 
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
@@ -870,6 +879,54 @@ async fn outcome_row_is_durable_before_the_phase_event_that_announces_it() {
 /// codex answers an interrupt with `turn/completed` carrying `status: "interrupted"`, a different branch of the
 /// `TurnCompleted` arm. Notifications are handled in order by one loop, so once the target's row exists the
 /// non-target frame has been fully processed.
+#[tokio::test]
+async fn recovered_pending_timeout_retains_its_cause_until_the_exact_target_settles() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let mut rx = events.subscribe();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::IssuingInterrupt;
+    snapshot.last_thread_id = Some(SEED_THREAD_ID.into());
+    snapshot.last_turn_id = Some("timeout-target".into());
+    snapshot.interruption_intent = Some(calm_types::harness::HarnessInterruptionIntent {
+        turn_id: "timeout-target".into(),
+        reason: calm_types::harness::HarnessInterruptionReason::MaxTurnDuration,
+    });
+    let (harness, daemon, card_id, _) =
+        seed_harness_with_snapshot(repo.clone(), events, snapshot).await;
+    wait_for_notification_receiver(&daemon).await;
+    harness.persist_snapshot().await.unwrap();
+    assert!(
+        harness.snapshot().await.interruption_intent.is_some(),
+        "recovery persistence must retain the outstanding timeout intent"
+    );
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({"id":"timeout-target"}),
+    });
+    recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnRunning).await;
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({"id":"other","status":"interrupted"}),
+    });
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({"id":"timeout-target","status":"interrupted","error":null}),
+    });
+    recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnCompleted).await;
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    assert_eq!(rows[0].turn_id.as_deref(), Some("timeout-target"));
+    assert_eq!(
+        rows[0].turn_error_text.as_deref(),
+        Some("This turn exceeded its execution time limit and was interrupted.")
+    );
+    assert!(
+        harness.snapshot().await.interruption_intent.is_none(),
+        "settled intent cannot leak into the next turn"
+    );
+    harness.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn watchdog_execution_timeout_projects_durable_reason() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());

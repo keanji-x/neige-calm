@@ -26,7 +26,7 @@ pub(crate) async fn record(
         && let Some(snapshot) = session
             .handle_state_json
             .and_then(super::HarnessSnapshot::parse_known)
-        && snapshot.phase == super::HarnessPhaseTag::IssuingInterrupt
+        && snapshot.last_turn_id.as_deref() == Some(turn_id)
         && snapshot.last_thread_id.as_deref() == Some(thread_id)
         && let Some(intent) = snapshot.interruption_intent
         && intent.turn_id == turn_id

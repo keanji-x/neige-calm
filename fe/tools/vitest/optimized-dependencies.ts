@@ -5,6 +5,7 @@
 export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@tanstack/react-query',
   '@tanstack/react-router',
+  '@astryxdesign/core/Badge',
   '@astryxdesign/core/Button',
   '@astryxdesign/core/Calendar',
   '@astryxdesign/core/Card',
@@ -24,4 +25,12 @@ export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@astryxdesign/core/SegmentedControl',
   '@astryxdesign/core/TextInput',
   '@astryxdesign/core/Typeahead',
+  '@astryxdesign/core/VisuallyHidden',
+  'mdast-util-from-markdown',
+  'mdast-util-gfm',
+  'micromark-extension-gfm',
+  'react',
+  'react-dom',
+  'react/jsx-dev-runtime',
+  'zod',
 ] as const);
