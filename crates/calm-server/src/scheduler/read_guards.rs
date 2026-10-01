@@ -9,6 +9,13 @@ impl Scheduler {
         let scheduler = Arc::clone(self);
         tokio::spawn(async move {
             let _guard = guard;
+            if let Some(pool) = scheduler.repo.sqlite_pool() {
+                if let Err(error) =
+                    crate::operation::forge_action_adapter::lifecycle::reconcile(&pool).await
+                {
+                    tracing::warn!(%error,"Forge reference reconciliation failed");
+                }
+            }
             scheduler.settle_native_write_guards().await;
             scheduler.settle_read_guards().await;
         });
@@ -127,6 +134,16 @@ updated_at_ms=?2 WHERE lease_id=?1 AND holder_phase='running' AND state='held'
             if !task_guard::turn_stopped(&facts, active.as_deref()) {
                 continue;
             }
+            if !matches!(
+                tokio::time::timeout(
+                    self.worker_idle.probe_timeout,
+                    self.worker_idle.probe.background_terminals_stopped(&thread),
+                )
+                .await,
+                Ok(Some(true))
+            ) {
+                continue;
+            }
             if task_guard::record_read_stop(&pool, &card).await.is_err() {
                 continue;
             }
@@ -143,3 +160,6 @@ updated_at_ms=?2 WHERE lease_id=?1 AND holder_phase='running' AND state='held'
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -30,7 +30,7 @@ fn claim_fence_revision_grid_fails_closed_for_missing_null_and_negative() {
     );
 }
 
-fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
+pub(super) fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
     Task {
         id: format!("w:{key}"),
         track_id: "w".into(),
@@ -666,4 +666,18 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     .await
     .expect("cleanup marker count");
     assert_eq!(cleanup_markers, 0, "0-row CAS must not mark cleanup");
+}
+
+#[test]
+fn terminal_default_checkout_waits_for_readers_before_claim() {
+    let mut default = task("terminal-default", TaskStatus::Pending, &[], 0);
+    default.kind = TaskKind::Terminal;
+    let mut explicit = task("terminal-explicit", TaskStatus::Pending, &[], 0);
+    explicit.kind = TaskKind::Terminal;
+    explicit.cwd = Some("/other".into());
+    assert_eq!(
+        keys(&compute_ready(&[default, explicit], false).unwrap()),
+        vec!["terminal-explicit"],
+        "default checkout writer must stay pending; explicit cwd gets its own authoritative resource check"
+    );
 }

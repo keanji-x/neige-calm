@@ -3081,9 +3081,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 };
                 (NativeProvider::Codex, thread)
             }
-            PlannerBackend::Claude(_) => {
-                (NativeProvider::Claude, inner.worker_session_id.clone())
-            }
+            PlannerBackend::Claude(_) => (NativeProvider::Claude, inner.worker_session_id.clone()),
         };
         let mut connection = pool.acquire().await?;
         if !native_write_available_tx(

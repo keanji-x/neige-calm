@@ -179,7 +179,9 @@ pub(crate) async fn require_cleanup_safe(
     if let Some(sock) = sock {
         crate::terminal_renderer::stop_and_release_terminal(ctx.repo.as_ref(), &sock, &terminal_id)
             .await?;
-        if !business_may_be_live {return Ok(());}
+        if !business_may_be_live {
+            return Ok(());
+        }
     }
     Err(crate::error::CalmError::Conflict(format!(
         "worker launch cleanup is unverified for operation {} terminal {}; prepared rows and workspace retained for reconciliation",

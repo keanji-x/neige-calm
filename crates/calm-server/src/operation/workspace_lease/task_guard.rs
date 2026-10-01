@@ -224,6 +224,16 @@ pub(crate) async fn confirm_read_stop(
             "read task has not stopped; lease retained".into(),
         ));
     }
+    let background_stopped = tokio::time::timeout(
+        Duration::from_secs(25),
+        shared.background_terminals_stopped(&thread),
+    )
+    .await;
+    if !matches!(background_stopped, Ok(Ok(true))) {
+        return Err(CalmError::Conflict(
+            "read task background terminals have not stopped; lease retained".into(),
+        ));
+    }
     record_read_stop(pool, card).await
 }
 pub(crate) async fn record_read_stop(pool: &SqlitePool, card: &str) -> Result<()> {
