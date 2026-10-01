@@ -142,3 +142,45 @@ export function mentionSuggestionsOf(candidates: MentionCandidates, query: Menti
   const all = query.text === '' ? [...blocks, ...tracks, ...tags] : [...tags, ...tracks, ...blocks];
   return query.kind === null ? all : all.filter((suggestion) => suggestion.kind === query.kind);
 }
+
+/** A persisted message keeps the server address, not the composer's transient chip metadata. */
+export type SentMentionPart = Readonly<{ text: string; label: string | null }>;
+
+function sentMentionLabel(address: string): string | null {
+  if (address.startsWith('tag:') && address.length > 4) return `#${address.slice(4)}`;
+  const report = /^area\/reports\/(.+)\.md(?:#([^\s]+))?$/.exec(address);
+  if (report === null) return null;
+  let name: string;
+  try { name = decodeURIComponent(report[1]); } catch { return null; }
+  // Block headings are not persisted in the message. Keep its stable ID visible instead.
+  return report[2] === undefined ? name : `${name} › ${report[2]}`;
+}
+
+/**
+ * Recover display pills without fetching today's candidates or changing the sent text.
+ * Match complete backtick runs, including the longer fences and edge padding emitted by
+ * the server. Unknown addresses and unfinished spans remain literal user text.
+ */
+export function sentMentionParts(text: string): readonly SentMentionPart[] {
+  const parts: SentMentionPart[] = [];
+  const openings = /@(`+)/g;
+  let end = 0;
+  for (let opening = openings.exec(text); opening !== null; opening = openings.exec(text)) {
+    const start = openings.lastIndex;
+    const fences = /`+/g;
+    fences.lastIndex = start;
+    let closing = fences.exec(text);
+    while (closing !== null && closing[0].length !== opening[1].length) closing = fences.exec(text);
+    if (closing === null) break;
+    let address = text.slice(start, closing.index);
+    if (address.startsWith(' ') && address.endsWith(' ')) address = address.slice(1, -1);
+    const label = sentMentionLabel(address);
+    openings.lastIndex = fences.lastIndex;
+    if (label === null) continue;
+    if (opening.index > end) parts.push({ text: text.slice(end, opening.index), label: null });
+    end = fences.lastIndex;
+    parts.push({ text: text.slice(opening.index, end), label });
+  }
+  if (end < text.length) parts.push({ text: text.slice(end), label: null });
+  return parts;
+}

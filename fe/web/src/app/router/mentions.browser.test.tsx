@@ -27,7 +27,7 @@ const CANDIDATES: MentionCandidates = {
   blocks: [{ label: 'Rollback', block_id: 'b_1a2b', track_title: 'Deploy notes', track_id: 'w9', insert: BLOCK_INSERT }],
 };
 
-function mount(path: string) {
+function mount(path: string, storedText: string | null = null) {
   const requests: ApiRequest[] = [];
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { send(request) {
@@ -42,7 +42,16 @@ function mount(path: string) {
     if (request.path.endsWith('/planner/run')) {
       return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null }));
     }
-    if (request.path.endsWith('/planner/input')) return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', entry_id: null }));
+    if (request.path.endsWith('/planner/input')) {
+      storedText = (request.body as { text: string }).text;
+      return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', entry_id: 'entry-1' }));
+    }
+    if (request.path.includes('/harness/items?')) return Promise.resolve(ok(storedText === null ? [] : [{
+      id: 1, worker_session_id: 'runtime', card_id: PLANNER_CARD.id, track_id: TRACK.id,
+      thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: 'entry-1',
+      item_type: 'userMessage', method: 'item/completed', params: '{}', created_at_ms: 50,
+      input_segments: [{ presentation: 'user', text: storedText, attachments: [] }],
+    }]));
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     return Promise.resolve(ok([]));
   } };
@@ -82,6 +91,14 @@ it('groups the area\'s tags, reports and blocks under @ in the Planner conversat
   await expect.poll(() => requests.filter((request) => request.path.endsWith('/planner/input')).length).toBe(1);
   const sent = requests.find((request) => request.path.endsWith('/planner/input'))!.body as { text: string };
   expect(sent.text).toBe(`see ${BLOCK_INSERT}`);
+  await expect.element(page.getByText('Deploy notes › b_1a2b', { exact: true })).toBeVisible();
+  expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toBe('see Deploy notes › b_1a2b');
+  // A fresh route has no memory of the menu pick: the stored address still renders as a pill.
+  cleanup();
+  mount('/track/w1', sent.text);
+  await openConversation(/Conversation Planner chat/);
+  await expect.element(page.getByText('Deploy notes › b_1a2b', { exact: true })).toBeVisible();
+  expect(document.querySelector('[data-nc-sent-mention]')?.getAttribute('title')).toBe(BLOCK_INSERT);
 });
 
 /** The group headings the open menu shows, top to bottom. */

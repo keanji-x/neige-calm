@@ -11,6 +11,7 @@ import {
   type ChatComposerTrigger,
   type ChatToolCallItem,
 } from '@astryxdesign/core/Chat';
+import { Badge } from '@astryxdesign/core/Badge';
 import { Code } from '@astryxdesign/core/Code';
 import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
@@ -26,6 +27,7 @@ import { useTriggerFieldAria } from '../../../ui/trigger-menu-keys/field-aria.ts
 import { useState } from '../../../ui/state/public.ts';
 
 import { activityLabelOf, cardActivityOf, type CardActivity } from '../../../../../core/domain/activity.ts';
+import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
 import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
   isQueuedConversationTurn, opensAfterGap, opensExchange,
@@ -249,12 +251,16 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         )}
         {turn.author === 'you' ? (
           <>
-            {/* The caption is outside the `<p>`: the paragraph is the message verbatim, to a screen reader and to every `getByText`. */}
+            {/* The caption is outside the message; persisted references recover their display pills. */}
             <p
               className={styles.said}
               data-nc-turn="you"
               {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
-            >{turn.text}</p>
+            >{sentMentionParts(turn.text).map((part, index) => part.label === null ? part.text : (
+              <span key={index} data-nc-sent-mention="" title={part.text}>
+                <Badge label={part.label} />
+              </span>
+            ))}</p>
             {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}
             {(turn.attachments ?? []).length > 0 && (
               <ul className={styles.attachments} data-nc-turn-attachments="">

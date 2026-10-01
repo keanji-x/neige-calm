@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MentionCandidates } from '../api/generated/wire.js';
 import {
-  mentionCandidatesSchema, mentionQueryOf, mentionSuggestionsOf, mentionsOperation, type MentionQuery,
+  sentMentionParts, mentionCandidatesSchema, mentionQueryOf, mentionSuggestionsOf, mentionsOperation, type MentionQuery,
 } from './mentions.js';
 
 const CANDIDATES: MentionCandidates = {
@@ -123,5 +123,41 @@ describe('mentionSuggestionsOf', () => {
     expect(mentionSuggestionsOf(CANDIDATES, mentionQueryOf('>roll'))).toEqual(
       mentionSuggestionsOf(CANDIDATES, all('roll')).filter((suggestion) => suggestion.kind === 'block'),
     );
+  });
+});
+
+describe('sentMentionParts', () => {
+  it('recovers tags, reports and block addresses from persisted text', () => {
+    expect(sentMentionParts('a @`tag:部署` @`area/reports/Deploy notes.md#b_1a2b`!')).toEqual([
+      { text: 'a ', label: null }, { text: '@`tag:部署`', label: '#部署' },
+      { text: ' ', label: null },
+      { text: '@`area/reports/Deploy notes.md#b_1a2b`', label: 'Deploy notes › b_1a2b' },
+      { text: '!', label: null },
+    ]);
+  });
+
+  it('keeps repeated picks and server fences containing backticks and padding', () => {
+    expect(sentMentionParts('@``tag:a`b`` @`` tag:end` `` @`tag:x`@`tag:x`'))
+      .toEqual([
+        { text: '@``tag:a`b``', label: '#a`b' }, { text: ' ', label: null },
+        { text: '@`` tag:end` ``', label: '#end`' }, { text: ' ', label: null },
+        { text: '@`tag:x`', label: '#x' }, { text: '@`tag:x`', label: '#x' },
+      ]);
+  });
+
+  it('displays escaped report names and keeps disambiguating suffixes', () => {
+    expect(sentMentionParts('@`area/reports/a%2Fb%25%7E~12345678.md`')).toEqual([
+      { text: '@`area/reports/a%2Fb%25%7E~12345678.md`', label: 'a/b%~~12345678' },
+    ]);
+    expect(sentMentionParts('@`unknown` then @`tag:x`')).toEqual([
+      { text: '@`unknown` then ', label: null }, { text: '@`tag:x`', label: '#x' },
+    ]);
+  });
+
+  it('leaves ordinary, unknown and incomplete references unchanged', () => {
+    for (const text of ['', '@bob **literal**', '@`/tmp/a`', '@`tag:`',
+      '@`area/reports/bad%.md`', '@`area/reports/.md`', '@`area/reports/a.md#`', '@``tag:x`']) {
+      expect(sentMentionParts(text)).toEqual(text === '' ? [] : [{ text, label: null }]);
+    }
   });
 });

@@ -84,6 +84,19 @@ function followPane() {
 }
 
 describe('ChatThread', () => {
+  it('renders persisted mentions as pills while keeping ordinary text literal', () => {
+    const text = 'see @`tag:部署` and @`area/reports/Deploy notes.md` '
+      + 'then @`area/reports/Deploy notes.md#b_1a2b` **literal** @bob';
+    render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+      turns={[turn({ text })]} />);
+    const message = document.querySelector('[data-nc-turn="you"]')!;
+    expect([...message.querySelectorAll('[data-nc-sent-mention]')].map((pill) => pill.textContent))
+      .toEqual(['#部署', 'Deploy notes', 'Deploy notes › b_1a2b']);
+    expect(message.textContent).toBe('see #部署 and Deploy notes then Deploy notes › b_1a2b **literal** @bob');
+    expect(message.querySelector('strong')).toBeNull();
+    expect(message.querySelector('[data-nc-sent-mention]')?.getAttribute('title')).toBe('@`tag:部署`');
+  });
+
   it('renders the empty state before anything is said', () => {
     render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[]} />);
     expect(screen.getByText('Nothing said yet.')).toBeTruthy();
