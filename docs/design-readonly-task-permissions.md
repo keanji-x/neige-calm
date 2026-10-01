@@ -43,3 +43,22 @@ checks the compiled filesystem policy; named configuration resolution and live
 provider task execution remain separate integration checks. The regular sandbox
 CLI loads configuration even with explicit sandbox state, so it was not used for
 this dummy check. No real home configuration or private file was read.
+
+## Configuration layer isolation requirement
+
+A named profile ID alone does not prove the selected rules. The installed
+provider converts thread start and resume `config` map entries into dotted CLI
+TOML overrides in
+[`app-server/src/config_manager.rs`](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/app-server/src/config_manager.rs).
+The runtime override layer follows project configuration in
+[`config/src/loader/mod.rs`](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/config/src/loader/mod.rs),
+but [`config/src/merge.rs`](https://github.com/openai/codex/blob/rust-v0.159.2/codex-rs/config/src/merge.rs)
+recursively merges tables. Sending a complete `permissions.<ID>` table therefore
+cannot remove additional lower-layer filesystem grants or an inherited `extends`
+field. The named profile TOML representation offers no replacement marker.
+
+Readonly task integration must isolate its configuration layers or prove the
+final effective rules independently before model issuance. A table-shaped
+request override must not be presented as an immutable trusted rules snapshot.
+The SDK confirmation and shared-home writer are components of this boundary;
+they do not establish configuration-layer isolation on their own.
