@@ -5,9 +5,15 @@
 
 use crate::support;
 
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::card_with_codex_create_tx;
+use calm_server::ids::ActorId;
 use calm_server::mcp_server::cli::help::{self, HelpRequest};
 use calm_server::mcp_server::cli::render::{Render, render};
 use calm_server::model::CardRole;
+use calm_server::session_projection_repo::WorkerSessionState;
+use calm_types::event::TaskContextRef;
+use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint};
 use serde_json::{Value, json};
 use support::mcp::{
     CardBoot, boot_with_role, call_tool_card_bound, cli_output, neige_cli_via_socket,
@@ -187,7 +193,8 @@ async fn cli_state_text_is_one_fact_per_line() {
         .collect();
     assert_eq!(worker.len(), 1, "{text}");
     assert!(
-        worker[0].contains(" worker ") && worker[0].ends_with("  task fix-login"),
+        worker[0].contains(" worker ")
+            && worker[0].ends_with("  session starting  task fix-login running"),
         "{text}"
     );
     assert!(!text.contains('{'), "text, not JSON: {text}");
@@ -206,6 +213,162 @@ async fn cli_state_text_is_one_fact_per_line() {
     assert_eq!(live.len(), 1, "an exited worker is not live: {text}");
     assert!(
         live[0].contains(&boot.card_id) && live[0].ends_with("  (you)"),
+        "{text}"
+    );
+}
+
+/// Stamp an ungated task execution on its worker card, as the scheduler does at dispatch.
+async fn stamp_task(boot: &CardBoot, id: &str, key: &str, status: &str, worker: &str) {
+    sqlx::query(concat!(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
+        "created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex','g','{}',?4,?5,1,1)"
+    ))
+    .bind(id)
+    .bind(boot.track_id.as_str())
+    .bind(key)
+    .bind(status)
+    .bind(worker)
+    .execute(boot.sqlx.pool())
+    .await
+    .unwrap();
+}
+
+/// The worker's own `neige task-completed`: the production report path that ends its task.
+async fn report_completed(boot: &CardBoot, worker_token: &str, task_id: &str) {
+    let argv = [
+        "task-completed",
+        "--idempotency-key",
+        task_id,
+        "--result",
+        "{}",
+    ];
+    let (_, stderr, exit) =
+        cli_output(&neige_cli_via_socket(&boot.socket_path, worker_token, &argv).await);
+    assert_eq!((exit, stderr.as_str()), (0, ""), "{task_id}");
+}
+
+/// The `neige state` live row of `card`; exactly one.
+fn live_row<'a>(text: &'a str, card: &str) -> &'a str {
+    let rows: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("live"))
+        .filter(|line| line.contains(card))
+        .collect();
+    assert_eq!(rows.len(), 1, "{card}: {text}");
+    rows[0]
+}
+
+/// #1932: a worker's report ends its task in the report transaction while its session lives on;
+/// `neige state` names the session's status and the task's apart.
+#[tokio::test]
+async fn cli_state_shows_a_reported_task_done_beside_its_live_worker_session() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    let worker = boot.other_card_id.as_str();
+    boot.sqlx
+        .session_projection_set_status_for_card(worker, WorkerSessionState::Running)
+        .await
+        .unwrap();
+    stamp_task(&boot, "fix-login-1", "fix-login", "running", worker).await;
+    report_completed(&boot, &boot.other_raw_token, "fix-login-1").await;
+
+    // The task settled; the worker session did not end with it.
+    let (status, finished_at): (String, Option<i64>) =
+        sqlx::query_as("SELECT status, finished_at_ms FROM tasks WHERE id = 'fix-login-1'")
+            .fetch_one(boot.sqlx.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "done");
+    assert!(finished_at.is_some());
+    let session: String =
+        sqlx::query_scalar("SELECT state FROM worker_sessions WHERE card_id = ?1")
+            .bind(worker)
+            .fetch_one(boot.sqlx.pool())
+            .await
+            .unwrap();
+    assert_eq!(session, "running");
+
+    let (text, stderr, exit) = cli(&boot, &["state"]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
+    assert!(
+        live_row(&text, worker).ends_with("  worker   codex  session running  task fix-login done"),
+        "{text}"
+    );
+}
+
+/// #1932: `tasks` holds each key's current execution only, so a live card whose earlier attempt
+/// failed holds no task once the current attempt runs on another card.
+#[tokio::test]
+async fn cli_state_binds_a_task_only_to_the_card_of_its_current_attempt() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    let first = boot.other_card_id.as_str();
+    let retry = calm_server::model::new_id();
+    let mut tx = boot.sqlx.pool().begin().await.unwrap();
+    let (_, _, retry_token) = card_with_codex_create_tx(
+        &mut tx,
+        retry.clone(),
+        &calm_server::model::new_id(),
+        None,
+        boot.track_id.clone(),
+        None,
+        None,
+        "/workspace".into(),
+        json!({}),
+        None,
+        None,
+        None,
+        CardRole::Worker,
+        true,
+        &boot.card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for card in [first, retry.as_str()] {
+        boot.sqlx
+            .session_projection_set_status_for_card(card, WorkerSessionState::Running)
+            .await
+            .unwrap();
+    }
+    stamp_task(&boot, "fix-login-1", "fix-login", "failed", first).await;
+    let origin = TaskAttemptOrigin::Recovery {
+        previous_attempt_id: "fix-login-1".into(),
+        idempotency_key: "recover-fix-login".into(),
+        request_fingerprint: "fixture".into(),
+        reason: "fixture recovery".into(),
+        actor: ActorId::User,
+        constraint: TaskRecoveryConstraint::V1 {
+            refs: vec![TaskContextRef {
+                track_id: boot.track_id.clone(),
+                block_id: "blk-fix-login".into(),
+                rev: 1,
+                hash: "fixture".into(),
+                is_root: true,
+            }],
+            spawn: TASK_IN_TRACK_ROUTE.into(),
+            declared_by: "user".into(),
+        },
+    };
+    sqlx::query(concat!(
+        "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,",
+        "created_at_ms) VALUES('fix-login-2',?1,'fix-login',2,?2,2)"
+    ))
+    .bind(boot.track_id.as_str())
+    .bind(serde_json::to_string(&origin).unwrap())
+    .execute(boot.sqlx.pool())
+    .await
+    .unwrap();
+    stamp_task(&boot, "fix-login-2", "fix-login", "running", &retry).await;
+    report_completed(&boot, &retry_token.unwrap(), "fix-login-2").await;
+
+    let (text, _, exit) = cli(&boot, &["state"]).await;
+    assert_eq!(exit, 0, "{text}");
+    assert!(
+        live_row(&text, &retry).ends_with("  session running  task fix-login done"),
+        "{text}"
+    );
+    assert!(
+        live_row(&text, first).ends_with("  session running"),
         "{text}"
     );
 }

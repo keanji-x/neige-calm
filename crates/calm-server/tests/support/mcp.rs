@@ -39,6 +39,8 @@ pub struct CardBoot {
     pub card_id: String,
     /// Other card id tests may try to smuggle into tool args to prove the identity binding ignores it.
     pub other_card_id: String,
+    /// The worker card `other_card_id`'s own MCP token, as minted with it.
+    pub other_raw_token: String,
     pub raw_token: String,
     pub daemon_token: Option<String>,
     pub session_id: String,
@@ -144,7 +146,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         }
     };
     // Mint a second card so smuggled-card tests have a real alternative id.
-    let (_card_b, _term_b, _tok_b) = card_with_codex_create_tx(
+    let (_card_b, _term_b, other_raw_token) = card_with_codex_create_tx(
         &mut tx,
         other_card_id.clone(),
         &calm_server::model::new_id(),
@@ -164,6 +166,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     )
     .await
     .expect("mint sidekick card");
+    let other_raw_token = other_raw_token.expect("a worker card is minted with its MCP token");
     tx.commit().await.unwrap();
     let thread_id = format!("thread-{card_id}");
     let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
@@ -201,6 +204,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         events,
         card_id,
         other_card_id,
+        other_raw_token,
         raw_token,
         daemon_token,
         session_id,
