@@ -7,6 +7,12 @@ identifiers cannot be reused on the same provider thread. A definite refusal or
 failure before the RPC releases the unissued reference; missing turn identity,
 transport failure, and caller cancellation retain it.
 
+Both read and write task capabilities move into the native request lifecycle.
+A read request reserves its own native read reference, without a write root, so
+other readers can share the checkout. That independent reference still fences
+writers when a Task lease's lightweight stop observation races an unknown RPC.
+The same durable nonce, physical stop, and cancellation rules apply to both modes.
+
 Recovery reads the provider's full thread history. Only a user message carrying
 that exact nonce identifies an unknown request's turn. Thread identity and actual
 cwd must match the reference. The matching turn and every returned turn must be

@@ -45,32 +45,44 @@ pub(crate) async fn bind_execution(
     Ok(())
 }
 
-pub(crate) struct ExecutionWriteGuard {
+struct ExecutionLeaseGuard {
     pool: SqlitePool,
     id: String,
 }
-impl ExecutionWriteGuard {
+impl ExecutionLeaseGuard {
     pub(crate) async fn acquire_native(
         pool: &SqlitePool,
         card: &str,
         thread: &str,
         except_attempt: &str,
         provider: NativeProvider,
+        access: WorkspaceAccess,
     ) -> Result<Self> {
         let mut tx = begin_immediate_tx(pool).await?;
         let context = native_write_context_tx(&mut tx, card, thread, provider).await?;
-        if !native_context_available_tx(&mut tx, card, except_attempt, &context).await? {
+        if !native_context_available_for_access_tx(&mut tx, card, except_attempt, &context, access)
+            .await?
+        {
             return Err(CalmError::Conflict(
                 "workspace write guard is waiting for current readers or writers".into(),
             ));
         }
-        let id = acquire_execution_write_tx(
+        let id = new_id();
+        let root = context.root.as_deref().unwrap_or(&id);
+        insert_execution_reference(
             &mut tx,
-            &context.track,
-            card,
-            thread,
-            "native",
-            Path::new(&context.cwd),
+            ExecutionReference {
+                track: &context.track,
+                card,
+                holder: thread,
+                kind: "native",
+                path: &context.cwd,
+                access: match access {
+                    WorkspaceAccess::ReadOnly => ExecutionAccess::Read,
+                    WorkspaceAccess::ReadWrite => ExecutionAccess::Write(root),
+                },
+            },
+            &id,
         )
         .await?;
         sqlx::query("UPDATE workspace_leases SET native_provider=?2,native_client_id=lease_id WHERE lease_id=?1")
@@ -165,6 +177,85 @@ lease_id=?1 AND state='held' AND holder_phase IN ('issuing','stopping')
     }
 }
 
+pub(crate) struct ExecutionWriteGuard(ExecutionLeaseGuard);
+impl ExecutionWriteGuard {
+    pub(crate) async fn acquire_native(
+        pool: &SqlitePool,
+        card: &str,
+        thread: &str,
+        except: &str,
+        provider: NativeProvider,
+    ) -> Result<Self> {
+        Ok(Self(
+            ExecutionLeaseGuard::acquire_native(
+                pool,
+                card,
+                thread,
+                except,
+                provider,
+                WorkspaceAccess::ReadWrite,
+            )
+            .await?,
+        ))
+    }
+    pub(crate) async fn started(self, turn: &str) -> Result<()> {
+        self.0.started(turn).await
+    }
+    #[cfg(test)]
+    pub(crate) async fn rejected(self) -> Result<()> {
+        self.0.rejected().await
+    }
+}
+pub(crate) struct ExecutionReadGuard(ExecutionLeaseGuard);
+impl ExecutionReadGuard {
+    pub(crate) async fn acquire_native(
+        pool: &SqlitePool,
+        card: &str,
+        thread: &str,
+        provider: NativeProvider,
+    ) -> Result<Self> {
+        Ok(Self(
+            ExecutionLeaseGuard::acquire_native(
+                pool,
+                card,
+                thread,
+                "",
+                provider,
+                WorkspaceAccess::ReadOnly,
+            )
+            .await?,
+        ))
+    }
+}
+/// Move-only task capability; storage and physical completion are owned by one lease lifecycle.
+pub(crate) enum NativeTaskGuard {
+    Read(ExecutionReadGuard),
+    Write(ExecutionWriteGuard),
+}
+impl NativeTaskGuard {
+    fn lease(&self) -> &ExecutionLeaseGuard {
+        match self {
+            Self::Read(guard) => &guard.0,
+            Self::Write(guard) => &guard.0,
+        }
+    }
+    fn into_lease(self) -> ExecutionLeaseGuard {
+        match self {
+            Self::Read(guard) => guard.0,
+            Self::Write(guard) => guard.0,
+        }
+    }
+    pub(crate) async fn client_nonce(&self, preferred: Option<&str>) -> Result<String> {
+        self.lease().client_nonce(preferred).await
+    }
+    pub(crate) async fn started(self, turn: &str) -> Result<()> {
+        self.into_lease().started(turn).await
+    }
+    pub(crate) async fn rejected(self) -> Result<()> {
+        self.into_lease().rejected().await
+    }
+}
+
 /// A live descendant retains its authenticated root even after the root's own execution stopped.
 /// Card ownership alone grants nothing: the root must be a task/native writer of this resource.
 pub(crate) async fn owned_write_root_tx(
@@ -217,11 +308,12 @@ async fn native_write_context_tx(
     let root = owned_write_root_tx(conn, card, &cwd).await?;
     Ok(NativeWriteContext { track, cwd, root })
 }
-async fn native_context_available_tx(
+async fn native_context_available_for_access_tx(
     conn: &mut sqlx::SqliteConnection,
     card: &str,
     except: &str,
     context: &NativeWriteContext,
+    access: WorkspaceAccess,
 ) -> Result<bool> {
     let duplicate: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM workspace_leases WHERE holder_kind='native' \
@@ -237,9 +329,13 @@ async fn native_context_available_tx(
         conn,
         &context.track,
         except,
-        WorkspaceAccess::ReadWrite,
+        access,
         Some(&context.cwd),
-        context.root.as_deref(),
+        if access == WorkspaceAccess::ReadWrite {
+            context.root.as_deref()
+        } else {
+            None
+        },
     )
     .await?)
 }
@@ -252,7 +348,8 @@ pub(crate) async fn native_write_available_tx(
     provider: NativeProvider,
 ) -> Result<bool> {
     let context = native_write_context_tx(conn, card, thread, provider).await?;
-    native_context_available_tx(conn, card, except, &context).await
+    native_context_available_for_access_tx(conn, card, except, &context, WorkspaceAccess::ReadWrite)
+        .await
 }
 
 /// The caller's transaction reserves the Track checkout before spawning any write execution.
@@ -284,7 +381,7 @@ pub(crate) async fn acquire_execution_write_tx(
             holder,
             kind,
             path,
-            root: &root,
+            access: ExecutionAccess::Write(&root),
         },
         &id,
     )
@@ -298,7 +395,11 @@ struct ExecutionReference<'a> {
     holder: &'a str,
     kind: &'a str,
     path: &'a str,
-    root: &'a str,
+    access: ExecutionAccess<'a>,
+}
+enum ExecutionAccess<'a> {
+    Read,
+    Write(&'a str),
 }
 async fn insert_execution_reference(
     tx: &mut Tx<'_>,
@@ -311,13 +412,17 @@ async fn insert_execution_reference(
         holder,
         kind,
         path,
-        root,
+        access,
     } = reference;
+    let (mode, root) = match access {
+        ExecutionAccess::Read => ("read_only", None),
+        ExecutionAccess::Write(root) => ("read_write", Some(root)),
+    };
     sqlx::query(
         r#"
 INSERT INTO workspace_leases(lease_id, card_id, track_id, path, state, lease_owner, boot_id,
 created_at_ms, updated_at_ms, access_mode, holder_kind, holder_id, holder_phase,write_root_id) VALUES(?1, ?2,
-?3, ?4, 'held', ?5, ?6, ?7, ?7, 'read_write', ?8, ?5, 'issuing',?9)
+?3, ?4, 'held', ?5, ?6, ?7, ?7, ?10, ?8, ?5, 'issuing',?9)
 "#,
     )
     .bind(&id)
@@ -329,6 +434,7 @@ created_at_ms, updated_at_ms, access_mode, holder_kind, holder_id, holder_phase,
     .bind(now_ms())
     .bind(kind)
     .bind(root)
+    .bind(mode)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -378,7 +484,7 @@ pub(crate) async fn acquire_execution_child_tx(
             holder,
             kind,
             path,
-            root: &root,
+            access: ExecutionAccess::Write(&root),
         },
         &id,
     )
@@ -499,7 +605,7 @@ pub(crate) async fn acquire_execution_delegated_tx(
             holder,
             kind,
             path,
-            root: &root,
+            access: ExecutionAccess::Write(&root),
         },
         &id,
     )

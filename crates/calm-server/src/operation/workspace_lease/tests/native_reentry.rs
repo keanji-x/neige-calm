@@ -166,3 +166,79 @@ async fn native_writer_reader_fence_uses_the_persisted_execution_cwd() {
         "a reader at actual execution cwd must block even when Track cwd differs"
     );
 }
+
+#[tokio::test]
+async fn native_read_guards_share_scope_but_fence_native_writer() {
+    use execution_guard::{ExecutionReadGuard, NativeTaskGuard};
+    let cwd = tempfile::tempdir().unwrap();
+    let (repo, track, card) = lease_fixture(cwd.path()).await;
+    let other = crate::db::RepoSyncDomainRaw::card_create(
+        &repo,
+        crate::model::NewCard {
+            track_id: track.into(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: serde_json::Value::Null,
+        },
+    )
+    .await
+    .unwrap();
+    execution_guard::bind_execution(
+        repo.pool(),
+        NativeProvider::Codex,
+        &card,
+        "reader-one",
+        cwd.path().to_str().unwrap(),
+    )
+    .await
+    .unwrap();
+    execution_guard::bind_execution(
+        repo.pool(),
+        NativeProvider::Codex,
+        other.id.as_str(),
+        "reader-two",
+        cwd.path().to_str().unwrap(),
+    )
+    .await
+    .unwrap();
+    let first = NativeTaskGuard::Read(
+        ExecutionReadGuard::acquire_native(repo.pool(), &card, "reader-one", NativeProvider::Codex)
+            .await
+            .unwrap(),
+    );
+    let second = NativeTaskGuard::Read(
+        ExecutionReadGuard::acquire_native(
+            repo.pool(),
+            other.id.as_str(),
+            "reader-two",
+            NativeProvider::Codex,
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(
+        ExecutionWriteGuard::acquire_native(
+            repo.pool(),
+            &card,
+            "reader-one",
+            "",
+            NativeProvider::Codex
+        )
+        .await
+        .is_err()
+    );
+    let modes: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT access_mode,write_root_id FROM workspace_leases \
+        WHERE holder_kind='native' AND state='held'",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        modes,
+        vec![("read_only".into(), None), ("read_only".into(), None)]
+    );
+    first.rejected().await.unwrap();
+    second.rejected().await.unwrap();
+}

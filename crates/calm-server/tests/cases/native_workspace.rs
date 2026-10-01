@@ -237,3 +237,88 @@ async fn native_workspace_resume_missing_provider_cwd_cannot_invent_a_binding() 
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn native_workspace_readonly_lost_response_retains_independent_reader_until_exact_stop() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card = seed_card(&repo, 104).await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let thread = daemon
+        .thread_start_mint_for_card(
+            &card,
+            SharedThreadStartParams {
+                cwd: root.path().to_str().unwrap().into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "read-only".into(),
+                developer_instructions: None,
+                config: ThreadConfig::NoMcp,
+            },
+        )
+        .await
+        .unwrap();
+    let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+        .bind(&card)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner, \
+        created_at_ms,updated_at_ms,access_mode) VALUES('task-read',?1,?2,?3,'held','reader',0,0,'read_only')")
+        .bind(&card).bind(&track).bind(root.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::write(sock.with_extension("turn-start-no-id"), "1").unwrap();
+    assert!(
+        daemon
+            .turn_start(
+                &thread,
+                vec![InputItem::text("read under pinned snapshot")],
+                &TurnModelSelection {
+                    model: None,
+                    effort: None
+                },
+                None
+            )
+            .await
+            .is_err()
+    );
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT lease_id,native_client_id FROM workspace_leases \
+        WHERE holder_kind='native' AND access_mode='read_only' AND state='held'",
+    )
+    .fetch_optional(repo.pool())
+    .await
+    .unwrap();
+    // The Task lease's old lightweight stop proof may arrive before this request is accepted.
+    sqlx::query("UPDATE workspace_leases SET state='released' WHERE lease_id='task-read'")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let (lease, nonce) =
+        row.expect("a read-only native request needs its own durable issuance reference");
+    let read_path = sock.with_extension("thread-read");
+    let original = std::fs::read(&read_path).unwrap();
+    std::fs::write(&read_path,serde_json::to_vec(&json!({"thread":{"id":thread,"cwd":root.path(),"status":{"type":"idle"},"turns":[{"id":"old-completed","status":"completed","items":[]}]}})).unwrap()).unwrap();
+    assert!(
+        daemon
+            .reconcile_native_workspace_guard(&lease)
+            .await
+            .is_err(),
+        "old completed turns cannot settle the delayed reader nonce"
+    );
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workspace_leases WHERE access_mode='read_only' AND state='held'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(held, 1);
+    assert!(!nonce.is_empty());
+    std::fs::write(&read_path, original).unwrap();
+    assert!(
+        daemon
+            .reconcile_native_workspace_guard(&lease)
+            .await
+            .unwrap()
+    );
+}

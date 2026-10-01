@@ -1382,10 +1382,11 @@ impl SharedCodexAppServer {
             use crate::operation::workspace_lease::task_guard::{
                 PreparedTaskAccess, prepared_task_access,
             };
+            use crate::operation::workspace_lease::execution_guard::{NativeTaskGuard,ExecutionReadGuard};
             match prepared_task_access(&pool,&card).await? {
-                PreparedTaskAccess::Read => None,
-                PreparedTaskAccess::Write {attempt} => Some(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,&attempt,crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?),
-                PreparedTaskAccess::Independent => Some(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,"",crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?),
+                PreparedTaskAccess::Read => Some(NativeTaskGuard::Read(ExecutionReadGuard::acquire_native(&pool,&card,thread_id,crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?)),
+                PreparedTaskAccess::Write {attempt} => Some(NativeTaskGuard::Write(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,&attempt,crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?)),
+                PreparedTaskAccess::Independent => Some(NativeTaskGuard::Write(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,"",crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?)),
             }
         } else {
             None
