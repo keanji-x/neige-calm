@@ -203,15 +203,14 @@ pub(crate) async fn authorize_native_session_tx(
             "native interactive session is stopping".into(),
         ));
     }
-    if let Some(permit) = permit {
-        if permit.record.id != execution
+    if let Some(permit) = permit
+        && (permit.record.id != execution
             || permit.record.holder != terminal
-            || permit.record.cwd != cwd
-        {
-            return Err(CalmError::Conflict(
-                "native session capability differs from its durable owner".into(),
-            ));
-        }
+            || permit.record.cwd != cwd)
+    {
+        return Err(CalmError::Conflict(
+            "native session capability differs from its durable owner".into(),
+        ));
     }
     Ok(true)
 }
@@ -319,6 +318,13 @@ pub(crate) async fn stop_managed_native_session(
                 _ => {}
             }
         }
+        // No launch capability exists before claim_session changes this phase.
+        // This transaction fences a concurrent claim before confirming never-issued.
+        if record.phase == "issuing" {
+            super::super::storage::release_confirmed_tx(tx, &record, &record.holder, crate::model::now_ms()).await?;
+            super::super::storage::session_stop_record_tx(tx, &record, &socket).await?;
+            return Ok(Some(None));
+        }
         sqlx::query("UPDATE workspace_leases SET holder_phase='stopping' WHERE lease_id=?1 AND state='held'")
             .bind(&execution).execute(&mut **tx).await?;
         Ok(Some(Some(record)))
@@ -356,4 +362,26 @@ pub(crate) async fn stop_managed_native_session(
         })
     })
     .await
+}
+
+/// Cancel an unclaimed session without a process endpoint. No launch permit can exist yet.
+pub(crate) async fn release_unissued_native_session(
+    repo: &dyn crate::db::RouteRepo,
+    terminal: &str,
+) -> Result<Option<bool>> {
+    let terminal = terminal.to_owned();
+    crate::db::write_in_tx_typed(repo, move |tx| Box::pin(async move {
+        let execution: Option<String> = sqlx::query_scalar(
+            "SELECT lease.lease_id FROM workspace_leases lease JOIN operations operation \
+             ON json_extract(operation.tx_output_json,'$.data.terminal_id')=lease.holder_id \
+             AND json_extract(operation.tx_output_json,'$.data.card_id')=lease.card_id \
+             WHERE lease.holder_kind='terminal' AND lease.holder_id=?1 \
+             AND operation.kind IN ('codex-create','codex-worker') ORDER BY lease.created_at_ms DESC LIMIT 1",
+        ).bind(&terminal).fetch_optional(&mut **tx).await?;
+        let Some(execution) = execution else { return Ok(None); };
+        let Some(record) = super::super::storage::load_in(tx, &execution).await? else { return Ok(Some(true)); };
+        if record.phase != "issuing" { return Ok(Some(false)); }
+        super::super::storage::release_confirmed_tx(tx, &record, &record.holder, crate::model::now_ms()).await?;
+        Ok(Some(true))
+    })).await
 }

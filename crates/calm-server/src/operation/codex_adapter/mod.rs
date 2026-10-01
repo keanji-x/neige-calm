@@ -1084,13 +1084,10 @@ impl ProviderAdapter for CodexWorkerAdapter {
             if let Some(session) = ctx.repo.session_projection_by_id(&runtime_id).await?
                 && let Some(thread_id) = session.thread_id.as_deref()
             {
-                business_may_be_live = true;
-                // An interrupt request is not proof of stopped external writers.
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    self.shared_codex_appserver.interrupt_active_turn(thread_id),
-                )
-                .await;
+                business_may_be_live = !self
+                    .shared_codex_appserver
+                    .quiesce_native_thread(thread_id)
+                    .await?;
             }
         }
         super::worker_cleanup::require_cleanup_safe(ctx, op, output, business_may_be_live).await?;

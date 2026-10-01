@@ -73,6 +73,7 @@ pub(crate) async fn compensate_worker_rows(
     let rollback = repo
         .write_in_tx(Box::new(move |tx| {
             Box::pin(async move {
+                super::execution_manager::require_worker_cleanup_tx(tx, &card_id_for_tx).await?;
                 card_with_terminal_rollback_tx(tx, &card_id_for_tx, &term_id_for_tx, &cache_for_tx)
                     .await
             })
@@ -85,6 +86,7 @@ pub(crate) async fn compensate_worker_rows(
             error = %e,
             "worker compensation rollback failed; sweeper fallback will reap on next tick",
         );
+        return WorkerCleanupOutcome::Preserved;
     }
     WorkerCleanupOutcome::Deleted
 }
@@ -123,7 +125,17 @@ pub(crate) async fn require_cleanup_safe(
     business_may_be_live: bool,
 ) -> crate::error::Result<()> {
     use super::terminal_launch::RequestState;
-    if !may_have_started(op)? {
+    let managed_session = if !business_may_be_live {
+        let terminal = output.output_string("terminal_id", "worker cleanup")?;
+        super::execution_manager::release_unissued_native_session(ctx.repo.as_ref(), &terminal)
+            .await?
+    } else {
+        None
+    };
+    if managed_session == Some(true) {
+        return Ok(());
+    }
+    if managed_session.is_none() && !may_have_started(op)? {
         let id = output
             .data
             .get("terminal_id")
@@ -139,7 +151,10 @@ pub(crate) async fn require_cleanup_safe(
         return Ok(());
     }
     let state = RequestState::read(&output.data)?;
-    if !business_may_be_live && matches!(state, Some(RequestState::NotRequested { .. })) {
+    if managed_session.is_none()
+        && !business_may_be_live
+        && matches!(state, Some(RequestState::NotRequested { .. }))
+    {
         let id = output.output_string("terminal_id", "worker cleanup")?;
         super::workspace_lease::execution_guard::release_stopped_execution(
             &ctx.operation_repo.sqlite_pool(),

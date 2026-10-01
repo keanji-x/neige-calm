@@ -23,3 +23,5 @@ pub(crate) use session::{
     authorize_native_session_tx, native_session_presentation, session_preparation_tx,
     stop_managed_native_session,
 };
+
+pub(crate) use session::release_unissued_native_session;

@@ -884,6 +884,12 @@ async fn interrupt_target_completion_writes_outcome_row() {
         turn: json!({ "id": "turn-int" }),
     });
     recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnRunning).await;
+    daemon
+        .set_native_thread_history_for_test(json!({"thread":{
+            "id":SEED_THREAD_ID,"cwd":"/tmp","status":{"type":"active","activeFlags":[]},
+            "turns":[{"id":"turn-int","status":"inProgress","items":[]}]
+        }}))
+        .unwrap();
     harness.interrupt("user".into()).await.unwrap();
     recv_phase_event_into(&mut rx, HarnessPhaseTag::IssuingInterrupt).await;
     assert_eq!(

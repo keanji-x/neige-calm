@@ -197,3 +197,110 @@ async fn native_session_retains_writer_until_exact_supervisor_stop() {
         .unwrap();
     endpoint.await.unwrap();
 }
+
+#[tokio::test]
+async fn native_fence_claimed_session_cannot_release_from_old_not_requested_snapshot() {
+    let harness = worker_lease_harness().await;
+    let pending =
+        pending_worker_with_context(&harness, "claimed-session", "claimed-session", Value::Null)
+            .await;
+    let operations = std::sync::Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let (prepared, _) = operations
+        .prepare_tx_and_advance(&pending, &harness.adapter)
+        .await
+        .unwrap()
+        .unwrap();
+    let output = prepared.tx_output.clone().unwrap();
+    let claimed = operations
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    operations
+        .set_phase_and_tx_output(&claimed, Phase::SpawnStarted, &output)
+        .await
+        .unwrap()
+        .unwrap();
+    let op = operations
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let terminal = output.output_string("terminal_id", "fixture").unwrap();
+    let execution:String=sqlx::query_scalar("SELECT lease_id FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1 AND state='held'")
+        .bind(&terminal).fetch_one(harness.repo.pool()).await.unwrap();
+    crate::operation::execution_manager::tests::issue_session_fixture(
+        harness.repo.pool(),
+        &execution,
+    )
+    .await;
+    let ctx = SpawnCtx::new(
+        harness.repo.clone(),
+        operations,
+        std::sync::Arc::new(DaemonClient::new_stub()),
+        TerminalRendererRegistry::new_with_repo(harness.repo.clone()),
+        harness.events.clone(),
+        OperationCompletionBus::new(),
+    );
+    assert!(
+        crate::operation::worker_cleanup::require_cleanup_safe(&ctx, &op, &output, false)
+            .await
+            .is_err(),
+        "a capability-bearing managed session cannot use an older NotRequested caller snapshot as stop proof"
+    );
+    let state: String = sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id=?1")
+        .bind(execution)
+        .fetch_one(harness.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(state, "held");
+}
+
+#[tokio::test]
+async fn native_fence_worker_delete_rechecks_live_native_reference() {
+    let harness = worker_lease_harness().await;
+    let (output, _, _) = prepare_worker_and_op(&harness, "late-reference", "late-reference").await;
+    let card = output.output_string("card_id", "fixture").unwrap();
+    let terminal = output.output_string("terminal_id", "fixture").unwrap();
+    let shared = SharedCodexAppServer::new_fake_running_with_pending(harness.repo.clone(), None);
+    let thread = shared
+        .thread_start_mint_for_card(
+            &card,
+            SharedThreadStartParams {
+                cwd: output.output_string("cwd", "fixture").unwrap(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: ThreadConfig::NoMcp,
+            },
+        )
+        .await
+        .unwrap();
+    shared
+        .turn_start(
+            &thread,
+            vec![crate::codex_appserver::InputItem::text(
+                "writer raced cleanup",
+            )],
+            &TurnModelSelection::inherit(),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = compensate_worker_rows(
+        harness.repo.as_ref(),
+        TerminalRendererRegistry::new().as_ref(),
+        &harness.adapter.card_role_cache,
+        &card,
+        &terminal,
+    )
+    .await;
+    assert_eq!(
+        result,
+        WorkerCleanupOutcome::Preserved,
+        "projection deletion must check managed execution references in its final transaction"
+    );
+    assert!(harness.repo.card_get(&card).await.unwrap().is_some());
+}

@@ -974,6 +974,12 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
 
+    let op = operation_repo
+        .set_phase_and_tx_output(&op, Phase::SpawnStarted, &output)
+        .await
+        .unwrap()
+        .expect("owned spawn checkpoint must be persisted");
+
     let runtime_id = output.data["runtime_id"].as_str().unwrap().to_string();
     let card_id = output.data["card_id"].as_str().unwrap().to_string();
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
@@ -1015,6 +1021,14 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
             .is_none(),
         "fresh recovered daemon must start with an empty active_turns cache"
     );
+    recovered_shared
+        .set_native_thread_history_for_test(json!({"thread":{
+            "id":thread_id,
+            "cwd":output.data["cwd"].as_str().expect("prepared native workspace"),
+            "status":{"type":"active","activeFlags":[]},
+            "turns":[{"id":turn_id,"status":"inProgress","items":[]}]
+        }}))
+        .unwrap();
     let recovered_adapter = CodexWorkerAdapter::new(
         route_repo.clone(),
         state.codex.clone(),
@@ -1027,7 +1041,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     let completion = OperationCompletionBus::new();
     let spawn_ctx = SpawnCtx::new(
         route_repo,
-        operation_repo,
+        operation_repo.clone(),
         state.daemon.clone(),
         state.terminal_renderer.clone(),
         state.events.clone(),
@@ -1055,6 +1069,15 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         Some(terminal_id.as_str())
     );
 
+    let recovered_claim = operation_repo.claim_drive_batch(1).await.unwrap();
+    assert_eq!(recovered_claim.len(), 1);
+    assert_eq!(recovered_claim[0].id, op.id);
+    let op = operation_repo.get_operation(&op.id).await.unwrap().unwrap();
+    let op = operation_repo
+        .set_compensating(&op, &compensation, &output)
+        .await
+        .unwrap()
+        .expect("owned compensation must be persisted");
     for step in &compensation.steps {
         recovered_adapter
             .compensate_step(step, &output, &op, &spawn_ctx)

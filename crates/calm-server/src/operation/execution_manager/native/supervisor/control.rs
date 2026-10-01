@@ -50,7 +50,13 @@ impl ExecutionManager {
         if storage::native_turn_stopped(&self.pool, thread, turn).await? {
             return Ok(());
         }
-        let executions = storage::native_executions(&self.pool, thread).await?;
+        let mut executions = storage::native_executions(&self.pool, thread).await?;
+        if executions.is_empty() {
+            if self.restore_native_scope(backend, thread, false).await? {
+                return Ok(());
+            }
+            executions = storage::native_executions(&self.pool, thread).await?;
+        }
         let [execution] = executions.as_slice() else {
             return Err(CalmError::Conflict(
                 "native interrupt requires one managed generation".into(),
@@ -88,17 +94,75 @@ impl ExecutionManager {
         backend: &CodexBackend,
         thread: &str,
     ) -> Result<()> {
-        let executions = storage::native_executions(&self.pool, thread).await?;
+        self.cancel_native_thread_inner(backend, thread, false)
+            .await
+    }
+
+    pub(in crate::operation::execution_manager) async fn quiesce_native_scope(
+        &self,
+        backend: &CodexBackend,
+        thread: &str,
+    ) -> Result<()> {
+        storage::close_native_scope(&self.pool, thread).await?;
+        self.cancel_native_thread_inner(backend, thread, true).await
+    }
+
+    async fn cancel_native_thread_inner(
+        &self,
+        backend: &CodexBackend,
+        thread: &str,
+        close_scope: bool,
+    ) -> Result<()> {
+        let mut executions = storage::native_executions(&self.pool, thread).await?;
         if executions.is_empty()
             && storage::native_thread_requires_recovery(&self.pool, thread).await?
         {
-            return Err(CalmError::Conflict(
-                "persisted native scope requires provider recovery before cancellation".into(),
-            ));
+            if self
+                .restore_native_scope(backend, thread, close_scope)
+                .await?
+            {
+                return Ok(());
+            }
+            executions = storage::native_executions(&self.pool, thread).await?;
         }
         for execution in executions {
             self.cancel(backend, &execution).await?;
         }
         Ok(())
+    }
+}
+
+impl ExecutionManager {
+    async fn restore_native_scope(
+        &self,
+        backend: &CodexBackend,
+        thread: &str,
+        close_scope: bool,
+    ) -> Result<bool> {
+        let facts = backend.discover(thread).await?;
+        if facts.thread.id != thread || !std::path::Path::new(&facts.thread.cwd).is_absolute() {
+            return Err(CalmError::Conflict(
+                "discovered native scope identity differs".into(),
+            ));
+        }
+        let stopped = facts.thread.stopped() && facts.background_stopped;
+        let observed = facts
+            .thread
+            .turns
+            .iter()
+            .rev()
+            .find(|turn| matches!(turn.status, crate::codex_appserver::TurnStatus::InProgress))
+            .or_else(|| stopped.then(|| facts.thread.turns.last()).flatten())
+            .map(|turn| turn.id.as_str());
+        storage::adopt_discovered_native_scope(
+            &self.pool,
+            thread,
+            &facts.thread.cwd,
+            observed,
+            stopped,
+            close_scope,
+        )
+        .await?;
+        Ok(stopped)
     }
 }

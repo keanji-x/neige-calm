@@ -2593,6 +2593,27 @@ async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
         )
         .await
         .unwrap();
+    let (turn, nonce): (String, String) = sqlx::query_as(
+        "SELECT native_observed_turn_id,native_client_id FROM workspace_leases \
+         WHERE holder_kind='native' AND holder_id=?1 AND state='held'",
+    )
+    .bind(&thread_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    let facts = serde_json::json!({"thread":{
+        "id":thread_id,"cwd":"/tmp","status":{"type":"idle"},
+        "turns":[{"id":turn,"status":"interrupted","items":[
+            {"type":"userMessage","clientId":nonce}
+        ]}]
+    }});
+    std::fs::write(
+        root.path()
+            .join("run/codex-appserver.sock")
+            .with_extension("thread-read"),
+        serde_json::to_vec(&facts).unwrap(),
+    )
+    .unwrap();
     daemon.interrupt_active_turn(&thread_id).await.unwrap();
 
     unsafe {

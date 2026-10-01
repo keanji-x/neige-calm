@@ -5,18 +5,18 @@ use crate::operation::workspace_lease::execution_guard::NativeProvider;
 use serde_json::Value;
 use std::path::Path;
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub(crate) struct NativeThreadRead {
     pub thread: NativeThread,
 }
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub(crate) struct NativeThread {
     pub id: String,
     pub cwd: String,
     pub status: ThreadStatus,
     pub turns: Vec<NativeTurn>,
 }
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub(crate) struct NativeTurn {
     pub id: String,
     pub status: TurnStatus,

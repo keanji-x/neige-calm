@@ -54,7 +54,7 @@ pub(crate) async fn persist_execution_scope(
 ) -> Result<()> {
     let changed = sqlx::query(
         "INSERT INTO workspace_execution_bindings(provider,holder_id,card_id,cwd,scope_phase) \
-        VALUES(?1,?2,?3,?4,?5) ON CONFLICT(provider,holder_id) DO UPDATE SET cwd=excluded.cwd,scope_phase=excluded.scope_phase \
+        VALUES(?1,?2,?3,?4,?5) ON CONFLICT(provider,holder_id) DO UPDATE SET cwd=excluded.cwd,scope_phase=CASE WHEN workspace_execution_bindings.scope_phase='closed' THEN 'closed' ELSE excluded.scope_phase END \
         WHERE workspace_execution_bindings.card_id=excluded.card_id",
     )
     .bind(provider.wire()).bind(holder).bind(card).bind(cwd).bind(phase.as_db_str())
@@ -275,6 +275,7 @@ impl NativeTaskGuard {
     pub(crate) async fn client_nonce(&self, preferred: Option<&str>) -> Result<String> {
         self.lease().client_nonce(preferred).await
     }
+    #[cfg(test)]
     pub(crate) async fn started(self, turn: &str) -> Result<()> {
         self.into_lease().started(turn).await
     }
@@ -547,7 +548,7 @@ created_at_ms, updated_at_ms, access_mode, holder_kind, holder_id, holder_phase,
 ?3, ?4, ?11, ?5, ?6, ?7, ?7, ?10, ?8, ?5, ?12,?9,?13)
 "#,
     )
-    .bind(&id)
+    .bind(id)
     .bind(card)
     .bind(track)
     .bind(path)
@@ -740,4 +741,7 @@ pub(crate) async fn acquire_execution_delegated_tx(
 
 #[path = "execution_guard/legacy.rs"]
 mod legacy;
-pub(crate) use legacy::{adopt_native_scope_tx, record_stopped_terminal_tx};
+pub(crate) use legacy::{adopt_native_scope_tx, record_stopped_native_scope_tx};
+
+#[cfg(test)]
+pub(crate) use legacy::record_stopped_terminal_tx;

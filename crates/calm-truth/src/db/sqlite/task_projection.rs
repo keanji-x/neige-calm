@@ -438,27 +438,28 @@ async fn attach_task_pending_reasons(
                         message,
                         dependencies,
                     });
-                } else if let Some(declaration) = declarations.get(index) {
-                    if declaration.kind == "terminal"
-                        || runs_in_track_checkout(&declaration.kind, &declaration.spawn)
+                } else if let Some(declaration) = declarations.get(index)
+                    && (declaration.kind == "terminal"
+                        || runs_in_track_checkout(&declaration.kind, &declaration.spawn))
+                {
+                    let access = calm_types::workspace_access::WorkspaceAccess::from_context(
+                        &declaration.context,
+                    )
+                    .map_err(CalmError::BadRequest)?;
+                    let cwd = super::track_idle::declared_workspace_cwd(
+                        declaration.kind == "terminal",
+                        declaration.cwd.as_deref(),
+                    );
+                    if !super::track_idle::workspace_available(
+                        conn, track_id, &row.id, access, cwd, None,
+                    )
+                    .await?
                     {
-                        let access = calm_types::workspace_access::WorkspaceAccess::from_context(
-                            &declaration.context,
-                        )
-                        .map_err(CalmError::BadRequest)?;
-                        let cwd = super::track_idle::declared_workspace_cwd(
-                            declaration.kind == "terminal",
-                            declaration.cwd.as_deref(),
-                        );
-                        if !super::track_idle::workspace_available(
-                            conn, track_id, &row.id, access, cwd, None,
-                        )
-                        .await?
-                        {
-                            verdict.pending_reason=Some(TaskPendingReason::TrackBusy {
-                                message:"Waiting for the task's workspace: another execution is using it".into(),
-                            });
-                        }
+                        verdict.pending_reason = Some(TaskPendingReason::TrackBusy {
+                            message:
+                                "Waiting for the task's workspace: another execution is using it"
+                                    .into(),
+                        });
                     }
                 }
                 continue;

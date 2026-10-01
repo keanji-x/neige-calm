@@ -284,3 +284,254 @@ async fn native_stop_can_precede_writable_task_business_report() {
         "a running business task retains its remaining workspace intent"
     );
 }
+
+struct UncertainSessionBackend;
+#[async_trait::async_trait]
+impl Backend for UncertainSessionBackend {
+    type Request = ();
+    fn kind(&self) -> BackendKind {
+        BackendKind::NativeSession
+    }
+    async fn launch(&self, permit: LaunchPermit, _: ()) -> LaunchOutcome {
+        assert!(matches!(permit, LaunchPermit::Write(_)));
+        LaunchOutcome::Uncertain(CalmError::Conflict(
+            "fixture request has no acknowledgement".into(),
+        ))
+    }
+    async fn recover(&self, record: &Record) -> Result<Observation> {
+        Ok(Observation {
+            execution: record.id.clone(),
+            identity: None,
+            stopped: false,
+        })
+    }
+    async fn stop(&self, record: &Record) -> Result<Observation> {
+        self.recover(record).await
+    }
+}
+
+pub(crate) async fn issue_session_fixture(pool: &SqlitePool, execution: &str) {
+    let manager = ExecutionManager::new(pool.clone());
+    assert!(
+        manager
+            .launch_reserved(&UncertainSessionBackend, execution, ())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn native_fence_quiesce_closes_future_generations() {
+    let (repo, cwd, track) = fixture().await;
+    let owner = owner(&repo, cwd.path(), &track, "closing-fixture", false).await;
+    let repo = std::sync::Arc::new(repo);
+    let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_fake_running_with_pending(
+        repo.clone(),
+        None,
+    );
+    let thread = daemon
+        .thread_start_mint_for_card(
+            &owner.card,
+            crate::shared_codex_appserver::SharedThreadStartParams {
+                cwd: cwd.path().to_str().unwrap().into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: crate::shared_codex_appserver::ThreadConfig::NoMcp,
+            },
+        )
+        .await
+        .unwrap();
+    daemon
+        .turn_start(
+            &thread,
+            vec![crate::codex_appserver::InputItem::text("initial")],
+            &crate::planner_model::TurnModelSelection::inherit(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(daemon.quiesce_native_thread(&thread).await.unwrap());
+    assert!(
+        daemon
+            .turn_start(
+                &thread,
+                vec![crate::codex_appserver::InputItem::text("late issuer")],
+                &crate::planner_model::TurnModelSelection::inherit(),
+                None
+            )
+            .await
+            .is_err(),
+        "worker cleanup permanently closes admission before removing its projection"
+    );
+}
+
+#[tokio::test]
+async fn native_fence_stopped_legacy_discovery_does_not_reserve_writer_against_reader() {
+    let (repo, cwd, track) = fixture().await;
+    let owner = owner(&repo, cwd.path(), &track, "stopped-legacy", false).await;
+    sqlx::query(
+        "UPDATE workspace_execution_bindings SET scope_phase='recovering' WHERE holder_id=?1",
+    )
+    .bind(&owner.holder)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,access_mode,created_at_ms,updated_at_ms) \
+        VALUES('existing-reader','reader',?1,?2,'held','reader','read_only',0,0)")
+        .bind(&track).bind(cwd.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
+    let repo = std::sync::Arc::new(repo);
+    let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_fake_running_with_pending(
+        repo.clone(),
+        None,
+    );
+    daemon
+        .set_native_thread_history_for_test(
+            serde_json::json!({"thread":{"id":owner.holder,"cwd":cwd.path(),
+        "status":{"type":"idle"},"turns":[{"id":"old-finished","status":"completed","items":[]}]}}),
+        )
+        .unwrap();
+    assert!(
+        daemon.quiesce_native_thread(&owner.holder).await.unwrap(),
+        "positive stopped facts must not temporarily acquire an overlapping write execution"
+    );
+    let reader: String =
+        sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id='existing-reader'")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(reader, "held");
+}
+
+#[tokio::test]
+async fn native_fence_stopped_legacy_scope_hands_off_terminal_read_intent() {
+    let (repo, cwd, track) = fixture().await;
+    let owner = owner(&repo, cwd.path(), &track, "legacy-read-handoff", true).await;
+    let task: String = sqlx::query_scalar("SELECT id FROM tasks WHERE worker_card_id=?1")
+        .bind(&owner.card)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    let mut tx = crate::db::sqlite::begin_immediate_tx(repo.pool())
+        .await
+        .unwrap();
+    crate::db::sqlite::task_complete_from_worker_tx(
+        &mut tx,
+        &task,
+        &track,
+        crate::db::sqlite::TaskReporter::Kernel,
+        crate::model::now_ms(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        task_ended_tx(
+            &mut tx,
+            &owner.card,
+            crate::operation::workspace_lease::ReleaseDelivery::CommitAsTaskEnded
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    );
+    tx.commit().await.unwrap();
+    sqlx::query(
+        "UPDATE workspace_execution_bindings SET scope_phase='recovering' WHERE holder_id=?1",
+    )
+    .bind(&owner.holder)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let repo = std::sync::Arc::new(repo);
+    let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_fake_running_with_pending(
+        repo.clone(),
+        None,
+    );
+    daemon.set_native_thread_history_for_test(serde_json::json!({"thread":{"id":owner.holder,"cwd":cwd.path(),
+        "status":{"type":"idle"},"turns":[{"id":"read-finished","status":"completed","items":[]}]}})).unwrap();
+    assert!(daemon.quiesce_native_thread(&owner.holder).await.unwrap());
+    let state: (String, Option<i64>) = sqlx::query_as(
+        "SELECT state,read_stop_confirmed_at_ms FROM workspace_leases \
+        WHERE card_id=?1 AND holder_kind='task'",
+    )
+    .bind(&owner.card)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        state.0, "released",
+        "provider scope stop settles the exact terminal read task intent"
+    );
+    assert!(state.1.is_some());
+}
+
+#[tokio::test]
+async fn native_fence_unknown_scope_keeps_closed_reader_and_deletion_barrier() {
+    let (repo, cwd, track) = fixture().await;
+    let owner = owner(&repo, cwd.path(), &track, "unknown-closed-scope", false).await;
+    let mut tx = crate::db::sqlite::begin_immediate_tx(repo.pool())
+        .await
+        .unwrap();
+    crate::db::sqlite::session_start_runtime_tx(
+        &mut tx,
+        crate::session_projection_repo::WorkerSessionInit {
+            id: crate::model::new_id(),
+            card_id: owner.card.clone(),
+            kind: crate::session_projection_repo::WorkerSessionKind::CodexCard,
+            agent_provider: Some(crate::session_projection_repo::AgentProvider::Codex),
+            status: crate::session_projection_repo::WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some(owner.holder.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: crate::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query(
+        "UPDATE workspace_execution_bindings SET scope_phase='recovering' WHERE holder_id=?1",
+    )
+    .bind(&owner.holder)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let repo = std::sync::Arc::new(repo);
+    let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_fake_running_with_pending(
+        repo.clone(),
+        None,
+    );
+    assert!(daemon.quiesce_native_thread(&owner.holder).await.is_err());
+    let phase: String = sqlx::query_scalar(
+        "SELECT scope_phase FROM workspace_execution_bindings WHERE holder_id=?1",
+    )
+    .bind(&owner.holder)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(phase, "closed");
+    let mut tx = crate::db::sqlite::begin_immediate_tx(repo.pool())
+        .await
+        .unwrap();
+    assert!(
+        super::require_worker_cleanup_tx(&mut tx, &owner.card)
+            .await
+            .is_err()
+    );
+    assert!(
+        !crate::db::sqlite::workspace_available(
+            &mut tx,
+            &track,
+            "",
+            calm_types::workspace_access::WorkspaceAccess::ReadOnly,
+            Some(cwd.path().to_str().unwrap()),
+            None
+        )
+        .await
+        .unwrap()
+    );
+    tx.rollback().await.unwrap();
+}

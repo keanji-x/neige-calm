@@ -49,7 +49,7 @@ CREATE TABLE workspace_execution_bindings (
  holder_id TEXT NOT NULL,
  card_id TEXT NOT NULL,
  cwd TEXT NOT NULL,
- scope_phase TEXT NOT NULL CHECK(scope_phase IN ('new','recovering','ready')),
+ scope_phase TEXT NOT NULL CHECK(scope_phase IN ('new','recovering','ready','closed')),
  PRIMARY KEY(provider,holder_id)
 );
 

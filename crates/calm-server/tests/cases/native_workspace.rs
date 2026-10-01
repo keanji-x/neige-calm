@@ -714,3 +714,6 @@ async fn native_workspace_cancellation_cannot_assume_unregistered_legacy_thread_
         "missing local cache and execution record cannot prove a persisted legacy thread stopped"
     );
 }
+
+#[path = "native_workspace/fences.rs"]
+mod fences;

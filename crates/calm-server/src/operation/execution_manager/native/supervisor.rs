@@ -789,6 +789,8 @@ pub struct TurnStartReturnHook {
 #[cfg(feature = "fixtures")]
 pub struct FakeSharedCodexAppServer {
     native_turns: std::sync::Mutex<Vec<execution_backend::FakeNativeTurn>>,
+    native_scope_snapshots:
+        std::sync::Mutex<std::collections::HashMap<String, workspace::NativeThread>>,
     next_thread: AtomicU64,
     next_turn: AtomicU64,
     liveness_facts: std::sync::Mutex<
@@ -847,6 +849,7 @@ impl FakeSharedCodexAppServer {
     fn new() -> Self {
         Self {
             native_turns: std::sync::Mutex::new(Vec::new()),
+            native_scope_snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
             liveness_facts: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1321,9 +1324,9 @@ impl SharedCodexAppServer {
             .thread_start_with_params(ThreadStartParams {
                 cwd: params.cwd,
                 approval_policy: params.approval_policy,
-                permissions: read_permissions.unwrap_or_else(|| {
-                    crate::codex_appserver::PermissionsChoice::SandboxMode(params.sandbox_mode)
-                }),
+                permissions: read_permissions.unwrap_or(
+                    crate::codex_appserver::PermissionsChoice::SandboxMode(params.sandbox_mode),
+                ),
                 developer_instructions: params.developer_instructions,
                 config,
             })
@@ -1701,6 +1704,19 @@ impl SharedCodexAppServer {
         super::super::ExecutionManager::new(pool)
             .cancel_native_thread(&backend, thread_id)
             .await
+    }
+
+    pub(crate) async fn quiesce_native_thread(&self, thread: &str) -> Result<bool> {
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Conflict("managed execution requires durable storage".into())
+        })?;
+        let backend = execution_backend::CodexBackend::for_service(self).await;
+        let manager = super::super::ExecutionManager::new(pool.clone());
+        manager.quiesce_native_scope(&backend, thread).await?;
+        Ok(super::super::storage::native_executions(&pool, thread)
+            .await?
+            .is_empty()
+            && !super::super::storage::native_thread_requires_recovery(&pool, thread).await?)
     }
 
     pub async fn interrupt_active_turn_for_card(&self, card_id: &str) -> Result<()> {
@@ -3477,9 +3493,9 @@ impl SharedCodexAppServer {
         card_id: &str,
         config: ThreadConfig,
     ) {
-        if let Some(pool) = self.repo.sqlite_pool() {
-            if let Err(error) = sqlx::query(
-                "UPDATE workspace_execution_bindings SET scope_phase=?3 \
+        if let Some(pool) = self.repo.sqlite_pool()
+            && let Err(error) = sqlx::query(
+                "UPDATE workspace_execution_bindings SET scope_phase=CASE WHEN scope_phase='closed' THEN 'closed' ELSE ?3 END \
                 WHERE provider='codex' AND holder_id=?1 AND card_id=?2",
             )
             .bind(thread_id)
@@ -3490,7 +3506,6 @@ impl SharedCodexAppServer {
             {
                 tracing::warn!(%error,%thread_id,"native scope recovery barrier could not be persisted");
                 return;
-            }
         }
         let lowered = match config.to_wire_config() {
             Ok(lowered) => lowered,
@@ -3832,6 +3847,22 @@ impl SharedCodexAppServer {
             thread_id: thread_id.to_string(),
             turn: serde_json::json!({ "id": turn_id }),
         });
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn set_native_thread_history_for_test(&self, response: serde_json::Value) -> Result<()> {
+        let facts: workspace::NativeThreadRead =
+            serde_json::from_value(response).map_err(|error| {
+                CalmError::CodexAppServer(format!("fixture thread history: {error}"))
+            })?;
+        let fake = self.fake.as_ref().ok_or_else(|| {
+            CalmError::Conflict("thread history scripting requires the fixture provider".into())
+        })?;
+        fake.native_scope_snapshots
+            .lock()
+            .expect("fixture scope snapshots")
+            .insert(facts.thread.id.clone(), facts.thread);
+        Ok(())
     }
 
     #[cfg(feature = "fixtures")]

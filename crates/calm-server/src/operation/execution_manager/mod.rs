@@ -19,6 +19,7 @@ impl ExecutionManager {
         Self { pool }
     }
 
+    #[cfg(test)]
     async fn submit<B: Backend>(
         &self,
         backend: &B,
@@ -256,7 +257,7 @@ pub(super) struct Record {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Called from the existing business-state transaction, without granting release authority.
 pub(crate) async fn task_ended_tx(
@@ -271,4 +272,12 @@ pub(crate) async fn task_ended_tx(
     )>,
 > {
     storage::task_ended_tx(tx, card, delivery).await
+}
+
+/// Final cleanup consumes the same execution state in the projection deletion transaction.
+pub(crate) async fn require_worker_cleanup_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    card: &str,
+) -> Result<()> {
+    storage::require_worker_cleanup_tx(tx, card).await
 }

@@ -225,6 +225,12 @@ async fn recovered_harness_shutdown_interrupts_last_known_turn() {
     let (harness, _runtime_id) = harness_from_snapshot(repo, daemon.clone(), snapshot).await;
     assert!(daemon.active_turn_id_for_thread("TH1").is_none());
 
+    daemon
+        .set_native_thread_history_for_test(json!({"thread":{
+            "id":"TH1","cwd":"/tmp","status":{"type":"active","activeFlags":[]},
+            "turns":[{"id":"T1","status":"inProgress","items":[]}]
+        }}))
+        .unwrap();
     harness.shutdown().await.unwrap();
 
     assert!(

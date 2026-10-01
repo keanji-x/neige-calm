@@ -105,3 +105,19 @@ sandbox to start a managed read execution.
 
 Completion means the next execution path is constrained by types and module
 visibility by default, rather than relying on a reviewer to remember a guard.
+
+## Native recovery cleanup fence
+
+Permanent projection cleanup closes the native scope in the same durable admission
+boundary used to mint launch capabilities. Ordinary turn interruption leaves it
+open for the next generation. Discovery can refine a closed scope's actual cwd;
+it cannot reopen it. Missing provider facts retain the closed recovery barrier.
+
+Both provider histories must agree with the acknowledged generation. A lost target
+after interrupt, or a nonce mapped to another acknowledged turn, supplies no stop
+proof. Session cleanup distinguishes an atomically unclaimed capability from a
+claimed session; the caller's old launch snapshot supplies no release authority.
+The final projection deletion transaction rechecks live references and unknown
+native scope state. Positive legacy stop records evidence without acquiring a
+writer. Only its exact current terminal task's durable read intent can receive
+the stop handoff after all live references are gone.

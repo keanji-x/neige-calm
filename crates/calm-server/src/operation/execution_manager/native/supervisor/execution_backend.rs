@@ -1,5 +1,7 @@
 //! Native backend: launch consumes authority; stop/recovery only produce observations.
 use super::*;
+#[cfg(feature = "fixtures")]
+use crate::codex_appserver::ThreadStatus;
 use crate::codex_appserver::TurnStatus;
 use crate::operation::execution_manager::backend::{Backend, LaunchOutcome, Observation};
 use crate::operation::execution_manager::{LaunchPermit, Record};
@@ -179,68 +181,201 @@ impl Backend for CodexBackend {
         self.observe(record, true).await
     }
 }
+pub(in crate::operation::execution_manager) struct ScopeObservation {
+    pub thread: super::workspace::NativeThread,
+    pub background_stopped: bool,
+}
 impl CodexBackend {
-    async fn observe(&self, record: &Record, stop: bool) -> Result<Observation> {
+    pub(in crate::operation::execution_manager) async fn discover(
+        &self,
+        thread: &str,
+    ) -> Result<ScopeObservation> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
-            return self.observe_fixture(fake, record, stop);
+            if let Some(facts) = fake
+                .native_scope_snapshots
+                .lock()
+                .expect("fixture scope snapshots")
+                .get(thread)
+                .cloned()
+            {
+                return Ok(ScopeObservation {
+                    thread: facts,
+                    background_stopped: true,
+                });
+            }
+            let history = fake.native_turns.lock().expect("fake provider history");
+            let known = history
+                .iter()
+                .filter(|turn| turn.thread == thread)
+                .collect::<Vec<_>>();
+            let first = known.first().ok_or_else(|| {
+                CalmError::Conflict("fixture provider has no scope history".into())
+            })?;
+            let stopped = known.iter().all(|turn| {
+                matches!(
+                    turn.status,
+                    TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
+                )
+            });
+            return Ok(ScopeObservation {
+                thread: super::workspace::NativeThread {
+                    id: thread.to_owned(),
+                    cwd: first.cwd.clone(),
+                    status: if stopped {
+                        ThreadStatus::Idle
+                    } else {
+                        ThreadStatus::Active {
+                            active_flags: vec![],
+                        }
+                    },
+                    turns: known
+                        .iter()
+                        .map(|turn| super::workspace::NativeTurn {
+                            id: turn.turn.clone(),
+                            status: turn.status,
+                            items: vec![
+                                serde_json::json!({"type":"userMessage","clientId":turn.nonce}),
+                            ],
+                        })
+                        .collect(),
+                },
+                background_stopped: true,
+            });
         }
         let client = self.client()?;
-        let mut facts = client
-            .thread_workspace_history(&record.holder)
-            .await?
-            .thread;
-        if facts.id != record.holder
-            || std::fs::canonicalize(&facts.cwd)? != std::fs::canonicalize(&record.cwd)?
+        Ok(ScopeObservation {
+            thread: client.thread_workspace_history(thread).await?.thread,
+            background_stopped: client.background_terminals_stopped(thread).await?,
+        })
+    }
+
+    async fn observe(&self, record: &Record, stop: bool) -> Result<Observation> {
+        let mut facts = self.discover(&record.holder).await?;
+        if facts.thread.id != record.holder
+            || std::fs::canonicalize(&facts.thread.cwd)? != std::fs::canonicalize(&record.cwd)?
         {
             return Err(CalmError::Conflict(
                 "native evidence differs from reserved execution scope".into(),
             ));
         }
         let turn = match record.nonce.as_deref() {
-            Some(nonce) => facts.turn_for_nonce(nonce)?,
-            None => record
-                .observed
-                .as_deref()
-                .and_then(|id| facts.turns.iter().find(|turn| turn.id == id)),
+            Some(nonce) => facts.thread.turn_for_nonce(nonce)?,
+            None => match record.observed.as_deref() {
+                Some(id) => facts.thread.turns.iter().find(|turn| turn.id == id),
+                None => facts
+                    .thread
+                    .turns
+                    .iter()
+                    .rev()
+                    .find(|turn| matches!(turn.status, TurnStatus::InProgress))
+                    .or_else(|| facts.thread.turns.last()),
+            },
         }
-        .ok_or_else(|| CalmError::Conflict("native issuance remains unconfirmed".into()))?
-        .id
-        .clone();
-        if stop {
-            client.turn_interrupt(&record.holder, &turn).await?;
-            client.clean_background_terminals(&record.holder).await?;
-            facts = client
-                .thread_workspace_history(&record.holder)
-                .await?
-                .thread;
+        .map(|turn| turn.id.clone());
+        if let Some(acknowledged) = record.observed.as_deref()
+            && turn.as_deref() != Some(acknowledged)
+        {
+            return Err(CalmError::Conflict(
+                "provider history contradicts acknowledged execution generation".into(),
+            ));
         }
-        if facts.id != record.holder
-            || std::fs::canonicalize(&facts.cwd)? != std::fs::canonicalize(&record.cwd)?
+        if turn.is_none() && (record.nonce.is_some() || record.observed.is_some()) {
+            return Err(CalmError::Conflict(
+                "native issuance remains unconfirmed".into(),
+            ));
+        }
+        if stop && let Some(turn) = turn.as_deref() {
+            self.interrupt_provider(&record.holder, turn).await?;
+            facts = self.discover(&record.holder).await?;
+        }
+        if facts.thread.id != record.holder
+            || std::fs::canonicalize(&facts.thread.cwd)? != std::fs::canonicalize(&record.cwd)?
         {
             return Err(CalmError::Conflict("native stopped scope changed".into()));
         }
-        let stopped = facts
-            .turns
-            .iter()
-            .find(|candidate| candidate.id == turn)
-            .is_some_and(|candidate| {
-                matches!(
-                    candidate.status,
-                    TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
-                )
-            })
-            && facts.stopped()
-            && client.background_terminals_stopped(&record.holder).await?;
-        if stopped {
-            self.active_turns
-                .remove_if(&record.holder, |_, active| active == &turn);
-        }
+        let target_stopped = match turn.as_deref() {
+            Some(target) => {
+                if let Some(nonce) = record.nonce.as_deref()
+                    && facts
+                        .thread
+                        .turn_for_nonce(nonce)?
+                        .map(|turn| turn.id.as_str())
+                        != Some(target)
+                {
+                    return Err(CalmError::Conflict(
+                        "stopped provider history lost the exact request generation".into(),
+                    ));
+                }
+                facts
+                    .thread
+                    .turns
+                    .iter()
+                    .find(|candidate| candidate.id == target)
+                    .is_some_and(|candidate| {
+                        matches!(
+                            candidate.status,
+                            TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
+                        )
+                    })
+            }
+            None => false,
+        };
+        let stopped = target_stopped && facts.thread.stopped() && facts.background_stopped;
         Ok(Observation {
             execution: record.id.clone(),
-            identity: Some(turn),
+            identity: turn,
             stopped,
         })
+    }
+
+    async fn interrupt_provider(&self, thread: &str, turn: &str) -> Result<()> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.interrupted_turns
+                .lock()
+                .expect("fixture interrupts")
+                .push((thread.to_owned(), turn.to_owned()));
+            if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexAppServer(
+                    "fixture: turn/interrupt failed".into(),
+                ));
+            }
+            for known in fake
+                .native_turns
+                .lock()
+                .expect("fake provider history")
+                .iter_mut()
+            {
+                if known.thread == thread && known.turn == turn {
+                    known.status = TurnStatus::Interrupted;
+                }
+            }
+            if let Some(facts) = fake
+                .native_scope_snapshots
+                .lock()
+                .expect("fixture scope snapshots")
+                .get_mut(thread)
+            {
+                for known in &mut facts.turns {
+                    if known.id == turn {
+                        known.status = TurnStatus::Interrupted;
+                    }
+                }
+                if facts.turns.iter().all(|turn| {
+                    matches!(
+                        turn.status,
+                        TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
+                    )
+                }) {
+                    facts.status = ThreadStatus::Idle;
+                }
+            }
+            return Ok(());
+        }
+        let client = self.client()?;
+        client.turn_interrupt(thread, turn).await?;
+        client.clean_background_terminals(thread).await
     }
 }
 
@@ -318,52 +453,4 @@ pub(super) struct FakeNativeTurn {
     pub cwd: String,
     pub nonce: String,
     pub status: TurnStatus,
-}
-#[cfg(feature = "fixtures")]
-impl CodexBackend {
-    fn observe_fixture(
-        &self,
-        fake: &FakeSharedCodexAppServer,
-        record: &Record,
-        stop: bool,
-    ) -> Result<Observation> {
-        let mut history = fake.native_turns.lock().expect("fake provider history");
-        let turn = history
-            .iter_mut()
-            .find(|turn| {
-                turn.thread == record.holder
-                    && record.nonce.as_deref() == Some(turn.nonce.as_str())
-                    && turn.cwd == record.cwd
-            })
-            .ok_or_else(|| {
-                CalmError::Conflict("fixture provider has no matching issuance".into())
-            })?;
-        if stop {
-            fake.interrupted_turns
-                .lock()
-                .expect("fixture interrupts")
-                .push((turn.thread.clone(), turn.turn.clone()));
-            if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "fixture: turn/interrupt failed".into(),
-                ));
-            }
-            turn.status = TurnStatus::Interrupted;
-        }
-        let identity = turn.turn.clone();
-        let stopped = history
-            .iter()
-            .filter(|turn| turn.thread == record.holder)
-            .all(|turn| {
-                matches!(
-                    turn.status,
-                    TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
-                )
-            });
-        Ok(Observation {
-            execution: record.id.clone(),
-            identity: Some(identity),
-            stopped,
-        })
-    }
 }

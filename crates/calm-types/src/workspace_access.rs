@@ -49,6 +49,7 @@ pub enum WorkspaceScopePhase {
     New,
     Recovering,
     Ready,
+    Closed,
 }
 impl WorkspaceScopePhase {
     pub const fn as_db_str(self) -> &'static str {
@@ -56,6 +57,7 @@ impl WorkspaceScopePhase {
             Self::New => "new",
             Self::Recovering => "recovering",
             Self::Ready => "ready",
+            Self::Closed => "closed",
         }
     }
     pub fn from_db_str(value: &str) -> Result<Self, String> {
@@ -63,6 +65,7 @@ impl WorkspaceScopePhase {
             "new" => Ok(Self::New),
             "recovering" => Ok(Self::Recovering),
             "ready" => Ok(Self::Ready),
+            "closed" => Ok(Self::Closed),
             _ => Err(format!("unknown workspace scope phase: {value}")),
         }
     }

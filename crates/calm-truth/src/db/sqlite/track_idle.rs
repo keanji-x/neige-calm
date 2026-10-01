@@ -182,7 +182,11 @@ AND b.holder_id=CASE WHEN s.provider='codex' THEN s.thread_id ELSE s.id END
 WHERE s.state IN ('starting','running','idle','turn_pending')
 AND ((s.provider='codex' AND s.thread_id IS NOT NULL)
  OR (s.provider='claude' AND s.terminal_run_id IS NULL))
-AND (b.scope_phase IS NULL OR b.scope_phase='recovering')
+AND (b.scope_phase IS NULL OR b.scope_phase='recovering' OR
+ (b.scope_phase='closed' AND NOT EXISTS(SELECT 1 FROM workspace_leases proof
+ WHERE proof.holder_kind='native' AND proof.native_provider=s.provider
+ AND proof.holder_id=b.holder_id AND proof.card_id=s.card_id
+ AND proof.state='released' AND proof.holder_phase='stopped')))
 "#,
     )
     .fetch_all(&mut *conn)
@@ -219,10 +223,10 @@ AND ((l.holder_kind='native' AND l.native_provider=?2 AND l.holder_id=?3)
         if covered {
             continue;
         }
-        if let Some(cwd) = &session.cwd {
-            if !scope.overlaps(&session.track_id, cwd)? {
-                continue;
-            }
+        if let Some(cwd) = &session.cwd
+            && !scope.overlaps(&session.track_id, cwd)?
+        {
+            continue;
         }
         // No Track checkout guess can substitute for an unobserved native cwd.
         return Ok(false);

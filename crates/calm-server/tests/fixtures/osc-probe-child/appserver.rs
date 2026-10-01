@@ -550,6 +550,14 @@ async fn serve_conn(
                 }
             }
             "turn/interrupt" => {
+                if let Ok(next) =
+                    std::fs::read(reads.sock.with_extension("thread-read-after-interrupt"))
+                {
+                    std::fs::write(reads.sock.with_extension("thread-read"), next)
+                        .map_err(|error| error.to_string())?;
+                }
+                std::fs::write(reads.sock.with_extension("interrupt-observed"), "1")
+                    .map_err(|error| error.to_string())?;
                 if let Ok(path) = std::env::var("FAKE_CODEX_INTERRUPT_MARKER") {
                     let _ = std::fs::write(path, "1");
                 }

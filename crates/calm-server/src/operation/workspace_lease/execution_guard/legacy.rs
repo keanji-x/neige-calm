@@ -78,6 +78,7 @@ pub(crate) async fn adopt_native_scope_tx(
 
 /// The caller must hold the supervisor's positive StopAndConfirm proof for this immutable holder.
 /// Recording evidence starts released, so existing readers never conflict with a stopped writer.
+#[cfg(test)]
 pub(crate) async fn record_stopped_terminal_tx(
     tx: &mut Tx<'_>,
     track: &str,
@@ -125,4 +126,46 @@ pub(crate) async fn record_stopped_terminal_tx(
         InitialExecutionState::Stopped,
     )
     .await
+}
+
+/// Persist an authenticated stopped scope without ever taking write admission.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_stopped_native_scope_tx(
+    tx: &mut Tx<'_>,
+    card: &str,
+    holder: &str,
+    provider: NativeProvider,
+    cwd: &str,
+    access: WorkspaceAccess,
+    observed: Option<&str>,
+) -> Result<()> {
+    let path = std::fs::canonicalize(cwd)?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| CalmError::Conflict("native stopped scope is not UTF-8".into()))?;
+    let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+        .bind(card)
+        .fetch_one(&mut **tx)
+        .await?;
+    let id = new_id();
+    insert_execution_reference_at(
+        tx,
+        ExecutionReference {
+            track: &track,
+            card,
+            holder,
+            kind: "native",
+            path,
+            access: match access {
+                WorkspaceAccess::ReadOnly => ExecutionAccess::Read,
+                WorkspaceAccess::ReadWrite => ExecutionAccess::Write(&id),
+            },
+        },
+        &id,
+        InitialExecutionState::Stopped,
+    )
+    .await?;
+    sqlx::query("UPDATE workspace_leases SET native_provider=?2,native_observed_turn_id=?3 WHERE lease_id=?1")
+        .bind(id).bind(provider.wire()).bind(observed).execute(&mut **tx).await?;
+    Ok(())
 }

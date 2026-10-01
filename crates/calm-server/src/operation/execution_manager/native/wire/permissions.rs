@@ -9,17 +9,16 @@ pub enum PermissionsChoice {
 
 impl PermissionsChoice {
     pub(super) fn verify_active(&self, result: &ThreadResult) -> Result<()> {
-        if let Self::NamedProfile(expected) = self {
-            if result
+        if let Self::NamedProfile(expected) = self
+            && result
                 .active_permission_profile
                 .as_ref()
                 .map(|profile| profile.id.as_str())
                 != Some(expected.as_str())
-            {
-                return Err(CalmError::CodexAppServer(
-                    "provider did not confirm the requested named permissions profile".into(),
-                ));
-            }
+        {
+            return Err(CalmError::CodexAppServer(
+                "provider did not confirm the requested named permissions profile".into(),
+            ));
         }
         Ok(())
     }
