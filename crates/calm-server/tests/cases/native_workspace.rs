@@ -69,7 +69,7 @@ async fn native_workspace_legacy_cold_resume_binds_provider_cwd() {
         .unwrap();
     sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner, \
         created_at_ms,updated_at_ms,access_mode) VALUES('track-reader',?1,?2,?3,'held','read',0,0,'read_only')")
-        .bind(&card).bind(&track).bind(declared.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
+        .bind(new_id()).bind(&track).bind(declared.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
     let started = daemon
         .turn_start(
             "legacy-thread",
@@ -263,9 +263,27 @@ async fn native_workspace_readonly_lost_response_retains_independent_reader_unti
         .fetch_one(repo.pool())
         .await
         .unwrap();
+    use calm_server::operation::OperationRepo;
+    let task = new_id();
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id, \
+        declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,?1,'codex','read',?3,'running',?4,'user',0,0)")
+        .bind(&task).bind(&track).bind(json!({"neige_workspace":{"access":"read_only"}}).to_string()).bind(&card).execute(repo.pool()).await.unwrap();
+    let operations = calm_server::operation::SqlxOperationRepo::new(repo.pool().clone());
+    let owner = operations
+        .insert_operation(
+            "codex-worker",
+            calm_server::operation::OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task),
+                payload_hash: "read-scope".into(),
+            },
+            json!({}),
+        )
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner, \
-        created_at_ms,updated_at_ms,access_mode) VALUES('task-read',?1,?2,?3,'held','reader',0,0,'read_only')")
-        .bind(&card).bind(&track).bind(root.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
+        created_at_ms,updated_at_ms,access_mode) VALUES('task-read',?1,?2,?3,'held',?4,0,0,'read_only')")
+        .bind(&card).bind(&track).bind(root.path().to_str().unwrap()).bind(owner).execute(repo.pool()).await.unwrap();
     let sock = root.path().join("run/codex-appserver.sock");
     std::fs::write(sock.with_extension("turn-start-no-id"), "1").unwrap();
     assert!(

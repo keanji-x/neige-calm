@@ -60,6 +60,8 @@ impl ExecutionLeaseGuard {
     ) -> Result<Self> {
         let mut tx = begin_immediate_tx(pool).await?;
         let context = native_write_context_tx(&mut tx, card, thread, provider).await?;
+        let task_attempt = verify_task_intent_tx(&mut tx, card, &context.cwd, access).await?;
+        let except_attempt = task_attempt.as_deref().unwrap_or(except_attempt);
         if !native_context_available_for_access_tx(&mut tx, card, except_attempt, &context, access)
             .await?
         {
@@ -254,6 +256,76 @@ impl NativeTaskGuard {
     pub(crate) async fn rejected(self) -> Result<()> {
         self.into_lease().rejected().await
     }
+}
+
+/// Task-bound issuance rechecks authority and the frozen directory in the reservation transaction.
+async fn verify_task_intent_tx(
+    conn: &mut sqlx::SqliteConnection,
+    card: &str,
+    cwd: &str,
+    access: WorkspaceAccess,
+) -> Result<Option<String>> {
+    let tasks: Vec<(String, String)> =
+        sqlx::query_as("SELECT id,status FROM tasks WHERE worker_card_id=?1 LIMIT 2")
+            .bind(card)
+            .fetch_all(&mut *conn)
+            .await?;
+    if tasks.len() > 1 {
+        return Err(CalmError::Conflict(
+            "ambiguous native task ownership".into(),
+        ));
+    }
+    if tasks
+        .first()
+        .is_some_and(|(_, state)| !matches!(state.as_str(), "dispatched" | "running" | "verifying"))
+    {
+        return Err(CalmError::Conflict(
+            "ended or unclaimed task cannot issue native execution".into(),
+        ));
+    }
+    let lease:Option<(String,String,String,Option<String>)>=sqlx::query_as(
+        "SELECT l.access_mode,l.state,COALESCE(l.canonical_path,l.path),o.idempotency_key \
+         FROM workspace_leases l LEFT JOIN operations o ON o.id=l.lease_owner \
+         WHERE l.card_id=?1 AND l.holder_kind='task' ORDER BY l.created_at_ms DESC,l.lease_id DESC LIMIT 1"
+    ).bind(card).fetch_optional(&mut *conn).await?;
+    let Some((mode, state, path, attempt)) = lease else {
+        if access == WorkspaceAccess::ReadOnly || !tasks.is_empty() {
+            return Err(CalmError::Conflict(
+                "native task has no held workspace intent".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    if state != "held"
+        || mode
+            != match access {
+                WorkspaceAccess::ReadOnly => "read_only",
+                WorkspaceAccess::ReadWrite => "read_write",
+            }
+    {
+        return Err(CalmError::Conflict(
+            "native task workspace intent closed or changed access".into(),
+        ));
+    }
+    if std::fs::canonicalize(path)? != std::fs::canonicalize(cwd)? {
+        return Err(CalmError::Conflict(
+            "native binding differs from the frozen task directory".into(),
+        ));
+    }
+    if let Some((task, _)) = tasks.first() {
+        if attempt.as_deref() != Some(task.as_str()) {
+            return Err(CalmError::Conflict(
+                "native task intent is not held by its claimed attempt".into(),
+            ));
+        }
+        return Ok(Some(task.clone()));
+    }
+    if access == WorkspaceAccess::ReadOnly {
+        return Err(CalmError::Conflict(
+            "native read intent requires an actual claimed task".into(),
+        ));
+    }
+    Ok(None)
 }
 
 /// A live descendant retains its authenticated root even after the root's own execution stopped.
