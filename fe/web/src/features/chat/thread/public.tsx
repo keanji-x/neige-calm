@@ -7,11 +7,12 @@ import {
   ChatComposer as AstryxChatComposer,
   ChatComposerInput,
   ChatSendButton,
-  ChatSystemMessage,
   type ChatComposerTrigger,
   type ChatToolCallItem,
 } from '@astryxdesign/core/Chat';
 import { Badge } from '@astryxdesign/core/Badge';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
+import { Divider } from '@astryxdesign/core/Divider';
 import { Code } from '@astryxdesign/core/Code';
 import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
@@ -215,8 +216,19 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       );
     }
     if (turn.author === 'turn') {
-      /* Only `interrupted` and `failed` paint; `completed` is an anchor. `ChatSystemMessage` forwards no `data-*` and its content span is `nowrap`, so the state hooks and the message sit on this wrapper. */
+      /* Completed turns are silent anchors. Interrupted and failed turns share
+         one metadata row; the backend's readable reason lives in its disclosure. */
       if (turn.status === 'completed') return null;
+      const hasReason = turn.text !== undefined && turn.text.trim() !== '';
+      const hasHint = turn.status === 'failed' && (turn.code !== undefined || turn.rawStatus !== undefined);
+      const label = turn.status === 'interrupted' ? 'Response interrupted' : 'Failed';
+      const guidance = turn.status === 'interrupted' && last && !live && !stalled;
+      const heading = (
+        <span className={styles.outcomeHeader}>
+          <span className={styles.outcomeStatusLabel}>{label}</span>
+          {guidance && <>{' '}<span className={styles.outcomeGuidance} data-nc-interruption-guidance="">Send a message to continue.</span></>}
+        </span>
+      );
       return (
         <div
           key={turn.id}
@@ -225,14 +237,18 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
           data-nc-turn="outcome"
           data-nc-turn-outcome={turn.status}
         >
-          <ChatSystemMessage>{turn.status === 'interrupted' ? 'Stopped' : 'Failed'}</ChatSystemMessage>
-          {/* The kernel's readable text; codex's raw message stays reachable as the tooltip. */}
-          {turn.status === 'failed' && turn.text !== undefined && turn.text !== '' && (
-            <p className={styles.outcomeDetail} data-nc-turn-outcome-message="" title={turn.message}>{turn.text}</p>
-          )}
-          {turn.status === 'failed' && (
-            <OutcomeHint code={turn.code} rawStatus={turn.rawStatus} />
-          )}
+          <div className={styles.outcomeNotice} role="status">
+            <Divider />
+            <Collapsible defaultIsOpen={false} trigger={heading}>
+              {hasReason && <p className={styles.outcomeReason} data-nc-turn-outcome-message="" title={turn.message}>{turn.text}</p>}
+              {hasHint && <OutcomeHint code={turn.code} rawStatus={turn.rawStatus} />}
+              {!hasReason && !hasHint && (
+                <p className={styles.outcomeReason} data-nc-turn-outcome-fallback="">
+                  {turn.status === 'failed' ? 'The model provider is temporarily unavailable.' : 'No interruption details are available.'}
+                </p>
+              )}
+            </Collapsible>
+          </div>
         </div>
       );
     }
@@ -387,7 +403,7 @@ function OutcomeHint({ code, rawStatus }: { code: string | undefined; rawStatus:
   const hint = code === undefined ? null : (FAILURE_HINTS[code] ?? code);
   if (hint === null && rawStatus === undefined) return null;
   return (
-    <p className={styles.outcomeDetail} data-nc-turn-outcome-hint="">
+    <p className={styles.outcomeReason} data-nc-turn-outcome-hint="">
       {hint ?? `Ended with status “${rawStatus}”`}
     </p>
   );

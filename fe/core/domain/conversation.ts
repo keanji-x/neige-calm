@@ -926,9 +926,9 @@ export type ConversationTurnOutcome = Readonly<{
   author: 'turn';
   turnId: string;
   status: TurnOutcomeStatus;
-  /** codex's own `error.message`, verbatim. Only a `failed` turn carries one. */
+  /** The recorded `error.message`, verbatim; interrupted turns may also carry a reason. */
   message?: string;
-  /** The kernel's readable form of `message` (`turn_error_text`): what the Failed line shows. */
+  /** The kernel's readable reason (`turn_error_text`) for an interrupted or failed turn. */
   text?: string;
   /** `error.codexErrorInfo` as one token: the bare enum string or, for the object form, its single key. */
   code?: string;

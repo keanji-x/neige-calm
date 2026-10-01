@@ -1,0 +1,72 @@
+import '../../../styles/entry.css';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, expect, it } from 'vitest';
+import { page, userEvent } from 'vitest/browser';
+
+import { ChatThread } from './public.tsx';
+import type { Conversation, ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
+
+afterEach(async () => { cleanup(); await page.viewport(1280, 720); });
+
+function conversation(): Conversation {
+  return { id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'idle', updatedAt: 1 };
+}
+
+function outcome(status: 'interrupted' | 'failed', text: string | undefined): ConversationTurnOutcome {
+  return { id: `outcome-${status}`, author: 'turn', turnId: `turn-${status}`, status, atMs: 1, text };
+}
+
+it.each(['interrupted', 'failed'] as const)('keeps one native disclosure and normal type for %s', async (status) => {
+  const reason = 'The request timed out before the model provider returned a response.';
+  const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[outcome(status, reason)]} />);
+  const label = status === 'failed' ? 'Failed' : 'Response interrupted';
+  const title = screen.getByText(label, { exact: true });
+  const button = screen.getByRole('button', { name: new RegExp(`^${label}`), expanded: false });
+  const detail = container.querySelector<HTMLElement>('[data-nc-turn-outcome-message]')!;
+  expect(getComputedStyle(title).fontWeight).toBe('400');
+  expect(detail.checkVisibility()).toBe(false);
+  expect(screen.queryByText('Details')).toBeNull();
+  button.focus();
+  await userEvent.keyboard('{Enter}');
+  expect(button.getAttribute('aria-expanded')).toBe('true');
+  expect(detail.checkVisibility()).toBe(true);
+  expect(detail.textContent).toBe(reason);
+  await userEvent.keyboard('{Enter}');
+  expect(detail.checkVisibility()).toBe(false);
+});
+
+it.each(['interrupted', 'failed'] as const)('retains the disclosure and default explanation without a reason for %s', async (status) => {
+  const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[outcome(status, undefined)]} />);
+  const button = screen.getByRole('button', { expanded: false });
+  const detail = container.querySelector<HTMLElement>('[data-nc-turn-outcome-fallback]')!;
+  expect(detail.checkVisibility()).toBe(false);
+  await userEvent.click(button);
+  expect(detail.checkVisibility()).toBe(true);
+  expect(detail.textContent).toBe(status === 'failed'
+    ? 'The model provider is temporarily unavailable.' : 'No interruption details are available.');
+});
+
+it.each([320, 390, 1280])('aligns the guidance at the right without overflowing (%ipx)', async (width) => {
+  await page.viewport(width, 844);
+  const { container } = render(<div style={{ width: Math.min(width - 32, 600) }}>
+    <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[outcome('interrupted', 'Connection ended.')]} />
+  </div>);
+  const label = screen.getByText('Response interrupted', { exact: true }).getBoundingClientRect();
+  const guidance = screen.getByText('Send a message to continue.', { exact: true }).getBoundingClientRect();
+  const button = screen.getByRole('button', { expanded: false }).getBoundingClientRect();
+  expect(guidance.left).toBeGreaterThanOrEqual(label.right);
+  expect(guidance.right).toBeLessThanOrEqual(button.right);
+  const thread = container.querySelector<HTMLElement>('[data-nc-thread]')!;
+  expect(thread.scrollWidth).toBeLessThanOrEqual(thread.clientWidth + 1);
+  expect(document.documentElement.scrollWidth).toBe(width);
+});
+
+it('uses distinct semantic colors and the same weight for interrupted and failed labels', () => {
+  render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+    turns={[outcome('interrupted', 'Connection ended.'), outcome('failed', 'The request timed out.')]} />);
+  const interrupted = getComputedStyle(screen.getByText('Response interrupted', { exact: true }));
+  const failed = getComputedStyle(screen.getByText('Failed', { exact: true }));
+  expect(interrupted.color).not.toBe(failed.color);
+  expect(interrupted.fontWeight).toBe(failed.fontWeight);
+  expect(failed.fontWeight).toBe('400');
+});

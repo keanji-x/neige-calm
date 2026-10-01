@@ -413,10 +413,7 @@
     white-space: pre-wrap;
   }
 
-  /* #1625 P1 — a turn that stopped or failed. The label is Astryx's centred
-   * system line; the reason is a block of its own under it, because the
-   * label's span does not wrap and an error sentence must. Same ink as a
-   * kernel observation: it is context for the exchange, not a speaker. */
+  /* Turn outcomes are supporting metadata rather than a speaker's reply. */
   .outcome {
     margin: 0;
     color: var(--text-4);
@@ -424,12 +421,54 @@
     line-height: var(--leading-snug);
   }
 
-  .outcomeDetail {
-    margin: var(--space-2) 0 0;
-    overflow-wrap: anywhere;
+  /* A common supporting row for turn outcomes. The state words carry both
+     semantics and text-safe semantic colors; the disclosure retains vendor keys. */
+  .outcomeNotice {
+    --text-large-size: var(--text-base);
+    --font-weight-semibold: var(--weight-normal);
+    --text-body-size: var(--text-base);
+    --text-body-leading: var(--leading-base);
+
+    margin-block: var(--space-6);
+    text-align: start;
+  }
+
+  .outcomeNotice > [role='separator'] {
+    margin-block-end: var(--space-6);
+  }
+
+  .outcomeHeader {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-6);
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+  }
+
+  .outcomeStatusLabel {
+    color: var(--warn-text);
+    font-weight: var(--weight-normal);
+  }
+
+  .outcome[data-nc-turn-outcome='failed'] .outcomeStatusLabel {
+    color: var(--error-text);
+  }
+
+  .outcomeGuidance {
+    min-inline-size: 0;
+    margin-inline-end: var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
     color: var(--text-3);
-    text-align: center;
+    text-align: end;
+  }
+
+  .outcomeReason {
+    margin: var(--space-4) 0 0;
+    overflow-wrap: anywhere;
     white-space: pre-wrap;
+    color: var(--text-2);
   }
 
 

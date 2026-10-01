@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  CONVERSATION_GAP_MS,
+  CONVERSATION_GAP_MS, buildTranscript,
   type Conversation, type ConversationActivity, type ConversationSystemEntry,
   type ConversationTurn, type ConversationTurnOutcome, type SendOutcome,
 } from '../../../../../core/domain/conversation.ts';
@@ -147,7 +147,8 @@ describe('ChatThread', () => {
     );
     const outcome = container.querySelector('[data-nc-turn-outcome="failed"]') as HTMLElement;
     expect(outcome.getAttribute('data-nc-turn')).toBe('outcome');
-    expect(screen.getByRole('status').textContent).toBe('Failed');
+    expect(screen.getByRole('status').textContent).toContain('Failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
     const line = outcome.querySelector('[data-nc-turn-outcome-message]');
     expect(line?.textContent).toBe('400: The conversation exceeded the model\'s context window.');
     expect(line?.getAttribute('title')).toBe(raw);
@@ -169,12 +170,86 @@ describe('ChatThread', () => {
     expect(container.querySelector('[data-nc-turn-outcome-hint]')?.textContent).toBe('Ended with status “inProgress”');
   });
 
-  it('says Stopped for an interrupted turn and nothing at all for a completed one', () => {
+  it('keeps the same disclosure for a failed turn without details and keeps known hints', () => {
+    const { container, rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+      turns={[turnOutcome({ text: '   ', message: 'raw provider payload' })]} />);
+    expect(screen.getByText('Failed', { exact: true })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
+    expect(screen.getByText('The model provider is temporarily unavailable.', { exact: true })).toBeTruthy();
+    expect(container.querySelector('[data-nc-turn-outcome]')?.getAttribute('data-nc-turn-outcome')).toBe('failed');
+    expect(screen.getByRole('button', { name: 'Failed', expanded: true })).toBeTruthy();
+    expect(container.textContent).not.toContain('raw provider payload');
+    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+      turns={[turnOutcome({ code: 'rateLimitExceeded' })]} />);
+    expect(screen.getByText('Failed', { exact: true })).toBeTruthy();
+    expect(screen.queryByText('Unknown error')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Failed' })).toBeTruthy();
+  });
+
+  it('shows the restart reason from the production transcript wire', () => {
+    const text = 'neige restarted during this turn';
+    const turns = buildTranscript([{
+      id: 91, worker_session_id: 'r', card_id: 'c1', track_id: 'w1', thread_id: 'thread-1',
+      turn_id: 'turn-1', item_uuid: null, item_type: null, method: 'turn/completed',
+      params: JSON.stringify({ id: 'turn-1', status: 'interrupted', error: { message: text } }),
+      turn_error_text: text, created_at_ms: NOW,
+    }]);
+    const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+    const details = screen.getByRole('button', { name: /^Response interrupted/, expanded: false });
+    fireEvent.click(details);
+    expect(details.getAttribute('aria-expanded')).toBe('true');
+    const line = container.querySelector('[data-nc-turn-outcome-message]');
+    expect(line?.textContent).toBe(text);
+    expect(line?.getAttribute('title')).toBe(text);
+    expect(screen.getByRole('status').textContent).toContain('Response interrupted');
+    expect(screen.getByText('Response interrupted', { exact: true })).toBeTruthy();
+    expect(screen.getByText('Send a message to continue.')).toBeTruthy();
+  });
+
+  it('shows a provider timeout delivered by the production transcript wire', () => {
+    const reason = 'The request timed out before the model provider returned a response.';
+    const turns = buildTranscript([{
+      id: 92, worker_session_id: 'r', card_id: 'c1', track_id: 'w1', thread_id: 'thread-1',
+      turn_id: 'turn-timeout', item_uuid: null, item_type: null, method: 'turn/completed',
+      params: JSON.stringify({ id: 'turn-timeout', status: 'failed', error: { message: reason } }),
+      turn_error_text: reason, created_at_ms: NOW,
+    }]);
+    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
+    expect(screen.getByText(reason, { exact: true })).toBeTruthy();
+    expect(screen.queryByText('The model provider is temporarily unavailable.', { exact: true })).toBeNull();
+  });
+
+  it('does not guess the cause or substitute raw errors for a missing readable reason', () => {
+    const raw = '{"internal":"raw error payload"}';
+    const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+      turns={[turnOutcome({ status: 'interrupted', message: raw })]} />);
+    expect(screen.getByRole('status').textContent).toContain('Response interrupted');
+    expect(screen.getByText('Response interrupted', { exact: true })).toBeTruthy();
+    expect(container.querySelector('[data-nc-turn-outcome-message]')).toBeNull();
+    expect(container.textContent).not.toContain(raw);
+    expect(container.textContent).not.toContain('restarted');
+  });
+
+  it('keeps historical interruption details but offers continuation guidance only at an idle tail', () => {
+    const interrupted = turnOutcome({ status: 'interrupted', text: 'Connection ended.' });
+    const props = { cards: {}, stalled: false, conversation: conversation() };
+    const { rerender } = render(<ChatThread {...props} turns={[interrupted, turn({ id: 'new-turn' })]} />);
+    expect(screen.getByText('Connection ended.')).toBeTruthy();
+    expect(screen.queryByText('Send a message to continue.')).toBeNull();
+    rerender(<ChatThread {...props} turns={[interrupted]} pending />);
+    expect(screen.queryByText('Send a message to continue.')).toBeNull();
+    rerender(<ChatThread {...props} turns={[interrupted]} stalled />);
+    expect(screen.queryByText('Send a message to continue.')).toBeNull();
+  });
+
+  it('says Response interrupted for an interrupted turn and nothing at all for a completed one', () => {
     const { container, rerender } = render(
       <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[turnOutcome({ status: 'interrupted' })]} />,
     );
     expect(container.querySelector('[data-nc-turn-outcome="interrupted"]')).not.toBeNull();
-    expect(screen.getByRole('status').textContent).toBe('Stopped');
+    expect(screen.getByRole('status').textContent).toContain('Response interrupted');
+    expect(screen.getByText('Response interrupted', { exact: true })).toBeTruthy();
     rerender(
       <ChatThread cards={{}} stalled={false}
         conversation={conversation()}
