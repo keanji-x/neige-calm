@@ -257,6 +257,7 @@ pub(crate) enum NativeTaskGuard {
     Write(ExecutionWriteGuard),
 }
 impl NativeTaskGuard {
+    pub(crate) fn execution_id(&self) -> &str { &self.lease().id }
     fn lease(&self) -> &ExecutionLeaseGuard {
         match self {
             Self::Read(guard) => &guard.0,

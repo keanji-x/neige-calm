@@ -5,6 +5,7 @@ pub(crate) mod launch_cleanup_test_support;
 mod parked_fence_model;
 
 mod driver;
+pub(crate) mod execution_manager;
 pub(crate) mod owned_parked;
 mod repo_sqlite;
 pub(crate) mod workspace_lease;
