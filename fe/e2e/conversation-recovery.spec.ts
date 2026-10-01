@@ -181,7 +181,9 @@ for (const failedFirst of [false, true]) {
       }
       const notice = page.locator('[data-nc-drawer-scroll]').getByRole('button', { name: 'Stop unconfirmed', exact: true });
       await expect(notice).toBeVisible();
-      await notice.click();
+      // Retrying preserves the user's open disclosure across status changes.
+      await expect(notice).toHaveAttribute('aria-expanded', failedFirst ? 'true' : 'false');
+      if (!failedFirst) await notice.click();
       await expect(page.getByText('The response may still be starting or may already have ended.', { exact: true })).toBeVisible();
       await expect(page.locator('[data-nc-turn-outcome]')).toHaveCount(0);
       await expect(page.getByRole('alert')).toHaveCount(0);
