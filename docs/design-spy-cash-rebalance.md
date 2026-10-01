@@ -112,3 +112,33 @@ Live SDK snapshot exposed native local-naive timestamps. Official v5.2.0
 therefore interprets naive SDK objects as process-local time and preserves the
 epoch using `astimezone(UTC)`. User timestamps remain timezone-required. A
 non-UTC regression reproduced red before this fix.
+
+
+## Exact tool approval continuation
+
+The real Planner read Longbridge and Wisburg but its `spy.refresh` call was
+refused by provider approval policy before reaching the App. Preserve truthful
+MCP annotations. For this explicitly authorized private Demo only, the operator
+sets `approval_mode = "approve"` for the exact `spy.plan` and `spy.refresh` MCP
+names in its private shared provider configuration. No global default changes.
+The App still enforces the owning Track and Planner role for plan writes.
+
+An isolated Worker already receives a frozen, validated plugin-tool grant list.
+Generate the same exact per-tool approval overrides in its private provider
+configuration, rather than prompting again for actions explicitly delegated by
+the Planner. Do not approve tools outside that grant list or enable network or
+new tools. The transport repeats live-attempt grant checks before execution.
+Acceptance: the production private-home test requires exactly the delegated
+approval keys; a no-grant home has no plugin approvals. Keep the message-driven
+strategy Track open after each message; only an explicit user request closes it.
+
+
+Approval regression was red before the change. The first implementation's
+explicit child table disappeared under an inline parent; a TOML-only reproduction
+confirmed this. The production configuration now uses an inline approval table,
+and the test parses the saved configuration with `as_table_like()`.
+All five private-home tests passed. An exclusive single-factor production
+mutation added `plugin.ungranted` to the approval table: predicted and actual
+red sets were exactly
+`dedicated_codex::home::tests::dedicated_codex_plugin_grants_are_explicit_and_do_not_enable_network`.
+Production was restored byte-for-byte and all five checks passed again.

@@ -415,6 +415,15 @@ exact tools through `plugin_tools`:
 - `plugin.dev-neige-paper-trading_spy.status`
 - `plugin.dev-neige-paper-trading_spy.refresh`
 
+For this explicitly authorized strategy, the operator also sets exact
+`mcp_servers.calm.tools."plugin.dev-neige-paper-trading_spy.plan".approval_mode`
+and `mcp_servers.calm.tools."plugin.dev-neige-paper-trading_spy.refresh".approval_mode`
+to `"approve"` in the Demo's private shared provider configuration. Preserve
+truthful tool annotations and leave the global approval default unchanged.
+The isolated Worker's frozen grants generate their own exact approval overrides;
+the transport and App still enforce role, live attempt, owner and account checks.
+Keep the strategy Track open between messages; close only on explicit request.
+
 The Worker receives only the decision ID and those grants. It cannot change the
 target through the execution call; the App requires the kernel-resolved Worker
 role and literal `delegated_tool: true`, proved by the current isolated attempt

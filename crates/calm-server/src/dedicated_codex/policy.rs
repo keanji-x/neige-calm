@@ -150,5 +150,12 @@ pub(crate) fn apply(
         allowed.push(tool);
     }
     doc["mcp_servers"]["calm"]["enabled_tools"] = value(allowed);
+    // The frozen task grant authorizes these exact plugin actions. Keep truthful
+    // MCP annotations and transport admission; do not prompt for the same grant
+    // again or carry approval overrides outside this attempt's capability set.
+    doc["mcp_servers"]["calm"]["tools"] = value(toml_edit::InlineTable::new());
+    for tool in plugin_tools {
+        doc["mcp_servers"]["calm"]["tools"][tool]["approval_mode"] = value("approve");
+    }
     Ok(())
 }

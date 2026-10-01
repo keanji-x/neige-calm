@@ -171,6 +171,16 @@ fn dedicated_codex_plugin_grants_are_explicit_and_do_not_enable_network() {
         Some(false)
     );
     assert_eq!(doc["web_search"].as_str(), Some("disabled"));
+    let approvals = doc["mcp_servers"]["calm"]["tools"].as_table_like().unwrap();
+    assert_eq!(
+        approvals.len(),
+        1,
+        "only the exact frozen plugin grant is approved"
+    );
+    assert_eq!(
+        approvals.get("plugin.research_lookup").unwrap()["approval_mode"].as_str(),
+        Some("approve")
+    );
     f.native.plugin_tools.push("plugin.research_detail".into());
     assert!(
         home.prepare("grant", "request", &f.seed, &f.native)
