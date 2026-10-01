@@ -178,6 +178,11 @@ impl PluginHost {
     pub async fn disable(self: &Arc<Self>, id: &str) -> Result<Plugin> {
         // The 404 probe stays before the guard: a guard taken first would turn "unknown id AND busy" into a 409.
         self.plugin_row_or_404(id).await?;
+        if crate::builtin_plugins::get(id).is_some_and(|component| !component.can_disable()) {
+            return Err(CalmError::BadRequest(
+                "this built-in component is always enabled".into(),
+            ));
+        }
         let guard = self.try_lock_lifecycle(id).map_err(spawn_error_to_calm)?;
         match self.stop_under(&guard).await {
             Ok(()) => {}
@@ -193,7 +198,7 @@ impl PluginHost {
     pub async fn uninstall(self: &Arc<Self>, id: &str) -> Result<()> {
         if crate::builtin_plugins::is_reserved(id) {
             return Err(CalmError::BadRequest(
-                "built-in components can be disabled, not uninstalled".into(),
+                "built-in components cannot be uninstalled".into(),
             ));
         }
         // Probe before guard: taking the guard first would answer 409 for an unknown id that happens to be busy.

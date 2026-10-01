@@ -171,14 +171,19 @@ export function PluginsPane({
                         />
                       )}
                       {stateBadge(plugin.state)}
-                          <AstryxSwitch
+                          {plugin.can_disable ? <AstryxSwitch
                             // Named after the plugin: a list of switches all called "Enabled" cannot be navigated by a screen reader.
                             label={`Enable ${plugin.manifest_name}`}
                             isLabelHidden
                             value={plugin.enabled}
                             isLoading={pendingIds.has(plugin.id)}
                             onChange={(next) => onSetEnabled(plugin.id, next)}
-                          />
+                          /> : <>
+                            <AstryxText color="secondary">Always on</AstryxText>
+                            {plugin.state !== 'running' && plugin.state !== 'spawning' && plugin.state !== 'installing' && <AstryxButton
+                              label={`Retry ${plugin.manifest_name}`} variant="ghost" size="sm" isLoading={pendingIds.has(plugin.id)}
+                              onClick={() => onSetEnabled(plugin.id, true)}>Retry</AstryxButton>}
+                          </>}
                         </>
                       )}
                     </span>

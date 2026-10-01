@@ -10,6 +10,14 @@ use tokio::sync::Mutex;
 impl PluginHost {
     /// Reconcile only compiled declarations; preserve installed enable/configuration state.
     pub async fn reconcile_builtins(&self) -> Result<(), crate::error::CalmError> {
+        if let Some(component) = crate::builtin_plugins::catalog().iter().find(|component| {
+            !component.can_disable() && self.plugins_disabled.contains(&component.manifest().id)
+        }) {
+            return Err(crate::error::CalmError::BadRequest(format!(
+                "always-enabled component `{}` cannot be listed in plugins_disabled",
+                component.manifest().id
+            )));
+        }
         for component in crate::builtin_plugins::catalog() {
             let manifest = component.manifest();
             let _guard = self
@@ -23,7 +31,7 @@ impl PluginHost {
                     version: manifest.version.clone(),
                     install_path: format!("builtin:{}", manifest.id),
                     manifest: manifest.to_json(),
-                    enabled: prior.as_ref().is_some_and(|p| p.enabled),
+                    enabled: !component.can_disable() || prior.as_ref().is_some_and(|p| p.enabled),
                     user_config: serde_json::json!({}),
                 })
                 .await?;

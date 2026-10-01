@@ -26,9 +26,9 @@ it('opens real plugin guides from their preview and sends a named documentation 
     requests.push(request);
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.path === '/api/plugins' ? [
       { id: 'dev.example', version: '1', enabled: false, state: 'disabled', manifest_name: 'Development',
-        manifest_description: 'Develop issues and publish changes. '.repeat(20), has_config: false, can_uninstall: false },
+        manifest_description: 'Develop issues and publish changes. '.repeat(20), has_config: false, can_uninstall: false, can_disable: true },
       { id: 'ui.example', version: '1', enabled: false, state: 'disabled', manifest_name: 'UI tools',
-        manifest_description: 'Review interface changes.', has_config: false, can_uninstall: false },
+        manifest_description: 'Review interface changes.', has_config: false, can_uninstall: false, can_disable: true },
     ] : { tags: [{ label: 'release', track_count: 2, insert: '@`tag:release`' }], tracks: [], blocks: [] } });
   } };
   const search = mentionSearchOf(transport, createUnauthorizedChannel({ enqueue: task => task() }), 'area', 'track');

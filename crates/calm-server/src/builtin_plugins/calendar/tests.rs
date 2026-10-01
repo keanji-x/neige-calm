@@ -27,7 +27,7 @@ struct Fixture {
     areas: TrackAreaCache,
 }
 impl Fixture {
-    async fn new() -> Self {
+    async fn installed() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let repo = Arc::new(
             SqlxRepo::open(&format!(
@@ -51,7 +51,6 @@ impl Fixture {
             write.clone(),
         ));
         host.reconcile_builtins().await.unwrap();
-        host.enable(PLUGIN_ID).await.unwrap();
         let cell = Arc::new(tokio::sync::OnceCell::new());
         cell.set(host.clone()).ok().unwrap();
         let ctx = AppContext::new(
@@ -71,6 +70,11 @@ impl Fixture {
             roles,
             areas,
         }
+    }
+    async fn new() -> Self {
+        let fx = Self::installed().await;
+        fx.host.enable(PLUGIN_ID).await.unwrap();
+        fx
     }
     async fn identity(&self, role: CardRole) -> ToolCallIdentity {
         let area = self
@@ -301,7 +305,7 @@ async fn calendar_native_tools_enforce_scope_role_session_and_enablement() {
     let mut second = request();
     second.idempotency_key = "another".into();
     assert!(create(fx.ctx.clone(), stale, json!(second)).await.is_err());
-    fx.host.disable(PLUGIN_ID).await.unwrap();
+    fx.host.stop(PLUGIN_ID).await.unwrap();
     assert!(
         create(fx.ctx.clone(), owner, json!(request()))
             .await
@@ -421,8 +425,8 @@ async fn calendar_http_create_edit_and_disable_share_the_plugin_store() {
             .unwrap()
             .is_empty()
     );
-    fx.host.disable(PLUGIN_ID).await.unwrap();
-    assert_eq!(app.oneshot(make("user")).await.unwrap().status(), 409);
+    fx.host.stop(PLUGIN_ID).await.unwrap();
+    assert_eq!(app.oneshot(make("user")).await.unwrap().status(), 503);
     let task_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
         .fetch_one(fx.repo.pool())
         .await
@@ -571,4 +575,86 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     .err()
     .unwrap();
     assert_eq!(error.code, -32601);
+}
+
+#[tokio::test]
+async fn calendar_always_enabled_policy_preserves_legacy_data_and_rejects_disable() {
+    let fx = Fixture::new().await;
+    let entry = store::create(&fx.ctx, human(), request()).await.unwrap();
+    assert!(fx.host.disable(PLUGIN_ID).await.is_err());
+    assert!(
+        fx.repo
+            .plugin_get_by_id(PLUGIN_ID)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    fx.host.stop(PLUGIN_ID).await.unwrap();
+    sqlx::query("UPDATE plugins SET enabled=0 WHERE id=?")
+        .bind(PLUGIN_ID)
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+    fx.host.reconcile_builtins().await.unwrap();
+    assert!(
+        fx.repo
+            .plugin_get_by_id(PLUGIN_ID)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    assert_eq!(
+        store::list(&fx.ctx, &human(), window()).await.unwrap()[0].id,
+        entry.id
+    );
+}
+
+#[tokio::test]
+async fn calendar_is_enabled_on_first_install_and_autospawn() {
+    let fx = Fixture::installed().await;
+    assert!(
+        fx.repo
+            .plugin_get_by_id(PLUGIN_ID)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    fx.host.autospawn_enabled().await;
+    assert!(fx.host.running_plugin_ids().await.contains(PLUGIN_ID));
+    assert!(
+        !fx.repo
+            .plugin_get_by_id(crate::builtin_plugins::dev::PLUGIN_ID)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+}
+
+#[tokio::test]
+async fn calendar_reconcile_rejects_operator_disable_without_mutation() {
+    let fx = Fixture::new().await;
+    let before = fx.repo.plugin_get_by_id(PLUGIN_ID).await.unwrap().unwrap();
+    let host = Arc::new(PluginHost::new_full(
+        Arc::new(PluginRegistry::empty().with_builtins()),
+        fx.repo.clone(),
+        fx._dir.path().join("conflict-plugins"),
+        fx._dir.path().join("conflict-data"),
+        vec![PLUGIN_ID.into()],
+        fx.ctx.events.clone(),
+        WriteContext::new(fx.roles.clone(), fx.areas.clone()),
+    ));
+    assert!(
+        host.reconcile_builtins()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("plugins_disabled")
+    );
+    let after = fx.repo.plugin_get_by_id(PLUGIN_ID).await.unwrap().unwrap();
+    assert_eq!(before.enabled, after.enabled);
+    assert_eq!(before.manifest, after.manifest);
 }

@@ -22,7 +22,7 @@ it('costs a plugin row no height while it is empty', async () => {
         manifest_name: 'Todo',
         manifest_description: 'Tracks what is left to do.',
         has_config: false,
-        can_uninstall: true,
+        can_uninstall: true, can_disable: true,
       }]}
       loadError={null}
       onRetryLoad={vi.fn()}
@@ -75,7 +75,7 @@ it('shows an enabled built-in capability without a removal action', async () => 
   const onSetEnabled = vi.fn();
   const { container } = render(<PluginsPane
     plugins={[{ id: 'development', version: '0.1.0', enabled: true, state: 'running',
-      manifest_name: 'Development', has_config: false, can_uninstall: false }]}
+      manifest_name: 'Development', has_config: false, can_uninstall: false, can_disable: true }]}
     loadError={null} onRetryLoad={vi.fn()} pendingIds={new Set()} errors={new Map()}
     effectBoundaryIds={new Set()} onSetEnabled={onSetEnabled} onOpenConfig={vi.fn()}
     onAdd={vi.fn()} onUninstall={vi.fn()}

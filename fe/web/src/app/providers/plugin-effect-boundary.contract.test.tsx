@@ -40,7 +40,7 @@ function fakeKernel(refuses: ReadonlySet<string>) {
             state: on ? 'running' : 'disabled',
             manifest_name: id === 'todo' ? 'Todo' : 'Git forge',
             has_config: false,
-            can_uninstall: true,
+            can_uninstall: true, can_disable: true,
           })),
         });
       }

@@ -50,7 +50,7 @@
   },
   {
     "name": "calm.calendar.create",
-    "description_sha256": "2c69ad2a72ad3a2ed06c1893ce9f3026d0d8031ff5359b936fcea80116800ec6",
+    "description_sha256": "e3e6d8a91de0382003433601ff2542bd9b29e9aa875615c843e1f4426f4fcfc1",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

@@ -35,7 +35,7 @@ describe('plugin list rows', () => {
     };
     expect(pluginListItemSchema.safeParse(row).success).toBe(false);
     expect(pluginListItemSchema.safeParse({ ...row, has_config: false }).success).toBe(false);
-    expect(pluginListItemSchema.safeParse({ ...row, has_config: false, can_uninstall: true }).success).toBe(true);
+    expect(pluginListItemSchema.safeParse({ ...row, has_config: false, can_uninstall: true, can_disable: true }).success).toBe(true);
   });
 });
 
@@ -454,4 +454,8 @@ describe('connector install', () => {
     expect(installLocalPathOperation(' /srv/neige/plugins/todo ').body)
       .toEqual({ source: { kind: 'local_path', path: '/srv/neige/plugins/todo' } });
   });
+});
+
+it('rejects an otherwise complete legacy row missing lifecycle permission', () => {
+  expect(pluginListItemSchema.safeParse({ id: 'x', version: '1', enabled: true, state: 'running', manifest_name: 'X', has_config: false, can_uninstall: true }).success).toBe(false);
 });

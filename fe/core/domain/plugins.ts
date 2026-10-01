@@ -29,6 +29,7 @@ export const pluginListItemSchema = z.object({
   /** Required, not defaulted: a kernel that did not send it is not the one this screen was written against. */
   has_config: z.boolean(),
   can_uninstall: z.boolean(),
+  can_disable: z.boolean(),
 });
 export type PluginListItem = z.infer<typeof pluginListItemSchema>;
 

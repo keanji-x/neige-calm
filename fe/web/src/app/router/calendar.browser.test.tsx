@@ -47,7 +47,7 @@ it('queries the visible month and selected day separately through the real adapt
     send(request) {
       requests.push(request);
       let body: unknown;
-      if (request.path === '/api/plugins') body = [{ id: 'dev.neige.calendar', version: '0.1.0', enabled: true, state: 'running', manifest_name: 'Calendar', has_config: false, can_uninstall: false }];
+      if (request.path === '/api/plugins') body = [{ id: 'dev.neige.calendar', version: '0.1.0', enabled: true, state: 'running', manifest_name: 'Calendar', has_config: false, can_uninstall: false, can_disable: false }];
       else if (request.method === 'GET') body = visible;
       else if (request.path === '/api/calendar/tasks') {
         const payload = request.body as { task: unknown };

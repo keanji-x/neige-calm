@@ -1,1 +1,1 @@
-Create this Track's calendar commitment, not execution or a reminder. Enable Calendar in Settings. Keep idempotency_key on retry. Date only: all_day. Timed: RFC3339 offsets matching IANA timezone; ask for missing time, zone or end. Confirm saved time only after success.
+Create this Track's calendar commitment, not execution or a reminder. Calendar is always enabled. Keep idempotency_key on retry. Date only: all_day. Timed: RFC3339 offsets matching IANA timezone; ask for missing time, zone or end. Confirm saved time only after success.

@@ -1,6 +1,6 @@
 Calendar records user-level work commitments, not execution tasks. Use
 `calm.calendar.list`, `calm.calendar.create`, and `calm.calendar.update` only when
-the user intends to arrange work. These tools require Calendar enabled in Settings.
+the user intends to arrange work. Calendar is always enabled by the kernel.
 They can access only entries sourced from your authenticated Track.
 
 Resolve relative dates using the user's explicit IANA timezone; ask if the intended
