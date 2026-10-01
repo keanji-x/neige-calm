@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, type ReactNode } from 'react';
 import { useState } from '../state/public.ts';
 import { useRovingTabindex } from '../focus/public.ts';
 
-export interface MenuItem { label: string; onSelect: () => void; disabled?: boolean; icon?: ReactNode; current?: boolean; separatorBefore?: boolean }
+export interface MenuItem { label: string; labelContent?: ReactNode; onSelect: () => void; disabled?: boolean; icon?: ReactNode; current?: boolean; separatorBefore?: boolean }
 export interface MenuTriggerProps { ref: (element: HTMLButtonElement | null) => void; onClick: () => void; 'aria-haspopup': 'menu'; 'aria-expanded': boolean }
 export interface MenuProps {
   items: readonly MenuItem[];
@@ -49,7 +49,7 @@ export function Menu({ items, trigger, wrapClassName, menuClassName, itemClassNa
           className={`${itemClassName ?? ''}${index === activeIndex ? ' is-active' : ''}`.trim() || undefined}
           onKeyDown={props.onKeyDown} onClick={() => activate(index)} onMouseMove={() => setActiveIndex(index)}
           aria-current={item.current ? 'page' : undefined}
-          aria-disabled={item.disabled || undefined}>{item.icon}{item.label}</button></li>
+          aria-disabled={item.disabled || undefined} aria-label={item.labelContent === undefined ? undefined : item.label}>{item.icon}{item.labelContent ?? item.label}</button></li>
         </Fragment>;
       })}
     </ul>}

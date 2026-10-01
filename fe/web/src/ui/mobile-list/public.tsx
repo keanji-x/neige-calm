@@ -65,7 +65,7 @@ export function MobileListEmpty({ children, fieldMarker }: Readonly<{
 }
 
 export function MobileListItem({
-  title, meta, startContent, ariaLabel, nested = false, titleVariant = 'interface', onSelect,
+  title, titleContent, meta, startContent, ariaLabel, nested = false, titleVariant = 'interface', onSelect,
   hint, accessibleDescription, rowMarker, rowActionMarker, titleFieldMarker,
 }: Readonly<{
   title: string;
@@ -87,8 +87,11 @@ export function MobileListItem({
   /** The value of `data-nc-row-action` on the root `<li>`; it shares the element with `rowMarker` because it is a host annotation, not a content marker. */
   rowActionMarker?: string;
   /** The value of `data-nc-field` on the visible title span; the `<li>` already carries `data-nc-row` and may hold only one content marker. */
-  titleFieldMarker?: string;
-}>) {
+} & (
+  | { titleContent?: never; titleFieldMarker?: string }
+  /** Custom title content cannot replace a projection's verbatim title field. */
+  | { titleContent: ReactNode; titleFieldMarker?: never }
+)>) {
   const metaLabel = typeof meta === 'string' || typeof meta === 'number' ? String(meta) : null;
   /* `title` is not in Astryx's `BaseProps`, so it travels as a spread onto the root `<li>`. */
   const hintAttribute: Readonly<Record<string, string>> = hint === undefined ? {} : { title: hint };
@@ -136,7 +139,7 @@ export function MobileListItem({
           className={`${styles.itemTitle} ${titleVariant === 'document' ? styles.itemTitleDocument : ''}`}
           {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
         >
-          {title}
+          {titleContent ?? title}
         </span>
       )}
       startContent={startContent}

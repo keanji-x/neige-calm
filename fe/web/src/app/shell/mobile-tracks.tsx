@@ -1,3 +1,4 @@
+import { TrackTitle } from '../../features/track/title/public.tsx';
 // Both navigation levels share their header and actions. Choosing an Area
 // scopes the Track list; only opening a Track changes the page underneath.
 import { useLayoutEffect, useRef } from 'react';
@@ -77,11 +78,11 @@ function NavigationPage({
             const activityBit = activityNameBit(activity);
             const descriptionId = `mobile-track-${track.id}-unread`;
             return <li key={track.id}>
-              <button type="button" className={styles.track} aria-label={`${trackDisplayTitle(track.title)}${activityBit ? `, ${activityBit}` : ''}`}
+              <button type="button" className={styles.track} aria-label={`${trackDisplayTitle(track.title)}${activityBit ? `, ${activityBit}` : ''}${isClosed(track) ? ', closed' : ''}`}
                 aria-describedby={activity === 'unread' ? descriptionId : undefined}
                 aria-current={track.id === currentTrackId ? 'page' : undefined} onClick={() => onOpenTrack(track.id)}>
                 <span className={styles.trackIcon}><Icon name="file" /></span>
-                <span className={styles.trackCopy}><span>{trackDisplayTitle(track.title)}</span>{isClosed(track) && <span className={styles.trackMeta}>Closed</span>}</span>
+                <span className={styles.trackCopy}><TrackTitle track={track} />{isClosed(track) && <span className={styles.trackMeta}>Closed</span>}</span>
                 {activity !== 'quiet' && <span className={styles.trackActivity} aria-hidden="true"><ActivityIndicator state={activity} /></span>}
               </button>
               {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}

@@ -8,11 +8,12 @@ import styles from './mobile-header.module.css';
 /** Marked module titles remain pure headings. Interactive app title content
  * cannot consume the projection marker that belongs to a module title. */
 type MobileHeaderTitle =
-  | Readonly<{ titleContent?: never; titleFieldMarker?: string }>
-  | Readonly<{ titleContent: ReactNode; titleFieldMarker?: never }>;
+  | Readonly<{ titleContent?: never; titleFieldMarker?: string; titleText?: never }>
+  | Readonly<{ titleContent?: never; titleFieldMarker?: never; titleText: ReactNode }>
+  | Readonly<{ titleContent: ReactNode; titleFieldMarker?: never; titleText?: never }>;
 
 export function MobileHeader({
-  title, meta, level = 2, backLabel, onBack, actions, titleFieldMarker, titleContent, leading,
+  title, meta, level = 2, backLabel, onBack, actions, titleFieldMarker, titleContent, titleText, leading,
 }: Readonly<{
   title: string;
   meta?: ReactNode;
@@ -48,7 +49,7 @@ export function MobileHeader({
           className={styles.title}
           {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
         >
-          {title}
+          {titleText ?? title}
         </AstryxHeading>}
         {meta}
       </div>

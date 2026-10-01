@@ -113,7 +113,7 @@ describe('MobileTracks', () => {
 
     view.rerender(mount({ closedAt: 5, working: true }));
     expect(marker()).toBe('working');
-    expect(name()).toBe('Responsive mobile UI, working');
+    expect(name()).toBe('Responsive mobile UI, working, closed');
     expect(description()).toBeNull();
 
     view.rerender(mount({ attention: 'input' }));
@@ -146,6 +146,6 @@ describe('MobileTracks', () => {
     // A closed track says so in its meta, as a fact, not as activity.
     view.rerender(mount({ closedAt: 5, working: false }));
     expect(marker()).toBeNull();
-    expect(screen.getByRole('button', { name: 'Responsive mobile UI' }).textContent).toContain('Closed');
+    expect(screen.getByRole('button', { name: 'Responsive mobile UI, closed' }).textContent).toContain('Closed');
   });
 });

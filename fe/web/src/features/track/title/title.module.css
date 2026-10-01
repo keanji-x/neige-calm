@@ -1,0 +1,6 @@
+@layer features {
+  .closed {
+    text-decoration-line: line-through;
+    text-decoration-thickness: 1px;
+  }
+}

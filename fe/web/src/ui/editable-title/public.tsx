@@ -16,6 +16,8 @@ export type EditableTitleProps = Readonly<{
   onCommit: (next: string) => void | Promise<void>;
   editLabel: string;
   inputLabel: string;
+  /** Visible read-mode text; the stored value still owns the edit draft. */
+  displayContent?: ReactNode;
   className?: string;
   /** Marks this as the route's single page-title element. No `tabIndex={-1}`: taking a rename control out of the Tab order would delete the keyboard path to renaming. */
   isPageTitle?: boolean;
@@ -32,7 +34,7 @@ const CLICK_SUPPRESS_MS = 300;
 
 export function EditableTitle({
   value, placeholder, emptyCommit = 'cancel', onCommit, editLabel, inputLabel,
-  className, isPageTitle, titleRef, readView,
+  className, isPageTitle, titleRef, readView, displayContent,
 }: EditableTitleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -95,7 +97,7 @@ export function EditableTitle({
           if (event.key === 'F2') { event.preventDefault(); begin(); }
         }}
       >
-        {value.trim() === '' && placeholder !== undefined ? placeholder : value}
+        {displayContent ?? (value.trim() === '' && placeholder !== undefined ? placeholder : value)}
       </button>
     );
   }

@@ -1,3 +1,4 @@
+import { TrackTitle } from '../title/public.tsx';
 // The one track row, rendered by the sidebar rail and Today. It stays under `features/track` because it reads track predicates, which `ui/` may not.
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
@@ -102,7 +103,7 @@ export function TrackRow({
         <span className={styles.titleRow}>
           {hourLabel !== undefined && <span className={styles.hour}>{hourLabel}</span>}
           <ListText tone="primary" emphasis={active ? 'selected' : variant === 'default' ? 'medium' : undefined}
-            className={styles.title} title={title}>{title}</ListText>
+            className={styles.title} title={title}><TrackTitle track={track} /></ListText>
         </span>
         {!trailingStatus && (
           <span className={styles.age}>{relativeTime(track.updatedAt, now)}</span>

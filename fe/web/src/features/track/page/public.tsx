@@ -1,3 +1,4 @@
+import { TrackTitle } from '../title/public.tsx';
 // The `/track/$trackId` surface. Presentational: every mutation and navigation leaves through a callback,
 // and there is no `<a href>` anywhere on this page.
 
@@ -399,7 +400,7 @@ export function TrackPage({
           else if (!titleContainer.contains(event.relatedTarget)) lastFocusedTitleRef.current = null;
         }}>
         <h1 className={styles.titleHeading}><EditableTitle value={track.title} placeholder={UNTITLED_TRACK_LABEL}
-          emptyCommit="clear" onCommit={onRenameTrack} editLabel="Rename track" inputLabel="Track title"
+          displayContent={<TrackTitle track={track} />} emptyCommit="clear" onCommit={onRenameTrack} editLabel="Rename track" inputLabel="Track title"
           className={styles.title} isPageTitle titleRef={titleReadControlRef}
           readView={titleInHeader && mobileTitleReadView !== undefined ? (controls) => <MobileTitleReadView
             controls={controls} host={mobileTitleReadHost} view={mobileTitleReadView} register={registerMobileTitleEdit} /> : undefined} /></h1>
@@ -413,6 +414,7 @@ export function TrackPage({
       {titleInHeader && !boardOpen ? null : <div className={styles.mobileTrackHeader}>
         <MobileHeader
           title={trackDisplayTitle(track.title)}
+          titleText={<TrackTitle track={track} />}
           meta={<TrackClosedBadge closedAt={track.closedAt} />}
           level={1}
           backLabel={boardOpen ? 'Report' : mobileBackLabel}

@@ -1,3 +1,4 @@
+import { TrackTitle } from '../../features/track/title/public.tsx';
 import {
   SegmentedControl as AstryxSegmentedControl,
   SegmentedControlItem as AstryxSegmentedControlItem,
@@ -66,6 +67,8 @@ export function MobilePages({ areas, areaId, tracks, onOpenTrack, onBack, onNewT
             <MobileListItem
               key={track.id}
               title={trackDisplayTitle(track.title)}
+              titleContent={<TrackTitle track={track} />}
+              accessibleDescription={track.closedAt === null ? undefined : 'Closed'}
               titleVariant="document"
               meta={area?.name ?? 'Unknown area'}
               startContent={<span className={navigationStyles.trackIcon}><Icon name="file" /></span>}
