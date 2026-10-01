@@ -186,3 +186,27 @@ async fn workspace_access_parent_directory_writer_conflicts_with_child_reader() 
         "a writable parent directory includes the reader's checkout"
     );
 }
+
+#[tokio::test]
+async fn workspace_access_explicit_cwd_uses_its_own_resource() {
+    let root=tempfile::tempdir().unwrap();
+    let source=root.path().join("source");let other=root.path().join("other");
+    std::fs::create_dir_all(&source).unwrap();std::fs::create_dir_all(&other).unwrap();
+    let mut db=database(129).await;
+    sqlx::query("UPDATE tracks SET workspace_path=?1 WHERE id='track'").bind(source.to_str().unwrap()).execute(&mut db).await.unwrap();
+    lease(&mut db,"reader",source.to_str().unwrap(),source.to_str().unwrap(),"read_only").await.unwrap();
+    assert!(calm_truth::db::sqlite::workspace_available(&mut db,"track","terminal",calm_types::workspace_access::WorkspaceAccess::ReadWrite,Some(other.to_str().unwrap()),None).await.unwrap());
+    assert!(!calm_truth::db::sqlite::workspace_available(&mut db,"track","terminal",calm_types::workspace_access::WorkspaceAccess::ReadWrite,Some(source.to_str().unwrap()),None).await.unwrap());
+}
+
+#[tokio::test]
+async fn workspace_access_owned_writer_lineage_can_reenter_while_readers_wait() {
+    let root=tempfile::tempdir().unwrap();
+    let mut db=database(129).await;
+    sqlx::query("UPDATE tracks SET workspace_path=?1 WHERE id='track'").bind(root.path().to_str().unwrap()).execute(&mut db).await.unwrap();
+    sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,created_at_ms,updated_at_ms,access_mode,write_root_id,holder_kind,holder_id,holder_phase) \
+        VALUES('child','terminal','track',?1,'held','terminal',1,1,'read_write','parent','terminal','terminal','running')")
+        .bind(root.path().to_str().unwrap()).execute(&mut db).await.unwrap();
+    assert!(calm_truth::db::sqlite::workspace_available(&mut db,"track","planner",calm_types::workspace_access::WorkspaceAccess::ReadWrite,Some(root.path().to_str().unwrap()),Some("parent")).await.unwrap());
+    assert!(!calm_truth::db::sqlite::track_available(&mut db,"track","reader",calm_types::workspace_access::WorkspaceAccess::ReadOnly).await.unwrap());
+}

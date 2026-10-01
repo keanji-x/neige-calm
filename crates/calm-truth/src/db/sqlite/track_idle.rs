@@ -32,6 +32,13 @@ pub async fn track_available(
     except_attempt: &str,
     access: calm_types::workspace_access::WorkspaceAccess,
 ) -> Result<bool> {
+    workspace_available(conn,track_id,except_attempt,access,None,None).await
+}
+
+pub async fn workspace_available(
+    conn:&mut SqliteConnection,track_id:&str,except_attempt:&str,
+    access:calm_types::workspace_access::WorkspaceAccess,cwd:Option<&str>,write_root:Option<&str>,
+)->Result<bool> {
     let sql = format!(
         "SELECT {TASK_COLUMNS} FROM current_tasks WHERE track_id = ?1 AND id <> ?2 \
          AND status IN ('dispatched','running','verifying')"
@@ -57,21 +64,23 @@ pub async fn track_available(
             .bind(track_id)
             .fetch_optional(&mut *conn)
             .await?;
-    let resource = declared
-        .and_then(|(path, worktree)| std::fs::canonicalize(worktree.unwrap_or(path)).ok())
+    let requested=cwd.map(str::to_owned).or_else(||declared.map(|(path,worktree)|worktree.unwrap_or(path)));
+    let resource = requested
+        .and_then(|path|std::fs::canonicalize(path).ok())
         .and_then(|path| path.to_str().map(str::to_owned));
     // `'stuck'` is the operations phase of an owner whose outcome is unknown (`PhaseTag::Stuck`).
     let lease_held: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM workspace_leases wl \
          LEFT JOIN operations o ON o.id = wl.lease_owner \
-         WHERE (wl.track_id = ?1 OR (?4 IS NOT NULL AND (
+         WHERE ((?5=1 AND wl.track_id = ?1) OR (?4 IS NOT NULL AND (
          COALESCE(wl.canonical_path,wl.path)=?4 OR COALESCE(wl.canonical_path,wl.path)='/' OR ?4='/'
          OR substr(COALESCE(wl.canonical_path,wl.path),1,length(?4)+1)=?4||'/'
          OR substr(?4,1,length(COALESCE(wl.canonical_path,wl.path))+1)=COALESCE(wl.canonical_path,wl.path)||'/')))
          AND wl.state IN ('held','releasing') \
          AND o.idempotency_key IS NOT ?2 \
          AND (o.phase IS NOT 'stuck' OR ?3='read_only' OR wl.holder_kind<>'task') \
-         AND (?3='read_write' OR wl.access_mode='read_write'))",
+         AND (?3='read_write' OR wl.access_mode='read_write') \
+         AND (?6 IS NULL OR wl.write_root_id IS NOT ?6))",
     )
     .bind(track_id)
     .bind(except_attempt)
@@ -80,6 +89,8 @@ pub async fn track_available(
         _ => "read_write",
     })
     .bind(resource.as_deref())
+    .bind(cwd.is_none())
+    .bind(write_root)
     .fetch_one(&mut *conn)
     .await?;
     if lease_held {

@@ -138,7 +138,7 @@ pub use track::{
     track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx, track_update_tx,
     track_worktree_path_for,
 };
-pub use track_idle::{track_available, track_idle};
+pub use track_idle::{track_available, track_idle,workspace_available};
 pub use track_recipe::track_recipe_get_tx;
 pub use track_tree::{
     DEFAULT_TREE_TASK_BUDGET, MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_BOUNDED_PATH_SQL,
