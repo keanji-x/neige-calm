@@ -80,7 +80,10 @@ impl AckProxy {
                             .await
                             .unwrap();
                         }
-                    } else if !hold_ack {
+                    } else if !hold_ack
+                        || matches!(message, ControlMsg::Probe(_))
+                            && count.load(Ordering::SeqCst) == 0
+                    {
                         let mut actual = tokio::net::UnixStream::connect(upstream).await.unwrap();
                         write_frame(&mut actual, &message).await.unwrap();
                         let _ = tokio::io::copy_bidirectional(&mut client, &mut actual).await;

@@ -425,6 +425,7 @@ dependencies = [
  "anyhow",
  "calm-session",
  "calm-test-sockets",
+ "calm-worker-runtime",
  "clap",
  "libc",
  "portable-pty",

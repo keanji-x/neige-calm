@@ -19,6 +19,11 @@ pub(crate) enum RequestState {
         supervisor_sock: PathBuf,
         pid: u32,
     },
+    Stopped {
+        version: u8,
+        terminal_id: String,
+        supervisor_sock: PathBuf,
+    },
     Requested {
         version: u8,
         terminal_id: String,
@@ -34,7 +39,8 @@ impl RequestState {
         let version = match &state {
             Self::NotRequested { version }
             | Self::Requested { version, .. }
-            | Self::HandedOff { version, .. } => *version,
+            | Self::HandedOff { version, .. }
+            | Self::Stopped { version, .. } => *version,
         };
         if version != 1 {
             return Err(CalmError::Conflict(
@@ -51,7 +57,10 @@ pub(crate) fn fresh_state() -> Value {
 /// Only callers transitioning from a recorded pre-spawn phase may initialize
 /// a legacy output. Missing state at SpawnStarted remains permanently unknown.
 pub(crate) fn initialize_prestart(kind: &str, output: &mut super::TxOutput) -> Result<()> {
-    if matches!(kind, "codex-worker" | "claude-worker" | "terminal-worker") {
+    if matches!(
+        kind,
+        "codex-worker" | "claude-worker" | "terminal-worker" | "terminal-create"
+    ) {
         let data = output
             .data
             .as_object_mut()
@@ -61,9 +70,66 @@ pub(crate) fn initialize_prestart(kind: &str, output: &mut super::TxOutput) -> R
     Ok(())
 }
 
+#[derive(Clone)]
+pub(crate) enum Launch {
+    Task(TaskLaunch),
+    Terminal(super::Operation),
+}
+impl Launch {
+    fn operation(&self) -> &super::Operation {
+        match self {
+            Self::Task(t) => t.operation(),
+            Self::Terminal(op) => op,
+        }
+    }
+    pub(crate) async fn run_observed<T, F>(
+        self,
+        repo: &dyn RouteRepo,
+        effect: F,
+    ) -> std::result::Result<T, super::task_launch::LaunchFailure>
+    where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T>> + Send + 'static,
+    {
+        match self {
+            Self::Task(t) => t.run_observed(repo, effect).await,
+            Self::Terminal(op) => {
+                write_in_tx_typed(repo, move |tx| {
+                    Box::pin(async move {
+                        let valid: bool = sqlx::query_scalar(
+                            r#"
+SELECT EXISTS(SELECT 1 FROM operations WHERE id=?1 AND lease_owner=?2
+AND phase='spawn_started'
+AND json_extract(tx_output_json,'$.data.terminal_launch.state')='requested')
+"#,
+                        )
+                        .bind(op.id)
+                        .bind(op.lease_owner)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        if !valid {
+                            return Err(CalmError::Conflict(
+                                "terminal launch ownership changed".into(),
+                            ));
+                        }
+                        Ok(())
+                    })
+                })
+                .await?;
+                effect
+                    .await
+                    .map_err(|error| super::task_launch::LaunchFailure {
+                        error,
+                        effect_started: true,
+                    })
+            }
+        }
+    }
+}
+
 pub(crate) enum TerminalStart {
     Unbound,
-    Fresh(Box<TaskLaunch>),
+    Fresh(Box<Launch>),
     AttachOnly(PathBuf),
 }
 
@@ -84,23 +150,32 @@ pub(crate) async fn resolve(
             .bind(&terminal_id).fetch_optional(&mut **tx).await?
             .ok_or_else(|| CalmError::NotFound(format!("terminal {terminal_id}")))?;
         let rows: Vec<(String,String,Option<String>,String)> = sqlx::query_as(
-            "SELECT id,phase,lease_owner,tx_output_json FROM operations WHERE target_type='card' AND target_id=?1 AND kind IN ('codex-worker','claude-worker','terminal-worker') LIMIT 2"
+            "SELECT id,phase,lease_owner,tx_output_json FROM operations WHERE (target_type='card' AND target_id=?1 OR json_extract(tx_output_json,'$.data.card_id')=?1) AND kind IN ('codex-worker','claude-worker','terminal-worker','terminal-create') LIMIT 2"
         ).bind(&card).fetch_all(&mut **tx).await?;
         if rows.len() > 1 { return Err(CalmError::Conflict("terminal has conflicting worker operation ownership".into())); }
         let Some((op_id, phase, owner, output)) = rows.into_iter().next() else {
             if launch.is_some() { return Err(CalmError::Conflict("task launch operation does not own this terminal".into())); }
-            let task_owned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE worker_card_id=?1)")
-                .bind(&card).fetch_one(&mut **tx).await?;
-            return Ok(if task_owned { TerminalStart::AttachOnly(sock) } else { TerminalStart::Unbound });
+            // Historical rows carry no authority to create another writer.
+            // UI can attach to a surviving process; a missing process needs a new operation.
+            return Ok(TerminalStart::AttachOnly(sock));
         };
         let output: Value = serde_json::from_str(&output)?;
         match RequestState::read(&output["data"])? {
-            Some(RequestState::Requested {terminal_id: recorded, supervisor_sock,..} | RequestState::HandedOff {terminal_id: recorded, supervisor_sock,..}) => {
+            Some(RequestState::Requested {terminal_id: recorded, supervisor_sock,..} | RequestState::HandedOff {terminal_id: recorded, supervisor_sock,..} | RequestState::Stopped {terminal_id:recorded,supervisor_sock,..}) => {
                 if recorded != terminal_id { return Err(CalmError::Conflict("terminal launch identity disagrees with prepared operation".into())); }
                 Ok(TerminalStart::AttachOnly(supervisor_sock))
             }
             Some(RequestState::NotRequested {..}) => {
-                let Some(launch) = launch else { return Ok(TerminalStart::AttachOnly(sock)); };
+                let launch = match launch {
+                    Some(launch)=>Launch::Task(launch),
+                    None=> {
+                        let row=sqlx::query("SELECT * FROM operations WHERE id=?1 AND kind='terminal-create'").bind(&op_id).fetch_optional(&mut **tx).await?;
+                        let Some(row)=row else {return Ok(TerminalStart::AttachOnly(sock));};
+                        let op=super::repo_sqlite::operation_from_row(&row)?;
+                        if phase != "spawn_started" || owner.is_none() {return Ok(TerminalStart::AttachOnly(sock));}
+                        Launch::Terminal(op)
+                    }
+                };
                 if launch.operation().id != op_id || phase != "spawn_started" || owner.is_none() || owner != launch.operation().lease_owner {
                     return Err(CalmError::Conflict("terminal launch operation lease or phase changed".into()));
                 }
@@ -120,7 +195,7 @@ pub(crate) async fn resolve(
     })).await
 }
 
-pub(crate) async fn reset_unissued(repo: &dyn RouteRepo, launch: &TaskLaunch) -> Result<()> {
+pub(crate) async fn reset_unissued(repo: &dyn RouteRepo, launch: &Launch) -> Result<()> {
     let op = launch.operation().clone();
     write_in_tx_typed(repo, move |tx| Box::pin(async move {
         sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch',json(?1)) WHERE id=?2 AND lease_owner=?3 AND phase='spawn_started' AND json_extract(tx_output_json,'$.data.terminal_launch.state')='requested'")
@@ -134,15 +209,17 @@ pub(crate) async fn reset_unissued(repo: &dyn RouteRepo, launch: &TaskLaunch) ->
 /// registry installation. This records ownership transfer, NOT writer quiescence.
 pub(crate) async fn hand_off(
     repo: &dyn RouteRepo,
-    launch: TaskLaunch,
+    launch: Launch,
     terminal_id: String,
     pid: u32,
 ) -> Result<()> {
     let op = launch.operation().clone();
     write_in_tx_typed(repo, move |tx| Box::pin(async move {
-        let changed = sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.state','handed_off','$.data.terminal_launch.pid',?1) WHERE id=?2 AND lease_owner=?3 AND phase='spawn_started' AND json_extract(tx_output_json,'$.data.terminal_launch.state')='requested' AND json_extract(tx_output_json,'$.data.terminal_launch.terminal_id')=?4 AND EXISTS(SELECT 1 FROM terminals WHERE id=?4 AND pid=?1 AND card_id=operations.target_id)")
-            .bind(i64::from(pid)).bind(op.id).bind(op.lease_owner).bind(terminal_id).execute(&mut **tx).await?.rows_affected();
+        let changed = sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.state','handed_off','$.data.terminal_launch.pid',?1) WHERE id=?2 AND lease_owner=?3 AND phase='spawn_started' AND json_extract(tx_output_json,'$.data.terminal_launch.state')='requested' AND json_extract(tx_output_json,'$.data.terminal_launch.terminal_id')=?4 AND EXISTS(SELECT 1 FROM terminals WHERE id=?4 AND pid=?1 AND card_id=json_extract(operations.tx_output_json,'$.data.card_id'))")
+            .bind(i64::from(pid)).bind(op.id).bind(op.lease_owner).bind(&terminal_id).execute(&mut **tx).await?.rows_affected();
         if changed != 1 { return Err(CalmError::Conflict("terminal ownership handoff changed; retain prepared operation for reconciliation".into())); }
+        sqlx::query("UPDATE workspace_leases SET holder_phase='running' WHERE holder_kind='terminal' AND holder_id=?1 AND state='held'")
+            .bind(&terminal_id).execute(&mut **tx).await?;
         Ok(())
     })).await
 }

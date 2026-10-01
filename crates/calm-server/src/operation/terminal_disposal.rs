@@ -34,7 +34,7 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
     };
     // Column is selected exclusively from the static scope above.
     let sql = format!(
-        "SELECT o.* FROM operations o JOIN cards c ON o.target_type='card' AND o.target_id=c.id JOIN tracks t ON t.id=c.track_id WHERE o.kind IN ('terminal-worker','claude-worker','codex-worker') AND {column}=?1 ORDER BY o.id"
+        "SELECT o.* FROM operations o JOIN cards c ON (o.target_type='card' AND o.target_id=c.id OR json_extract(o.tx_output_json,'$.data.card_id')=c.id) JOIN tracks t ON t.id=c.track_id WHERE o.kind IN ('terminal-worker','claude-worker','codex-worker','terminal-create') AND {column}=?1 ORDER BY o.id"
     );
     let rows = sqlx::query(&sql).bind(id).fetch_all(&mut **tx).await?;
     let mut unresolved = Vec::new();
@@ -54,6 +54,7 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
         let state = RequestState::read(&output.data)?;
         let successful = matches!(op.phase, Phase::Succeeded | Phase::SpawnSucceeded);
         let socket = match state {
+            Some(RequestState::Stopped { .. }) => continue,
             Some(RequestState::Requested {
                 terminal_id: recorded,
                 supervisor_sock,
@@ -119,8 +120,16 @@ pub(crate) async fn require_safe(
     .await?;
     for launch in &unresolved {
         if let Some(socket) = launch.socket.as_deref().or(configured_socket) {
-            crate::terminal_renderer::request_terminal_stop(socket, &launch.terminal_id).await;
+            crate::terminal_renderer::stop_and_release_terminal(repo, socket, &launch.terminal_id)
+                .await?;
         }
+    }
+    if !unresolved.is_empty()
+        && unresolved
+            .iter()
+            .all(|launch| launch.socket.as_deref().or(configured_socket).is_some())
+    {
+        return Ok(());
     }
     match unresolved.first() {
         Some(launch) => Err(launch.error()),

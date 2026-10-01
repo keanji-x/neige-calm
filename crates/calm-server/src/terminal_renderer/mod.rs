@@ -1,3 +1,6 @@
+mod execution_guard;
+use execution_guard::require_stop_protocol;
+pub(crate) use execution_guard::{reconcile_terminal_writers, stop_and_release_terminal};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -293,6 +296,10 @@ pub struct TerminalRendererRegistry {
 }
 
 impl TerminalRendererRegistry {
+    pub(crate) fn repository(&self) -> Option<&dyn RouteRepo> {
+        self.repo.as_deref()
+    }
+
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             entries: StdMutex::new(HashMap::new()),
@@ -406,7 +413,8 @@ impl TerminalRendererRegistry {
         )
         .await?;
         #[cfg(test)]
-        if let Some((launch, _)) = handoff.as_ref() {
+        if let Some((crate::operation::terminal_launch::Launch::Task(launch), _)) = handoff.as_ref()
+        {
             establishment_test_hook::pause(launch.task_id(), &entry.terminal_id).await;
         }
         let entry = Arc::new(entry);
@@ -606,7 +614,7 @@ impl TerminalRendererRegistry {
 
 struct EstablishedRenderer {
     entry: RendererEntry,
-    handoff: Option<(crate::operation::task_launch::TaskLaunch, u32)>,
+    handoff: Option<(crate::operation::terminal_launch::Launch, u32)>,
 }
 
 async fn ensure_entry(
@@ -636,6 +644,14 @@ async fn ensure_entry(
             (None, true)
         }
     };
+    if let Some(launch) = launch.as_ref() {
+        if let Err(error) = require_stop_protocol(&cfg.supervisor_sock, &cfg.terminal_id).await {
+            if let Some(repo) = repo.as_deref() {
+                terminal_launch::reset_unissued(repo, launch).await?;
+            }
+            return Err(error);
+        }
+    }
     // A replay alone cannot reconstruct geometry changes from an earlier
     // server lifetime. Human reattachment remains available; model observation
     // refuses that unproven projection instead of inventing a fresh screen.

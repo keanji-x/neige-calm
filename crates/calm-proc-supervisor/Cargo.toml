@@ -41,6 +41,7 @@ test-support = []
 pgid-escape-probe = []
 
 [dependencies]
+calm-worker-runtime = { path = "../calm-worker-runtime" }
 calm-test-sockets = { path = "../calm-test-sockets" }
 anyhow = "1"
 calm-session = { path = "../calm-session" }

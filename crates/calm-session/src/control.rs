@@ -11,6 +11,10 @@ pub enum ControlMsg {
     Signal(SignalRequest),
     Cleanup(CleanupRequest),
     Probe(ProbeRequest),
+    /// Permanently seal this execution identity, stop all its descendants, then confirm.
+    StopAndConfirm {
+        proc_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,4 +150,6 @@ pub enum ControlReply {
         signalled: bool,
         cursor: u64,
     },
+    /// The execution is sealed against future EnsureProc and every owned process stopped.
+    Stopped,
 }

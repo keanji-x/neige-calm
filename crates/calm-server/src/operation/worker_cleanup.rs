@@ -124,10 +124,29 @@ pub(crate) async fn require_cleanup_safe(
 ) -> crate::error::Result<()> {
     use super::terminal_launch::RequestState;
     if !may_have_started(op)? {
+        let id = output
+            .data
+            .get("terminal_id")
+            .and_then(serde_json::Value::as_str);
+        if let Some(id) = id {
+            super::workspace_lease::execution_guard::release_stopped_execution(
+                &ctx.operation_repo.sqlite_pool(),
+                "terminal",
+                id,
+            )
+            .await?;
+        }
         return Ok(());
     }
     let state = RequestState::read(&output.data)?;
     if !business_may_be_live && matches!(state, Some(RequestState::NotRequested { .. })) {
+        let id = output.output_string("terminal_id", "worker cleanup")?;
+        super::workspace_lease::execution_guard::release_stopped_execution(
+            &ctx.operation_repo.sqlite_pool(),
+            "terminal",
+            &id,
+        )
+        .await?;
         return Ok(());
     }
     let terminal_id = output.output_string("terminal_id", "worker cleanup")?;
@@ -158,7 +177,9 @@ pub(crate) async fn require_cleanup_safe(
             .or_else(|| ctx.daemon.proc_supervisor_sock.clone()),
     };
     if let Some(sock) = sock {
-        crate::terminal_renderer::request_terminal_stop(&sock, &terminal_id).await;
+        crate::terminal_renderer::stop_and_release_terminal(ctx.repo.as_ref(), &sock, &terminal_id)
+            .await?;
+        if !business_may_be_live {return Ok(());}
     }
     Err(crate::error::CalmError::Conflict(format!(
         "worker launch cleanup is unverified for operation {} terminal {}; prepared rows and workspace retained for reconciliation",

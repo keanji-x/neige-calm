@@ -1,4 +1,5 @@
 mod child_environment;
+mod execution_stop;
 
 use calm_session::control::{
     AttachRequest, Attached, CleanupRequest, ControlErrorKind, ControlMsg, ControlReply,
@@ -35,6 +36,7 @@ const PTY_SWEEP_MAX: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 pub struct ProcRegistry {
     inner: Arc<StdMutex<HashMap<String, Arc<ProcEntry>>>>,
+    executions: Arc<Mutex<std::collections::HashSet<String>>>,
     reap_children: bool,
     pty_reclaim_grace: Duration,
     /// Production always leaves this at `PTY_DRAIN_GRACE`; only tests move it.
@@ -289,6 +291,7 @@ impl ProcRegistry {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(StdMutex::new(HashMap::new())),
+            executions: Arc::new(Mutex::new(std::collections::HashSet::new())),
             reap_children: true,
             pty_reclaim_grace: PTY_RECLAIM_GRACE,
             pty_drain_grace: PTY_DRAIN_GRACE,
@@ -509,6 +512,18 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         };
         match msg {
             ControlMsg::EnsureProc(request) => {
+                let sealed = registry.executions.lock().await;
+                if sealed.contains(&request.proc_id) {
+                    write_frame(
+                        &mut stream,
+                        &ControlReply::SpawnFailed {
+                            error: "execution is permanently stopped".into(),
+                            child_already_reaped: true,
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
                 // Idempotent fast path: a live proc with this id is already
                 // past readiness, so emit Spawned+Ready immediately.
                 if let Some(pid) = existing_live_pid(&registry, &request.proc_id).await {
@@ -516,7 +531,9 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                     write_frame(&mut stream, &ControlReply::Ready).await?;
                     continue;
                 }
-                match try_spawn(registry.clone(), request).await {
+                let spawn_result = try_spawn(registry.clone(), request).await;
+                drop(sealed);
+                match spawn_result {
                     Err(err) => {
                         write_frame(
                             &mut stream,
@@ -548,6 +565,10 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                     }
                 }
             }
+            ControlMsg::StopAndConfirm { proc_id } => {
+                let reply = execution_stop::stop(&registry, &proc_id).await;
+                write_frame(&mut stream, &reply).await?;
+            }
             ControlMsg::Attach(request) => {
                 handle_attach(stream, registry, request).await?;
                 return Ok(());
@@ -578,10 +599,18 @@ pub async fn ensure_proc_impl(
     registry: ProcRegistry,
     request: EnsureProcRequest,
 ) -> Result<u32, EnsureProcFailure> {
+    let sealed = registry.executions.lock().await;
+    if sealed.contains(&request.proc_id) {
+        return Err(EnsureProcFailure {
+            error: "execution is permanently stopped".into(),
+            child_already_reaped: true,
+        });
+    }
     if let Some(pid) = existing_live_pid(&registry, &request.proc_id).await {
         return Ok(pid);
     }
-    let spawned = try_spawn(registry, request).await?;
+    let spawned = try_spawn(registry.clone(), request).await?;
+    drop(sealed);
     await_ready_phase(spawned).await
 }
 
@@ -1122,8 +1151,12 @@ struct Spawned {
 
 async fn try_spawn(
     registry: ProcRegistry,
-    request: EnsureProcRequest,
+    mut request: EnsureProcRequest,
 ) -> Result<Spawned, EnsureProcFailure> {
+    request.envs.retain(|(key, _)| key != "NEIGE_EXECUTION_OP");
+    request
+        .envs
+        .push(("NEIGE_EXECUTION_OP".into(), request.proc_id.clone()));
     match request.io_mode.clone() {
         IoMode::Pipe => try_spawn_pipe(registry, request).await,
         IoMode::Pty { cols, rows } => try_spawn_pty(registry, request, cols, rows).await,

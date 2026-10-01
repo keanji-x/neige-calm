@@ -7,12 +7,15 @@ struct TerminalWorkerHarness {
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     adapter: TerminalWorkerAdapter,
     track_id: String,
+    workspace: Option<tempfile::TempDir>,
 }
 
-const HARNESS_WORKSPACE: &str = "/neige-fixture-workspace";
-
 async fn terminal_worker_harness() -> TerminalWorkerHarness {
-    terminal_worker_harness_with_workspace(HARNESS_WORKSPACE).await
+    let workspace = tempfile::tempdir().unwrap();
+    let mut harness =
+        terminal_worker_harness_with_workspace(workspace.path().to_str().unwrap()).await;
+    harness.workspace = Some(workspace);
+    harness
 }
 
 async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWorkerHarness {
@@ -56,6 +59,7 @@ async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWork
         ),
         repo,
         track_id: track.id.to_string(),
+        workspace: None,
     }
 }
 
@@ -168,7 +172,7 @@ async fn terminal_worker_env_disables_claude_auto_memory() {
 #[tokio::test]
 async fn terminal_worker_without_cwd_lands_in_the_track_workspace() {
     let harness = terminal_worker_harness().await;
-    let workspace = HARNESS_WORKSPACE;
+    let workspace = harness.workspace.as_ref().unwrap().path().to_str().unwrap();
 
     let output = prepare_terminal_worker_with_cwd(&harness, "no-cwd", None).await;
     let card_id = output.output_string("card_id", "test").unwrap();
@@ -269,3 +273,166 @@ mod launch_cleanup_tests;
 
 #[cfg(test)]
 mod disposal_tests;
+
+#[tokio::test]
+async fn terminal_writer_releases_only_after_sealed_stop() {
+    let harness = terminal_worker_harness().await;
+    let output = prepare_terminal_worker(&harness, "writer-stop").await;
+    let id = output.output_string("terminal_id", "test").unwrap();
+    let held:i64=sqlx::query_scalar("SELECT count(*) FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1 AND state='held'")
+        .bind(&id).fetch_one(harness.repo.pool()).await.unwrap();
+    assert_eq!(held, 1, "prepare must reserve the actual terminal cwd");
+    let absent = harness
+        .workspace
+        .as_ref()
+        .unwrap()
+        .path()
+        .join("missing-supervisor.sock");
+    assert!(
+        crate::terminal_renderer::stop_and_release_terminal(harness.repo.as_ref(), &absent, &id)
+            .await
+            .is_err()
+    );
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1",
+    )
+    .bind(&id)
+    .fetch_one(harness.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(state, "held", "uncertain stop retains writer");
+    let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
+        .await
+        .unwrap();
+    crate::terminal_renderer::stop_and_release_terminal(
+        harness.repo.as_ref(),
+        supervisor.sock(),
+        &id,
+    )
+    .await
+    .unwrap();
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1",
+    )
+    .bind(&id)
+    .fetch_one(harness.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(state, "released", "sealed provider proof permits release");
+}
+
+#[tokio::test]
+async fn terminal_create_ui_consumes_launch_once_and_recovery_only_attaches() {
+    use crate::operation::{
+        Phase,
+        terminal_launch::{self, Launch, TerminalStart},
+    };
+    let harness = terminal_worker_harness().await;
+    let adapter = TerminalAdapter::new(
+        harness.repo.clone(),
+        CardRoleCache::new(),
+        TrackAreaCache::new(),
+    );
+    let payload = json!({"actor":ActorId::Kernel,"track_id":harness.track_id,"program":"/bin/sh","cwd":harness.workspace.as_ref().unwrap().path(),"theme":RequestTheme::default_dark()});
+    let ops = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let id = ops
+        .insert_operation(
+            "terminal-create",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash: "create-ui".into(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let op = ops
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|o| o.id == id)
+        .unwrap();
+    ops.prepare_tx_and_advance(&op, &adapter)
+        .await
+        .unwrap()
+        .unwrap();
+    let op = ops
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|o| o.id == id)
+        .unwrap();
+    ops.set_phase(&op, Phase::SpawnStarted)
+        .await
+        .unwrap()
+        .unwrap();
+    let op = ops
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|o| o.id == id)
+        .unwrap();
+    let output = op.tx_output.as_ref().unwrap();
+    let terminal = output.output_string("terminal_id", "test").unwrap();
+    let sock = harness
+        .workspace
+        .as_ref()
+        .unwrap()
+        .path()
+        .join("supervisor.sock");
+    let first = terminal_launch::resolve(harness.repo.as_ref(), &terminal, &sock, None)
+        .await
+        .unwrap();
+    assert!(matches!(first,TerminalStart::Fresh(launch) if matches!(*launch,Launch::Terminal(_))));
+    let second = terminal_launch::resolve(harness.repo.as_ref(), &terminal, &sock, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(second, TerminalStart::AttachOnly(_)),
+        "UI/recovery cannot reissue EnsureProc after recorded request"
+    );
+    ops.set_phase(&op, Phase::Succeeded).await.unwrap().unwrap();
+    let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
+        .await
+        .unwrap();
+    crate::terminal_sweeper::reconcile_terminal_writers(harness.repo.as_ref(), supervisor.sock())
+        .await
+        .unwrap();
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1",
+    )
+    .bind(&terminal)
+    .fetch_one(harness.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        state, "released",
+        "restart reconciliation seals a missing execution before releasing its guard"
+    );
+}
+
+#[tokio::test]
+async fn legacy_terminal_without_persisted_launch_owner_only_attaches() {
+    let harness = terminal_worker_harness().await;
+    let output = prepare_terminal_worker(&harness, "legacy-no-owner").await;
+    // prepare_tx alone has not committed an Operation output/target. That
+    // historical terminal row cannot authorize a new process from a UI attach.
+    let id = output.output_string("terminal_id", "test").unwrap();
+    let sock = harness
+        .workspace
+        .as_ref()
+        .unwrap()
+        .path()
+        .join("supervisor.sock");
+    let start = super::super::terminal_launch::resolve(harness.repo.as_ref(), &id, &sock, None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        start,
+        super::super::terminal_launch::TerminalStart::AttachOnly(_)
+    ));
+}

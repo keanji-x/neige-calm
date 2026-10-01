@@ -91,6 +91,9 @@ pub fn spawn(state: AppState) {
 
 /// One sweep pass: the orphan arm, the completed-track arm, then the thread arm; integration tests drive it without the interval task.
 pub async fn sweep(state: &AppState) -> Result<()> {
+    if let Some(sock) = state.daemon.proc_supervisor_sock.as_deref() {
+        reconcile_terminal_writers(state.repo.as_ref(), sock).await?;
+    }
     let orphans = state.repo.terminals_orphaned(ORPHAN_GRACE_SECONDS).await?;
     if !orphans.is_empty() {
         tracing::info!(count = orphans.len(), "terminal_sweeper: reaping orphans");
@@ -418,6 +421,8 @@ pub async fn reap_terminal_artifacts_with_renderer(
     }
 }
 
+pub(crate) use crate::terminal_renderer::reconcile_terminal_writers;
+
 /// Preserve unresolved task launch ownership before the existing terminal
 /// deletion checks. A missing PID or negative probe cannot discharge a pending
 /// EnsureProc. Observed leader exit does not prove all descendants stopped.
@@ -426,6 +431,20 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
     supervisor_sock: Option<&std::path::Path>,
     term: &Terminal,
 ) -> crate::error::Result<()> {
+    let sock = supervisor_sock
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| {
+            renderer
+                .and_then(|r| r.get(&term.id))
+                .map(|e| e.config().supervisor_sock.clone())
+        });
+    if let (Some(registry), Some(sock)) = (renderer, sock.as_deref()) {
+        if let Some(repo) = registry.repository() {
+            crate::terminal_renderer::stop_and_release_terminal(repo, sock, &term.id).await?;
+            registry.drop_entry_for_deletion(&term.id).await;
+            return Ok(());
+        }
+    }
     // A renderer entry gives a supervisor-owned `proc_id` to TERM/KILL. Without the entry, the
     // legacy row has no `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
     // and fail closed instead of signaling a possibly recycled pid.

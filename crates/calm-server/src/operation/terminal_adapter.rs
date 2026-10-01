@@ -260,7 +260,7 @@ impl ProviderAdapter for TerminalAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> Result<TxOutput> {
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         let program = payload.request.program.clone();
@@ -296,7 +296,7 @@ impl ProviderAdapter for TerminalAdapter {
             tx,
             card_id,
             &runtime_id,
-            None,
+            Some(op.id.as_str()),
             TrackId::from(track_id),
             payload.request.title.clone(),
             payload.request.sort,
@@ -308,6 +308,15 @@ impl ProviderAdapter for TerminalAdapter {
             &self.card_role_cache,
             payload.request.theme,
             payload.planner_hooks,
+        )
+        .await?;
+        super::workspace_lease::execution_guard::acquire_execution_write_tx(
+            tx,
+            card.track_id.as_ref(),
+            card.id.as_ref(),
+            &term.id,
+            "terminal",
+            std::path::Path::new(&cwd),
         )
         .await?;
         let event = Event::CardAdded(card.clone());
@@ -338,6 +347,7 @@ impl ProviderAdapter for TerminalAdapter {
             "cwd": cwd,
             "env": env,
             "planner_hooks": payload.planner_hooks,
+            "terminal_launch": super::terminal_launch::fresh_state(),
         });
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,
@@ -517,8 +527,8 @@ impl ProviderAdapter for TerminalAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
+        output: &TxOutput,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
@@ -548,6 +558,7 @@ impl ProviderAdapter for TerminalAdapter {
             .and_then(Value::as_str)
             .ok_or_else(|| CalmError::Internal("rollback step missing track_id".into()))?
             .to_string();
+        super::worker_cleanup::require_cleanup_safe(ctx, op, output, false).await?;
         let card = CardId::from(card_id.clone());
         let track = TrackId::from(track_id);
         let scope = card_scope(ctx.repo.as_ref(), card.clone(), track.clone()).await?;
@@ -661,6 +672,16 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             &self.card_role_cache,
             RequestTheme::default_dark(),
             false,
+        )
+        .await?;
+
+        super::workspace_lease::execution_guard::acquire_execution_write_tx(
+            tx,
+            card.track_id.as_ref(),
+            card.id.as_ref(),
+            &term.id,
+            "terminal",
+            std::path::Path::new(&cwd),
         )
         .await?;
 

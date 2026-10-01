@@ -27,19 +27,19 @@ enum Disposal {
     Sweep,
 }
 #[tokio::test]
-async fn unresolved_launch_delete_card_retains_rows() {
+async fn sealed_launch_delete_card_refuses_delayed_spawn() {
     exercise(History::Unknown, Disposal::Card).await;
 }
 #[tokio::test]
-async fn unresolved_launch_delete_track_retains_workspace() {
+async fn sealed_launch_delete_track_refuses_delayed_spawn() {
     exercise(History::Unknown, Disposal::Track).await;
 }
 #[tokio::test]
-async fn unresolved_launch_delete_area_retains_workspace() {
+async fn sealed_launch_delete_area_refuses_delayed_spawn() {
     exercise(History::Unknown, Disposal::Area).await;
 }
 #[tokio::test]
-async fn unresolved_launch_repoint_retains_workspace() {
+async fn sealed_launch_repoint_refuses_delayed_spawn() {
     exercise(History::Unknown, Disposal::Repoint).await;
 }
 
@@ -76,20 +76,20 @@ async fn old_prestart_launch_delete_card_uses_normal_cleanup() {
     exercise(History::OldPrestart, Disposal::Card).await;
 }
 #[tokio::test]
-async fn pid_write_failure_does_not_publish_handoff_or_allow_delete() {
+async fn pid_write_failure_never_publishes_handoff_and_sealed_stop_allows_delete() {
     exercise(History::PidWriteFailure, Disposal::Card).await;
 }
 
 #[tokio::test]
-async fn unresolved_launch_sweep_retains_terminal() {
+async fn sealed_launch_sweep_refuses_delayed_spawn() {
     exercise(History::Unknown, Disposal::Sweep).await;
 }
 #[tokio::test]
-async fn unresolved_old_launch_delete_card_retains_rows() {
+async fn sealed_old_launch_delete_card_refuses_delayed_spawn() {
     exercise(History::OldUnknown, Disposal::Card).await;
 }
 #[tokio::test]
-async fn unresolved_compensating_launch_delete_card_retains_rows() {
+async fn sealed_compensating_launch_delete_card_refuses_delayed_spawn() {
     exercise(History::OldCompensating, Disposal::Card).await;
 }
 #[tokio::test]
@@ -379,7 +379,10 @@ async fn exercise(history: History, disposal: Disposal) {
         assert_eq!(output.data["terminal_launch"]["state"], "handed_off");
     } else if matches!(history, History::ConcurrentForeignPid) {
         assert!(terminal.pid.is_some());
-        assert_eq!(output.data["terminal_launch"]["state"], "requested");
+        assert_eq!(
+            output.data["terminal_launch"]["state"], "stopped",
+            "PID mismatch must never publish handed_off; sealed cleanup records stopped"
+        );
     } else {
         assert!(terminal.pid.is_none());
     }
@@ -428,10 +431,10 @@ async fn exercise(history: History, disposal: Disposal) {
                 .any(|t| t.id == term_id)
         );
         crate::terminal_sweeper::sweep(&state).await.unwrap();
-        release_late_process(&proxy, &execution).await;
+        assert_late_launch_refused(&proxy, &execution).await;
         assert!(
-            repo.terminal_get(&term_id).await.unwrap().is_some(),
-            "sweeper discarded unknown launch"
+            repo.terminal_get(&term_id).await.unwrap().is_none(),
+            "confirmed sealed stop allows orphan cleanup"
         );
         return;
     }
@@ -462,6 +465,23 @@ async fn exercise(history: History, disposal: Disposal) {
         tokio::time::timeout(Duration::from_secs(15), call(app, method, &uri, body))
             .await
             .unwrap();
+    if matches!(disposal, Disposal::Repoint) && status == StatusCode::CONFLICT {
+        proxy.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), proxy.spawned.notified())
+            .await
+            .unwrap();
+        assert!(!proxy.rejected.load(std::sync::atomic::Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !execution.join("started").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(workspace.join(".git").is_dir());
+        assert!(repo.card_get(&card_id).await.unwrap().is_some());
+        return;
+    }
     if history.successful() || matches!(history, History::OldPrestart) {
         assert_eq!(
             status,
@@ -472,46 +492,58 @@ async fn exercise(history: History, disposal: Disposal) {
         assert!(repo.terminal_get(&term_id).await.unwrap().is_none());
         return;
     }
-    // The original request can still launch after a truthful Probe(false).
     if matches!(
         history,
         History::PidWriteFailure | History::ConcurrentForeignPid
     ) {
-        assert_eq!(output.data["terminal_launch"]["state"], "requested");
-        assert!(
-            state.terminal_renderer.get(&term_id).is_some(),
-            "renderer installed but PID write failed"
+        assert_ne!(
+            output.data["terminal_launch"]["state"], "handed_off",
+            "a wrong or missing persisted PID never authorizes handoff"
+        );
+        let latest = operations
+            .find_by_idempotency_key(kind, &key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            latest.tx_output.unwrap().data["terminal_launch"]["state"],
+            "stopped",
+            "only the real sealed stop permits disposal"
         );
     } else {
-        release_late_process(&proxy, &execution).await;
+        assert_late_launch_refused(&proxy, &execution).await;
     }
-    assert_eq!(
-        status,
-        StatusCode::CONFLICT,
-        "{disposal:?} must retain unresolved owned launch: {body}"
-    );
-    assert!(repo.card_get(&card_id).await.unwrap().is_some());
-    assert!(repo.terminal_get(&term_id).await.unwrap().is_some());
-    assert!(repo.track_get(&track_id).await.unwrap().is_some());
-    assert!(repo.area_get(area_id).await.unwrap().is_some());
-    assert!(
-        workspace.join(".git").is_dir(),
-        "managed workspace must not move"
-    );
+    if matches!(disposal, Disposal::Repoint) {
+        assert_eq!(
+            status,
+            StatusCode::NO_CONTENT,
+            "sealed launch must not prevent workspace relocation: {body}"
+        );
+        assert!(repo.track_get(&track_id).await.unwrap().is_some());
+    } else {
+        assert_eq!(
+            status,
+            StatusCode::NO_CONTENT,
+            "sealed launch must not prevent disposal: {body}"
+        );
+        assert!(repo.card_get(&card_id).await.unwrap().is_none());
+        assert!(repo.terminal_get(&term_id).await.unwrap().is_none());
+    }
 }
 
-async fn release_late_process(proxy: &PendingProxy, execution: &Path) {
+async fn assert_late_launch_refused(proxy: &PendingProxy, execution: &Path) {
     proxy.release.notify_one();
     tokio::time::timeout(Duration::from_secs(5), proxy.spawned.notified())
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !execution.join("started").exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    assert!(
+        proxy.rejected.load(std::sync::atomic::Ordering::SeqCst),
+        "late EnsureProc must receive SpawnFailed after sealed stop"
+    );
+    assert!(
+        !execution.join("started").exists(),
+        "a delayed request must not execute after workspace disposal"
+    );
 }
 
 struct PendingProxy {
@@ -521,6 +553,7 @@ struct PendingProxy {
     received: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     spawned: Arc<tokio::sync::Notify>,
+    rejected: Arc<std::sync::atomic::AtomicBool>,
 }
 impl PendingProxy {
     async fn start(upstream: &Path) -> Self {
@@ -531,6 +564,8 @@ impl PendingProxy {
         let received = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let spawned = Arc::new(tokio::sync::Notify::new());
+        let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reject = rejected.clone();
         let rec = received.clone();
         let rel = release.clone();
         let spawn = spawned.clone();
@@ -539,6 +574,7 @@ impl PendingProxy {
             loop {
                 let (mut client, _) = listener.accept().await.unwrap();
                 let upstream = upstream.clone();
+                let rejected = reject.clone();
                 let rec = rec.clone();
                 let rel = rel.clone();
                 let spawn = spawn.clone();
@@ -551,10 +587,11 @@ impl PendingProxy {
                         rel.notified().await;
                         let mut actual = tokio::net::UnixStream::connect(upstream).await.unwrap();
                         write_frame(&mut actual, &message).await.unwrap();
-                        assert!(matches!(
-                            read_frame::<ControlReply, _>(&mut actual).await.unwrap(),
-                            ControlReply::Spawned { .. }
-                        ));
+                        let reply: ControlReply = read_frame(&mut actual).await.unwrap();
+                        rejected.store(
+                            matches!(reply, ControlReply::SpawnFailed { .. }),
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
                         spawn.notify_one();
                     } else {
                         let mut actual = tokio::net::UnixStream::connect(upstream).await.unwrap();
@@ -572,6 +609,7 @@ impl PendingProxy {
             received,
             release,
             spawned,
+            rejected,
         }
     }
 }
