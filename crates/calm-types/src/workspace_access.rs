@@ -42,6 +42,32 @@ impl WorkspaceAccess {
     }
 }
 
+/// Persistent native resource discovery phase; unresolved executions block read admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceScopePhase {
+    New,
+    Recovering,
+    Ready,
+}
+impl WorkspaceScopePhase {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Recovering => "recovering",
+            Self::Ready => "ready",
+        }
+    }
+    pub fn from_db_str(value: &str) -> Result<Self, String> {
+        match value {
+            "new" => Ok(Self::New),
+            "recovering" => Ok(Self::Recovering),
+            "ready" => Ok(Self::Ready),
+            _ => Err(format!("unknown workspace scope phase: {value}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

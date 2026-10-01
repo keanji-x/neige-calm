@@ -32,14 +32,15 @@ pub(crate) async fn bind_execution(
         .to_str()
         .ok_or_else(|| CalmError::Conflict("execution cwd is not UTF-8".into()))?;
     sqlx::query(
-        "INSERT INTO workspace_execution_bindings(provider,holder_id,card_id,cwd) \
-        VALUES(?1,?2,?3,?4) ON CONFLICT(provider,holder_id) DO UPDATE SET cwd=excluded.cwd \
+        "INSERT INTO workspace_execution_bindings(provider,holder_id,card_id,cwd,scope_phase) \
+        VALUES(?1,?2,?3,?4,?5) ON CONFLICT(provider,holder_id) DO UPDATE SET cwd=excluded.cwd,scope_phase=excluded.scope_phase \
         WHERE workspace_execution_bindings.card_id=excluded.card_id",
     )
     .bind(provider.wire())
     .bind(holder)
     .bind(card)
     .bind(cwd)
+    .bind(calm_types::workspace_access::WorkspaceScopePhase::New.as_db_str())
     .execute(pool)
     .await?;
     Ok(())
