@@ -50,6 +50,9 @@ pub async fn workspace_available(
         track: track.to_owned(),
         path: physical_path(&path)?,
     };
+    if access == WorkspaceAccess::ReadOnly && !legacy_native_scopes_available(conn, &scope).await? {
+        return Ok(false);
+    }
     if !active_resources_available(conn, &scope, except, Some(except), access, write_root).await? {
         return Ok(false);
     }
@@ -149,6 +152,82 @@ fn physical_path(path: &str) -> Result<Option<PathBuf>> {
             }
         }
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct LegacyNativeScope {
+    track_id: String,
+    card_id: Option<String>,
+    provider: String,
+    holder_id: String,
+    spawn_op_id: Option<String>,
+    cwd: Option<String>,
+}
+
+/// A legacy provider must establish its actual scope before a reader can be admitted.
+/// Missing scope is unknown globally; recovering scope fences only its physical resource.
+/// An exact existing execution reference already provides that same admission barrier.
+async fn legacy_native_scopes_available(
+    conn: &mut SqliteConnection,
+    scope: &Scope,
+) -> Result<bool> {
+    let sessions = sqlx::query_as::<_, LegacyNativeScope>(
+        r#"
+SELECT s.track_id,s.card_id,s.provider,
+CASE WHEN s.provider='codex' THEN s.thread_id ELSE s.id END AS holder_id,
+s.spawn_op_id,b.cwd
+FROM worker_sessions s
+LEFT JOIN workspace_execution_bindings b ON b.provider=s.provider
+AND b.holder_id=CASE WHEN s.provider='codex' THEN s.thread_id ELSE s.id END
+WHERE s.state IN ('starting','running','idle','turn_pending')
+AND ((s.provider='codex' AND s.thread_id IS NOT NULL)
+ OR (s.provider='claude' AND s.terminal_run_id IS NULL))
+AND (b.scope_phase IS NULL OR b.scope_phase='recovering')
+"#,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for session in sessions {
+        let paths: Vec<String> = sqlx::query_scalar(
+            r#"
+SELECT COALESCE(l.canonical_path,l.path) FROM workspace_leases l
+WHERE l.state IN ('held','releasing') AND l.card_id=?1
+AND ((l.holder_kind='native' AND l.native_provider=?2 AND l.holder_id=?3)
+ OR (l.holder_kind='task' AND l.lease_owner=?4))
+"#,
+        )
+        .bind(&session.card_id)
+        .bind(&session.provider)
+        .bind(&session.holder_id)
+        .bind(&session.spawn_op_id)
+        .fetch_all(&mut *conn)
+        .await?;
+        let known = session
+            .cwd
+            .as_deref()
+            .map(physical_path)
+            .transpose()?
+            .flatten();
+        let mut covered = false;
+        for path in paths {
+            let held = physical_path(&path)?;
+            if known.is_none() || held == known {
+                covered = true;
+                break;
+            }
+        }
+        if covered {
+            continue;
+        }
+        if let Some(cwd) = &session.cwd {
+            if !scope.overlaps(&session.track_id, cwd)? {
+                continue;
+            }
+        }
+        // No Track checkout guess can substitute for an unobserved native cwd.
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 #[derive(sqlx::FromRow)]

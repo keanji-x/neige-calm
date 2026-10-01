@@ -647,3 +647,164 @@ async fn workspace_verifying_terminal_reserves_gate_cwd_not_its_finished_executi
         "the finished command no longer occupies its old directory"
     );
 }
+
+#[tokio::test]
+async fn workspace_legacy_native_scope_is_fenced_before_resume() {
+    use calm_types::workspace_access::WorkspaceAccess;
+    let mut db = database(129).await;
+    sqlx::query(
+        r#"
+INSERT INTO worker_sessions(id,track_id,card_id,provider,mode,contract,state,thread_id,
+created_at_ms,updated_at_ms)
+VALUES('legacy','track','legacy-card','codex','resumable','planner','running','thread',1,1)
+"#,
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    assert!(
+        !calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "reader",
+            WorkspaceAccess::ReadOnly,
+            Some("/other-resource"),
+            None
+        )
+        .await
+        .unwrap(),
+        "missing actual native scope must fence readers before resume replies"
+    );
+    sqlx::query(
+        r#"
+INSERT INTO workspace_execution_bindings(provider,holder_id,card_id,cwd,scope_phase)
+VALUES('codex','thread','legacy-card','/native-resource','recovering')
+"#,
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    assert!(
+        calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "reader",
+            WorkspaceAccess::ReadOnly,
+            Some("/other-resource"),
+            None
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        !calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "reader",
+            WorkspaceAccess::ReadOnly,
+            Some("/native-resource/child"),
+            None
+        )
+        .await
+        .unwrap()
+    );
+    sqlx::query("UPDATE workspace_execution_bindings SET scope_phase='ready'")
+        .execute(&mut db)
+        .await
+        .unwrap();
+    assert!(
+        calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "reader",
+            WorkspaceAccess::ReadOnly,
+            Some("/native-resource"),
+            None
+        )
+        .await
+        .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn workspace_legacy_scope_requires_exact_execution_coverage() {
+    use calm_types::workspace_access::WorkspaceAccess;
+    let mut db = database(129).await;
+    sqlx::query(
+        r#"
+INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,
+phase,created_at_ms,updated_at_ms)
+VALUES('worker-op','worker-op','codex-worker','hash','card','{}','{}','spawn_succeeded',1,1)
+"#,
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"
+INSERT INTO worker_sessions(id,track_id,card_id,provider,mode,contract,state,thread_id,
+spawn_op_id,created_at_ms,updated_at_ms)
+VALUES('worker','track','reader-a','codex','resumable','executor','running','worker-thread',
+'worker-op',1,1)
+"#,
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    lease(&mut db, "reader-a", "/review", "/review", "read_only")
+        .await
+        .unwrap();
+    assert!(
+        !calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "second-reader",
+            WorkspaceAccess::ReadOnly,
+            Some("/review"),
+            None
+        )
+        .await
+        .unwrap(),
+        "same-card reference does not establish native execution ownership"
+    );
+    sqlx::query("UPDATE workspace_leases SET lease_owner='worker-op',holder_kind='task'")
+        .execute(&mut db)
+        .await
+        .unwrap();
+    assert!(
+        calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "second-reader",
+            WorkspaceAccess::ReadOnly,
+            Some("/review"),
+            None
+        )
+        .await
+        .unwrap(),
+        "an exact read task reservation must allow a second reader"
+    );
+    sqlx::query(
+        r#"
+INSERT INTO worker_sessions(id,track_id,card_id,provider,mode,contract,state,
+created_at_ms,updated_at_ms)
+VALUES('legacy-claude','track','claude-card','claude','resumable','planner','idle',1,1)
+"#,
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    assert!(
+        !calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "second-reader",
+            WorkspaceAccess::ReadOnly,
+            Some("/review"),
+            None
+        )
+        .await
+        .unwrap(),
+        "unresolved Claude native execution is also fenced"
+    );
+}
