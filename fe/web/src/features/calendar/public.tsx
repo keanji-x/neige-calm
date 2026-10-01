@@ -1,5 +1,4 @@
 import { Button } from '@astryxdesign/core/Button';
-import { Calendar as DateCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { Banner } from '@astryxdesign/core/Banner';
 import { useState } from '../../ui/state/public.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
@@ -7,19 +6,16 @@ import { calendarDate, type CalendarEntry, type CalendarWrite } from '../../../.
 import { CalendarEditor } from './editor.tsx';
 import styles from './calendar.module.css';
 
-export type CalendarProps = Readonly<{
+export type CalendarTasksProps = Readonly<{
   date: string; timezone: string; entries: readonly CalendarEntry[] | undefined;
   enabled: boolean; loading: boolean; error: string | null; pending: boolean;
-  onDate(date: string): void; onRetry(): void; onSettings(): void;
+  onRetry(): void; onSettings(): void;
   onOpenTrack(id: string): void; onSave(write: CalendarWrite): Promise<void>;
 }>;
-export function Calendar({ date, timezone, entries, enabled, loading, error, pending, onDate, onRetry, onSettings, onOpenTrack, onSave }: CalendarProps) {
+export function CalendarTasks({ date, timezone, entries, enabled, loading, error, pending, onRetry, onSettings, onOpenTrack, onSave }: CalendarTasksProps) {
   const [editing, setEditing] = useState<CalendarEntry | null>(null);
   const [generation, setGeneration] = useState(0);
   return <section className={styles.calendar} aria-label="Calendar tasks">
-    <div className={styles.dates}>
-      <DateCalendar value={date as ISODateString} onChange={(value) => onDate(value)} weekStartsOn="mon" hasVariableRowCount />
-    </div>
     <div className={styles.agenda}>
       <div className={styles.heading}><h2>{new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${date}T12:00:00Z`))}</h2><span>{timezone}</span></div>
       {error !== null ? <Banner status="error" title={error} endContent={<Button label="Retry" variant="ghost" onClick={onRetry} />} />

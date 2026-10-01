@@ -31,7 +31,7 @@ import {
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import footerStyles from './composer-footer.module.css';
-import { TodayCalendar } from './calendar.tsx';
+import { TodayCalendarTasks } from './calendar.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { nameTodaySummaryConversation } from '../../../../core/domain/today.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
@@ -1689,7 +1689,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       <button type="button" data-nc-action="tertiary" onClick={resetConfirm.feedback.clear}>Dismiss</button>
     </div>}
     <TodayPage
-      calendar={<TodayCalendar transport={transport} unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })} onOpenTrack={(trackId) => go({ name: 'track', trackId })} />}
+      renderCalendarTasks={(date) => <TodayCalendarTasks date={date} transport={transport} unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })} onOpenTrack={(trackId) => go({ name: 'track', trackId })} />}
       activityAvailable={workspaceError === null && workspace.overlaysError === null
         && !workspace.areasLoading && !workspace.overlaysLoading
         && ![...workspace.tracksLoadingByArea.values()].some(Boolean)}

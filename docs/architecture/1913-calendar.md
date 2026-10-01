@@ -34,7 +34,10 @@ revision conflicts, time boundaries, scope rejection, lifecycle gating, desktop
 UI and real browser interaction. Existing report/conversation UI remains composed
 alongside the calendar. Task dependencies and deliverable acceptance remain future work.
 
-The UI uses Astryx Calendar, TextInput, DateInput, TimeInput, TextArea and Button.
+The UI reuses Today's existing sidebar calendar as its only date selector.
+Today owns the selected date; the injected task agenda uses it for queries and
+creation. Entry/edit controls use Astryx TextInput, DateInput, TimeInput, TextArea
+and Button. There is no separate month calendar in the main column.
 Creating an all-day entry needs only its title on the selected date. Time and
 notes expand on request; timezone and cross-day end date are secondary controls.
 The display timezone comes from the device and is visible next to the selected day;

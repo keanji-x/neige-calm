@@ -1,7 +1,6 @@
 @layer features {
-  .calendar { display: flex; flex-wrap: wrap; gap: var(--space-5); padding: var(--space-5); border: 1px solid var(--hairline); border-radius: var(--radius-lg); background: var(--surface-card); }
-  .dates { flex: 0 1 auto; max-width: 100%; }
-  .agenda { flex: 1 1 18rem; min-width: 0; }
+  .calendar { padding: var(--space-5); border: 1px solid var(--hairline); border-radius: var(--radius-lg); background: var(--surface-card); }
+  .agenda { min-width: 0; }
   .heading { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-4); }
   .heading h2 { margin: 0; font-size: var(--text-md); }
   .heading span, .empty, .time { color: var(--text-3); font-size: var(--text-base); }

@@ -72,12 +72,24 @@ describe('Today clock', () => {
   it('moves the page date across midnight on the clock tick', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 10, 23, 59, 50));
-    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[]} areas={[]} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[]} areas={[]}
+      renderCalendarTasks={(date) => <div role="status" aria-label="Task date">{date}</div>} />);
+    expect(screen.getByRole('status', { name: 'Task date' }).textContent).toBe('2026-08-10');
     expect(screen.getByRole('heading', { name: 'Monday, August 10' })).toBeTruthy();
 
     await act(() => vi.advanceTimersByTime(15_000));
     expect(screen.getByRole('heading', { name: 'Tuesday, August 11' })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Task date' }).textContent).toBe('2026-08-11');
   });
+});
+
+it('keeps a deliberately selected future day when the clock passes midnight', async () => {
+  const props = { tracks: [], areas: [], activityAvailable: true, renderTrackRow,
+    renderCalendarTasks: (date: string) => <div role="status" aria-label="Task date">{date}</div> };
+  const view = render(<TodayPage {...props} nowMs={new Date(2026, 7, 10, 23, 59, 50).getTime()} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Wednesday, Aug 12' }));
+  view.rerender(<TodayPage {...props} nowMs={new Date(2026, 7, 11, 0, 0, 5).getTime()} />);
+  expect(screen.getByRole('status', { name: 'Task date' }).textContent).toBe('2026-08-12');
 });
 
 describe('Today calendar label', () => {

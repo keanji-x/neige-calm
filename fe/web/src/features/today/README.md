@@ -3,10 +3,12 @@
 Today composes the builtin Calendar task surface on desktop only. Mobile task
 scheduling is explicitly deferred; its viewport ledger excludes the Calendar
 slot, so no task form or calendar API queries mount on the compact viewport.
-The existing sidebar date selector is labelled **Track activity** and reports
-lifecycle-overlap activity only. It neither selects the scheduling date nor
-claims that no calendar commitments exist. Calendar creation is title-first,
-with time and notes optional; its form uses Astryx controls.
+The existing sidebar **Calendar** is the only desktop date selector. Today owns
+its selected date and passes that date to both Track activity and the injected
+task agenda through `renderCalendarTasks`. The task feature renders the list and
+Astryx entry/edit controls; it does not render another calendar. Choosing a day
+or another week updates queries and the new-task date without discarding a draft.
+Calendar creation is title-first, with time and notes optional.
 
 # `features/today`
 

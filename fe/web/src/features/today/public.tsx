@@ -126,9 +126,17 @@ function TodayCompact({ nowMs }: TodayCompactProps) {
 function TodayDesktop({
   tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
-  documentAction, activityAvailable, calendar,
+  documentAction, activityAvailable, renderCalendarTasks,
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
+
+  const [selected, setSelected] = useState<Date>(today);
+  const previousToday = useRef(today);
+  useEffect(() => {
+    const previous = previousToday.current;
+    previousToday.current = today;
+    setSelected((current) => sameDay(current, previous) ? today : current);
+  }, [today]);
 
   /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the "Open" group is every open track the kernel is not waiting on a person for. A group and a number never share a word. */
   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);
@@ -138,10 +146,12 @@ function TodayDesktop({
   const panel = (
     <aside className={styles.panelColumn} data-nc-panel="">
       <PanelCard>
-        <PanelModule title="Track activity">
+        <PanelModule title="Calendar">
           <Calendar
             activityAvailable={activityAvailable}
             today={today}
+            selected={selected}
+            onSelect={setSelected}
             tracks={tracks}
             areas={areas}
             scheduledEvents={scheduledEvents}
@@ -163,7 +173,7 @@ function TodayDesktop({
       />
       <div className={styles.content}>
         <div className={styles.mainColumn}>
-          {calendar}
+          {renderCalendarTasks?.(isoDate(selected))}
           <TodayDocument
             launchpad={launchpad}
             document={launchpadDocument}
@@ -272,8 +282,10 @@ function Clock({ now }: { now: Date }) {
   );
 }
 
-function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs, activityAvailable }: {
+function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, renderTrackRow, nowMs, activityAvailable }: {
   today: Date;
+  selected: Date;
+  onSelect: (day: Date) => void;
   tracks: readonly Track[];
   areas: readonly Area[];
   scheduledEvents: readonly ScheduledEvent[];
@@ -281,12 +293,6 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
   nowMs?: number;
   activityAvailable: boolean;
 }) {
-  const [selected, setSelected] = useState<Date>(today);
-  const previousToday = useRef(today);
-  useEffect(() => {
-    setSelected((current) => sameDay(current, previousToday.current) ? today : current);
-    previousToday.current = today;
-  }, [today]);
   const now = nowMs ?? Date.now();
   const weekStart = startOfWeek(selected);
   const days = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
@@ -302,12 +308,12 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
       <div className={styles.week}>
         <div className={styles.weekHead}>
           <button type="button" data-nc-role="icon" className={styles.navButton}
-            aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}><Icon name="chevron-left" /></button>
+            aria-label="Previous week" onClick={() => onSelect(addDays(selected, -7))}><Icon name="chevron-left" /></button>
           <span className={styles.monthLabel}>
             {weekLabel(weekStart, addDays(weekStart, 6))}
           </span>
           <button type="button" data-nc-role="icon" className={styles.navButton}
-            aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}><Icon name="chevron-right" /></button>
+            aria-label="Next week" onClick={() => onSelect(addDays(selected, 7))}><Icon name="chevron-right" /></button>
         </div>
 
         <div className={styles.dayNames} aria-hidden="true">
@@ -341,7 +347,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
                 /* The count belongs in the accessible name: the superscript mark is hidden from assistive tech. */
                 aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
                   + (!activityAvailable || seen.size === 0 ? '' : `, ${seen.size} track${seen.size === 1 ? '' : 's'}`)}
-                onClick={() => setSelected(day)}
+                onClick={() => onSelect(day)}
               >
                 <span className={styles.dayNumber}>{day.getDate()}</span>
                 {activityAvailable && seen.size > 0 && (
@@ -356,11 +362,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
       </div>
 
       <div className={styles.agenda}>
-          {!sameDay(selected, today) && (
-            <h2 className={styles.sectionLabel}>
-              {selected.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
-            </h2>
-          )}
+        <h2 className={styles.sectionLabel}>Track activity{!sameDay(selected, today) && <> · <span>{selected.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</span></>}</h2>
 
         {scheduledAgenda.length === 0 && trackAgenda.length === 0
           ? activityAvailable ? <PanelEmpty>No track activity.</PanelEmpty> : null
