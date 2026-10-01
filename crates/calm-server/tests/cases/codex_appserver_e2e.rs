@@ -10,7 +10,9 @@ use crate::support;
 use std::process::Stdio;
 use std::time::Duration;
 
-use calm_server::codex_appserver::{ClientInfo, CodexAppServer, InputItem, Notification};
+use calm_server::codex_appserver::{
+    ClientInfo, InputItem, Notification, TestingCodexAppServer as CodexAppServer,
+};
 use calm_server::planner_model::TurnModelSelection;
 // Env `NEIGE_CODEX_BIN` only; tests must never fall back to a PATH/home codex.
 use support::codex_fixture::resolve_codex_bin;

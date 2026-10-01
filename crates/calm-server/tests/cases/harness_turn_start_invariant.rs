@@ -46,7 +46,9 @@ fn harness_turn_start_is_gated() {
         "src/harness/backend.rs",
         "src/harness/run_loop.rs",
         "src/operation/codex_adapter/mod.rs",
-        "src/shared_codex_appserver.rs",
+        "src/operation/execution_manager/native/supervisor.rs",
+        "src/operation/execution_manager/native/wire.rs",
+        "src/operation/execution_manager/native/testing.rs",
     ];
     for path in rust_files(&manifest_dir.join("src")) {
         let rel = path

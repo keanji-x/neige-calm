@@ -1,4 +1,7 @@
 //! Execution ownership: consumers submit requests; only this module creates launch capabilities.
+mod native;
+pub use native::*;
+pub(crate) use native::{DeletionThreadSeals, redact_thread_start_config};
 mod backend;
 mod storage;
 

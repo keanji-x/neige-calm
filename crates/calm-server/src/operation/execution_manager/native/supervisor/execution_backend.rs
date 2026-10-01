@@ -4,8 +4,8 @@ use crate::operation::execution_manager::{LaunchPermit, Record};
 use crate::operation::execution_manager::backend::{Backend, LaunchOutcome, Observation};
 use crate::codex_appserver::TurnStatus;
 
-pub(in crate::shared_codex_appserver) struct CodexBackend<'a>(pub &'a SharedCodexAppServer);
-pub(in crate::shared_codex_appserver) struct TurnRequest {
+pub(in crate::operation::execution_manager) struct CodexBackend<'a>(pub &'a SharedCodexAppServer);
+pub(in crate::operation::execution_manager) struct TurnRequest {
     pub thread: String,
     pub items: Vec<InputItem>,
     pub selection: TurnModelSelection,
