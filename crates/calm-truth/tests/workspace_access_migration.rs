@@ -784,6 +784,21 @@ VALUES('worker','track','reader-a','codex','resumable','executor','running','wor
         .unwrap(),
         "an exact read task reservation must allow a second reader"
     );
+    sqlx::query("UPDATE workspace_leases SET holder_kind='native',holder_id='worker-thread',native_provider='codex'")
+        .execute(&mut db).await.unwrap();
+    assert!(
+        !calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "second-reader",
+            WorkspaceAccess::ReadOnly,
+            Some("/other-native-cwd"),
+            None
+        )
+        .await
+        .unwrap(),
+        "an old native reference cannot establish an unobserved provider cwd"
+    );
     sqlx::query(
         r#"
 INSERT INTO worker_sessions(id,track_id,card_id,provider,mode,contract,state,

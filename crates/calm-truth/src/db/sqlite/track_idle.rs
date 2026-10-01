@@ -188,9 +188,9 @@ AND (b.scope_phase IS NULL OR b.scope_phase='recovering')
     .fetch_all(&mut *conn)
     .await?;
     for session in sessions {
-        let paths: Vec<String> = sqlx::query_scalar(
+        let paths: Vec<(String, String)> = sqlx::query_as(
             r#"
-SELECT COALESCE(l.canonical_path,l.path) FROM workspace_leases l
+SELECT COALESCE(l.canonical_path,l.path),l.holder_kind FROM workspace_leases l
 WHERE l.state IN ('held','releasing') AND l.card_id=?1
 AND ((l.holder_kind='native' AND l.native_provider=?2 AND l.holder_id=?3)
  OR (l.holder_kind='task' AND l.lease_owner=?4))
@@ -209,9 +209,9 @@ AND ((l.holder_kind='native' AND l.native_provider=?2 AND l.holder_id=?3)
             .transpose()?
             .flatten();
         let mut covered = false;
-        for path in paths {
+        for (path, kind) in paths {
             let held = physical_path(&path)?;
-            if known.is_none() || held == known {
+            if (known.is_none() && kind == "task") || (known.is_some() && held == known) {
                 covered = true;
                 break;
             }
