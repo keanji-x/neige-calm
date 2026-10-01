@@ -414,8 +414,9 @@ pub struct HarnessItem {
     #[ts(optional)]
     pub input_segments: Option<Vec<HarnessInputSegment>>,
     pub created_at_ms: i64,
-    /// A `turn/completed` row's `error.message` in words a person reads (#1829), reduced by the
-    /// kernel; `params` keeps the raw message. `null` on every row without one.
+    /// Readable reason for a `turn/completed` row: the provider's reduced `error.message`, or a
+    /// confirmed kernel interruption cause when the provider gives no readable message. `params`
+    /// retains the raw provider error and kernel cause metadata. `null` without a readable reason.
     #[schema(required = true, nullable = true)]
     pub turn_error_text: Option<String>,
 }

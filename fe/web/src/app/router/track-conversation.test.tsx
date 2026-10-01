@@ -950,6 +950,22 @@ describe('track conversations', () => {
     expect(inputBodies(requests)[1]).toEqual({ text: '', attachments: [ATTACHMENT_ID] });
   });
 
+  it('shows the unconfirmed stop reason once and blocks further sends', async () => {
+    const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'wedged', model: null,
+        reasoning_effort: null, blocked_reason: reason }) : undefined);
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(1));
+    expect(within(screen.getByRole('alert')).getByText(reason, { exact: true })).toBeTruthy();
+    expect(screen.queryByText('This conversation is stuck. Start a new conversation to continue.')).toBeNull();
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Start a new conversation' })).toBeTruthy();
+  });
+
   it('[F6] replaces stale Working with a stuck explanation and preserves the unsent draft', async () => {
     let phase = 'turn_running';
     const { client, requests } = setup((request) => {

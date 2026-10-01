@@ -39,7 +39,7 @@ it('rejects an offline Settings write without replaying it over a newer client v
   const field = await screen.findByLabelText('HTTP proxy');
   act(() => onlineManager.setOnline(false));
   await userEvent.clear(field); await userEvent.type(field, 'http://two'); await userEvent.tab();
-  await screen.findByText(/offline.*Reconnect/i);
+  await within(field.closest('li')!).findByText(/offline.*Reconnect/i);
   serverValue = 'http://three'; // A second independent client committed this while this tab was offline.
   await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
   expect(serverValue).toBe('http://three');

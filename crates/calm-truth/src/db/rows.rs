@@ -238,15 +238,27 @@ impl TryFrom<HarnessItemRow> for HarnessItem {
     }
 }
 
-/// The readable form of a `turn/completed` row's `error.message`; `None` for any other row, and for
-/// one whose params carry no string message.
+/// Prefer the provider's readable error; otherwise expose a confirmed kernel interruption cause.
 fn turn_error_text(method: &str, params: &str) -> Option<String> {
     if method != "turn/completed" {
         return None;
     }
     let params: serde_json::Value = serde_json::from_str(params).ok()?;
-    let message = params.pointer("/error/message")?.as_str()?;
-    Some(crate::readable_error_text::readable_error_text(message))
+    if let Some(message) = params
+        .pointer("/error/message")
+        .and_then(serde_json::Value::as_str)
+    {
+        let readable = crate::readable_error_text::readable_error_text(message);
+        if !readable.trim().is_empty() {
+            return Some(readable);
+        }
+    }
+    if params.get("status").and_then(serde_json::Value::as_str) != Some("interrupted") {
+        return None;
+    }
+    let reason: calm_types::harness::HarnessInterruptionReason =
+        serde_json::from_value(params.get("harness_interruption_reason")?.clone()).ok()?;
+    Some(reason.message().into())
 }
 
 /// Row of the `worker_flow_items` table: the raw persistence shape, not a mirror of a calm-types entity.
@@ -301,5 +313,55 @@ impl From<OverlayRow> for Overlay {
             payload: r.payload,
             updated_at: r.updated_at,
         }
+    }
+}
+
+#[cfg(test)]
+mod turn_error_tests {
+    use super::turn_error_text;
+    use serde_json::json;
+
+    #[test]
+    fn kernel_interruption_reason_preserves_provider_error_precedence() {
+        for message in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("<html><body></body></html>"),
+        ] {
+            let params = json!({"status":"interrupted", "harness_interruption_reason":"max_turn_duration",
+                "error": message.map(|message| json!({"message":message}))});
+            assert_eq!(
+                turn_error_text("turn/completed", &params.to_string()).as_deref(),
+                Some("This turn exceeded its execution time limit and was interrupted.")
+            );
+        }
+        let params = json!({"status":"interrupted", "harness_interruption_reason":"max_turn_duration",
+            "error":{"message":"provider detail", "codexErrorInfo":"other"}});
+        assert_eq!(
+            turn_error_text("turn/completed", &params.to_string()).as_deref(),
+            Some("provider detail")
+        );
+    }
+
+    #[test]
+    fn kernel_interruption_reason_requires_confirmed_interrupted_status() {
+        for status in ["completed", "failed", "inProgress"] {
+            let params = json!({"status":status,"harness_interruption_reason":"max_turn_duration"});
+            assert_eq!(turn_error_text("turn/completed", &params.to_string()), None);
+        }
+        for reason in [None, Some("unknown"), Some("user")] {
+            let params = json!({"status":"interrupted","harness_interruption_reason":reason});
+            assert_eq!(turn_error_text("turn/completed", &params.to_string()), None);
+        }
+        assert_eq!(
+            turn_error_text(
+                "item/completed",
+                &json!({"status":"interrupted",
+            "harness_interruption_reason":"max_turn_duration"})
+                .to_string()
+            ),
+            None
+        );
     }
 }

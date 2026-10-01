@@ -297,3 +297,59 @@ async fn claude_planner_turn_runs_in_the_track_worktree() {
     );
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_watchdog_timeout_reason_survives_a_server_restart() {
+    use calm_server::harness::{HarnessConfig, HarnessState};
+    use std::time::Instant;
+    let root = Root::new("hold");
+    let stack = Stack::boot(&root).await;
+    let (_, card_id) = stack.create_claude_track().await;
+    let session = stack.runtime(&card_id).await;
+    let (status, body) = stack.post_input(&card_id, "work until interrupted").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_file(&root, "stdin").await;
+    stack.wait_phase(&session.id, "turn_running").await;
+    let harness = stack.harness(&session.id);
+    let HarnessState::TurnRunning { turn_id, .. } = harness.state_for_test().await else {
+        panic!("the fixture must still be running");
+    };
+    harness
+        .set_state_for_test(HarnessState::TurnRunning {
+            turn_id,
+            started_at: Instant::now()
+                - HarnessConfig::default().max_turn_duration
+                - Duration::from_secs(1),
+        })
+        .await;
+    let outcomes = stack.wait_outcomes(&card_id, 1).await;
+    assert_eq!(outcomes[0]["status"], "interrupted");
+    assert_eq!(
+        outcomes[0]["harness_interruption_reason"],
+        "max_turn_duration"
+    );
+    assert_eq!(outcomes[0]["error"], Value::Null);
+    stack.wait_phase(&session.id, "turn_completed").await;
+    let uri = format!("/api/cards/{card_id}/harness/items");
+    let (status, before) = stack.send("GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let terminal = before
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["method"] == "turn/completed")
+        .unwrap();
+    assert_eq!(
+        terminal["turn_error_text"],
+        "This turn exceeded its execution time limit and was interrupted."
+    );
+    stack.shutdown().await;
+    let stack = Stack::boot(&root).await;
+    let (status, after) = stack.send("GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        before, after,
+        "a restart preserves the confirmed timeout and all transcript rows"
+    );
+    stack.shutdown().await;
+}

@@ -16,6 +16,24 @@ pub(crate) async fn record(
     if let Some(object) = outcome.as_object_mut() {
         object.remove("items");
         object.remove("itemsView");
+        // This reserved field is written only from the kernel's durable interrupt intent.
+        object.remove("harness_interruption_reason");
+    }
+    if outcome.get("status").and_then(Value::as_str) == Some("interrupted")
+        && outcome.get("id").and_then(Value::as_str) == Some(turn_id)
+        && let Some(session) = repo
+            .session_projection_by_id(&session_id.to_string())
+            .await?
+        && session.card_id == card_id
+        && let Some(snapshot) = session
+            .handle_state_json
+            .and_then(super::HarnessSnapshot::parse_known)
+        && snapshot.phase == super::HarnessPhaseTag::IssuingInterrupt
+        && snapshot.last_thread_id.as_deref() == Some(thread_id)
+        && let Some(intent) = snapshot.interruption_intent
+        && intent.turn_id == turn_id
+    {
+        outcome["harness_interruption_reason"] = serde_json::to_value(intent.reason)?;
     }
     Ok(repo
         .harness_turn_outcome_put(

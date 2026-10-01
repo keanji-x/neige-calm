@@ -3529,7 +3529,7 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
     {
         *inner.state.lock().await = HarnessState::Wedged {
             since: Instant::now(),
-            reason: "interrupt_timeout".into(),
+            reason: calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON.into(),
         };
         *inner.issued_turn_id.lock().await = None;
         *inner.interrupt_deadline.lock().await = None;

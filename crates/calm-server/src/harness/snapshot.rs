@@ -121,6 +121,10 @@ pub struct HarnessSnapshot {
     pub projection_client_id: Option<QueueEntryId>,
     #[serde(default)]
     pub wedged_reason: Option<String>,
+    /// Additive timeout intent, committed before interrupting either backend. Old snapshots have
+    /// no recorded intent and do not infer a timeout; old binaries ignore this key on rollback.
+    #[serde(default)]
+    pub interruption_intent: Option<calm_types::harness::HarnessInterruptionIntent>,
     /// Latest `thread/tokenUsage/updated` reading. Additive and defaulted, no `schema_version` bump:
     /// an old binary ignores the unknown key and loses only a value re-pushed on the next response,
     /// whereas a bump would turn a lossless rollback into a boot panic.
@@ -147,6 +151,7 @@ impl HarnessSnapshot {
             issued_input_segments: None,
             projection_client_id: None,
             wedged_reason: None,
+            interruption_intent: None,
             token_usage: None,
         };
         snapshot.set_pending_entries(entries);
@@ -185,6 +190,22 @@ impl HarnessSnapshot {
             // Set by `snapshot_for` from `Inner`; `from_state` sees only `HarnessState`.
             token_usage: None,
             wedged_reason,
+            interruption_intent: match state {
+                HarnessState::Issuing {
+                    kind:
+                        IssuingKind::Interrupt {
+                            target_turn_id,
+                            reason,
+                        },
+                    ..
+                } if reason == "max_turn_duration" => {
+                    Some(calm_types::harness::HarnessInterruptionIntent {
+                        turn_id: target_turn_id.clone(),
+                        reason: calm_types::harness::HarnessInterruptionReason::MaxTurnDuration,
+                    })
+                }
+                _ => None,
+            },
         };
         snapshot.set_pending_entries(entries);
         snapshot
@@ -408,6 +429,47 @@ mod tests {
     use super::*;
 
     use serde_json::json;
+
+    #[test]
+    fn timeout_interrupt_intent_round_trips_without_inventing_old_causes() {
+        use std::time::Instant;
+        for reason in ["max_turn_duration", "user"] {
+            let state = HarnessState::Issuing {
+                since: Instant::now(),
+                kind: IssuingKind::Interrupt {
+                    target_turn_id: "target".into(),
+                    reason: reason.into(),
+                },
+            };
+            let snapshot = HarnessSnapshot::from_state(
+                &state,
+                0,
+                vec![],
+                Some("thread".into()),
+                Some("target".into()),
+                None,
+            );
+            assert_eq!(
+                snapshot.interruption_intent.is_some(),
+                reason == "max_turn_duration"
+            );
+            let value = serde_json::to_value(&snapshot).unwrap();
+            assert_eq!(HarnessSnapshot::from_value_strict(value.clone()), snapshot);
+            let mut old = value;
+            old.as_object_mut().unwrap().remove("interruption_intent");
+            assert!(
+                HarnessSnapshot::from_value_strict(old)
+                    .interruption_intent
+                    .is_none()
+            );
+        }
+        let mut value = serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap();
+        value["interruption_intent"] = json!({"reason":"max_turn_duration"});
+        assert!(
+            serde_json::from_value::<HarnessSnapshot>(value).is_err(),
+            "a recorded interruption requires its exact target; it cannot default to another turn"
+        );
+    }
 
     /// A snapshot as a pre-`token_usage` binary wrote it: no key at all. Has to be a literal —
     /// every other `from_value_strict` call site feeds JSON a current binary just serialized.

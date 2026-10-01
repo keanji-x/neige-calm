@@ -511,3 +511,60 @@ async fn interrupt_non_planner_card_403() {
         "body={body}"
     );
 }
+
+#[tokio::test]
+async fn get_planner_run_preserves_unconfirmed_stop_timeout_after_registry_loss() {
+    let boot = boot().await;
+    let (card, session_id, _thread_id, harness) = seed_live_planner_harness(&boot).await;
+    harness
+        .set_state_for_test(HarnessState::TurnRunning {
+            turn_id: "unconfirmed".into(),
+            started_at: Instant::now(),
+        })
+        .await;
+    harness
+        .observe_for_test(
+            calm_server::harness::Observation::UserMessage {
+                text: "retain this queued message".into(),
+            },
+            None,
+        )
+        .await;
+    harness
+        .set_state_for_test(HarnessState::Wedged {
+            since: Instant::now(),
+            reason: "interrupt_timeout".into(),
+        })
+        .await;
+    harness.persist_snapshot().await.unwrap();
+    for registered in [true, false] {
+        if !registered {
+            shutdown_seeded_harness(&boot, &session_id, harness.clone()).await;
+        }
+        let (status, body) = get_json(
+            boot.app.clone(),
+            &format!("/api/cards/{}/planner/run", card.id),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["phase"], "wedged", "stop remains unconfirmed: {body}");
+        assert_eq!(body["worker_session_id"], session_id);
+        assert_eq!(body["pending"].as_array().unwrap().len(), 1);
+        assert_eq!(body["pending"][0]["text"], "retain this queued message");
+        assert_eq!(
+            body["blocked_reason"],
+            "The stop request timed out before the model confirmed that this turn had stopped."
+        );
+        let (status, rows) = get_json(
+            boot.app.clone(),
+            &format!("/api/cards/{}/harness/items", card.id),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = rows.as_array().unwrap();
+        assert!(
+            rows.iter().all(|row| row["method"] != "turn/completed"),
+            "a stop request cannot fabricate a terminal result"
+        );
+    }
+}

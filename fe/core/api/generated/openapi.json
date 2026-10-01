@@ -8467,7 +8467,7 @@
               "string",
               "null"
             ],
-            "description": "A `turn/completed` row's `error.message` in words a person reads (#1829), reduced by the\nkernel; `params` keeps the raw message. `null` on every row without one."
+            "description": "Readable reason for a `turn/completed` row: the provider's reduced `error.message`, or a\nconfirmed kernel interruption cause when the provider gives no readable message. `params`\nretains the raw provider error and kernel cause metadata. `null` without a readable reason."
           },
           "turn_id": {
             "type": [

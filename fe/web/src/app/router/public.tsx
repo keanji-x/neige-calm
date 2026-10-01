@@ -1328,7 +1328,7 @@ function useConversationPanel(
             )}
             {store.stalled && (
               <ChatFooterNotice>
-                <ChatFooterError message="This conversation is stuck. Start a new conversation to continue." />
+                <ChatFooterError message={store.blockedReason ?? "This conversation is stuck. Start a new conversation to continue."} />
                 <ChatFooterRemedy onClick={continueFromStall}>Start a new conversation</ChatFooterRemedy>
               </ChatFooterNotice>
             )}
@@ -1389,7 +1389,7 @@ function useConversationPanel(
             )}
             {/* Not an `alert`: nothing just happened, the condition was already true when
                             this page opened. */}
-            {store.blockedReason !== null && (
+            {!store.stalled && store.blockedReason !== null && (
               <ChatFooterNotice>
                 <ChatFooterError message={store.blockedReason} />
               </ChatFooterNotice>

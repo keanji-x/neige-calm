@@ -1182,12 +1182,25 @@ pub(crate) async fn get_planner_run(
             .repo
             .session_projection_projectable_for_card(&card.id.to_string())
             .await?
-            && let Some(snapshot) =
-                super::planner_recovery::recoverable_snapshot(&s, &runtime).await?
         {
-            dormant.blocked_reason = Some(super::planner_recovery::RECOVERY_NOTICE.into());
-            (dormant.pending, dormant.pending_overflow) =
-                page_pending_entries(&card.id, &snapshot.pending_entries());
+            if let Some(snapshot) = super::planner_recovery::unconfirmed_stop_snapshot(&runtime) {
+                dormant.worker_session_id = Some(runtime.id.clone());
+                dormant.phase = Some(snapshot.phase);
+                dormant.blocked_reason =
+                    Some(calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_MESSAGE.into());
+                dormant.token_usage = snapshot
+                    .token_usage
+                    .as_ref()
+                    .map(PlannerRunTokenUsage::from);
+                (dormant.pending, dormant.pending_overflow) =
+                    page_pending_entries(&card.id, &snapshot.pending_entries());
+            } else if let Some(snapshot) =
+                super::planner_recovery::recoverable_snapshot(&s, &runtime).await?
+            {
+                dormant.blocked_reason = Some(super::planner_recovery::RECOVERY_NOTICE.into());
+                (dormant.pending, dormant.pending_overflow) =
+                    page_pending_entries(&card.id, &snapshot.pending_entries());
+            }
         }
         return Ok(Json(dormant));
     };

@@ -278,8 +278,9 @@ attachments: Array<PlannerAttachment>, };
 
 export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, 
 /**
- * A `turn/completed` row's `error.message` in words a person reads (#1829), reduced by the
- * kernel; `params` keeps the raw message. `null` on every row without one.
+ * Readable reason for a `turn/completed` row: the provider's reduced `error.message`, or a
+ * confirmed kernel interruption cause when the provider gives no readable message. `params`
+ * retains the raw provider error and kernel cause metadata. `null` without a readable reason.
  */
 turn_error_text: string | null, };
 

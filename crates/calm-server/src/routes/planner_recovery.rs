@@ -117,19 +117,10 @@ pub(super) async fn recoverable_snapshot(
     s: &RouteState,
     runtime: &WorkerSessionProjection,
 ) -> Result<Option<HarnessSnapshot>> {
-    if runtime.status != WorkerSessionState::Failed || runtime.completed_at_ms.is_some() {
-        return Ok(None);
-    }
-    let Some(snapshot) = runtime
-        .handle_state_json
-        .clone()
-        .and_then(HarnessSnapshot::parse_known)
-    else {
+    let Some(snapshot) = failed_wedged_snapshot(runtime) else {
         return Ok(None);
     };
-    if snapshot.phase != HarnessPhaseTag::Wedged
-        || snapshot.wedged_reason.as_deref() != Some(HARNESS_SYSTEM_ERROR_REASON)
-    {
+    if snapshot.wedged_reason.as_deref() != Some(HARNESS_SYSTEM_ERROR_REASON) {
         return Ok(None);
     }
     let Some(thread) = crate::harness::effective_runtime_thread_id(runtime) else {
@@ -143,4 +134,22 @@ pub(super) async fn recoverable_snapshot(
         return Ok(None);
     }
     Ok(Some(snapshot))
+}
+
+/// Read-only projection of an unconfirmed stop. This does not grant send recovery.
+pub(super) fn unconfirmed_stop_snapshot(
+    runtime: &WorkerSessionProjection,
+) -> Option<HarnessSnapshot> {
+    let snapshot = failed_wedged_snapshot(runtime)?;
+    (snapshot.wedged_reason.as_deref()
+        == Some(calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON))
+    .then_some(snapshot)
+}
+
+fn failed_wedged_snapshot(runtime: &WorkerSessionProjection) -> Option<HarnessSnapshot> {
+    if runtime.status != WorkerSessionState::Failed || runtime.completed_at_ms.is_some() {
+        return None;
+    }
+    let snapshot = HarnessSnapshot::parse_known(runtime.handle_state_json.clone()?)?;
+    (snapshot.phase == HarnessPhaseTag::Wedged).then_some(snapshot)
 }

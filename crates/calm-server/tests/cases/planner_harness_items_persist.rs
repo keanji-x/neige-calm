@@ -871,6 +871,105 @@ async fn outcome_row_is_durable_before_the_phase_event_that_announces_it() {
 /// `TurnCompleted` arm. Notifications are handled in order by one loop, so once the target's row exists the
 /// non-target frame has been fully processed.
 #[tokio::test]
+async fn watchdog_execution_timeout_projects_durable_reason() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let mut rx = events.subscribe();
+    let (harness, daemon, card_id, _) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+    record_outcome_rows_at_each_event(&repo).await;
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({"id":"turn-timeout"}),
+    });
+    recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnRunning).await;
+    harness
+        .set_state_for_test(HarnessState::TurnRunning {
+            turn_id: "turn-timeout".into(),
+            started_at: Instant::now()
+                - HarnessConfig::default().max_turn_duration
+                - Duration::from_secs(1),
+        })
+        .await;
+    recv_phase_event_into(&mut rx, HarnessPhaseTag::IssuingInterrupt).await;
+    assert_eq!(
+        daemon.interrupted_turns_for_test(),
+        vec![(SEED_THREAD_ID.to_string(), "turn-timeout".to_string())]
+    );
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({"id":"turn-other","status":"interrupted"}),
+    });
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({"id":"turn-timeout","status":"interrupted","error":null}),
+    });
+    let completed = recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnCompleted).await;
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    assert_eq!(rows[0].turn_id.as_deref(), Some("turn-timeout"));
+    assert_eq!(
+        rows[0].turn_error_text.as_deref(),
+        Some("This turn exceeded its execution time limit and was interrupted.")
+    );
+    let stored: Value = serde_json::from_str(&rows[0].params).unwrap();
+    assert_eq!(
+        stored["error"],
+        Value::Null,
+        "provider error stays unchanged"
+    );
+    assert_eq!(stored["harness_interruption_reason"], "max_turn_duration");
+    assert_eq!(
+        outcome_rows_at_event(&repo, completed.id).await,
+        1,
+        "the timeout reason must be durable before clients receive the phase event"
+    );
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn timeout_interrupt_preserves_provider_results_and_requires_explicit_target() {
+    for (status, message, explicit_id) in [
+        ("interrupted", Some("provider detail"), true),
+        ("completed", None, true),
+        ("failed", Some("provider failure"), true),
+        ("interrupted", None, false),
+    ] {
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let events = EventBus::new();
+        let mut rx = events.subscribe();
+        let (harness, daemon, card_id, _) = seed_harness(repo.clone(), events).await;
+        wait_for_notification_receiver(&daemon).await;
+        daemon.emit_notification_for_test(Notification::TurnStarted {
+            thread_id: SEED_THREAD_ID.into(),
+            turn: json!({"id":"target"}),
+        });
+        recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnRunning).await;
+        harness.interrupt("max_turn_duration".into()).await.unwrap();
+        recv_phase_event_into(&mut rx, HarnessPhaseTag::IssuingInterrupt).await;
+        let error = message.map(|message| json!({"message":message,"codexErrorInfo":"other"}));
+        let mut turn = json!({"status":status,"error":error});
+        if explicit_id {
+            turn["id"] = json!("target");
+        }
+        daemon.emit_notification_for_test(Notification::TurnCompleted {
+            thread_id: SEED_THREAD_ID.into(),
+            turn,
+        });
+        recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnCompleted).await;
+        let rows = wait_for_rows(&repo, &card_id, 1).await;
+        let stored: Value = serde_json::from_str(&rows[0].params).unwrap();
+        assert_eq!(stored["status"], status);
+        assert_eq!(stored["error"], serde_json::to_value(error).unwrap());
+        assert_eq!(rows[0].turn_error_text.as_deref(), message);
+        assert_eq!(
+            stored.get("harness_interruption_reason").is_some(),
+            status == "interrupted" && explicit_id
+        );
+        harness.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn interrupt_target_completion_writes_outcome_row() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
@@ -921,6 +1020,7 @@ async fn interrupt_target_completion_writes_outcome_row() {
     let stored: Value = serde_json::from_str(&rows[0].params).unwrap();
     assert_eq!(stored["status"], "interrupted");
     assert!(stored.get("error").is_none());
+    assert!(stored.get("harness_interruption_reason").is_none());
     assert_eq!(
         outcome_rows_at_event(&repo, completed.id).await,
         1,
