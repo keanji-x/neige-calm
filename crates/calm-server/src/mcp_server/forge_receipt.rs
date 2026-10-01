@@ -2,8 +2,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-pub(super) const PENDING_GUIDANCE: &str =
-    include_str!("../../prompts/tools/forge-action.pending.md");
+pub(super) const PENDING_GUIDANCE: &str = include_str!("../../prompts/forge-action/pending.md");
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]

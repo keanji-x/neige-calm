@@ -231,8 +231,8 @@ mod tests {
         assert_eq!(absent_row[0], null_without_key);
     }
 
-    /// Every non-alias tool's description is `prompts/tools/<tool name>.md` (`include_str!` +
-    /// `trim_end()`), and there is no such file without a tool. Trailing whitespace before the
+    /// Every non-alias tool's description renders `prompts/tools/<tool name>.md` with shared
+    /// acceptance guidance, and there is no such file without a tool. Trailing whitespace before the
     /// final newline would make the embedded description differ from the file's visible content.
     #[test]
     fn prompt_files_cover_exactly_the_non_alias_tools() {
@@ -292,9 +292,11 @@ mod tests {
                 )
             });
             assert_eq!(
-                &descriptor.description, file_body,
-                "{}: description is not the content of prompts/tools/{}.md",
-                descriptor.name, descriptor.name
+                descriptor.description,
+                calm_types::observation::render_task_acceptance_guidance(file_body),
+                "{}: description does not render prompts/tools/{}.md",
+                descriptor.name,
+                descriptor.name
             );
             expected.insert(descriptor.name);
         }
