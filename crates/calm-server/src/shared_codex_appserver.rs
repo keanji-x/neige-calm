@@ -784,6 +784,9 @@ pub struct TurnStartReturnHook {
 pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
+    liveness_facts: std::sync::Mutex<
+        std::collections::HashMap<String, calm_provider::provider::CodexLivenessFacts>,
+    >,
     fail_next_thread_start: AtomicBool,
     fail_thread_resume: AtomicBool,
     resumed_threads: std::sync::Mutex<Vec<(String, bool)>>,
@@ -838,6 +841,7 @@ impl FakeSharedCodexAppServer {
         Self {
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
+            liveness_facts: std::sync::Mutex::new(std::collections::HashMap::new()),
             fail_next_thread_start: AtomicBool::new(false),
             fail_thread_resume: AtomicBool::new(false),
             resumed_threads: std::sync::Mutex::new(Vec::new()),
@@ -3879,6 +3883,20 @@ impl SharedCodexAppServer {
     }
 
     #[cfg(feature = "fixtures")]
+    pub fn set_liveness_facts_for_test(
+        &self,
+        thread: &str,
+        facts: calm_provider::provider::CodexLivenessFacts,
+    ) {
+        self.fake
+            .as_ref()
+            .expect("fake provider required")
+            .liveness_facts
+            .lock()
+            .expect("fake liveness facts")
+            .insert(thread.to_owned(), facts);
+    }
+
     pub fn fail_turn_interrupt_for_test(&self, fail: bool) {
         if let Some(fake) = self.fake.as_ref() {
             fake.fail_turn_interrupt.store(fail, Ordering::SeqCst);
@@ -4674,6 +4692,15 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
         &self,
         thread_id: &str,
     ) -> Option<calm_provider::provider::CodexLivenessFacts> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            return fake
+                .liveness_facts
+                .lock()
+                .expect("fake liveness facts")
+                .get(thread_id)
+                .copied();
+        }
         let client = self.connected_client().await.ok()?;
         let read = client.thread_read(thread_id, true).await.ok()?;
         // Secondary `loaded` signal; a failed list shouldn't sink the pull.
