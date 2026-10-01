@@ -422,6 +422,7 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::OverlayDeleted { .. }
         | Event::TerminalDeleted { .. }
         | Event::PluginState { .. }
+        | Event::PluginDataChanged { .. }
         | Event::PluginToolRegistered { .. } => {}
         // The task plan has no track-fs view; plan revisions change no tracked path.
         Event::PlanUpdated { .. } => {}

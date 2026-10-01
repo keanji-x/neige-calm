@@ -1,0 +1,4 @@
+{
+  "description": "Plugin-owned data invalidation carries plugin identity without domain contents.",
+  "wire": { "ev": "plugin.data.changed", "data": { "plugin_id": "plugin-x" } }
+}

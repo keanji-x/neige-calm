@@ -58,7 +58,7 @@ describe('degraded workspace reads stay usable', () => {
     const main = await screen.findByRole('main');
     await within(main).findByRole('alert');
     expect(within(main).getByRole('banner').textContent).not.toMatch(/\d(?:waiting|working)/);
-    expect(within(main).queryByText('Nothing scheduled.')).toBeNull();
+    expect(within(main).queryByText('No track activity.')).toBeNull();
     if (resource === 'activity') expect(within(main).getAllByText('Reliable').length).toBeGreaterThan(0);
     broken = false;
     await userEvent.click(within(main).getByRole('button', { name: 'Retry' }));

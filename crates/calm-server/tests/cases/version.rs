@@ -128,26 +128,26 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "16",
-        "#1897: built-in capability removal and additional Track tool choices require the current contract"
+        "17",
+        "#1913: calendar scheduling requires the current contract"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
     // `scripts/gate-sync-event-version-lockstep.sh` binds the constant to this literal, so bumping the constant alone cannot make this file agree with itself.
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 21);
+    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 22);
 
     assert_eq!(
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 35);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 36);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 35);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 36);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

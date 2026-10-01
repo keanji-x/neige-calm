@@ -215,7 +215,8 @@ describe('invalidation plan behavior', () => {
 
   it('returns an empty plan for explicit no-op policies', () => {
     const empty = { invalidate: [], remove: [], writeThrough: [] };
-    expect(invalidationPlanFor(event({ ev: 'plugin.state', data: {} }))).toEqual(empty);
+    expect(invalidationPlanFor(event({ ev: 'plugin.state', data: {} })).invalidate).toEqual([['plugins']]);
+    expect(invalidationPlanFor({ ev: 'plugin.data.changed', data: { plugin_id: 'calendar' } }).invalidate).toEqual([['plugin-data', 'calendar']]);
     expect(invalidationPlanFor(event({ ev: 'proposal.resolved', data: {} }))).toEqual(empty);
   });
 

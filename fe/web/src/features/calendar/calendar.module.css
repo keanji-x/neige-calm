@@ -1,0 +1,18 @@
+@layer features {
+  .calendar { display: flex; flex-wrap: wrap; gap: var(--space-5); padding: var(--space-5); border: 1px solid var(--hairline); border-radius: var(--radius-lg); background: var(--surface-card); }
+  .dates { flex: 0 1 auto; max-width: 100%; }
+  .agenda { flex: 1 1 18rem; min-width: 0; }
+  .heading { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-4); }
+  .heading h2 { margin: 0; font-size: var(--text-md); }
+  .heading span, .empty, .time { color: var(--text-3); font-size: var(--text-base); }
+  .quickAdd { display: flex; align-items: end; gap: var(--space-2); }
+  .quickAdd > :first-child { flex: 1; min-width: 0; }
+  .quickAdd > button { flex-shrink: 0; }
+  .form { display: grid; gap: var(--space-2); min-width: 0; }
+  .options, .actions, .entryHeading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+  .timeFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+  .timeFields > button { grid-column: 1 / -1; justify-self: start; }
+  .entries { list-style: none; padding: 0; margin: var(--space-4) 0 0; }
+  .entry { padding-block: var(--space-3); border-top: 1px solid var(--hairline); overflow-wrap: anywhere; }
+  .entry p { margin: var(--space-2) 0; color: var(--text-2); }
+}

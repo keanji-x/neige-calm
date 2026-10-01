@@ -24,6 +24,8 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   // Read-only server DTO, decoded by core/domain/template.ts; its shape is pinned below.
   'TrackTemplateDetail',
   'TemplatePluginGuide',
+  // Builtin-owned DTO decoded by core/domain/calendar.ts.
+  'CalendarEntry',
   'ReportSeriesResolved', 'ReportSeriesRevConflict', 'TrackPreviews',
 ]);
 

@@ -1,3 +1,13 @@
+# Calendar commitments (#1913)
+
+Today composes the builtin Calendar task surface on desktop only. Mobile task
+scheduling is explicitly deferred; its viewport ledger excludes the Calendar
+slot, so no task form or calendar API queries mount on the compact viewport.
+The existing sidebar date selector is labelled **Track activity** and reports
+lifecycle-overlap activity only. It neither selects the scheduling date nor
+claims that no calendar commitments exist. Calendar creation is title-first,
+with time and notes optional; its form uses Astryx controls.
+
 # `features/today`
 
 The landing route: a status bar and **the day's document**, beside a panel

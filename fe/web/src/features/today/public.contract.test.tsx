@@ -40,7 +40,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
   it('renders live track activity while the scheduled list is empty', () => {
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />);
     expect(screen.getByRole('complementary').textContent).toContain('Open track');
-    expect(screen.queryByText('Nothing scheduled.')).toBeNull();
+    expect(screen.queryByText('No track activity.')).toBeNull();
   });
 
   it('keeps both sources in the same agenda instead of letting either take over', () => {
@@ -55,7 +55,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
 
   it('shows the empty state only when both sources are empty', () => {
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW} />);
-    expect(screen.getByText('Nothing scheduled.')).toBeTruthy();
+    expect(screen.getByText('No track activity.')).toBeTruthy();
   });
 
   it('counts a track once when both sources carry it', () => {
@@ -177,7 +177,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
       launchpad={null}
       conversationList={<p>No conversations yet.</p>}
     />);
-    expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Track activity' })).toBeTruthy();
     expect(screen.getByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
     expect(screen.queryByText('Nothing here yet.')).toBeNull();
   });
@@ -191,7 +191,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
       conversationList={<p>Launchpad conversations</p>}
       conversationAction={<button type="button">New conversation</button>}
     />);
-    expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Track activity' })).toBeTruthy();
     expect(screen.queryByText('Nothing here yet.')).toBeNull();
     expect(screen.getByText("the day's report")).toBeTruthy();
     expect(screen.getByText('Launchpad conversations')).toBeTruthy();

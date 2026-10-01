@@ -72,6 +72,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(crate::planner_attachments::routes::router())
         .merge(overlays::router())
         .merge(plugins::router())
+        .merge(crate::builtin_plugins::router())
         .merge(terminal::router())
         .merge(terminal_cards::router())
         .merge(today::router())

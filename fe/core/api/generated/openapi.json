@@ -678,6 +678,123 @@
         }
       }
     },
+    "/api/calendar/tasks": {
+      "get": {
+        "tags": [
+          "calendar"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CalendarEntry"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "calendar"
+        ],
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalendarCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarEntry"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/calendar/tasks/{id}": {
+      "post": {
+        "tags": [
+          "calendar"
+        ],
+        "operationId": "update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalendarUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarEntry"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{card_id}/terminal": {
       "get": {
         "tags": [
@@ -7328,6 +7445,155 @@
             ]
           }
         }
+      },
+      "CalendarCreate": {
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "task"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "task": {
+            "$ref": "#/components/schemas/CalendarDraft"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CalendarDraft": {
+        "type": "object",
+        "required": [
+          "title",
+          "description",
+          "schedule"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/CalendarSchedule"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CalendarEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "task",
+          "version",
+          "cancelled",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "source_track_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task": {
+            "$ref": "#/components/schemas/CalendarDraft"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CalendarSchedule": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "date",
+              "kind"
+            ],
+            "properties": {
+              "date": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "all_day"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "start",
+              "end",
+              "timezone",
+              "kind"
+            ],
+            "properties": {
+              "end": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "timed"
+                ]
+              },
+              "start": {
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "CalendarUpdate": {
+        "type": "object",
+        "required": [
+          "expected_version",
+          "task",
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean"
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "task": {
+            "$ref": "#/components/schemas/CalendarDraft"
+          }
+        },
+        "additionalProperties": false
       },
       "Card": {
         "type": "object",

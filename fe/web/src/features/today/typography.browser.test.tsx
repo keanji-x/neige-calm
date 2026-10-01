@@ -180,9 +180,9 @@ describe('the agenda empty line sits on the panel inset', () => {
       />,
     );
     const empty = [...container.querySelectorAll('p')]
-      .find((node) => node.textContent === 'Nothing scheduled.');
+      .find((node) => node.textContent === 'No track activity.');
     const title = [...container.querySelectorAll('h2')]
-      .find((node) => node.textContent === 'Calendar');
+      .find((node) => node.textContent === 'Track activity');
     expect(empty).toBeTruthy();
     expect(title).toBeTruthy();
     expect((empty as HTMLElement).getBoundingClientRect().left)

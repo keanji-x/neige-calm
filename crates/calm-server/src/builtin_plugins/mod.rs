@@ -1,5 +1,6 @@
 //! Compiled plugin backends. Filesystem manifests cannot provide or replace their code.
 
+pub mod calendar;
 pub mod dev;
 
 use crate::mcp_server::framing::RpcError;
@@ -16,6 +17,7 @@ pub struct BuiltinPlugin {
     lower: fn(&str, &Value) -> Result<Value, String>,
     forge_lower: fn(&str, &Value, &ForgeCallerScope) -> Result<Value, String>,
     instructions: &'static str,
+    router: fn() -> axum::Router<crate::state::AppState>,
 }
 
 impl BuiltinPlugin {
@@ -32,6 +34,7 @@ impl BuiltinPlugin {
             lower,
             forge_lower,
             instructions,
+            router: axum::Router::new,
         }
     }
     pub fn manifest(&self) -> &Manifest {
@@ -63,7 +66,8 @@ impl BuiltinPlugin {
     }
 }
 
-static CATALOG: LazyLock<Vec<BuiltinPlugin>> = LazyLock::new(|| vec![dev::component()]);
+static CATALOG: LazyLock<Vec<BuiltinPlugin>> =
+    LazyLock::new(|| vec![dev::component(), calendar::component()]);
 pub fn catalog() -> &'static [BuiltinPlugin] {
     &CATALOG
 }
@@ -138,4 +142,12 @@ pub(crate) fn required_owner(template_id: &str) -> Option<&'static str> {
         .iter()
         .find(|p| p.manifest.templates.iter().any(|t| t.id == template_id))
         .map(|p| p.manifest.id.as_str())
+}
+
+pub fn router() -> axum::Router<crate::state::AppState> {
+    catalog()
+        .iter()
+        .fold(axum::Router::new(), |router, plugin| {
+            router.merge((plugin.router)())
+        })
 }

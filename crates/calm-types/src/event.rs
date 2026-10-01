@@ -224,7 +224,7 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 21;
+pub const SYNC_EVENT_VERSION: u32 = 22;
 
 /// What happened to one entry in the harness pending queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -436,6 +436,9 @@ pub enum Event {
         #[ts(optional)]
         last_error: Option<String>,
     },
+    /// A plugin-owned persisted resource changed; payload contains no domain data.
+    #[serde(rename = "plugin.data.changed")]
+    PluginDataChanged { plugin_id: String },
     #[serde(rename = "plugin.tool.registered")]
     PluginToolRegistered {
         plugin_id: String,
@@ -940,7 +943,8 @@ impl Event {
                 entity_kind: None,
                 entity_id: Some(id.clone()),
             },
-            Event::PluginToolRegistered { plugin_id, .. } => EventMetadata {
+            Event::PluginDataChanged { plugin_id }
+            | Event::PluginToolRegistered { plugin_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: Some(plugin_id.clone()),
                 entity_kind: None,
@@ -1079,6 +1083,7 @@ impl Event {
             Event::TerminalDeleted { .. } => "terminal.deleted",
             Event::PluginState { .. } => "plugin.state",
             Event::PluginToolRegistered { .. } => "plugin.tool.registered",
+            Event::PluginDataChanged { .. } => "plugin.data.changed",
             Event::CodexHook { .. } => "codex.hook",
             Event::ClaudeHook { .. } => "claude.hook",
             Event::CodexWorkerRequested { .. } => "codex.worker_requested",
@@ -1216,7 +1221,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         Event::PluginState { id, .. } => {
             vec![format!("plugin:{}", id), "plugin:*".into(), "*".into()]
         }
-        Event::PluginToolRegistered { plugin_id, .. } => {
+        Event::PluginDataChanged { plugin_id } | Event::PluginToolRegistered { plugin_id, .. } => {
             vec![
                 format!("plugin:{}", plugin_id),
                 "plugin:*".into(),

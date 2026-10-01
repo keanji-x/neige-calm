@@ -6,4 +6,5 @@
 // Revision 15 (#1876): a track is open or closed; `closed_at` replaces `lifecycle`, `terminal_at` and
 // `archived_at`, and `PATCH /api/tracks/{id}` takes `closed`.
 // Revision 16 (#1897): plugin list rows declare required can_uninstall for built-in capabilities.
-pub const REST_API_VERSION: &str = "16";
+// Revision 17 (#1913): Calendar REST and plugin data invalidation.
+pub const REST_API_VERSION: &str = "17";

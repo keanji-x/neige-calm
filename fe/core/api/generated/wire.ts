@@ -163,7 +163,7 @@ author_plugin_id?: string, edit_id: string, summary_before: string, summary_afte
  * Crash reason / initialize-rejected message, surfaced to the WS so the UI can show it without a
  * separate `/log` fetch; `None` for healthy transitions.
  */
-last_error?: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "codex.hook", "data": { 
+last_error?: string, } } | { "ev": "plugin.data.changed", "data": { plugin_id: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "codex.hook", "data": { 
 /**
  * Owning card id — topic key `card:<card_id>`.
  */

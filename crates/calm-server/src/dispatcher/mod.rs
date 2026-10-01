@@ -163,6 +163,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::OverlayDeleted { .. }
         | Event::TerminalDeleted { .. }
         | Event::PluginState { .. }
+        | Event::PluginDataChanged { .. }
         | Event::PluginToolRegistered { .. }
         | Event::CodexWorkerRequested { .. }
         | Event::TerminalWorkerRequested { .. }
@@ -1099,7 +1100,8 @@ impl Inner {
             | Event::OverlayDeleted { .. }
             | Event::TerminalDeleted { .. }
             | Event::PluginState { .. }
-            | Event::PluginToolRegistered { .. }
+            | Event::PluginDataChanged { .. }
+        | Event::PluginToolRegistered { .. }
             | Event::CodexWorkerRequested { .. }
             | Event::TerminalWorkerRequested { .. }
             | Event::TaskDispatched { .. }
@@ -1627,6 +1629,7 @@ pub(crate) fn harness_observation_from_event(
         | Event::OverlayDeleted { .. }
         | Event::TerminalDeleted { .. }
         | Event::PluginState { .. }
+        | Event::PluginDataChanged { .. }
         | Event::PluginToolRegistered { .. }
         | Event::CodexWorkerRequested { .. }
         | Event::TerminalWorkerRequested { .. }

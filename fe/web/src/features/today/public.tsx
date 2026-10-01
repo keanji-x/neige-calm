@@ -126,7 +126,7 @@ function TodayCompact({ nowMs }: TodayCompactProps) {
 function TodayDesktop({
   tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
-  documentAction, activityAvailable,
+  documentAction, activityAvailable, calendar,
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
 
@@ -138,7 +138,7 @@ function TodayDesktop({
   const panel = (
     <aside className={styles.panelColumn} data-nc-panel="">
       <PanelCard>
-        <PanelModule title="Calendar">
+        <PanelModule title="Track activity">
           <Calendar
             activityAvailable={activityAvailable}
             today={today}
@@ -163,6 +163,7 @@ function TodayDesktop({
       />
       <div className={styles.content}>
         <div className={styles.mainColumn}>
+          {calendar}
           <TodayDocument
             launchpad={launchpad}
             document={launchpadDocument}
@@ -362,7 +363,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
           )}
 
         {scheduledAgenda.length === 0 && trackAgenda.length === 0
-          ? activityAvailable ? <PanelEmpty>Nothing scheduled.</PanelEmpty> : null
+          ? activityAvailable ? <PanelEmpty>No track activity.</PanelEmpty> : null
           : (
         <div className={styles.rows}>
           {scheduledAgenda.map((event) => (
