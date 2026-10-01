@@ -17,3 +17,9 @@ pub use wire::{
 mod testing;
 #[cfg(any(feature = "fixtures", feature = "codex-e2e"))]
 pub use testing::TestingCodexAppServer;
+
+mod session;
+pub(crate) use session::{
+    authorize_native_session_tx, native_session_presentation, session_preparation_tx,
+    stop_managed_native_session,
+};

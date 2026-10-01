@@ -1,4 +1,5 @@
 //! Runtime lookup helpers.
+mod worker_snapshot;
 
 use std::collections::HashMap;
 
@@ -8,7 +9,7 @@ use crate::event::Event;
 use crate::model::{Card, CardRuntimeView};
 use crate::session_projection_repo::{
     AgentProvider, Result as WorkerSessionProjectionResult, WorkerSessionKind,
-    WorkerSessionProjection, WorkerSessionProjectionRepo, WorkerSessionState,
+    WorkerSessionProjection, WorkerSessionState,
 };
 use crate::worker::WorkerSessionId;
 use serde_json::Value;
@@ -103,10 +104,11 @@ pub async fn merge_active_shared_thread_attribution(
 /// Patch active runtime identity into a `Card`'s payload for API/WS
 /// compatibility. The runtime row is SOT; fields it has no opinion on are
 /// left untouched.
-pub async fn project_runtime_into_card_payload<R: WorkerSessionProjectionRepo + ?Sized>(
-    repo: &R,
+pub async fn project_runtime_into_card_payload(
+    repo: &dyn RouteRepo,
     card: &mut Card,
 ) -> WorkerSessionProjectionResult<()> {
+    worker_snapshot::project(repo, std::slice::from_mut(card)).await?;
     let Some(runtime) = repo
         .session_projection_projectable_for_card(&card.id.to_string())
         .await?
@@ -117,10 +119,11 @@ pub async fn project_runtime_into_card_payload<R: WorkerSessionProjectionRepo + 
     Ok(())
 }
 
-pub async fn project_runtime_into_cards_payload<R: WorkerSessionProjectionRepo + ?Sized>(
-    repo: &R,
+pub async fn project_runtime_into_cards_payload(
+    repo: &dyn RouteRepo,
     cards: &mut [Card],
 ) -> WorkerSessionProjectionResult<()> {
+    worker_snapshot::project(repo, cards).await?;
     let card_ids = cards
         .iter()
         .map(|card| card.id.to_string())
@@ -136,8 +139,8 @@ pub async fn project_runtime_into_cards_payload<R: WorkerSessionProjectionRepo +
     Ok(())
 }
 
-pub async fn project_runtime_into_event_payload<R: WorkerSessionProjectionRepo + ?Sized>(
-    repo: &R,
+pub async fn project_runtime_into_event_payload(
+    repo: &dyn RouteRepo,
     event: &mut Event,
 ) -> WorkerSessionProjectionResult<()> {
     match event {

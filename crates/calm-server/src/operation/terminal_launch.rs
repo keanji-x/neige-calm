@@ -144,6 +144,16 @@ pub(crate) async fn resolve(
     supervisor_sock: &Path,
     launch: Option<TaskLaunch>,
 ) -> Result<TerminalStart> {
+    resolve_for_native_session(repo, terminal_id, supervisor_sock, launch, None).await
+}
+
+pub(crate) async fn resolve_for_native_session(
+    repo: &dyn RouteRepo,
+    terminal_id: &str,
+    supervisor_sock: &Path,
+    launch: Option<TaskLaunch>,
+    native_permit: Option<super::execution_manager::WritePermit>,
+) -> Result<TerminalStart> {
     let terminal_id = terminal_id.to_owned();
     let sock = if supervisor_sock.is_absolute() {
         supervisor_sock.to_path_buf()
@@ -151,6 +161,7 @@ pub(crate) async fn resolve(
         std::env::current_dir()?.join(supervisor_sock)
     };
     write_in_tx_typed(repo, move |tx| Box::pin(async move {
+        let managed = super::execution_manager::authorize_native_session_tx(tx, &terminal_id, native_permit.as_ref()).await?;
         let card: String = sqlx::query_scalar("SELECT card_id FROM terminals WHERE id=?1")
             .bind(&terminal_id).fetch_optional(&mut **tx).await?
             .ok_or_else(|| CalmError::NotFound(format!("terminal {terminal_id}")))?;
@@ -171,6 +182,7 @@ pub(crate) async fn resolve(
                 Ok(TerminalStart::AttachOnly(supervisor_sock))
             }
             Some(RequestState::NotRequested {..}) => {
+                if managed && native_permit.is_none() { return Ok(TerminalStart::AttachOnly(sock)); }
                 let launch = match launch {
                     Some(launch)=>Launch::Task(launch),
                     None=> {

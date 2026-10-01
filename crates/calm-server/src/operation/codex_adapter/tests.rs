@@ -6,6 +6,7 @@ use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease
 use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
+use calm_truth::db::RepoRead;
 use sqlx::Row;
 use std::path::Path;
 use std::process::Command;
@@ -212,16 +213,46 @@ async fn prepare_worker_and_op(
     key: &str,
     task_key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>, Operation) {
-    let payload = worker_payload(&harness.track_id, key);
+    prepare_worker_with_context(harness, key, task_key, Value::Null).await
+}
+
+async fn prepare_worker_with_context(
+    harness: &WorkerLeaseHarness,
+    key: &str,
+    task_key: &str,
+    context: Value,
+) -> (TxOutput, Vec<BroadcastEnvelope>, Operation) {
+    let op = pending_worker_with_context(harness, key, task_key, context).await;
+    let payload = op.payload.clone();
+    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let output = harness
+        .adapter
+        .prepare_tx(&mut tx, &payload, &op)
+        .await
+        .unwrap();
+    let events = output.post_commit_events.clone();
+    tx.commit().await.unwrap();
+    (output, events, op)
+}
+
+async fn pending_worker_with_context(
+    harness: &WorkerLeaseHarness,
+    key: &str,
+    task_key: &str,
+    context: Value,
+) -> Operation {
+    let mut payload = worker_payload(&harness.track_id, key);
+    payload["context"] = context.clone();
     let task_id = format!("{}:{key}", harness.track_id);
     sqlx::query(
         "INSERT OR IGNORE INTO tasks \
          (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
-         VALUES (?1, ?2, ?3, 'codex', 'test', 'null', '[]', 'dispatched', 1, 1)",
+         VALUES (?1, ?2, ?3, 'codex', 'test', ?4, '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
     .bind(&harness.track_id)
     .bind(task_key)
+    .bind(context.to_string())
     .execute(harness.repo.pool())
     .await
     .unwrap();
@@ -231,7 +262,7 @@ async fn prepare_worker_and_op(
             "codex-worker",
             OperationKey {
                 operation_key: new_id(),
-                idempotency_key: Some(format!("op-{key}")),
+                idempotency_key: Some(task_id.clone()),
                 payload_hash: format!("hash-{key}"),
             },
             payload.clone(),
@@ -245,15 +276,7 @@ async fn prepare_worker_and_op(
         .into_iter()
         .find(|op| op.id == op_id)
         .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let output = harness
-        .adapter
-        .prepare_tx(&mut tx, &payload, &op)
-        .await
-        .unwrap();
-    let events = output.post_commit_events.clone();
-    tx.commit().await.unwrap();
-    (output, events, op)
+    op
 }
 
 #[test]
@@ -680,3 +703,5 @@ async fn worker_lease_is_kernel_policy() {
             .unwrap();
     assert_eq!(policy, None, "the plain fixture lease is legacy");
 }
+
+mod native_session_tests;

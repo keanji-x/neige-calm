@@ -32,36 +32,20 @@ pub(crate) async fn stop_and_release_terminal(
     sock: &Path,
     terminal_id: &str,
 ) -> crate::error::Result<()> {
-    require_stop_protocol(sock, terminal_id)
-        .await
-        .map_err(|e| crate::error::CalmError::Conflict(format!("terminal writer retained: {e}")))?;
-    let terminal_id = terminal_id.to_owned();
-    let proof = async {
-        let mut conn = UnixStream::connect(sock).await?;
-        write_frame(
-            &mut conn,
-            &ControlMsg::StopAndConfirm {
-                proc_id: format!("term:{terminal_id}"),
-            },
-        )
-        .await?;
-        match read_frame::<ControlReply, _>(&mut conn).await? {
-            ControlReply::Stopped => Ok::<_, anyhow::Error>(()),
-            reply => anyhow::bail!("terminal stop not confirmed: {reply:?}"),
-        }
-    };
-    timeout(Duration::from_secs(10), proof)
-        .await
-        .map_err(|_| {
-            crate::error::CalmError::Conflict(
-                "terminal stop confirmation timed out; writer retained".into(),
-            )
-        })?
-        .map_err(|e| {
-            crate::error::CalmError::Conflict(format!(
-                "terminal stop unverified; writer retained: {e}"
+    if let Some(stopped) =
+        crate::operation::execution_manager::stop_managed_native_session(repo, sock, terminal_id)
+            .await?
+    {
+        return if stopped {
+            Ok(())
+        } else {
+            Err(crate::error::CalmError::Conflict(
+                "native session stop remains unconfirmed".into(),
             ))
-        })?;
+        };
+    }
+    confirm_terminal_stopped(sock, terminal_id).await?;
+    let terminal_id = terminal_id.to_owned();
     let stopped =
         serde_json::to_string(&crate::operation::terminal_launch::RequestState::Stopped {
             version: 1,
@@ -91,6 +75,43 @@ AND kind IN ('terminal-create','terminal-worker','codex-worker','claude-worker',
         })
     })
     .await
+}
+
+/// Exact supervisor stop proof; it changes no resource or business records.
+pub(crate) async fn confirm_terminal_stopped(
+    sock: &Path,
+    terminal_id: &str,
+) -> crate::error::Result<()> {
+    require_stop_protocol(sock, terminal_id)
+        .await
+        .map_err(|e| crate::error::CalmError::Conflict(format!("terminal writer retained: {e}")))?;
+    let proof = async {
+        let mut conn = UnixStream::connect(sock).await?;
+        write_frame(
+            &mut conn,
+            &ControlMsg::StopAndConfirm {
+                proc_id: format!("term:{terminal_id}"),
+            },
+        )
+        .await?;
+        match read_frame::<ControlReply, _>(&mut conn).await? {
+            ControlReply::Stopped => Ok::<_, anyhow::Error>(()),
+            reply => anyhow::bail!("terminal stop not confirmed: {reply:?}"),
+        }
+    };
+    timeout(Duration::from_secs(10), proof)
+        .await
+        .map_err(|_| {
+            crate::error::CalmError::Conflict(
+                "terminal stop confirmation timed out; writer retained".into(),
+            )
+        })?
+        .map_err(|e| {
+            crate::error::CalmError::Conflict(format!(
+                "terminal stop unverified; writer retained: {e}"
+            ))
+        })?;
+    Ok(())
 }
 
 /// Reconcile durable writers after natural exit, cancellation, or server restart.

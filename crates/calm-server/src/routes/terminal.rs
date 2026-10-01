@@ -96,7 +96,7 @@ pub(crate) async fn spawn_task_terminal_with_parts(
         .map_err(|error| CalmError::Internal(error.to_string()))
 }
 
-async fn terminal_renderer_config(
+pub(crate) async fn terminal_renderer_config(
     daemon: &DaemonClient,
     term: &Terminal,
     program: &str,

@@ -1,6 +1,8 @@
 mod execution_guard;
 use execution_guard::require_stop_protocol;
-pub(crate) use execution_guard::{reconcile_terminal_writers, stop_and_release_terminal};
+pub(crate) use execution_guard::{
+    confirm_terminal_stopped, reconcile_terminal_writers, stop_and_release_terminal,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -384,7 +386,7 @@ impl TerminalRendererRegistry {
         &self,
         cfg: RendererConfig,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, None).await
+        self.ensure_with_launch(cfg, None, None).await
     }
 
     pub(crate) async fn ensure_for_task(
@@ -392,14 +394,42 @@ impl TerminalRendererRegistry {
         cfg: RendererConfig,
         launch: crate::operation::task_launch::TaskLaunch,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, Some(launch)).await
+        self.ensure_with_launch(cfg, Some(launch), None).await
+    }
+
+    pub(crate) async fn ensure_for_native_session(
+        &self,
+        cfg: RendererConfig,
+        launch: Option<crate::operation::task_launch::TaskLaunch>,
+        permit: crate::operation::execution_manager::WritePermit,
+    ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
+        self.ensure_with_launch(cfg, launch, Some(permit)).await
     }
 
     async fn ensure_with_launch(
         &self,
         cfg: RendererConfig,
         launch: Option<crate::operation::task_launch::TaskLaunch>,
+        native_permit: Option<crate::operation::execution_manager::WritePermit>,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
+        let native_permit = if let Some(repo) = self.repo.as_deref() {
+            let terminal = cfg.terminal_id.clone();
+            crate::db::write_in_tx_typed(repo, move |tx| {
+                Box::pin(async move {
+                    crate::operation::execution_manager::authorize_native_session_tx(
+                        tx,
+                        &terminal,
+                        native_permit.as_ref(),
+                    )
+                    .await?;
+                    Ok(native_permit)
+                })
+            })
+            .await
+            .map_err(anyhow::Error::from)?
+        } else {
+            native_permit
+        };
         if let Some(existing) = self.get(&cfg.terminal_id) {
             return Ok(existing);
         }
@@ -409,6 +439,7 @@ impl TerminalRendererRegistry {
             self.repo.clone(),
             self.task_hook(),
             launch,
+            native_permit,
             Arc::clone(&self.output_wake),
         )
         .await?;
@@ -622,6 +653,7 @@ async fn ensure_entry(
     repo: Option<Arc<dyn RouteRepo>>,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
     launch: Option<crate::operation::task_launch::TaskLaunch>,
+    native_permit: Option<crate::operation::execution_manager::WritePermit>,
     output_wake: OutputWake,
 ) -> anyhow::Result<EstablishedRenderer> {
     use crate::operation::terminal_launch::{self, TerminalStart};
@@ -630,9 +662,22 @@ async fn ensure_entry(
         cfg.supervisor_sock = std::env::current_dir()?.join(&cfg.supervisor_sock);
     }
     let start = match repo.as_deref() {
-        Some(repo) => {
-            terminal_launch::resolve(repo, &cfg.terminal_id, &cfg.supervisor_sock, launch).await?
-        }
+        Some(repo) => match native_permit {
+            Some(permit) => {
+                terminal_launch::resolve_for_native_session(
+                    repo,
+                    &cfg.terminal_id,
+                    &cfg.supervisor_sock,
+                    launch,
+                    Some(permit),
+                )
+                .await?
+            }
+            None => {
+                terminal_launch::resolve(repo, &cfg.terminal_id, &cfg.supervisor_sock, launch)
+                    .await?
+            }
+        },
         None if launch.is_some() => anyhow::bail!("task launch requires its repository"),
         None => TerminalStart::Unbound,
     };

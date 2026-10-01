@@ -101,6 +101,14 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
     s: &AppState,
     term: Terminal,
 ) -> Result<LiveRenderer> {
+    let terminal = term.id.clone();
+    crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::operation::execution_manager::authorize_native_session_tx(tx, &terminal, None)
+                .await
+        })
+    })
+    .await?;
     if let Some(entry) = s.terminal_renderer.get(&term.id) {
         return Ok(LiveRenderer::Alive(entry));
     }

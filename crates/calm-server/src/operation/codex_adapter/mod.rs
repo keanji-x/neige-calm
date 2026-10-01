@@ -29,9 +29,11 @@ use crate::operation::workspace_lease::{
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::planner_model::TurnModelSelection;
 use crate::routes::cards::card_scope;
+#[cfg(feature = "fixtures")]
+use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::codex_cards::{
     INITIAL_TURN_LIFECYCLE_TIMEOUT, await_shared_initial_turn_lifecycle, default_cwd,
-    normalize_optional_css_color, shell_single_quote,
+    normalize_optional_css_color,
 };
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
@@ -358,6 +360,15 @@ impl ProviderAdapter for CodexAdapter {
             payload.request.theme,
         )
         .await?;
+        super::execution_manager::session_preparation_tx(
+            tx,
+            card.id.as_str(),
+            &track_id,
+            &term.id,
+            &payload.request.cwd,
+            _op,
+        )
+        .await?;
         let projected_card =
             project_codex_runtime_fields_for_response(card.clone(), Some(&term.id), None, None);
         let event = Event::CardAdded(projected_card.clone());
@@ -521,6 +532,7 @@ impl ProviderAdapter for CodexAdapter {
         let card_id = output.output_string("card_id", "codex")?;
         let track_id = output.output_string("track_id", "codex")?;
         let runtime_id = output.output_string("runtime_id", "codex")?;
+        #[cfg(feature = "fixtures")]
         let cwd = output.output_string("cwd", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
@@ -530,6 +542,7 @@ impl ProviderAdapter for CodexAdapter {
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
         let is_prompted = output_prompt(output)?.is_some();
+        #[cfg(feature = "fixtures")]
         let command_line = if is_prompted {
             let thread_id = output.output_string("codex_thread_id", "codex")?;
             format!(
@@ -562,10 +575,12 @@ impl ProviderAdapter for CodexAdapter {
                     .map(SpawnOutcome::Ready);
             }
 
-            return ctx
-                .spawn_terminal(&term, &command_line, &cwd, &env)
-                .await
-                .map(SpawnOutcome::Ready);
+            return super::execution_manager::ExecutionManager::new(
+                ctx.operation_repo.sqlite_pool(),
+            )
+            .launch_native_session(ctx, &term, &self.shared_codex_appserver, None, &env, None)
+            .await
+            .map(SpawnOutcome::Ready);
         }
 
         #[cfg(feature = "fixtures")]
@@ -575,7 +590,16 @@ impl ProviderAdapter for CodexAdapter {
                 .map(SpawnOutcome::Ready);
         }
 
-        ctx.spawn_terminal(&term, &command_line, &cwd, &env)
+        let thread = output.output_string("codex_thread_id", "codex")?;
+        super::execution_manager::ExecutionManager::new(ctx.operation_repo.sqlite_pool())
+            .launch_native_session(
+                ctx,
+                &term,
+                &self.shared_codex_appserver,
+                Some(&thread),
+                &env,
+                None,
+            )
             .await
             .map(SpawnOutcome::Ready)
     }
@@ -822,6 +846,16 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let (lease, lease_event) =
             acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &plan).await?;
 
+        let presentation = super::execution_manager::session_preparation_tx(
+            tx,
+            card.id.as_str(),
+            card.track_id.as_str(),
+            &term.id,
+            &cwd,
+            op,
+        )
+        .await?;
+
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
             merged.insert(
@@ -829,6 +863,10 @@ impl ProviderAdapter for CodexWorkerAdapter {
                 Value::String(payload.idempotency_key.clone()),
             );
             merged.insert("role_request".into(), Value::String("codex".into()));
+            merged.insert(
+                "worker_presentation".into(),
+                serde_json::to_value(&presentation)?,
+            );
             merged.insert("goal".into(), Value::String(payload.goal.clone()));
             merged.insert("context".into(), payload.context.clone());
             if let Some(ac) = payload.acceptance_criteria.as_ref() {
@@ -1273,13 +1311,34 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         }
     }
 
+    if super::execution_manager::native_session_presentation(
+        &ctx.spawn_ctx.operation_repo.sqlite_pool(),
+        &ctx.term.id,
+    )
+    .await?
+        == calm_types::worker_presentation::WorkerPresentation::NativeOnly
+    {
+        return Ok(SpawnHandle::NativeSession {
+            worker_session_id: ctx.worker_session_id.to_owned(),
+            thread_id,
+        });
+    }
+
     // The business turn is already issued; a viewer-preparation failure must not route into business startup compensation.
     match ctx.spawn_ctx.repo.task_get(ctx.launch.task_id()).await {
         Ok(Some(task)) if !task.status.is_terminal() => {}
-        Ok(_) => return Ok(SpawnHandle::NoOp),
+        Ok(_) => {
+            return Ok(SpawnHandle::NativeSession {
+                worker_session_id: ctx.worker_session_id.to_owned(),
+                thread_id: thread_id.clone(),
+            });
+        }
         Err(error) => {
             tracing::warn!(card_id, %error, "optional viewer task read unavailable after business turn; retaining execution");
-            return Ok(SpawnHandle::NoOp);
+            return Ok(SpawnHandle::NativeSession {
+                worker_session_id: ctx.worker_session_id.to_owned(),
+                thread_id: thread_id.clone(),
+            });
         }
     }
     #[cfg(test)]
@@ -1299,21 +1358,18 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         }
     }
 
-    let command_line = format!(
-        "codex resume {} --remote {}",
-        shell_single_quote(&thread_id),
-        shell_single_quote(&remote_uri)
-    );
-    match ctx
-        .spawn_ctx
-        .spawn_task_terminal(
-            ctx.term,
-            &command_line,
-            ctx.cwd,
-            &env_for_spawn,
-            ctx.launch.clone(),
-        )
-        .await
+    match super::execution_manager::ExecutionManager::new(
+        ctx.spawn_ctx.operation_repo.sqlite_pool(),
+    )
+    .launch_native_session(
+        ctx.spawn_ctx,
+        ctx.term,
+        ctx.shared_codex_appserver,
+        Some(&thread_id),
+        &env_for_spawn,
+        Some(ctx.launch.clone()),
+    )
+    .await
     {
         Ok(handle) => {
             tracing::info!(
@@ -1328,7 +1384,10 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         }
         Err(error) => {
             tracing::warn!(card_id, thread_id=%thread_id, %error, "optional worker viewer unavailable after business turn; retaining execution");
-            Ok(SpawnHandle::NoOp)
+            Ok(SpawnHandle::NativeSession {
+                worker_session_id: ctx.worker_session_id.to_owned(),
+                thread_id: thread_id.clone(),
+            })
         }
     }
 }
