@@ -23,7 +23,7 @@ pub(crate) struct NativeTurn {
     pub items: Vec<Value>,
 }
 impl NativeThread {
-    fn stopped(&self) -> bool {
+    pub(super) fn stopped(&self) -> bool {
         matches!(self.status, ThreadStatus::Idle | ThreadStatus::SystemError)
             && self.turns.iter().all(|turn| {
                 matches!(
@@ -32,7 +32,7 @@ impl NativeThread {
                 )
             })
     }
-    fn turn_for_nonce(&self, nonce: &str) -> Result<Option<&NativeTurn>> {
+    pub(super) fn turn_for_nonce(&self, nonce: &str) -> Result<Option<&NativeTurn>> {
         let mut matches = self.turns.iter().filter(|turn| {
             turn.items.iter().any(|item| {
                 item.get("type").and_then(Value::as_str) == Some("userMessage")
@@ -148,93 +148,25 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    /// A requested stop is durable and seals new requests; acknowledgments never release access.
+    /// Managed cancellation owns the durable request and positive release transaction.
     pub async fn cancel_native_workspace_guard(&self, lease: &str) -> Result<bool> {
         let pool = self
             .repo
             .sqlite_pool()
-            .ok_or_else(|| CalmError::Conflict("native guard database unavailable".into()))?;
-        let thread: Option<String> = sqlx::query_scalar(
-            "SELECT holder_id FROM workspace_leases WHERE lease_id=?1 AND holder_kind='native' AND \
-        native_provider='codex' AND state='held'",
-        )
-        .bind(lease)
-        .fetch_optional(&pool)
-        .await?;
-        let Some(thread) = thread else {
-            return Ok(true);
-        };
-        self.seal_turn_thread_for_deletion(&thread);
-        sqlx::query("UPDATE workspace_leases SET holder_phase='stopping' WHERE lease_id=?1 AND state='held'").bind(lease).execute(&pool).await?;
-        self.reconcile_native_workspace_guard(lease).await
+            .ok_or_else(|| CalmError::Conflict("execution storage unavailable".into()))?;
+        super::super::super::ExecutionManager::new(pool)
+            .cancel(&super::execution_backend::CodexBackend(self), lease)
+            .await
     }
 
-    /// Unknown issuance is recoverable only when the exact durable nonce appears in full history.
+    /// Recovery is a manager transition; the native backend supplies only evidence.
     pub async fn reconcile_native_workspace_guard(&self, lease: &str) -> Result<bool> {
         let pool = self
             .repo
             .sqlite_pool()
-            .ok_or_else(|| CalmError::Conflict("native guard database unavailable".into()))?;
-        let row:Option<(String,String,Option<String>,Option<String>,String)>=sqlx::query_as(
-            "SELECT holder_id,holder_phase,native_client_id,native_observed_turn_id,path FROM workspace_leases \
-             WHERE lease_id=?1 AND holder_kind='native' AND native_provider='codex' AND state='held'"
-        ).bind(lease).fetch_optional(&pool).await?;
-        let Some((thread, phase, nonce, known_turn, cwd)) = row else {
-            return Ok(true);
-        };
-        let client = self.connected_client().await?;
-        let mut facts = client.thread_workspace_history(&thread).await?.thread;
-        if facts.id != thread || std::fs::canonicalize(&facts.cwd)? != std::fs::canonicalize(&cwd)?
-        {
-            return Err(CalmError::Conflict(
-                "native provider workspace facts differ from frozen scope".into(),
-            ));
-        }
-        let turn=match nonce.as_deref() {
-            Some(nonce)=>facts.turn_for_nonce(nonce)?,
-            None=>known_turn.as_deref().and_then(|known|facts.turns.iter().find(|turn|turn.id==known)),
-        }.ok_or_else(||CalmError::Conflict("native issuance is unknown; guard remains held until provider history confirms its request".into()))?.id.clone();
-        sqlx::query("UPDATE workspace_leases SET lease_owner=?2,native_observed_turn_id=?2,holder_phase=CASE WHEN holder_phase='stopping' \
-        THEN 'stopping' ELSE 'running' END WHERE lease_id=?1 AND state='held'").bind(lease).bind(&turn).execute(&pool).await?;
-        if phase == "stopping" {
-            self.seal_turn_thread_for_deletion(&thread);
-            client.turn_interrupt(&thread, &turn).await?;
-            client.clean_background_terminals(&thread).await?;
-            facts = client.thread_workspace_history(&thread).await?.thread;
-        }
-        if facts.id != thread || std::fs::canonicalize(&facts.cwd)? != std::fs::canonicalize(&cwd)?
-        {
-            return Err(CalmError::Conflict(
-                "stopped native provider scope changed".into(),
-            ));
-        }
-        let matched = facts.turns.iter().find(|candidate| candidate.id == turn);
-        if !matched.is_some_and(|candidate| {
-            matches!(
-                candidate.status,
-                TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
-            )
-        }) {
-            return Ok(false);
-        }
-        if !facts.stopped() || !client.background_terminals_stopped(&thread).await? {
-            return Ok(false);
-        }
-        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-        let changed=sqlx::query("UPDATE workspace_leases SET \
-        state='released',holder_phase='stopped',released_at_ms=?2,updated_at_ms=?2 WHERE lease_id=?1 AND state='held' AND lease_owner=?3")
-            .bind(lease).bind(crate::model::now_ms()).bind(&turn).execute(&mut *tx).await?.rows_affected();
-        if changed == 1 {
-            sqlx::query("UPDATE workspace_leases AS task SET read_stop_confirmed_at_ms=?2 \
-                WHERE task.holder_kind='task' AND task.access_mode='read_only' AND task.state='held' \
-                AND EXISTS(SELECT 1 FROM workspace_leases native JOIN tasks current ON current.worker_card_id=native.card_id \
-                JOIN operations attempt ON attempt.id=task.lease_owner AND attempt.idempotency_key=current.id \
-                WHERE native.lease_id=?1 AND native.access_mode='read_only' AND native.card_id=task.card_id \
-                AND COALESCE(native.canonical_path,native.path)=COALESCE(task.canonical_path,task.path) \
-                AND current.status IN ('done','failed','canceled'))")
-                .bind(lease).bind(crate::model::now_ms()).execute(&mut *tx).await?;
-        }
-        tx.commit().await?;
-        Ok(changed == 1)
+            .ok_or_else(|| CalmError::Conflict("execution storage unavailable".into()))?;
+        super::super::super::ExecutionManager::new(pool)
+            .recover(&super::execution_backend::CodexBackend(self), lease)
+            .await
     }
 }

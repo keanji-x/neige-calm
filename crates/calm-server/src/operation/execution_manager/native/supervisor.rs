@@ -1,6 +1,7 @@
 //! Shared `codex app-server` supervisor: starts, supervises, and takes over a single
 //! daemon for the whole server.
 
+mod execution_backend;
 #[cfg(target_os = "macos")]
 mod macos_process;
 mod preserving_recovery;
@@ -1381,173 +1382,51 @@ impl SharedCodexAppServer {
         selection: &TurnModelSelection,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
-        if let Some(card) = self.cached_card_for_thread(thread_id)
-            && let Some(task) = self.repo.task_for_worker_card(&card).await?
-            && task.status.is_terminal()
-        {
+        let card = self.cached_card_for_thread(thread_id).ok_or_else(|| {
+            CalmError::Conflict("native execution owner mapping is required".into())
+        })?;
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Conflict("managed execution requires durable storage".into())
+        })?;
+        if self.sealed_turn_threads.contains_key(thread_id) {
             return Err(CalmError::Conflict(
-                "ended task cannot start another turn".into(),
+                "native execution owner is closed".into(),
             ));
         }
-        if self.sealed_turn_threads.contains_key(thread_id) {
-            return Err(CalmError::Conflict(format!(
-                "thread {thread_id} is sealed because its track is being deleted"
-            )));
-        }
-        if !self.thread_cache.contains_key(thread_id) {
-            tracing::warn!(
-                target = "shared_codex_daemon::mapping_miss",
-                %thread_id,
-                method = "turn/start",
-                "turn/start for thread missing shared daemon card mapping"
-            );
-        }
-        let read_permissions = match self.cached_card_for_thread(thread_id) {
-            Some(card) => self.read_task_permissions(&card).await?,
-            None => None,
-        };
-        let native_write = if let (Some(pool), Some(card)) = (
-            self.repo.sqlite_pool(),
-            self.cached_card_for_thread(thread_id),
-        ) {
-            use crate::operation::workspace_lease::execution_guard::{
-                ExecutionReadGuard, NativeTaskGuard,
-            };
-            use crate::operation::workspace_lease::task_guard::{
-                PreparedTaskAccess, prepared_task_access,
-            };
-            match prepared_task_access(&pool,&card).await? {
-                PreparedTaskAccess::Read => Some(NativeTaskGuard::Read(ExecutionReadGuard::acquire_native(&pool,&card,thread_id,crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?)),
-                PreparedTaskAccess::Write {attempt} => Some(NativeTaskGuard::Write(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,&attempt,crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?)),
-                PreparedTaskAccess::Independent => Some(NativeTaskGuard::Write(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,"",crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?)),
-            }
-        } else {
-            None
-        };
-        let client_nonce = if let Some(guard) = native_write.as_ref() {
-            match guard.client_nonce(client_user_message_id).await {
-                Ok(nonce) => Some(nonce),
-                Err(error) => {
-                    native_write.expect("guard present").rejected().await?;
-                    return Err(error);
-                }
-            }
-        } else {
-            client_user_message_id.map(str::to_owned)
-        };
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            if fake.reject_turn_start.load(Ordering::SeqCst) {
-                if let Some(guard) = native_write {
-                    guard.rejected().await?;
-                }
-                return Err(CalmError::CodexRefused(
-                    "turn/start failed: unknown model (code -32602)".into(),
-                ));
-            }
-            if fake.fail_turn_start.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "forced turn/start failure for test".into(),
-                ));
-            }
-            let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
-            let turn_id = format!("fake-turn-{n:04}");
-            fake.started_turns
-                .lock()
-                .expect("fake shared codex started turns mutex poisoned")
-                .push((thread_id.to_string(), items.clone()));
-            fake.started_turn_selections
-                .lock()
-                .expect("fake shared codex turn selections mutex poisoned")
-                .push((thread_id.to_string(), selection.clone()));
-            fake.started_turn_client_ids
-                .lock()
-                .expect("fake shared codex turn client ids mutex poisoned")
-                .push(client_nonce.clone());
-            let hook = fake
-                .turn_start_return_hook
-                .lock()
-                .expect("fake shared codex turn-start hook mutex poisoned")
-                .take();
-            if let Some(hook) = hook {
-                hook.entered.notify_one();
-                hook.release.notified().await;
-            }
+        let manager = super::super::ExecutionManager::new(pool);
+        let receipt = manager
+            .submit(
+                &execution_backend::CodexBackend(self),
+                &super::super::Owner {
+                    card,
+                    holder: thread_id.to_owned(),
+                },
+                execution_backend::TurnRequest {
+                    thread: thread_id.to_owned(),
+                    items,
+                    selection: selection.clone(),
+                },
+                client_user_message_id,
+            )
+            .await?;
+        if !receipt.stopped {
             self.active_turns
-                .insert(thread_id.to_string(), turn_id.clone());
-            let _ = self.notifications.send(Notification::TurnStarted {
-                thread_id: thread_id.to_string(),
-                turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
-            });
-            if let Some(guard) = native_write {
-                guard.started(&turn_id).await?;
-            }
-            if self.sealed_turn_threads.contains_key(thread_id) {
-                self.turn_interrupt(thread_id, &turn_id).await?;
-                self.active_turns
-                    .remove_if(thread_id, |_, active| active == &turn_id);
-                return Err(CalmError::Conflict(format!(
-                    "thread {thread_id} was sealed while turn/start was in flight"
-                )));
-            }
-            return Ok(turn_id);
-        }
-        let client = match self.connected_client().await {
-            Ok(client) => client,
-            Err(error) => {
-                if let Some(guard) = native_write {
-                    guard.rejected().await?;
-                }
-                return Err(error);
-            }
-        };
-        let response = match read_permissions.as_ref() {
-            Some(permissions) => {
-                client
-                    .turn_start_with_permissions(
-                        thread_id,
-                        items,
-                        selection,
-                        client_nonce.as_deref(),
-                        permissions,
-                    )
-                    .await
-            }
-            None => {
-                client
-                    .turn_start_with_client_id(thread_id, items, selection, client_nonce.as_deref())
-                    .await
-            }
-        };
-        let turn = match response {
-            Ok(turn) => turn,
-            Err(error) => {
-                if matches!(error, CalmError::CodexRefused(_))
-                    && let Some(guard) = native_write
-                {
-                    guard.rejected().await?;
-                }
-                return Err(error);
-            }
-        };
-        let turn_id = turn
-            .turn_id()
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))?;
-        self.active_turns
-            .insert(thread_id.to_string(), turn_id.clone());
-        if let Some(guard) = native_write {
-            guard.started(&turn_id).await?;
+                .insert(thread_id.to_owned(), receipt.identity.clone());
         }
         if self.sealed_turn_threads.contains_key(thread_id) {
-            self.turn_interrupt(thread_id, &turn_id).await?;
+            manager
+                .cancel(
+                    &execution_backend::CodexBackend(self),
+                    &receipt.execution_id,
+                )
+                .await?;
             self.active_turns
-                .remove_if(thread_id, |_, active| active == &turn_id);
-            return Err(CalmError::Conflict(format!(
-                "thread {thread_id} was sealed while turn/start was in flight"
-            )));
+                .remove_if(thread_id, |_, active| active == &receipt.identity);
+            return Err(CalmError::Conflict(
+                "native owner closed during execution launch".into(),
+            ));
         }
-        Ok(turn_id)
+        Ok(receipt.identity)
     }
 
     /// Whether a live app-server connection exists right now. Awaits the core lock rather than

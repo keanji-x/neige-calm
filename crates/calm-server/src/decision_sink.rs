@@ -9,7 +9,7 @@ use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{AreaId, CardId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, CardRole, Track};
-use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
+use crate::operation::workspace_lease::ReleaseDelivery;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
@@ -183,18 +183,19 @@ impl CardDecisionSink {
                                 "task {task_id}: admitted report did not advance the task"
                             )));
                         }
-                        // #1830 S2 D7: the lease is released in this transaction, and the first delivery row
-                        // (commit the track's checkout as this attempt ended) lands with it when the card's
-                        // lease is a kernel-delivery lease. A REPEATED report never reaches here, so a second
-                        // report never writes a second row; a crash can no longer leave the lease `held`.
+                        // A report ends business state. The execution owner determines whether
+                        // positive stop evidence allows the resource handoff and delivery.
                         let delivery = if success {
                             ReleaseDelivery::Commit(AttemptOutcome::Completed)
                         } else {
                             ReleaseDelivery::Commit(AttemptOutcome::Failed)
                         };
-                        released =
-                            release_workspace_lease_for_card_tx(tx, &worker_card_id, delivery)
-                                .await?;
+                        released = crate::operation::execution_manager::task_ended_tx(
+                            tx,
+                            &worker_card_id,
+                            delivery,
+                        )
+                        .await?;
                     }
 
                     let mut events = vec![(actor, scope, event)];

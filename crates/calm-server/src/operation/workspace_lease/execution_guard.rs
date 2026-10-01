@@ -257,7 +257,9 @@ pub(crate) enum NativeTaskGuard {
     Write(ExecutionWriteGuard),
 }
 impl NativeTaskGuard {
-    pub(crate) fn execution_id(&self) -> &str { &self.lease().id }
+    pub(crate) fn execution_id(&self) -> &str {
+        &self.lease().id
+    }
     fn lease(&self) -> &ExecutionLeaseGuard {
         match self {
             Self::Read(guard) => &guard.0,
@@ -288,11 +290,15 @@ async fn verify_task_intent_tx(
     cwd: &str,
     access: WorkspaceAccess,
 ) -> Result<Option<String>> {
-    let tasks: Vec<(String, String)> =
-        sqlx::query_as("SELECT id,status FROM tasks WHERE worker_card_id=?1 LIMIT 2")
-            .bind(card)
-            .fetch_all(&mut *conn)
-            .await?;
+    let tasks: Vec<(String, String)> = sqlx::query_as(
+        "SELECT t.id,t.status FROM tasks t WHERE t.worker_card_id=?1 OR EXISTS( \
+         SELECT 1 FROM workspace_leases l JOIN operations o ON o.id=l.lease_owner \
+         WHERE l.card_id=?1 AND l.holder_kind='task' AND l.state='held' \
+         AND o.idempotency_key=t.id AND o.kind IN ('codex-worker','claude-worker')) LIMIT 2",
+    )
+    .bind(card)
+    .fetch_all(&mut *conn)
+    .await?;
     if tasks.len() > 1 {
         return Err(CalmError::Conflict(
             "ambiguous native task ownership".into(),

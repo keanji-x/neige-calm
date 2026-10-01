@@ -1,8 +1,8 @@
 //! Native backend: launch consumes authority; stop/recovery only produce observations.
 use super::*;
-use crate::operation::execution_manager::{LaunchPermit, Record};
-use crate::operation::execution_manager::backend::{Backend, LaunchOutcome, Observation};
 use crate::codex_appserver::TurnStatus;
+use crate::operation::execution_manager::backend::{Backend, LaunchOutcome, Observation};
+use crate::operation::execution_manager::{LaunchPermit, Record};
 
 pub(in crate::operation::execution_manager) struct CodexBackend<'a>(pub &'a SharedCodexAppServer);
 pub(in crate::operation::execution_manager) struct TurnRequest {
@@ -13,26 +13,55 @@ pub(in crate::operation::execution_manager) struct TurnRequest {
 #[async_trait::async_trait]
 impl Backend for CodexBackend<'_> {
     type Request = TurnRequest;
+    fn kind(&self) -> crate::operation::execution_manager::BackendKind {
+        crate::operation::execution_manager::BackendKind::NativeTurn
+    }
     async fn launch(&self, permit: LaunchPermit, request: TurnRequest) -> LaunchOutcome {
         let daemon = self.0;
+        if permit.record().holder != request.thread {
+            return LaunchOutcome::NotIssued(CalmError::Conflict(
+                "launch permit belongs to another native owner".into(),
+            ));
+        }
         let nonce = permit.nonce().to_owned();
         #[cfg(feature = "fixtures")]
         if let Some(fake) = daemon.fake.as_ref() {
             if fake.reject_turn_start.load(Ordering::SeqCst) {
-                return LaunchOutcome::NotIssued(CalmError::CodexRefused("turn/start failed: unknown model (code -32602)".into()));
+                return LaunchOutcome::NotIssued(CalmError::CodexRefused(
+                    "turn/start failed: unknown model (code -32602)".into(),
+                ));
             }
             if fake.fail_turn_start.load(Ordering::SeqCst) {
-                return LaunchOutcome::Uncertain(CalmError::CodexAppServer("forced turn/start failure for test".into()));
+                return LaunchOutcome::Uncertain(CalmError::CodexAppServer(
+                    "forced turn/start failure for test".into(),
+                ));
             }
             let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
             let turn = format!("fake-turn-{n:04}");
-            fake.started_turns.lock().expect("started turns").push((request.thread.clone(),request.items));
-            fake.started_turn_selections.lock().expect("turn selections").push((request.thread.clone(),request.selection));
-            fake.started_turn_client_ids.lock().expect("client IDs").push(Some(nonce));
-            let hook = fake.turn_start_return_hook.lock().expect("return hook").take();
-            if let Some(hook) = hook { hook.entered.notify_one(); hook.release.notified().await; }
+            fake.started_turns
+                .lock()
+                .expect("started turns")
+                .push((request.thread.clone(), request.items));
+            fake.started_turn_selections
+                .lock()
+                .expect("turn selections")
+                .push((request.thread.clone(), request.selection));
+            fake.started_turn_client_ids
+                .lock()
+                .expect("client IDs")
+                .push(Some(nonce));
+            let hook = fake
+                .turn_start_return_hook
+                .lock()
+                .expect("return hook")
+                .take();
+            if let Some(hook) = hook {
+                hook.entered.notify_one();
+                hook.release.notified().await;
+            }
             let _ = daemon.notifications.send(Notification::TurnStarted {
-                thread_id: request.thread, turn: serde_json::json!({"id":turn}),
+                thread_id: request.thread,
+                turn: serde_json::json!({"id":turn}),
             });
             return LaunchOutcome::Started(turn);
         }
@@ -42,20 +71,45 @@ impl Backend for CodexBackend<'_> {
         };
         let card = match daemon.cached_card_for_thread(&request.thread) {
             Some(card) => card,
-            None => return LaunchOutcome::NotIssued(CalmError::Conflict("native owner mapping is missing".into())),
+            None => {
+                return LaunchOutcome::NotIssued(CalmError::Conflict(
+                    "native owner mapping is missing".into(),
+                ));
+            }
         };
         let permissions = match daemon.read_task_permissions(&card).await {
             Ok(policy) => policy,
             Err(error) => return LaunchOutcome::NotIssued(error),
         };
         let result = match permissions.as_ref() {
-            Some(policy) => client.turn_start_with_permissions(&request.thread,request.items,&request.selection,Some(&nonce),policy).await,
-            None => client.turn_start_with_client_id(&request.thread,request.items,&request.selection,Some(&nonce)).await,
+            Some(policy) => {
+                client
+                    .turn_start_with_permissions(
+                        &request.thread,
+                        request.items,
+                        &request.selection,
+                        Some(&nonce),
+                        policy,
+                    )
+                    .await
+            }
+            None => {
+                client
+                    .turn_start_with_client_id(
+                        &request.thread,
+                        request.items,
+                        &request.selection,
+                        Some(&nonce),
+                    )
+                    .await
+            }
         };
         match result {
             Ok(receipt) => match receipt.turn_id().filter(|id| !id.is_empty()) {
                 Some(id) => LaunchOutcome::Started(id.to_owned()),
-                None => LaunchOutcome::Uncertain(CalmError::CodexAppServer("turn/start returned no turn.id".into())),
+                None => LaunchOutcome::Uncertain(CalmError::CodexAppServer(
+                    "turn/start returned no turn.id".into(),
+                )),
             },
             Err(error @ CalmError::CodexRefused(_)) => LaunchOutcome::NotIssued(error),
             Err(error) => LaunchOutcome::Uncertain(error),
@@ -72,26 +126,62 @@ impl Backend for CodexBackend<'_> {
 impl CodexBackend<'_> {
     async fn observe(&self, record: &Record, stop: bool) -> Result<Observation> {
         let client = self.0.connected_client().await?;
-        let mut facts = client.thread_workspace_history(&record.holder).await?.thread;
-        if facts.id != record.holder || std::fs::canonicalize(&facts.cwd)? != std::fs::canonicalize(&record.cwd)? {
-            return Err(CalmError::Conflict("native evidence differs from reserved execution scope".into()));
+        let mut facts = client
+            .thread_workspace_history(&record.holder)
+            .await?
+            .thread;
+        if facts.id != record.holder
+            || std::fs::canonicalize(&facts.cwd)? != std::fs::canonicalize(&record.cwd)?
+        {
+            return Err(CalmError::Conflict(
+                "native evidence differs from reserved execution scope".into(),
+            ));
         }
         let turn = match record.nonce.as_deref() {
             Some(nonce) => facts.turn_for_nonce(nonce)?,
-            None => record.observed.as_deref().and_then(|id| facts.turns.iter().find(|turn| turn.id == id)),
-        }.ok_or_else(|| CalmError::Conflict("native issuance remains unconfirmed".into()))?.id.clone();
+            None => record
+                .observed
+                .as_deref()
+                .and_then(|id| facts.turns.iter().find(|turn| turn.id == id)),
+        }
+        .ok_or_else(|| CalmError::Conflict("native issuance remains unconfirmed".into()))?
+        .id
+        .clone();
         if stop {
             self.0.seal_turn_thread_for_deletion(&record.holder);
-            client.turn_interrupt(&record.holder,&turn).await?;
+            client.turn_interrupt(&record.holder, &turn).await?;
             client.clean_background_terminals(&record.holder).await?;
-            facts = client.thread_workspace_history(&record.holder).await?.thread;
+            facts = client
+                .thread_workspace_history(&record.holder)
+                .await?
+                .thread;
         }
-        if facts.id != record.holder || std::fs::canonicalize(&facts.cwd)? != std::fs::canonicalize(&record.cwd)? {
+        if facts.id != record.holder
+            || std::fs::canonicalize(&facts.cwd)? != std::fs::canonicalize(&record.cwd)?
+        {
             return Err(CalmError::Conflict("native stopped scope changed".into()));
         }
-        let stopped = facts.turns.iter().find(|candidate| candidate.id == turn).is_some_and(|candidate|
-            matches!(candidate.status,TurnStatus::Completed|TurnStatus::Interrupted|TurnStatus::Failed))
-            && facts.stopped() && client.background_terminals_stopped(&record.holder).await?;
-        Ok(Observation { execution: record.id.clone(), identity: Some(turn), stopped })
+        let stopped = facts
+            .turns
+            .iter()
+            .find(|candidate| candidate.id == turn)
+            .is_some_and(|candidate| {
+                matches!(
+                    candidate.status,
+                    TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
+                )
+            })
+            && facts.stopped()
+            && client.background_terminals_stopped(&record.holder).await?;
+        if stopped {
+            self.0
+                .active_turns
+                .remove_if(&record.holder, |_, active| active == &turn);
+        }
+        Ok(Observation {
+            execution: record.id.clone(),
+            identity: Some(turn),
+            stopped,
+        })
     }
 }

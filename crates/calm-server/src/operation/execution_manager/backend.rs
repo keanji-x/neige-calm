@@ -1,10 +1,11 @@
 //! Registered backend contract; no database handle or resource releaser is provided.
-use super::{LaunchPermit, Record};
+use super::{BackendKind, LaunchPermit, Record};
 use crate::error::{CalmError, Result};
 
 #[async_trait::async_trait]
 pub(super) trait Backend: Send + Sync {
     type Request: Send;
+    fn kind(&self) -> BackendKind;
     async fn launch(&self, permit: LaunchPermit, request: Self::Request) -> LaunchOutcome;
     async fn recover(&self, record: &Record) -> Result<Observation>;
     async fn stop(&self, record: &Record) -> Result<Observation>;

@@ -17,6 +17,10 @@ pub enum SpawnHandle {
     Harness {
         worker_session_id: String,
     },
+    NativeSession {
+        worker_session_id: String,
+        thread_id: String,
+    },
     NoOp,
 }
 
