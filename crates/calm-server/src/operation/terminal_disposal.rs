@@ -125,6 +125,11 @@ WHERE l.holder_kind='terminal' AND l.state IN ('held','releasing') AND {column}=
 
 /// Transaction recheck immediately before removing rows or replacing workspace ownership; no supervisor I/O happens in this writer.
 pub(crate) async fn require_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()> {
+    if !writers_tx(tx, scope).await?.is_empty() {
+        return Err(CalmError::Conflict(
+            "terminal writer requires confirmed stop before deletion or relocation".into(),
+        ));
+    }
     if let Some(unresolved) = unresolved_tx(tx, scope).await?.first() {
         return Err(unresolved.error());
     }

@@ -572,3 +572,21 @@ async fn terminal_outside_parent_scope_reserves_independent_root() {
     );
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn terminal_delete_transaction_rechecks_any_new_writer_reference() {
+    let h = terminal_worker_harness().await;
+    let output = prepare_terminal_worker(&h, "delete-writer-race").await;
+    let card = output.output_string("card_id", "test").unwrap();
+    let mut tx = begin_immediate_tx(h.repo.pool()).await.unwrap();
+    let result = super::super::terminal_disposal::require_safe_tx(
+        &mut tx,
+        &super::super::terminal_disposal::Scope::Card(card),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "a held writer appearing after the I/O stop pass must prevent row deletion"
+    );
+    tx.rollback().await.unwrap();
+}
