@@ -282,3 +282,51 @@ pub(crate) async fn prepared_task_access(
         _ => Ok(PreparedTaskAccess::Independent),
     }
 }
+
+/// A card's persistent native references survive projection cleanup until their exact requests stop.
+pub(crate) async fn cancel_native_references(
+    repo: &dyn crate::db::RouteRepo,
+    card: &str,
+    shared: Option<&crate::shared_codex_appserver::SharedCodexAppServer>,
+) -> Result<()> {
+    let card = card.to_owned();
+    let references: Vec<String> =
+        crate::db::write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move {
+                Ok(sqlx::query_scalar(
+                "SELECT lease_id FROM workspace_leases WHERE card_id=?1 AND holder_kind='native' \
+                 AND native_provider='codex' AND state='held' ORDER BY created_at_ms,lease_id",
+            ).bind(card).fetch_all(&mut **tx).await?)
+            })
+        })
+        .await?;
+    if references.is_empty() {
+        return Ok(());
+    }
+    let shared =
+        shared.ok_or_else(|| CalmError::Conflict("native stop requires its provider".into()))?;
+    for reference in references {
+        match tokio::time::timeout(
+            Duration::from_secs(25),
+            shared.cancel_native_workspace_guard(&reference),
+        )
+        .await
+        {
+            Ok(Ok(true)) => {}
+            Ok(Err(error)) => return Err(error),
+            Ok(Ok(false)) => {
+                return Err(CalmError::Conflict(
+                    "native execution stop is unconfirmed; references and workspace retained"
+                        .into(),
+                ));
+            }
+            Err(_) => {
+                return Err(CalmError::Conflict(
+                    "native execution stop timed out; references and workspace retained".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}

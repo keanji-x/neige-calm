@@ -87,50 +87,18 @@ pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     crate::harness::profile::PlannerBinding::from_card(card, role).is_some()
 }
 
-pub(crate) async fn interrupt_shared_card_active_turn(
-    repo: &dyn RouteRepo,
-    cs: &CodexShellState,
-    card: &Card,
-) {
-    let active_runtime = match repo
-        .session_projection_active_for_card(&card.id.to_string())
-        .await
-    {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            tracing::warn!(
-                target: "session_projection_lookup::fallback",
-                card_id = %card.id,
-                error = %e,
-                "runtime shared-card discriminator query failed; falling back to card payload"
-            );
-            None
-        }
-    };
-    if !card_is_shared_planner(card, active_runtime.as_ref()) {
-        return;
-    }
-    if let Err(e) = cs
-        .shared_codex_appserver
-        .interrupt_active_turn_for_card(card.id.as_str())
-        .await
-    {
-        tracing::warn!(
-            target: "shared_codex_daemon::orphan_turn",
-            card_id = %card.id,
-            track_id = %card.track_id,
-            error = %e,
-            "failed to interrupt active shared codex turn during card teardown"
-        );
-    }
-}
-
-/// Deletion-grade form of [`interrupt_shared_card_active_turn`]: every failure is propagated, since a destructive workspace move may only follow a confirmed quiesce.
+/// Stop persistent native references before removing or relocating the card's workspace.
 pub(crate) async fn quiesce_shared_card_active_turn(
     repo: &dyn RouteRepo,
     cs: &CodexShellState,
     card: &Card,
 ) -> Result<Option<String>> {
+    crate::operation::workspace_lease::task_guard::cancel_native_references(
+        repo,
+        card.id.as_str(),
+        Some(cs.shared_codex_appserver.as_ref()),
+    )
+    .await?;
     let active_runtime = repo
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
@@ -1535,7 +1503,7 @@ pub(crate) async fn delete_card(
     let track_id = card.track_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone()).await?;
 
-    interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, &card).await;
+    quiesce_shared_card_active_turn(s.repo.as_ref(), &cs, &card).await?;
 
     // Eager teardown: `terminals.card_id` is `ON DELETE RESTRICT`, so the terminal row must be removed, and its daemon + socket reaped, before the card row delete. Cleanup runs outside the write txn; if it fails the row stays and the sweeper retries next tick. The txn then deletes both rows in one commit under `Event::CardDeleted`.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;

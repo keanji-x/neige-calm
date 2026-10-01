@@ -16,11 +16,11 @@ impl Scheduler {
                     tracing::warn!(%error,"Forge reference reconciliation failed");
                 }
             }
-            scheduler.settle_native_write_guards().await;
+            scheduler.settle_native_execution_guards().await;
             scheduler.settle_read_guards().await;
         });
     }
-    async fn settle_native_write_guards(&self) {
+    async fn settle_native_execution_guards(self: &Arc<Self>) {
         let Some(pool) = self.repo.sqlite_pool() else {
             return;
         };
@@ -32,8 +32,9 @@ impl Scheduler {
         };
         let rows = sqlx::query_as::<_, (String, String)>(
             r#"
-SELECT lease_id, holder_id FROM workspace_leases WHERE holder_kind='native' AND
-holder_phase='running' AND native_provider='codex' AND state='held' ORDER BY updated_at_ms,lease_id LIMIT 16
+SELECT lease_id,track_id FROM workspace_leases WHERE holder_kind='native'
+AND holder_phase IN ('issuing','running','stopping') AND native_provider='codex'
+AND state='held' ORDER BY updated_at_ms,lease_id LIMIT 16
 "#,
         )
         .fetch_all(&pool)
@@ -41,50 +42,29 @@ holder_phase='running' AND native_provider='codex' AND state='held' ORDER BY upd
         let Ok(rows) = rows else {
             return;
         };
-        for (lease, thread) in rows {
-            if sqlx::query("UPDATE workspace_leases SET updated_at_ms=?2 WHERE lease_id=?1")
-                .bind(&lease)
-                .bind(now_ms())
-                .execute(&pool)
-                .await
-                .is_err()
-            {
-                continue;
-            }
-            let confirmed = async {
-                let facts =
-                    calm_provider::provider::CodexDaemonProbe::read_liveness_facts(shared, &thread)
-                        .await?;
-                if !task_guard::turn_stopped(
-                    &facts,
-                    shared.active_turn_id_for_thread(&thread).as_deref(),
-                ) {
-                    return None;
-                }
-                shared
-                    .background_terminals_stopped(&thread)
-                    .await
-                    .ok()
-                    .filter(|stopped| *stopped)
-            };
-            if !matches!(
-                tokio::time::timeout(self.worker_idle.probe_timeout, confirmed).await,
-                Ok(Some(true))
-            ) {
-                continue;
-            }
-            if let Err(error) = sqlx::query(
-                r#"
-UPDATE workspace_leases SET state='released', holder_phase='stopped', released_at_ms=?2,
-updated_at_ms=?2 WHERE lease_id=?1 AND holder_phase='running' AND state='held'
-"#,
+        for (lease, track) in rows {
+            if sqlx::query(
+                "UPDATE workspace_leases SET updated_at_ms=?2 WHERE lease_id=?1 AND state='held'",
             )
             .bind(&lease)
             .bind(now_ms())
             .execute(&pool)
             .await
+            .is_err()
             {
-                tracing::warn!(%error,%lease,"native write guard settlement failed");
+                continue;
+            }
+            match tokio::time::timeout(
+                self.worker_idle.probe_timeout,
+                shared.reconcile_native_workspace_guard(&lease),
+            )
+            .await
+            {
+                Ok(Ok(true)) => self.poke(TrackId::from(track)),
+                Ok(Err(error)) => {
+                    tracing::debug!(%error,%lease,"native execution guard retained for recovery")
+                }
+                _ => {}
             }
         }
     }

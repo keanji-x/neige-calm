@@ -795,11 +795,23 @@ impl CodexAppServer {
                 .is_none_or(serde_json::Value::is_null))
     }
 
-    pub(crate) async fn thread_workspace_history(&self,thread:&str)->Result<crate::shared_codex_appserver::workspace::NativeThreadRead> {
-        self.request("thread/read",json!({"threadId":thread,"includeTurns":true})).await
+    pub(crate) async fn thread_workspace_history(
+        &self,
+        thread: &str,
+    ) -> Result<crate::shared_codex_appserver::workspace::NativeThreadRead> {
+        self.request(
+            "thread/read",
+            json!({"threadId":thread,"includeTurns":true}),
+        )
+        .await
     }
-    pub(crate) async fn clean_background_terminals(&self,thread:&str)->Result<()> {
-        let _:Value=self.request("thread/backgroundTerminals/clean",json!({"threadId":thread})).await?;
+    pub(crate) async fn clean_background_terminals(&self, thread: &str) -> Result<()> {
+        let _: Value = self
+            .request(
+                "thread/backgroundTerminals/clean",
+                json!({"threadId":thread}),
+            )
+            .await?;
         Ok(())
     }
 

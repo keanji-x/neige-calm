@@ -177,6 +177,12 @@ impl OperationRuntime {
     }
 
     pub async fn fail_running_worker_card(&self, card_id: &str) -> Result<()> {
+        super::workspace_lease::task_guard::cancel_native_references(
+            self.spawn_ctx.repo.as_ref(),
+            card_id,
+            self.spawn_ctx.shared_codex_appserver.as_deref(),
+        )
+        .await?;
         self.interrupt_running_codex_turn_for_card(card_id).await?;
         super::workspace_lease::task_guard::confirm_read_stop(
             &self.spawn_ctx.operation_repo.sqlite_pool(),

@@ -123,11 +123,35 @@ WHERE l.holder_kind='terminal' AND l.state IN ('held','releasing') AND {column}=
         .collect())
 }
 
+async fn live_business_references_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<bool> {
+    let (column, id) = match scope {
+        Scope::Card(id) => ("c.id", id),
+        Scope::Track(id) => ("c.track_id", id),
+        Scope::Area(id) => ("t.area_id", id),
+        Scope::Terminal(_) => return Ok(false),
+    };
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM workspace_leases l JOIN cards c ON c.id=l.card_id \
+         JOIN tracks t ON t.id=c.track_id WHERE l.holder_kind IN ('native','forge') \
+         AND l.state IN ('held','releasing') AND {column}=?1)"
+    );
+    let active: bool = sqlx::query_scalar(&sql)
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+    Ok(active)
+}
+
 /// Transaction recheck immediately before removing rows or replacing workspace ownership; no supervisor I/O happens in this writer.
 pub(crate) async fn require_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()> {
     if !writers_tx(tx, scope).await?.is_empty() {
         return Err(CalmError::Conflict(
             "terminal writer requires confirmed stop before deletion or relocation".into(),
+        ));
+    }
+    if live_business_references_tx(tx, scope).await? {
+        return Err(CalmError::Conflict(
+            "execution reference requires confirmed stop before deletion or relocation".into(),
         ));
     }
     if let Some(unresolved) = unresolved_tx(tx, scope).await?.first() {

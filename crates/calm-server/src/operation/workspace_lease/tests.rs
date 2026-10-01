@@ -981,3 +981,6 @@ async fn new_card(repo: &crate::db::sqlite::SqlxRepo, track_id: &str) -> String 
 
 #[path = "tests/native_reentry.rs"]
 mod native_reentry;
+
+#[path = "tests/disposal.rs"]
+mod disposal;

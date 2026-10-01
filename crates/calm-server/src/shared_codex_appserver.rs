@@ -1390,12 +1390,17 @@ impl SharedCodexAppServer {
         } else {
             None
         };
-        let client_nonce = if let Some(guard)=native_write.as_ref() {
+        let client_nonce = if let Some(guard) = native_write.as_ref() {
             match guard.client_nonce(client_user_message_id).await {
-                Ok(nonce)=>Some(nonce),
-                Err(error)=>{native_write.expect("guard present").rejected().await?;return Err(error)}
+                Ok(nonce) => Some(nonce),
+                Err(error) => {
+                    native_write.expect("guard present").rejected().await?;
+                    return Err(error);
+                }
             }
-        } else {client_user_message_id.map(str::to_owned)};
+        } else {
+            client_user_message_id.map(str::to_owned)
+        };
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.reject_turn_start.load(Ordering::SeqCst) {
@@ -1440,7 +1445,9 @@ impl SharedCodexAppServer {
                 thread_id: thread_id.to_string(),
                 turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
             });
-            if let Some(guard)=native_write {guard.started(&turn_id).await?;}
+            if let Some(guard) = native_write {
+                guard.started(&turn_id).await?;
+            }
             if self.sealed_turn_threads.contains_key(thread_id) {
                 self.turn_interrupt(thread_id, &turn_id).await?;
                 self.active_turns
@@ -1480,7 +1487,9 @@ impl SharedCodexAppServer {
             .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))?;
         self.active_turns
             .insert(thread_id.to_string(), turn_id.clone());
-        if let Some(guard)=native_write {guard.started(&turn_id).await?;}
+        if let Some(guard) = native_write {
+            guard.started(&turn_id).await?;
+        }
         if self.sealed_turn_threads.contains_key(thread_id) {
             self.turn_interrupt(thread_id, &turn_id).await?;
             self.active_turns
@@ -3618,21 +3627,35 @@ impl SharedCodexAppServer {
                 return;
             }
         }
-        match client.thread_resume_with_sandbox(thread_id,lowered,read_only.then_some("read-only")).await {
-            Ok(response)=>{
-                if let Err(error)=self.bind_resumed_workspace(thread_id,card_id,&response.thread).await {
-                    if let Some(pool)=self.repo.sqlite_pool() {
-                        if let Err(invalidation)=sqlx::query("DELETE FROM workspace_execution_bindings \
-                            WHERE provider='codex' AND holder_id=?1 AND card_id=?2").bind(thread_id).bind(card_id).execute(&pool).await {
+        match client
+            .thread_resume_with_sandbox(thread_id, lowered, read_only.then_some("read-only"))
+            .await
+        {
+            Ok(response) => {
+                if let Err(error) = self
+                    .bind_resumed_workspace(thread_id, card_id, &response.thread)
+                    .await
+                {
+                    if let Some(pool) = self.repo.sqlite_pool() {
+                        if let Err(invalidation) = sqlx::query(
+                            "DELETE FROM workspace_execution_bindings \
+                            WHERE provider='codex' AND holder_id=?1 AND card_id=?2",
+                        )
+                        .bind(thread_id)
+                        .bind(card_id)
+                        .execute(&pool)
+                        .await
+                        {
                             tracing::warn!(%invalidation,%thread_id,"invalid resumed workspace could not be retired");
                         }
                     }
                     tracing::warn!(%error,%thread_id,%card_id,"resumed thread workspace binding refused");
                 }
             }
-            Err(error)=>tracing::warn!(%error,%thread_id,%card_id,"shared codex thread resume failed; leaving mapping intact"),
+            Err(error) => {
+                tracing::warn!(%error,%thread_id,%card_id,"shared codex thread resume failed; leaving mapping intact")
+            }
         }
-
     }
 }
 
@@ -4694,8 +4717,10 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
 
     /// Pull the liveness facts via `thread/read(include_turns)` (+ `thread/loaded/list`); `None`
     /// on ANY RPC error, which the arbiter treats as `Unknown`.
-    async fn background_terminals_stopped(&self,thread_id:&str)->Option<bool> {
-        SharedCodexAppServer::background_terminals_stopped(self,thread_id).await.ok()
+    async fn background_terminals_stopped(&self, thread_id: &str) -> Option<bool> {
+        SharedCodexAppServer::background_terminals_stopped(self, thread_id)
+            .await
+            .ok()
     }
 
     async fn read_liveness_facts(
