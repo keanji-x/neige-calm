@@ -105,6 +105,25 @@ state IN ('held', 'releasing'))
             id,
         })
     }
+    /// Consumed only when issuance was never attempted or the provider rejected it.
+    pub(crate) async fn rejected(self) -> Result<()> {
+        let changed = sqlx::query(
+            "UPDATE workspace_leases SET state='released',holder_phase='stopped', \
+            released_at_ms=?2,updated_at_ms=?2 WHERE lease_id=?1 AND holder_kind='native' \
+            AND state='held' AND holder_phase='issuing'",
+        )
+        .bind(&self.id)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(CalmError::Conflict(
+                "unissued guard changed before rejection".into(),
+            ));
+        }
+        Ok(())
+    }
     pub(crate) async fn started(self, turn: &str) -> Result<()> {
         sqlx::query(
             r#"
@@ -205,6 +224,7 @@ created_at_ms, updated_at_ms, access_mode, holder_kind, holder_id, holder_phase,
 }
 
 /// A probe receives a child reference only from its specific live Forge parent.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn acquire_execution_child_tx(
     tx: &mut Tx<'_>,
     track: &str,
@@ -213,7 +233,21 @@ pub(crate) async fn acquire_execution_child_tx(
     kind: &str,
     cwd: &Path,
     parent: &str,
+    expected_owner: &str,
 ) -> Result<String> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operations \
+        WHERE id=?1 AND phase='parked' AND lease_owner=?2)",
+    )
+    .bind(parent)
+    .bind(expected_owner)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !owned {
+        return Err(CalmError::Conflict(
+            "child execution issuance lost its operation lease".into(),
+        ));
+    }
     if kind != "forge" {
         return Err(CalmError::Internal(
             "unsupported child execution kind".into(),
