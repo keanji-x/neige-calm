@@ -72,7 +72,12 @@ describe('tool groups alongside quiet syncs and turn outcomes', () => {
     const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={[
       activity('before-1'), activity('before-2'), outcome(status), activity('after-1'), activity('after-2'),
     ]} />);
-    expect(container.querySelectorAll('[aria-expanded]')).toHaveLength(2);
+    const toolGroups = screen.getAllByRole('group', { name: '2 tool calls' });
+    expect(toolGroups).toHaveLength(2);
+    expect(toolGroups[0].textContent).toContain('before-2');
+    expect(toolGroups[0].textContent).not.toContain('after-1');
+    expect(toolGroups[1].textContent).toContain('after-2');
+    expect(toolGroups[1].textContent).not.toContain('before-1');
     expect(container.querySelector('[data-nc-turn="outcome"]')?.getAttribute('data-nc-turn-outcome') ?? null)
       .toBe(status === 'completed' ? null : status);
   });

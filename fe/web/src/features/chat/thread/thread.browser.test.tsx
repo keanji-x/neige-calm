@@ -1,5 +1,5 @@
 /* The composer, the exchange rail and the reply's type, measured against a real rendering engine. */
-import { act, render } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -494,7 +494,7 @@ describe('the structured system disclosure in a real engine', () => {
   });
 });
 
-/* Only this tier can prove the error sentence wraps instead of riding Astryx's `nowrap` label span off the column. */
+/* Measure the revealed error, not the hidden disclosure or enclosing live region. */
 describe('a failed turn in a real engine', () => {
   it('shows Failed with the message wrapped below it, and nothing for a completed turn', async () => {
     const you: ConversationTurn = { id: 'you-1', author: 'you', text: 'Summarise everything.', atMs: 0 };
@@ -514,11 +514,15 @@ describe('a failed turn in a real engine', () => {
     expect(outcomes).toHaveLength(1);
     const outcome = outcomes[0];
     expect(outcome.dataset['ncTurnOutcome']).toBe('failed');
-    expect(outcome.querySelector('[role="status"]')?.textContent).toBe('Failed');
+    expect(screen.getByText('Failed', { exact: true }).checkVisibility()).toBe(true);
+    const disclosure = screen.getByRole('button', { name: 'Failed', expanded: false });
+    disclosure.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
     const message = outcome.querySelector<HTMLElement>('[data-nc-turn-outcome-message]')!;
     expect(message.textContent).toBe(failed.text);
-    const label = outcome.querySelector<HTMLElement>('[role="status"]')!;
-    const labelBox = label.getBoundingClientRect();
+    expect(message.checkVisibility()).toBe(true);
+    const labelBox = disclosure.getBoundingClientRect();
     const messageBox = message.getBoundingClientRect();
     expect(messageBox.top).toBeGreaterThanOrEqual(labelBox.bottom);
     expect(messageBox.width).toBeLessThanOrEqual(labelBox.width + 1);
