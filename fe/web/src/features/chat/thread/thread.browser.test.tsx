@@ -1981,7 +1981,7 @@ it('paints persisted mention pills in a narrow transcript', async () => {
 it('keeps long mention pills inside a narrow transcript', async () => {
   await page.viewport(414, 896);
   const name = 'Very long report name '.repeat(12);
-  const tag = '部署'.repeat(60);
+  const tag = '部署'.repeat(32);
   render(<div style={{ width: 320 }}><ChatThread cards={{}} stalled={false}
     conversation={railConversation()}
     turns={[{ id: 'long-mention', author: 'you',

@@ -155,7 +155,7 @@ describe('sentMentionParts', () => {
   });
 
   it('recovers valid picks after incomplete or invalid mention prefixes', () => {
-    for (const prefix of ['literal @``unfinished then ', 'literal @`unfinished then ']) {
+    for (const prefix of ['literal @``unfinished then ', 'literal @`unfinished then ', 'literal @`tag:unfinished then ']) {
       expect(sentMentionParts(prefix + '@`tag:x`')).toEqual([
         { text: prefix, label: null }, { text: '@`tag:x`', label: '#x' },
       ]);
@@ -167,7 +167,7 @@ describe('sentMentionParts', () => {
   });
 
   it('leaves ordinary, unknown and incomplete references unchanged', () => {
-    for (const text of ['', '@bob **literal**', '@`/tmp/a`', '@`tag:`',
+    for (const text of ['', '@bob **literal**', '@`/tmp/a`', '@`tag:`', '@`tag:a,b`', '@`tag:a b`', '@`tag:a\u0000b`',
       '@`area/reports/bad%.md`', '@`area/reports/.md`', '@`area/reports/a.md#`', '@``tag:x`']) {
       expect(sentMentionParts(text)).toEqual(text === '' ? [] : [{ text, label: null }]);
     }

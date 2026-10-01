@@ -147,7 +147,12 @@ export function mentionSuggestionsOf(candidates: MentionCandidates, query: Menti
 export type SentMentionPart = Readonly<{ text: string; label: string | null }>;
 
 function sentMentionLabel(address: string): string | null {
-  if (address.startsWith('tag:') && address.length > 4) return `#${address.slice(4)}`;
+  if (address.startsWith('tag:')) {
+    const tag = address.slice(4);
+    // Stored tags obey report_tags::normalize_tag; malformed prefixes must not consume later picks.
+    if (tag === '' || /[\s,\p{Cc}]/u.test(tag) || Array.from(tag).length > 64) return null;
+    return `#${tag}`;
+  }
   const report = /^area\/reports\/(.+)\.md(?:#([^\s]+))?$/.exec(address);
   if (report === null) return null;
   let name: string;
