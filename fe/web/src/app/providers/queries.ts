@@ -132,6 +132,7 @@ export const queryKeys = Object.freeze({
   areaFolders: (areaId: string) => ['area-folders', areaId] as const,
   tracksInArea: (areaId: string) => ['tracks', areaId] as const,
   trackDetail: (trackId: string) => ['track', trackId] as const,
+  trackDetailPrefix: () => ['track'] as const,
   trackBacklinks: (trackId: string) => ['track-backlinks', trackId] as const,
   /* The track's registered previews (#1780). Registrations emit no event; `trackPreviewsQueryOptions` polls. */
   trackPreviews: (trackId: string) => ['track-previews', trackId] as const,

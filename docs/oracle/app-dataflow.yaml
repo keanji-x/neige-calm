@@ -158,7 +158,7 @@
   why: >
     track 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
     少一个就出现某一处静默陈旧。
-  source: fe/core/events/invalidation-plan.ts:127-143
+  source: fe/core/events/invalidation-plan.ts:133-149
   authoritative_test: fe/core/events/invalidation-plan.test.ts:19-30
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -179,7 +179,7 @@
     继续作为 placeholder 上色。删除 tree member 也会改变剩余成员的 B/N budget share，
     所以仍存活的 task verdict 查询必须重新读取服务端重投影结果；删除目标自己的 report
     endpoint 已经是 404，必须先从 cache 移除，不能被 prefix refetch 命中。
-  source: fe/core/events/invalidation-plan.ts:134-141; fe/web/src/app/events/query-invalidation-adapter.ts:56-66
+  source: fe/core/events/invalidation-plan.ts:140-147; fe/web/src/app/events/query-invalidation-adapter.ts:56-66
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:271
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -197,7 +197,7 @@
   why: >
     `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:222-224
+  source: fe/core/events/invalidation-plan.ts:228-230
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:238-244
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -217,7 +217,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 track。
     没有 track 被加载时，用户根本看不到那个 track 的 card overlay 变化，等下次 track detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:188-207
+  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:194-213
   authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7-17
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -236,7 +236,7 @@
   why: >
     runs/* 与 cards/* 的 hook 视图都从 kernel 投影的 track 文件派生；反查失败时宁可
     宽失效也不能静默不失效（否则报告侧栏永远看不到新产物）。
-  source: fe/core/events/invalidation-plan.ts:46-68
+  source: fe/core/events/invalidation-plan.ts:46-74
   authoritative_test: fe/core/events/invalidation-plan.test.ts:22; fe/core/events/invalidation-plan.contract.test.ts:36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -253,7 +253,7 @@
     所属 track detail、`['overlays','card']` 与该 track 的 track-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: fe/core/events/invalidation-plan.ts:110-116,159-161; fe/web/src/app/events/track-lookup.ts:7-17
+  source: fe/core/events/invalidation-plan.ts:116-122,165-167; fe/web/src/app/events/track-lookup.ts:7-17
   authoritative_test: fe/core/events/invalidation-plan.test.ts:100-103
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -276,7 +276,7 @@
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
-  source: fe/core/events/invalidation-plan.ts:187
+  source: fe/core/events/invalidation-plan.ts:193
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:24-36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -787,7 +787,7 @@
   statement: harness.item.added 必须失效同 card 的 harness-items；harness.transcript.cleared 必须同时失效同 card 的
     harness-items 与 planner-run。applyEventEffects 必须把这些计划键映射为现行查询键，不能丢弃。
   why: 转录新增与清空必须刷新可见投影。旧界面的本地 seq 状态实现已退役；新版由 core 计划和 app 查询适配器共同履行此约束。
-  source: fe/core/events/invalidation-plan.ts:160-174 ; fe/web/src/app/events/query-invalidation-adapter.ts:19-96
+  source: fe/core/events/invalidation-plan.ts:166-180 ; fe/web/src/app/events/query-invalidation-adapter.ts:19-96
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:257-287
   owner_slice: app/events-glue/invalidation
   intentional_omission: false

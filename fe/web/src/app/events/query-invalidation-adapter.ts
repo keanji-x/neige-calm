@@ -17,10 +17,10 @@ export interface QueryCachePort extends QueryRefreshPort {
 
 /**
  * TanStack reuses an in-flight initial fetch even after `invalidateQueries`, and the stale response
- * then clears `isInvalidated`; task verdicts do not all poll, so cancel the report fetch first.
+ * then clears `isInvalidated`; task verdicts and native card snapshots do not poll, so cancel their reads first.
  */
 function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknown[]): void {
-  const cancelFirst = queryKey[0] === 'track-report'
+  const cancelFirst = (queryKey[0] === 'track' && queryKey.length === 1) || queryKey[0] === 'track-report'
     || (queryKey[0] === 'overlays' && queryKey[1] === 'track');
   if (!cancelFirst) {
     void client.invalidateQueries({ queryKey });
@@ -34,6 +34,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   const [head, first, second] = key;
   if (head === 'areas' && key.length === 1) return queryKeys.areas();
   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);
+  if (head === 'track' && key.length === 1) return queryKeys.trackDetailPrefix();
   if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);
   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);
   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);

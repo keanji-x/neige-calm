@@ -51,6 +51,12 @@ function trackFilesDerived(trackId: string | null): readonly QueryKey[] {
   return [trackFiles(trackId), trackId === null ? ['track-report'] : ['track-report', trackId]];
 }
 
+/* Task reports carry opaque attempt IDs without track/card scope. Card snapshots
+ * therefore refresh the detail prefix, using the same declared scope as task verdicts. */
+function taskReportViews(): readonly QueryKey[] {
+  return [...trackFilesDerived(null), ['track']];
+}
+
 export type TrackFilesDerivedKind =
   | 'worker_session.started' | 'worker_session.status_changed' | 'worker_session.superseded'
   | 'terminal.deleted' | 'codex.hook' | 'claude.hook'
@@ -216,8 +222,8 @@ function policies(): PolicyMap {
   'claude.hook': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),
   'codex.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'terminal.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'task.completed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'task.failed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
+  'task.completed': plan(() => result(taskReportViews())),
+  'task.failed': plan(() => result(taskReportViews())),
   'task.git_delivery_settled': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'plan.updated': plan((event) => result(
     typeof event.data.agent_message === 'string' ? [['track-report', event.data.track_id]] : [],
