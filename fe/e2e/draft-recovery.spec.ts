@@ -104,15 +104,18 @@ test('does not replay an offline settings edit over another client and refreshes
     await page.goto('/next/settings');
     await other.goto('/next/settings');
     const mine = page.getByLabel('HTTP proxy', { exact: true });
+    // Astryx also announces field errors in a document-wide live region.
+    // Assert the visible verdict on this client's actual editing row.
+    const myRow = page.getByRole('listitem').filter({ has: mine });
     await expect(mine).toHaveValue(proxy(1));
     await context.setOffline(true);
     await mine.fill(proxy(2)); await mine.press('Tab');
-    await expect(page.getByText(/offline.*Reconnect/i)).toBeVisible();
+    await expect(myRow.getByText(/offline.*Reconnect/i)).toBeVisible();
     const theirs = other.getByLabel('HTTP proxy', { exact: true });
     await theirs.fill(proxy(3)); await theirs.press('Tab');
     await expect.poll(async () => (await (await request.get('/api/settings')).json() as { settings: Record<string, string> }).settings.http_proxy).toBe(proxy(3));
     await context.setOffline(false);
-    await expect(page.getByText('Changed elsewhere. Your edit is not saved.')).toBeVisible();
+    await expect(myRow.getByText('Changed elsewhere. Your edit is not saved.')).toBeVisible();
     await expect(mine).toHaveValue(proxy(2));
     expect((await (await request.get('/api/settings')).json() as { settings: Record<string, string> }).settings.http_proxy).toBe(proxy(3));
     await request.put('/api/settings', { data: { settings: { http_proxy: proxy(4) } } });
