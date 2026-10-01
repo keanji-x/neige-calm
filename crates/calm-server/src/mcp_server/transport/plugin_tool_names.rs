@@ -53,10 +53,14 @@ fn visible_plugin_tools_from(
     in_scope: &BTreeSet<String>,
     scope: &TrackPluginScope,
 ) -> BTreeSet<String> {
-    plugin_tool_descriptors_from(registry.list(), in_scope, scope)
-        .into_iter()
-        .map(|d| d.name)
-        .collect()
+    plugin_tool_descriptors_from(
+        registry.list(),
+        in_scope,
+        &super::ToolDiscoveryScope::Track(scope),
+    )
+    .into_iter()
+    .map(|d| d.name)
+    .collect()
 }
 
 /// A tool outside the Track's scope is unknown here, and no plugin host means no plugin tools.

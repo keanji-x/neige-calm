@@ -36,6 +36,22 @@ impl TrackPluginScope {
     }
 }
 
+/// Discovery context is not a call grant. A daemon bootstrap catalog must cover tools
+/// that any later bound Planner/Worker may need; a known unbound Track stays restricted.
+pub(crate) enum ToolDiscoveryScope<'a> {
+    Bootstrap,
+    Track(&'a TrackPluginScope),
+}
+
+impl ToolDiscoveryScope<'_> {
+    pub(crate) fn allows_manifest(&self, manifest: &crate::plugin_host::Manifest) -> bool {
+        match self {
+            Self::Bootstrap => true,
+            Self::Track(scope) => scope.allows_manifest(manifest),
+        }
+    }
+}
+
 /// Single choke-point policy. A missing track row is `None`: bound-ness cannot be proven, so
 /// fail closed rather than widen to the union. The decision itself lives in `track_binding`.
 pub(crate) async fn plugin_scope_for_track(

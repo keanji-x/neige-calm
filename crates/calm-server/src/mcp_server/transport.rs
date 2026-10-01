@@ -15,7 +15,9 @@ use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolDescriptor, ToolRegistry,
     require_role_any,
 };
-use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track};
+use crate::mcp_server::tool_visibility::{
+    ToolDiscoveryScope, TrackPluginScope, plugin_scope_for_track,
+};
 use crate::model::CardRole;
 use crate::model::{new_id, now_ms};
 use crate::operation::forge_action_adapter::{
@@ -374,26 +376,11 @@ async fn dispatch_request(
                             .await;
                             descriptors
                         }
-                        None => {
-                            // Unresolvable threadId: no track context, so the scope is the union ("discovery wide, dispatch strict"); tools/call still enforces per-thread identity and per-track scope.
-                            let scope = plugin_scope_for_track(ctx, None).await;
-                            let mut descriptors =
-                                registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
-                            descriptors
-                                .retain(|d| crate::builtin_plugins::owner(&d.name).is_none());
-                            descriptors.extend(plugin_tool_descriptors(ctx, &scope).await);
-                            descriptors
-                        }
+                        None => bootstrap_tool_descriptors(ctx, registry).await,
                     },
-                    // Shared-daemon Codex sessions may send tools/list before a thread is attributed. Discovery returns the role-visible union because tools/call still enforces identity and scope; the residual exposure is tool names only.
-                    None => {
-                        let scope = plugin_scope_for_track(ctx, None).await;
-                        let mut descriptors =
-                            registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
-                        descriptors.retain(|d| crate::builtin_plugins::owner(&d.name).is_none());
-                        descriptors.extend(plugin_tool_descriptors(ctx, &scope).await);
-                        descriptors
-                    }
+                    // Initial discovery may precede thread attribution. The catalog covers all
+                    // running plugins; tools/call still requires a live role and Track binding.
+                    None => bootstrap_tool_descriptors(ctx, registry).await,
                 },
                 ConnectionIdentity::CardBound(bound) => match thread_id {
                     Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
@@ -463,13 +450,40 @@ async fn dispatch_request(
     }
 }
 
+async fn bootstrap_tool_descriptors(
+    ctx: &Arc<AppContext>,
+    registry: &ToolRegistry,
+) -> Vec<ToolDescriptor> {
+    let mut descriptors = registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
+    extend_plugin_tool_descriptors(
+        ctx,
+        &mut descriptors,
+        PLUGIN_TOOL_ROLES,
+        &ToolDiscoveryScope::Bootstrap,
+    )
+    .await;
+    descriptors
+}
+
 pub(crate) async fn extend_plugin_tool_descriptors_for_role(
     ctx: &Arc<AppContext>,
     descriptors: &mut Vec<ToolDescriptor>,
     role: CardRole,
     scope: &TrackPluginScope,
 ) {
-    let running = match ctx.plugin_host.get() {
+    extend_plugin_tool_descriptors(ctx, descriptors, &[role], &ToolDiscoveryScope::Track(scope))
+        .await;
+}
+
+/// Native and manifest tools use the same lifecycle snapshot and discovery policy.
+async fn extend_plugin_tool_descriptors(
+    ctx: &Arc<AppContext>,
+    descriptors: &mut Vec<ToolDescriptor>,
+    roles: &[CardRole],
+    scope: &ToolDiscoveryScope<'_>,
+) {
+    let host = ctx.plugin_host.get();
+    let running = match host {
         Some(host) => host.running_plugin_ids().await,
         None => BTreeSet::new(),
     };
@@ -478,29 +492,22 @@ pub(crate) async fn extend_plugin_tool_descriptors_for_role(
             running.contains(&p.manifest().id) && scope.allows_manifest(p.manifest())
         })
     });
-    if PLUGIN_TOOL_ROLES.contains(&role) {
-        descriptors.extend(plugin_tool_descriptors(ctx, scope).await);
+    if roles.iter().any(|role| PLUGIN_TOOL_ROLES.contains(role))
+        && let Some(host) = host
+    {
+        descriptors.extend(plugin_tool_descriptors_from(
+            host.registry().list(),
+            &running,
+            scope,
+        ));
     }
-}
-
-/// Plugin tool descriptors visible under `scope`; kernel `calm.*` descriptors never route through here.
-async fn plugin_tool_descriptors(
-    ctx: &Arc<AppContext>,
-    scope: &TrackPluginScope,
-) -> Vec<ToolDescriptor> {
-    let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
-        return Vec::new();
-    };
-
-    let running_ids = plugin_host.running_plugin_ids().await;
-    plugin_tool_descriptors_from(plugin_host.registry().list(), &running_ids, scope)
 }
 
 /// The only place `plugin.<id>_<tool>` names are minted for discovery; `plugin_tool_route` is its inverse.
 fn plugin_tool_descriptors_from(
     manifests: Vec<crate::plugin_host::Manifest>,
     running_ids: &BTreeSet<String>,
-    scope: &TrackPluginScope,
+    scope: &ToolDiscoveryScope<'_>,
 ) -> Vec<ToolDescriptor> {
     let mut descriptors = Vec::new();
     for manifest in manifests {
@@ -1303,7 +1310,7 @@ mod connector_tool_routing_tests {
         let names: Vec<String> = plugin_tool_descriptors_from(
             registry.list(),
             &running(&[CONNECTOR_ID]),
-            &TrackPluginScope::All,
+            &ToolDiscoveryScope::Track(&TrackPluginScope::All),
         )
         .into_iter()
         .map(|d| d.name)
@@ -1332,11 +1339,14 @@ mod connector_tool_routing_tests {
             &[UNDERSCORE_TOOL],
         )]);
         // Same registry, empty running set — the ONLY thing that changed.
-        let names: Vec<String> =
-            plugin_tool_descriptors_from(registry.list(), &running(&[]), &TrackPluginScope::All)
-                .into_iter()
-                .map(|d| d.name)
-                .collect();
+        let names: Vec<String> = plugin_tool_descriptors_from(
+            registry.list(),
+            &running(&[]),
+            &ToolDiscoveryScope::Track(&TrackPluginScope::All),
+        )
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
         assert!(
             names.is_empty(),
             "tools must vanish the instant the id leaves the running set: {names:?}"

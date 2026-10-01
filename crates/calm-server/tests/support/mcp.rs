@@ -25,6 +25,7 @@ pub const TEST_BUDGET: Duration = Duration::from_secs(5);
 /// Carded boot helper — mints one card with the requested role and returns everything callers need to drive an MCP session.
 pub struct CardBoot {
     pub server: Arc<McpServer>,
+    pub plugin_host: Arc<tokio::sync::OnceCell<Arc<calm_server::plugin_host::PluginHost>>>,
     pub repo: Arc<dyn Repo>,
     /// Same handle as `repo`, kept concrete so a fixture can open a transaction and mint through the production `*_tx` helpers.
     pub sqlx: Arc<SqlxRepo>,
@@ -171,6 +172,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     let registry = build_default_registry();
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+    let plugin_host = Arc::new(tokio::sync::OnceCell::new());
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
@@ -181,7 +183,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         daemon_token
             .as_deref()
             .map(calm_server::mcp_server::auth::hash_token),
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        plugin_host.clone(),
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
     )
@@ -190,6 +192,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
 
     CardBoot {
         server,
+        plugin_host,
         repo,
         sqlx: sqlx_repo,
         card_role_cache,
