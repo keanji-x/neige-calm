@@ -15,6 +15,8 @@ use super::{
     idempotency_payload_conflict, operation_result_from, required_lease_owner, required_output,
 };
 
+const PREPARE_DEFERRED_RETRY_MS: i64 = 250;
+
 #[derive(Clone)]
 pub struct SqlxOperationRepo {
     pub(super) pool: SqlitePool,
@@ -279,7 +281,21 @@ impl OperationRepo for SqlxOperationRepo {
         let output = match adapter.prepare_tx(&mut tx, &op.payload, op).await {
             Ok(output) => output,
             Err(e) => {
-                let _ = tx.rollback().await;
+                tx.rollback().await?;
+                if matches!(e, CalmError::OperationDeferred(_)) {
+                    // Roll back every preparation write before yielding this claim. A short
+                    // persisted delay prevents the drive loop from spinning on a busy resource.
+                    sqlx::query(
+                        r#"UPDATE operations SET lease_owner=NULL, lease_until_ms=?1,
+                        updated_at_ms=?2 WHERE id=?3 AND phase='pending' AND lease_owner=?4"#,
+                    )
+                    .bind(now_ms() + PREPARE_DEFERRED_RETRY_MS)
+                    .bind(now_ms())
+                    .bind(&op.id)
+                    .bind(required_lease_owner(op)?)
+                    .execute(&self.pool)
+                    .await?;
+                }
                 return Err(e);
             }
         };

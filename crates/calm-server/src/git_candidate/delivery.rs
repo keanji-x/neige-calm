@@ -344,6 +344,37 @@ pub(crate) async fn attempt_has_delivery(
     .await?)
 }
 
+/// A durable delivery binding declares exclusive checkout handoff. Other Forge actions
+/// have no delivery binding and keep their normal execution-reference admission.
+/// Call in the Forge prepare transaction before acquiring its writer or issuing effects.
+pub(crate) async fn admit_kernel_delivery_operation_tx(
+    tx: &mut Tx<'_>,
+    operation_key: &str,
+    track_id: &str,
+    card_id: &str,
+) -> Result<()> {
+    let binding: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT delivery_id,track_id,card_id FROM task_git_deliveries WHERE operation_key=?1",
+    )
+    .bind(operation_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((delivery_id, bound_track, bound_card)) = binding else {
+        return Ok(());
+    };
+    if bound_track != track_id || bound_card != card_id {
+        return Err(CalmError::BadRequest(
+            "kernel delivery operation does not match its persisted checkout owner".into(),
+        ));
+    }
+    if !crate::db::sqlite::delivery_workspace_available(&mut **tx, &delivery_id).await? {
+        return Err(CalmError::OperationDeferred(
+            "kernel delivery is waiting for checkout access".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Submit one delivery's forge action under the row's persisted `operation_key` (the one
 /// submission function, D2): the report handler and the scheduler's re-submission both come
 /// here, so the semantic hash and the key are equal and the runtime dedups the second call.

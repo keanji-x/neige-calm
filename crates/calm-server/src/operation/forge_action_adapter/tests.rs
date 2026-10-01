@@ -975,3 +975,6 @@ fn forge_env_key_buckets_are_a_partition() {
 
 #[path = "tests/guards.rs"]
 mod guards;
+
+#[path = "tests/delivery_guards.rs"]
+mod delivery_guards;

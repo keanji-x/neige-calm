@@ -33,6 +33,11 @@ pub enum CalmError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    /// Prepare admission is temporarily occupied. The kernel leaves the durable operation
+    /// pending and retries; this is never a permanent idempotency-key failure.
+    #[error("operation deferred: {0}")]
+    OperationDeferred(String),
+
     /// 409 — SELECT-inside-tx idempotency sentinel: a worker card with the same `idempotency_key`
     /// already exists. Never escapes the dispatcher closure.
     #[error("dispatch idempotency collision: {0}")]
@@ -136,6 +141,7 @@ impl CalmError {
         match self {
             CalmError::NotFound(_) => "not_found",
             CalmError::Conflict(_) => "conflict",
+            CalmError::OperationDeferred(_) => "operation_deferred",
             CalmError::IdempotencyCollision(_) => "idempotency_collision",
             CalmError::IdempotencyKeyExhausted(_) => "idempotency_key_exhausted",
             CalmError::TodaySummaryNoActivity(_) => "today_summary_no_activity",
@@ -170,6 +176,7 @@ impl CalmError {
         match self {
             CalmError::NotFound(_) => StatusCode::NOT_FOUND,
             CalmError::Conflict(_)
+            | CalmError::OperationDeferred(_)
             | CalmError::IdempotencyCollision(_)
             | CalmError::IdempotencyKeyExhausted(_)
             | CalmError::PluginConflict(_)
@@ -277,8 +284,9 @@ impl From<CalmError> for calm_truth::TruthError {
             CalmError::Db(e) => calm_truth::TruthError::Db(e),
             CalmError::Io(e) => calm_truth::TruthError::Io(e),
             CalmError::Serde(e) => calm_truth::TruthError::Serde(e),
-            // Route-only variants with no `CoreError`/`TruthError` twin collapse to Internal.
-            CalmError::IdempotencyKeyExhausted(m)
+            // Server-only variants with no `CoreError`/`TruthError` twin collapse to Internal.
+            CalmError::OperationDeferred(m)
+            | CalmError::IdempotencyKeyExhausted(m)
             | CalmError::PluginInstall(m)
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)

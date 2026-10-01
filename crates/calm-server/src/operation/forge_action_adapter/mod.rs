@@ -1212,6 +1212,13 @@ impl ProviderAdapter for ForgeActionAdapter {
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("track {}", payload.track_id)))?;
 
+        crate::git_candidate::delivery::admit_kernel_delivery_operation_tx(
+            tx,
+            &op.operation_key,
+            &payload.track_id,
+            &payload.card_id,
+        )
+        .await?;
         super::workspace_lease::execution_guard::acquire_execution_write_tx(
             tx,
             &payload.track_id,

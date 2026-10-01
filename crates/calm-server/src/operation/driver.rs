@@ -417,6 +417,9 @@ impl OperationRuntime {
                     .await;
                 let Some((_next, events)) = (match prepared {
                     Ok(prepared) => prepared,
+                    // The repository rolled preparation back and yielded its claim with a
+                    // retry delay. Keep the same durable operation key pending.
+                    Err(CalmError::OperationDeferred(_)) => return Ok(()),
                     Err(e) => {
                         if let Some((last_error, last_error_class)) = client_failure_parts(&e) {
                             if let Some(result) = self

@@ -1068,3 +1068,6 @@ fn required_output(op: &Operation) -> Result<&TxOutput> {
 mod claim_completion_deadlock_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod prepare_admission_tests;
