@@ -23,3 +23,12 @@ intentionally clearing its marker and escaping the original group. An unreadable
 live process in the original group prevents confirmation. An old supervisor is
 explicitly refused before starting a new managed terminal; restart it to use the
 new stop contract. Browser terminal protocol version 4 is unchanged.
+
+Authenticated terminal.open captures the caller's live native write origin separately
+from its stable request hash. Preparation verifies that origin atomically; unrelated
+physical scopes reserve their own root. Each terminal keeps its own durable reference,
+so ending the caller's turn cannot permit readers while its terminal can still write.
+Claude CLI creators and task workers explicitly declare the same terminal writer
+reference. Codex viewers declare launch ownership without acquiring a writer reference.
+A terminal task reaching a terminal status requests strict stop during reconciliation;
+card, Track, and area deletion stop all scoped terminal writers before releasing them.

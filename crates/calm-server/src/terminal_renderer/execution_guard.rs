@@ -80,7 +80,7 @@ pub(crate) async fn stop_and_release_terminal(
                 r#"
 UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch',json(?1))
 WHERE json_extract(tx_output_json,'$.data.terminal_id')=?2
-AND kind IN ('terminal-create','terminal-worker','codex-worker','claude-worker')
+AND kind IN ('terminal-create','terminal-worker','codex-worker','claude-worker','codex-create','claude-create')
 "#,
             )
             .bind(stopped)
@@ -106,10 +106,12 @@ pub(crate) async fn reconcile_terminal_writers(
 SELECT DISTINCT l.holder_id,
 COALESCE((t.id IS NULL OR t.exit_code IS NOT NULL OR t.signal_killed=1 OR
  o.phase IN ('compensating','failed','stuck') OR
- ws.state IN ('exited','failed','superseded')),0)
+ ws.state IN ('exited','failed','superseded') OR
+ ct.status IN ('done','failed','canceled')),0)
 FROM workspace_leases l LEFT JOIN terminals t ON t.id=l.holder_id
 LEFT JOIN operations o ON json_extract(o.tx_output_json,'$.data.terminal_id')=l.holder_id
 LEFT JOIN worker_sessions ws ON ws.terminal_run_id=t.id
+LEFT JOIN current_tasks ct ON ct.worker_card_id=l.card_id
 WHERE l.holder_kind='terminal' AND l.state IN ('held','releasing')
 AND o.phase IN ('succeeded','spawn_succeeded','compensating','failed','stuck')
 ORDER BY l.updated_at_ms,l.holder_id LIMIT 16

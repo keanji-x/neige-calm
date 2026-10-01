@@ -34,7 +34,7 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
     };
     // Column is selected exclusively from the static scope above.
     let sql = format!(
-        "SELECT o.* FROM operations o JOIN cards c ON (o.target_type='card' AND o.target_id=c.id OR json_extract(o.tx_output_json,'$.data.card_id')=c.id) JOIN tracks t ON t.id=c.track_id WHERE o.kind IN ('terminal-worker','claude-worker','codex-worker','terminal-create') AND {column}=?1 ORDER BY o.id"
+        "SELECT o.* FROM operations o JOIN cards c ON (o.target_type='card' AND o.target_id=c.id OR json_extract(o.tx_output_json,'$.data.card_id')=c.id) JOIN tracks t ON t.id=c.track_id WHERE o.kind IN ('terminal-worker','claude-worker','codex-worker','terminal-create','codex-create','claude-create') AND {column}=?1 ORDER BY o.id"
     );
     let rows = sqlx::query(&sql).bind(id).fetch_all(&mut **tx).await?;
     let mut unresolved = Vec::new();

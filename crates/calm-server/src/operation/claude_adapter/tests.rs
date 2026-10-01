@@ -764,3 +764,45 @@ async fn worker_lease_is_kernel_policy() {
             .unwrap();
     assert_eq!(policy, None, "the plain fixture lease is legacy");
 }
+
+#[tokio::test]
+async fn claude_cli_writer_reference_survives_task_lease_release_until_stop() {
+    let h = claude_worker_harness().await;
+    let (output, _, _) = prepare_claude_worker(&h, "cli-stop").await;
+    let card = output.output_string("card_id", "test").unwrap();
+    let terminal = output.output_string("terminal_id", "test").unwrap();
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1 AND state='held'")
+        .bind(&terminal).fetch_one(h.repo.pool()).await.unwrap();
+    assert_eq!(
+        count, 1,
+        "the real CLI owns an independent writer reference before spawn"
+    );
+    release_workspace_lease_for_card_repo(
+        h.repo.as_ref(),
+        &h.events,
+        &card,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
+    let held:i64=sqlx::query_scalar("SELECT count(*) FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1 AND state='held'")
+        .bind(&terminal).fetch_one(h.repo.pool()).await.unwrap();
+    assert_eq!(
+        held, 1,
+        "a committed task report cannot release a live CLI's reference"
+    );
+    let host = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
+        .await
+        .unwrap();
+    crate::terminal_renderer::stop_and_release_terminal(h.repo.as_ref(), host.sock(), &terminal)
+        .await
+        .unwrap();
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1",
+    )
+    .bind(&terminal)
+    .fetch_one(h.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(state, "released");
+}

@@ -59,7 +59,12 @@ pub(crate) fn fresh_state() -> Value {
 pub(crate) fn initialize_prestart(kind: &str, output: &mut super::TxOutput) -> Result<()> {
     if matches!(
         kind,
-        "codex-worker" | "claude-worker" | "terminal-worker" | "terminal-create"
+        "codex-worker"
+            | "claude-worker"
+            | "terminal-worker"
+            | "terminal-create"
+            | "codex-create"
+            | "claude-create"
     ) {
         let data = output
             .data
@@ -150,7 +155,7 @@ pub(crate) async fn resolve(
             .bind(&terminal_id).fetch_optional(&mut **tx).await?
             .ok_or_else(|| CalmError::NotFound(format!("terminal {terminal_id}")))?;
         let rows: Vec<(String,String,Option<String>,String)> = sqlx::query_as(
-            "SELECT id,phase,lease_owner,tx_output_json FROM operations WHERE (target_type='card' AND target_id=?1 OR json_extract(tx_output_json,'$.data.card_id')=?1) AND kind IN ('codex-worker','claude-worker','terminal-worker','terminal-create') LIMIT 2"
+            "SELECT id,phase,lease_owner,tx_output_json FROM operations WHERE (target_type='card' AND target_id=?1 OR json_extract(tx_output_json,'$.data.card_id')=?1) AND kind IN ('codex-worker','claude-worker','terminal-worker','terminal-create','codex-create','claude-create') LIMIT 2"
         ).bind(&card).fetch_all(&mut **tx).await?;
         if rows.len() > 1 { return Err(CalmError::Conflict("terminal has conflicting worker operation ownership".into())); }
         let Some((op_id, phase, owner, output)) = rows.into_iter().next() else {
@@ -169,7 +174,7 @@ pub(crate) async fn resolve(
                 let launch = match launch {
                     Some(launch)=>Launch::Task(launch),
                     None=> {
-                        let row=sqlx::query("SELECT * FROM operations WHERE id=?1 AND kind='terminal-create'").bind(&op_id).fetch_optional(&mut **tx).await?;
+                        let row=sqlx::query("SELECT * FROM operations WHERE id=?1 AND kind IN ('terminal-create','codex-create','claude-create')").bind(&op_id).fetch_optional(&mut **tx).await?;
                         let Some(row)=row else {return Ok(TerminalStart::AttachOnly(sock));};
                         let op=super::repo_sqlite::operation_from_row(&row)?;
                         if phase != "spawn_started" || owner.is_none() {return Ok(TerminalStart::AttachOnly(sock));}

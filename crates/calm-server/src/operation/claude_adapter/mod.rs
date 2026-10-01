@@ -465,6 +465,15 @@ impl ProviderAdapter for ClaudeAdapter {
             request.theme,
         )
         .await?;
+        super::workspace_lease::execution_guard::acquire_execution_write_tx(
+            tx,
+            card.track_id.as_ref(),
+            card.id.as_ref(),
+            &term.id,
+            "terminal",
+            Path::new(&request.cwd),
+        )
+        .await?;
         let projected_card = project_claude_runtime_fields_for_response(
             card.clone(),
             &term.id,
@@ -493,6 +502,7 @@ impl ProviderAdapter for ClaudeAdapter {
             "runtime_id": runtime_id,
             "track_id": card.track_id,
             "terminal_id": term.id,
+            "terminal_launch": super::terminal_launch::fresh_state(),
             "settings_path": request.settings_path,
             "claude_session_id": request.claude_session_id,
             "command_line": request.command_line,
@@ -688,13 +698,14 @@ impl ProviderAdapter for ClaudeAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
+        output: &TxOutput,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
             return Ok(());
         }
+        super::worker_cleanup::require_cleanup_safe(ctx, op, output, false).await?;
         match step.op.as_str() {
             "reap_terminal_pty" => {
                 let terminal_id = step_arg_string(step, "terminal_id")?;
@@ -819,6 +830,15 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let (lease, lease_event) =
             acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &plan).await?;
 
+        super::workspace_lease::execution_guard::acquire_execution_write_tx(
+            tx,
+            card.track_id.as_ref(),
+            card.id.as_ref(),
+            &term.id,
+            "terminal",
+            Path::new(&cwd),
+        )
+        .await?;
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
             merged.insert(
