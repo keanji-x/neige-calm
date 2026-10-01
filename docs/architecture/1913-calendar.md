@@ -1,7 +1,7 @@
 # Calendar commitments
 
-Calendar is a compiled plugin (`dev.neige.calendar`), disabled on first install
-like other builtins. Its own module owns validation, namespaced persistence,
+Calendar is an always-enabled compiled plugin (`dev.neige.calendar`); other
+builtins keep their declared optional lifecycle. Its own module owns validation, namespaced persistence,
 HTTP handlers, and native AI tools. The catalog registers HTTP routers without
 application-ID dispatch in the kernel. Page loads only read.
 
@@ -141,3 +141,29 @@ reported that it did not need to calculate UTC offsets. It still reported broad
 tool-discovery results; this change does not claim to fix that discovery behavior.
 The probe used an unbound Track and does not establish development-owner access
 or reminders. Temporary acceptance instrumentation was restored after execution.
+
+## Separate follow-up: always-enabled lifecycle
+
+After #1936, Calendar becomes an always-enabled compiled component. A typed
+compiled lifecycle policy supplies enablement and disable permission; external
+manifest data cannot opt into it. Reconciliation enables new and legacy-disabled
+Calendar rows without changing stored entries. User disable attempts are rejected,
+and conflicting operator `plugins_disabled` configuration is refused explicitly.
+Other builtins retain their optional lifecycle.
+
+The plugin list declares required `can_disable` metadata. Settings uses that
+contract to show Always on instead of a switch. REST revision18 and web revision37
+gate matched clients. Non-running always-on rows offer Retry through the existing
+enable endpoint without a disable action. This follow-up does not change Track/role tool admission,
+associate manual tasks, or add reminder delivery. Those remain separate work.
+
+Acceptance covers first boot, legacy disabled reconciliation, rejected disable
+with retained data, unchanged optional builtin behavior, required metadata
+decoding, and Settings controls. The orchestrator approves the narrow generated
+OpenAPI and frontend compatibility contract updates under #1913.
+
+Follow-up ownership records:
+
+```
+OWNERSHIP-CHANGE: fe/core/api/generated/openapi.json — expose required builtin disable permission (#1913)
+```

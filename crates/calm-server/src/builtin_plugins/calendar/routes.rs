@@ -33,8 +33,8 @@ async fn access(s: &RouteState, actor: &Actor) -> Result<Access> {
         .get()
         .ok_or_else(|| CalmError::ServiceUnavailable("plugin host unavailable".into()))?;
     if !host.running_plugin_ids().await.contains(PLUGIN_ID) {
-        return Err(CalmError::Conflict(
-            "Enable Calendar in Settings to arrange tasks".into(),
+        return Err(CalmError::ServiceUnavailable(
+            "Calendar is temporarily unavailable".into(),
         ));
     }
     Ok(Access {

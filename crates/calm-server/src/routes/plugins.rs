@@ -70,8 +70,10 @@ pub struct PluginListItem {
     /// Does this plugin declare a `config_schema`? Read from the registry, the same source
     /// the write path validates against; `false` when the manifest is not loaded.
     pub has_config: bool,
-    /// False for compiled components; they can be disabled but not removed.
+    /// False for compiled components; removal is independent of enablement.
     pub can_uninstall: bool,
+    /// Lifecycle permission declared by the component, independent of removal.
+    pub can_disable: bool,
 }
 
 /// Single-plugin detail; the full manifest blob rides along.
@@ -223,6 +225,8 @@ pub(crate) async fn list_plugins(
             version: plug.version.clone(),
             enabled: plug.enabled,
             can_uninstall: !crate::builtin_plugins::is_reserved(&plug.id),
+            can_disable: crate::builtin_plugins::get(&plug.id)
+                .is_none_or(|component| component.can_disable()),
             state,
             manifest_name: manifest
                 .get("display_name")

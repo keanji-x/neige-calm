@@ -30,7 +30,7 @@ function plugin(overrides: Partial<PluginListItem> = {}): PluginListItem {
     state: 'running',
     manifest_name: 'Todo',
     has_config: false,
-    can_uninstall: true,
+    can_uninstall: true, can_disable: true,
     ...overrides,
   };
 }
@@ -60,7 +60,7 @@ describe('Plugins pane', () => {
   it('keeps a built-in capability switch but offers no removal', async () => {
     const onSetEnabled = vi.fn();
     render(<PluginsPane {...props({
-      plugins: [plugin({ manifest_name: 'Development', can_uninstall: false })],
+      plugins: [plugin({ manifest_name: 'Development', can_uninstall: false, can_disable: true })],
       onSetEnabled,
     })} />);
     expect(screen.queryByRole('button', { name: 'Remove Development' })).toBeNull();
@@ -288,4 +288,22 @@ describe('Plugins pane — add and remove', () => {
     expect(screen.queryByRole('button', { name: 'Keep Git forge' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Keep Todo' })).toBeTruthy();
   });
+});
+
+it('shows an always-on lifecycle declaration without an enable switch', () => {
+  render(<PluginsPane plugins={[plugin({ id: 'calendar', manifest_name: 'Calendar', can_uninstall: false, can_disable: false, enabled: true, state: 'running' })]}
+    loadError={null} onRetryLoad={vi.fn()} pendingIds={new Set()} errors={new Map()} onSetEnabled={vi.fn()} onOpenConfig={vi.fn()}
+    effectBoundaryIds={new Set()} onAdd={vi.fn()} onUninstall={vi.fn()} />);
+  expect(screen.getByText('Always on')).toBeTruthy();
+  expect(screen.queryByRole('switch', { name: 'Enable Calendar' })).toBeNull();
+});
+
+it('retries an unavailable always-on component without offering disable', async () => {
+  const onSetEnabled = vi.fn();
+  render(<PluginsPane plugins={[plugin({ id: 'calendar', manifest_name: 'Calendar', can_uninstall: false, can_disable: false, enabled: true, state: 'unavailable' })]}
+    loadError={null} onRetryLoad={vi.fn()} pendingIds={new Set()} errors={new Map()} onSetEnabled={onSetEnabled} onOpenConfig={vi.fn()}
+    effectBoundaryIds={new Set()} onAdd={vi.fn()} onUninstall={vi.fn()} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Retry Calendar' }));
+  expect(onSetEnabled).toHaveBeenCalledWith('calendar', true);
+  expect(screen.queryByRole('switch', { name: 'Enable Calendar' })).toBeNull();
 });

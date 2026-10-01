@@ -1,1 +1,1 @@
-Create this Track's commitment; enable Calendar first. Retry identical idempotency_key/body. all_day: date. timed: local YYYY-MM-DDTHH:mm start/end + IANA zone, or matching RFC3339 offsets. Ask for missing time/zone/end or DST ambiguity. Confirm after success. No execution/reminders.
+Create this Track's commitment; Calendar is always enabled. Retry identical idempotency_key/body. all_day: date. timed: local YYYY-MM-DDTHH:mm start/end + IANA zone, or matching RFC3339 offsets. Ask for missing time/zone/end or DST ambiguity. Confirm after success. No execution/reminders.

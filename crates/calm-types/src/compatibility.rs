@@ -7,4 +7,5 @@
 // `archived_at`, and `PATCH /api/tracks/{id}` takes `closed`.
 // Revision 16 (#1897): plugin list rows declare required can_uninstall for built-in capabilities.
 // Revision 17 (#1913): Calendar REST and plugin data invalidation.
-pub const REST_API_VERSION: &str = "17";
+// Revision18 (#1913 follow-up): plugin list requires lifecycle can_disable.
+pub const REST_API_VERSION: &str = "18";

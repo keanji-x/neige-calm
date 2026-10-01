@@ -38,7 +38,7 @@ function mount(path: string, storedText: string | null = null, pluginDescription
     if (request.path === '/api/plugins') return Promise.resolve(ok([{
       id: 'dev.example', version: '1', enabled: false, state: 'disabled',
       manifest_name: 'development', manifest_description: pluginDescription,
-      has_config: false, can_uninstall: false,
+      has_config: false, can_uninstall: false, can_disable: true,
     }]));
     if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));

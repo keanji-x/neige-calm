@@ -16,7 +16,8 @@ pub(super) fn component() -> super::BuiltinPlugin {
         |_, _| Err("Calendar uses its authenticated native tools".into()),
         |_, _, _| Err("Calendar does not expose forge actions".into()),
         include_str!("instructions.md"),
-    );
+    )
+    .always_enabled();
     component.router = routes::router;
     component
 }

@@ -28,7 +28,7 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
       onDateChange={onDateChange} onWindowChange={onWindowChange}>
     {month.error && <Banner status="error" title={month.error} endContent={<Button label="Retry" variant="ghost" onClick={onRetry} />} />}
     {month.loading && <p role="status" className={styles.empty}>Loading calendar…</p>}
-    {!month.loading && !month.error && !enabled && <p className={styles.empty}>Arrange work here with your assistant.<br /><Button label="Enable Calendar in Settings" variant="ghost" onClick={onSettings} /></p>}
+    {!month.loading && !month.error && !enabled && <p className={styles.empty}>Calendar is temporarily unavailable.<br /><Button label="Open plugin settings" variant="ghost" onClick={onSettings} /></p>}
     <section className={styles.dayDetails} aria-label="Selected day tasks">
       <div className={styles.heading}>
         <div className={styles.dateHeading}><h2>{dateLabel}</h2><span>{timezone}</span></div>

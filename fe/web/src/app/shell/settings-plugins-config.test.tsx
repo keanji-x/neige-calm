@@ -45,7 +45,7 @@ const ROW = {
   state: 'running',
   manifest_name: 'Git forge',
   has_config: true,
-  can_uninstall: true,
+  can_uninstall: true, can_disable: true,
 };
 
 function detailBody(overrides: Record<string, unknown> = {}): unknown {

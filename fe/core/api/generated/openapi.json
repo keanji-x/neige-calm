@@ -9990,12 +9990,17 @@
           "state",
           "manifest_name",
           "has_config",
-          "can_uninstall"
+          "can_uninstall",
+          "can_disable"
         ],
         "properties": {
+          "can_disable": {
+            "type": "boolean",
+            "description": "Lifecycle permission declared by the component, independent of removal."
+          },
           "can_uninstall": {
             "type": "boolean",
-            "description": "False for compiled components; they can be disabled but not removed."
+            "description": "False for compiled components; removal is independent of enablement."
           },
           "enabled": {
             "type": "boolean"

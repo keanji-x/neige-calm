@@ -10,7 +10,7 @@ it('references disabled plugin documentation using only catalog reads', async ()
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.path === '/api/plugins' ? [{
       id: 'dev.example', version: '1', enabled: false, state: 'disabled',
       manifest_name: 'development', manifest_description: 'Develop issues and publish changes.',
-      has_config: false, can_uninstall: false,
+      has_config: false, can_uninstall: false, can_disable: true,
     }] : { tags: [], tracks: [], blocks: [] } });
   } };
   const search = mentionSearchOf(transport, createUnauthorizedChannel({ enqueue: task => task() }), 'area', 'track');
@@ -57,7 +57,7 @@ it.each(['+development', '＋development'])('filters %s through the plugin catal
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.path === '/api/plugins' ? [{
       id: 'dev.example', version: '1', enabled: false, state: 'disabled',
       manifest_name: 'development', manifest_description: 'Develop issues and publish changes.',
-      has_config: false, can_uninstall: false,
+      has_config: false, can_uninstall: false, can_disable: true,
     }] : { tags: [], tracks: [], blocks: [] } });
   } };
   const search = mentionSearchOf(transport, createUnauthorizedChannel({ enqueue: task => task() }), 'area', 'track');

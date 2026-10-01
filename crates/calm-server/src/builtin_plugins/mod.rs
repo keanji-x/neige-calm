@@ -11,7 +11,14 @@ use crate::plugin_host::{CallToolResult, Manifest};
 use serde_json::{Value, json};
 use std::sync::{Arc, LazyLock};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LifecyclePolicy {
+    Optional,
+    Always,
+}
+
 pub struct BuiltinPlugin {
+    lifecycle: LifecyclePolicy,
     manifest: Manifest,
     native: ToolRegistry,
     lower: fn(&str, &Value) -> Result<Value, String>,
@@ -29,6 +36,7 @@ impl BuiltinPlugin {
         instructions: &'static str,
     ) -> Self {
         Self {
+            lifecycle: LifecyclePolicy::Optional,
             manifest: Manifest::parse(manifest).expect("compiled manifest"),
             native,
             lower,
@@ -36,6 +44,13 @@ impl BuiltinPlugin {
             instructions,
             router: axum::Router::new,
         }
+    }
+    pub(super) fn always_enabled(mut self) -> Self {
+        self.lifecycle = LifecyclePolicy::Always;
+        self
+    }
+    pub fn can_disable(&self) -> bool {
+        self.lifecycle == LifecyclePolicy::Optional
     }
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
