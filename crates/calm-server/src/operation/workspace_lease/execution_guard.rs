@@ -275,10 +275,6 @@ impl NativeTaskGuard {
     pub(crate) async fn client_nonce(&self, preferred: Option<&str>) -> Result<String> {
         self.lease().client_nonce(preferred).await
     }
-    #[cfg(test)]
-    pub(crate) async fn started(self, turn: &str) -> Result<()> {
-        self.into_lease().started(turn).await
-    }
     pub(crate) async fn rejected(self) -> Result<()> {
         self.into_lease().rejected().await
     }
