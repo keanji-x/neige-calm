@@ -43,6 +43,7 @@ describe('mentionQueryOf', () => {
     ['#dep', { kind: 'tag', text: 'dep' }],
     ['/dep', { kind: 'track', text: 'dep' }],
     ['>roll', { kind: 'block', text: 'roll' }],
+    ['+dev', { kind: 'plugin', text: 'dev' }],
   ] as const)('reads %s as one group and strips the prefix from the search', (typed, query) => {
     expect(mentionQueryOf(typed)).toEqual(query);
   });
@@ -51,6 +52,7 @@ describe('mentionQueryOf', () => {
     ['＃dep', { kind: 'tag', text: 'dep' }],
     ['、dep', { kind: 'track', text: 'dep' }],
     ['》roll', { kind: 'block', text: 'roll' }],
+    ['＋dev', { kind: 'plugin', text: 'dev' }],
     ['＃', { kind: 'tag', text: '' }],
     ['、', { kind: 'track', text: '' }],
     ['》', { kind: 'block', text: '' }],
@@ -62,6 +64,7 @@ describe('mentionQueryOf', () => {
     expect(mentionQueryOf('#')).toEqual({ kind: 'tag', text: '' });
     expect(mentionQueryOf('/')).toEqual({ kind: 'track', text: '' });
     expect(mentionQueryOf('>')).toEqual({ kind: 'block', text: '' });
+    expect(mentionQueryOf('+')).toEqual({ kind: 'plugin', text: '' });
   });
 
   it('keeps everything typed, in all three groups, without a prefix; only the first character is one', () => {

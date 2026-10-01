@@ -18,6 +18,10 @@ const GROUP_HEADING: Readonly<Record<MentionKind, string>> = Object.freeze({
   plugin: 'Plugins',
 });
 
+const ITEM_MARKER: Readonly<Record<MentionKind, string>> = Object.freeze({
+  tag: '#', track: '/', block: '>', plugin: '+',
+});
+
 /**
  * How long a keystroke waits before its request goes out. The wait is this source's, not
  * Astryx's: `useTriggerMenu` calls `search('')` on every keystroke only to learn whether the
@@ -29,7 +33,7 @@ const GROUP_HEADING: Readonly<Record<MentionKind, string>> = Object.freeze({
 export const MENTION_SEARCH_DELAY_MS = 120;
 
 type MentionCategory = Readonly<{
-  kind: MentionKind | 'plugin'; label: string; detail: string; prefix: string;
+  kind: MentionKind; label: string; detail: string; prefix: string;
 }>;
 
 type MentionItem = SearchableItem<
@@ -39,7 +43,7 @@ type MentionItem = SearchableItem<
 
 function categoryItems(suggestions: readonly MentionSuggestion[]): MentionItem[] {
   return ([
-    { kind: 'plugin', label: 'Plugins', detail: 'Tools · None installed', prefix: '@+' },
+    { kind: 'plugin', label: 'Plugins', detail: 'Plugin guides', prefix: '@+' },
     { kind: 'tag', label: 'Tags', detail: 'Group of tracks', prefix: '@#' },
     { kind: 'track', label: 'Tracks', detail: 'Full report', prefix: '@/' },
     { kind: 'block', label: 'Blocks', detail: 'Report section', prefix: '@>' },
@@ -104,7 +108,6 @@ export function createMentionSource(search: MentionSearch, delayMs: number): Sea
         };
         attempt.timer = setTimeout(() => {
           attempt.timer = null;
-          if (query.startsWith('+')) { answer([]); return; }
           search(query, attempt.controller.signal).then(
             (suggestions) => { answer(query === '' ? categoryItems(suggestions) : suggestions.map((suggestion) => itemOf(suggestion))); },
             () => { answer(query === '' ? categoryItems([]) : []); },
@@ -119,7 +122,7 @@ function MentionRow({ suggestion, preview }: { suggestion: MentionSuggestion; pr
   return (
     <span className={styles.item} data-nc-mention={suggestion.kind}>
       {preview && <span className={styles.itemMarker} aria-hidden="true">
-        {suggestion.kind === 'tag' ? '#' : suggestion.kind === 'track' ? '/' : '>'}
+        {ITEM_MARKER[suggestion.kind]}
       </span>}
       <span className={styles.label}>{preview && suggestion.kind === 'tag' ? suggestion.label.slice(1) : suggestion.label}</span>
       {suggestion.detail !== null && <span className={styles.detail}>{suggestion.detail}</span>}

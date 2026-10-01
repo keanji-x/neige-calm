@@ -48,3 +48,20 @@ it.each([
   await expect(search(typed, new AbortController().signal)).rejects.toThrow('source failure');
   expect(requests).toHaveLength(1);
 });
+
+it.each(['+development', '＋development'])('filters %s through the plugin catalog alone', async (typed) => {
+  const requests: ApiRequest[] = [];
+  const transport: ApiTransportPort = { send(request) {
+    requests.push(request);
+    return Promise.resolve({ status: 200, statusText: 'OK', body: request.path === '/api/plugins' ? [{
+      id: 'dev.example', version: '1', enabled: false, state: 'disabled',
+      manifest_name: 'development', manifest_description: 'Develop issues and publish changes.',
+      has_config: false, can_uninstall: false,
+    }] : { tags: [], tracks: [], blocks: [] } });
+  } };
+  const search = mentionSearchOf(transport, createUnauthorizedChannel({ enqueue: task => task() }), 'area', 'track');
+  const suggestions = await search(typed, new AbortController().signal);
+  expect(suggestions.map(item => item.kind)).toEqual(['plugin']);
+  expect(suggestions[0].insert).toContain('documentation only');
+  expect(requests.map(request => [request.method, request.path])).toEqual([['GET', '/api/plugins']]);
+});

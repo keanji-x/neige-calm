@@ -187,15 +187,32 @@ describe('the @ menu in the real composer', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('selects plugin guides through @+ and sends their documentation verbatim', async () => {
+    const plugin: MentionSuggestion = {
+      id: 'plugin:dev.example', kind: 'plugin', label: 'Development', detail: 'Issue workflow',
+      chip: 'Development', insert: 'Plugin reference (documentation only; kernel permissions still apply): ' + JSON.stringify({ id: 'dev.example', name: 'Development', description: 'Issue workflow' }),
+    };
+    const search = vi.fn<MentionSearch>((query) => Promise.resolve(query.startsWith('+') ? [plugin] : [TAG, plugin]));
+    const onSend = vi.fn();
+    render(<MentionComposer search={search} onSend={onSend} />);
+    await userEvent.type(field(), 'see @');
+    await userEvent.click(await screen.findByRole('option', { name: 'More Plugins' }));
+    await screen.findByRole('option', { name: /Development/ });
+    expect(field().textContent).toBe('see @+');
+    expect(search).toHaveBeenLastCalledWith('+', expect.anything());
+    await userEvent.keyboard('{Enter}{Enter}');
+    expect(onSend).toHaveBeenLastCalledWith(`see ${plugin.insert}`);
+  });
+
   it('opens an empty Plugins category without querying other mention types', async () => {
-    const search = vi.fn<MentionSearch>(() => Promise.resolve([TAG, TRACK, BLOCK]));
+    const search = vi.fn<MentionSearch>((query) => Promise.resolve(query === '+' ? [] : [TAG, TRACK, BLOCK]));
     render(<MentionComposer search={search} onSend={vi.fn()} />);
     await userEvent.type(field(), '@');
     await screen.findByRole('option', { name: /^Plugins/ });
     await userEvent.keyboard('{Enter}');
     await screen.findByText('No matches');
     expect(field().textContent).toBe('@+');
-    expect(search.mock.calls.map(([query]) => query)).toEqual(['']);
+    expect(search.mock.calls.map(([query]) => query)).toEqual(['', '+']);
     expect(screen.queryByRole('option')).toBeNull();
   });
 

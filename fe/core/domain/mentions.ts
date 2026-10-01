@@ -107,16 +107,17 @@ function blockSuggestion(block: BlockMention): MentionSuggestion {
 }
 
 /**
- * What the text typed after `@` asks for. A leading `#`, `/` or `>` narrows the menu to tags,
- * tracks or blocks (`kind`) and is not part of the search: `text` is the rest, the server's `q`.
+ * What the text typed after `@` asks for. A leading `+`, `#`, `/` or `>` narrows the menu to plugins,
+ * tags, tracks or blocks (`kind`) and is not part of the search: `text` is the rest, the server's `q`.
  * Without one of them `kind` is `null` and `text` is everything typed, so a name that starts
  * with one of these characters is still found by typing it without that character.
  */
 export type MentionQuery = Readonly<{ kind: MentionKind | null; text: string }>;
 
-/** Each prefix also as a Chinese IME's punctuation mode types it: `＃` (full-width), `、` and `》`. */
+/** Also accepts a Chinese IME's punctuation: `＋`, `＃`, `、` and `》`. */
 function prefixKind(char: string): MentionKind | null {
   switch (char) {
+    case '+': case '＋': return 'plugin';
     case '#': case '＃': return 'tag';
     case '/': case '、': return 'track';
     case '>': case '》': return 'block';
@@ -194,7 +195,7 @@ export function sentMentionParts(text: string): readonly SentMentionPart[] {
 /** References are ordinary message text, never plugin enablement or tool authorization. */
 export function pluginMentionSuggestions(plugins: readonly PluginListItem[], typed: string): readonly MentionSuggestion[] {
   const query = mentionQueryOf(typed);
-  if (query.kind !== null) return [];
+  if (query.kind !== null && query.kind !== 'plugin') return [];
   const needle = query.text.trim().toLocaleLowerCase();
   return plugins.filter(plugin => `${plugin.manifest_name} ${plugin.id}`.toLocaleLowerCase().includes(needle))
     .sort((a, b) => a.manifest_name.localeCompare(b.manifest_name) || a.id.localeCompare(b.id))

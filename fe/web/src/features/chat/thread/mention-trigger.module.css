@@ -75,10 +75,6 @@
     color: var(--text-3);
   }
 
-  [role='option']:has(.more) {
-    block-size: var(--space-10);
-  }
-
   .visuallyHidden {
     position: absolute;
     inline-size: 1px;

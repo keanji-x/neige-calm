@@ -17,10 +17,10 @@ export function mentionSearchOf(
   return async (typed, signal) => {
     const query = mentionQueryOf(typed);
     const sources: Promise<readonly MentionSuggestion[]>[] = [];
-    if (areaId !== null) sources.push(runOperation(transport,
+    if (areaId !== null && query.kind !== 'plugin') sources.push(runOperation(transport,
       { ...mentionsOperation(areaId, query.text, trackId), signal }, unauthorized)
       .then(candidates => mentionSuggestionsOf(candidates, query)));
-    if (query.kind === null) sources.push(runOperation(transport, { ...pluginsOperation(), signal }, unauthorized)
+    if (query.kind === null || query.kind === 'plugin') sources.push(runOperation(transport, { ...pluginsOperation(), signal }, unauthorized)
       .then(catalog => pluginMentionSuggestions(catalog, typed)));
     const results = await Promise.allSettled(sources);
     const failed = results.find(result => result.status === 'rejected');
