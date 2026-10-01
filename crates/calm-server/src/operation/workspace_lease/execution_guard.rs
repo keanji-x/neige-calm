@@ -1,9 +1,9 @@
-//! Durable write references for execution that can outlive a model turn.
+//! Durable execution references for execution that can outlive a model turn.
 use super::*;
 use crate::db::sqlite::begin_immediate_tx;
-use calm_types::workspace_access::WorkspaceAccess;
+use calm_types::workspace_access::{WorkspaceAccess, WorkspaceScopePhase};
 
-/// Never cloned or released by Drop: an uncertain provider outcome retains its lease.
+/// Closed protocol identities supported by native execution producers.
 #[derive(Clone, Copy)]
 pub(crate) enum NativeProvider {
     Codex,
@@ -31,18 +31,39 @@ pub(crate) async fn bind_execution(
     let cwd = cwd
         .to_str()
         .ok_or_else(|| CalmError::Conflict("execution cwd is not UTF-8".into()))?;
-    sqlx::query(
+    let mut conn = pool.acquire().await?;
+    persist_execution_scope(
+        &mut conn,
+        provider,
+        card,
+        holder,
+        cwd,
+        WorkspaceScopePhase::New,
+    )
+    .await
+}
+
+/// Producers supply provider-confirmed cwd; the binding cannot transfer to another card.
+pub(crate) async fn persist_execution_scope(
+    conn: &mut sqlx::SqliteConnection,
+    provider: NativeProvider,
+    card: &str,
+    holder: &str,
+    cwd: &str,
+    phase: WorkspaceScopePhase,
+) -> Result<()> {
+    let changed = sqlx::query(
         "INSERT INTO workspace_execution_bindings(provider,holder_id,card_id,cwd,scope_phase) \
         VALUES(?1,?2,?3,?4,?5) ON CONFLICT(provider,holder_id) DO UPDATE SET cwd=excluded.cwd,scope_phase=excluded.scope_phase \
         WHERE workspace_execution_bindings.card_id=excluded.card_id",
     )
-    .bind(provider.wire())
-    .bind(holder)
-    .bind(card)
-    .bind(cwd)
-    .bind(calm_types::workspace_access::WorkspaceScopePhase::New.as_db_str())
-    .execute(pool)
-    .await?;
+    .bind(provider.wire()).bind(holder).bind(card).bind(cwd).bind(phase.as_db_str())
+    .execute(conn).await?.rows_affected();
+    if changed != 1 {
+        return Err(CalmError::Conflict(
+            "native scope belongs to another owner".into(),
+        ));
+    }
     Ok(())
 }
 

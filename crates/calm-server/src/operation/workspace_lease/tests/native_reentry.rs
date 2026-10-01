@@ -393,3 +393,55 @@ async fn native_write_issuance_checks_task_directory_and_real_ended_task() {
         );
     }
 }
+
+#[tokio::test]
+async fn native_scope_binding_rejects_another_card_owner() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (repo, _, card) = lease_fixture(cwd.path()).await;
+    execution_guard::bind_execution(
+        repo.pool(),
+        NativeProvider::Codex,
+        &card,
+        "owned-scope",
+        cwd.path().to_str().unwrap(),
+    )
+    .await
+    .unwrap();
+    let rejected = execution_guard::bind_execution(
+        repo.pool(),
+        NativeProvider::Codex,
+        "other-card",
+        "owned-scope",
+        cwd.path().to_str().unwrap(),
+    )
+    .await;
+    assert!(
+        rejected.is_err(),
+        "scope producers must report a foreign owner instead of silently ignoring its binding"
+    );
+}
+
+#[tokio::test]
+async fn stopped_terminal_reference_can_be_recorded_while_reader_is_held() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (repo, track, card) = lease_fixture(cwd.path()).await;
+    sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner, \
+        created_at_ms,updated_at_ms,access_mode) VALUES('reader-before-stop',?1,?2,?3,'held','reader-owner',0,0,'read_only')")
+        .bind(&card).bind(&track).bind(cwd.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    execution_guard::record_stopped_terminal_tx(
+        &mut tx,
+        &track,
+        &card,
+        "stopped-terminal",
+        cwd.path(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let proof: (String,String,Option<i64>) = sqlx::query_as("SELECT state,holder_phase,released_at_ms FROM workspace_leases WHERE holder_id='stopped-terminal'")
+        .fetch_one(repo.pool()).await.unwrap();
+    assert_eq!(proof.0, "released");
+    assert_eq!(proof.1, "stopped");
+    assert!(proof.2.is_some());
+}

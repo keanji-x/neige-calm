@@ -73,16 +73,7 @@ pub(crate) async fn adopt_native_scope_tx(
             holder_phase=CASE WHEN ?3 IS NULL THEN 'issuing' ELSE 'running' END WHERE lease_id=?1")
             .bind(&id).bind(provider.wire()).bind(observed_turn).execute(&mut **tx).await?;
     }
-    let changed=sqlx::query("INSERT INTO workspace_execution_bindings(provider,holder_id,card_id,cwd,scope_phase) \
-        VALUES(?1,?2,?3,?4,?5) ON CONFLICT(provider,holder_id) DO UPDATE SET cwd=excluded.cwd,scope_phase=excluded.scope_phase \
-        WHERE workspace_execution_bindings.card_id=excluded.card_id")
-        .bind(provider.wire()).bind(holder).bind(card).bind(path).bind(calm_types::workspace_access::WorkspaceScopePhase::Ready.as_db_str()).execute(&mut **tx).await?.rows_affected();
-    if changed != 1 {
-        return Err(CalmError::Conflict(
-            "resumed native scope belongs to another owner".into(),
-        ));
-    }
-    Ok(())
+    persist_execution_scope(tx, provider, card, holder, path, WorkspaceScopePhase::Ready).await
 }
 
 /// The caller must hold the supervisor's positive StopAndConfirm proof for this immutable holder.

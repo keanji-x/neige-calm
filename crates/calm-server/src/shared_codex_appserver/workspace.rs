@@ -131,12 +131,16 @@ impl SharedCodexAppServer {
             .and_then(|cwd| std::fs::canonicalize(cwd).ok())
             .and_then(|cwd| cwd.to_str().map(str::to_owned));
         if let Some(cwd) = actual {
-            sqlx::query("INSERT INTO workspace_execution_bindings(provider,holder_id,card_id,cwd,scope_phase) \
-                VALUES('codex',?1,?2,?3,?4) ON CONFLICT(provider,holder_id) DO UPDATE SET \
-                cwd=excluded.cwd,scope_phase=excluded.scope_phase WHERE workspace_execution_bindings.card_id=excluded.card_id")
-                .bind(thread).bind(card).bind(cwd)
-                .bind(calm_types::workspace_access::WorkspaceScopePhase::Recovering.as_db_str())
-                .execute(&pool).await?;
+            let mut conn = pool.acquire().await?;
+            crate::operation::workspace_lease::execution_guard::persist_execution_scope(
+                &mut conn,
+                NativeProvider::Codex,
+                card,
+                thread,
+                &cwd,
+                calm_types::workspace_access::WorkspaceScopePhase::Recovering,
+            )
+            .await?;
         } else {
             sqlx::query("DELETE FROM workspace_execution_bindings WHERE provider='codex' AND holder_id=?1 AND card_id=?2")
                 .bind(thread).bind(card).execute(&pool).await?;
