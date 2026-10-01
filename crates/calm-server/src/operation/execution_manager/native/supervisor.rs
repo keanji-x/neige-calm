@@ -3343,23 +3343,32 @@ impl SharedCodexAppServer {
                     let Some(client) = client.upgrade() else {
                         break;
                     };
-                    let active_turns = active_turns.clone();
+                    let Some(pool) = repo.sqlite_pool() else {
+                        tracing::warn!(
+                            thread_id,
+                            turn_id,
+                            "late turn has no durable execution store"
+                        );
+                        continue;
+                    };
+                    let backend = execution_backend::CodexBackend::for_notification(
+                        client,
+                        active_turns.clone(),
+                        #[cfg(feature = "fixtures")]
+                        tx.clone(),
+                    );
                     tokio::spawn(async move {
-                        match client.turn_interrupt(&thread_id, &turn_id).await {
-                            Ok(()) => {
-                                active_turns.remove_if(&thread_id, |_, active| active == &turn_id);
-                            }
-                            Err(error) => {
-                                // Keep the id in `active_turns`: deletion's
-                                // strict quiesce can retry and must not mistake
-                                // a failed best-effort interrupt for absence.
-                                tracing::warn!(
-                                    thread_id,
-                                    turn_id,
-                                    error = %error,
-                                    "failed to interrupt late turn on deletion-sealed thread"
-                                );
-                            }
+                        if let Err(error) = super::super::ExecutionManager::new(pool)
+                            .quiesce_native_scope(&backend, &thread_id)
+                            .await
+                        {
+                            // Only provider stop evidence can release the durable generation.
+                            tracing::warn!(
+                                thread_id,
+                                turn_id,
+                                error = %error,
+                                "failed to quiesce late turn on deletion-sealed thread"
+                            );
                         }
                     });
                 }

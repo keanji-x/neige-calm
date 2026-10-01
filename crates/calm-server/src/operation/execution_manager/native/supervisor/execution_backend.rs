@@ -47,6 +47,21 @@ impl CodexBackend {
             notifications: service.notifications.clone(),
         }
     }
+    // Notifications borrow a live connection without retaining the supervisor or storage.
+    pub(super) fn for_notification(
+        client: Arc<CodexAppServer>,
+        active_turns: Arc<DashMap<String, String>>,
+        #[cfg(feature = "fixtures")] notifications: NotificationFanout,
+    ) -> Self {
+        Self {
+            connection: Connection::Live(client),
+            active_turns,
+            #[cfg(feature = "fixtures")]
+            fake: None,
+            #[cfg(feature = "fixtures")]
+            notifications,
+        }
+    }
     fn client(&self) -> Result<&CodexAppServer> {
         match &self.connection {
             Connection::Live(client) => Ok(client),

@@ -526,6 +526,10 @@ async fn serve_conn(
                 if env_flag("FAKE_CODEX_EXIT_AFTER_TURN_ACK") {
                     std::process::exit(0);
                 }
+                // A per-peer barrier makes late notification races deterministic.
+                while reads.sock.with_extension("hold-turn-started").exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
                 // …then emit the `turn/started` notification the kernel's
                 // DECISION-A sequence awaits (proves a rollout exists).
                 if !env_flag("FAKE_CODEX_SKIP_TURN_STARTED") {
