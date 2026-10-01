@@ -72,6 +72,11 @@ Working method
 
 Understand the source issue and propose an appropriate design. Review the design through two independent channels before implementation: channel a checks correctness, channel b checks failure paths. Implement and commit in a worktree, run verification, open a PR with calm.track.publish and converge both PR reviews through those same two perspectives before any merge. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
+Read the issue discussion with gh.issue.comments; pass a new attempt when refreshing
+comments or the gh.issue.view body. Post relevant questions, progress, and results
+with gh.issue.comment, using a stable idem and unchanged body on retries and a
+new idem for each new comment. A pending receipt does not confirm publication.
+
 Read pull requests with the git-forge tools, not the gh CLI: gh.pr.diff returns the path of the file holding the patch, and gh.pr.checks returns the conclusion (pass a new attempt on each re-read).
 
 Review convergence

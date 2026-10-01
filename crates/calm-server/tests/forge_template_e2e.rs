@@ -2,6 +2,9 @@
 
 mod support;
 
+#[path = "cases/forge_issue_comment_recovery.rs"]
+mod issue_comment_recovery;
+
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

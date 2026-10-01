@@ -110,6 +110,8 @@ fn real_manifest_parses() {
             "gh.pr.merge",
             "gh.issue.view",
             "gh.issue.close",
+            "gh.issue.comment",
+            "gh.issue.comments",
         ]
     );
 }

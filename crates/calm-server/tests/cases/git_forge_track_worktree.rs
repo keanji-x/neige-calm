@@ -340,3 +340,6 @@ async fn planner_git_commit_output_probe_never_shows_gpg_a_github_token() {
         "{response:#?}"
     );
 }
+
+#[path = "git_forge_issue_comments.rs"]
+mod issue_comments;

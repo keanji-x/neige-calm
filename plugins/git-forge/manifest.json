@@ -264,6 +264,13 @@
           "issue": {
             "type": "integer",
             "description": "Issue number"
+          },
+          "attempt": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "Use a new attempt for a fresh read; reuse it when retrying."
           }
         },
         "required": [
@@ -300,6 +307,85 @@
       "annotations": {
         "title": "Close Issue",
         "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "gh.issue.comment",
+      "description": "Post an issue comment through the kernel. Reuse idem and body on retries; use a new idem for another comment.",
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository selector passed to gh"
+          },
+          "issue": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Issue number"
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Markdown comment body"
+          },
+          "idem": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable identity for this logical comment"
+          }
+        },
+        "required": [
+          "repo",
+          "issue",
+          "body",
+          "idem"
+        ]
+      },
+      "annotations": {
+        "title": "Comment on Issue",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "gh.issue.comments",
+      "description": "Read issue discussion as JSON; use a new attempt to refresh.",
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository selector passed to gh"
+          },
+          "issue": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Issue number"
+          },
+          "attempt": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "Fresh read identity"
+          }
+        },
+        "required": [
+          "repo",
+          "issue"
+        ]
+      },
+      "annotations": {
+        "title": "Read Issue Comments",
+        "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
       }

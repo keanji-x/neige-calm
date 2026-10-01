@@ -6,6 +6,8 @@ use calm_types::forge_git::{
 };
 use serde_json::{Value, json};
 
+mod issue;
+
 pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
     match tool {
         "git.worktree.add" => lower_git_worktree_add(args),
@@ -17,6 +19,8 @@ pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
         "gh.pr.merge" => lower_gh_pr_merge(args),
         "gh.issue.view" => lower_gh_issue_view(args),
         "gh.issue.close" => lower_gh_issue_close(args),
+        "gh.issue.comment" => issue::comment(args),
+        "gh.issue.comments" => issue::comments(args),
         _ => Err(format!("unknown git-forge tool `{tool}`")),
     }
 }
@@ -415,7 +419,15 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
     // Idempotent read: intentionally probe-free.
     let repo = required_string(args, "repo")?;
     let issue = required_u64(args, "issue")?;
-    forge_payload(
+    let idem_key = match optional_attempt(args)? {
+        Some(attempt) => format!(
+            "gh.issue.view:v3:{}",
+            serde_json::to_string(&json!([repo, issue, attempt]))
+                .map_err(|e| format!("encode issue read identity: {e}"))?
+        ),
+        None => format!("gh.issue.view:v2:{repo}:{issue}"),
+    };
+    issue::read_payload(
         vec![
             "gh".into(),
             "issue".into(),
@@ -428,11 +440,8 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
             "--jq".into(),
             ".body".into(),
         ],
-        format!("gh.issue.view:v2:{repo}:{issue}"),
-        Some(event_spec("forge.issue.read", [])),
-        json!({"issue_number": issue}),
-        None,
-        false,
+        idem_key,
+        issue,
     )
 }
 

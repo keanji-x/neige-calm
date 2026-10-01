@@ -328,6 +328,16 @@ case "$area:$verb" in
       state:*)
         printf '{"state":"%s"}\n' "$issue_state"
         ;;
+      comments:*)
+        comments_dir="$state/issues/$issue.comments"
+        mkdir -p "$comments_dir"
+        if [ -f "$state/issues/$issue.comments.fail" ]; then exit 1; fi
+        if [ -f "$state/issues/$issue.comments.invalid" ]; then echo invalid; exit 0; fi
+        # gh evaluates its jq expression over the complete issue comment connection.
+        (for comment in "$comments_dir"/*.json; do
+          [ -f "$comment" ] && cat "$comment"
+        done) | jq -s '{comments: .}' | jq "$jq_expr"
+        ;;
       body:.body)
         if [ -f "$state/issues/$issue.body" ]; then
           cat "$state/issues/$issue.body"
@@ -340,6 +350,19 @@ case "$area:$verb" in
         exit 2
         ;;
     esac
+    ;;
+  issue:comment)
+    issue=$1
+    repo=$(get_arg --repo "$@") || exit 2
+    body=$(get_arg --body "$@") || exit 2
+    state=$(ensure_state "$repo")
+    comments_dir="$state/issues/$issue.comments"
+    mkdir -p "$comments_dir"
+    inc_counter "$state/issue_comment_count"
+    count=$(cat "$state/issue_comment_count")
+    printf '%s' "$body" | jq -Rs --arg url "https://example.test/issues/$issue#issuecomment-$count" '{body: ., url: $url}' > "$comments_dir/$count.json"
+    block_if_requested "$state" issue_comment
+    printf 'https://example.test/issues/%s#issuecomment-%s\n' "$issue" "$count"
     ;;
   issue:close)
     [ "$#" -ge 1 ] || exit 2
