@@ -58,42 +58,21 @@ impl ExecutionWriteGuard {
         provider: NativeProvider,
     ) -> Result<Self> {
         let mut tx = begin_immediate_tx(pool).await?;
-        let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
-            .bind(card)
-            .fetch_one(&mut *tx)
-            .await?;
-        if !crate::db::sqlite::track_available(
-            &mut tx,
-            &track,
-            except_attempt,
-            WorkspaceAccess::ReadWrite,
-        )
-        .await?
-        {
+        let context = native_write_context_tx(&mut tx, card, thread, provider).await?;
+        if !native_context_available_tx(&mut tx, card, except_attempt, &context).await? {
             return Err(CalmError::Conflict(
                 "workspace write guard is waiting for current readers or writers".into(),
             ));
         }
-        let duplicate: bool = sqlx::query_scalar(
-            r#"
-SELECT EXISTS(SELECT 1 FROM workspace_leases WHERE holder_kind='native' AND card_id=?1 AND
-state IN ('held', 'releasing'))
-"#,
+        let id = acquire_execution_write_tx(
+            &mut tx,
+            &context.track,
+            card,
+            thread,
+            "native",
+            Path::new(&context.cwd),
         )
-        .bind(card)
-        .fetch_one(&mut *tx)
         .await?;
-        if duplicate {
-            return Err(CalmError::Conflict(
-                "native execution still holds its write guard".into(),
-            ));
-        }
-        let cwd:String=sqlx::query_scalar("SELECT cwd FROM workspace_execution_bindings WHERE provider=?1 AND holder_id=?2 AND card_id=?3")
-            .bind(provider.wire()).bind(thread).bind(card).fetch_optional(&mut *tx).await?
-            .ok_or_else(||CalmError::Conflict("native execution has no bound workspace".into()))?;
-        let id =
-            acquire_execution_write_tx(&mut tx, &track, card, thread, "native", Path::new(&cwd))
-                .await?;
         sqlx::query("UPDATE workspace_leases SET native_provider=?2 WHERE lease_id=?1")
             .bind(&id)
             .bind(provider.wire())
@@ -140,6 +119,96 @@ lease_id=?1 AND state='held' AND holder_phase='issuing'
     }
 }
 
+/// A live descendant retains its authenticated root even after the root's own execution stopped.
+/// Card ownership alone grants nothing: the root must be a task/native writer of this resource.
+pub(crate) async fn owned_write_root_tx(
+    conn: &mut sqlx::SqliteConnection,
+    card: &str,
+    cwd: &str,
+) -> Result<Option<String>> {
+    let root=sqlx::query_scalar(
+        "SELECT origin.lease_id FROM workspace_leases descendant \
+         JOIN workspace_leases origin ON origin.lease_id=descendant.write_root_id \
+         WHERE descendant.state IN ('held','releasing') AND descendant.access_mode='read_write' \
+         AND origin.card_id=?1 AND origin.access_mode='read_write' \
+         AND origin.holder_kind IN ('task','native') AND COALESCE(origin.canonical_path,origin.path)=?2 \
+         AND (COALESCE(descendant.canonical_path,descendant.path)=?2 OR ?2='/' \
+         OR COALESCE(descendant.canonical_path,descendant.path)='/' \
+         OR substr(COALESCE(descendant.canonical_path,descendant.path),1,length(?2)+1)=?2||'/' \
+         OR substr(?2,1,length(COALESCE(descendant.canonical_path,descendant.path))+1) \
+         =COALESCE(descendant.canonical_path,descendant.path)||'/') \
+         ORDER BY origin.created_at_ms DESC,origin.lease_id DESC LIMIT 1"
+    ).bind(card).bind(cwd).fetch_optional(&mut *conn).await?;
+    Ok(root)
+}
+
+struct NativeWriteContext {
+    track: String,
+    cwd: String,
+    root: Option<String>,
+}
+async fn native_write_context_tx(
+    conn: &mut sqlx::SqliteConnection,
+    card: &str,
+    thread: &str,
+    provider: NativeProvider,
+) -> Result<NativeWriteContext> {
+    let (track, cwd): (String, String) = sqlx::query_as(
+        "SELECT c.track_id,b.cwd FROM workspace_execution_bindings b \
+         JOIN cards c ON c.id=b.card_id WHERE b.provider=?1 AND b.holder_id=?2 AND b.card_id=?3",
+    )
+    .bind(provider.wire())
+    .bind(thread)
+    .bind(card)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| CalmError::Conflict("native execution has no bound workspace".into()))?;
+    let cwd = std::fs::canonicalize(cwd)
+        .map_err(|e| CalmError::Conflict(format!("native workspace unavailable: {e}")))?
+        .to_str()
+        .ok_or_else(|| CalmError::Conflict("native workspace is not UTF-8".into()))?
+        .to_owned();
+    let root = owned_write_root_tx(conn, card, &cwd).await?;
+    Ok(NativeWriteContext { track, cwd, root })
+}
+async fn native_context_available_tx(
+    conn: &mut sqlx::SqliteConnection,
+    card: &str,
+    except: &str,
+    context: &NativeWriteContext,
+) -> Result<bool> {
+    let duplicate: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM workspace_leases WHERE holder_kind='native' \
+         AND card_id=?1 AND state IN ('held','releasing'))",
+    )
+    .bind(card)
+    .fetch_one(&mut *conn)
+    .await?;
+    if duplicate {
+        return Ok(false);
+    }
+    Ok(crate::db::sqlite::workspace_available(
+        conn,
+        &context.track,
+        except,
+        WorkspaceAccess::ReadWrite,
+        Some(&context.cwd),
+        context.root.as_deref(),
+    )
+    .await?)
+}
+/// Queue preflight consumes the same bound cwd and lineage rules as atomic native acquisition.
+pub(crate) async fn native_write_available_tx(
+    conn: &mut sqlx::SqliteConnection,
+    card: &str,
+    thread: &str,
+    except: &str,
+    provider: NativeProvider,
+) -> Result<bool> {
+    let context = native_write_context_tx(conn, card, thread, provider).await?;
+    native_context_available_tx(conn, card, except, &context).await
+}
+
 /// The caller's transaction reserves the Track checkout before spawning any write execution.
 pub(crate) async fn acquire_execution_write_tx(
     tx: &mut Tx<'_>,
@@ -159,11 +228,7 @@ pub(crate) async fn acquire_execution_write_tx(
         .to_str()
         .ok_or_else(|| CalmError::Conflict("workspace guard path is not UTF-8".into()))?;
     let id = new_id();
-    let parent:Option<String>=sqlx::query_scalar(
-        "SELECT write_root_id FROM workspace_leases WHERE card_id=?1 AND access_mode='read_write' \
-         AND state='held' AND holder_kind IN ('task','native') AND COALESCE(canonical_path,path)=?2 \
-         ORDER BY created_at_ms DESC LIMIT 1"
-    ).bind(card).bind(path).fetch_optional(&mut **tx).await?.flatten();
+    let parent = owned_write_root_tx(tx, card, path).await?;
     let root = parent.unwrap_or_else(|| id.clone());
     insert_execution_reference(
         tx,

@@ -978,3 +978,6 @@ async fn new_card(repo: &crate::db::sqlite::SqlxRepo, track_id: &str) -> String 
     .id
     .to_string()
 }
+
+#[path = "tests/native_reentry.rs"]
+mod native_reentry;
