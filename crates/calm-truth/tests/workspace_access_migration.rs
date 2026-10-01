@@ -592,3 +592,58 @@ failure_reason='test',retry_allowed=0,wake_reason='failed' WHERE delivery_id='fi
             .unwrap()
     );
 }
+
+#[tokio::test]
+async fn workspace_verifying_terminal_reserves_gate_cwd_not_its_finished_execution() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let gate = root.path().join("gate");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&gate).unwrap();
+    let mut db = database(129).await;
+    sqlx::query("UPDATE tracks SET workspace_path=?1 WHERE id='track'")
+        .bind(source.to_str().unwrap())
+        .execute(&mut db)
+        .await
+        .unwrap();
+    inflight(
+        &mut db,
+        "track",
+        "verifier",
+        "terminal",
+        Some(source.to_str().unwrap()),
+        "read_write",
+    )
+    .await;
+    sqlx::query("UPDATE tasks SET status='verifying',gate_json=?1 WHERE id='verifier'")
+        .bind(serde_json::json!({"cwd":gate,"steps":[{"name":"gate","cmd":"true"}]}).to_string())
+        .execute(&mut db)
+        .await
+        .unwrap();
+    assert!(
+        !calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "reader",
+            calm_types::workspace_access::WorkspaceAccess::ReadOnly,
+            Some(gate.to_str().unwrap()),
+            None
+        )
+        .await
+        .unwrap(),
+        "a claimed verifier may act in its explicit gate directory before preparing its lease"
+    );
+    assert!(
+        calm_truth::db::sqlite::workspace_available(
+            &mut db,
+            "track",
+            "reader",
+            calm_types::workspace_access::WorkspaceAccess::ReadOnly,
+            Some(source.to_str().unwrap()),
+            None
+        )
+        .await
+        .unwrap(),
+        "the finished command no longer occupies its old directory"
+    );
+}

@@ -158,6 +158,9 @@ struct ActiveTaskResource {
     context_json: String,
     cwd: Option<String>,
     checkout: String,
+    verifying: bool,
+    gate_cwd: Option<String>,
+    frozen_cwd: Option<String>,
 }
 async fn active_resources_available(
     conn: &mut SqliteConnection,
@@ -169,13 +172,37 @@ async fn active_resources_available(
 ) -> Result<bool> {
     // Only reserved executions are inspected; pending work and unrelated Track trees are not scanned.
     let tasks = sqlx::query_as::<_,ActiveTaskResource>(r#"
-SELECT t.track_id,t.kind,t.context_json,t.cwd,COALESCE(w.workspace_worktree_path,w.workspace_path) AS checkout
+SELECT t.track_id,t.kind,t.context_json,t.cwd,COALESCE(w.workspace_worktree_path,w.workspace_path) AS checkout,
+(t.status='verifying') AS verifying,json_extract(t.gate_json,'$.cwd') AS gate_cwd,
+CASE WHEN t.status='verifying' THEN (
+ SELECT json_extract(o.tx_output_json,'$.data.cwd') FROM operations o
+ WHERE o.kind='task-verify' AND o.target_type='task' AND o.target_id=t.id
+ AND json_extract(o.tx_output_json,'$.data.attempt')=t.gate_attempt
+ ORDER BY o.updated_at_ms DESC,o.id DESC LIMIT 1
+) ELSE (
+ SELECT json_extract(o.tx_output_json,'$.data.cwd') FROM operations o
+ WHERE o.idempotency_key=t.id AND o.kind IN ('codex-worker','claude-worker','terminal-worker')
+ ORDER BY o.updated_at_ms DESC,o.id DESC LIMIT 1
+) END AS frozen_cwd
 FROM current_tasks t JOIN tracks w ON w.id=t.track_id
 WHERE t.id<>?1 AND t.status IN ('dispatched','running','verifying')
 AND (t.kind='terminal' OR (t.kind IN ('codex','claude') AND t.spawn<>?2))
 "#).bind(except_task).bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE).fetch_all(&mut *conn).await?;
     for task in tasks {
-        let path = declared_workspace_cwd(task.kind == TaskKind::Terminal, task.cwd.as_deref())
+        let declared = declared_workspace_cwd(task.kind == TaskKind::Terminal, task.cwd.as_deref());
+        let gate = task
+            .gate_cwd
+            .as_deref()
+            .filter(|cwd| !cwd.trim().is_empty());
+        let path = task
+            .frozen_cwd
+            .as_deref()
+            .filter(|cwd| !cwd.is_empty())
+            .or(if task.verifying {
+                gate.or(declared)
+            } else {
+                declared
+            })
             .unwrap_or(&task.checkout);
         if !scope.overlaps(&task.track_id, path)? {
             continue;
