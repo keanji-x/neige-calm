@@ -346,6 +346,48 @@ impl SharedCodexHome {
         Ok(())
     }
 
+    /// Install an immutable lease-scoped profile before the daemon reads its configuration.
+    pub fn ensure_task_read_profile(&self, profile: &ReadonlyTaskProfile) -> io::Result<()> {
+        fs::create_dir_all(&self.home)?;
+        let _lock = ConfigLock::acquire(&self.home.join(".config.lock"))?;
+        let cfg_path = self.home.join("config.toml");
+        let text = match fs::read_to_string(&cfg_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e),
+        };
+        let mut doc: DocumentMut = text
+            .parse()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let permissions = doc["permissions"]
+            .or_insert(toml_edit::table())
+            .as_table_like_mut()
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "permissions must be a table")
+            })?;
+        let expected = profile.config_table();
+        if let Some(existing) = permissions.get(profile.name()) {
+            let mut existing_doc = DocumentMut::new();
+            existing_doc["profile"] = existing.clone();
+            let mut expected_doc = DocumentMut::new();
+            expected_doc["profile"] = toml_edit::Item::Table(expected);
+            let existing_value: toml::Value = toml::from_str(&existing_doc.to_string())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let expected_value: toml::Value = toml::from_str(&expected_doc.to_string())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if existing_value != expected_value {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "lease permissions profile differs from its immutable rules",
+                ));
+            }
+            fs::set_permissions(&cfg_path, fs::Permissions::from_mode(0o600))?;
+            return Ok(());
+        }
+        permissions.insert(profile.name(), toml_edit::Item::Table(expected));
+        write_config_0600(&cfg_path, doc.to_string().as_bytes())
+    }
+
     /// Returns Codex 0.134/0.135 runtime state files, relative to this home.
     pub fn codex_runtime_state_files(&self) -> Vec<PathBuf> {
         [
@@ -459,5 +501,164 @@ fn ensure_table_bool(doc: &mut DocumentMut, table: &str, key: &str, value: bool)
         && table.get(key).is_none()
     {
         table[key] = toml_edit::value(value);
+    }
+}
+
+/// Trusted application-owned read rules. Each lease gets its own immutable name.
+#[derive(Debug, Clone)]
+pub struct ReadonlyTaskProfile {
+    name: String,
+    protected_paths: Vec<PathBuf>,
+    readable_roots: Vec<PathBuf>,
+}
+
+impl ReadonlyTaskProfile {
+    pub fn new(
+        lease: uuid::Uuid,
+        protected_paths: Vec<PathBuf>,
+        readable_roots: Vec<PathBuf>,
+    ) -> io::Result<Self> {
+        if protected_paths.is_empty()
+            || protected_paths.iter().chain(&readable_roots).any(|p| {
+                p.to_str().is_none()
+                    || !p.is_absolute()
+                    || p == Path::new("/")
+                    || p.components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "task permission roots must be explicit absolute non-root paths; protected paths are required",
+            ));
+        }
+        for readable in &readable_roots {
+            if protected_paths
+                .iter()
+                .any(|protected| readable == protected || readable.starts_with(protected))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "readable roots must not reopen protected runtime paths",
+                ));
+            }
+        }
+        Ok(Self {
+            name: format!("neige-task-read-{lease}"),
+            protected_paths,
+            readable_roots,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn config_table(&self) -> toml_edit::Table {
+        let mut profile = toml_edit::Table::new();
+        let mut filesystem = toml_edit::Table::new();
+        filesystem[":root"] = toml_edit::value("deny");
+        filesystem[":minimal"] = toml_edit::value("read");
+        let mut workspace = toml_edit::Table::new();
+        workspace["."] = toml_edit::value("read");
+        filesystem[":workspace_roots"] = toml_edit::Item::Table(workspace);
+        for path in &self.readable_roots {
+            filesystem[&path.to_string_lossy()] = toml_edit::value("read");
+        }
+        for path in &self.protected_paths {
+            filesystem[&path.to_string_lossy()] = toml_edit::value("deny");
+        }
+        profile["filesystem"] = toml_edit::Item::Table(filesystem);
+        let mut network = toml_edit::Table::new();
+        network["enabled"] = toml_edit::value(false);
+        profile["network"] = toml_edit::Item::Table(network);
+        profile
+    }
+}
+
+#[cfg(test)]
+mod task_read_profile_tests {
+    use super::*;
+
+    #[test]
+    fn readonly_profile_is_lease_scoped_immutable_and_root_denied() {
+        let root = tempfile::tempdir().unwrap();
+        let home = SharedCodexHome::new(root.path().join("home"), root.path().join("legacy"));
+        let protected = root.path().join("runtime");
+        let readable = root.path().join("git-common");
+        let lease = uuid::Uuid::new_v4();
+        let profile =
+            ReadonlyTaskProfile::new(lease, vec![protected.clone()], vec![readable.clone()])
+                .unwrap();
+        home.ensure_task_read_profile(&profile).unwrap();
+        fs::set_permissions(
+            home.path().join("config.toml"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        home.ensure_task_read_profile(&profile).unwrap();
+        assert_eq!(
+            fs::metadata(home.path().join("config.toml"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let text = fs::read_to_string(home.path().join("config.toml")).unwrap();
+        let doc: toml::Value = toml::from_str(&text).unwrap();
+        let rules = &doc["permissions"][profile.name()];
+        assert_eq!(rules["filesystem"][":root"].as_str(), Some("deny"));
+        assert_eq!(rules["filesystem"][":minimal"].as_str(), Some("read"));
+        assert_eq!(
+            rules["filesystem"][":workspace_roots"]["."].as_str(),
+            Some("read")
+        );
+        assert_eq!(
+            rules["filesystem"][protected.to_str().unwrap()].as_str(),
+            Some("deny")
+        );
+        assert_eq!(
+            rules["filesystem"][readable.to_str().unwrap()].as_str(),
+            Some("read")
+        );
+        assert_eq!(rules["network"]["enabled"].as_bool(), Some(false));
+        assert!(rules.get("extends").is_none());
+        let conflict = ReadonlyTaskProfile::new(lease, vec![protected.clone()], vec![]).unwrap();
+        assert_eq!(
+            home.ensure_task_read_profile(&conflict).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            text
+        );
+        let independent =
+            ReadonlyTaskProfile::new(uuid::Uuid::new_v4(), vec![protected], vec![]).unwrap();
+        home.ensure_task_read_profile(&independent).unwrap();
+        assert_ne!(profile.name(), independent.name());
+    }
+
+    #[test]
+    fn readonly_profile_rejects_invalid_or_reopened_protected_roots() {
+        use std::os::unix::ffi::OsStringExt;
+        let non_utf8 = PathBuf::from(std::ffi::OsString::from_vec(b"/runtime/\xff".to_vec()));
+        assert!(ReadonlyTaskProfile::new(uuid::Uuid::new_v4(), vec![non_utf8], vec![]).is_err());
+        for (protected, readable) in [
+            (vec![], vec![]),
+            (vec![PathBuf::from("relative")], vec![]),
+            (vec![PathBuf::from("/")], vec![]),
+            (vec![PathBuf::from("/runtime")], vec![PathBuf::from("/")]),
+            (
+                vec![PathBuf::from("/runtime")],
+                vec![PathBuf::from("/runtime/helpers")],
+            ),
+            (
+                vec![PathBuf::from("/runtime")],
+                vec![PathBuf::from("/workspace/../runtime")],
+            ),
+        ] {
+            assert!(ReadonlyTaskProfile::new(uuid::Uuid::new_v4(), protected, readable).is_err());
+        }
     }
 }

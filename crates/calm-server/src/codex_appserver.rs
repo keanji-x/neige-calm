@@ -7,6 +7,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 
 mod client_transport;
+mod permissions;
+pub use permissions::PermissionsChoice;
 #[cfg(test)]
 mod server_request_tests;
 mod server_requests;
@@ -88,7 +90,7 @@ pub enum InputItem {
 pub struct ThreadStartParams {
     pub cwd: String,
     pub approval_policy: String,
-    pub sandbox_mode: String,
+    pub permissions: PermissionsChoice,
     pub developer_instructions: Option<String>,
     pub config: Option<serde_json::Value>,
 }
@@ -101,7 +103,7 @@ impl std::fmt::Debug for ThreadStartParams {
         f.debug_struct("ThreadStartParams")
             .field("cwd", &self.cwd)
             .field("approval_policy", &self.approval_policy)
-            .field("sandbox_mode", &self.sandbox_mode)
+            .field("permissions", &self.permissions)
             .field("developer_instructions", &self.developer_instructions)
             .field("config", &redact_thread_start_config(&self.config))
             .finish()
@@ -164,6 +166,13 @@ pub struct ThreadResult {
     pub thread: Value,
     /// Resolved model (e.g. `gpt-5.5`).
     pub model: String,
+    #[serde(rename = "activePermissionProfile")]
+    pub active_permission_profile: Option<ActivePermissionProfile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivePermissionProfile {
+    pub id: String,
 }
 
 impl ThreadResult {
@@ -725,15 +734,18 @@ impl CodexAppServer {
         let mut value = json!({
             "cwd": params.cwd,
             "approvalPolicy": params.approval_policy,
-            "sandbox": params.sandbox_mode,
         });
+        params.permissions.apply_thread(&mut value);
+        let permissions = params.permissions;
         if let Some(prompt) = params.developer_instructions {
             value["developerInstructions"] = Value::String(prompt);
         }
         if let Some(config) = params.config {
             value["config"] = config;
         }
-        self.request("thread/start", value).await
+        let result: ThreadResult = self.request("thread/start", value).await?;
+        permissions.verify_active(&result)?;
+        Ok(result)
     }
 
     /// Full provider-owned details for exact-thread reconciliation; no new recorder.
@@ -766,14 +778,39 @@ impl CodexAppServer {
         config: Option<serde_json::Value>,
         sandbox: Option<&str>,
     ) -> Result<ThreadResult> {
+        let choice = sandbox.map(|value| PermissionsChoice::SandboxMode(value.into()));
+        self.thread_resume_with_optional_permissions(thread_id, config, choice.as_ref())
+            .await
+    }
+
+    pub async fn thread_resume_with_permissions(
+        &self,
+        thread_id: &str,
+        config: Option<Value>,
+        permissions: &PermissionsChoice,
+    ) -> Result<ThreadResult> {
+        self.thread_resume_with_optional_permissions(thread_id, config, Some(permissions))
+            .await
+    }
+
+    async fn thread_resume_with_optional_permissions(
+        &self,
+        thread_id: &str,
+        config: Option<Value>,
+        permissions: Option<&PermissionsChoice>,
+    ) -> Result<ThreadResult> {
         let mut value = json!({ "threadId": thread_id });
         if let Some(config) = config {
             value["config"] = config;
         }
-        if let Some(sandbox) = sandbox {
-            value["sandbox"] = json!(sandbox);
+        if let Some(permissions) = permissions {
+            permissions.apply_thread(&mut value);
         }
-        self.request("thread/resume", value).await
+        let result: ThreadResult = self.request("thread/resume", value).await?;
+        if let Some(permissions) = permissions {
+            permissions.verify_active(&result)?;
+        }
+        Ok(result)
     }
 
     pub async fn background_terminals_stopped(&self, thread: &str) -> Result<bool> {
@@ -868,11 +905,47 @@ impl CodexAppServer {
         selection: &TurnModelSelection,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnStartResult> {
-        self.request(
-            "turn/start",
-            turn_start_params(thread_id, &input, selection, client_user_message_id),
+        self.turn_start_with_optional_permissions(
+            thread_id,
+            input,
+            selection,
+            client_user_message_id,
+            None,
         )
         .await
+    }
+
+    pub async fn turn_start_with_permissions(
+        &self,
+        thread_id: &str,
+        input: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        client_user_message_id: Option<&str>,
+        permissions: &PermissionsChoice,
+    ) -> Result<TurnStartResult> {
+        self.turn_start_with_optional_permissions(
+            thread_id,
+            input,
+            selection,
+            client_user_message_id,
+            Some(permissions),
+        )
+        .await
+    }
+
+    async fn turn_start_with_optional_permissions(
+        &self,
+        thread_id: &str,
+        input: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        client_user_message_id: Option<&str>,
+        permissions: Option<&PermissionsChoice>,
+    ) -> Result<TurnStartResult> {
+        let mut value = turn_start_params(thread_id, &input, selection, client_user_message_id);
+        if let Some(permissions) = permissions {
+            permissions.apply_turn(&mut value)?;
+        }
+        self.request("turn/start", value).await
     }
 
     /// `model/list` — one page. `includeHidden` is pinned to `false`: the picker-visibility filter is codex's.
@@ -1490,7 +1563,7 @@ mod tests {
         let params = ThreadStartParams {
             cwd: "/workspace".into(),
             approval_policy: "never".into(),
-            sandbox_mode: "workspace-write".into(),
+            permissions: PermissionsChoice::SandboxMode("workspace-write".into()),
             developer_instructions: None,
             config: Some(json!({
                 "shell_environment_policy": {
@@ -1839,7 +1912,7 @@ mod tests {
         let req_fut = client.thread_start_with_params(ThreadStartParams {
             cwd: "/workspace".into(),
             approval_policy: "never".into(),
-            sandbox_mode: "workspace-write".into(),
+            permissions: PermissionsChoice::SandboxMode("workspace-write".into()),
             developer_instructions: None,
             config: None,
         });
@@ -1909,7 +1982,7 @@ mod tests {
         let req_fut = client.thread_start_with_params(ThreadStartParams {
             cwd: "/workspace".into(),
             approval_policy: "never".into(),
-            sandbox_mode: "workspace-write".into(),
+            permissions: PermissionsChoice::SandboxMode("workspace-write".into()),
             developer_instructions: None,
             config: Some(expected.clone()),
         });
@@ -1948,7 +2021,7 @@ mod tests {
         let req_fut = client.thread_start_with_params(ThreadStartParams {
             cwd: "/workspace".into(),
             approval_policy: "never".into(),
-            sandbox_mode: "workspace-write".into(),
+            permissions: PermissionsChoice::SandboxMode("workspace-write".into()),
             developer_instructions: None,
             config: None,
         });

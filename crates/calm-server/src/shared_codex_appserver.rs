@@ -1292,7 +1292,7 @@ impl SharedCodexAppServer {
             .thread_start_with_params(ThreadStartParams {
                 cwd: params.cwd,
                 approval_policy: params.approval_policy,
-                sandbox_mode: params.sandbox_mode,
+                permissions: crate::codex_appserver::PermissionsChoice::SandboxMode(params.sandbox_mode),
                 developer_instructions: params.developer_instructions,
                 config,
             })
