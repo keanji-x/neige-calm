@@ -425,6 +425,7 @@ export function useConversationStore(
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stop = useConversationStop({
     cardId, canStop: working && !stalled,
+    responseEnded: phase === 'idle' || phase === 'turn_completed',
     historyKnown: history.data !== undefined,
     completedId: serverEntries.filter((entry) => entry.author === 'turn').at(-1)?.id ?? null,
     requestStop: mutations.interrupt,

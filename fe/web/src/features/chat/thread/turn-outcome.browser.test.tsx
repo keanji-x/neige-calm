@@ -141,3 +141,17 @@ it.each([320, 390, 1280])('keeps stop feedback inside the transcript and clear o
   expect(scroller.getBoundingClientRect().bottom).toBeLessThanOrEqual(screen.getByRole('textbox').getBoundingClientRect().top + 1);
   expect(document.documentElement.scrollWidth).toBe(width);
 });
+
+it.each(['stopping', 'unconfirmed', 'failed'] as const)('preserves focused disclosure and expansion when requesting becomes %s', async (kind) => {
+  const { rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+    turns={[]} stopFeedback={{ kind: 'requesting' }} />);
+  const button = screen.getByRole('button', { name: 'Requesting stop', expanded: false });
+  button.focus();
+  await userEvent.keyboard('{Enter}');
+  const feedback: ConversationStopFeedback = kind === 'failed' ? { kind, message: 'Request failed.' } : { kind };
+  rerender(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[]} stopFeedback={feedback} />);
+  const label = kind === 'stopping' ? 'Stopping response' : kind === 'failed' ? 'Stop request failed' : 'Stop unconfirmed';
+  const current = screen.getByRole('button', { name: label, expanded: true });
+  expect(current).toBe(button);
+  expect(document.activeElement).toBe(button);
+});

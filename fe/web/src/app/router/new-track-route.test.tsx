@@ -288,7 +288,8 @@ describe('New track model selection', () => {
     await userEvent.click(await screen.findByRole('menuitem', { name: 'GPT-5' }));
     await userEvent.click(screen.getByRole('button', { name: 'Reasoning effort: low (the default)' }));
     await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Use these settings from the first turn');
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.paste('Use these settings from the first turn');
     await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     expect(await screen.findByRole('button', { name: 'Model: Default' })).toBeTruthy();

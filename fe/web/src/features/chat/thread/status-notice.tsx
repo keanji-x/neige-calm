@@ -24,7 +24,7 @@ export function StopStatusNotice({ feedback }: { feedback: ConversationStopFeedb
     : feedback.kind === 'stopping' ? 'Waiting for the response to end.'
     : 'The response may still be starting or may already have ended.';
   return <div className={styles.outcome}>
-    <ThreadStatusNotice key={feedback.kind} error={feedback.kind === 'failed'}
+    <ThreadStatusNotice error={feedback.kind === 'failed'}
       heading={<span className={styles.outcomeHeader}>
         <span className={styles.outcomeStatusLabel}>{labels[feedback.kind]}</span>
       </span>}>

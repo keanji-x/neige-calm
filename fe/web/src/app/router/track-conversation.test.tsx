@@ -1024,7 +1024,7 @@ describe('track conversations', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
-    await screen.findByRole('button', { name: 'Stop unconfirmed', expanded: false });
+    await screen.findByRole('button', { name: 'Stop unconfirmed', expanded: true });
     expect(stops).toBe(2);
   });
 

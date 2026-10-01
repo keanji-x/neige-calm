@@ -2,18 +2,15 @@ import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 
-type StopView = { cardId: string; request: object | null; canStop: boolean };
-type StopNotice = Readonly<{
-  view: StopView;
-  feedback: ConversationStopFeedback;
-  historyKnown: boolean;
-  completedId: string | null;
-}>;
+type StopLease = { historyKnown: boolean; completedId: string | null };
+type StopView = { cardId: string; request: StopLease | null; canStop: boolean };
+type StopNotice = Readonly<{ view: StopView; lease: StopLease; feedback: ConversationStopFeedback }>;
 
-/** One request lease per conversation view; a receipt never manufactures completion. */
-export function useConversationStop({ cardId, canStop, historyKnown, completedId, requestStop, failureText }: {
+/** One request lease per committed view; a receipt never manufactures completion. */
+export function useConversationStop({ cardId, canStop, responseEnded, historyKnown, completedId, requestStop, failureText }: {
   cardId: string;
   canStop: boolean;
+  responseEnded: boolean;
   historyKnown: boolean;
   completedId: string | null;
   requestStop: () => Promise<Readonly<{ stopped: boolean }>>;
@@ -21,8 +18,6 @@ export function useConversationStop({ cardId, canStop, historyKnown, completedId
 }) {
   const view = useMemo<StopView>(() => ({ cardId, request: null, canStop: false }), [cardId]);
   const viewRef = useRef<StopView | null>(null);
-  // Ownership follows committed views, not speculative renders. Unmounting
-  // retires callbacks without cancelling a stop the user already requested.
   useLayoutEffect(() => {
     viewRef.current = view;
     view.canStop = canStop;
@@ -30,31 +25,43 @@ export function useConversationStop({ cardId, canStop, historyKnown, completedId
   }, [view, canStop]);
   const [notice, setNotice] = useState<StopNotice | null>(null);
   const owned = notice?.view === view ? notice : null;
-  // New authoritative terminal activity retires the old action notice. This is
-  // presentation only: it neither changes send authority nor infers who stopped it.
-  const ended = owned !== null && owned.historyKnown && historyKnown && owned.completedId !== completedId;
-  const feedback = ended ? null : owned?.feedback ?? null;
+  const terminalAdvanced = owned !== null && owned.lease.historyKnown && historyKnown
+    && owned.lease.completedId !== completedId;
+  const ended = terminalAdvanced || (owned !== null && view.request === owned.lease && responseEnded);
+  useLayoutEffect(() => {
+    if (owned === null) return;
+    // The first known history establishes a baseline, not completion evidence.
+    // The same lease survives receipt updates, so delayed ACKs cannot reset it.
+    if (!owned.lease.historyKnown && historyKnown) {
+      owned.lease.historyKnown = true;
+      owned.lease.completedId = completedId;
+    }
+    if (!ended) return;
+    if (view.request === owned.lease) view.request = null;
+    setNotice((previous) => previous?.lease === owned.lease ? null : previous);
+  }, [view, owned, historyKnown, completedId, ended]);
 
   const interrupt = () => {
     if (viewRef.current !== view || !view.canStop || view.request !== null) return;
-    const request = {};
-    view.request = request;
-    const current = () => viewRef.current === view && view.request === request;
-    setNotice({ view, feedback: { kind: 'requesting' }, historyKnown, completedId });
+    const lease: StopLease = { historyKnown, completedId };
+    view.request = lease;
+    const current = () => viewRef.current === view && view.request === lease;
+    setNotice({ view, lease, feedback: { kind: 'requesting' } });
     void Promise.resolve().then(requestStop).then((receipt) => {
       if (!current()) return;
-      setNotice(receipt.stopped ? null : { view, feedback: { kind: 'unconfirmed' }, historyKnown, completedId });
+      if (!receipt.stopped) view.request = null;
+      setNotice({ view, lease, feedback: { kind: receipt.stopped ? 'stopping' : 'unconfirmed' } });
     }).catch((error: unknown) => {
       if (!current()) return;
-      setNotice({ view, feedback: { kind: 'failed', message: failureText(error) }, historyKnown, completedId });
-    }).finally(() => {
-      if (current()) view.request = null;
+      view.request = null;
+      setNotice({ view, lease, feedback: { kind: 'failed', message: failureText(error) } });
     });
   };
+  const feedback = ended ? null : owned?.feedback ?? null;
   return {
-    pending: owned?.feedback.kind === 'requesting',
+    pending: feedback?.kind === 'requesting' || feedback?.kind === 'stopping',
     feedback,
     interrupt,
-    clearFeedback: () => setNotice((previous) => previous?.view === view && previous.feedback.kind !== 'requesting' ? null : previous),
+    clearFeedback: () => setNotice((previous) => previous?.view === view && previous.lease !== view.request ? null : previous),
   };
 }
