@@ -239,3 +239,36 @@ pub(crate) async fn record_read_stop(pool: &SqlitePool, card: &str) -> Result<()
     .await?;
     Ok(())
 }
+
+/// Admission uses the prepare lease before the scheduler has stamped worker_card_id.
+pub(crate) enum PreparedTaskAccess {
+    Read,
+    Write { attempt: String },
+    Independent,
+}
+pub(crate) async fn prepared_task_access(
+    pool: &SqlitePool,
+    card: &str,
+) -> Result<PreparedTaskAccess> {
+    let row=sqlx::query_as::<_,(String,String,Option<String>)>(
+        "SELECT l.access_mode,l.state,o.idempotency_key FROM workspace_leases l \
+         LEFT JOIN operations o ON o.id=l.lease_owner \
+         WHERE l.card_id=?1 AND l.holder_kind='task' ORDER BY l.created_at_ms DESC,l.lease_id DESC LIMIT 1"
+    ).bind(card).fetch_optional(pool).await?;
+    match row {
+        Some((mode, state, _)) if mode == "read_only" => {
+            if state != "held" {
+                return Err(CalmError::Conflict(
+                    "read task guard is no longer held".into(),
+                ));
+            }
+            Ok(PreparedTaskAccess::Read)
+        }
+        Some((_, state, attempt)) if state == "held" => Ok(PreparedTaskAccess::Write {
+            attempt: attempt.ok_or_else(|| {
+                CalmError::Conflict("task write guard has no owning attempt".into())
+            })?,
+        }),
+        _ => Ok(PreparedTaskAccess::Independent),
+    }
+}

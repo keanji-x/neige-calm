@@ -123,3 +123,47 @@ async fn worker_mint_does_not_receive_planner_terminal_policy() {
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn read_task_initial_turn_uses_prepared_lease_before_worker_card_stamp() {
+    let _guard = ENV_LOCK.lock().await;
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card = seed_card(&repo, 0).await;
+    let track = repo.card_get(&card).await.unwrap().unwrap().track_id;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let thread = daemon
+        .thread_start_mint_mcp_shell(
+            &card,
+            "/tmp".into(),
+            None,
+            root.path().join("mcp.sock"),
+            "fixture-token".into(),
+            "read-only",
+        )
+        .await
+        .unwrap();
+    // This is the prepare/spawn window: scheduler stamps worker_card_id only after spawn returns.
+    assert!(repo.task_for_worker_card(&card).await.unwrap().is_none());
+    sqlx::query(
+        "INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,\
+         created_at_ms,updated_at_ms,access_mode) VALUES('reader',?1,?2,'/tmp','held','spawn',1,1,'read_only')"
+    ).bind(&card).bind(track.as_str()).execute(repo.pool()).await.unwrap();
+    daemon
+        .turn_start(
+            &thread,
+            vec![InputItem::text("Review only")],
+            &TurnModelSelection::inherit(),
+            None,
+        )
+        .await
+        .unwrap();
+    let writers:i64=sqlx::query_scalar(
+        "SELECT count(*) FROM workspace_leases WHERE card_id=?1 AND access_mode='read_write' AND state='held'"
+    ).bind(&card).fetch_one(repo.pool()).await.unwrap();
+    assert_eq!(
+        writers, 0,
+        "a prepared reader cannot acquire a native writer before the running stamp"
+    );
+}

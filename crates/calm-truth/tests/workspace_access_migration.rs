@@ -139,3 +139,50 @@ created_at_ms, updated_at_ms) VALUES('legacy', 'card', 'track', '/real', 'held',
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn workspace_access_claim_blocks_foreign_track_writer_in_actual_checkout() {
+    let root = tempfile::tempdir().unwrap();
+    let mut db = database(129).await;
+    sqlx::query("UPDATE tracks SET workspace_path=?1 WHERE id='track'")
+        .bind(root.path().to_str().unwrap())
+        .execute(&mut db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) \
+        VALUES('other','area','Other',1,1,2)",
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner, \
+        created_at_ms,updated_at_ms,access_mode,holder_kind,holder_id,holder_phase,native_provider,write_root_id) \
+        VALUES('native','writer','other',?1,'held','thread',1,1,'read_write','native','thread','running','codex','native')")
+        .bind(root.path().to_str().unwrap()).execute(&mut db).await.unwrap();
+    assert!(
+        !calm_truth::db::sqlite::track_available(
+            &mut db,
+            "track",
+            "reader",
+            calm_types::workspace_access::WorkspaceAccess::ReadOnly
+        )
+        .await
+        .unwrap(),
+        "card ownership cannot hide a writer using another Track's physical checkout"
+    );
+}
+
+#[tokio::test]
+async fn workspace_access_parent_directory_writer_conflicts_with_child_reader() {
+    let mut db = database(129).await;
+    lease(&mut db, "reader", "/root/repo", "/root/repo", "read_only")
+        .await
+        .unwrap();
+    assert!(
+        lease(&mut db, "writer", "/root", "/root", "read_write")
+            .await
+            .is_err(),
+        "a writable parent directory includes the reader's checkout"
+    );
+}

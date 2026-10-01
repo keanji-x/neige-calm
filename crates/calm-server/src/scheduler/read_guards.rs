@@ -26,7 +26,7 @@ impl Scheduler {
         let rows = sqlx::query_as::<_, (String, String)>(
             r#"
 SELECT lease_id, holder_id FROM workspace_leases WHERE holder_kind='native' AND
-holder_phase='running' AND state='held' ORDER BY updated_at_ms LIMIT 16
+holder_phase='running' AND native_provider='codex' AND state='held' ORDER BY updated_at_ms,lease_id LIMIT 16
 "#,
         )
         .fetch_all(&pool)
@@ -35,6 +35,15 @@ holder_phase='running' AND state='held' ORDER BY updated_at_ms LIMIT 16
             return;
         };
         for (lease, thread) in rows {
+            if sqlx::query("UPDATE workspace_leases SET updated_at_ms=?2 WHERE lease_id=?1")
+                .bind(&lease)
+                .bind(now_ms())
+                .execute(&pool)
+                .await
+                .is_err()
+            {
+                continue;
+            }
             let confirmed = async {
                 let facts =
                     calm_provider::provider::CodexDaemonProbe::read_liveness_facts(shared, &thread)

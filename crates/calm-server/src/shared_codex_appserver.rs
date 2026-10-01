@@ -1252,6 +1252,7 @@ impl SharedCodexAppServer {
         card_id: &str,
         params: SharedThreadStartParams,
     ) -> Result<String> {
+        let binding_cwd = params.cwd.clone();
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.fail_next_thread_start.swap(false, Ordering::SeqCst) {
@@ -1267,6 +1268,16 @@ impl SharedCodexAppServer {
                 .insert(thread_id.clone());
             self.thread_cache
                 .insert(thread_id.clone(), card_id.to_string());
+            if let Some(pool) = self.repo.sqlite_pool() {
+                crate::operation::workspace_lease::execution_guard::bind_execution(
+                    &pool,
+                    crate::operation::workspace_lease::execution_guard::NativeProvider::Codex,
+                    card_id,
+                    &thread_id,
+                    &binding_cwd,
+                )
+                .await?;
+            }
             return Ok(thread_id);
         }
         self.reap_and_respawn_with_current_settings().await?;
@@ -1291,6 +1302,16 @@ impl SharedCodexAppServer {
             .insert(thread_id.clone());
         self.thread_cache
             .insert(thread_id.clone(), card_id.to_string());
+        if let Some(pool) = self.repo.sqlite_pool() {
+            crate::operation::workspace_lease::execution_guard::bind_execution(
+                &pool,
+                crate::operation::workspace_lease::execution_guard::NativeProvider::Codex,
+                card_id,
+                &thread_id,
+                &binding_cwd,
+            )
+            .await?;
+        }
         Ok(thread_id)
     }
 
@@ -1353,17 +1374,13 @@ impl SharedCodexAppServer {
             self.repo.sqlite_pool(),
             self.cached_card_for_thread(thread_id),
         ) {
-            let task = self.repo.task_for_worker_card(&card).await?;
-            if task
-                .as_ref()
-                .map(|task| task.workspace_access())
-                .transpose()
-                .map_err(CalmError::BadRequest)?
-                != Some(calm_types::workspace_access::WorkspaceAccess::ReadOnly)
-            {
-                Some(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool, &card, thread_id, task.as_ref().map_or("",|task|task.id.as_str())).await?)
-            } else {
-                None
+            use crate::operation::workspace_lease::task_guard::{
+                PreparedTaskAccess, prepared_task_access,
+            };
+            match prepared_task_access(&pool,&card).await? {
+                PreparedTaskAccess::Read => None,
+                PreparedTaskAccess::Write {attempt} => Some(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,&attempt,crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?),
+                PreparedTaskAccess::Independent => Some(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,"",crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?),
             }
         } else {
             None

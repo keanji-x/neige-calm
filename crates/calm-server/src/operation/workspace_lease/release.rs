@@ -217,6 +217,16 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
             continue;
         }
         let mut tx = begin_immediate_tx(pool).await?;
+        // A changed machine boot is positive evidence that all prior-boot execution stopped.
+        if lease.access_mode == calm_types::workspace_access::WorkspaceAccess::ReadOnly {
+            sqlx::query(
+                "UPDATE workspace_leases SET read_stop_confirmed_at_ms=?2 WHERE lease_id=?1",
+            )
+            .bind(&lease.lease_id)
+            .bind(now_ms())
+            .execute(&mut *tx)
+            .await?;
+        }
         let mut released = fail_lease_attempt_tx(&mut tx, &lease).await?;
         let lease_events = release_lease_tx(
             &mut tx,

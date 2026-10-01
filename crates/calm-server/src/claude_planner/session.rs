@@ -494,7 +494,18 @@ impl ClaudePlannerSession {
             Err(error) => return Err(self.abort_before_ok(None, instructions, error).await),
         };
         if let Some(pool) = params.repo.sqlite_pool() {
-            crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&params.card_id,thread,"").await?.started(&turn_id).await?;
+            crate::operation::workspace_lease::execution_guard::bind_execution(
+                &pool,
+                crate::operation::workspace_lease::execution_guard::NativeProvider::Claude,
+                &params.card_id,
+                &params.worker_session_id,
+                params
+                    .cwd
+                    .to_str()
+                    .ok_or_else(|| CalmError::Conflict("Claude cwd is not UTF-8".into()))?,
+            )
+            .await?;
+            crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&params.card_id,&params.worker_session_id,"",crate::operation::workspace_lease::execution_guard::NativeProvider::Claude).await?.started(&turn_id).await?;
         }
         let spawned = Command::new(&config.claude_binary)
             .args(argv)
@@ -617,7 +628,20 @@ impl ClaudePlannerSession {
         error: CalmError,
     ) -> CalmError {
         let params = &self.shared.params;
-        if let Err(stop_error) = stop(&params.host.instance, &params.worker_session_id).await {
+        let stopped = stop(&params.host.instance, &params.worker_session_id).await;
+        if stopped.is_ok()
+            && let Some(pool) = params.repo.sqlite_pool()
+            && let Err(release_error) =
+                crate::operation::workspace_lease::execution_guard::release_stopped_execution(
+                    &pool,
+                    "native",
+                    &params.worker_session_id,
+                )
+                .await
+        {
+            tracing::warn!(%release_error,"confirmed Claude stop could not release its guard");
+        }
+        if let Err(stop_error) = stopped {
             tracing::warn!(
                 worker_session_id = %params.worker_session_id,
                 error = %stop_error,
@@ -680,6 +704,16 @@ impl ClaudePlannerSession {
         }
         let params = &shared.params;
         let stopped = stop(&params.host.instance, &params.worker_session_id).await;
+        if stopped.is_ok()
+            && let Some(pool) = params.repo.sqlite_pool()
+        {
+            crate::operation::workspace_lease::execution_guard::release_stopped_execution(
+                &pool,
+                "native",
+                &params.worker_session_id,
+            )
+            .await?;
+        }
         if let Some(slot) = slot {
             let mut settled = slot.settled.subscribe();
             if tokio::time::timeout(SHUTDOWN_SETTLE_WAIT, settled.wait_for(|done| *done))

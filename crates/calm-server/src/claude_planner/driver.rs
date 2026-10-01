@@ -591,7 +591,7 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
             crate::operation::workspace_lease::execution_guard::release_stopped_execution(
                 &pool,
                 "native",
-                &thread.to_string(),
+                &params.worker_session_id,
             )
             .await
     {

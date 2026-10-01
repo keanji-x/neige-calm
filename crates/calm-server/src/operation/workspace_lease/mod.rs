@@ -202,9 +202,9 @@ async fn acquire_workspace_lease_at_path_tx(
                lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms,
                base_sha, base_source, base_attempt_id, canonical_path, git_common_dir,
-               delivery_policy,access_mode
+               delivery_policy,access_mode,write_root_id
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
@@ -226,6 +226,10 @@ async fn acquire_workspace_lease_at_path_tx(
             calm_types::workspace_access::WorkspaceAccess::ReadOnly => "read_only",
             _ => "read_write",
         })
+        .bind(
+            (access_mode == calm_types::workspace_access::WorkspaceAccess::ReadWrite)
+                .then_some(&lease_id),
+        )
         .execute(&mut **tx)
         .await?;
 
