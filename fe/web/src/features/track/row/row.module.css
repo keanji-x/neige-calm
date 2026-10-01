@@ -148,6 +148,12 @@
     padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
   }
 
+  /* Compact rows share the timestamp slot with their hover delete action. */
+  .variantCompact.hasRemove:not(.hasPin) { padding-inline-end: var(--space-2); }
+  .variantCompact.hasRemove:not(.hasPin) .age { min-inline-size: var(--control-h-sm); text-align: end; }
+  .wrapper:hover .variantCompact.hasRemove:not(.hasPin) .age,
+  .wrapper:focus-within .variantCompact.hasRemove:not(.hasPin) .age { opacity: 0; }
+
   .row.hasPin.hasRemove {
     padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
   }

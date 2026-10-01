@@ -3,3 +3,6 @@
 @import "react-grid-layout/css/styles.css" layer(vendor);
 @import "react-resizable/css/styles.css" layer(vendor);
 
+@import "@fullcalendar/react/skeleton.css" layer(vendor);
+@import "@fullcalendar/react/themes/monarch/theme.css" layer(vendor);
+@import "@fullcalendar/react/themes/monarch/palettes/blue.css" layer(vendor);

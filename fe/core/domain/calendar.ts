@@ -1,3 +1,4 @@
+import { Temporal } from 'temporal-polyfill';
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 
@@ -11,6 +12,7 @@ export const calendarEntrySchema = z.object({
   id: z.string(), task: calendarDraftSchema, version: z.number(), cancelled: z.boolean(),
   source_track_id: z.string().nullable(), created_by: z.string(), created_at: z.number(), updated_at: z.number(),
 });
+export type CalendarWindow = Readonly<{ from: string; until: string }>;
 export type CalendarDraft = z.infer<typeof calendarDraftSchema>;
 export type CalendarEntry = z.infer<typeof calendarEntrySchema>;
 export type CalendarWrite = Readonly<{ idempotency_key: string; task: CalendarDraft }> |
@@ -59,4 +61,12 @@ export function calendarInstant(input: string, timezone: string): string {
   const hours = String(Math.floor(Math.abs(minutes) / 60)).padStart(2, '0');
   const rest = String(Math.abs(minutes) % 60).padStart(2, '0');
   return `${input}:00${sign}${hours}:${rest}`;
+}
+
+/** Project a validated half-open schedule into a display date without losing nanoseconds. */
+export function calendarScheduleIncludesDate(schedule: CalendarDraft['schedule'], day: string, timezone: string): boolean {
+  if (schedule.kind === 'all_day') return schedule.date === day;
+  const first = Temporal.Instant.from(schedule.start).toZonedDateTimeISO(timezone).toPlainDate().toString();
+  const last = Temporal.Instant.from(schedule.end).subtract({ nanoseconds: 1 }).toZonedDateTimeISO(timezone).toPlainDate().toString();
+  return first <= day && last >= day;
 }

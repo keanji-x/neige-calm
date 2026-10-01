@@ -3,6 +3,9 @@
 # committed baseline tsv. Both directions fail: a rise is new retiring vocabulary,
 # a fall means tighten the ratchet (`--update-baseline`, commit the tsv).
 # A baseline is only valid for the tree it was generated on — regenerate after every merge of upstream.
+# #1913 bounded exception: spec/fe 59 -> 63 comes solely from the pinned
+# temporal-spec transitive dependency in fe/package-lock.json (dependency key,
+# package path and two archive URL tokens). No retired application concept is added.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

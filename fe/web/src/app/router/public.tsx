@@ -1689,7 +1689,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       <button type="button" data-nc-action="tertiary" onClick={resetConfirm.feedback.clear}>Dismiss</button>
     </div>}
     <TodayPage
-      renderCalendarTasks={(date) => <TodayCalendarTasks date={date} transport={transport} unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })} onOpenTrack={(trackId) => go({ name: 'track', trackId })} />}
+      isTrackUnread={(track) => preferences.isUnread('track', track.id, track.activityAt ?? 0)}
+      renderCalendarTasks={(date, onDateChange, trackCountOn) => <TodayCalendarTasks trackCountOn={trackCountOn} date={date} onDateChange={onDateChange} transport={transport} unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })} onOpenTrack={(trackId) => go({ name: 'track', trackId })} />}
       activityAvailable={workspaceError === null && workspace.overlaysError === null
         && !workspace.areasLoading && !workspace.overlaysLoading
         && ![...workspace.tracksLoadingByArea.values()].some(Boolean)}
@@ -1707,9 +1708,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
                        unread on Today exactly when it does there. */
           unread={preferences.isUnread('track', track.id, track.activityAt ?? 0)}
           onOpen={(trackId) => go({ name: 'track', trackId })}
-          /* The panel variant only: the main column's sections are the day's report,
-                       not a place you edit from. */
-          onDelete={options.variant === 'panel' ? deletion.request : undefined}
+          onDelete={deletion.request}
         />
       )}
       conversationList={conversationList}

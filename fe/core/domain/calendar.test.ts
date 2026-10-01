@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calendarDate, calendarInstant, calendarListOperation, calendarWriteOperation, shiftCalendarDate } from './calendar.js';
+import { calendarDate, calendarInstant, calendarScheduleIncludesDate, calendarListOperation, calendarWriteOperation, shiftCalendarDate } from './calendar.js';
 
 describe('calendar time contracts', () => {
   it('uses the selected timezone across midnight and calendar boundaries', () => {
@@ -21,4 +21,11 @@ describe('calendar time contracts', () => {
     expect(calendarWriteOperation({ id: 'a/b', expected_version: 2, task, cancelled: true })).toMatchObject({ path: '/api/calendar/tasks/a%2Fb', body: { expected_version: 2, cancelled: true } });
     expect(calendarListOperation('2026-10-02', '2026-10-03', 'Asia/Shanghai').path).toContain('Asia%2FShanghai');
   });
+});
+
+it('projects exclusive ends with server precision in the display timezone', () => {
+  const schedule = { kind: 'timed' as const, start: '2026-10-02T23:00:00+08:00', end: '2026-10-03T00:00:00.000001+08:00', timezone: 'Asia/Shanghai' };
+  expect(calendarScheduleIncludesDate(schedule, '2026-10-03', 'Asia/Shanghai')).toBe(true);
+  expect(calendarScheduleIncludesDate(schedule, '2026-10-03', 'UTC')).toBe(false);
+  expect(calendarScheduleIncludesDate({ ...schedule, end: '2026-10-03T00:00:00+08:00' }, '2026-10-03', 'Asia/Shanghai')).toBe(false);
 });

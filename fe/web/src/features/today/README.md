@@ -1,14 +1,16 @@
 # Calendar commitments (#1913)
 
-Today composes the builtin Calendar task surface on desktop only. Mobile task
-scheduling is explicitly deferred; its viewport ledger excludes the Calendar
-slot, so no task form or calendar API queries mount on the compact viewport.
-The existing sidebar **Calendar** is the only desktop date selector. Today owns
-its selected date and passes that date to both Track activity and the injected
-task agenda through `renderCalendarTasks`. The task feature renders the list and
-Astryx entry/edit controls; it does not render another calendar. Choosing a day
-or another week updates queries and the new-task date without discarding a draft.
-Calendar creation is title-first, with time and notes optional.
+Today mounts Week/Month date navigation in the desktop sidebar. Dates show Track
+counts above and task counts below. Task details remain in the fixed-height
+scrolling list below; Activity is a separate fixed-height list with update times
+and a closed-track visibility toggle. No separate Open group is rendered.
+
+Today owns date selection and Track counts. The app queries the visible date
+window and selected day; Calendar projects task counts from those entries.
+Astryx controls and shared PanelModules provide consistent controls and dividers.
+
+The compact viewport ledger excludes the renderer, preserving the explicit
+desktop-only scope. An open dialog keeps its captured creation date.
 
 # `features/today`
 

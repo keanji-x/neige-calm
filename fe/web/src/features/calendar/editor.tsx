@@ -3,11 +3,12 @@ import { DateInput } from '@astryxdesign/core/DateInput';
 import { TimeInput } from '@astryxdesign/core/TimeInput';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { TextArea } from '@astryxdesign/core/TextArea';
+import { Switch } from '@astryxdesign/core/Switch';
 import { Banner } from '@astryxdesign/core/Banner';
 import type { ISODateString } from '@astryxdesign/core/Calendar';
 import type { ISOTimeString } from '@astryxdesign/core/utils';
 import { useState } from '../../ui/state/public.ts';
-import { calendarInstant, shiftCalendarDate, wallTime, type CalendarEntry, type CalendarWrite } from '../../../../core/domain/calendar.ts';
+import { calendarInstant, wallTime, type CalendarEntry, type CalendarWrite } from '../../../../core/domain/calendar.ts';
 import styles from './calendar.module.css';
 
 export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave }: Readonly<{
@@ -28,16 +29,16 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
   const [zone, setZone] = useState(original?.kind === 'timed' ? original.timezone : timezone);
   const [error, setError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<{ fingerprint: string; key: string } | null>(null);
-  const [selectedDate, setSelectedDate] = useState(date);
-  if (!entry && selectedDate !== date) {
-    const delta = (Date.parse(`${date}T12:00:00Z`) - Date.parse(`${selectedDate}T12:00:00Z`)) / 86400000;
-    setSelectedDate(date); setDay(date); setEndDay(shiftCalendarDate(endDay, delta));
-  }
   const changeDay = (value: string | undefined) => {
     if (value) { if (endDay === day) setEndDay(value); setDay(value); }
   };
   const save = async (cancelled: boolean) => {
     try {
+      if (cancelled && entry) {
+        await onSave({ id: entry.id, expected_version: entry.version, task: entry.task, cancelled: true });
+        onClose(); return;
+      }
+      if (timed && (!start || !end)) throw new Error('Choose a start and end time.');
       if (!title.trim()) throw new Error('Give this task a name.');
       const resolveTime = (value: string, edge: 'start' | 'end') => original?.kind === 'timed'
         && zone === original.timezone && wallTime(Date.parse(original[edge]), zone) === value
@@ -51,14 +52,10 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save this task.'); }
   };
   return <form className={styles.form} onSubmit={(event) => { event.preventDefault(); void save(false); }}>
-    <div className={styles.quickAdd}>
-      <TextInput label="Task name" isLabelHidden={!entry} placeholder="What would you like to get done?" value={title} onChange={setTitle} isDisabled={pending} width="100%" />
-      {!entry && <Button label="Add task" type="submit" variant="primary" isDisabled={pending || !title.trim()} isLoading={pending} />}
-    </div>
-    {entry && <DateInput label="Date" value={day as ISODateString} onChange={changeDay} isDisabled={pending} />}
-    <div className={styles.options}>
-      <Button label={timed ? 'Remove time' : 'Set time'} size="sm" variant="ghost" isDisabled={pending} onClick={() => setTimed(!timed)} />
-      <Button label={details ? 'Hide notes' : 'Add notes'} size="sm" variant="ghost" isDisabled={pending} onClick={() => setDetails(!details)} />
+    <TextInput label="Task title" isLabelHidden placeholder="Task title" hasAutoFocus size="lg" value={title} onChange={setTitle} isDisabled={pending} width="100%" />
+    <div className={styles.dateRow}>
+      <DateInput label="Date" value={day as ISODateString} onChange={changeDay} isDisabled={pending} width="100%" />
+      <Switch label="All day" value={!timed} onChange={(allDay) => setTimed(!allDay)} isDisabled={pending} />
     </div>
     {timed && zone !== timezone && <p className={styles.time}>Times in {zone}</p>}
     {timed && <div className={styles.timeFields}>
@@ -68,12 +65,15 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
       {(advanced || endDay !== day) && <DateInput label="End date" value={endDay as ISODateString} onChange={(value) => { if (value) setEndDay(value); }} isDisabled={pending} width="100%" />}
       {advanced && <TextInput label="Time zone" value={zone} onChange={setZone} isDisabled={pending} width="100%" />}
     </div>}
-    {details && <TextArea label="Notes" value={description} onChange={setDescription} isDisabled={pending} />}
+    {details ? <TextArea label="Notes" placeholder="Add context or an expected result" value={description} onChange={setDescription} isDisabled={pending} />
+      : <div><Button label="Add notes" size="sm" variant="ghost" isDisabled={pending} onClick={() => setDetails(true)} /></div>}
     {error && <Banner status="error" title={error} />}
-    {entry && <div className={styles.actions}>
-      <Button label="Save changes" type="submit" variant="primary" isDisabled={pending} isLoading={pending} />
-      <Button label="Cancel task" variant="destructive" isDisabled={pending} onClick={() => { void save(true); }} />
-      <Button label="Close" variant="ghost" isDisabled={pending} onClick={onClose} />
-    </div>}
+    <div className={styles.actions}>
+      {entry && <Button label="Cancel task" variant="destructive" isDisabled={pending} onClick={() => { void save(true); }} />}
+      <div className={styles.saveActions}>
+        <Button label="Cancel" variant="ghost" isDisabled={pending} onClick={onClose} />
+        <Button label={entry ? 'Save changes' : 'Create task'} type="submit" variant="primary" isDisabled={pending || !title.trim()} isLoading={pending} />
+      </div>
+    </div>
   </form>;
 }

@@ -65,7 +65,7 @@ const markerOf = (root: HTMLElement, title: string) => within(root).getByRole('b
 it('Today rows carry the track read receipt', async () => {
   renderToday();
   const main = await screen.findByRole('main');
-  const open = (await within(main).findByRole('heading', { name: 'Open' })).closest('section')!;
+  const open = (await within(main).findByRole('heading', { name: 'Activity' })).closest('section')!;
   await waitFor(() => expect(markerOf(open, 'Fresh result')).toBe('unread'));
   expect(markerOf(open, 'Seen result')).toBeNull();
   expect(markerOf(open, 'Still busy')).toBe('working');
@@ -82,7 +82,7 @@ it('Today rows carry the track read receipt', async () => {
 it('Today\'s second number counts the kernel\'s working verdict, not the open tracks', async () => {
   renderToday();
   const main = await screen.findByRole('main');
-  await within(main).findByRole('heading', { name: 'Open' });
+  await within(main).findByRole('heading', { name: 'Activity' });
   await waitFor(() => expect(within(main).getByRole('banner').textContent).toContain('1working'));
   expect(within(main).getByRole('banner').textContent).not.toMatch(/3working|in progress/);
 });

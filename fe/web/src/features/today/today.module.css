@@ -74,6 +74,8 @@
   /* Start-aligned, not centred: with a permanent left rail, centring
      decouples the content from the navigation. At 1440 / rail 240 the painted
      split is leftover / 24 / `--panel-span` (828 / 24 / 300). */
+  .withCalendar { --panel-span: max(20rem, min(30rem, 42cqi)); }
+
   .content {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);
@@ -98,6 +100,11 @@
     min-block-size: 0;
     align-self: start;
   }
+
+  .withCalendar .panelColumn { align-self: stretch; block-size: 100%; overflow: hidden; }
+  .panelColumn > div { padding-block-start: var(--space-3); }
+  .filterAction { width: var(--control-h-sm); min-width: var(--control-h-sm); height: var(--control-h-sm); padding: 0; margin-inline-end: calc(var(--space-2) * -1); }
+  .activityScroll { flex: 1 1 12rem; min-block-size: 0; block-size: 12rem; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
 
   .section {
     display: flex;

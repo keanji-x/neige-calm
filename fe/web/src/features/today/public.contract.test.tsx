@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // Invariants for the Today surface. Behavior lives in public.test.tsx.
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Area } from '../../../../core/domain/area.ts';
@@ -11,7 +12,7 @@ import type { TodayPageProps } from './public.tsx';
 
 // A stand-in, not the real TrackRow: `features/today` may not import a sibling domain.
 const renderTrackRow: TodayPageProps['renderTrackRow'] = (track, options) => (
-  <span data-nc-role="row" data-nc-state={options.variant === 'panel' ? 'selected' : undefined}>
+  <span data-nc-role="row" data-nc-state={options.variant === 'compact' ? 'selected' : undefined}>
     {options.hourLabel}{track.title}
   </span>
 );
@@ -43,11 +44,14 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
     expect(screen.queryByText('No track activity.')).toBeNull();
   });
 
-  it('keeps both sources in the same agenda instead of letting either take over', () => {
+  it('keeps both sources in the same agenda instead of letting either take over', async () => {
     const scheduled = track({ id: 'w2', title: 'Scheduled track', createdAt: NOW - 10 * 86_400_000, closedAt: NOW - 9 * 86_400_000 });
     const events: ScheduledEvent[] = [{ track: scheduled, date: new Date(NOW), hour: 15 }];
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
 
+    expect(screen.queryByText('Scheduled track')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Activity filters' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Show closed/ }));
     const agenda = screen.getByRole('complementary').textContent ?? '';
     expect(agenda).toContain('Scheduled track');
     expect(agenda).toContain('Open track');
@@ -177,7 +181,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
       launchpad={null}
       conversationList={<p>No conversations yet.</p>}
     />);
-    expect(screen.getByRole('heading', { name: 'Track activity' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Activity' })).toBeTruthy();
     expect(screen.getByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
     expect(screen.queryByText('Nothing here yet.')).toBeNull();
   });
@@ -191,7 +195,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
       conversationList={<p>Launchpad conversations</p>}
       conversationAction={<button type="button">New conversation</button>}
     />);
-    expect(screen.getByRole('heading', { name: 'Track activity' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Activity' })).toBeTruthy();
     expect(screen.queryByText('Nothing here yet.')).toBeNull();
     expect(screen.getByText("the day's report")).toBeTruthy();
     expect(screen.getByText('Launchpad conversations')).toBeTruthy();

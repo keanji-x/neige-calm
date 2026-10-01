@@ -5,14 +5,16 @@ import styles from './panel-card.module.css';
 
 /* Each projection marker channel is its own opt-in prop: a rest-prop spread reaches only the outermost element, and unconditional marking would put module markers in trees whose view model has none. The attribute names are literals because `ui/**` may not import `core/view/panel.ts`. */
 
-export function PanelCard({ children }: { children: ReactNode }) {
-  return <div className={styles.card}>{children}</div>;
+export function PanelCard({ children, fill = false }: { children: ReactNode; fill?: boolean }) {
+  return <div className={[styles.card, fill ? styles.fill : ''].filter(Boolean).join(' ')}>{children}</div>;
 }
 
-export function PanelModule({ title, action, children, moduleMarker, titleFieldMarker }: {
+export function PanelModule({ title, action, children, grow = false, moduleMarker, titleFieldMarker }: {
   title: string;
   action?: ReactNode;
   children: ReactNode;
+  /** Allow this module body to shrink and share a bounded card. */
+  grow?: boolean;
   /** The value of `data-nc-module` on this module's `<section>`; omit on a module outside the panel's view model. */
   moduleMarker?: string;
   /** The value of `data-nc-field` on this module's `<h2>`. */
@@ -20,7 +22,7 @@ export function PanelModule({ title, action, children, moduleMarker, titleFieldM
 }) {
   return (
     <section
-      className={styles.module}
+      className={[styles.module, grow ? styles.grow : ''].filter(Boolean).join(' ')}
       {...(moduleMarker === undefined ? {} : { 'data-nc-module': moduleMarker })}
     >
       <div className={styles.head}>

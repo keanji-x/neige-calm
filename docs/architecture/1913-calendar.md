@@ -1,61 +1,111 @@
-# Calendar time scheduling
+# Calendar commitments
 
 Calendar is a compiled plugin (`dev.neige.calendar`), disabled on first install
-like other builtins. Enabling it is an explicit user action. Its own module
-owns validation, namespaced persistence, HTTP handlers, and native AI tools.
-The catalog registers HTTP routers without application-ID dispatch in the kernel.
-Today composes a calendar feature on desktop only; page loads only read.
+like other builtins. Its own module owns validation, namespaced persistence,
+HTTP handlers, and native AI tools. The catalog registers HTTP routers without
+application-ID dispatch in the kernel. Page loads only read.
+
+## Desktop presentation
+
+The sidebar uses FullCalendar for Week and Month date navigation. Both views
+show dates with Track counts above and task counts below; full task content
+appears only in the selected-day list. Track counts reuse Today's activity
+selection and closed-track visibility. Task counts project loaded entries onto
+local calendar dates, respecting exclusive timed ends. No execution is implied.
+
+The Calendar heading contains an Astryx segmented control. Task rows put title
+and time on one line, truncating long titles; notes remain in editing. Date and
+timezone share the heading with an icon-only plus button. Calendar, Activity and
+Conversations use sibling PanelModules and full-width group dividers. The task
+and activity lists have preferred 12rem scrolling viewports. The card is bounded
+by the available desktop height; Month consumes more date-grid space, so both
+lists shrink and keep independent scrolling. Shared PanelCard/PanelModule props
+express generic fill/shrink behavior without Calendar-specific UI rules.
+
+Activity replaces the separate Open group and shows update times using existing
+Track rows. Closed tracks are hidden initially; the Activity menu toggles them in
+both Activity and date counts. Show read defaults on and uses the same receipt predicate as Track unread status,
+injected by the app. Both filters apply to date counts and Activity. The panel
+has top padding around its controls. Task text reuses ListText primary typography.
+
+Today owns the focused date. The app queries the visible window and selected day
+separately. Month/week navigation and default creation date stay connected. An
+open edit dialog retains its captured date when background selection changes.
+New task starts with a title and all-day date; time and notes expand on demand.
+Nondefault zones and overnight ends stay explicit. Cancellation uses stored
+content. The compact viewport excludes scheduling; mobile is deferred.
+
+## Domain and authority
 
 Calendar entries are work commitments, separate from execution Tasks and Track
 lifecycle. This slice stores dates and time ranges only: no execution, dependency,
 reminder or delivery workflow is triggered. Source Track identity is attribution.
 
-Use existing plugin KV storage, one versioned record per entry and immutable
-creation receipts for idempotency, inside the normal transaction write boundary.
-No released migration changes; a new migration records sync event revision 22. A generic `plugin.data.changed` event contains
-only plugin identity; the owning component publishes it with the transaction.
-Clients invalidate that plugin's data queries, never infer calendar policy.
+Use existing plugin KV storage: one versioned record per entry and immutable
+creation receipts, within the normal transaction boundary. The generic
+`plugin.data.changed` event contains only plugin identity and invalidates that
+plugin's query prefix. No calendar policy enters the generic event dispatcher.
 
-Humans can access all calendar entries through session-protected REST. AI tools
-are exposed to Planner and Assistant roles, subject to existing plugin admission
-and track scope. AI reads/writes only entries belonging to its authenticated
-Track; a launchpad assistant has the same restriction, not implicit global power.
-Human-created entries have no source Track. Neither REST nor tool arguments may
-forge the source or creator. Worker roles cannot call these tools.
+Humans can access calendar entries through session-protected REST. AI tools are
+exposed to Planner and Assistant roles, subject to existing plugin admission and
+Track scope. AI reads/writes only entries belonging to its authenticated Track;
+a launchpad assistant has the same restriction, not implicit global power.
+Human-created entries have no source Track. Request arguments cannot forge source
+or creator. Worker roles and forge lowering cannot call the Calendar capability.
 
-Time contracts distinguish a civil all-day date from an RFC3339 instant range
-with an explicit IANA timezone. Offset/timezone mismatches are rejected; ambiguous
-wall times must carry their chosen offset. Queries use a half-open date window
-and an explicit display timezone. Updates compare revisions; cancelled entries
-remain durable. Lost create responses can be retried using the same key and body.
+Time contracts distinguish an all-day civil date from an RFC3339 instant range
+with an explicit IANA timezone. Offset/timezone mismatches are rejected. Queries
+use a half-open date window and explicit display timezone. Updates compare
+revisions; cancelled entries remain durable. Lost creation responses can be
+retried using the same key and body.
 
-Acceptance follows #1913: both creation paths, durability, idempotency conflicts,
-revision conflicts, time boundaries, scope rejection, lifecycle gating, desktop
-UI and real browser interaction. Existing report/conversation UI remains composed
-alongside the calendar. Task dependencies and deliverable acceptance remain future work.
+## Contracts and checks
 
-The UI reuses Today's existing sidebar calendar as its only date selector.
-Today owns the selected date; the injected task agenda uses it for queries and
-creation. Entry/edit controls use Astryx TextInput, DateInput, TimeInput, TextArea
-and Button. There is no separate month calendar in the main column.
-Creating an all-day entry needs only its title on the selected date. Time and
-notes expand on request; timezone and cross-day end date are secondary controls.
-The display timezone comes from the device and is visible next to the selected day;
-a timed edit retains its stored timezone and explicit offset.
+REST revision 17, sync event revision 22 and web revision 36 gate the new surface.
+No released migration changes; the new migration stamps the invalidation kind.
+Generated outputs come from the real generators. Check both creation paths,
+durability, concurrent writes, retry/revision conflicts, scope rejection, timezone
+boundaries, month/day queries and real desktop interaction. Critical scope tests
+are mutation-verified. Two independent full-diff reviews cover ownership,
+duplication and application-specific assumptions.
 
-Owner scope correction: mobile scheduling is deferred. The compact Today viewport
-excludes the Calendar task slot and retains its prior date-only presentation.
-A browser check pins the absence of the task surface on compact viewports.
+The standard React calendar and its Temporal peer are pinned. Official CSS enters
+through the existing vendor stylesheet; local theme adjustments remain scoped.
+The dependency introduces four lockfile matches of a retired vocabulary token in
+the Temporal runtime package name. The bounded baseline allowance is documented
+in the terminology gate header; matching rules and scopes are unchanged.
+
+## Planner experience review gate
+
+Run this gate separately from the two code-review channels. Record the user
+request, discovered tools, actual arguments and responses, persisted result, and
+Planner confirmation. Separate scripted native-tool checks from live-model turns.
+Use an isolated permitted host for live Codex; never enable real Codex E2E on the
+shared production host.
+
+Cover date-only creation, explicit timed creation, retry after response loss,
+owner list/reschedule/cancel, a human edit causing a revision conflict, disabled
+Calendar, a development-bound Planner, and a manually created task. Ask for a
+missing timezone or timed end instead of inventing values. A reminder request
+must be declined clearly unless a real delivery path exists. Future reminder
+acceptance must observe the due-time wake-up, recipient, retries/deduplication,
+rescheduling and cancellation; a stored timestamp does not satisfy that check.
+
+The current review found two unresolved product boundaries: a development-owned
+Track cannot discover or call Calendar under the existing owner-only plugin-tool
+policy, and Calendar has no due-time delivery/wake-up mechanism. Human-created
+entries also remain outside Planner's Track scope. These are not fixed by
+bypassing the generic authorization boundary. A declarative cross-plugin grant
+and a separately designed durable reminder contract are needed before claiming
+that normal development Planners can schedule and receive reminders end to end.
+Essential limitations and recovery instructions are included in discovered tool
+help, because component instructions are only injected for an owning plugin.
 
 ## Ownership change request and decision
 
-The orchestrator approves these narrow contract changes under #1913: register the
-Calendar feature owner, expose the plugin-owned REST schemas, add the opaque
-plugin data event to the generated/client event union, and invalidate the owning
-plugin's query prefix. Existing ownership enforcement and dependency rules remain
-unchanged. All generated outputs come from the real generators.
-
-The schema/event/ownership commit carries these exact trailers:
+The orchestrator approves the narrow Calendar feature registration, REST/event
+contracts, invalidation policies, dependencies and official vendor styles under
+#1913. Existing ownership enforcement and dependency rules remain unchanged.
 
 ```
 OWNERSHIP-CHANGE: fe/core/api/generated/openapi.json — expose builtin calendar scheduling contracts (#1913)
@@ -64,4 +114,7 @@ OWNERSHIP-CHANGE: fe/core/api/schemas.ts — decode plugin data invalidation eve
 OWNERSHIP-CHANGE: fe/core/events/invalidation-plan.ts — refresh plugin data and lifecycle queries (#1913)
 OWNERSHIP-CHANGE: fe/core/events/invalidation-plan.test.ts — verify plugin query invalidation (#1913)
 OWNERSHIP-CHANGE: fe/module-file-inventory.yaml — register the calendar feature owner (#1913)
+OWNERSHIP-CHANGE: fe/package.json — add the standard event calendar and Temporal peer (#1913)
+OWNERSHIP-CHANGE: fe/package-lock.json — pin the event calendar dependency graph (#1913)
+OWNERSHIP-CHANGE: fe/web/src/styles/vendor.css — load official calendar CSS through the vendor layer (#1913)
 ```

@@ -82,9 +82,8 @@ describe('route registration', () => {
     expect(await screen.findByRole('complementary')).toBeTruthy();
     /* The status counts are in `TodayHeader` and on no other route. */
     expect(screen.getByText('waiting on you')).toBeTruthy();
-    /* The locator the Playwright suites anchor `/next/` on: only Today's calendar
-           module renders a `Previous week` control. */
-    expect(screen.getByRole('button', { name: 'Previous week' })).toBeTruthy();
+    /* The integrated week calendar remains the deployed Today navigation anchor. */
+    expect(screen.getByRole('button', { name: /Previous week/i })).toBeTruthy();
   });
 
   function registeredPaths(): (string | undefined)[] {

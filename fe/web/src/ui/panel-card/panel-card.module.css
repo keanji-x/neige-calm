@@ -26,6 +26,11 @@
     overflow: hidden;
   }
 
+  .fill { block-size: 100%; max-block-size: 100%; min-block-size: 0; }
+  .fill > .module { flex-shrink: 0; }
+  .fill > .grow { flex: 1 1 auto; min-block-size: 0; }
+  .grow > .body { flex: 1 1 auto; min-block-size: 0; }
+
   .module {
     display: flex;
     flex-direction: column;
@@ -58,6 +63,7 @@
     justify-content: space-between;
     gap: var(--space-2);
     block-size: var(--row-h);
+    flex-shrink: 0;
     padding-inline: var(--space-6);
     padding-block-end: 0;
   }

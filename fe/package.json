@@ -29,6 +29,7 @@
     "@codemirror/search": "^6.7.2",
     "@codemirror/state": "^6.7.2",
     "@codemirror/view": "^6.43.10",
+    "@fullcalendar/react": "7.1.0",
     "@noble/hashes": "1.8.0",
     "@tanstack/react-query": "^5.100.11",
     "@tanstack/react-router": "^1.170.4",
@@ -44,6 +45,7 @@
     "react-dom": "^19.2.4",
     "react-grid-layout": "^2.2.4",
     "react-resizable": "^3.2.0",
+    "temporal-polyfill": "1.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

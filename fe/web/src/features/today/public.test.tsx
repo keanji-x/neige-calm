@@ -11,7 +11,7 @@ import type { TodayPageProps } from './public.tsx';
 
 // A stand-in, not the real TrackRow: `features/today` may not import a sibling domain.
 const renderTrackRow: TodayPageProps['renderTrackRow'] = (track, options) => (
-  <span data-nc-role="row" data-nc-state={options.variant === 'panel' ? 'selected' : undefined}>
+  <span data-nc-role="row" data-nc-state={options.variant === 'compact' ? 'selected' : undefined}>
     {options.hourLabel}{track.title}
   </span>
 );
@@ -54,12 +54,12 @@ describe('Today clock', () => {
     expect(screen.getByRole('banner').textContent).toContain('2waiting on you');
     expect(screen.getByRole('banner').textContent).toContain('1working');
     expect(screen.getByRole('banner').textContent).not.toContain('in progress');
-    const section = screen.getByRole('heading', { name: 'Open' }).closest('section')!;
+    const section = screen.getByRole('heading', { name: 'Activity' }).closest('section')!;
     expect(section.textContent).toContain('Open, idle planner');
     expect(section.textContent).toContain('Open, idle');
     expect(section.textContent).not.toContain('Closed, still in flight');
-    expect(section.textContent).not.toContain('Open, failed');
-    expect(section.textContent).not.toContain('needs input');
+    expect(section.textContent).toContain('Open, failed');
+    expect(section.textContent).toContain('needs input');
     expect(screen.queryByText('Running')).toBeNull();
   });
 
@@ -85,9 +85,9 @@ describe('Today clock', () => {
 
 it('keeps a deliberately selected future day when the clock passes midnight', async () => {
   const props = { tracks: [], areas: [], activityAvailable: true, renderTrackRow,
-    renderCalendarTasks: (date: string) => <div role="status" aria-label="Task date">{date}</div> };
+    renderCalendarTasks: (date: string, onDateChange: (date: string) => void) => <><div role="status" aria-label="Task date">{date}</div><button type="button" onClick={() => onDateChange('2026-08-12')}>Choose August 12</button></> };
   const view = render(<TodayPage {...props} nowMs={new Date(2026, 7, 10, 23, 59, 50).getTime()} />);
-  await userEvent.click(screen.getByRole('button', { name: 'Wednesday, Aug 12' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Choose August 12' }));
   view.rerender(<TodayPage {...props} nowMs={new Date(2026, 7, 11, 0, 0, 5).getTime()} />);
   expect(screen.getByRole('status', { name: 'Task date' }).textContent).toBe('2026-08-12');
 });
@@ -118,7 +118,7 @@ describe('Today calendar label', () => {
 });
 
 describe('Today agenda', () => {
-  it('hands each agenda track to the injected renderer in the panel variant', () => {
+  it('hands each agenda track to the injected renderer in the compact variant with update time', () => {
     const seen: { id: string; variant: string }[] = [];
     render(<TodayPage
       activityAvailable
@@ -128,7 +128,7 @@ describe('Today agenda', () => {
       }}
       tracks={[track()]} areas={[area()]} nowMs={NOW}
     />);
-    expect(seen.some((entry) => entry.id === 'w1' && entry.variant === 'panel')).toBe(true);
+    expect(seen.some((entry) => entry.id === 'w1' && entry.variant === 'compact')).toBe(true);
   });
 
   it('resolves each agenda track area name for the renderer', () => {
@@ -164,10 +164,14 @@ describe('Today agenda', () => {
     render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track(), tomorrowOnly]} areas={[area()]} nowMs={NOW} />);
     expect(agenda()).not.toContain('Tomorrow only');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Tuesday, Aug 11, 1 track' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Tuesday, Aug 11' }));
+    expect(agenda()).not.toContain('Tomorrow only');
+    await userEvent.click(screen.getByRole('button', { name: 'Activity filters' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Show closed/ }));
     expect(agenda()).toContain('Tomorrow only');
+    expect(screen.getByRole('button', { name: 'Tuesday, Aug 11, 1 track' })).toBeTruthy();
     expect(agenda()).not.toContain('Open track');
-    expect(screen.getByText('Tuesday, Aug 11')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Activity' })).toBeTruthy();
   });
 
   it('moves the week window with the previous/next controls', async () => {
@@ -177,4 +181,13 @@ describe('Today agenda', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Next week' }));
     expect(screen.getByRole('button', { name: 'Monday, Aug 10' })).toBeTruthy();
   });
+});
+
+it('filters read tracks using the injected receipt state and keeps unread tracks', async () => {
+  render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track({ id: 'read', title: 'Read track' }), track({ id: 'unread', title: 'Unread track' })]} areas={[area()]} nowMs={NOW} isTrackUnread={(value) => value.id === 'unread'} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Activity filters' }));
+  await userEvent.click(await screen.findByRole('menuitem', { name: /Show read/ }));
+  expect(screen.queryByText('Read track')).toBeNull();
+  expect(screen.getByText('Unread track')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Monday, Aug 10, 1 track' })).toBeTruthy();
 });

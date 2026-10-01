@@ -1,5 +1,6 @@
 // Today — the landing route. Presentational and props-driven: the data comes from app/router.
 
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
@@ -126,10 +127,12 @@ function TodayCompact({ nowMs }: TodayCompactProps) {
 function TodayDesktop({
   tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
-  documentAction, activityAvailable, renderCalendarTasks,
+  documentAction, activityAvailable, renderCalendarTasks, isTrackUnread,
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
 
+  const [showRead, setShowRead] = useState(true);
+  const [showClosed, setShowClosed] = useState(false);
   const [selected, setSelected] = useState<Date>(today);
   const previousToday = useRef(today);
   useEffect(() => {
@@ -142,30 +145,30 @@ function TodayDesktop({
   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);
   const waiting = tracks.filter(needsPerson);
   const working = tracks.filter(isWorking);
-  const open = tracks.filter((track) => !isClosed(track) && !needsPerson(track));
+  const isVisible = (track: Track) => (showClosed || !isClosed(track)) && (showRead || isTrackUnread?.(track) === true);
+  const activityTracks = tracks.filter(isVisible);
   const panel = (
     <aside className={styles.panelColumn} data-nc-panel="">
-      <PanelCard>
-        <PanelModule title="Calendar">
+      <PanelCard fill={renderCalendarTasks !== undefined}>
           <Calendar
-            activityAvailable={activityAvailable}
+            activityAvailable={activityAvailable} showClosed={showClosed} onShowClosedChange={setShowClosed}
+            showRead={showRead} onShowReadChange={setShowRead} canFilterRead={isTrackUnread !== undefined}
+            taskAgenda={renderCalendarTasks?.(isoDate(selected), (date) => setSelected((current) => isoDate(current) === date ? current : new Date(`${date}T12:00:00`)), (date) => activityAvailable ? activeTracksOn(activityTracks, new Date(`${date}T12:00:00`), now.getTime()).length : null)}
             today={today}
             selected={selected}
             onSelect={setSelected}
-            tracks={tracks}
+            tracks={activityTracks}
             areas={areas}
-            scheduledEvents={scheduledEvents}
+            scheduledEvents={scheduledEvents.filter((event) => isVisible(event.track))}
             renderTrackRow={renderTrackRow}
             nowMs={now.getTime()}
           />
-        </PanelModule>
-        <PanelRows title="Open" tracks={open} render={renderTrackRow} />
         <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
       </PanelCard>
     </aside>
   );
   return (
-    <div className={styles.page}>
+    <div className={[styles.page, renderCalendarTasks ? styles.withCalendar : ''].filter(Boolean).join(' ')}>
       <TodayHeader
         activityAvailable={activityAvailable}
         today={today} waiting={waiting.length} working={working.length}
@@ -173,7 +176,6 @@ function TodayDesktop({
       />
       <div className={styles.content}>
         <div className={styles.mainColumn}>
-          {renderCalendarTasks?.(isoDate(selected))}
           <TodayDocument
             launchpad={launchpad}
             document={launchpadDocument}
@@ -227,23 +229,6 @@ function TodayDocument({ launchpad, document, error, action }: {
 }
 
 /** A track list as a panel module, rendered only when it has rows. The `panel` variant is the agenda's: `app/router` keys the row's delete affordance off it. */
-function PanelRows({ title, tracks, render }: {
-  title: string;
-  tracks: readonly Track[];
-  render: TrackRowRenderer;
-}) {
-  if (tracks.length === 0) return null;
-  return (
-    <PanelModule title={title}>
-      <div className={styles.rows}>
-        {tracks.map((track) => (
-          <span key={track.id}>{render(track, { variant: 'compact' })}</span>
-        ))}
-      </div>
-    </PanelModule>
-  );
-}
-
 function TodayHeader({ today, waiting, working, now, activityAvailable }: {
   today: Date;
   waiting: number;
@@ -282,7 +267,10 @@ function Clock({ now }: { now: Date }) {
   );
 }
 
-function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, renderTrackRow, nowMs, activityAvailable }: {
+function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, renderTrackRow, nowMs, activityAvailable, taskAgenda, showClosed, onShowClosedChange, showRead, onShowReadChange, canFilterRead }: {
+  showRead: boolean; onShowReadChange: (value: boolean) => void; canFilterRead: boolean;
+  showClosed: boolean; onShowClosedChange: (value: boolean) => void;
+  taskAgenda?: ReactNode;
   today: Date;
   selected: Date;
   onSelect: (day: Date) => void;
@@ -298,14 +286,14 @@ function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, r
   const days = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
 
   const scheduledAgenda = scheduledEvents
-    .filter((event) => sameDay(event.date, selected))
+    .filter((event) => sameDay(event.date, selected) && (showClosed || !isClosed(event.track)))
     .toSorted((left, right) => left.hour - right.hour);
   const trackAgenda = activeTracksOn(tracks, selected, now);
   const scheduledIds = new Set(scheduledAgenda.map((event) => event.track.id));
 
   return (
-    <div className={styles.calendar}>
-      <div className={styles.week}>
+    <>
+      {taskAgenda ?? <PanelModule title="Calendar"><div className={styles.week}>
         <div className={styles.weekHead}>
           <button type="button" data-nc-role="icon" className={styles.navButton}
             aria-label="Previous week" onClick={() => onSelect(addDays(selected, -7))}><Icon name="chevron-left" /></button>
@@ -327,7 +315,7 @@ function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, r
             // De-dup by track id: a track with both a scheduled event and an
             // overlapping activity window is counted once, not twice.
             const seen = new Set<string>();
-            for (const event of scheduledEvents.filter((candidate) => sameDay(candidate.date, day))) {
+            for (const event of scheduledEvents.filter((candidate) => sameDay(candidate.date, day) && (showClosed || !isClosed(candidate.track)))) {
               seen.add(event.track.id);
             }
             for (const track of activeTracksOn(tracks, day, now)) {
@@ -359,10 +347,12 @@ function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, r
             );
           })}
         </div>
-      </div>
-
-      <div className={styles.agenda}>
-        <h2 className={styles.sectionLabel}>Track activity{!sameDay(selected, today) && <> · <span>{selected.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</span></>}</h2>
+      </div></PanelModule>}
+      <PanelModule title="Activity" grow={taskAgenda !== undefined} action={<DropdownMenu button={{ label: 'Activity filters', isIconOnly: true, icon: <Icon name="more" size="sm" />, className: styles.filterAction, size: 'sm', variant: 'ghost' }}>
+        <DropdownMenuItem label="Show closed" endContent={showClosed ? 'On' : 'Off'} onClick={() => onShowClosedChange(!showClosed)} />
+        <DropdownMenuItem label="Show read" endContent={showRead ? 'On' : 'Off'} isDisabled={!canFilterRead} onClick={() => onShowReadChange(!showRead)} />
+      </DropdownMenu>}>
+        <div className={styles.activityScroll} role="region" aria-label="Activity list">
 
         {scheduledAgenda.length === 0 && trackAgenda.length === 0
           ? activityAvailable ? <PanelEmpty>No track activity.</PanelEmpty> : null
@@ -371,7 +361,7 @@ function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, r
           {scheduledAgenda.map((event) => (
             <span key={`scheduled-${event.track.id}-${event.hour}`}>
               {renderTrackRow(event.track, {
-                variant: 'panel',
+                variant: 'compact',
                 hourLabel: formatHour(event.hour),
                 areaName: areaOf(event.track.areaId, areas)?.name ?? UNKNOWN_AREA,
               })}
@@ -379,12 +369,13 @@ function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, r
           ))}
           {trackAgenda.filter((track) => !scheduledIds.has(track.id)).map((track) => (
             <span key={`track-${track.id}`}>
-              {renderTrackRow(track, { variant: 'panel', areaName: areaOf(track.areaId, areas)?.name ?? UNKNOWN_AREA })}
+              {renderTrackRow(track, { variant: 'compact', areaName: areaOf(track.areaId, areas)?.name ?? UNKNOWN_AREA })}
             </span>
           ))}
         </div>
           )}
-      </div>
-    </div>
+        </div>
+      </PanelModule>
+    </>
   );
 }

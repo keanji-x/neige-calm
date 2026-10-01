@@ -30,7 +30,7 @@ test('the application routes are reachable through the real kernel', async ({ pa
   const routes = [
     /* Today's title is the date via `toLocaleDateString`, so a text match would depend on the
        browser's locale and the day; `Previous week` is the calendar's own control and exists on no other route. */
-    { path: '/next/', anchor: page.getByRole('button', { name: 'Previous week' }) },
+    { path: '/next/', anchor: page.getByRole('button', { name: /Previous week/i }) },
     /* Anchored on the composer because the new-track page has no `data-nc-page-title`. */
     { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },
     { path: `/next/track/${track.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: track.title }) },

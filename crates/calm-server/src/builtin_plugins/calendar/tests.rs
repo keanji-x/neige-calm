@@ -466,3 +466,109 @@ async fn calendar_concurrent_creation_and_edits_are_serialized() {
         2
     );
 }
+
+#[tokio::test]
+async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
+    let fx = Fixture::new().await;
+    let registry = crate::mcp_server::build_default_registry();
+    let create = registry.lookup("calm.calendar.create").unwrap();
+    let list = registry.lookup("calm.calendar.list").unwrap();
+    let update = registry.lookup("calm.calendar.update").unwrap();
+    let planner = fx.identity(CardRole::Planner).await;
+    let timed = json!({"title":"Review research","description":"Deliver recommendations","schedule":{
+        "kind":"timed","start":"2026-10-02T09:00:00+08:00","end":"2026-10-02T10:00:00+08:00","timezone":"Asia/Shanghai"
+    }});
+    let request = json!({"idempotency_key":"planner-review-timed","task":timed});
+    let first = create(fx.ctx.clone(), planner.clone(), request.clone())
+        .await
+        .unwrap();
+    let first = serde_json::to_value(first).unwrap()["structuredContent"].clone();
+    let retry = create(fx.ctx.clone(), planner.clone(), request)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(retry).unwrap()["structuredContent"],
+        first
+    );
+    assert_eq!(first["source_track_id"], json!(planner.track_id));
+    let visible = list(
+        fx.ctx.clone(),
+        planner.clone(),
+        json!({"from":"2026-10-02","until":"2026-10-03","timezone":"Asia/Shanghai"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(visible).unwrap()["structuredContent"],
+        json!([first])
+    );
+    let mut moved = timed.clone();
+    moved["schedule"]["start"] = json!("2026-10-02T11:00:00+08:00");
+    moved["schedule"]["end"] = json!("2026-10-02T12:00:00+08:00");
+    let revised = update(
+        fx.ctx.clone(),
+        planner.clone(),
+        json!({
+            "id":first["id"],"expected_version":first["version"],"task":moved,"cancelled":false
+        }),
+    )
+    .await
+    .unwrap();
+    let revised = serde_json::to_value(revised).unwrap()["structuredContent"].clone();
+    assert_eq!(revised["version"], 2);
+    let human_view = store::list(&fx.ctx, &human(), window()).await.unwrap();
+    assert_eq!(human_view.len(), 1);
+    assert_eq!(serde_json::to_value(&human_view[0].task).unwrap(), moved);
+    update(
+        fx.ctx.clone(),
+        planner.clone(),
+        json!({
+            "id":first["id"],"expected_version":revised["version"],"task":moved,"cancelled":true
+        }),
+    )
+    .await
+    .unwrap();
+    let visible = list(
+        fx.ctx.clone(),
+        planner.clone(),
+        json!({"from":"2026-10-02","until":"2026-10-03","timezone":"Asia/Shanghai"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(visible).unwrap()["structuredContent"],
+        json!([])
+    );
+    assert!(
+        store::list(&fx.ctx, &human(), window())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Evidence for the current product limitation, not permission to bypass ownership:
+    // a development-owned Planner cannot discover or invoke Calendar's native tools.
+    let owner = crate::builtin_plugins::dev::PLUGIN_ID;
+    fx.host.enable(owner).await.unwrap();
+    sqlx::query("UPDATE tracks SET plugin_scope=? WHERE id=?")
+        .bind(owner)
+        .bind(planner.track_id.as_deref().unwrap())
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+    let scope = crate::mcp_server::tool_visibility::plugin_scope_for_track(
+        &fx.ctx,
+        planner.track_id.as_deref(),
+    )
+    .await;
+    assert!(!scope.allows_manifest(crate::builtin_plugins::get(PLUGIN_ID).unwrap().manifest()));
+    let error = create(
+        fx.ctx.clone(),
+        planner,
+        json!({"idempotency_key":"bound-review","task":timed}),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(error.code, -32601);
+}
