@@ -55,7 +55,8 @@ function Thinking() {
 function Creation() {
   const times = '0;.32;.48;.56;.72;1';
   return <g>
-    <Turn values="0 192 192;0 192 192;120 192 192;120 192 192;0 192 192;0 192 192" times="0;.12;.32;.72;.92;1" />
+    {/* Advance the outer turn during fold closure so each fold keeps turning clockwise. */}
+    <Turn values="0 192 192;0 192 192;120 192 192;120 192 192;300 192 192;360 192 192;360 192 192" times="0;.12;.32;.56;.72;.92;1" />
     {[0, 1, 2].map(index => {
       const points = snowFold(0);
       const [x, y] = points[1];

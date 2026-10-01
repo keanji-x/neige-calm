@@ -110,3 +110,21 @@ describe('Neige vector motion in the browser', () => {
     } finally { await commands.emulateReducedMotion(false); }
   });
 });
+
+it('turns each creation fold clockwise throughout the cycle', () => {
+  const svg = mount('creation');
+  const paths = folds(svg);
+  const previous = paths.map(() => 0);
+  for (let step = 0; step <= 55; step++) {
+    svg.setCurrentTime(step / 10);
+    paths.forEach((path, index) => {
+      const matrix = path.getCTM()!;
+      const angle = Math.atan2(matrix.b, matrix.a) * 180 / Math.PI;
+      if (step > 0) {
+        const delta = ((angle - previous[index] + 540) % 360) - 180;
+        expect(delta).toBeGreaterThanOrEqual(-.001);
+      }
+      previous[index] = angle;
+    });
+  }
+});

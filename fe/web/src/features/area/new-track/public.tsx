@@ -245,8 +245,10 @@ export function NewTrackForm({
 
 
         <div className={styles.masthead}>
-          <span className={styles.mark} aria-hidden="true"><NeigeMotion kind="creation" /></span>
-          <h1 className={styles.greeting}>What would you like to work on?</h1>
+          <h1 className={styles.greeting}>
+            <span className={styles.mark} aria-hidden="true"><NeigeMotion kind="creation" /></span>
+            What would you like to work on?
+          </h1>
         </div>
 
         <div

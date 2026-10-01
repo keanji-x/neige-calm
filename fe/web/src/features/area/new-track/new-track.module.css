@@ -73,9 +73,11 @@
   }
 
   .mark {
-    flex: 0 0 auto;
-    inline-size: 24px;
-    block-size: 24px;
+    display: inline-block;
+    inline-size: 1em;
+    block-size: 1em;
+    vertical-align: middle;
+    margin-inline-end: var(--space-4);
     color: var(--text-3);
   }
 
