@@ -5101,3 +5101,7 @@ mod thread_release;
 
 #[path = "cases/native_workspace.rs"]
 mod native_workspace;
+
+#[path = "cases/pinned_read_workspace.rs"]
+mod pinned_read_workspace;
+use pinned_read_workspace::pinned_read_workspace;

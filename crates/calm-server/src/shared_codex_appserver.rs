@@ -3666,7 +3666,9 @@ impl SharedCodexAppServer {
                     .await
                 {
                     if let Err(invalidation) = self
-                        .retain_unresolved_resumed_scope(thread_id, card_id, &response.thread).await {
+                        .retain_unresolved_resumed_scope(thread_id, card_id, &response.thread)
+                        .await
+                    {
                         tracing::warn!(%invalidation,%thread_id,"unresolved resumed workspace could not be retained");
                     }
                     tracing::warn!(%error,%thread_id,%card_id,"resumed thread workspace binding refused");

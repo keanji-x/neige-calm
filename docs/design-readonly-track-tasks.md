@@ -1,5 +1,9 @@
 # Shared read-only tasks in the Track checkout
 
+The execution ownership boundary is superseded by
+[Execution ownership before concurrent read tasks](design-execution-manager.md).
+This draft records the earlier per-entry guard approach; it is not merge approval.
+
 This adapts the reviewed read-only guard change to #1830 S2 and #1893: workers
 use the Track checkout; there is no per-Track concurrency budget and no isolated
 file delivery. Released migrations remain frozen.

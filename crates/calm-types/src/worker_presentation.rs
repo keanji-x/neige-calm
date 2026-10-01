@@ -26,10 +26,8 @@ pub struct WorkerSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(try_from = "String", into = "String")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-#[ts(
-    type = "\"pending\" | \"dispatched\" | \"running\" | \"verifying\" | \
-            \"done\" | \"failed\" | \"canceled\""
-)]
+#[ts(type = "\"pending\" | \"dispatched\" | \"running\" | \"verifying\" | \
+            \"done\" | \"failed\" | \"canceled\"")]
 pub struct WorkerSnapshotStatus(String);
 impl TryFrom<String> for WorkerSnapshotStatus {
     type Error = String;

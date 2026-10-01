@@ -250,6 +250,8 @@ async fn native_workspace_positive_read_stop_confirms_only_its_terminal_task_int
 
 async fn readonly_lost_response(release_task: bool) {
     let root = tempfile::tempdir().unwrap();
+    let (workspace, base_sha, common_dir) = pinned_read_workspace();
+    let task_lease = new_id();
     let repo = repo().await;
     let card = seed_card(&repo, 104).await;
     let daemon = server(&root, repo.clone()).await;
@@ -258,7 +260,7 @@ async fn readonly_lost_response(release_task: bool) {
         .thread_start_mint_for_card(
             &card,
             SharedThreadStartParams {
-                cwd: root.path().to_str().unwrap().into(),
+                cwd: workspace.path().to_str().unwrap().into(),
                 approval_policy: "never".into(),
                 sandbox_mode: "read-only".into(),
                 developer_instructions: None,
@@ -290,9 +292,12 @@ async fn readonly_lost_response(release_task: bool) {
         )
         .await
         .unwrap();
-    sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner, \
-        created_at_ms,updated_at_ms,access_mode) VALUES('task-read',?1,?2,?3,'held',?4,0,0,'read_only')")
-        .bind(&card).bind(&track).bind(root.path().to_str().unwrap()).bind(owner).execute(repo.pool()).await.unwrap();
+    sqlx::query(r#"
+        INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,
+            created_at_ms,updated_at_ms,access_mode,base_sha,base_source,canonical_path,git_common_dir)
+        VALUES(?1,?2,?3,?4,'held',?5,0,0,'read_only',?6,'commit',?4,?7)
+    "#).bind(&task_lease).bind(&card).bind(&track).bind(workspace.path().to_str().unwrap())
+        .bind(owner).bind(base_sha).bind(common_dir.to_str().unwrap()).execute(repo.pool()).await.unwrap();
     let sock = root.path().join("run/codex-appserver.sock");
     std::fs::write(sock.with_extension("turn-start-no-id"), "1").unwrap();
     assert!(
@@ -318,7 +323,8 @@ async fn readonly_lost_response(release_task: bool) {
     .unwrap();
     // The Task lease's old lightweight stop proof may arrive before this request is accepted.
     if release_task {
-        sqlx::query("UPDATE workspace_leases SET state='released' WHERE lease_id='task-read'")
+        sqlx::query("UPDATE workspace_leases SET state='released' WHERE lease_id=?1")
+            .bind(&task_lease)
             .execute(repo.pool())
             .await
             .unwrap();
@@ -330,13 +336,13 @@ async fn readonly_lost_response(release_task: bool) {
             .unwrap();
         sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner, \
             created_at_ms,updated_at_ms,access_mode) VALUES('unrelated-task-read',?1,?2,?3,'held','unrelated-operation',0,0,'read_only')")
-            .bind(&card).bind(&track).bind(root.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
+            .bind(&card).bind(&track).bind(workspace.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
     }
     let (lease, nonce) =
         row.expect("a read-only native request needs its own durable issuance reference");
     let read_path = sock.with_extension("thread-read");
     let original = std::fs::read(&read_path).unwrap();
-    std::fs::write(&read_path,serde_json::to_vec(&json!({"thread":{"id":thread,"cwd":root.path(),"status":{"type":"idle"},"turns":[{"id":"old-completed","status":"completed","items":[]}]}})).unwrap()).unwrap();
+    std::fs::write(&read_path,serde_json::to_vec(&json!({"thread":{"id":thread,"cwd":workspace.path(),"status":{"type":"idle"},"turns":[{"id":"old-completed","status":"completed","items":[]}]}})).unwrap()).unwrap();
     assert!(
         daemon
             .reconcile_native_workspace_guard(&lease)
@@ -364,11 +370,21 @@ async fn readonly_lost_response(release_task: bool) {
             "SELECT lease_id,read_stop_confirmed_at_ms FROM workspace_leases WHERE holder_kind='task' ORDER BY lease_id")
             .fetch_all(repo.pool()).await.unwrap();
         assert!(
-            stamps[0].1.is_some(),
+            stamps
+                .iter()
+                .find(|(id, _)| id == &task_lease)
+                .unwrap()
+                .1
+                .is_some(),
             "exact native stop also confirms its ended Task intent"
         );
         assert!(
-            stamps[1].1.is_none(),
+            stamps
+                .iter()
+                .find(|(id, _)| id == "unrelated-task-read")
+                .unwrap()
+                .1
+                .is_none(),
             "another operation cannot borrow the native stop proof"
         );
     }

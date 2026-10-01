@@ -485,7 +485,8 @@ async fn serve_conn(
                 send_result(
                     &mut write,
                     &id,
-                    json!({ "thread": { "id": response_id,"cwd":thread_cwd,"status":{"type":"idle"},"turns":[] }, "model": "fake-model" }),
+                    json!({ "thread": { "id": response_id,"cwd":thread_cwd,"status":{"type":"idle"},"turns":[] }, "model": "fake-model",
+                        "activePermissionProfile": req.pointer("/params/permissions").and_then(Value::as_str).map(|id| json!({"id":id})) }),
                 )
                 .await?;
                 // `thread/started` notification (best-effort; the kernel
