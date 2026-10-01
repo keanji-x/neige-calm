@@ -21,20 +21,36 @@ pub(crate) async fn reconcile(
     let pool = ctx.operation_repo.sqlite_pool();
     let recovery = adapter.recover_owned_parked(op, mode, ctx);
     tokio::pin!(recovery);
-    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(20));
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let outcome = loop {
-        tokio::select! {
-            result=&mut recovery=>break result,
-            _=heartbeat.tick()=>{
-                let now=crate::model::now_ms();
-                let renewed=sqlx::query("UPDATE operations SET lease_until_ms=?3 WHERE id=?1 \
-                    AND lease_owner=?2 AND phase='parked' AND lease_until_ms>=?4")
-                    .bind(&op.id).bind(owner).bind(now+super::OPERATION_LEASE_MS).bind(now)
-                    .execute(&pool).await?.rows_affected();
-                if renewed!=1 {break Err(CalmError::Conflict("owned resource recovery lost its operation lease".into()));}
+    let renewal = async {
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(20));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            heartbeat.tick().await;
+            let now = crate::model::now_ms();
+            let renewed = sqlx::query(
+                "UPDATE operations SET lease_until_ms=?3 WHERE id=?1 \
+                AND lease_owner=?2 AND phase='parked' AND lease_until_ms>=?4",
+            )
+            .bind(&op.id)
+            .bind(owner)
+            .bind(now + super::OPERATION_LEASE_MS)
+            .bind(now)
+            .execute(&pool)
+            .await?
+            .rows_affected();
+            if renewed != 1 {
+                return Err::<(), CalmError>(CalmError::Conflict(
+                    "owned resource recovery lost its operation lease".into(),
+                ));
             }
         }
+    };
+    tokio::pin!(renewal);
+    // Neither future may suspend the other's sqlx writer-lock rendezvous.
+    let outcome = tokio::select! {
+        biased;
+        result=&mut recovery=>result,
+        error=&mut renewal=>error.and_then(|_|Err(CalmError::Conflict("owned resource renewal unexpectedly ended".into()))),
     };
     let result = async {
         match outcome? {
