@@ -53,11 +53,21 @@ execution state before changing ownership or removing resources. Their final
 transaction checks that state again. They do not interpret backend process or
 turn facts, and they do not release leases.
 
-Interactive TUI clients must pass through managed execution ingress. Until that
-is enforced at the RPC boundary, the complete interactive session holds a write
-permit. Read tasks expose status and reports without a write-capable TUI. The
-manager owns permission-profile selection and validation; callers do not select
-a weaker sandbox to start a managed read execution.
+Interactive TUI clients must connect through the manager's session ingress,
+which owns their native control requests. The CLI can select another thread
+inside a remote session: its starting directory and `resume SESSION_ID` do not
+freeze the scope. Stopping the CLI also does not prove its remote turns stopped.
+A session write permit alone therefore cannot authorize direct daemon access.
+
+The ingress admits only supported inspection requests directly. Thread creation,
+resume, turn launch and control enter the manager, which validates the frozen
+scope and permission policy and persists each execution before forwarding it.
+Unknown mutating requests fail closed. The raw daemon endpoint stays private to
+execution backends. Cancellation closes ingress, stops the client, then settles
+its managed native executions using provider evidence before releasing resources.
+Read tasks expose status and reports without a write-capable TUI. The manager
+owns permission-profile selection and validation; callers do not select a weaker
+sandbox to start a managed read execution.
 
 ## Bounded migration
 
