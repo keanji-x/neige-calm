@@ -166,6 +166,7 @@ pub struct BlockVerdict {
 
 #[derive(Deserialize)]
 struct TaskReadState {
+    id: String,
     key: String,
     status: String,
     status_detail: Option<String>,
@@ -370,14 +371,15 @@ fn task_verdict_row_state<'a>(
     }
 }
 
-/// Every input but `track_idle` comes from `track_projection_state`'s one statement; the idle
-/// read is its own statement because a pending reason is presentation, never a projection input.
-fn attach_task_pending_reasons(
+/// Availability is read through the same actual-resource owner used by task claims.
+/// Pending reasons remain presentation metadata, never projection inputs.
+async fn attach_task_pending_reasons(
+    conn: &mut SqliteConnection,
+    track_id: &str,
     state: &TrackProjectionState,
     declarations: &[TaskDeclaration],
-    track_idle: bool,
     verdicts: &mut [BlockVerdict],
-) {
+) -> Result<()> {
     let by_key: BTreeMap<_, _> = state
         .task_read_state
         .iter()
@@ -436,15 +438,28 @@ fn attach_task_pending_reasons(
                         message,
                         dependencies,
                     });
-                } else if !track_idle
-                    && declarations.get(index).is_some_and(|declaration| {
-                        runs_in_track_checkout(&declaration.kind, &declaration.spawn)
-                    })
-                {
-                    verdict.pending_reason = Some(TaskPendingReason::TrackBusy {
-                        message: "Waiting for the track's checkout: another task is using it"
-                            .into(),
-                    });
+                } else if let Some(declaration) = declarations.get(index) {
+                    if declaration.kind == "terminal"
+                        || runs_in_track_checkout(&declaration.kind, &declaration.spawn)
+                    {
+                        let access = calm_types::workspace_access::WorkspaceAccess::from_context(
+                            &declaration.context,
+                        )
+                        .map_err(CalmError::BadRequest)?;
+                        let cwd = super::track_idle::declared_workspace_cwd(
+                            declaration.kind == "terminal",
+                            declaration.cwd.as_deref(),
+                        );
+                        if !super::track_idle::workspace_available(
+                            conn, track_id, &row.id, access, cwd, None,
+                        )
+                        .await?
+                        {
+                            verdict.pending_reason=Some(TaskPendingReason::TrackBusy {
+                                message:"Waiting for the task's workspace: another execution is using it".into(),
+                            });
+                        }
+                    }
                 }
                 continue;
             }
@@ -493,6 +508,7 @@ fn attach_task_pending_reasons(
             actions,
         });
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -716,7 +732,7 @@ async fn track_projection_state(
                    WHERE t.track_id = w.id
                        AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    CASE WHEN ?3 != 0 THEN (SELECT json_group_array(json_object(
-                        'key', t.key, 'status', t.status,
+                        'id',t.id,'key', t.key, 'status', t.status,
                         'status_detail', t.status_detail,
                        'gate_result_json', t.gate_result_json,
                        'worker_card_id', t.worker_card_id,
@@ -1392,8 +1408,8 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
             &mut verdicts,
         );
         if read.pending_reasons {
-            let track_idle = super::track_idle::track_idle(&mut *conn, track_id, "").await?;
-            attach_task_pending_reasons(&state, declarations, track_idle, &mut verdicts);
+            attach_task_pending_reasons(conn, track_id, &state, declarations, &mut verdicts)
+                .await?;
         }
     }
     Ok(verdicts)
@@ -2468,5 +2484,68 @@ mod tests {
             expected
         );
         assert_eq!(withdrawal_rationales_for([y, x]).await, expected);
+    }
+    #[tokio::test]
+    async fn pending_workspace_reason_shares_readers_and_waits_writers() {
+        let (repo, track) = setup().await;
+        let root = tempfile::tempdir().unwrap();
+        sqlx::query("UPDATE tracks SET workspace_path=?1,planner_task_ceiling=8 WHERE id=?2")
+            .bind(root.path().to_str().unwrap())
+            .bind(&track)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        let readonly = json!({"neige_workspace":{"access":"read_only"}});
+        insert_block_task(&repo, &track, "reader-a", "running").await;
+        sqlx::query("UPDATE tasks SET context_json=?1 WHERE key='reader-a'")
+            .bind(readonly.to_string())
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        let mut declarations = Vec::new();
+        for (index, key, kind, context) in [
+            (0, "reader-b", "codex", readonly),
+            (1, "writer", "codex", json!({})),
+            (2, "terminal", "terminal", json!({})),
+        ] {
+            insert_block_task(&repo, &track, key, "pending").await;
+            sqlx::query("UPDATE tasks SET kind=?1,context_json=?2,decl_ready=1 WHERE key=?3")
+                .bind(kind)
+                .bind(context.to_string())
+                .bind(key)
+                .execute(&repo.pool)
+                .await
+                .unwrap();
+            let payload = if kind == "terminal" {
+                json!({"key":key,"kind":kind,"command":format!("goal {key}"),"context":context,"declared_by":PLANNER_DECLARATION_AUTHOR,"ready":true})
+            } else {
+                json!({"key":key,"kind":kind,"goal":format!("goal {key}"),"context":context,"no_gate_reason":"not needed","declared_by":PLANNER_DECLARATION_AUTHOR,"ready":true})
+            };
+            declarations.push(report_declaration(index, payload));
+        }
+        let mut conn = repo.pool.acquire().await.unwrap();
+        let verdicts = evaluate_schedulability_with_pending_reasons(
+            &mut conn,
+            &track,
+            &declarations,
+            &[vec![], vec![], vec![]],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            verdicts[0].pending_reason, None,
+            "reader B can share reader A's actual workspace"
+        );
+        for verdict in &verdicts[1..3] {
+            assert!(
+                matches!(
+                    verdict.pending_reason,
+                    Some(TaskPendingReason::TrackBusy { .. })
+                ),
+                "{} must wait for the workspace reader: {:?}",
+                verdict.block_id,
+                verdict.pending_reason
+            );
+        }
     }
 }
