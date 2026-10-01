@@ -445,3 +445,30 @@ async fn stopped_terminal_reference_can_be_recorded_while_reader_is_held() {
     assert_eq!(proof.1, "stopped");
     assert!(proof.2.is_some());
 }
+
+#[tokio::test]
+async fn stopped_terminal_reference_keeps_evidence_when_its_saved_directory_disappears() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (repo, track, card) = lease_fixture(cwd.path()).await;
+    let saved_actual_cwd = cwd.path().to_path_buf();
+    std::fs::remove_dir_all(cwd.path()).unwrap();
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    execution_guard::record_stopped_terminal_tx(
+        &mut tx,
+        &track,
+        &card,
+        "stopped-deleted-cwd",
+        &saved_actual_cwd,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let proof: (String, String) = sqlx::query_as(
+        "SELECT state,path FROM workspace_leases WHERE holder_id='stopped-deleted-cwd'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(proof.0, "released");
+    assert_eq!(proof.1, saved_actual_cwd.to_str().unwrap());
+}

@@ -96,7 +96,17 @@ pub(crate) async fn record_stopped_terminal_tx(
             "stopped terminal owner differs from its track".into(),
         ));
     }
-    let path = std::fs::canonicalize(cwd)?;
+    if !cwd.is_absolute() {
+        return Err(CalmError::Conflict(
+            "stopped terminal requires its persisted absolute cwd".into(),
+        ));
+    }
+    // Positive stop belongs to the immutable holder, even if its saved directory was removed.
+    let path = match std::fs::canonicalize(cwd) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => cwd.to_path_buf(),
+        Err(error) => return Err(error.into()),
+    };
     let path = path
         .to_str()
         .ok_or_else(|| CalmError::Conflict("stopped terminal cwd is not UTF-8".into()))?;
