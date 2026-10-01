@@ -167,3 +167,14 @@ Follow-up ownership records:
 ```
 OWNERSHIP-CHANGE: fe/core/api/generated/openapi.json — expose required builtin disable permission (#1913)
 ```
+
+## Real Planner creation evidence
+
+The Docker-isolated Codex runner executed a real unbound Planner with a Chinese
+request to create 调研日历交互 for 2026-10-02 09:00–10:00 Asia/Shanghai and then
+query it. The model invoked calm.calendar.create and calm.calendar.list itself;
+its persisted creator/Track matched the live session, and it confirmed the saved
+time. No injected execution plan was used. The successful run completed in
+37.55 seconds after fixing the standalone Codex code-mode companion mount.
+The network fence rejected production and private-network targets. This proves
+creation/query for the unbound case, not development-owner access or reminders.

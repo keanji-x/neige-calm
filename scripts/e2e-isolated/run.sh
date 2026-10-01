@@ -311,6 +311,13 @@ docker_run_args() {
         -e "E2E_TEST_FILTER=$TEST_FILTER"
         -e "DECOYS=$DECOYS"
     )
+    # New standalone Codex packages launch this sibling for code-mode tools.
+    # Keep the executable read-only inside the same fenced container.
+    local code_mode_host
+    code_mode_host="$(dirname -- "$CODEX_REAL")/codex-code-mode-host"
+    if [ -x "$code_mode_host" ]; then
+        DOCKER_ARGS+=(-v "$code_mode_host:/opt/codex/codex-code-mode-host:ro")
+    fi
     # Forwarded only when set+non-empty so the default argv (and the check_dry_run.sh golden) stays byte-identical.
     if [ -n "${NEIGE_PLANNER_PLANNING_BUDGET:-}" ]; then
         DOCKER_ARGS+=(-e "NEIGE_PLANNER_PLANNING_BUDGET=$NEIGE_PLANNER_PLANNING_BUDGET")
