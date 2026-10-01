@@ -329,3 +329,69 @@ pub(crate) async fn record_execution_artifacts(
     }
     Ok(())
 }
+
+/// Captured by an authenticated caller; remains separate from user request idempotency.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkspaceWriteOrigin {
+    pub(crate) lease_id: String,
+    pub(crate) card_id: String,
+}
+pub(crate) async fn capture_write_origin(
+    pool: &SqlitePool,
+    card: &str,
+) -> Result<WorkspaceWriteOrigin> {
+    let lease_id:String=sqlx::query_scalar(
+        "SELECT lease_id FROM workspace_leases WHERE card_id=?1 AND access_mode='read_write' \
+         AND state='held' AND holder_kind='native' ORDER BY created_at_ms DESC,lease_id DESC LIMIT 1"
+    ).bind(card).fetch_optional(pool).await?
+        .ok_or_else(||CalmError::Conflict("terminal delegation requires its caller's held write guard".into()))?;
+    Ok(WorkspaceWriteOrigin {
+        lease_id,
+        card_id: card.to_owned(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn acquire_execution_delegated_tx(
+    tx: &mut Tx<'_>,
+    track: &str,
+    card: &str,
+    holder: &str,
+    kind: &str,
+    cwd: &Path,
+    origin: &WorkspaceWriteOrigin,
+) -> Result<String> {
+    let (root, parent_path): (String, String) = sqlx::query_as(
+        "SELECT write_root_id,path FROM workspace_leases WHERE lease_id=?1 AND card_id=?2 \
+         AND access_mode='read_write' AND state='held' AND holder_kind='native'",
+    )
+    .bind(&origin.lease_id)
+    .bind(&origin.card_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| CalmError::Conflict("delegated execution lost its parent write guard".into()))?;
+    let path = std::fs::canonicalize(cwd)
+        .map_err(|e| CalmError::Conflict(format!("delegated cwd unavailable: {e}")))?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| CalmError::Conflict("delegated cwd is not UTF-8".into()))?;
+    if !Path::new(path).starts_with(&parent_path) && !Path::new(&parent_path).starts_with(path) {
+        return acquire_execution_write_tx(tx, track, card, holder, kind, cwd).await;
+    }
+    let id = new_id();
+    insert_execution_reference(
+        tx,
+        ExecutionReference {
+            track,
+            card,
+            holder,
+            kind,
+            path,
+            root: &root,
+        },
+        &id,
+    )
+    .await?;
+    Ok(id)
+}
