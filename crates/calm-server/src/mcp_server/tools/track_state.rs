@@ -135,9 +135,9 @@ fn report_startup_read_required(cards: &[Card]) -> bool {
 fn task_verdict_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_VERDICT.into(),
-        description: include_str!("../../../prompts/tools/calm.task.verdict.md")
-            .trim_end()
-            .to_string(),
+        description: calm_types::observation::render_task_acceptance_guidance(
+            include_str!("../../../prompts/tools/calm.task.verdict.md").trim_end(),
+        ),
         input_schema: json!({
             "type": "object",
             "required": ["idempotency_key", "status", "message"],

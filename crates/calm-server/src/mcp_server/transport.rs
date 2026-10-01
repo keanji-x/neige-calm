@@ -497,10 +497,15 @@ fn plugin_tool_descriptors_from(
             continue;
         }
         for entry in manifest.exposes_tools {
+            let mut description = entry.description.unwrap_or_default();
+            if entry.kind == Some(ToolKind::ForgeAction) {
+                description.push_str("\nFor a pending receipt: ");
+                description.push_str(super::forge_receipt::PENDING_GUIDANCE.trim());
+            }
             descriptors.push(ToolDescriptor {
                 // Plugin ids exclude `_`, so `_` is an unambiguous id↔tool boundary.
                 name: format!("plugin.{}_{}", plugin_id, entry.name),
-                description: entry.description.unwrap_or_default(),
+                description,
                 input_schema: entry
                     .input_schema
                     .unwrap_or_else(|| json!({ "type": "object" })),
@@ -902,6 +907,10 @@ async fn dispatch_forge_action_plugin_tool(
     let card_id = identity.card_id.clone();
     let cwd_lease = resolve_forge_cwd(ctx, &identity, &track_id).await?;
 
+    let completion_event = payload
+        .event_spec
+        .as_ref()
+        .map(|event| event.event_kind.clone());
     let submitted =
         match submit_forge_action(ctx, plugin_id, track_id, card_id, cwd_lease, payload).await? {
             Ok(submitted) => submitted,
@@ -918,10 +927,10 @@ async fn dispatch_forge_action_plugin_tool(
         if let Some(result) = result {
             return Ok(operation_result_to_mcp_result(result));
         }
-        return Ok(mcp_success_result(json!({
-            "op_id": submitted.op_id,
-            "parked": true,
-        })));
+        return Ok(mcp_success_result(super::forge_receipt::pending(
+            &submitted.op_id,
+            completion_event.as_deref(),
+        )));
     }
 
     let outcome = match runtime.wait(&submitted.op_id).await {
@@ -938,12 +947,12 @@ fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), Rpc
     if payload.idem_key.trim().is_empty() {
         return Err(malformed_forge_payload());
     }
-    if let Some(event_spec) = payload.event_spec.as_ref()
-        && !SUPPORTED_FORGE_EVENT_KINDS.contains(&event_spec.event_kind.as_str())
+    if let Some(event) = payload.event_spec.as_ref()
+        && !SUPPORTED_FORGE_EVENT_KINDS.contains(&event.event_kind.as_str())
     {
         return Err(RpcError::invalid_params(format!(
             "forge-action event_kind `{}` is not supported",
-            event_spec.event_kind
+            event.event_kind
         )));
     }
     Ok(())

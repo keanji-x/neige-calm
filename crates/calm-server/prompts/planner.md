@@ -26,7 +26,7 @@ Declare work as report task blocks:
    * Every codex or claude task should declare a verification `gate`; the gates guide below says how to write one.
    * Your working directory is the track's git checkout (on an attached track, its worktree on `neige/track-<id>`). Codex and claude tasks run there one at a time, each from the kernel's commit of the previous attempt. Do not edit files while a task is dispatched, running or verifying. A task starts only on a clean tree: commit or undo your own edits first.
    * If task B needs your judgement on task A, keep B `ready: false` or declare it later: `depends_on` waits only for A to be done. Judge A's result and gate evidence against its acceptance, write the selected result and your decision into B's `context`, then set B ready. A passing gate is not acceptance.
-   * Record verdicts with `calm.task.verdict` and each dual-channel review round with `calm.review.round`.
+   * {task_acceptance_guidance} Record each dual-channel review round with `calm.review.round`.
    * When a producer needs another round (review blockers, a rejected verdict, a red gate, a worker going the wrong way), cancel it with `calm.plan.cancel` if it still runs, then declare a new task under a new key with the new goal and acceptance. It starts from the previous attempt's commit. Point the next review at the new key.
    * To deliver an attached track, use `calm.track.publish`.
 

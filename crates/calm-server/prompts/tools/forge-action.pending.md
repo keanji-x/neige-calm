@@ -1,0 +1,1 @@
+Operation is still in progress, waiting for the external command to finish or recovery to confirm its outcome. This receipt has not confirmed success. When present, completion_event names the event emitted on success. Wait for the result; call the same tool with identical arguments from the same card to retrieve this operation's recorded outcome.

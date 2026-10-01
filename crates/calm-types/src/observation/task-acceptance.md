@@ -1,0 +1,1 @@
+When semantic acceptance is required, validate the exact completion and verification evidence before recording calm.task.verdict on the producer attempt. Review and audit tasks need no verdict of their own; use their findings to judge the producer. Accepting a review report does not accept the implementation.

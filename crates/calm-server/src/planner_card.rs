@@ -1,6 +1,6 @@
 //! Planner-card binding: the role-specific system prompts (data under `prompts/`, embedded at compile time) and their per-spawn placeholder substitution.
 
-/// The planner-agent system prompt template, embedded from `prompts/planner.md`. Placeholders `{track_id}` and `{planner_wake_authors}` are substituted by [`render_system_prompt`].
+/// The planner-agent system prompt template, embedded from `prompts/planner.md`. Placeholders `{track_id}`, `{planner_wake_authors}`, and `{task_acceptance_guidance}` are substituted by [`render_system_prompt`].
 /// Wording is pinned by `tests/goldens/issue_development_planner_prompt.txt` (regenerate with `REGEN_PLANNER_PROMPT_GOLDEN=1`, then hand-verify the diff).
 pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/planner.md");
 
@@ -42,11 +42,13 @@ fn planner_wake_authors_prose() -> String {
         .join(" / ")
 }
 
-/// Substitute the per-spawn placeholders `{track_id}` and `{planner_wake_authors}` into a prompt template.
+/// Substitute per-spawn identity, wake authors, and shared task acceptance guidance.
 pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
-    template
-        .replace("{track_id}", track_id)
-        .replace("{planner_wake_authors}", &planner_wake_authors_prose())
+    calm_types::observation::render_task_acceptance_guidance(
+        &template
+            .replace("{track_id}", track_id)
+            .replace("{planner_wake_authors}", &planner_wake_authors_prose()),
+    )
 }
 
 #[cfg(test)]
@@ -153,6 +155,54 @@ mod tests {
                 !out.contains("{track_id}"),
                 "placeholder should be gone; got: {out}"
             );
+        }
+    }
+
+    #[test]
+    fn task_acceptance_guidance_is_consistent_across_surfaces() {
+        use calm_types::observation::{Observation, TASK_ACCEPTANCE_GUIDANCE};
+        let guidance = TASK_ACCEPTANCE_GUIDANCE.trim();
+        let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "acceptance-track");
+        let descriptors = crate::mcp_server::build_default_registry()
+            .descriptors_for_role(calm_types::model::CardRole::Planner);
+        let descriptions = ["calm.task.verdict"].map(|name| {
+            descriptors
+                .iter()
+                .find(|tool| tool.name == name)
+                .expect("Planner acceptance-related descriptor")
+                .description
+                .clone()
+        });
+        let notices = [
+            Observation::TaskCompleted {
+                idempotency_key: "attempt".into(),
+                result: serde_json::json!({}),
+            },
+            Observation::TaskFailed {
+                idempotency_key: "attempt".into(),
+                error: "failed".into(),
+            },
+            Observation::TaskGitDeliverySettled {
+                key: "review".into(),
+                attempt_id: "attempt".into(),
+                result: calm_types::git_candidate::DeliverySettlement::Candidate {
+                    candidate_id: "candidate".into(),
+                    commit_sha: "b".repeat(40),
+                    base_sha: "b".repeat(40),
+                    base_is_ancestor: true,
+                },
+                retained_path: None,
+            },
+        ];
+        for text in std::iter::once(prompt)
+            .chain(descriptions)
+            .chain(notices.iter().map(Observation::to_turn_text))
+        {
+            assert!(
+                text.contains(guidance),
+                "acceptance guidance drifted: {text}"
+            );
+            assert!(!text.contains("{task_acceptance_guidance}"), "{text}");
         }
     }
 
@@ -310,7 +360,7 @@ mod tests {
 
     #[test]
     fn planner_prompt_fits_its_byte_budget() {
-        let bytes = PLANNER_SYSTEM_PROMPT_TEMPLATE.len();
+        let bytes = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-budget").len();
         assert!(
             bytes >= 3_000,
             "anti-vacuity: planner.md is only {bytes} bytes"

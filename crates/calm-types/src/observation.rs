@@ -15,6 +15,17 @@ use crate::verify_target::{
 
 mod receipt;
 
+/// Shared acceptance guidance for Planner prompts, tool descriptions, and result notices.
+pub const TASK_ACCEPTANCE_GUIDANCE: &str = include_str!("observation/task-acceptance.md");
+
+/// Bind the shared guidance in a trusted kernel template.
+pub fn render_task_acceptance_guidance(template: &str) -> String {
+    template.replace(
+        "{task_acceptance_guidance}",
+        TASK_ACCEPTANCE_GUIDANCE.trim(),
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Observation {
@@ -358,7 +369,8 @@ impl Observation {
                 };
                 format!(
                     "Task {key} delivered candidate {candidate_id} ({commit_sha}, base {base_sha}{no_change}). \
-                     Accept with calm.task.verdict when the task completed; read the worker output at runs/{attempt_id}.md."
+                     {guidance} Read the worker output at runs/{attempt_id}.md.",
+                    guidance = TASK_ACCEPTANCE_GUIDANCE.trim()
                 )
             }
             Observation::TaskGitDeliverySettled {
@@ -635,6 +647,29 @@ pub fn collapse_repeated_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_delivery_notice_distinguishes_producer_acceptance_from_review_completion() {
+        let observation = Observation::TaskGitDeliverySettled {
+            key: "review-a".into(),
+            attempt_id: "review-attempt".into(),
+            result: DeliverySettlement::Candidate {
+                candidate_id: "review-candidate".into(),
+                commit_sha: "b".repeat(40),
+                base_sha: "b".repeat(40),
+                base_is_ancestor: true,
+            },
+            retained_path: None,
+        };
+        let text = observation.to_turn_text();
+        assert!(!text.contains("Accept with calm.task.verdict"), "{text}");
+        assert!(
+            text.contains("Review and audit tasks need no verdict of their own"),
+            "{text}"
+        );
+        assert!(text.contains("producer attempt"), "{text}");
+        assert!(text.contains("runs/review-attempt.md"), "{text}");
+    }
 
     #[test]
     fn collapse_repeated_lines_leaves_unrepeated_text_identical() {

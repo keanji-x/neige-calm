@@ -2867,14 +2867,14 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     let text = observation.to_turn_text();
     assert!(
         text.starts_with(&format!(
-            "Task deliver delivered candidate delivery-1 ({}, base {}). Accept with calm.task.verdict when the task completed;",
+            "Task deliver delivered candidate delivery-1 ({}, base {}). When semantic acceptance is required,",
             "c".repeat(40),
             "b".repeat(40)
         )),
         "{text}"
     );
     assert!(
-        text.ends_with(&format!("read the worker output at runs/{task_id}.md.")),
+        text.ends_with(&format!("Read the worker output at runs/{task_id}.md.")),
         "{text}"
     );
     assert!(!text.contains("no change"), "{text}");

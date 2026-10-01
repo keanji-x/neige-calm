@@ -942,7 +942,7 @@
   },
   {
     "name": "calm.task.verdict",
-    "description_sha256": "46c1236b9f6a32379af6f6ece63cf45b4b2534fb02312ca2af32e00fab0414fa",
+    "description_sha256": "b374381c0ab2822245ac098ad8a868f35732f68165c9bba5e7b7549e889b4c64",
     "input_schema": {
       "properties": {
         "idempotency_key": {

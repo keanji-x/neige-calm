@@ -89,6 +89,7 @@ enum StubMode {
     Awaited,
     AwaitFailure,
     Parked,
+    ParkedNoEvent,
     Malformed,
     Override,
     Scoped,
@@ -100,6 +101,7 @@ impl StubMode {
             Self::Awaited => "stub-forge-awaited",
             Self::AwaitFailure => "stub-forge-await-failure",
             Self::Parked => "stub-forge-parked",
+            Self::ParkedNoEvent => "stub-forge-parked-no-event",
             Self::Malformed => "stub-forge-malformed",
             Self::Override => "stub-forge-override",
             Self::Scoped => "stub-forge-scoped",
@@ -107,7 +109,7 @@ impl StubMode {
     }
 
     fn parked(self) -> bool {
-        matches!(self, Self::Parked)
+        matches!(self, Self::Parked | Self::ParkedNoEvent)
     }
 
     fn stub_mode(self) -> Option<&'static str> {
@@ -121,7 +123,7 @@ impl StubMode {
     fn argv_json(self) -> &'static str {
         match self {
             Self::AwaitFailure => r#"["/bin/false"]"#,
-            Self::Parked => r#"["/bin/sh","-c","sleep 1"]"#,
+            Self::Parked | Self::ParkedNoEvent => r#"["/bin/sh","-c","sleep 1"]"#,
             _ => r#"["/bin/true"]"#,
         }
     }
@@ -129,6 +131,7 @@ impl StubMode {
     fn event_spec_json(self) -> &'static str {
         match self {
             Self::Scoped => r#"{"event_kind":"worktree.provisioned","fields":{}}"#,
+            Self::ParkedNoEvent => "null",
             _ => r#"{"event_kind":"forge.scan.completed","fields":{}}"#,
         }
     }
@@ -255,6 +258,23 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
     );
     let parked_structured = &parked_resp["result"]["structuredContent"];
     assert_eq!(parked_structured["parked"], true);
+    assert_eq!(parked_structured["status"], "pending");
+    assert_eq!(
+        parked_structured["completion_event"],
+        "forge.scan.completed"
+    );
+    let message = parked_structured["message"]
+        .as_str()
+        .expect("pending explanation");
+    assert!(message.contains("not confirmed success"), "{message}");
+    assert!(message.contains("external command"), "{message}");
+    assert!(message.contains("same card"), "{message}");
+
+    assert!(
+        message.contains("same tool with identical arguments"),
+        "{message}"
+    );
+
     assert!(parked_structured["op_id"].as_str().is_some());
     assert_eq!(
         event_count(&parked.repo, "forge.scan.completed").await,
@@ -262,11 +282,77 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         "parked response must return before the typed forge event lands"
     );
     wait_for_event_count(&parked.repo, "forge.scan.completed", 1).await;
+    let (mut rd, mut wr) = connect(&parked.socket_path).await;
+    handshake(&mut rd, &mut wr, &parked.raw_token).await;
+    send_frame(&mut wr, tools_list_frame(50, &parked.thread_id)).await;
+    let listed = recv_frame(&mut rd).await;
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == EXPOSED_NAME)
+        .unwrap();
+    assert!(
+        tool["description"].as_str().unwrap().contains(message),
+        "discovery and pending receipt guidance differ: {listed}"
+    );
+
+    let completed_resp = call_forge_tool(&parked, 51).await;
+    let completed_structured = &completed_resp["result"]["structuredContent"];
+    assert_eq!(completed_structured["op_id"], parked_structured["op_id"]);
+    assert_eq!(completed_structured["parked"], false);
+    assert_eq!(
+        completed_structured["result"]["event_kind"],
+        "forge.scan.completed"
+    );
+    assert_eq!(operation_count(&parked.repo).await, 1);
+    assert_eq!(event_count(&parked.repo, "forge.scan.completed").await, 1);
     parked
         .plugin_host
         .stop(PLUGIN_ID)
         .await
         .expect("stop parked plugin");
+
+    let no_event = boot_fixture_with_role(StubMode::ParkedNoEvent, CardRole::Planner).await;
+    let no_event_resp = call_forge_tool(&no_event, 52).await;
+    let receipt = &no_event_resp["result"]["structuredContent"];
+    assert_eq!(receipt["status"], "pending");
+    assert_eq!(receipt["parked"], true);
+    assert!(receipt.get("completion_event").is_none());
+    assert!(
+        receipt["message"]
+            .as_str()
+            .unwrap()
+            .contains("same tool with identical arguments")
+    );
+    let op_id = receipt["op_id"]
+        .as_str()
+        .expect("pending operation identity")
+        .to_owned();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while no_event
+        ._runtime
+        .operation_result(&op_id)
+        .await
+        .unwrap()
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "no-event operation did not finish"
+        );
+        sleep(Duration::from_millis(20)).await;
+    }
+    let completed = call_forge_tool(&no_event, 53).await;
+    assert_eq!(completed["result"]["structuredContent"]["op_id"], op_id);
+    assert_eq!(completed["result"]["structuredContent"]["parked"], false);
+    assert_eq!(operation_count(&no_event.repo).await, 1);
+    assert_eq!(event_count(&no_event.repo, "forge.scan.completed").await, 0);
+    no_event
+        .plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop no-event plugin");
 
     let parked_missing_cwd = boot_fixture_with_role(StubMode::Parked, CardRole::Planner).await;
     std::fs::remove_dir_all(parked_missing_cwd._tmp.path().join("track-cwd"))
@@ -1038,6 +1124,21 @@ async fn assert_tool_is_discoverable(fx: &Fixture) {
     assert!(
         names.contains(&EXPOSED_NAME),
         "forge-action plugin tool missing from discovery: {names:?}"
+    );
+    let tool = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == EXPOSED_NAME)
+        .unwrap();
+    let description = tool["description"].as_str().unwrap();
+    assert!(
+        description.contains("For a pending receipt:"),
+        "{description}"
+    );
+    assert!(
+        description.contains("not confirmed success"),
+        "{description}"
     );
 }
 
