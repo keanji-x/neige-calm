@@ -102,7 +102,7 @@ async fn terminal_stop_confirms_escaped_descendant_after_leader_exit() {
     assert!(std::path::Path::new(&format!("/proc/{child}")).exists());
     write_frame(
         &mut conn,
-        &ControlMsg::StopAndConfirm {
+        &ControlMsg::StopAndConfirmKnown {
             proc_id: "term:escaped-stop".into(),
         },
     )
@@ -124,4 +124,28 @@ async fn terminal_stop_confirms_escaped_descendant_after_leader_exit() {
             "escaped child remains live: {stat}"
         );
     }
+}
+
+#[tokio::test]
+async fn legacy_terminal_stop_without_registry_identity_is_unconfirmed() {
+    let host = InProcessProcSupervisor::start().await.unwrap();
+    let mut conn = UnixStream::connect(host.sock()).await.unwrap();
+    write_frame(
+        &mut conn,
+        &ControlMsg::StopAndConfirmKnown {
+            proc_id: "term:unknown-legacy".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            read_frame::<ControlReply, _>(&mut conn).await.unwrap(),
+            ControlReply::Error {
+                kind: calm_session::control::ControlErrorKind::WrongState,
+                ..
+            }
+        ),
+        "an empty registry and marker scan cannot prove an unmarked historical execution stopped"
+    );
 }

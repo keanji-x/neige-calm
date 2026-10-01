@@ -6,6 +6,17 @@ use super::*;
 use calm_worker_runtime::execution_process::{capture, stop_marker_pass, stop_pass};
 
 pub(super) async fn stop(registry: &ProcRegistry, proc_id: &str) -> ControlReply {
+    stop_with_identity(registry, proc_id, false).await
+}
+
+pub(super) async fn stop_known(registry: &ProcRegistry, proc_id: &str) -> ControlReply {
+    stop_with_identity(registry, proc_id, true).await
+}
+async fn stop_with_identity(
+    registry: &ProcRegistry,
+    proc_id: &str,
+    require_known: bool,
+) -> ControlReply {
     let mut sealed = registry.executions.lock().await;
     // Seal before scanning. A reply loss still cannot permit a replacement.
     sealed.insert(proc_id.to_owned());
@@ -18,6 +29,12 @@ pub(super) async fn stop(registry: &ProcRegistry, proc_id: &str) -> ControlReply
             };
         }
     };
+    if require_known && entry.is_none() {
+        return ControlReply::Error {
+            kind: ControlErrorKind::WrongState,
+            message: "legacy execution identity is unknown; stop not confirmed".into(),
+        };
+    }
     let artifacts = match entry.as_ref() {
         Some(entry) => match capture(entry.pid as i32) {
             Ok(artifacts) => Some(artifacts),

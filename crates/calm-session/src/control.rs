@@ -15,6 +15,10 @@ pub enum ControlMsg {
     StopAndConfirm {
         proc_id: String,
     },
+    /// Legacy execution requires an authenticated retained process/group identity.
+    StopAndConfirmKnown {
+        proc_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

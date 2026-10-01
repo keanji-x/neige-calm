@@ -565,6 +565,10 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                     }
                 }
             }
+            ControlMsg::StopAndConfirmKnown { proc_id } => {
+                let reply = execution_stop::stop_known(&registry, &proc_id).await;
+                write_frame(&mut stream, &reply).await?;
+            }
             ControlMsg::StopAndConfirm { proc_id } => {
                 let reply = execution_stop::stop(&registry, &proc_id).await;
                 write_frame(&mut stream, &reply).await?;
