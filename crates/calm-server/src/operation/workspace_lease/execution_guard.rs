@@ -250,6 +250,11 @@ pub(crate) async fn acquire_execution_child_tx(
         &id,
     )
     .await?;
+    sqlx::query("UPDATE workspace_leases SET execution_parent_holder_id=?2 WHERE lease_id=?1")
+        .bind(&id)
+        .bind(parent)
+        .execute(&mut **tx)
+        .await?;
     Ok(id)
 }
 
