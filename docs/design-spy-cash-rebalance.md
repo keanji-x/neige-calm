@@ -87,3 +87,28 @@ contracts retain legacy behavior.
 Delegation mutation: expected and actual red sets were exactly `test_spy_legacy_or_unproved_worker_cannot_execute[1]`, `test_spy_legacy_or_unproved_worker_cannot_execute[False]`, `test_spy_legacy_or_unproved_worker_cannot_execute[None]`, `test_spy_legacy_or_unproved_worker_cannot_execute[true]`. The production guard was restored byte-for-byte and all 51 SPY/SDK checks passed.
 
 Role-only mutation: expected and actual red set was `test_spy_planner_cannot_execute_with_claimed_delegation`; the delegation predicate remained intact. This result was rerun in an exclusive period after all other Python readers ended. Production source was restored byte-for-byte and all 52 SPY/SDK checks passed.
+
+## Live setup continuation
+
+SDK OAuth was completed by relaying the matching user-provided callback to the
+still-running official SDK listener. Same-login statement/account verification
+succeeded. Global SDK quote connections were reset by the host network; the
+official CN endpoint succeeded, so `access_region` is explicit trusted config,
+with only global/CN official endpoints and no retry fallback after a write.
+
+The original Demo runs with an in-memory database and disabled providers. Keep
+its original process/data untouched while preparing a separate persistent
+runtime. Seed the new store using normal production APIs, then perform a stopped,
+transactional identity transplant for the original Area/Recipe/Track IDs only,
+including exact JSON references and managed-path components. No broker plugin is
+enabled and no agent runs during this step. Back up the new SQLite store using
+the SQLite backup API, require foreign-key/integrity checks and verify the
+original IDs/report bindings through normal read APIs before activation. Original
+fictional report is preserved in the private snapshot, not imported as fills.
+Keep the Demo URL/Track identity; account and plugin ledger survive restart.
+
+Live SDK snapshot exposed native local-naive timestamps. Official v5.2.0
+`python/src/time.rs` uses `PyDateTime::from_timestamp(epoch, None)`; conversion
+therefore interprets naive SDK objects as process-local time and preserves the
+epoch using `astimezone(UTC)`. User timestamps remain timezone-required. A
+non-UTC regression reproduced red before this fix.

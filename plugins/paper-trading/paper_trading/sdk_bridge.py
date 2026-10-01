@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 from paper_trading.config import exact, identifier, integer, money, timestamp
 
 
-ENDPOINT = 'https://openapi.longbridge.com'
+ACCESS_POINTS = {'global': 'longbridge.com', 'cn': 'longbridge.cn'}
 NY = ZoneInfo('America/New_York')
 
 
@@ -27,12 +27,13 @@ def enum(value):
 
 
 def utc(value):
-    if value.tzinfo is None:
-        raise ValueError('SDK timestamp timezone required')
+    # Official SDK 5.2.0 PyOffsetDateTimeWrapper uses from_timestamp(epoch, None):
+    # its naive values are LOCAL time, including fold on DST transitions.
+    # astimezone preserves that epoch; user-supplied timestamps still require TZ.
     return value.astimezone(timezone.utc).isoformat()
 
 
-def contexts(client_id, interactive=False):
+def contexts(client_id, interactive=False, access_region="global"):
     from longbridge.openapi import AssetContext, Config, OAuthBuilder, QuoteContext, TradeContext
 
     def authorize(url):
@@ -40,10 +41,13 @@ def contexts(client_id, interactive=False):
             raise ValueError('SDK OAuth authorization required; run the documented login command')
         print('Open this official authorization URL to authorize the PAPER account:', url, flush=True)
 
+    if access_region not in ACCESS_POINTS:
+        raise ValueError("unknown official access region")
+    host = ACCESS_POINTS[access_region]
     oauth = OAuthBuilder(client_id).build(authorize)
-    config = Config.from_oauth(oauth, http_url=ENDPOINT,
-        quote_ws_url='wss://openapi-quote.longbridge.com/v2',
-        trade_ws_url='wss://openapi-trade.longbridge.com/v2',
+    config = Config.from_oauth(oauth, http_url="https://openapi." + host,
+        quote_ws_url="wss://openapi-quote." + host + "/v2",
+        trade_ws_url="wss://openapi-trade." + host + "/v2",
         enable_papertrading=True, enable_overnight=False, enable_print_quote_packages=False)
     return AssetContext(config), TradeContext(config), QuoteContext(config)
 
@@ -219,6 +223,7 @@ def submit(asset, trade, quote, expected, request, policy):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--access-region', choices=('global', 'cn'), default='global')
     parser.add_argument('--client-id', required=True)
     parser.add_argument('--account', required=True)
     parser.add_argument('--cash-buffer-bps', type=int, default=200)
@@ -229,7 +234,7 @@ def main():
     args = parser.parse_args()
     identifier(args.client_id); identifier(args.account)
     try:
-        asset, trade, quote = contexts(args.client_id, args.method == 'login')
+        asset, trade, quote = contexts(args.client_id, args.method == 'login', args.access_region)
     except Exception:
         if args.method == 'submit':
             raise OrderNotSubmitted('SDK preflight refused before sending an order') from None

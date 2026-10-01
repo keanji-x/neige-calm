@@ -17,6 +17,7 @@ class AllocationBroker(Broker):
         # Typed configuration and exact operations only; no model-selected paths or endpoints.
         import json
         args = ['-I', str(Path(__file__).with_name('sdk_bridge.py')),
+                '--access-region', self.config.access_region,
                 '--client-id', self.config.oauth_client_id, '--account', self.config.account_no,
                 '--cash-buffer-bps', str(self.config.cash_buffer_bps),
                 '--max-order-bps', str(self.config.max_order_bps),

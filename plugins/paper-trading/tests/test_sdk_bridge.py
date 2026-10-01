@@ -231,3 +231,35 @@ def test_sdk_non_normal_quote_is_not_submitted(sdk):
     with pytest.raises(bridge.OrderNotSubmitted):
         bridge.submit(sdk.asset,sdk.trade,sdk.quote,'PAPER123',sdk.request,sdk.policy)
     assert not sdk.calls
+
+
+def test_sdk_context_uses_explicit_official_cn_access_point(sdk):
+    options=[]
+    class OAuth:
+        def __init__(self,client):assert client=='sdk-client'
+        def build(self,callback):return 'cached-oauth'
+    class Config:
+        @staticmethod
+        def from_oauth(oauth,**kwargs):options.append(kwargs);return 'config'
+    sdk.module.OAuthBuilder=OAuth;sdk.module.Config=Config
+    sdk.module.AssetContext=sdk.module.TradeContext=sdk.module.QuoteContext=lambda config:config
+    assert bridge.contexts('sdk-client',access_region='cn')==('config','config','config')
+    assert options[0]['http_url']=='https://openapi.longbridge.cn'
+    assert options[0]['quote_ws_url']=='wss://openapi-quote.longbridge.cn/v2'
+    assert options[0]['enable_papertrading'] is True
+
+
+def test_sdk_native_local_datetime_preserves_epoch(monkeypatch):
+    import os,time
+    from datetime import datetime,timezone
+    old=os.environ.get('TZ')
+    try:
+        monkeypatch.setenv('TZ','Asia/Shanghai');time.tzset()
+        expected=datetime(2026,10,1,1,2,3,tzinfo=timezone.utc)
+        native=datetime.fromtimestamp(expected.timestamp())
+        assert native.tzinfo is None
+        assert bridge.utc(native)==expected.isoformat()
+    finally:
+        if old is None:os.environ.pop('TZ',None)
+        else:os.environ['TZ']=old
+        time.tzset()

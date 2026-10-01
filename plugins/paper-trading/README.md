@@ -356,6 +356,7 @@ a configurable fraction of current cash plus SPY market value:
   "broker_home": "/private/path/sdk-home",
   "owner_track_id": "YOUR_SPY_TRACK_ID",
   "oauth_client_id": "YOUR_REGISTERED_OAUTH_CLIENT",
+  "access_region": "cn",
   "sdk_python_path": "/private/path/spy-venv/bin/python",
   "max_order_bps": 1000,
   "poll_seconds": 60,
@@ -437,3 +438,8 @@ execution and roll back the observation. Reconciliation can be retried; deleting
 or editing SQLite is not recovery. Disabling this plugin does not cancel orders
 or liquidate positions. Fees, financing, dividends, tax and net returns are not
 calculated in this first allocation slice.
+
+`access_region` selects a fixed official SDK network entry: `global` (default)
+or `cn`. It never accepts a custom URL or retries an uncertain write through a
+second entry. This host verified SPY reads with `cn`; `global` quote reads were
+reset by the network. OAuth/account identity is unchanged by the entry choice.

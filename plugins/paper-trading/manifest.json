@@ -15,6 +15,7 @@
       "poll_seconds": {"type": "integer", "description": "Reconciliation interval, 5-3600 seconds.", "default": 60},
       "profile": {"type": "string", "enum": ["supervised", "spy_cash"], "default": "supervised", "description": "spy_cash explicitly enables automatic official-paper SPY market execution through a delegated Worker. Immutable per data directory."},
       "owner_track_id": {"type": "string", "description": "Required for spy_cash: the sole owning Track."},
+      "access_region": {"type": "string", "enum": ["global", "cn"], "description": "SPY SDK official access point: global or cn; omitted value global. Select cn when the server uses the mainland-China network. No endpoint override or automatic fallback."},
       "oauth_client_id": {"type": "string", "description": "Required for spy_cash: separately authorized official SDK OAuth client; never decrypt CLI credentials."},
       "sdk_python_path": {"type": "string", "description": "Required for spy_cash: absolute Python interpreter with official Longbridge SDK 5.2.0."},
       "max_order_bps": {"type": "integer", "description": "SPY order step as basis points of current cash plus SPY market value, 1-10000; omitted value 1000 (10%). Includes 1% sizing reserve; not a market-price guarantee."},
