@@ -155,8 +155,16 @@ async fn native_workspace_unknown_response_recovers_exact_nonce_and_retains_unkn
     .unwrap();
     assert_eq!(held, 1);
     assert!(
-        daemon.turn_thread_is_sealed_for_test(&thread),
-        "explicit unknown issuance cancellation seals new turns"
+        daemon
+            .turn_start(
+                &thread,
+                vec![InputItem::text("cannot overtake unconfirmed cancellation")],
+                &TurnModelSelection::inherit(),
+                None,
+            )
+            .await
+            .is_err(),
+        "unconfirmed cancellation blocks new generations through durable execution state"
     );
     let mut wrong: Value = serde_json::from_slice(&original).unwrap();
     wrong["thread"]["turns"][0]["items"][0]["clientId"] = json!("another-request-identity");
@@ -464,6 +472,20 @@ async fn native_workspace_legacy_active_resume_atomically_adopts_actual_writer()
     assert!(
         daemon.cancel_native_workspace_guard(&lease).await.unwrap(),
         "a legacy positively observed turn remains recoverable after changing to stopping, without fabricating a request nonce"
+    );
+    let next = daemon
+        .turn_start(
+            "legacy-active",
+            vec![InputItem::text(
+                "start another generation after normal cancellation",
+            )],
+            &TurnModelSelection::inherit(),
+            None,
+        )
+        .await;
+    assert!(
+        next.is_ok(),
+        "normal cancellation must allow another generation: {next:?}"
     );
 }
 

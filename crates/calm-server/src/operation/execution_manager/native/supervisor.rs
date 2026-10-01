@@ -1,6 +1,7 @@
 //! Shared `codex app-server` supervisor: starts, supervises, and takes over a single
 //! daemon for the whole server.
 
+mod control;
 mod execution_backend;
 #[cfg(target_os = "macos")]
 mod macos_process;
@@ -787,6 +788,7 @@ pub struct TurnStartReturnHook {
 
 #[cfg(feature = "fixtures")]
 pub struct FakeSharedCodexAppServer {
+    native_turns: std::sync::Mutex<Vec<execution_backend::FakeNativeTurn>>,
     next_thread: AtomicU64,
     next_turn: AtomicU64,
     liveness_facts: std::sync::Mutex<
@@ -844,6 +846,7 @@ pub type SteeredTurnParam = (String, String, Vec<InputItem>, Option<String>);
 impl FakeSharedCodexAppServer {
     fn new() -> Self {
         Self {
+            native_turns: std::sync::Mutex::new(Vec::new()),
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
             liveness_facts: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1375,6 +1378,29 @@ impl SharedCodexAppServer {
             .await
     }
 
+    /// Admission and reconciliation query the same manager that will own the next launch.
+    pub async fn native_writer_available(&self, thread: &str) -> Result<bool> {
+        let card = self.cached_card_for_thread(thread).ok_or_else(|| {
+            CalmError::Conflict("native execution owner mapping is required".into())
+        })?;
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Conflict("managed execution requires durable storage".into())
+        })?;
+        if self.sealed_turn_threads.contains_key(thread) {
+            return Ok(false);
+        }
+        let backend = execution_backend::CodexBackend::for_service(self).await;
+        super::super::ExecutionManager::new(pool)
+            .native_writer_available(
+                &backend,
+                &super::super::Owner {
+                    card,
+                    holder: thread.to_owned(),
+                },
+            )
+            .await
+    }
+
     pub async fn turn_start(
         &self,
         thread_id: &str,
@@ -1623,9 +1649,7 @@ impl SharedCodexAppServer {
         self.sealed_turn_threads.contains_key(thread_id)
     }
 
-    /// `turn/steer` — hand `items` to the turn running on `thread_id`; codex refuses when
-    /// `expected_turn_id` is not the active turn (`CalmError::CodexRefused`). No seal check and
-    /// no `active_turns` write: a steer creates no turn.
+    /// Steer only the running generation authorized by the execution manager.
     pub async fn turn_steer(
         &self,
         thread_id: &str,
@@ -1633,57 +1657,24 @@ impl SharedCodexAppServer {
         items: Vec<InputItem>,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            fake.steered_turns
-                .lock()
-                .expect("fake shared codex steered turns mutex poisoned")
-                .push((
-                    thread_id.to_string(),
-                    expected_turn_id.to_string(),
-                    items.clone(),
-                    client_user_message_id.map(ToOwned::to_owned),
-                ));
-            let hook = fake
-                .turn_steer_return_hook
-                .lock()
-                .expect("fake shared codex turn-steer hook mutex poisoned")
-                .take();
-            if let Some(hook) = hook {
-                hook.entered.notify_one();
-                hook.release.notified().await;
-            }
-            let scripted = fake
-                .reject_turn_steer
-                .lock()
-                .expect("fake shared codex reject-steer mutex poisoned")
-                .clone();
-            if let Some(message) = scripted {
-                return Err(CalmError::CodexRefused(message));
-            }
-            if fake.fail_turn_steer.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "request turn/steer timed out".into(),
-                ));
-            }
-            return match self.active_turn_id_for_thread(thread_id) {
-                None => Err(CalmError::CodexRefused(
-                    "turn/steer failed: no active turn to steer (code -32600)".into(),
-                )),
-                Some(active) if active != expected_turn_id => {
-                    Err(CalmError::CodexRefused(format!(
-                        "turn/steer failed: expected active turn id `{expected_turn_id}` but \
-                         found `{active}` (code -32600)"
-                    )))
-                }
-                Some(active) => Ok(active),
-            };
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Conflict("managed execution requires durable storage".into())
+        })?;
+        if self.sealed_turn_threads.contains_key(thread_id) {
+            return Err(CalmError::Conflict(
+                "native execution owner is closed".into(),
+            ));
         }
-        let client = self.connected_client().await?;
-        let steered = client
-            .turn_steer(thread_id, expected_turn_id, items, client_user_message_id)
-            .await?;
-        Ok(steered.turn_id)
+        let backend = execution_backend::CodexBackend::for_service(self).await;
+        super::super::ExecutionManager::new(pool)
+            .steer_native(
+                &backend,
+                thread_id,
+                expected_turn_id,
+                items,
+                client_user_message_id,
+            )
+            .await
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
@@ -3859,6 +3850,25 @@ impl SharedCodexAppServer {
 
     #[cfg(feature = "fixtures")]
     pub fn emit_notification_for_test(&self, notification: Notification) {
+        if let (Some(fake), Notification::TurnCompleted { thread_id, turn }) =
+            (&self.fake, &notification)
+            && let (Some(id), Some(status)) = (
+                turn.get("id").and_then(serde_json::Value::as_str),
+                turn.get("status"),
+            )
+            && let Ok(status) = serde_json::from_value(status.clone())
+        {
+            for observed in fake
+                .native_turns
+                .lock()
+                .expect("fake provider history")
+                .iter_mut()
+            {
+                if observed.thread == *thread_id && observed.turn == id {
+                    observed.status = status;
+                }
+            }
+        }
         let _ = self.notifications.send(notification);
     }
 

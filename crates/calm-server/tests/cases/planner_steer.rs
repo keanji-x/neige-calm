@@ -1176,3 +1176,31 @@ async fn immediate_recovery_waits_for_the_failed_turn_to_settle_accepted_steers(
     }
     boot.harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn stopping_execution_rejects_steer_and_preserves_queued_input() {
+    let boot = boot_with_a_running_turn().await;
+    let entry = queue_one(&boot, "keep for the next turn").await;
+    let changed = sqlx::query(
+        "UPDATE workspace_leases SET holder_phase='stopping' \
+         WHERE holder_kind='native' AND holder_id=?1 AND native_observed_turn_id=?2 AND state='held'",
+    )
+    .bind(SEED_THREAD_ID)
+    .bind(FIRST_TURN)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(
+        changed, 1,
+        "premise: the real issued generation is stopping"
+    );
+
+    let (status, body) = steer(&boot, &entry, 0).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert!(boot.daemon.steered_turns_for_test().is_empty());
+    let queued = pending(&boot).await;
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0]["entry_id"], json!(entry));
+    assert_eq!(queued[0]["text"], json!("keep for the next turn"));
+}

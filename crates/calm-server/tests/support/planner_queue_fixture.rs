@@ -20,14 +20,16 @@ use calm_server::harness::{
 use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::shared_codex_appserver::{
+    SharedCodexAppServer, SharedThreadStartParams, ThreadConfig,
+};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-pub const SEED_THREAD_ID: &str = "thread-pending-queue";
+pub const SEED_THREAD_ID: &str = "fake-thread-0001";
 
 async fn insert_owner_principal(
     mut request: axum::extract::Request,
@@ -238,6 +240,22 @@ async fn boot_inner(
     }
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let created_thread = daemon
+        .thread_start_for_card(
+            planner_card.id.as_str(),
+            CardRole::Planner,
+            Some(track.id.as_str()),
+            SharedThreadStartParams {
+                cwd: workspace.to_str().unwrap().to_owned(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: ThreadConfig::NoMcp,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(created_thread, SEED_THREAD_ID);
     let daemon_handle = Arc::clone(&daemon);
     let state = state.with_shared_codex_appserver(daemon.clone());
     let repo_dyn: Arc<dyn Repo> = repo.clone();

@@ -37,6 +37,11 @@ impl ExecutionManager {
         preferred_nonce: Option<&str>,
         policy: Option<PermissionsChoice>,
     ) -> Result<Receipt> {
+        if !self.reconcile_before_launch(backend, &owner.holder).await? {
+            return Err(CalmError::Conflict(
+                "previous native generation is still executing".into(),
+            ));
+        }
         let reservation = Reservation::acquire(&self.pool, owner).await?;
         let nonce = match reservation.nonce(preferred_nonce).await {
             Ok(nonce) => nonce,
@@ -80,6 +85,26 @@ impl ExecutionManager {
             }
             LaunchOutcome::Uncertain(error) => Err(error),
         }
+    }
+
+    async fn reconcile_before_launch<B: Backend>(&self, backend: &B, holder: &str) -> Result<bool> {
+        for execution in storage::native_executions(&self.pool, holder).await? {
+            if !self.recover(backend, &execution).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    async fn native_writer_available<B: Backend>(
+        &self,
+        backend: &B,
+        owner: &Owner,
+    ) -> Result<bool> {
+        if !self.reconcile_before_launch(backend, &owner.holder).await? {
+            return Ok(false);
+        }
+        storage::native_writer_available(&self.pool, owner).await
     }
 
     async fn launch_reserved<B: Backend>(

@@ -338,3 +338,52 @@ pub(super) async fn session_stop_record_tx(
         .bind(stopped).bind(&record.holder).execute(&mut **tx).await?;
     Ok(())
 }
+
+/// Match the exact running generation; caches cannot authorize control.
+pub(super) async fn running_native_turn(
+    pool: &SqlitePool,
+    thread: &str,
+    turn: &str,
+) -> Result<Option<Record>> {
+    let mut connection = pool.acquire().await?;
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT lease_id FROM workspace_leases WHERE holder_kind='native' AND native_provider='codex' \
+         AND holder_id=?1 AND native_observed_turn_id=?2 AND state='held' AND holder_phase='running' \
+         LIMIT 2",
+    )
+    .bind(thread)
+    .bind(turn)
+    .fetch_all(&mut *connection)
+    .await?;
+    match ids.as_slice() {
+        [] => Ok(None),
+        [id] => Ok(load_in(&mut connection, id).await?.filter(|record| {
+            record.phase == "running" && record.observed.as_deref() == Some(turn)
+        })),
+        _ => Err(crate::error::CalmError::Conflict(
+            "native control generation has multiple owners".into(),
+        )),
+    }
+}
+
+pub(super) async fn native_executions(pool: &SqlitePool, thread: &str) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT lease_id FROM workspace_leases WHERE holder_kind='native' AND native_provider='codex' \
+         AND holder_id=?1 AND state='held' ORDER BY created_at_ms,lease_id",
+    )
+    .bind(thread)
+    .fetch_all(pool)
+    .await?)
+}
+
+pub(super) async fn native_writer_available(pool: &SqlitePool, owner: &Owner) -> Result<bool> {
+    let mut connection = pool.acquire().await?;
+    crate::operation::workspace_lease::execution_guard::native_write_available_tx(
+        &mut connection,
+        &owner.card,
+        &owner.holder,
+        "",
+        NativeProvider::Codex,
+    )
+    .await
+}

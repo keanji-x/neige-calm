@@ -13,7 +13,6 @@ enum Connection {
 pub(in crate::operation::execution_manager) struct CodexBackend {
     connection: Connection,
     active_turns: Arc<DashMap<String, String>>,
-    sealed_turn_threads: Arc<DashMap<String, ()>>,
     #[cfg(feature = "fixtures")]
     fake: Option<Arc<FakeSharedCodexAppServer>>,
     #[cfg(feature = "fixtures")]
@@ -40,7 +39,6 @@ impl CodexBackend {
         Self {
             connection,
             active_turns: service.active_turns.clone(),
-            sealed_turn_threads: service.sealed_turn_threads.clone(),
             #[cfg(feature = "fixtures")]
             fake: service.fake.clone(),
             #[cfg(feature = "fixtures")]
@@ -91,6 +89,16 @@ impl Backend for CodexBackend {
             }
             let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
             let turn = format!("fake-turn-{n:04}");
+            fake.native_turns
+                .lock()
+                .expect("fake provider history")
+                .push(FakeNativeTurn {
+                    thread: request.thread.clone(),
+                    turn: turn.clone(),
+                    cwd: permit.record().cwd.clone(),
+                    nonce: nonce.clone(),
+                    status: TurnStatus::InProgress,
+                });
             fake.started_turns
                 .lock()
                 .expect("started turns")
@@ -168,12 +176,15 @@ impl Backend for CodexBackend {
         self.observe(record, record.phase == "stopping").await
     }
     async fn stop(&self, record: &Record) -> Result<Observation> {
-        self.sealed_turn_threads.insert(record.holder.clone(), ());
         self.observe(record, true).await
     }
 }
 impl CodexBackend {
     async fn observe(&self, record: &Record, stop: bool) -> Result<Observation> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            return self.observe_fixture(fake, record, stop);
+        }
         let client = self.client()?;
         let mut facts = client
             .thread_workspace_history(&record.holder)
@@ -197,7 +208,6 @@ impl CodexBackend {
         .id
         .clone();
         if stop {
-            self.sealed_turn_threads.insert(record.holder.clone(), ());
             client.turn_interrupt(&record.holder, &turn).await?;
             client.clean_background_terminals(&record.holder).await?;
             facts = client
@@ -229,6 +239,130 @@ impl CodexBackend {
         Ok(Observation {
             execution: record.id.clone(),
             identity: Some(turn),
+            stopped,
+        })
+    }
+}
+
+impl CodexBackend {
+    pub(in crate::operation::execution_manager) async fn steer(
+        &self,
+        permit: super::control::TurnControlPermit,
+        items: Vec<InputItem>,
+        client_user_message_id: Option<&str>,
+    ) -> Result<TurnId> {
+        let thread_id = permit.thread();
+        let expected_turn_id = permit.turn();
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.steered_turns
+                .lock()
+                .expect("fake shared codex steered turns mutex poisoned")
+                .push((
+                    thread_id.to_string(),
+                    expected_turn_id.to_string(),
+                    items.clone(),
+                    client_user_message_id.map(ToOwned::to_owned),
+                ));
+            let hook = fake
+                .turn_steer_return_hook
+                .lock()
+                .expect("fake shared codex turn-steer hook mutex poisoned")
+                .take();
+            if let Some(hook) = hook {
+                hook.entered.notify_one();
+                hook.release.notified().await;
+            }
+            let scripted = fake
+                .reject_turn_steer
+                .lock()
+                .expect("fake shared codex reject-steer mutex poisoned")
+                .clone();
+            if let Some(message) = scripted {
+                return Err(CalmError::CodexRefused(message));
+            }
+            if fake.fail_turn_steer.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexAppServer(
+                    "request turn/steer timed out".into(),
+                ));
+            }
+            return match self
+                .active_turns
+                .get(thread_id)
+                .map(|entry| entry.value().clone())
+            {
+                None => Err(CalmError::CodexRefused(
+                    "turn/steer failed: no active turn to steer (code -32600)".into(),
+                )),
+                Some(active) if active != expected_turn_id => {
+                    Err(CalmError::CodexRefused(format!(
+                        "turn/steer failed: expected active turn id `{expected_turn_id}` but \
+                         found `{active}` (code -32600)"
+                    )))
+                }
+                Some(active) => Ok(active),
+            };
+        }
+        let client = self.client()?;
+        let steered = client
+            .turn_steer(thread_id, expected_turn_id, items, client_user_message_id)
+            .await?;
+        Ok(steered.turn_id)
+    }
+}
+
+#[cfg(feature = "fixtures")]
+pub(super) struct FakeNativeTurn {
+    pub thread: String,
+    pub turn: String,
+    pub cwd: String,
+    pub nonce: String,
+    pub status: TurnStatus,
+}
+#[cfg(feature = "fixtures")]
+impl CodexBackend {
+    fn observe_fixture(
+        &self,
+        fake: &FakeSharedCodexAppServer,
+        record: &Record,
+        stop: bool,
+    ) -> Result<Observation> {
+        let mut history = fake.native_turns.lock().expect("fake provider history");
+        let turn = history
+            .iter_mut()
+            .find(|turn| {
+                turn.thread == record.holder
+                    && record.nonce.as_deref() == Some(turn.nonce.as_str())
+                    && turn.cwd == record.cwd
+            })
+            .ok_or_else(|| {
+                CalmError::Conflict("fixture provider has no matching issuance".into())
+            })?;
+        if stop {
+            fake.interrupted_turns
+                .lock()
+                .expect("fixture interrupts")
+                .push((turn.thread.clone(), turn.turn.clone()));
+            if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexAppServer(
+                    "fixture: turn/interrupt failed".into(),
+                ));
+            }
+            turn.status = TurnStatus::Interrupted;
+        }
+        let identity = turn.turn.clone();
+        let stopped = history
+            .iter()
+            .filter(|turn| turn.thread == record.holder)
+            .all(|turn| {
+                matches!(
+                    turn.status,
+                    TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
+                )
+            });
+        Ok(Observation {
+            execution: record.id.clone(),
+            identity: Some(identity),
             stopped,
         })
     }

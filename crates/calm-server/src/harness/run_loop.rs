@@ -3070,30 +3070,30 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
 
-    if let Some(pool) = inner.repo.sqlite_pool() {
-        use crate::operation::workspace_lease::execution_guard::{
-            NativeProvider, native_write_available_tx,
-        };
-        let (provider, holder) = match &inner.backend {
-            PlannerBackend::Codex(_) => {
-                let Some(thread) = inner.thread_id.read().await.clone() else {
-                    return Ok(());
-                };
-                (NativeProvider::Codex, thread)
+    match &inner.backend {
+        PlannerBackend::Codex(daemon) => {
+            let Some(thread) = inner.thread_id.read().await.clone() else {
+                return Ok(());
+            };
+            if !daemon.native_writer_available(&thread).await? {
+                return Ok(());
             }
-            PlannerBackend::Claude(_) => (NativeProvider::Claude, inner.worker_session_id.clone()),
-        };
-        let mut connection = pool.acquire().await?;
-        if !native_write_available_tx(
-            &mut connection,
-            inner.card_id.as_str(),
-            &holder,
-            "",
-            provider,
-        )
-        .await?
-        {
-            return Ok(());
+        }
+        PlannerBackend::Claude(_) => {
+            if let Some(pool) = inner.repo.sqlite_pool() {
+                let mut connection = pool.acquire().await?;
+                if !crate::operation::workspace_lease::execution_guard::native_write_available_tx(
+                    &mut connection,
+                    inner.card_id.as_str(),
+                    &inner.worker_session_id,
+                    "",
+                    crate::operation::workspace_lease::execution_guard::NativeProvider::Claude,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+            }
         }
     }
     let prior_turn = {
