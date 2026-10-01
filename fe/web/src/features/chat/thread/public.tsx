@@ -11,8 +11,6 @@ import {
   type ChatToolCallItem,
 } from '@astryxdesign/core/Chat';
 import { Badge } from '@astryxdesign/core/Badge';
-import { Collapsible } from '@astryxdesign/core/Collapsible';
-import { Divider } from '@astryxdesign/core/Divider';
 import { Code } from '@astryxdesign/core/Code';
 import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
@@ -35,6 +33,8 @@ import {
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
 import styles from './thread.module.css';
+import { ThreadStatusNotice, StopStatusNotice } from './status-notice.tsx';
+import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import {
   ToolCallGroup, toolCallGroupShowsRunning, untouchedToolCallGroup, useToolCallFocus, withDetailOpen,
   type ToolCallGroupUi,
@@ -55,9 +55,10 @@ export type ChatThreadProps = Readonly<{
   stalled: boolean;
   /** The runtime reason is separate from the persisted terminal transcript. */
   stalledReason?: string | null;
+  stopFeedback?: ConversationStopFeedback | null;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -123,16 +124,17 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   const newestId = lastTurn?.id;
   /** The newest turn as of the last run of the follow effect, so *Load earlier* is not mistaken for an arrival. Updated on every run, including runs that decline to scroll. */
   const followedTo = useRef<string | undefined>(undefined);
-  const followedStall = useRef(false);
+  const followedNotice = useRef<string | null>(null);
+  const noticeKind = stalled ? 'paused' : stopFeedback?.kind ?? null;
 
-  /* Follow the newest turn only for a reader already at the bottom, when the last turn's id or paused state changes — not the count: *Load earlier* grows the count, and a collapsed `Thought` changes the id without it. A pane resize moves the reader without a `scroll`, so the same measurement runs from a `ResizeObserver`. Write the pane's own `scrollTop`: `scrollIntoView` pans every ancestor scrollport. */
+  /* Follow the newest turn only for a reader already at the bottom, when the last turn's id or runtime notice changes — not the count: *Load earlier* grows the count, and a collapsed `Thought` changes the id without it. A pane resize moves the reader without a `scroll`, so the same measurement runs from a `ResizeObserver`. Write the pane's own `scrollTop`: `scrollIntoView` pans every ancestor scrollport. */
   useEffect(() => {
     const end = endRef.current;
     if (end == null) return;
     const scroller = end.closest<HTMLElement>('[data-nc-drawer-scroll]');
     if (scroller == null) return;
-    const arrived = newestId !== followedTo.current || stalled !== followedStall.current;
-    followedStall.current = stalled;
+    const arrived = newestId !== followedTo.current || noticeKind !== followedNotice.current;
+    followedNotice.current = noticeKind;
     followedTo.current = newestId;
     if (arrived && followsNewest.current) scroller.scrollTop = scroller.scrollHeight;
     const measure = () => {
@@ -145,7 +147,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       scroller.removeEventListener('scroll', measure);
       unobserve();
     };
-  }, [turns.length, newestId, stalled]);
+  }, [turns.length, newestId, noticeKind]);
 
   /* The lit dot is the last exchange whose opening marker sits at or above an edge: the pane's top while a pane-height of scroll remains, sliding to the bottom as it runs out (a hard switch jumped the mark by a pane's worth). Evaluated on every scroll rather than by an observer. `read()` stops at a zero-height pane, and that guard lives only there so a pane mounted at zero height still gets its listeners. */
   const exchangeKey = JSON.stringify(exchanges.map((exchange) => exchange.id));
@@ -306,7 +308,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     );
   };
 
-  if (turns.length === 0 && !stalled) {
+  if (turns.length === 0 && noticeKind === null) {
     return (
       <div className={styles.empty} data-nc-thread-empty="">
         <p className={styles.emptyLead}>{live ? 'The agent is working.' : 'Nothing said yet.'}</p>
@@ -385,19 +387,12 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
             </ThreadStatusNotice>
           </div>
         )}
+        {!stalled && stopFeedback !== null && <StopStatusNotice feedback={stopFeedback} />}
         <div ref={endRef} aria-hidden="true" />
       </div>
     </div>
   );
 
-}
-
-/** Terminal outcomes and runtime pauses share one visual; a pause does not invent a turn. */
-function ThreadStatusNotice({ heading, children }: { heading: ReactNode; children: ReactNode }) {
-  return <div className={styles.outcomeNotice} role="status">
-    <Divider />
-    <Collapsible defaultIsOpen={false} trigger={heading}>{children}</Collapsible>
-  </div>;
 }
 
 /** One thing you said and everything that came back — as far as the rail needs

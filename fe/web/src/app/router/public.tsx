@@ -1,3 +1,5 @@
+import { useConversationStop } from '../conversations/stop.ts';
+import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 // Code-based TanStack Router setup, built inside a factory so a test can inject the
 // transport and QueryClient; also the composition point for route-owned surfaces.
@@ -132,6 +134,7 @@ type ConversationStore = Readonly<{
   working: boolean;
   stalled: boolean;
   stopping: boolean;
+  stopFeedback: ConversationStopFeedback | null;
   sending: boolean;
   sendBlocked: boolean;
   /** The addressable page of the harness pending queue. */
@@ -332,7 +335,6 @@ export function useConversationStore(
   /** The echo whose `POST /planner/input` is unanswered. One id, not a set: a second unanswered echo would make `confirmedEchoes` report the first as confirmed. */
   const [unconfirmedEchoId, setUnconfirmedEchoId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [interruptPending, setInterruptPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const sendingRef = useRef(false);
   /** The send whose settling may still speak for this store; a request that is no longer this one says nothing about `sending` or `actionError`. */
@@ -367,7 +369,6 @@ export function useConversationStore(
     activeSend.current = null;
     sendingRef.current = false;
     setSending(false);
-    setInterruptPending(false);
   }, [cardId]);
   /* A send can settle through an older store after this card is already open in
      a new one. Merge its confirmed optimistic turn from the provider, then give
@@ -422,7 +423,17 @@ export function useConversationStore(
     () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
   );
   const working = phase === 'issuing_turn' || phase === 'turn_running';
-  const stopping = !stalled && (phase === 'issuing_interrupt' || interruptPending);
+  const stop = useConversationStop({
+    cardId, canStop: working && !stalled,
+    historyKnown: history.data !== undefined,
+    completedId: serverEntries.filter((entry) => entry.author === 'turn').at(-1)?.id ?? null,
+    requestStop: mutations.interrupt,
+    failureText: (error) => errorMessage(error, 'Could not confirm the stop request.'),
+  });
+  const stopping = !stalled && (phase === 'issuing_interrupt' || (working && stop.pending));
+  const stopFeedback: ConversationStopFeedback | null = stalled ? null
+    : phase === 'issuing_interrupt' ? { kind: 'stopping' }
+    : stop.feedback?.kind === 'requesting' && !working ? null : stop.feedback;
   const facts = useMemo<ConversationFacts | null>(() => trackId === undefined ? null : {
     cardId, trackId, trackTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
     state: scopeState, working, stalled, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
@@ -487,6 +498,7 @@ export function useConversationStore(
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
+    stop.clearFeedback();
     const echo: OptimisticConversationTurn = {
       id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
       /* The echo carries the images: an image-only message has no text to reconcile
@@ -583,14 +595,6 @@ export function useConversationStore(
     }).then((): SendOutcome => answeredHere ? settled : 'abandoned');
   };
 
-  const interrupt = () => {
-    if (!working || stopping) return;
-    setInterruptPending(true);
-    setActionError(null);
-    void mutations.interrupt().catch((error: unknown) => {
-      setActionError(errorMessage(error, 'Could not stop the turn.'));
-    }).finally(() => setInterruptPending(false));
-  };
 
   const sendingAcrossMounts = cardId !== '' && registry.pendingSendIds.has(cardId);
   /**
@@ -645,6 +649,7 @@ export function useConversationStore(
     working,
     stalled,
     stopping,
+    stopFeedback,
     sending: sending || sendingAcrossMounts,
     sendBlocked,
     pendingQueue,
@@ -671,7 +676,7 @@ export function useConversationStore(
     attachmentsSupported: run.data?.attachments_supported ?? false,
     contextUsage: run.data?.token_usage ?? null,
     uploadAttachment: mutations.uploadAttachment,
-    interrupt,
+    interrupt: stop.interrupt,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
     blockedReason: run.data?.blocked_reason ?? null,
@@ -1474,7 +1479,7 @@ function useConversationPanel(
                           `ChatThread` draws its empty state (with the live dot) for an empty list.
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
-            {(store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled) && (
+            {(store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled || store.stopFeedback !== null) && (
               <ChatThread
                 key={open.id}
                 conversation={open}
@@ -1484,6 +1489,7 @@ function useConversationPanel(
                 cards={source.cards}
                 stalled={store.stalled}
                 stalledReason={store.blockedReason}
+                stopFeedback={store.stopFeedback}
               />
             )}
           </>

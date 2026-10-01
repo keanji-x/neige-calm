@@ -143,3 +143,57 @@ test('keeps a lost acknowledgement uncertain and asks before resending', async (
     await request.delete(`/api/areas/${area.id}`);
   }
 });
+
+for (const failedFirst of [false, true]) {
+  test(`shows an unconfirmed stop without fabricating completion${failedFirst ? ' after a failed request' : ''}`, async ({ page, request }, testInfo) => {
+    const area = await createArea(request, `Stop receipt ${Date.now()}`);
+    try {
+      const track = await createTrack(request, area.id);
+      let stops = 0;
+      let sends = 0;
+      // The real harness is idle. A stale working snapshot reproduces a click
+      // racing the response's end; the real interrupt route returns stopped:false.
+      await page.route('**/api/cards/*/planner/run', async (route) => {
+        const response = await route.fetch();
+        const body = await response.json() as Record<string, unknown>;
+        await route.fulfill({ response, json: { ...body, phase: 'turn_running' } });
+      });
+      await page.route('**/api/cards/*/planner/interrupt', async (route) => {
+        stops += 1;
+        if (failedFirst && stops === 1) {
+          await route.fulfill({ status: 503, json: { code: 'service_unavailable', error: 'The connection is unavailable.' } });
+        } else await route.continue();
+      });
+      page.on('request', (outgoing) => { if (outgoing.method() === 'POST' && outgoing.url().endsWith('/planner/input')) sends += 1; });
+      await page.goto(`/next/track/${track.id}`);
+      await page.getByRole('button', { name: 'Conversation Planner' }).click();
+      const composer = page.getByRole('combobox', { name: 'Message' });
+      await expect(composer).toHaveAttribute('contenteditable', 'true');
+      await composer.fill('Keep this stop request draft');
+      await page.getByRole('button', { name: 'Stop', exact: true }).click();
+      if (failedFirst) {
+        const failure = page.getByRole('button', { name: 'Stop request failed', exact: true });
+        await expect(failure).toBeVisible();
+        await failure.click();
+        await expect(page.getByText('The connection is unavailable.', { exact: true })).toBeVisible();
+        expect(stops).toBe(1);
+        await page.getByRole('button', { name: 'Stop', exact: true }).click();
+      }
+      const notice = page.locator('[data-nc-drawer-scroll]').getByRole('button', { name: 'Stop unconfirmed', exact: true });
+      await expect(notice).toBeVisible();
+      await notice.click();
+      await expect(page.getByText('The response may still be starting or may already have ended.', { exact: true })).toBeVisible();
+      await expect(page.locator('[data-nc-turn-outcome]')).toHaveCount(0);
+      await expect(page.getByRole('alert')).toHaveCount(0);
+      await expect(composer).toHaveText('Keep this stop request draft');
+      expect(stops).toBe(failedFirst ? 2 : 1);
+      expect(sends).toBe(0);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(notice).toBeVisible();
+      await expect(composer).toHaveText('Keep this stop request draft');
+      await page.screenshot({ path: testInfo.outputPath('stop-unconfirmed-mobile.png'), fullPage: true, animations: 'disabled' });
+    } finally {
+      await request.delete(`/api/areas/${area.id}`);
+    }
+  });
+}

@@ -950,6 +950,84 @@ describe('track conversations', () => {
     expect(inputBodies(requests)[1]).toEqual({ text: '', attachments: [ATTACHMENT_ID] });
   });
 
+  it('keeps a true receipt as a pending stop until the runtime and transcript confirm completion', async () => {
+    let phase = 'turn_running';
+    const terminal = { ...harnessMessage(99, '', {}), item_type: null,
+      turn_id: 'stopped-turn', method: 'turn/completed',
+      params: JSON.stringify({ id: 'stopped-turn', status: 'interrupted', error: null }) };
+    let rows: Array<ReturnType<typeof harnessMessage> | typeof terminal> = [];
+    let resolve!: (response: ApiTransportResponse) => void;
+    const pending = new Promise<ApiTransportResponse>((done) => { resolve = done; });
+    const { client, requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
+        worker_session_id: 'r', phase, model: null, reasoning_effort: null, blocked_reason: null });
+      if (request.path.includes(HISTORY_PATH)) return ok(rows);
+      if (request.path.endsWith('/planner/interrupt')) return pending;
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+    await screen.findByRole('button', { name: 'Requesting stop', expanded: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
+    expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
+    phase = 'issuing_interrupt';
+    await act(async () => { resolve(ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: true })); await pending; });
+    await screen.findByRole('button', { name: 'Stopping response', expanded: false });
+    expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
+    phase = 'turn_completed';
+    rows = [terminal];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] });
+      await client.invalidateQueries({ queryKey: ['harness-items', ASSISTANT_CARD.id] }); });
+    await screen.findByRole('button', { name: /^Response interrupted/ });
+    expect(screen.queryByRole('button', { name: 'Stopping response' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+  });
+
+  it.each(['issuing_turn', 'turn_running'])('shows an unconfirmed stop receipt without inventing a terminal result (%s)', async (phase) => {
+    const { requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
+        worker_session_id: 'r', phase, model: null, reasoning_effort: null, blocked_reason: null });
+      if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: false });
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await screen.findByRole('button', { name: 'Stop' });
+    await typeInto(messageField(), 'Keep the stop draft');
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    const notice = await screen.findByRole('button', { name: 'Stop unconfirmed', expanded: false });
+    fireEvent.click(notice);
+    expect(screen.getByText('The response may still be starting or may already have ended.', { exact: true })).toBeTruthy();
+    expect(messageField().textContent).toBe('Keep the stop draft');
+    expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(0);
+  });
+
+  it('shows a failed stop request through the native status row and permits a manual retry', async () => {
+    let stops = 0;
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
+        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null });
+      if (request.path.endsWith('/planner/interrupt')) {
+        stops += 1;
+        return stops === 1 ? failure(503, 'service_unavailable', 'The connection is unavailable.')
+          : ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: false });
+      }
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop request failed', expanded: false }));
+    expect(screen.getByText('The connection is unavailable.', { exact: true })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await screen.findByRole('button', { name: 'Stop unconfirmed', expanded: false });
+    expect(stops).toBe(2);
+  });
+
   it('shows the unconfirmed stop reason once and blocks further sends', async () => {
     const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
     const { requests } = setup((request) => request.path.endsWith('/planner/run')

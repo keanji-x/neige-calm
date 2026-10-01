@@ -451,6 +451,7 @@
     font-weight: var(--weight-normal);
   }
 
+  .outcomeNoticeError .outcomeStatusLabel,
   .outcome[data-nc-turn-outcome='failed'] .outcomeStatusLabel {
     color: var(--error-text);
   }
