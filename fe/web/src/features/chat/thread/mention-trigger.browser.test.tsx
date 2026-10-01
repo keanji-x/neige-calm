@@ -105,7 +105,7 @@ it.each(['light', 'dark'])('keeps %s selected menu captions readable', async the
   document.documentElement.dataset.theme = theme;
   try {
     await page.viewport(1200, 900);
-    render(<Composer search={async () => []} onSend={vi.fn()} />);
+    render(<Composer search={() => Promise.resolve([])} onSend={vi.fn()} />);
     await page.getByRole('combobox', { name: 'Message' }).click();
     await userEvent.keyboard('@');
     await expect.element(page.getByRole('option', { name: /^Plugins/ })).toBeVisible();
