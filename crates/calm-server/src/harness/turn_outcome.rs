@@ -21,9 +21,7 @@ pub(crate) async fn record(
     }
     if outcome.get("status").and_then(Value::as_str) == Some("interrupted")
         && outcome.get("id").and_then(Value::as_str) == Some(turn_id)
-        && let Some(session) = repo
-            .session_projection_by_id(&session_id.to_string())
-            .await?
+        && let Some(session) = repo.session_projection_by_id(session_id).await?
         && session.card_id == card_id
         && let Some(snapshot) = session
             .handle_state_json
