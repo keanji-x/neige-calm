@@ -100,6 +100,29 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
     Ok(unresolved)
 }
 
+async fn writers_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<(String, Option<PathBuf>)>> {
+    let (column, id) = match scope {
+        Scope::Card(id) => ("c.id", id),
+        Scope::Terminal(id) => ("l.holder_id", id),
+        Scope::Track(id) => ("c.track_id", id),
+        Scope::Area(id) => ("t.area_id", id),
+    };
+    let sql = format!(
+        r#"
+SELECT DISTINCT l.holder_id,json_extract(o.tx_output_json,'$.data.terminal_launch.supervisor_sock')
+FROM workspace_leases l JOIN cards c ON c.id=l.card_id JOIN tracks t ON t.id=c.track_id
+LEFT JOIN operations o ON json_extract(o.tx_output_json,'$.data.terminal_id')=l.holder_id
+WHERE l.holder_kind='terminal' AND l.state IN ('held','releasing') AND {column}=?1
+"#
+    );
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as(&sql).bind(id).fetch_all(&mut **tx).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, sock)| (id, sock.map(PathBuf::from)))
+        .collect())
+}
+
 /// Transaction recheck immediately before removing rows or replacing workspace ownership; no supervisor I/O happens in this writer.
 pub(crate) async fn require_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()> {
     if let Some(unresolved) = unresolved_tx(tx, scope).await?.first() {
@@ -114,6 +137,19 @@ pub(crate) async fn require_safe(
     scope: Scope,
     configured_socket: Option<&Path>,
 ) -> Result<()> {
+    let writer_scope = scope.clone();
+    let writers = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move { writers_tx(tx, &writer_scope).await })
+    })
+    .await?;
+    for (terminal, sock) in writers {
+        let sock = sock.as_deref().or(configured_socket).ok_or_else(|| {
+            CalmError::Conflict(
+                "terminal writer has no supervisor endpoint; retain resources".into(),
+            )
+        })?;
+        crate::terminal_renderer::stop_and_release_terminal(repo, sock, &terminal).await?;
+    }
     let unresolved = write_in_tx_typed(repo, move |tx| {
         Box::pin(async move { unresolved_tx(tx, &scope).await })
     })

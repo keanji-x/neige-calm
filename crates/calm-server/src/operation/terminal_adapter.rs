@@ -30,6 +30,8 @@ use super::{
     ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
+pub use super::workspace_lease::execution_guard::WorkspaceWriteOrigin;
+
 pub type SpawnHook = Arc<
     dyn Fn(String, String, String, Value) -> BoxFuture<'static, Result<SpawnHandle>> + Send + Sync,
 >;
@@ -156,6 +158,9 @@ impl TerminalWorkerAdapter {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TerminalCreateOperationPayload {
     pub actor: ActorId,
+    /// Internal authenticated delegation; absent historical records reserve their own root.
+    #[serde(default)]
+    pub write_origin: Option<WorkspaceWriteOrigin>,
     #[serde(default)]
     /// Wire key frozen as `runtime_id`: stored payloads keep it, and without the rename a parked operation would resume with a fresh session id.
     #[serde(rename = "runtime_id")]
@@ -260,7 +265,7 @@ impl ProviderAdapter for TerminalAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        op: &Operation,
+        _op: &Operation,
     ) -> Result<TxOutput> {
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         let program = payload.request.program.clone();
@@ -296,7 +301,7 @@ impl ProviderAdapter for TerminalAdapter {
             tx,
             card_id,
             &runtime_id,
-            Some(op.id.as_str()),
+            None,
             TrackId::from(track_id),
             payload.request.title.clone(),
             payload.request.sort,
@@ -310,15 +315,31 @@ impl ProviderAdapter for TerminalAdapter {
             payload.planner_hooks,
         )
         .await?;
-        super::workspace_lease::execution_guard::acquire_execution_write_tx(
-            tx,
-            card.track_id.as_ref(),
-            card.id.as_ref(),
-            &term.id,
-            "terminal",
-            std::path::Path::new(&cwd),
-        )
-        .await?;
+        match payload.write_origin.as_ref() {
+            Some(origin) => {
+                super::workspace_lease::execution_guard::acquire_execution_delegated_tx(
+                    tx,
+                    card.track_id.as_ref(),
+                    card.id.as_ref(),
+                    &term.id,
+                    "terminal",
+                    std::path::Path::new(&cwd),
+                    origin,
+                )
+                .await?;
+            }
+            None => {
+                super::workspace_lease::execution_guard::acquire_execution_write_tx(
+                    tx,
+                    card.track_id.as_ref(),
+                    card.id.as_ref(),
+                    &term.id,
+                    "terminal",
+                    std::path::Path::new(&cwd),
+                )
+                .await?;
+            }
+        }
         let event = Event::CardAdded(card.clone());
         let runtime_event = Event::WorkerSessionStarted {
             worker_session_id: runtime_id.clone(),

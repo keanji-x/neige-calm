@@ -436,3 +436,139 @@ async fn legacy_terminal_without_persisted_launch_owner_only_attaches() {
         super::super::terminal_launch::TerminalStart::AttachOnly(_)
     ));
 }
+
+async fn reserve_native_origin(h: &TerminalWorkerHarness) -> (String, WorkspaceWriteOrigin) {
+    let card = crate::db::RepoSyncDomainRaw::card_create(
+        h.repo.as_ref(),
+        crate::model::NewCard {
+            track_id: h.track_id.clone().into(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"role":"planner"}),
+        },
+    )
+    .await
+    .unwrap();
+    let cwd = h.workspace.as_ref().unwrap().path().to_str().unwrap();
+    super::super::workspace_lease::execution_guard::bind_execution(
+        h.repo.pool(),
+        super::super::workspace_lease::execution_guard::NativeProvider::Codex,
+        card.id.as_ref(),
+        "reserved-native",
+        cwd,
+    )
+    .await
+    .unwrap();
+    let _guard =
+        super::super::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(
+            h.repo.pool(),
+            card.id.as_ref(),
+            "reserved-native",
+            "",
+            super::super::workspace_lease::execution_guard::NativeProvider::Codex,
+        )
+        .await
+        .unwrap();
+    let origin = super::super::workspace_lease::execution_guard::capture_write_origin(
+        h.repo.pool(),
+        card.id.as_ref(),
+    )
+    .await
+    .unwrap();
+    (card.id.to_string(), origin)
+}
+
+#[tokio::test]
+async fn terminal_delegation_refuses_parent_released_before_prepare() {
+    let h = terminal_worker_harness().await;
+    let (_card, origin) = reserve_native_origin(&h).await;
+    // No effect was ever issued for this reservation; ending it is proven safe.
+    super::super::workspace_lease::execution_guard::release_stopped_execution(
+        h.repo.pool(),
+        "native",
+        "reserved-native",
+    )
+    .await
+    .unwrap();
+    let adapter = TerminalAdapter::new(h.repo.clone(), CardRoleCache::new(), TrackAreaCache::new());
+    let payload = json!({"actor":ActorId::Kernel,"write_origin":origin,"track_id":h.track_id,"cwd":h.workspace.as_ref().unwrap().path(),"program":"/bin/sh","theme":RequestTheme::default_dark()});
+    let ops = SqlxOperationRepo::new(h.repo.pool().clone());
+    let id = ops
+        .insert_operation(
+            "terminal-create",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash: "expired-parent".into(),
+            },
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    let op = ops
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|op| op.id == id)
+        .unwrap();
+    let mut tx = begin_immediate_tx(h.repo.pool()).await.unwrap();
+    let error = adapter
+        .prepare_tx(&mut tx, &payload, &op)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("lost its parent write guard"));
+    tx.rollback().await.unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM workspace_leases WHERE holder_kind='terminal'")
+            .fetch_one(h.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn terminal_outside_parent_scope_reserves_independent_root() {
+    let h = terminal_worker_harness().await;
+    let (_card, origin) = reserve_native_origin(&h).await;
+    let parent_root = origin.lease_id.clone();
+    let outside = tempfile::tempdir().unwrap();
+    let adapter = TerminalAdapter::new(h.repo.clone(), CardRoleCache::new(), TrackAreaCache::new());
+    let payload = json!({"actor":ActorId::Kernel,"write_origin":origin,"track_id":h.track_id,"cwd":outside.path(),"program":"/bin/sh","theme":RequestTheme::default_dark()});
+    let ops = SqlxOperationRepo::new(h.repo.pool().clone());
+    let id = ops
+        .insert_operation(
+            "terminal-create",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash: "independent-scope".into(),
+            },
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    let op = ops
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|op| op.id == id)
+        .unwrap();
+    let mut tx = begin_immediate_tx(h.repo.pool()).await.unwrap();
+    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    let terminal = output.output_string("terminal_id", "test").unwrap();
+    let child_root: String = sqlx::query_scalar(
+        "SELECT write_root_id FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1",
+    )
+    .bind(terminal)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_ne!(
+        child_root, parent_root,
+        "a foreign physical scope cannot borrow caller authority"
+    );
+    tx.rollback().await.unwrap();
+}

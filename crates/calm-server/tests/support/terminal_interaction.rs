@@ -65,7 +65,7 @@ impl Harness {
     pub async fn start_with_fake_codex() -> Self {
         Self::start_inner(true).await
     }
-    async fn start_inner(fake_codex: bool) -> Self {
+    async fn start_inner(_fake_codex: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let sql = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let repo: Arc<dyn Repo> = sql.clone();
@@ -154,14 +154,45 @@ impl Harness {
             Some(roles),
             Some(areas),
         );
-        let state = if fake_codex {
-            state.with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
-                repo.clone(),
+        let state = state.with_shared_codex_appserver(
+            SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
+        );
+        state.dispatcher.abort_event_listener_for_test();
+        let mut state = state;
+        state.dispatcher=Arc::new(calm_server::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+            repo.clone(),events.clone(),write.clone(),state.codex.clone(),state.daemon.clone(),state.terminal_renderer.clone(),None,
+            state.harness.clone(),state.shared_codex_appserver.clone(),state.operation_runtime.clone(),
+            calm_server::dispatcher::Dispatcher::permits_from_env(2),
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
+        ));
+        // A Planner MCP call occurs inside a real managed native turn. Seed
+        // through the actual launch and guard acquisition, not a lease fixture.
+        let thread = state
+            .shared_codex_appserver
+            .thread_start_mint_for_card(
+                &card_id,
+                calm_server::shared_codex_appserver::SharedThreadStartParams {
+                    cwd: root.path().to_str().unwrap().into(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: None,
+                    config: calm_server::shared_codex_appserver::ThreadConfig::NoMcp,
+                },
+            )
+            .await
+            .unwrap();
+        state
+            .shared_codex_appserver
+            .turn_start(
+                &thread,
+                vec![calm_server::codex_appserver::InputItem::text(
+                    "Manage the declared terminal",
+                )],
+                &calm_server::planner_model::TurnModelSelection::inherit(),
                 None,
-            ))
-        } else {
-            state
-        };
+            )
+            .await
+            .unwrap();
         let app = calm_server::routes::router()
             .layer(axum::middleware::from_fn(
                 calm_server::actor::actor_middleware,

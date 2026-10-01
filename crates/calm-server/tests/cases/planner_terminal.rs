@@ -526,3 +526,174 @@ async fn opened_terminal_path_leads_with_the_kernel_bin_dir() {
     assert!(rows.iter().any(|row| row == "KERNEL_BIN_LEADS"), "{opened}");
     h.stop(opened["terminal_id"].as_str().unwrap()).await;
 }
+
+#[tokio::test]
+async fn planner_terminal_inherits_current_native_writer() {
+    let h = Harness::start().await;
+    let parent:(String,String)=sqlx::query_as("SELECT lease_id,write_root_id FROM workspace_leases WHERE holder_kind='native' AND state='held'")
+        .fetch_one(h.sql.pool()).await.unwrap();
+    let opened = h
+        .call(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"delegated-native-terminal"}),
+        )
+        .await;
+    assert!(
+        opened
+            .pointer("/result/structuredContent/terminal_id")
+            .is_some_and(|v| v.is_string()),
+        "a current Planner turn must be able to open its own terminal: {opened}"
+    );
+    let terminal = opened["result"]["structuredContent"]["terminal_id"]
+        .as_str()
+        .unwrap();
+    let child:(String,String)=sqlx::query_as("SELECT lease_id,write_root_id FROM workspace_leases WHERE holder_kind='terminal' AND holder_id=?1 AND state='held'")
+        .bind(terminal).fetch_one(h.sql.pool()).await.unwrap();
+    assert_ne!(parent.0, child.0);
+    assert_eq!(
+        parent.1, child.1,
+        "the terminal has its own reference to the captured caller root"
+    );
+    let thread: String =
+        sqlx::query_scalar("SELECT holder_id FROM workspace_leases WHERE lease_id=?1")
+            .bind(&parent.0)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    h.state
+        .shared_codex_appserver
+        .interrupt_active_turn(&thread)
+        .await
+        .unwrap();
+    h.state.dispatcher.scheduler().sweep_boot().await;
+    // Interrupt acknowledgement without provider history is not stop proof.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let unknown: String =
+        sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id=?1")
+            .bind(&parent.0)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        unknown, "held",
+        "unknown provider history must retain the native reference"
+    );
+    h.state.shared_codex_appserver.set_liveness_facts_for_test(
+        &thread,
+        calm_provider::provider::CodexLivenessFacts {
+            loaded: true,
+            status: calm_provider::provider::ThreadStatusLite::Idle,
+            last_turn: Some(calm_provider::provider::LastTurnFacts {
+                completed_at: Some(calm_server::model::now_ms()),
+                status: calm_provider::provider::TurnStatusLite::Interrupted,
+            }),
+        },
+    );
+    h.state.dispatcher.scheduler().sweep_all().await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let state: String =
+                sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id=?1")
+                    .bind(&parent.0)
+                    .fetch_one(h.sql.pool())
+                    .await
+                    .unwrap();
+            if state == "released" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    assert!(
+        !calm_server::db::sqlite::track_available(
+            &mut tx,
+            &h.track,
+            "",
+            calm_types::workspace_access::WorkspaceAccess::ReadOnly
+        )
+        .await
+        .unwrap(),
+        "the live terminal independently excludes readers after its parent stopped"
+    );
+    tx.rollback().await.unwrap();
+    h.state
+        .shared_codex_appserver
+        .turn_start(
+            &thread,
+            vec![calm_server::codex_appserver::InputItem::text(
+                "Continue controlling the existing terminal",
+            )],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+            None,
+        )
+        .await
+        .expect(
+            "the authenticated owner must reenter its held descendant writer root on the next turn",
+        );
+    h.ok(
+        "calm.terminal.control",
+        json!({"terminal_id":terminal,"action":"claim"}),
+    )
+    .await;
+    let current_root:String=sqlx::query_scalar("SELECT write_root_id FROM workspace_leases WHERE holder_kind='native' AND holder_id=?1 AND state='held'")
+        .bind(&thread).fetch_one(h.sql.pool()).await.unwrap();
+    assert_eq!(current_root, child.1);
+    h.state
+        .shared_codex_appserver
+        .interrupt_active_turn(&thread)
+        .await
+        .unwrap();
+    h.state.shared_codex_appserver.set_liveness_facts_for_test(
+        &thread,
+        calm_provider::provider::CodexLivenessFacts {
+            loaded: true,
+            status: calm_provider::provider::ThreadStatusLite::Idle,
+            last_turn: Some(calm_provider::provider::LastTurnFacts {
+                completed_at: Some(calm_server::model::now_ms()),
+                status: calm_provider::provider::TurnStatusLite::Interrupted,
+            }),
+        },
+    );
+    h.state.dispatcher.scheduler().sweep_all().await;
+    tokio::time::timeout(Duration::from_secs(3),async {
+        loop {
+            let held:i64=sqlx::query_scalar("SELECT count(*) FROM workspace_leases WHERE holder_kind='native' AND holder_id=?1 AND state='held'")
+                .bind(&thread).fetch_one(h.sql.pool()).await.unwrap();
+            if held==0 {break;}
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    let card = opened["result"]["structuredContent"]["card_id"]
+        .as_str()
+        .unwrap();
+    let response = tower::ServiceExt::oneshot(
+        h.app.clone(),
+        axum::http::Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/cards/{card}"))
+            .header("X-Calm-Actor", "user")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    assert!(
+        calm_server::db::sqlite::track_available(
+            &mut tx,
+            &h.track,
+            "",
+            calm_types::workspace_access::WorkspaceAccess::ReadOnly
+        )
+        .await
+        .unwrap(),
+        "confirmed terminal stop admits readers"
+    );
+    tx.rollback().await.unwrap();
+    let id = terminal.to_owned();
+    h.stop(&id).await;
+}

@@ -92,6 +92,7 @@ pub(crate) async fn create_terminal_card(
     let actor = actor.to_actor_id();
     let payload = serde_json::to_value(TerminalCreateOperationPayload {
         actor,
+        write_origin: None,
         worker_session_id: Some(runtime_id),
         // Human-created terminals get exactly the env they asked for.
         planner_hooks: false,

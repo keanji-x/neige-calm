@@ -373,8 +373,20 @@ async fn call(
                 idempotency_key: Some(idempotency_key),
                 payload_hash: open_payload_hash(&identity, &request)?,
             };
+            let pool = ctx
+                .sqlite_pool
+                .as_ref()
+                .ok_or_else(|| RpcError::internal("workspace authority unavailable"))?;
+            let write_origin =
+                crate::operation::workspace_lease::execution_guard::capture_write_origin(
+                    pool,
+                    &identity.card_id,
+                )
+                .await
+                .map_err(failure)?;
             let payload = serde_json::to_value(TerminalCreateOperationPayload {
                 actor: identity.to_actor_id(),
+                write_origin: Some(write_origin),
                 worker_session_id: Some(new_id()),
                 planner_hooks: true,
                 request,

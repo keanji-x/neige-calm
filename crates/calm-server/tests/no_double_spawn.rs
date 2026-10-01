@@ -2897,6 +2897,7 @@ fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
 fn terminal_payload(track_id: &str) -> Value {
     serde_json::to_value(TerminalCreateOperationPayload {
         actor: ActorId::User,
+        write_origin: None,
         worker_session_id: Some(new_id()),
         planner_hooks: false,
         request: TerminalCreateRequestPayload {
