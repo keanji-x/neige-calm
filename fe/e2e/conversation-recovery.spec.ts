@@ -53,11 +53,13 @@ test('retains a rejected conversation message and retries it once', async ({ pag
   }
 });
 
-test('explains a wedged conversation and carries its draft into recovery', async ({ page, request }, testInfo) => {
+test('explains a paused conversation and retains its blocked draft', async ({ page, request }, testInfo) => {
   const area = await createArea(request, `Stalled recovery ${Date.now()}`);
   try {
     const track = await createTrack(request, area.id);
     let phase = 'turn_running';
+    let sends = 0;
+    await page.route('**/api/cards/*/planner/input', async (route) => { sends += 1; await route.continue(); });
     await page.route('**/api/cards/*/planner/run', async (route) => {
       const response = await route.fetch();
       const body = await response.json() as Record<string, unknown>;
@@ -70,15 +72,24 @@ test('explains a wedged conversation and carries its draft into recovery', async
     await composer.fill('Keep this unsent draft');
     phase = 'wedged';
     await page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
-    await expect(page.getByRole('alert')).toContainText('This conversation is stuck');
+    const pause = page.locator('[data-nc-drawer-scroll]').getByRole('button', { name: 'Conversation paused', exact: true });
+    await expect(pause).toBeVisible();
+    await expect(pause).toHaveAttribute('aria-expanded', 'false');
+    await pause.click();
+    await expect(page.locator('[data-nc-thread]').getByText('This conversation is stuck.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(composer).toHaveAttribute('contenteditable', 'false');
     await expect(page.getByRole('complementary').locator('[data-nc-activity="working"]')).toHaveCount(0);
     await composer.press('Enter');
     await expect(composer).toHaveText('Keep this unsent draft');
     await page.screenshot({ path: testInfo.outputPath('stalled-desktop.png'), fullPage: true, animations: 'disabled' });
-    await page.getByRole('button', { name: 'Start a new conversation' }).click();
-    await expect(page.getByRole('complementary', { name: 'Untitled' })).toBeVisible();
-    await expect(composer).toHaveAttribute('contenteditable', 'true');
+    await expect(page.getByRole('button', { name: 'Start a new conversation' })).toHaveCount(0);
+    expect(sends).toBe(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(pause).toBeVisible();
+    await expect(composer).toHaveAttribute('contenteditable', 'false');
     await expect(composer).toHaveText('Keep this unsent draft');
+    await page.screenshot({ path: testInfo.outputPath('stalled-mobile.png'), fullPage: true, animations: 'disabled' });
   } finally {
     await request.delete(`/api/areas/${area.id}`);
   }
