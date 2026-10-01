@@ -5,6 +5,7 @@ pub mod dev;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity, ToolRegistry};
 use crate::mcp_server::tool_visibility::plugin_scope_for_track;
+use crate::plugin_host::forge_caller::ForgeCallerScope;
 use crate::plugin_host::{CallToolResult, Manifest};
 use serde_json::{Value, json};
 use std::sync::{Arc, LazyLock};
@@ -13,6 +14,7 @@ pub struct BuiltinPlugin {
     manifest: Manifest,
     native: ToolRegistry,
     lower: fn(&str, &Value) -> Result<Value, String>,
+    forge_lower: fn(&str, &Value, &ForgeCallerScope) -> Result<Value, String>,
     instructions: &'static str,
 }
 
@@ -21,12 +23,14 @@ impl BuiltinPlugin {
         manifest: &str,
         native: ToolRegistry,
         lower: fn(&str, &Value) -> Result<Value, String>,
+        forge_lower: fn(&str, &Value, &ForgeCallerScope) -> Result<Value, String>,
         instructions: &'static str,
     ) -> Self {
         Self {
             manifest: Manifest::parse(manifest).expect("compiled manifest"),
             native,
             lower,
+            forge_lower,
             instructions,
         }
     }
@@ -37,7 +41,18 @@ impl BuiltinPlugin {
         self.instructions
     }
     pub fn tools_call(&self, tool: &str, args: &Value) -> Result<CallToolResult, RpcError> {
-        let result = match (self.lower)(tool, args) {
+        Self::encode_result((self.lower)(tool, args))
+    }
+    pub fn forge_tools_call(
+        &self,
+        tool: &str,
+        args: &Value,
+        caller: &ForgeCallerScope,
+    ) -> Result<CallToolResult, RpcError> {
+        Self::encode_result((self.forge_lower)(tool, args, caller))
+    }
+    fn encode_result(lowered: Result<Value, String>) -> Result<CallToolResult, RpcError> {
+        let result = match lowered {
             Ok(value) => json!({ "content": [], "isError": false, "structuredContent": value }),
             Err(error) => {
                 json!({ "content": [{"type":"text", "text":error}], "isError":true, "structuredContent":{"error":error} })

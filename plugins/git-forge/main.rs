@@ -92,7 +92,16 @@ fn tools_call_reply(frame: &Value, id: Value) -> Value {
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    match lower(tool, &args) {
+    let lowered = match frame
+        .pointer("/params/_meta")
+        .and_then(|meta| meta.get(FORGE_CALLER_META_KEY))
+    {
+        Some(scope) => serde_json::from_value::<ForgeCallerScope>(scope.clone())
+            .map_err(|e| format!("invalid forge caller metadata: {e}"))
+            .and_then(|caller| lower_for_caller(tool, &args, &caller)),
+        None => lower(tool, &args),
+    };
+    match lowered {
         Ok(structured) => json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -114,4 +123,44 @@ fn tools_call_reply(frame: &Value, id: Value) -> Value {
     }
 }
 
-use calm_server::builtin_plugins::dev::git_actions::lower;
+use calm_server::builtin_plugins::dev::git_actions::{lower, lower_for_caller};
+use calm_server::plugin_host::forge_caller::{FORGE_CALLER_META_KEY, ForgeCallerScope};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issue_comment_requires_caller_metadata_outside_arguments() {
+        let args = json!({"repo":"owner/repo","issue":42,"body":"Update","idem":"plan-1"});
+        let mut frame = json!({"params":{"name":"gh.issue.comment","arguments":args}});
+        assert_eq!(
+            tools_call_reply(&frame, json!(1))["result"]["isError"],
+            true
+        );
+        // A caller field in arguments cannot impersonate the kernel's metadata.
+        frame["params"]["arguments"][FORGE_CALLER_META_KEY] = json!({"plugin_id":"dev.neige.git-forge","track_id":"fake-track","card_id":"fake-card"});
+        assert_eq!(
+            tools_call_reply(&frame, json!(1))["result"]["isError"],
+            true
+        );
+        frame["params"]["_meta"] = json!({FORGE_CALLER_META_KEY:{"plugin_id":"dev.neige.git-forge","track_id":"track-a","card_id":"card-a"}});
+        let first = tools_call_reply(&frame, json!(1));
+        assert_eq!(first["result"]["isError"], false);
+        assert_eq!(first, tools_call_reply(&frame, json!(1)));
+        frame["params"]["_meta"][FORGE_CALLER_META_KEY]["card_id"] = json!("card-b");
+        let second = tools_call_reply(&frame, json!(1));
+        assert_ne!(
+            first["result"]["structuredContent"]["argv"][7],
+            second["result"]["structuredContent"]["argv"][7]
+        );
+        frame["params"]["_meta"][FORGE_CALLER_META_KEY]
+            .as_object_mut()
+            .unwrap()
+            .remove("card_id");
+        assert_eq!(
+            tools_call_reply(&frame, json!(1))["result"]["isError"],
+            true
+        );
+    }
+}

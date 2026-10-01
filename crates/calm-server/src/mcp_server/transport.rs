@@ -693,7 +693,8 @@ async fn dispatch_plugin_tools_call(
             if let Some(ConnectorClient::Builtin(component)) =
                 plugin_host.connector_client(&plugin_id).await
             {
-                let result = component.tools_call(&tool_name, &arguments)?;
+                let caller = forge_caller_scope(&plugin_id, &identity)?;
+                let result = component.forge_tools_call(&tool_name, &arguments, &caller)?;
                 return dispatch_forge_action_result(ctx, result, &plugin_id, identity).await;
             }
             let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
@@ -913,6 +914,19 @@ pub(crate) async fn submit_forge_action_with_key(
     }
 }
 
+fn forge_caller_scope(
+    plugin_id: &str,
+    identity: &ToolCallIdentity,
+) -> Result<crate::plugin_host::forge_caller::ForgeCallerScope, RpcError> {
+    Ok(crate::plugin_host::forge_caller::ForgeCallerScope {
+        plugin_id: plugin_id.to_owned(),
+        track_id: identity.track_id.clone().ok_or_else(|| {
+            RpcError::invalid_params("forge action requires a track-scoped caller")
+        })?,
+        card_id: identity.card_id.clone(),
+    })
+}
+
 async fn dispatch_forge_action_plugin_tool(
     ctx: &Arc<AppContext>,
     client: Arc<crate::plugin_host::McpClient>,
@@ -921,8 +935,9 @@ async fn dispatch_forge_action_plugin_tool(
     arguments: Value,
     identity: ToolCallIdentity,
 ) -> Result<Value, RpcError> {
+    let caller = forge_caller_scope(plugin_id, &identity)?;
     let result = client
-        .tools_call(tool_name, arguments, identity.track_id.as_deref())
+        .forge_tools_call(tool_name, arguments, &caller)
         .await?;
     dispatch_forge_action_result(ctx, result, plugin_id, identity).await
 }

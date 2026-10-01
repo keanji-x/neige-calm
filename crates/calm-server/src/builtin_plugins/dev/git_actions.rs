@@ -6,6 +6,8 @@ use calm_types::forge_git::{
 };
 use serde_json::{Value, json};
 
+use crate::plugin_host::forge_caller::ForgeCallerScope;
+
 mod issue;
 
 pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
@@ -19,9 +21,25 @@ pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
         "gh.pr.merge" => lower_gh_pr_merge(args),
         "gh.issue.view" => lower_gh_issue_view(args),
         "gh.issue.close" => lower_gh_issue_close(args),
-        "gh.issue.comment" => issue::comment(args),
+        "gh.issue.comment" => Err("issue comments require trusted forge caller metadata".into()),
         "gh.issue.comments" => issue::comments(args),
         _ => Err(format!("unknown git-forge tool `{tool}`")),
+    }
+}
+
+/// Caller-sensitive lowering stays in the owning plugin; the kernel only provides identity.
+pub fn lower_for_caller(
+    tool: &str,
+    args: &Value,
+    caller: &ForgeCallerScope,
+) -> Result<Value, String> {
+    caller.validate()?;
+    if caller.plugin_id != super::PLUGIN_ID {
+        return Err("forge caller plugin does not match development plugin".into());
+    }
+    match tool {
+        "gh.issue.comment" => issue::comment(args, caller),
+        _ => lower(tool, args),
     }
 }
 

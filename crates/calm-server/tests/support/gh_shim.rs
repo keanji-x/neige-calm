@@ -358,6 +358,10 @@ case "$area:$verb" in
     state=$(ensure_state "$repo")
     comments_dir="$state/issues/$issue.comments"
     mkdir -p "$comments_dir"
+    if [ -f "$state/block_issue_comment_before" ]; then
+      printf started > "$state/issue_comment_before_started"
+      block_if_requested "$state" issue_comment_before
+    fi
     inc_counter "$state/issue_comment_count"
     count=$(cat "$state/issue_comment_count")
     printf '%s' "$body" | jq -Rs --arg url "https://example.test/issues/$issue#issuecomment-$count" '{body: ., url: $url}' > "$comments_dir/$count.json"

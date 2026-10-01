@@ -9,6 +9,7 @@ pub mod config;
 pub mod connector;
 pub mod error;
 pub mod events;
+pub mod forge_caller;
 mod glob;
 pub mod http_headers;
 pub mod http_mcp;

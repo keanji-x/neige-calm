@@ -96,3 +96,19 @@ match config {
 `crates/calm-server/tests/cases/plugin_config_delivery.rs` boots a real child
 process and asks *the plugin* what it received, so the assertions above are
 witnessed on the wire rather than against the kernel's own merge.
+
+## Forge-action caller metadata
+
+For local forge-action calls, the kernel supplies `dev.neige/forge-caller` in
+`tools/call.params._meta` with required `plugin_id`, `track_id`, and `card_id`.
+These values come from the registered route and authenticated caller, matching
+operation idempotency scope. Tool arguments cannot override them. The existing
+`dev.neige/track` namespace remains present for local stdio plugins.
+
+Builtins receive the same `ForgeCallerScope` as typed context. The owning plugin
+can bind remote recovery identities to that scope; the kernel does not interpret
+or construct domain-specific markers. Development issue-comment lowering rejects
+missing, blank, or mismatched caller context. The standalone git-forge binary
+reads this namespace and uses the same scoped lowerer as the builtin.
+
+Remote HTTP connectors receive neither of these local caller namespaces.

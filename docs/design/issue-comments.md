@@ -11,7 +11,9 @@ remain the authority boundary; this feature adds no permission bypass.
   nonblank `idem`. A logical comment keeps its idem and body on every retry;
   another comment uses a new idem. The kernel scopes the operation to its caller.
 - The body carries a hidden SHA-256 marker derived from the structured tuple
-  `(repo, issue, idem, body)`. Recovery matches the complete posted body, never
+  `(plugin_id, track_id, card_id, repo, issue, idem, body)`. The kernel supplies
+  caller identity as typed context to builtins or private metadata to local stdio
+  lowerers, never as user arguments. Missing or invalid scope is rejected. Recovery matches the complete posted body, never
   an unmarked human comment or just a shared text fragment. User strings are
   argv values; the jq comparison uses a JSON-escaped string literal.
 - The write is parked before execution, as merge and close are. A successful

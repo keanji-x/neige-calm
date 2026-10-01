@@ -1,5 +1,6 @@
 //! Issue discussion writes and reads, lowered into kernel-owned operations.
 use super::{forge_payload, optional_attempt, required_string, required_u64};
+use crate::plugin_host::forge_caller::ForgeCallerScope;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -21,12 +22,12 @@ fn nonblank(args: &Value, name: &str) -> Result<String, String> {
     Ok(value)
 }
 
-pub(super) fn comment(args: &Value) -> Result<Value, String> {
+pub(super) fn comment(args: &Value, caller: &ForgeCallerScope) -> Result<Value, String> {
     let repo = nonblank(args, "repo")?;
     let issue = issue_number(args)?;
     let body = nonblank(args, "body")?;
     let idem = nonblank(args, "idem")?;
-    let encoded = serde_json::to_vec(&json!([repo, issue, idem, body]))
+    let encoded = serde_json::to_vec(&json!([caller, repo, issue, idem, body]))
         .map_err(|e| format!("encode comment identity: {e}"))?;
     let marker = format!("{:x}", Sha256::digest(encoded));
     let posted = format!("{body}\n\n<!-- neige:issue-comment:{marker} -->");

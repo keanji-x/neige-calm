@@ -16,6 +16,7 @@ pub(super) fn component() -> super::BuiltinPlugin {
         )),
         native,
         git_actions::lower,
+        git_actions::lower_for_caller,
         include_str!("instructions.md"),
     )
 }

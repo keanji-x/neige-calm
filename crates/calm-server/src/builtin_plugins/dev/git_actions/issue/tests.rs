@@ -1,5 +1,17 @@
 use super::*;
-use crate::builtin_plugins::dev::git_actions::lower;
+use crate::builtin_plugins::dev::git_actions::lower_for_caller;
+
+fn caller() -> ForgeCallerScope {
+    ForgeCallerScope {
+        plugin_id: "dev.neige.git-forge".into(),
+        track_id: "track-a".into(),
+        card_id: "card-a".into(),
+    }
+}
+
+fn lower(tool: &str, args: &Value) -> Result<Value, String> {
+    lower_for_caller(tool, args, &caller())
+}
 
 fn args() -> Value {
     json!({"repo":"owner/repo", "issue":42, "body":"A progress update", "idem":"update-1"})
@@ -121,4 +133,27 @@ fn issue_comment_probe_matches_exact_body_and_preserves_unknown() {
     assert_eq!(run(json!({"comments":null})), 3);
     std::fs::write(tmp.path().join("view.fail"), "fail").unwrap();
     assert_eq!(run(json!({"comments":[{"body":posted}]})), 3);
+}
+
+#[test]
+fn issue_comment_recovery_identity_binds_each_caller() {
+    let original = lower_for_caller("gh.issue.comment", &args(), &caller()).unwrap();
+    for field in ["track", "card"] {
+        let mut other = caller();
+        match field {
+            "track" => other.track_id = "track-b".into(),
+            _ => other.card_id = "card-b".into(),
+        }
+        let changed = lower_for_caller("gh.issue.comment", &args(), &other).unwrap();
+        assert_eq!(original["idem_key"], changed["idem_key"]);
+        assert_ne!(original["argv"][7], changed["argv"][7]);
+        assert_ne!(original["probe"], changed["probe"]);
+    }
+    assert!(crate::builtin_plugins::dev::git_actions::lower("gh.issue.comment", &args()).is_err());
+    let mut invalid = caller();
+    invalid.card_id.clear();
+    assert!(lower_for_caller("gh.issue.comment", &args(), &invalid).is_err());
+    invalid = caller();
+    invalid.plugin_id = "another.plugin".into();
+    assert!(lower_for_caller("gh.issue.comment", &args(), &invalid).is_err());
 }

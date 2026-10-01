@@ -414,6 +414,29 @@ impl McpClient {
         if let Some(track_id) = track_id {
             params["_meta"] = json!({ TRACK_META_KEY: { "id": track_id } });
         }
+        self.call_tool_params(params).await
+    }
+
+    /// Local forge lowerers receive the resolved caller scope outside user arguments.
+    pub async fn forge_tools_call(
+        &self,
+        name: &str,
+        arguments: Value,
+        caller: &super::forge_caller::ForgeCallerScope,
+    ) -> Result<CallToolResult, RpcError> {
+        use super::forge_caller::FORGE_CALLER_META_KEY;
+        self.call_tool_params(json!({
+            "name": name,
+            "arguments": arguments,
+            "_meta": {
+                TRACK_META_KEY: { "id": caller.track_id },
+                FORGE_CALLER_META_KEY: caller,
+            }
+        }))
+        .await
+    }
+
+    async fn call_tool_params(&self, params: Value) -> Result<CallToolResult, RpcError> {
         let raw = self.call("tools/call", params).await?;
         serde_json::from_value::<CallToolResult>(raw).map_err(|e| {
             RpcError::internal(format!(
