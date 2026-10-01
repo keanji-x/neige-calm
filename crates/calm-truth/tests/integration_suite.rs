@@ -51,3 +51,6 @@ mod planner_provider_card_key_migration;
 
 #[path = "workspace_access_migration.rs"]
 mod workspace_access_migration;
+
+#[path = "native_card_projection.rs"]
+mod native_card_projection;

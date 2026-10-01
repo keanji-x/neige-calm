@@ -89,6 +89,9 @@ pub(crate) trait CardKindHandler: Send + Sync + 'static {
         CardPersistenceInvariants::default()
     }
 
+    /// Project a returned copy without rewriting persisted card or event history.
+    fn project_public_payload(&self, _payload: &mut Value) {}
+
     fn validate_payload(&self, payload: &Value) -> CardKindResult<()>;
 }
 
@@ -139,6 +142,12 @@ impl CardKindRegistry {
         self.handler_for(kind).is_some()
     }
 
+    pub fn project_public_payload(&self, kind: &str, payload: &mut Value) {
+        if let Some(handler) = self.handler_for(kind) {
+            handler.project_public_payload(payload);
+        }
+    }
+
     pub fn validate_payload(&self, kind: &str, payload: &Value) -> CardKindResult<()> {
         self.handler_for(kind)
             .map_or(Ok(()), |handler| handler.validate_payload(payload))
@@ -146,6 +155,12 @@ impl CardKindRegistry {
 }
 
 static BUILTIN_CARD_KIND_REGISTRY: OnceLock<CardKindRegistry> = OnceLock::new();
+
+pub(crate) fn project_card_payload_global(kind: &str, payload: &mut Value) {
+    BUILTIN_CARD_KIND_REGISTRY
+        .get_or_init(CardKindRegistry::builtins)
+        .project_public_payload(kind, payload);
+}
 
 pub fn validate_card_kind_global(kind: &str, payload: &Value) -> crate::error::Result<()> {
     BUILTIN_CARD_KIND_REGISTRY

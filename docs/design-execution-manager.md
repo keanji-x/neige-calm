@@ -69,6 +69,25 @@ Read tasks expose status and reports without a write-capable TUI. The manager
 owns permission-profile selection and validation; callers do not select a weaker
 sandbox to start a managed read execution.
 
+## Runtime settlement
+
+OperationRuntime owns one bounded, coalesced execution reconciliation entry.
+Completion and reconnect notifications only wake it; they never constitute stop
+proof. The existing Dispatcher reconciliation calls the same entry when a
+notification is lost or a subscriber lags. The scheduler has no independent native
+execution scan or lease-release authority.
+
+Startup scans held executions even when their business Operation is terminal.
+An unavailable provider retains the reservation, and reconnection wakes the same
+entry. Remote probes run outside the global operation drive mutex. Observers use
+weak owners and unregister when their runtime ends; dropping an observer cannot
+prove that a remote execution stopped.
+
+Stop confirmation persists the release and its events atomically. Only after
+commit does the manager publish the exact recorded envelopes, including workspace
+release and delivery handoff. Harness outcome, input restoration and snapshot
+ordering stay with their existing business owner.
+
 ## Bounded migration
 
 1. Freeze further per-caller guard additions. Preserve all existing changes and

@@ -108,6 +108,7 @@ pub async fn project_runtime_into_card_payload(
     repo: &dyn RouteRepo,
     card: &mut Card,
 ) -> WorkerSessionProjectionResult<()> {
+    crate::card_kind::project_card_payload_global(&card.kind, &mut card.payload);
     worker_snapshot::project(repo, std::slice::from_mut(card)).await?;
     let Some(runtime) = repo
         .session_projection_projectable_for_card(&card.id.to_string())
@@ -123,6 +124,9 @@ pub async fn project_runtime_into_cards_payload(
     repo: &dyn RouteRepo,
     cards: &mut [Card],
 ) -> WorkerSessionProjectionResult<()> {
+    for card in cards.iter_mut() {
+        crate::card_kind::project_card_payload_global(&card.kind, &mut card.payload);
+    }
     worker_snapshot::project(repo, cards).await?;
     let card_ids = cards
         .iter()

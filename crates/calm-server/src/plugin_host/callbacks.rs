@@ -594,6 +594,7 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
     let plugin_id = ctx.plugin_id.to_string();
     let mcp = Arc::clone(&ctx.mcp);
     let mut rx = ctx.event_bus.subscribe();
+    let repo = Arc::clone(&ctx.repo);
     let filter = p.filter;
 
     // Bridge task: the McpClient's outbound channel is bounded and drops if backed up, so a slow plugin can't stall the bus.
@@ -601,8 +602,18 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
         loop {
             match rx.recv().await {
                 Ok(env) => {
-                    let ev = env.event;
+                    let mut ev = env.event;
                     if !filter.matches(&ev) {
+                        continue;
+                    }
+                    if let Err(error) =
+                        crate::session_projection_lookup::project_runtime_into_event_payload(
+                            repo.as_ref(),
+                            &mut ev,
+                        )
+                        .await
+                    {
+                        tracing::warn!(%error, %plugin_id, sub_id, "event subscription projection failed");
                         continue;
                     }
                     // Mirrors the WS wire shape: `_id` is the persisted events.id, usable as a cursor / dedupe key.
@@ -749,6 +760,7 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 
 #[cfg(test)]
 mod tests {
+    mod public_projection;
     use super::*;
     // Tests seed fixtures via raw sync-domain writes, so the harness keeps a full `Arc<dyn Repo>`; `ctx()` upcasts to `RouteRepo`.
     use crate::db::Repo;
@@ -815,6 +827,14 @@ mod tests {
 
     /// The stub answers `initialize` and silently drops everything else.
     async fn stub_mcp_client() -> Arc<McpClient> {
+        captured_mcp_client().await.0
+    }
+
+    async fn captured_mcp_client() -> (
+        Arc<McpClient>,
+        tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+    ) {
+        let (frames, received) = tokio::sync::mpsc::unbounded_channel();
         let (kernel, plugin) = tokio::io::duplex(64 * 1024);
         let (k_r, k_w) = tokio::io::split(kernel);
         let (p_r, p_w) = tokio::io::split(plugin);
@@ -833,6 +853,9 @@ mod tests {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
+                if v.get("method").and_then(Value::as_str) == Some("neige.event") {
+                    let _ = frames.send(v.clone());
+                }
                 if let Some(id) = v.get("id").cloned() {
                     let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
                     let reply = if method == "initialize" {
@@ -860,7 +883,7 @@ mod tests {
             }
         });
 
-        McpClient::connect_with_auth(
+        let client = McpClient::connect_with_auth(
             k_r,
             k_w,
             InitializeMeta {
@@ -869,7 +892,8 @@ mod tests {
             },
         )
         .await
-        .expect("stub connect")
+        .expect("stub connect");
+        (client, received)
     }
 
     impl Harness {

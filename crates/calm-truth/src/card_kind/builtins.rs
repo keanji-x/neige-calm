@@ -60,6 +60,12 @@ impl CardKindHandler for CodexCardHandler {
         Some(CODEX_PAYLOAD_SCHEMA_VERSION)
     }
 
+    fn project_public_payload(&self, payload: &mut Value) {
+        if let Some(fields) = payload.as_object_mut() {
+            fields.remove("appserver_sock");
+        }
+    }
+
     fn validate_payload(&self, payload: &Value) -> CardKindResult<()> {
         if payload.is_null() {
             return Ok(());

@@ -1,5 +1,8 @@
 //! WS replay protocol (the `since` cursor side of `ws::events::handle`) — end-to-end tests.
 
+#[path = "ws_replay/public_projection.rs"]
+mod public_projection;
+
 use std::sync::Arc;
 use std::time::Duration;
 
