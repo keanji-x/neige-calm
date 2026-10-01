@@ -220,7 +220,8 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
          one metadata row; the backend's readable reason lives in its disclosure. */
       if (turn.status === 'completed') return null;
       const hasReason = turn.text !== undefined && turn.text.trim() !== '';
-      const hasHint = turn.status === 'failed' && (turn.code !== undefined || turn.rawStatus !== undefined);
+      const hint = turn.status === 'failed' ? outcomeHintText(turn.code, turn.rawStatus) : null;
+      const hasHint = hint !== null;
       const label = turn.status === 'interrupted' ? 'Response interrupted' : 'Failed';
       const guidance = turn.status === 'interrupted' && last && !live && !stalled;
       const heading = (
@@ -241,7 +242,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
             <Divider />
             <Collapsible defaultIsOpen={false} trigger={heading}>
               {hasReason && <p className={styles.outcomeReason} data-nc-turn-outcome-message="" title={turn.message}>{turn.text}</p>}
-              {hasHint && <OutcomeHint code={turn.code} rawStatus={turn.rawStatus} />}
+              {hasHint && <p className={styles.outcomeReason} data-nc-turn-outcome-hint="">{hint}</p>}
               {!hasReason && !hasHint && (
                 <p className={styles.outcomeReason} data-nc-turn-outcome-fallback="">
                   {turn.status === 'failed' ? 'The model provider is temporarily unavailable.' : 'No interruption details are available.'}
@@ -399,14 +400,9 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
   serverOverloaded: 'The model provider is overloaded; try again in a moment.',
 });
 
-function OutcomeHint({ code, rawStatus }: { code: string | undefined; rawStatus: string | undefined }) {
-  const hint = code === undefined ? null : (FAILURE_HINTS[code] ?? code);
-  if (hint === null && rawStatus === undefined) return null;
-  return (
-    <p className={styles.outcomeReason} data-nc-turn-outcome-hint="">
-      {hint ?? `Ended with status “${rawStatus}”`}
-    </p>
-  );
+function outcomeHintText(code: string | undefined, rawStatus: string | undefined): string | null {
+  const hint = code === undefined || code.trim() === '' ? null : (FAILURE_HINTS[code] ?? code);
+  return hint ?? (rawStatus === undefined ? null : `Ended with status “${rawStatus}”`);
 }
 
 function exchangesOf(turns: readonly TranscriptEntry[]): readonly Exchange[] {

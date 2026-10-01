@@ -170,9 +170,9 @@ describe('ChatThread', () => {
     expect(container.querySelector('[data-nc-turn-outcome-hint]')?.textContent).toBe('Ended with status “inProgress”');
   });
 
-  it('keeps the same disclosure for a failed turn without details and keeps known hints', () => {
+  it.each([undefined, '', '   '])('keeps the same disclosure for missing details and an unusable code %s', (code) => {
     const { container, rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
-      turns={[turnOutcome({ text: '   ', message: 'raw provider payload' })]} />);
+      turns={[turnOutcome({ text: '   ', message: 'raw provider payload', code })]} />);
     expect(screen.getByText('Failed', { exact: true })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
     expect(screen.getByText('The model provider is temporarily unavailable.', { exact: true })).toBeTruthy();
@@ -184,6 +184,8 @@ describe('ChatThread', () => {
     expect(screen.getByText('Failed', { exact: true })).toBeTruthy();
     expect(screen.queryByText('Unknown error')).toBeNull();
     expect(screen.getByRole('button', { name: 'Failed' })).toBeTruthy();
+    expect(container.querySelector('[data-nc-turn-outcome-hint]')?.textContent).toBe('Requests are being rate-limited; try again in a moment.');
+    expect(container.querySelector('[data-nc-turn-outcome-fallback]')).toBeNull();
   });
 
   it('shows the restart reason from the production transcript wire', () => {
