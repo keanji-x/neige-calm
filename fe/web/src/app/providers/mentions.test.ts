@@ -38,6 +38,7 @@ it('keeps successful report candidates when the plugin catalog fails', async () 
 it.each([
   ['plugin-only', null, 'Report'],
   ['report-only', 'area', '/Report'],
+  ['plugin-filtered', 'area', '+Report'],
 ] as const)('preserves %s errors when its only actual source fails', async (_name, areaId, typed) => {
   const requests: ApiRequest[] = [];
   const transport: ApiTransportPort = { send(request) {

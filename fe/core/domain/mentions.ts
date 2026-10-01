@@ -1,6 +1,5 @@
-// `@` in a Planner's composer (#1881): the area's tags, reports and report blocks, as the
-// server ranked them, turned into one ordered list of things to pick. The server builds every
-// `insert` (the path format lives in Rust alone); this file never assembles a path.
+// Mention candidates: ranked Area report references and plugin catalog documentation.
+// Report addresses come from the server; plugin reference text is built from catalog metadata.
 
 import { z } from 'zod';
 import type { PluginListItem } from './plugins.js';
@@ -57,7 +56,7 @@ export type MentionKind = 'tag' | 'track' | 'block' | 'plugin';
 
 /** One row of the `@` menu and the chip it becomes. */
 export type MentionSuggestion = Readonly<{
-  /** Unique across the whole list, so the three groups can share one keyed list. */
+  /** Unique across the whole list, so all groups can share one keyed list. */
   id: string;
   kind: MentionKind;
   /** The row's name. */
@@ -66,7 +65,7 @@ export type MentionSuggestion = Readonly<{
   detail: string | null;
   /** What the chip shows in the field. */
   chip: string;
-  /** The exact text the message carries for this pick, verbatim from the server. */
+  /** The exact text the message carries for this pick, from its candidate producer. */
   insert: string;
 }>;
 

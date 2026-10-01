@@ -1,6 +1,5 @@
-// `@` in a composer whose message a Planner reads (#1881): Astryx's trigger menu over the
-// area's tags, reports and blocks. The caller hands in the search (the area and track are
-// composition facts); this file owns the menu row, the chip, and which answer may be shown.
+// Astryx's `@` menu over plugin guides and available Area tags, reports and blocks.
+// The caller owns the search scope; this feature owns rows, chips and answer freshness.
 
 import { useMemo, useRef } from 'react';
 import type { ChatComposerToken, ChatComposerTrigger } from '@astryxdesign/core/Chat';
@@ -69,7 +68,7 @@ function itemOf(suggestion: MentionSuggestion, preview = false): MentionItem {
 
 /**
  * The chip a pick becomes: its `value` is what the composer serializes, so the sent text holds
- * the server's `insert` exactly; the reader sees the short `chip` form instead.
+ * the source's `insert` exactly; the reader sees the short `chip` form instead.
  */
 export function mentionToken(suggestion: MentionSuggestion): ChatComposerToken {
   // Named references stay named even when their serialized documentation is long.
@@ -192,7 +191,7 @@ export function mentionTrigger(source: SearchSource<MentionItem>): ChatComposerT
 }
 
 /**
- * The `@` trigger, or `undefined` where `search` is `null` (a composer no Planner reads).
+ * The `@` trigger, or `undefined` when the host disables references with `search: null`.
  *
  * Stable for as long as `search` stays non-null, whatever its identity: `useTriggerMenu`
  * compares the active trigger by identity on every input event, so a new object per render
