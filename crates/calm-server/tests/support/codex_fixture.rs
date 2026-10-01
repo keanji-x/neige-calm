@@ -1005,14 +1005,17 @@ pub async fn preflight_mcp_through_shim(socket: &Path, daemon_token: &str) {
 pub async fn shutdown_shared_codex(shared: &Arc<SharedCodexAppServer>) {
     let status = shared.status_snapshot();
     if let Some(runtime) = status.runtime {
+        assert!(runtime.pgid > 1 && runtime.pgid != unsafe { libc::getpgrp() });
         let pgid = format!("-{}", runtime.pgid);
         let _ = StdCommand::new("/bin/kill")
             .arg("-TERM")
+            .arg("--")
             .arg(&pgid)
             .status();
         sleep(Duration::from_millis(200)).await;
         let _ = StdCommand::new("/bin/kill")
             .arg("-KILL")
+            .arg("--")
             .arg(&pgid)
             .status();
     }

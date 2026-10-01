@@ -83,6 +83,9 @@ async fn real_planner_discovers_builtin_tools_on_first_turn() {
         }
         sleep(Duration::from_millis(100)).await;
     }
+    eprintln!(
+        "verified: real Planner emitted review.round and publication retained its candidate fence"
+    );
     shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host.stop(PLUGIN_ID).await.unwrap();
     shutdown_shared_codex(&fx.shared).await;
