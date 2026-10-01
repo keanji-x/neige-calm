@@ -7,6 +7,9 @@ mod support;
 #[path = "cases/codex_builtin_discovery.rs"]
 mod codex_builtin_discovery;
 
+#[path = "cases/codex_calendar_preview.rs"]
+mod codex_calendar_preview;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
