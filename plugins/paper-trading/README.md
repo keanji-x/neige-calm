@@ -424,6 +424,18 @@ The isolated Worker's frozen grants generate their own exact approval overrides;
 the transport and App still enforce role, live attempt, owner and account checks.
 Keep the strategy Track open between messages; close only on explicit request.
 
+The service must configure the independent backend through
+`--isolated-codex-config`; see
+[`design-1501-single-task-execution.md`](../../docs/design-1501-single-task-execution.md#operator-entry-point)
+for its required fields and matching `calm-worker-boundary` helper. This Demo
+explicitly pins the installed Codex 0.153.4 executable, companion and sandbox
+bwrap. Codex 0.159.2 redirects its Unix listener to a namespace-private temporary
+socket, which this controller cannot reach. The global CLI is unaffected.
+Use a separate private Worker provider config with a model present in that
+account's returned catalog; the verified Demo uses `gpt-5.6-sol`. Planner model
+settings remain separate. Configure necessary proxy fields explicitly through
+the transport allowlist, rather than inheriting arbitrary environment values.
+
 The Worker receives only the decision ID and those grants. It cannot change the
 target through the execution call; the App requires the kernel-resolved Worker
 role and literal `delegated_tool: true`, proved by the current isolated attempt

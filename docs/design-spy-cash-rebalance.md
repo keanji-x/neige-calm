@@ -142,3 +142,41 @@ mutation added `plugin.ungranted` to the approval table: predicted and actual
 red sets were exactly
 `dedicated_codex::home::tests::dedicated_codex_plugin_grants_are_explicit_and_do_not_enable_network`.
 Production was restored byte-for-byte and all five checks passed again.
+
+
+## Live message and delegated execution evidence
+
+The original Demo identity now runs in a separate persistent private runtime on
+loopback port 4145. Longbridge CLI research, official SDK paper account and
+Wisburg managed read-only connector are enabled; the original 4143 process and
+production 4140 remain untouched. The user explicitly authorized reusing the
+existing Wisburg credentials against its original service. SDK credentials,
+connector secrets and app authentication stay outside tracked source.
+
+A normal Planner message read actual broker state, Longbridge quotes and
+Wisburg research, captured seven sources, and persisted a 1000-bps SPY target.
+No real Codex E2E suite ran. Initial independent execution lacked backend config;
+the next startup exposed missing explicit proxy transport. Codex 0.159.2 also
+publishes a listener symlink to its namespace-private temporary socket, outside
+the host's mounted control directory. The Demo now explicitly pins the installed
+0.153.4 executable and matching companions. A credential-free, no-model-turn
+Unix startup check confirmed a direct socket. A separate private Worker provider
+config selects `gpt-5.6-sol`, actually listed by that account's authenticated
+catalog; the prior inherited Planner model was refused by this client. Planner
+settings remain unchanged. No automatic runtime fallback or broad permissions
+were introduced.
+
+Failed attempts and their native stop records remain intact. Same-key recovery
+refusal was respected. Subsequent normal task declarations continued the same
+financial decision only after the prior runtime was Closed, its original init
+was absent and the broker-request ledger was empty. No financial decision ID,
+ratio, validity or source was replaced.
+
+The actual isolated Worker called status, executed the existing decision exactly
+once, then called status and refresh and submitted native task completion.
+Planner accepted the workflow report and explicitly kept allocation completion
+false. The three live tables render in a real authenticated browser with no page
+errors. The Track remains open. Market was outside the regular session: decision
+stays queued, actual SPY allocation is zero, and there are no submitted broker
+requests or fills. Regular-session broker acceptance and settlement still require
+live verification; queued execution does not schedule a later order by itself.
