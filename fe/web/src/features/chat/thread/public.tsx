@@ -275,7 +275,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         ) : (
           <div className={styles.reply} data-nc-turn="agent">
             <Reply text={turn.text} />
-            {showLive && last && <ActivityIndicator state="working" />}
+            {showLive && last && <ActivityIndicator state="working" motion="thinking" />}
           </div>
         )}
       </div>
@@ -287,7 +287,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       <div className={styles.empty} data-nc-thread-empty="">
         <p className={styles.emptyLead}>{live ? 'The agent is working.' : 'Nothing said yet.'}</p>
         <p className={styles.emptyHint}>{live ? 'Messages will appear here.' : 'Write below and it starts here.'}</p>
-        {live && <ActivityIndicator state="working" />}
+        {live && <ActivityIndicator state="working" motion="thinking" />}
       </div>
     );
   }
@@ -348,7 +348,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         })}
         {/* A reply that has not arrived yet still gets a place to arrive in; the placeholder keeps the one mark visible unless the tail carries it. */}
         {live && !tailCarriesLiveMark && (
-          <p className={styles.reply}><ActivityIndicator state="working" /></p>
+          <p className={styles.reply}><ActivityIndicator state="working" motion="thinking" /></p>
         )}
         {/* The drawer's one accessible "in motion" fact: every indicator is decorative. It sits after the placeholder because the stylesheet spaces `.thread`'s children by adjacency (`.exchange + *`). */}
         {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}

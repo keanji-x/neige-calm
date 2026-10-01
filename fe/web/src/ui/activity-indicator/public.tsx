@@ -10,12 +10,13 @@ export type ActivityState = 'failed' | 'attention' | 'working' | 'unread' | 'qui
  * label and the marker is decorative. `spoken` is rendered visually hidden after the marker where no
  * owning control names the fact; this primitive is domain-free and may not import the vocabulary.
  */
-export function ActivityIndicator({ state, spoken = null, motion = 'thinking' }: Readonly<{ state: ActivityState; spoken?: string | null; motion?: Exclude<NeigeMotionKind, 'creation'> }>) {
+export function ActivityIndicator({ state, spoken = null, motion }: Readonly<{ state: ActivityState; spoken?: string | null; motion?: Exclude<NeigeMotionKind, 'creation'> }>) {
   if (state === 'quiet') return null;
+  const hasMotion = state === 'working' && motion !== undefined;
   return (
     <>
-      <span className={`${styles.indicator} ${styles[state]}`} data-nc-activity={state} aria-hidden="true">
-        {state === 'working' && <NeigeMotion kind={motion} />}
+      <span className={`${styles.indicator} ${styles[state]} ${hasMotion ? styles.motion : ''}`} data-nc-activity={state} aria-hidden="true">
+        {hasMotion && <NeigeMotion kind={motion} />}
       </span>
       {spoken !== null && <VisuallyHidden>{spoken}</VisuallyHidden>}
     </>

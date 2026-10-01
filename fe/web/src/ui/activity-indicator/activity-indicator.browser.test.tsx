@@ -75,3 +75,25 @@ describe('activity indicator colours', () => {
       .toEqual(['unread', 'working', 'attention', 'failed']);
   });
 });
+
+it('keeps the default working indicator as the original compact rotating ring', () => {
+  const { container } = render(<ActivityIndicator state="working" />);
+  const marker = container.querySelector<HTMLElement>('[data-nc-activity="working"]')!;
+  expect(marker.querySelector('[data-nc-motion]')).toBeNull();
+  const style = getComputedStyle(marker);
+  expect(marker.getBoundingClientRect().width).toBe(10);
+  expect(marker.getBoundingClientRect().height).toBe(10);
+  expect(style.borderTopStyle).toBe('solid');
+  expect(style.animationName).not.toBe('none');
+  expect(style.animationDuration).toBe('0.9s');
+});
+
+it('uses a contextual motion only when explicitly requested', () => {
+  const { container } = render(<ActivityIndicator state="working" motion="thinking" />);
+  const marker = container.querySelector<HTMLElement>('[data-nc-activity="working"]')!;
+  expect(marker.querySelector('[data-nc-motion="thinking"]')).not.toBeNull();
+  const style = getComputedStyle(marker);
+  expect(style.animationName).toBe('none');
+  expect(style.borderTopWidth).toBe('0px');
+  expect(marker.getBoundingClientRect().width).toBe(Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--glyph')));
+});
