@@ -1,4 +1,6 @@
 //! Owned Linux process boundaries for explicitly admitted local Workers.
+pub mod execution_process;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
