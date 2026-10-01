@@ -485,7 +485,7 @@ async fn serve_conn(
                 send_result(
                     &mut write,
                     &id,
-                    json!({ "thread": { "id": response_id,"cwd":thread_cwd }, "model": "fake-model" }),
+                    json!({ "thread": { "id": response_id,"cwd":thread_cwd,"status":{"type":"idle"},"turns":[] }, "model": "fake-model" }),
                 )
                 .await?;
                 // `thread/started` notification (best-effort; the kernel

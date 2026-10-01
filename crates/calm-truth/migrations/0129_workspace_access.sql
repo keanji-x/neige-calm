@@ -59,3 +59,6 @@ ALTER TABLE workspace_leases ADD COLUMN execution_parent_holder_id TEXT NULL;
 
 -- New native issuance persists its exact client nonce; historical executions have none.
 ALTER TABLE workspace_leases ADD COLUMN native_client_id TEXT NULL;
+
+-- Positive provider identity of an observed native turn, independent of issuance phase.
+ALTER TABLE workspace_leases ADD COLUMN native_observed_turn_id TEXT NULL;

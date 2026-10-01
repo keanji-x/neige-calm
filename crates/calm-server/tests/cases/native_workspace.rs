@@ -240,6 +240,15 @@ async fn native_workspace_resume_missing_provider_cwd_cannot_invent_a_binding() 
 
 #[tokio::test]
 async fn native_workspace_readonly_lost_response_retains_independent_reader_until_exact_stop() {
+    readonly_lost_response(true).await;
+}
+
+#[tokio::test]
+async fn native_workspace_positive_read_stop_confirms_only_its_terminal_task_intent() {
+    readonly_lost_response(false).await;
+}
+
+async fn readonly_lost_response(release_task: bool) {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
     let card = seed_card(&repo, 104).await;
@@ -274,7 +283,7 @@ async fn native_workspace_readonly_lost_response_retains_independent_reader_unti
             "codex-worker",
             calm_server::operation::OperationKey {
                 operation_key: new_id(),
-                idempotency_key: Some(task),
+                idempotency_key: Some(task.clone()),
                 payload_hash: "read-scope".into(),
             },
             json!({}),
@@ -308,10 +317,21 @@ async fn native_workspace_readonly_lost_response_retains_independent_reader_unti
     .await
     .unwrap();
     // The Task lease's old lightweight stop proof may arrive before this request is accepted.
-    sqlx::query("UPDATE workspace_leases SET state='released' WHERE lease_id='task-read'")
-        .execute(repo.pool())
-        .await
-        .unwrap();
+    if release_task {
+        sqlx::query("UPDATE workspace_leases SET state='released' WHERE lease_id='task-read'")
+            .execute(repo.pool())
+            .await
+            .unwrap();
+    } else {
+        sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
+            .bind(&task)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner, \
+            created_at_ms,updated_at_ms,access_mode) VALUES('unrelated-task-read',?1,?2,?3,'held','unrelated-operation',0,0,'read_only')")
+            .bind(&card).bind(&track).bind(root.path().to_str().unwrap()).execute(repo.pool()).await.unwrap();
+    }
     let (lease, nonce) =
         row.expect("a read-only native request needs its own durable issuance reference");
     let read_path = sock.with_extension("thread-read");
@@ -330,7 +350,7 @@ async fn native_workspace_readonly_lost_response_retains_independent_reader_unti
     .fetch_one(repo.pool())
     .await
     .unwrap();
-    assert_eq!(held, 1);
+    assert_eq!(held, if release_task { 1 } else { 3 });
     assert!(!nonce.is_empty());
     std::fs::write(&read_path, original).unwrap();
     assert!(
@@ -338,5 +358,230 @@ async fn native_workspace_readonly_lost_response_retains_independent_reader_unti
             .reconcile_native_workspace_guard(&lease)
             .await
             .unwrap()
+    );
+    if !release_task {
+        let stamps: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT lease_id,read_stop_confirmed_at_ms FROM workspace_leases WHERE holder_kind='task' ORDER BY lease_id")
+            .fetch_all(repo.pool()).await.unwrap();
+        assert!(
+            stamps[0].1.is_some(),
+            "exact native stop also confirms its ended Task intent"
+        );
+        assert!(
+            stamps[1].1.is_none(),
+            "another operation cannot borrow the native stop proof"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_workspace_legacy_active_resume_atomically_adopts_actual_writer() {
+    let root = tempfile::tempdir().unwrap();
+    let actual = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card = seed_card(&repo, 105).await;
+    seed_runtime_thread(&repo, &card, "legacy-active").await;
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let scope = json!({"thread":{"id":"legacy-active","cwd":actual.path(),"status":{"type":"active","activeFlags":[]},"turns":[{"id":"observed-legacy-turn","status":"inProgress","items":[]}]},"model":"fake-model"});
+    std::fs::write(
+        sock.with_extension("thread-resume"),
+        serde_json::to_vec(&scope).unwrap(),
+    )
+    .unwrap();
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let held: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT path,lease_owner,native_client_id FROM workspace_leases \
+        WHERE holder_kind='native' AND holder_id='legacy-active' AND state='held'",
+    )
+    .fetch_optional(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        held,
+        Some((
+            actual.path().to_str().unwrap().into(),
+            "observed-legacy-turn".into(),
+            None
+        )),
+        "legacy existing writer needs actualcwd plus positively observed turn, never a fabricated request nonce"
+    );
+    let phase: String = sqlx::query_scalar(
+        "SELECT scope_phase FROM workspace_execution_bindings WHERE holder_id='legacy-active'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(phase, "ready");
+    let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+        .bind(&card)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    let mut conn = repo.pool().acquire().await.unwrap();
+    assert!(
+        !calm_server::db::sqlite::workspace_available(
+            &mut conn,
+            &track,
+            "",
+            calm_types::workspace_access::WorkspaceAccess::ReadOnly,
+            actual.path().to_str(),
+            None
+        )
+        .await
+        .unwrap(),
+        "reader admission cannot open before the old active writer is covered"
+    );
+    let lease: String = sqlx::query_scalar(
+        "SELECT lease_id FROM workspace_leases WHERE holder_id='legacy-active' AND state='held'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    let stopped = json!({"thread":{"id":"legacy-active","cwd":actual.path(),"status":{"type":"idle"},"turns":[{"id":"observed-legacy-turn","status":"interrupted","items":[]}]}});
+    std::fs::write(
+        sock.with_extension("thread-read"),
+        serde_json::to_vec(&stopped).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        daemon.cancel_native_workspace_guard(&lease).await.unwrap(),
+        "a legacy positively observed turn remains recoverable after changing to stopping, without fabricating a request nonce"
+    );
+}
+
+#[tokio::test]
+async fn native_workspace_legacy_unresolved_scope_blocks_reader_before_resume_reply() {
+    let root = tempfile::tempdir().unwrap();
+    let actual = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card = seed_card(&repo, 106).await;
+    seed_runtime_thread(&repo, &card, "before-reader").await;
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    std::fs::write(sock.with_extension("hold-first-resume"), "1").unwrap();
+    std::fs::write(sock.with_extension("thread-resume"),serde_json::to_vec(&json!({"thread":{"id":"before-reader","cwd":actual.path(),"status":{"type":"active","activeFlags":[]},"turns":[{"id":"existing-active","status":"inProgress","items":[]}]},"model":"fake-model"})).unwrap()).unwrap();
+    let daemon = server(&root, repo.clone()).await;
+    let starting = daemon.clone();
+    let started = tokio::spawn(async move { starting.start_or_takeover().await });
+    wait_for_file(&sock.with_extension("held-resume")).await;
+    let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+        .bind(&card)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let exposed = calm_server::db::sqlite::workspace_available(
+        &mut conn,
+        &track,
+        "",
+        calm_types::workspace_access::WorkspaceAccess::ReadOnly,
+        actual.path().to_str(),
+        None,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    std::fs::write(sock.with_extension("release-resume"), "1").unwrap();
+    started.await.unwrap().unwrap();
+    assert!(
+        !exposed,
+        "legacy actualcwd is not known yet: reader admission must already be gated before provider resume/adoption can conflict"
+    );
+}
+
+#[tokio::test]
+async fn native_workspace_legacy_unknown_resume_later_observes_real_turn() {
+    let root = tempfile::tempdir().unwrap();
+    let actual = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card = seed_card(&repo, 107).await;
+    seed_runtime_thread(&repo, &card, "legacy-observe").await;
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    std::fs::write(
+        sock.with_extension("thread-resume"),
+        serde_json::to_vec(&json!({
+            "thread":{"id":"legacy-observe","cwd":actual.path()},"model":"fake-model"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let lease: String = sqlx::query_scalar(
+        "SELECT lease_id FROM workspace_leases WHERE holder_id='legacy-observe' AND state='held'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        daemon
+            .reconcile_native_workspace_guard(&lease)
+            .await
+            .is_err()
+    );
+    let active = json!({"thread":{"id":"legacy-observe","cwd":actual.path(),
+        "status":{"type":"active","activeFlags":[]},"turns":[{"id":"observed-after-retry","status":"inProgress","items":[]}]},"model":"fake-model"});
+    std::fs::write(
+        sock.with_extension("thread-resume"),
+        serde_json::to_vec(&active).unwrap(),
+    )
+    .unwrap();
+    let takeover = server(&root, repo.clone()).await;
+    takeover.start_or_takeover().await.unwrap();
+    let observed: Option<String> = sqlx::query_scalar(
+        "SELECT native_observed_turn_id FROM workspace_leases WHERE lease_id=?1",
+    )
+    .bind(&lease)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        observed.as_deref(),
+        Some("observed-after-retry"),
+        "a retry must attach positively observed history identity to the existing unknown legacy reference"
+    );
+}
+
+#[tokio::test]
+async fn native_workspace_failed_scope_adoption_keeps_returned_actual_scope_recovering() {
+    let root = tempfile::tempdir().unwrap();
+    let original = tempfile::tempdir().unwrap();
+    let changed = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card = seed_card(&repo, 108).await;
+    seed_runtime_thread(&repo, &card, "changed-scope").await;
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let scope = |cwd: &std::path::Path| {
+        json!({"thread":{"id":"changed-scope","cwd":cwd,
+        "status":{"type":"active","activeFlags":[]},"turns":[{"id":"old-active","status":"inProgress","items":[]}]},"model":"fake-model"})
+    };
+    std::fs::write(
+        sock.with_extension("thread-resume"),
+        serde_json::to_vec(&scope(original.path())).unwrap(),
+    )
+    .unwrap();
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    std::fs::write(
+        sock.with_extension("thread-resume"),
+        serde_json::to_vec(&scope(changed.path())).unwrap(),
+    )
+    .unwrap();
+    let takeover = server(&root, repo.clone()).await;
+    takeover.start_or_takeover().await.unwrap();
+    let binding: Option<(String, String)> = sqlx::query_as(
+        "SELECT cwd,scope_phase FROM workspace_execution_bindings WHERE holder_id='changed-scope'",
+    )
+    .fetch_optional(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        binding,
+        Some((changed.path().to_str().unwrap().into(), "recovering".into())),
+        "failed adoption must retain the actual returned scope so an old reference cannot cover a different live resource"
     );
 }

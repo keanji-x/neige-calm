@@ -3610,6 +3610,21 @@ impl SharedCodexAppServer {
         card_id: &str,
         config: ThreadConfig,
     ) {
+        if let Some(pool) = self.repo.sqlite_pool() {
+            if let Err(error) = sqlx::query(
+                "UPDATE workspace_execution_bindings SET scope_phase=?3 \
+                WHERE provider='codex' AND holder_id=?1 AND card_id=?2",
+            )
+            .bind(thread_id)
+            .bind(card_id)
+            .bind(calm_types::workspace_access::WorkspaceScopePhase::Recovering.as_db_str())
+            .execute(&pool)
+            .await
+            {
+                tracing::warn!(%error,%thread_id,"native scope recovery barrier could not be persisted");
+                return;
+            }
+        }
         let lowered = match config.to_wire_config() {
             Ok(lowered) => lowered,
             Err(e) => {
@@ -3650,18 +3665,9 @@ impl SharedCodexAppServer {
                     .bind_resumed_workspace(thread_id, card_id, &response.thread)
                     .await
                 {
-                    if let Some(pool) = self.repo.sqlite_pool() {
-                        if let Err(invalidation) = sqlx::query(
-                            "DELETE FROM workspace_execution_bindings \
-                            WHERE provider='codex' AND holder_id=?1 AND card_id=?2",
-                        )
-                        .bind(thread_id)
-                        .bind(card_id)
-                        .execute(&pool)
-                        .await
-                        {
-                            tracing::warn!(%invalidation,%thread_id,"invalid resumed workspace could not be retired");
-                        }
+                    if let Err(invalidation) = self
+                        .retain_unresolved_resumed_scope(thread_id, card_id, &response.thread).await {
+                        tracing::warn!(%invalidation,%thread_id,"unresolved resumed workspace could not be retained");
                     }
                     tracing::warn!(%error,%thread_id,%card_id,"resumed thread workspace binding refused");
                 }

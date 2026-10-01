@@ -162,7 +162,7 @@ impl ExecutionLeaseGuard {
         }
         let changed=sqlx::query(
             r#"
-UPDATE workspace_leases SET holder_phase=CASE WHEN holder_phase='stopping' THEN 'stopping' ELSE 'running' END, lease_owner=?2, updated_at_ms=?3 WHERE
+UPDATE workspace_leases SET holder_phase=CASE WHEN holder_phase='stopping' THEN 'stopping' ELSE 'running' END, lease_owner=?2,native_observed_turn_id=?2, updated_at_ms=?3 WHERE
 lease_id=?1 AND state='held' AND holder_phase IN ('issuing','stopping')
 "#,
         )
@@ -365,7 +365,8 @@ async fn native_write_context_tx(
 ) -> Result<NativeWriteContext> {
     let (track, cwd): (String, String) = sqlx::query_as(
         "SELECT c.track_id,b.cwd FROM workspace_execution_bindings b \
-         JOIN cards c ON c.id=b.card_id WHERE b.provider=?1 AND b.holder_id=?2 AND b.card_id=?3",
+         JOIN cards c ON c.id=b.card_id WHERE b.provider=?1 AND b.holder_id=?2 AND b.card_id=?3 \
+         AND b.scope_phase IN ('new','ready')",
     )
     .bind(provider.wire())
     .bind(thread)
@@ -474,11 +475,27 @@ enum ExecutionAccess<'a> {
     Read,
     Write(&'a str),
 }
+enum InitialExecutionState {
+    Issuing,
+    Stopped,
+}
 async fn insert_execution_reference(
     tx: &mut Tx<'_>,
     reference: ExecutionReference<'_>,
     id: &str,
 ) -> Result<()> {
+    insert_execution_reference_at(tx, reference, id, InitialExecutionState::Issuing).await
+}
+async fn insert_execution_reference_at(
+    tx: &mut Tx<'_>,
+    reference: ExecutionReference<'_>,
+    id: &str,
+    initial: InitialExecutionState,
+) -> Result<()> {
+    let (state, phase, released) = match initial {
+        InitialExecutionState::Issuing => ("held", "issuing", None),
+        InitialExecutionState::Stopped => ("released", "stopped", Some(now_ms())),
+    };
     let ExecutionReference {
         track,
         card,
@@ -494,8 +511,8 @@ async fn insert_execution_reference(
     sqlx::query(
         r#"
 INSERT INTO workspace_leases(lease_id, card_id, track_id, path, state, lease_owner, boot_id,
-created_at_ms, updated_at_ms, access_mode, holder_kind, holder_id, holder_phase,write_root_id) VALUES(?1, ?2,
-?3, ?4, 'held', ?5, ?6, ?7, ?7, ?10, ?8, ?5, 'issuing',?9)
+created_at_ms, updated_at_ms, access_mode, holder_kind, holder_id, holder_phase,write_root_id,released_at_ms) VALUES(?1, ?2,
+?3, ?4, ?11, ?5, ?6, ?7, ?7, ?10, ?8, ?5, ?12,?9,?13)
 "#,
     )
     .bind(&id)
@@ -508,6 +525,9 @@ created_at_ms, updated_at_ms, access_mode, holder_kind, holder_id, holder_phase,
     .bind(kind)
     .bind(root)
     .bind(mode)
+    .bind(state)
+    .bind(phase)
+    .bind(released)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -685,3 +705,7 @@ pub(crate) async fn acquire_execution_delegated_tx(
     .await?;
     Ok(id)
 }
+
+#[path = "execution_guard/legacy.rs"]
+mod legacy;
+pub(crate) use legacy::{adopt_native_scope_tx, record_stopped_terminal_tx};

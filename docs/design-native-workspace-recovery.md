@@ -1,6 +1,6 @@
 # Native workspace issuance recovery
 
-A native write reference persists its exact `clientUserMessageId` before issuing
+A native execution reference persists its exact `clientUserMessageId` before issuing
 `turn/start`. The caller's message identifier is kept for transcript attribution;
 without one, the lease identifier supplies a unique nonce. Previously issued
 identifiers cannot be reused on the same provider thread. A definite refusal or
@@ -36,3 +36,16 @@ provider's required `thread.cwd`, including standalone threads whose directory
 differs from the Track. An absent cwd or mismatching thread identity invalidates
 the binding; no Track path is used as a substitute. Existing active references
 remain held until their own stop evidence is available.
+
+Legacy scopes use a separate positive `native_observed_turn_id`; changing to
+`stopping` does not lose that identity. Resume marks an existing binding
+`recovering` before the RPC. Its real cwd and either a held adopted reference or
+positive all-turn/background stop evidence become `ready` in one transaction.
+The read admission barrier must already cover missing/recovering scopes before
+reader claims begin: a later insertion conflict cannot undo exposure to an old
+writer. Claude scopes without trustworthy cwd/managed stop facts remain unresolved.
+
+If a valid resume reports a scope that cannot be adopted, its actual cwd remains
+`recovering`; an old reference for a different path cannot hide that live scope.
+A retry may attach a positively observed legacy turn to an unidentified legacy
+reference, but never substitutes that observation for a persisted request nonce.
