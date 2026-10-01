@@ -68,6 +68,11 @@ pub trait CodexDaemonProbe: Send + Sync {
 
     /// Returns `None` on ANY RPC error / unreachable daemon — the arbiter treats that as "can't rule out a live turn".
     async fn read_liveness_facts(&self, thread_id: &str) -> Option<CodexLivenessFacts>;
+
+    /// Positive evidence that the thread owns no background terminals. Unknown retains guards.
+    async fn background_terminals_stopped(&self, _thread_id: &str) -> Option<bool> {
+        None
+    }
 }
 
 #[derive(Clone)]
