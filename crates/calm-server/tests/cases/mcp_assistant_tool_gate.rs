@@ -13,6 +13,9 @@ use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 /// Tools an Assistant token may call. Its report writes are anchored by its own `calm.report.read`;
 /// their `lifecycle` field alone is refused.
 const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
+    "calm.calendar.list",
+    "calm.calendar.create",
+    "calm.calendar.update",
     "calm.report.read",
     "calm.report.blocks.kinds",
     "calm.report.commit",

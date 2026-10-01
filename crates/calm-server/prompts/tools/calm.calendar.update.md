@@ -1,0 +1,1 @@
+Replace this Track's calendar commitment using full task and expected_version from list; cancelled=true cancels. On conflict reread and reconcile. Manual and other Track tasks are inaccessible. No execution or reminders.

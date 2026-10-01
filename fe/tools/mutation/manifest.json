@@ -1052,7 +1052,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\nindex 3e95af5..8d0925b 100644\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -208,7 +208,7 @@ function policies(): PolicyMap {\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call. */\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -209,5 +209,5 @@\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': plan(() => result([['plugins']])),\n   'plugin.data.changed': plan((event) => result([['plugin-data', event.data.plugin_id]])),\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
       "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
@@ -1425,16 +1425,21 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/today/public.tsx",
-    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -134,7 +134,7 @@\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = tracks.filter(needsPerson);\n   const working = tracks.filter(isWorking);\n-  const open = tracks.filter((track) => !isClosed(track) && !needsPerson(track));\n+  const open = tracks.filter((track) => isWorking(track) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n       <PanelCard>\n",
+    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -147,5 +147,5 @@\n   const working = tracks.filter(isWorking);\n   const isVisible = (track: Track) => (showClosed || !isClosed(track)) && (showRead || isTrackUnread?.(track) === true);\n-  const activityTracks = tracks.filter(isVisible);\n+  const activityTracks = tracks.filter((track) => isVisible(track) && isWorking(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n",
     "expected_red": [
       "Today rows carry the track read receipt",
-      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state"
+      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
+      "Today agenda hands each agenda track to the injected renderer in the compact variant with update time",
+      "Today agenda resolves each agenda track area name for the renderer",
+      "Today agenda falls back to \"Unknown area\" when the track points at an area we cannot see",
+      "Today agenda re-scopes the agenda when another day is selected",
+      "filters read tracks using the injected receipt state and keeps unread tracks"
     ],
     "selection_paths": [
       "web/src/app/router/today-activity.test.tsx",
       "web/src/features/today/public.test.tsx"
     ],
-    "why_more_than_one": "Grouping Open by isWorking instead of the open state empties the section for the idle open fixtures: the Today unit case and the router-level Today row case both lose their idle open rows. The header's second number is the working count, not the group's size, so the degraded-read cases no longer move."
+    "why_more_than_one": "Restricting visible Activity rows to working tracks removes eligible idle rows. Router receipt, row rendering, area attribution, date selection and read-filter fixtures all exercise those rows; the working header count itself is unchanged."
   },
   {
     "mutation_id": "s2b-conversation-row-from-session-state",
@@ -1771,7 +1776,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/today/public.tsx",
-    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -133,7 +133,8 @@\n   /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the \"Open\" group is every open track the kernel is not waiting on a person for. A group and a number never share a word. */\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = tracks.filter(needsPerson);\n-  const working = tracks.filter(isWorking);\n+  // MUT-1743-S4-2: the second number counts the open tracks again\n+  const working = tracks.filter((track) => !isClosed(track));\n   const open = tracks.filter((track) => !isClosed(track) && !needsPerson(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n",
+    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -145,5 +145,5 @@\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = tracks.filter(needsPerson);\n-  const working = tracks.filter(isWorking);\n+  const working = tracks.filter((track) => !isClosed(track));\n   const isVisible = (track: Track) => (showClosed || !isClosed(track)) && (showRead || isTrackUnread?.(track) === true);\n   const activityTracks = tracks.filter(isVisible);\n",
     "expected_red": [
       "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
       "Today's second number counts the kernel's working verdict, not the open tracks",

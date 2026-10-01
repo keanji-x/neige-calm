@@ -49,6 +49,219 @@
     ]
   },
   {
+    "name": "calm.calendar.create",
+    "description_sha256": "2c69ad2a72ad3a2ed06c1893ce9f3026d0d8031ff5359b936fcea80116800ec6",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotency_key": {
+          "type": "string"
+        },
+        "task": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "schedule": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "date": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "all_day"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "date"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "timed"
+                    },
+                    "start": {
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "start",
+                    "end",
+                    "timezone"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "description",
+            "schedule"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "task"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "calm.calendar.list",
+    "description_sha256": "f0e82fad7dc19380bb633cca66796771fbe16ff47198c28a7a51c8e8d8928269",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "until": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "until",
+        "timezone"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "calm.calendar.update",
+    "description_sha256": "44de33c839727da4ef9f6667e4f9b5118b81a6ef726baa5634ec3e2e93ca00c7",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        },
+        "expected_version": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "task": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "schedule": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "date": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "all_day"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "date"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "timed"
+                    },
+                    "start": {
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "start",
+                    "end",
+                    "timezone"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "description",
+            "schedule"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "expected_version",
+        "task",
+        "cancelled"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
     "name": "calm.dispatch_request",
     "description_sha256": "ce1cce3d15a9877d436187081cdefe37fa19d650ba6c0224e19c4ae539d0b463",
     "input_schema": {

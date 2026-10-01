@@ -52,7 +52,13 @@ pub fn register(registry: &mut ToolRegistry) {
         registry.register(
             ToolDescriptor {
                 name: format!("calm.calendar.{action}"),
-                description: format!("{action}: {}", include_str!("tool-help.md").trim()),
+                description: match action {
+                    "list" => include_str!("../../../prompts/tools/calm.calendar.list.md"),
+                    "create" => include_str!("../../../prompts/tools/calm.calendar.create.md"),
+                    _ => include_str!("../../../prompts/tools/calm.calendar.update.md"),
+                }
+                .trim_end()
+                .to_string(),
                 input_schema: schema,
                 annotations: Some(if action == "list" {
                     read_only_annotations()

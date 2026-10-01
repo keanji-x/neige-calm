@@ -141,7 +141,7 @@ function TodayDesktop({
     setSelected((current) => sameDay(current, previous) ? today : current);
   }, [today]);
 
-  /* The header's two numbers are the kernel's verdicts (`waiting`: input or failed; `working`); the "Open" group is every open track the kernel is not waiting on a person for. A group and a number never share a word. */
+  /* Header counts use kernel verdicts. Activity visibility uses the read/closed filters independently. */
   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);
   const waiting = tracks.filter(needsPerson);
   const working = tracks.filter(isWorking);

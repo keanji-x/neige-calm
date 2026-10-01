@@ -98,8 +98,11 @@ entries also remain outside Planner's Track scope. These are not fixed by
 bypassing the generic authorization boundary. A declarative cross-plugin grant
 and a separately designed durable reminder contract are needed before claiming
 that normal development Planners can schedule and receive reminders end to end.
-Essential limitations and recovery instructions are included in discovered tool
-help, because component instructions are only injected for an owning plugin.
+Essential limitations and recovery instructions are included in the standard
+per-tool prompt files, because component instructions are only injected for an
+owning plugin. The three compact tool schemas and action-specific descriptions
+add about 2.3 KiB to the Planner catalog; the aggregate budget is capped at
+29,100 bytes, with the existing per-description bound retained.
 
 ## Ownership change request and decision
 

@@ -2543,6 +2543,14 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             false,
         ),
         row(
+            Event::PluginDataChanged {
+                plugin_id: "p".into(),
+            },
+            ActorId::Kernel,
+            false,
+            false,
+        ),
+        row(
             Event::PluginToolRegistered {
                 plugin_id: "p".into(),
                 tool_name: "t".into(),
