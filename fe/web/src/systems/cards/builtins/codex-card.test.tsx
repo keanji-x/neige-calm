@@ -26,7 +26,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: null, terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
+        card={{ type: 'codex', presentation: 'interactive_tui', id: 'x1', title: null, terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
         activity={null}
       />,
@@ -46,7 +46,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
+        card={{ type: 'codex', presentation: 'interactive_tui', id: 'x1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
         activity={null}
       />,
@@ -59,7 +59,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: null, terminalId: null, sessionState: 'starting', cwd: null, gateCwd: null }}
+        card={{ type: 'codex', presentation: 'interactive_tui', id: 'x1', title: null, terminalId: null, sessionState: 'starting', cwd: null, gateCwd: null }}
         host={fakeHost()}
         activity={null}
       />,
@@ -84,5 +84,29 @@ describe('worker checkout visibility', () => {
     expect(screen.getByText('Working directory')).toBeTruthy();
     expect(screen.getByText('Gate working directory')).toBeTruthy();
     expect(screen.getByText('/repo/gate-override')).toBeTruthy();
+  });
+});
+
+describe('native-only worker', () => {
+  it('shows its goal and committed result without mounting a terminal', () => {
+    const card = CODEX_CARD_ENTRY.fromKernel({
+      id: 'readonly-review', kind: 'codex',
+      payload: {
+        worker_presentation: { kind: 'native_only' },
+        worker_snapshot: {
+          task_id: 'review', goal: 'Review cancellation lifetimes', status: 'done',
+          report: { kind: 'reported', outcome: 'completed', result: 'Found one missing stop fence.' },
+        },
+        cwd: '/repo/track',
+      },
+    });
+    if (card === null) throw new Error('native worker must resolve');
+    const Component = CODEX_CARD_ENTRY.component;
+    render(<Component card={card} host={fakeHost()} activity={null} />);
+    expect(screen.getByText('Review cancellation lifetimes')).toBeTruthy();
+    expect(screen.getByText('Found one missing stop fence.')).toBeTruthy();
+    expect(screen.getByText('Read-only')).toBeTruthy();
+    expect(document.querySelector('[data-nc-terminal-card]')).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
   });
 });
