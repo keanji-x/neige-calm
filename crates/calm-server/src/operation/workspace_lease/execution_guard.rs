@@ -235,19 +235,7 @@ pub(crate) async fn acquire_execution_child_tx(
     parent: &str,
     expected_owner: &str,
 ) -> Result<String> {
-    let owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM operations \
-        WHERE id=?1 AND phase='parked' AND lease_owner=?2)",
-    )
-    .bind(parent)
-    .bind(expected_owner)
-    .fetch_one(&mut **tx)
-    .await?;
-    if !owned {
-        return Err(CalmError::Conflict(
-            "child execution issuance lost its operation lease".into(),
-        ));
-    }
+    super::super::owned_parked::require_owner_tx(tx, parent, expected_owner).await?;
     if kind != "forge" {
         return Err(CalmError::Internal(
             "unsupported child execution kind".into(),
