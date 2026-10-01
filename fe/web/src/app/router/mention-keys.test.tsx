@@ -39,6 +39,19 @@ afterEach(() => {
 });
 
 describe('Enter in the new-track sentence while the @ menu is open', () => {
+  it('enters a mention category with Enter without creating the track', async () => {
+    const onSubmit = vi.fn();
+    const search = vi.fn<MentionSearch>(() => Promise.resolve([TAG]));
+    render(<Form search={search} onSubmit={onSubmit} />);
+    await userEvent.type(field(), 'fix @');
+    await screen.findByRole('option', { name: /^Tags/ });
+    await userEvent.keyboard('{ArrowDown}{Enter}');
+    await screen.findByRole('option', { name: /#zz/ });
+    expect(field().textContent).toBe('fix @#');
+    expect(search).toHaveBeenLastCalledWith('#', expect.anything());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('with no rows, sends the sentence as typed through the form and keeps it in the field', async () => {
     const onSubmit = vi.fn();
     render(<Form search={() => Promise.resolve([])} onSubmit={onSubmit} />);
