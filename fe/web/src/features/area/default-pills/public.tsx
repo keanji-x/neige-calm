@@ -250,6 +250,7 @@ function TemplateChoice({
   if (tasks === undefined || tasks.length === 0) return item;
   return (
     <HoverCard
+      label={`${label} tasks`}
       placement="end"
       focusTrigger="always"
       content={(

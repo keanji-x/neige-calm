@@ -102,18 +102,16 @@ describe('Start from, in a real engine', () => {
     renderForm();
     const menu = await openMenu();
     const option = screen.getByRole('menuitem', { name: /^Small change/ });
-    const card = document.getElementById(option.getAttribute('aria-describedby') ?? '');
-
-    /* Asserted on the card's shown state, not on `aria-describedby`, which is
-           present from first paint. */
     option.focus();
+    const card = await screen.findByRole('dialog', { name: 'Small change tasks' });
+    expect(option.getAttribute('aria-controls')).toBe(card.id);
     await waitFor(() => { expect(card?.matches(':popover-open')).toBe(true); });
 
     /* The Template pill owns Escape in capture, before the HoverCard's native
            listener can strand DropdownMenu's delegated handler. */
     await userEvent.keyboard('{Escape}');
     await waitFor(() => {
-      expect(card?.matches(':popover-open')).toBe(false);
+      expect(screen.queryByRole('dialog', { name: 'Small change tasks' })).toBeNull();
       expect(menu.matches(':popover-open')).toBe(false);
       expect(trigger().getAttribute('aria-expanded')).toBe('false');
       expect(document.activeElement).toBe(trigger());
@@ -132,12 +130,10 @@ describe('Start from, in a real engine', () => {
     renderForm();
     await openMenu();
     const option = screen.getByRole('menuitem', { name: /^Small change/ });
-    const cardId = option.getAttribute('aria-describedby') ?? '';
-    expect(cardId).not.toBe('');
-    const card = document.getElementById(cardId);
-    expect(card?.matches(':popover-open')).toBe(false);
-
+    expect(screen.queryByRole('dialog', { name: 'Small change tasks' })).toBeNull();
     await userEvent.hover(option);
+    const card = await screen.findByRole('dialog', { name: 'Small change tasks' });
+    expect(option.getAttribute('aria-controls')).toBe(card.id);
     // `HoverCard`'s show delay is 300 ms; `waitFor` outlasts it.
     await waitFor(() => { expect(card?.matches(':popover-open')).toBe(true); }, { timeout: 2000 });
     expect(card?.textContent).toContain('implement');

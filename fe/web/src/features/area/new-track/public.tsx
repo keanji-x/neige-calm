@@ -15,7 +15,6 @@ import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
-import { useTriggerFieldAria } from '../../../ui/trigger-menu-keys/field-aria.ts';
 import {
   NO_STARTING_POINT, type StartingPoint,
 } from '../default-pills/public.tsx';
@@ -144,7 +143,6 @@ export function NewTrackForm({
   const [cwd, setCwd] = useState(initialDraft?.cwd ?? initialCwd ?? '');
   const [browsing, setBrowsing] = useState(false);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
-  useTriggerFieldAria(composerHostRef);
   /* One array per trigger: `useTriggerMenu` drops an open menu when the list changes identity. */
   const triggers = useMemo(() => mentionTrigger === undefined ? undefined : [mentionTrigger], [mentionTrigger]);
   const folderId = `${fieldId}-folder`;

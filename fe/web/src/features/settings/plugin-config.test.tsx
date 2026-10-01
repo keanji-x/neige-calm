@@ -76,7 +76,8 @@ describe('the form a config_schema asks for', () => {
     expect(screen.getByLabelText('token')).toBeTruthy();
     expect(screen.getByRole('combobox', { name: 'mode' })).toBeTruthy();
     expect(screen.getByRole('switch', { name: 'verbose' })).toBeTruthy();
-    expect(screen.getByLabelText<HTMLInputElement>('retries').type).toBe('number');
+    expect(screen.getByRole('spinbutton', { name: 'retries' })).toBe(screen.getByLabelText('retries'));
+    expect(screen.getByLabelText<HTMLInputElement>('retries').inputMode).toBe('numeric');
     expect(screen.getByText('API token for the forge.')).toBeTruthy();
   });
 

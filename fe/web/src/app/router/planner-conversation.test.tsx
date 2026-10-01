@@ -352,7 +352,7 @@ describe('planner conversation regressions', () => {
     const { client } = setup((request) => request.path.includes('/harness/items') ? ok(rows) : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '3 tool calls' });
-    const header = within(group).getByRole('button', { expanded: false });
+    const header = group.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="false"]')!;
     expect(header.textContent).toContain('Running');
     expect(header.textContent).toContain('cargo build');
     /* The reply before the run is not folded into it. */
@@ -400,7 +400,7 @@ describe('planner conversation regressions', () => {
       ? ok(request.path.includes('after_id=0&') ? firstPage : earlierPage) : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '2 tool calls' });
-    const header = within(group).getByRole('button', { expanded: false });
+    const header = group.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="false"]')!;
     fireEvent.click(header);
     fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
     const detail = within(group).getByText('error: no test specified');
@@ -445,7 +445,7 @@ describe('planner conversation regressions', () => {
       : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '2 tool calls' });
-    const header = within(group).getByRole('button', { expanded: false });
+    const header = group.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="false"]')!;
     fireEvent.click(header);
     fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
     expect(within(group).getByText('failure detail')).toBeTruthy();
@@ -457,7 +457,7 @@ describe('planner conversation regressions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
     const restored = await screen.findByRole('group', { name: '2 tool calls' });
-    expect(within(restored).getByRole('button', { expanded: true }).getAttribute('aria-expanded')).toBe('true');
+    expect(restored.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="true"]')!.getAttribute('aria-expanded')).toBe('true');
     expect(within(restored).getByText('failure detail')).toBeTruthy();
     expect((restored.textContent ?? '').indexOf('pwd')).toBeLessThan((restored.textContent ?? '').indexOf('npm test'));
     fireEvent.click(within(restored).getByRole('button', { name: /npm test/ }));
@@ -484,7 +484,7 @@ describe('planner conversation regressions', () => {
       : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '3 tool calls' });
-    const header = within(group).getByRole('button', { expanded: false });
+    const header = group.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="false"]')!;
     fireEvent.click(header);
     fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
     expect(within(group).getByText('failure evidence')).toBeTruthy();
@@ -523,7 +523,7 @@ describe('planner conversation regressions', () => {
       : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '2 tool calls' });
-    fireEvent.click(within(group).getByRole('button', { expanded: false }));
+    fireEvent.click(group.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="false"]')!);
     fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
     expect(within(group).getByText('whole-run failure evidence')).toBeTruthy();
 

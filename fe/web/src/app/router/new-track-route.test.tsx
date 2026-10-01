@@ -446,7 +446,7 @@ describe('New track model selection', () => {
     await pick('Model: Codex Default', 'Claude', /^Default/);
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Try Claude first');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('--claude-planner-config');
+    expect((await within(await screen.findByRole('main')).findByRole('alert')).textContent).toContain('--claude-planner-config');
     expect(composerText()).toBe('Try Claude first');
     await pick(CLAUDE_DEFAULT_TRIGGER, 'Codex', /^Default/);
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
@@ -533,7 +533,7 @@ describe('Track creation drafts survive navigation', () => {
     const original = createdTrackRequests(sent)[0];
     if (rejection === 'offline') act(() => onlineManager.setOnline(false));
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).not.toContain('Transport request failed'));
+    await waitFor(() => expect(within(screen.getByRole('main')).getByRole('alert').textContent).not.toContain('Transport request failed'));
     expect(screen.getByLabelText(TASK_LABEL).getAttribute('contenteditable')).toBe('false');
     expect(screen.queryByRole('button', { name: 'Create in Work' })).toBeNull();
     act(() => onlineManager.setOnline(true));
@@ -890,7 +890,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Create track' }));
     // The request, its rejection, and the re-render are three ticks the click
     // does not await; the default 1s window is not enough under a loaded suite.
-    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    const alert = await within(await screen.findByRole('main')).findByRole('alert', {}, { timeout: 5_000 });
     expect(alert.textContent).toContain('/srv/app');
     // `c1` is Work in the seeded area list — the id must never reach the page.
     expect(alert.textContent).toContain('area “Work”');
@@ -916,7 +916,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
-    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    const alert = await within(await screen.findByRole('main')).findByRole('alert', {}, { timeout: 5_000 });
     await userEvent.click(within(alert).getByRole('button', { name: 'Reuse directory in Reading' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
     const [failed, recovered] = createdTrackRequests(sent);
@@ -977,7 +977,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
-    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    const alert = await within(await screen.findByRole('main')).findByRole('alert', {}, { timeout: 5_000 });
     expect(within(alert).queryByRole('button', { name: 'Reuse directory in Reading' })).toBeNull();
   });
 
@@ -998,7 +998,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
-    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    const alert = await within(await screen.findByRole('main')).findByRole('alert', {}, { timeout: 5_000 });
     await userEvent.clear(field);
     await userEvent.type(field, 'Current message');
     await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
@@ -1029,7 +1029,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
-    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    const alert = await within(await screen.findByRole('main')).findByRole('alert', {}, { timeout: 5_000 });
     expect(within(alert).getByRole('button', { name: 'Reuse directory in Reading' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Use a Neige workspace instead' }));
     expect(within(alert).queryByRole('button', { name: 'Reuse directory in Reading' })).toBeNull();
@@ -1105,7 +1105,7 @@ describe('the new-track page is a route reached from Area groups', () => {
 describe('the route refuses an area id that no longer exists', () => {
   it('reports a deleted area instead of rendering a working composer', async () => {
     harness({ templates: TEMPLATES, path: '/area/c9/new' });
-    const alert = await screen.findByRole('alert');
+    const alert = await within(await screen.findByRole('main')).findByRole('alert');
     expect(alert.textContent).toContain('This area could not be found.');
     expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create track' })).toBeNull();
@@ -1126,7 +1126,7 @@ describe('the route refuses an area id that no longer exists', () => {
     releaseAreas();
     await held;
     expect(await findComposer()).toBeTruthy();
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(within(screen.getByRole('main')).queryByRole('alert')).toBeNull();
   });
 
   /* `workspace.areas` is `[]` while the read is in flight, so a bare `some()` would call every area deleted. */
@@ -1141,7 +1141,7 @@ describe('the route refuses an area id that no longer exists', () => {
 
     expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create track' })).toBeNull();
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(within(screen.getByRole('main')).queryByRole('alert')).toBeNull();
 
     releaseAreas();
     await held;
@@ -1318,7 +1318,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
-    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(await within(await screen.findByRole('main')).findByRole('alert')).toBeTruthy();
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`);
     expect(composerText()).toBe('Read it');
     expect(createdTrackBodies(sent)).toHaveLength(1);
@@ -1345,7 +1345,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
-    expect((await screen.findByRole('alert')).textContent).toContain('this key is used up');
+    expect((await within(await screen.findByRole('main')).findByRole('alert')).textContent).toContain('this key is used up');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
     const [exhausted, fresh] = createdTrackRequests(sent);
@@ -1375,7 +1375,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
-    expect((await screen.findByRole('alert')).textContent).toContain(errorMessage);
+    expect((await within(await screen.findByRole('main')).findByRole('alert')).textContent).toContain(errorMessage);
     expect(screen.getByRole('button', { name: 'Start as a new track' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
@@ -1383,7 +1383,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     expect(retry?.headers?.['Idempotency-Key']).toBe(conflict?.headers?.['Idempotency-Key']);
 
     await userEvent.click(await screen.findByRole('button', { name: 'Start as a new track' }));
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(within(screen.getByRole('main')).queryByRole('alert')).toBeNull();
     expect(createdTrackRequests(sent)).toHaveLength(2);
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(3));

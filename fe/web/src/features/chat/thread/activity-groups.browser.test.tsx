@@ -31,9 +31,10 @@ function groupButton(container: HTMLElement): HTMLElement {
 }
 
 const thread = (container: HTMLElement) => container.querySelector<HTMLElement>('[data-nc-thread]')!;
-/** Astryx's spinner is the one `role="status"` inside a group; `*ByRole`
- *  excludes it once the stylesheet has taken it out of the tree. */
-const spinners = () => screen.queryAllByRole('status', { name: 'Loading' });
+/* Vendor spinners are decorative in 0.6.3; status is announced separately.
+ * Count visible paint rather than asking for an aria-hidden live region. */
+const spinners = () => [...document.querySelectorAll('[data-nc-thread] [role="status"]')]
+  .filter((node) => node.checkVisibility({ visibilityProperty: true }));
 /* The thread's working marks are decorative by contract; counted by the marker, not by a label. */
 const workingMarks = () => document.querySelectorAll('[data-nc-activity="working"]');
 const visible = (element: Element) => element.checkVisibility({ visibilityProperty: true });
@@ -403,7 +404,7 @@ describe('tool activity groups', () => {
     expect(fits()).toBe(true);
     act(() => { fireEvent.click(button); });
     expect(fits()).toBe(true);
-    act(() => { fireEvent.click(screen.getByRole('button', { name: /^Ran a-very-long/ })); });
+    act(() => { fireEvent.click(screen.getByRole('button', { name: /^Error:.*Ran a-very-long/ })); });
     expect(visible(screen.getByText(failed.detail!))).toBe(true);
     expect(fits()).toBe(true);
   });
@@ -446,18 +447,18 @@ describe('tool activity groups', () => {
   });
 });
 
-/* Astryx draws a failed call's status as an `aria-hidden` icon with the failure text in its `title`; neither reaches the button's accessible name or description. */
+/* Astryx 0.6.3 announces each call's status and error in its accessible name. */
 describe('what a failed call says to assistive technology', () => {
   const failed = activity('bad', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'one suite failed' });
   const ok = activity('ok', { verb: 'Ran', target: 'pwd' });
-  const said = { name: /npm test/, description: /failed/i };
+  const said = { name: /^Error: one suite failed Ran npm test/ };
 
-  it('describes the closed header as failed while it draws a failed latest call', () => {
+  it('names the closed header as failed while it draws a failed latest call', () => {
     const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[ok, failed]} />);
     const header = screen.getByRole('button', said);
     expect(header).toBe(groupButton(container));
     expect(header.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.getByRole('button', { name: /^Ran npm test 2$/ })).toBe(header);
+    expect(screen.getByRole('button', { name: /^Error: one suite failed Ran npm test 2$/ })).toBe(header);
     expect(screen.queryByText('one suite failed')).toBeNull();
   });
 
@@ -466,14 +467,14 @@ describe('what a failed call says to assistive technology', () => {
     const header = groupButton(container);
     header.focus();
     await userEvent.keyboard('{Enter}');
-    const row = screen.getByRole('button', { name: /^Ran npm test Failed$/ });
+    const row = screen.getByRole('button', { name: /^Error: one suite failed Ran npm test$/ });
     expect(row).not.toBe(header);
     expect(screen.getByRole('button', { name: '2 tool calls' })).toBe(header);
     expect(screen.queryByRole('button', { description: /failed/i })).toBeNull();
     expect(screen.queryByText('one suite failed')).toBeNull();
     await userEvent.keyboard('{Tab}{Enter}');
     expect(visible(screen.getByText('one suite failed'))).toBe(true);
-    expect(screen.getByRole('button', { name: /^Ran npm test Failed$/ })).toBe(row);
+    expect(screen.getByRole('button', { name: /^Error: one suite failed Ran npm test$/ })).toBe(row);
   });
 
   it('says failed of nothing that did not fail', async () => {
@@ -485,7 +486,7 @@ describe('what a failed call says to assistive technology', () => {
     expect(screen.queryByRole('button', { description: /failed/i })).toBeNull();
     header.focus();
     await userEvent.keyboard('{Enter}');
-    expect(screen.getByRole('button', { name: /^Ran npm test Failed$/ })).not.toBe(header);
+    expect(screen.getByRole('button', { name: /^Error: one suite failed Ran npm test$/ })).not.toBe(header);
     expect(screen.getByRole('group').textContent?.match(/failed/gi)).toHaveLength(1);
     expect(screen.queryByRole('button', { description: /failed/i })).toBeNull();
   });

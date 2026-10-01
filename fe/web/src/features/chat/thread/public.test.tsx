@@ -854,6 +854,17 @@ function fieldText(field: HTMLElement): string {
 }
 
 describe('ChatComposer', () => {
+  it('uses valid field ARIA when command triggers are added and removed', () => {
+    const onSend = vi.fn();
+    const onNewConversation = vi.fn();
+    const { rerender } = render(<ChatComposer onSend={onSend} />);
+    expect(screen.getByRole('textbox', { name: 'Message' }).getAttribute('aria-multiline')).toBe('true');
+    rerender(<ChatComposer onSend={onSend} onNewConversation={onNewConversation} />);
+    expect(screen.getByRole('combobox', { name: 'Message' }).hasAttribute('aria-multiline')).toBe(false);
+    rerender(<ChatComposer onSend={onSend} />);
+    expect(screen.getByRole('textbox', { name: 'Message' }).getAttribute('aria-multiline')).toBe('true');
+  });
+
   it('keeps unsent words on Enter while submission is disabled during a turn', async () => {
     const onSend = vi.fn();
     const onStop = vi.fn();

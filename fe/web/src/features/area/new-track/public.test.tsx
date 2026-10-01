@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { createStaticSource } from '@astryxdesign/core/Typeahead';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DirectoryListing } from '../../../ui/directory-browser/public.tsx';
@@ -209,6 +210,16 @@ describe('NewTrackForm asks only what the track starts from', () => {
     expect(task.getAttribute('contenteditable')).toBe('true');
     expect(task.getAttribute('aria-multiline')).toBe('true');
     expect(screen.getByText(TASK_PLACEHOLDER)).toBeTruthy();
+  });
+
+  it('uses valid field ARIA when mention triggers are added and removed', () => {
+    const trigger = { character: '@', searchSource: createStaticSource([]), onSelect: () => '' };
+    const { props, rerender } = renderForm();
+    expect(screen.getByRole('textbox', { name: TASK_LABEL }).getAttribute('aria-multiline')).toBe('true');
+    rerender(<NewTrackForm {...props} mentionTrigger={trigger} />);
+    expect(screen.getByRole('combobox', { name: TASK_LABEL }).hasAttribute('aria-multiline')).toBe(false);
+    rerender(<NewTrackForm {...props} />);
+    expect(screen.getByRole('textbox', { name: TASK_LABEL }).getAttribute('aria-multiline')).toBe('true');
   });
 
   it('flips the label and blocks submit while submitting', () => {
@@ -542,7 +553,7 @@ describe('Start from — issue development expands under the group', () => {
 
     await userEvent.type(screen.getByLabelText('Issue URL'), 'not a url');
     expect(submitButton().disabled).toBe(true);
-    expect(screen.getByText(/Not a GitHub issue URL/)).toBeTruthy();
+    expect(within(screen.getByLabelText('Issue URL').closest('fieldset')!).getByText(/Not a GitHub issue URL/)).toBeTruthy();
     expect(screen.getByLabelText('Issue URL').getAttribute('aria-invalid')).toBe('true');
   });
 
@@ -631,29 +642,20 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     renderForm();
     const menu = await openTemplates();
 
-    // Every task key of the bound template, and its goal, is available.
-    for (const task of ISSUE_DEV.tasks) {
-      expect(screen.getByText(task.key)).toBeTruthy();
-      expect(screen.getByText(task.goal)).toBeTruthy();
-    }
-
-    /* One card per template with tasks, each bound to its own option. */
-    const cards = screen.getAllByRole('dialog', { hidden: true });
-    expect(TEMPLATES_WITH_TASKS.length).toBeLessThan(TEMPLATES.length);
-    expect(cards).toHaveLength(TEMPLATES_WITH_TASKS.length);
-    for (const template of TEMPLATES) {
+    // Hover cards mount on demand in Astryx 0.6.3. Visit each option and
+    // verify its own named popup, including the absence of another plan.
+    for (const template of TEMPLATES_WITH_TASKS) {
       const option = within(menu).getByRole('menuitem', { name: new RegExp(`^${template.title}`) });
-      if (template.tasks.length === 0) {
-        expect(option.getAttribute('aria-describedby')).toBeNull();
-        continue;
+      act(() => { option.focus(); });
+      const card = await screen.findByRole('dialog', { name: `${template.title} tasks` });
+      expect(option.getAttribute('aria-controls')).toBe(card.id);
+      for (const task of template.tasks) {
+        expect(within(card).getByText(task.key)).toBeTruthy();
+        expect(within(card).getByText(task.goal)).toBeTruthy();
       }
-      const card = document.getElementById(option.getAttribute('aria-describedby') ?? '');
-      expect(card).toBeTruthy();
-      for (const task of template.tasks) expect(card?.textContent).toContain(task.key);
-      // Goals and not keys for the negative: `inspect` is a prefix of `inspect-issue`.
       for (const other of TEMPLATES) {
         if (other.id === template.id) continue;
-        for (const task of other.tasks) expect(card?.textContent).not.toContain(task.goal);
+        for (const task of other.tasks) expect(card.textContent).not.toContain(task.goal);
       }
     }
     expect(within(menu).getByRole('menuitem', { name: /^No template/ }).getAttribute('aria-describedby'))
@@ -668,7 +670,8 @@ describe('Start from — each template says which tasks it pre-sets', () => {
 
     const option = within(menu).getByRole('menuitem', { name: /^Investment research/ });
     expect(option.getAttribute('aria-describedby')).toBeNull();
-    for (const card of screen.getAllByRole('dialog', { hidden: true })) {
+    expect(option.getAttribute('aria-haspopup')).toBeNull();
+    for (const card of screen.queryAllByRole('dialog', { hidden: true })) {
       expect(card.textContent).not.toContain(INVESTMENT_RESEARCH.title);
     }
     await userEvent.click(option);
@@ -725,13 +728,9 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     await userEvent.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}');
     const option = document.activeElement as HTMLElement;
     expect(option.textContent).toContain('Investigation');
-    const describedBy = option.getAttribute('aria-describedby') ?? '';
-    /* Shown, not merely present: every card is in the DOM inside a closed `popover`,
-           so `getElementById` alone would pass. `getAllBy` because the card arrowed past
-           is still fading out on its 200 ms hide delay. */
-    const shown = screen.getAllByRole('dialog');
-    expect(shown.map((card) => card.id)).toContain(describedBy);
-    expect(document.getElementById(describedBy)?.textContent).toContain('gather-facts');
+    const card = await screen.findByRole('dialog', { name: 'Investigation tasks' });
+    expect(option.getAttribute('aria-controls')).toBe(card.id);
+    expect(card.textContent).toContain('gather-facts');
   });
 });
 

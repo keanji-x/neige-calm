@@ -52,22 +52,24 @@ export function ComposerPreferences({ startingPoint, folder, browsing }: Props) 
 
   useLayoutEffect(() => {
     const host = hostRef.current;
+    // Closed popovers unmount their content in Astryx 0.6.3. Keep observing
+    // the footer and reuse its last measured control width until it opens.
     const items = itemsRef.current;
     // ChatComposer exposes footer slots, but not a ref for their shared row.
     const row = host?.parentElement?.parentElement;
     const actions = row?.lastElementChild;
-    if (host === null || items === null || !(row instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
+    if (host === null || !(row instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
     const measure = () => {
       const template = startingRef.current?.querySelector('button');
       const folders = [...(folderRef.current?.querySelectorAll<HTMLButtonElement>(':scope > button') ?? [])];
       const buttons = template === null || template === undefined ? folders : [template, ...folders];
       const labels = buttons.map((button) => button.getAttribute('aria-label') ?? button.textContent).join('\n');
-      if (items.getBoundingClientRect().width > 0) {
+      if (items !== null && items.getBoundingClientRect().width > 0) {
         const gap = parseFloat(getComputedStyle(host).columnGap) || 0;
         requiredWidth.current = buttons.reduce((sum, button) => sum + fullButtonWidth(button), 0)
           + gap * Math.max(0, buttons.length - 1);
         measuredLabels.current = labels;
-      } else if (labels !== measuredLabels.current) {
+      } else if (items !== null && labels !== measuredLabels.current) {
         // A selection may change while its directory dialog hides the popover.
         // Measure the single live pair inline before the next paint, then fold
         // it again if necessary. Width never depends on the overflow trigger.
@@ -78,7 +80,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing }: Props) 
       const available = row.clientWidth - actions.getBoundingClientRect().width - gap;
       const next = compact && requiredWidth.current > available + 0.5;
       if (next !== collapsed) {
-        restoreFocus.current = items.contains(document.activeElement) || moreRef.current === document.activeElement;
+        restoreFocus.current = (items?.contains(document.activeElement) ?? false) || moreRef.current === document.activeElement;
         setOpen(false);
         setCollapsed(next);
       }
@@ -91,7 +93,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing }: Props) 
     const observer = new ResizeObserver(measure);
     observer.observe(row);
     observer.observe(actions);
-    observer.observe(items);
+    if (items !== null) observer.observe(items);
     return () => observer.disconnect();
   });
 

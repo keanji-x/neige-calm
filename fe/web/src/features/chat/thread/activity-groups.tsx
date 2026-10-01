@@ -1,7 +1,7 @@
 // A run of tool calls as Astryx's `ChatToolCalls`, with what the reader did to it
 // (open state, opened failure details, focus) held outside the vendor's element.
 
-import { useId, useLayoutEffect, useRef, type FocusEvent, type KeyboardEvent, type RefObject, type SyntheticEvent } from 'react';
+import { useLayoutEffect, useRef, type FocusEvent, type KeyboardEvent, type RefObject, type SyntheticEvent } from 'react';
 import { ChatToolCalls, type ChatToolCallItem } from '@astryxdesign/core/Chat';
 import { createPortal } from 'react-dom';
 
@@ -54,18 +54,15 @@ export type ToolCallGroupProps = Readonly<{
 
 export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpenChange, live }: ToolCallGroupProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const id = useId();
   const [motionHosts, setMotionHosts] = useState<readonly HTMLElement[]>([]);
   // Astryx owns row/detail focus. Replace only its status ink, using its semantic status slot.
   useLayoutEffect(() => {
     const hosts = live && rootRef.current !== null
       ? [...rootRef.current.querySelectorAll<HTMLElement>('[role="status"]')]
-        .filter(host => ui.expanded || host.closest('[aria-expanded="false"]') !== null) : [];
+        .filter(host => ui.expanded || (rootRef.current !== null && headerOf(rootRef.current)?.contains(host))) : [];
     setMotionHosts(previous => previous.length === hosts.length && previous.every((host, index) => host === hosts[index])
       ? previous : hosts);
   }, [calls, live, ui.expanded]);
-  /** The element that says `Failed` for the call at `index`: in its row, and by reference for the header. */
-  const failedId = (index: number) => `${id}failed-${index}`;
   /* True while this component is pressing rows itself, so the watcher below
      does not mistake its own presses for the reader's. */
   const replaying = useRef(false);
@@ -90,23 +87,13 @@ export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpen
     }
   });
 
-  /* After every commit: closed, the header draws the latest call, and which
-     call that is and whether it failed both change under the same element. */
-  useLayoutEffect(() => {
-    const header = rootRef.current === null ? null : headerOf(rootRef.current);
-    if (header === null) return;
-    const latest = calls.length - 1;
-    if (!expanded && calls[latest]?.status === 'error') header.setAttribute('aria-describedby', failedId(latest));
-    else header.removeAttribute('aria-describedby');
-  });
-
   const noteToggle = (event: SyntheticEvent<HTMLElement>) => {
     const root = rootRef.current;
     if (replaying.current || root === null || !(event.target instanceof Element)) return;
     const row = event.target.closest<HTMLElement>('[role="button"]');
-    /* The header is the vendor's other button, and it has `aria-expanded`;
-       it reports through `onExpandedChange`. */
-    if (row === null || row.hasAttribute('aria-expanded') || !root.contains(row)) return;
+    /* Both rows and the header expose aria-expanded in Astryx 0.6.3.
+       The direct-child header reports through onExpandedChange. */
+    if (row === null || row === headerOf(root) || !root.contains(row)) return;
     const call = detailCalls(calls)[detailRows(root).indexOf(row)];
     if (call?.key === undefined) return;
     onDetailOpenChange(call.key, !detailIsOpen(root, call.key));
@@ -128,10 +115,9 @@ export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpen
         data-nc-entry={entry}
         {...(calls[calls.length - 1]?.status === 'complete' ? { 'data-nc-last-complete': '' } : {})}
         {...(live ? { 'data-nc-live': '' } : {})}
-        calls={calls.map((call, index) => (call.status === 'complete'
+        calls={calls.map((call) => (call.status === 'complete'
           ? { ...call, stats: <><span className={styles.srOnly} data-nc-tool-complete="" aria-hidden="true" />{call.stats}</> }
-          : call.status !== 'error' ? call
-            : { ...call, stats: <span className={styles.srOnly} id={failedId(index)}>Failed</span> }))}
+          : call))}
       />
       {live && motionHosts.map((host, index) => createPortal(<NeigeMotion kind="execution" />, host, String(index)))}
     </>
@@ -145,8 +131,8 @@ function detailCalls(calls: readonly ChatToolCallItem[]): readonly ChatToolCallI
 
 /** Those rows, in DOM order — the same order — excluding anything a detail itself contains. */
 function detailRows(root: HTMLElement): readonly HTMLElement[] {
-  return [...root.querySelectorAll<HTMLElement>('[role="button"]:not([aria-expanded])')]
-    .filter((row) => row.closest('[data-nc-detail]') === null);
+  return [...root.querySelectorAll<HTMLElement>('[role="button"][aria-expanded]')]
+    .filter((row) => row !== headerOf(root) && row.closest('[data-nc-detail]') === null);
 }
 
 /** Whether the vendor is showing `key`'s detail: it mounts the detail only while open. */
@@ -158,8 +144,8 @@ function detailIsOpen(root: HTMLElement, key: string): boolean {
 function callAround(root: HTMLElement, calls: readonly ChatToolCallItem[], element: Element): string | null {
   const detail = element.closest('[data-nc-detail]');
   if (detail !== null && root.contains(detail)) return detail.getAttribute('data-nc-detail');
-  const row = element.closest<HTMLElement>('[role="button"]:not([aria-expanded])');
-  if (row === null || !root.contains(row)) return null;
+  const row = element.closest<HTMLElement>('[role="button"][aria-expanded]');
+  if (row === null || row === headerOf(root) || !root.contains(row)) return null;
   return detailCalls(calls)[detailRows(root).indexOf(row)]?.key ?? null;
 }
 
@@ -169,9 +155,9 @@ function rowOf(root: HTMLElement, calls: readonly ChatToolCallItem[], key: strin
   return index === -1 ? undefined : detailRows(root)[index];
 }
 
-/** The group's disclosure header — the vendor's `role="button"` that carries `aria-expanded`. */
+/** The group header is a direct child; detail rows carry aria-expanded too. */
 function headerOf(root: HTMLElement): HTMLElement | null {
-  return root.querySelector<HTMLElement>('[aria-expanded]');
+  return root.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded]');
 }
 
 /** The transcript's element for the entry keyed `key`: every child `ChatThread` draws for an entry carries `data-nc-entry`. */

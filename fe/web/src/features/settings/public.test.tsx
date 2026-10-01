@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -129,8 +129,8 @@ describe('Settings appearance', () => {
 
 describe('Settings states', () => {
   it('surfaces a load failure as an alert', () => {
-    render(<NetworkPane {...props({ settings: undefined, loadError: 'settings unreachable' })} />);
-    expect(screen.getByRole('alert')).toBeTruthy();
+    const { container } = render(<NetworkPane {...props({ settings: undefined, loadError: 'settings unreachable' })} />);
+    expect(within(container).getByRole('alert')).toBeTruthy();
     expect(screen.getByText('settings unreachable')).toBeTruthy();
     expect(screen.queryByText('Loading settings…')).toBeNull();
   });
@@ -167,9 +167,9 @@ describe('Settings states', () => {
   });
 
   it('mounts the live region before it has anything to say', () => {
-    render(<NetworkPane {...props()} />);
+    const { container } = render(<NetworkPane {...props()} />);
     /* A live region that arrives in the same mutation as its text is commonly not announced at all. */
-    expect(screen.getAllByRole('status').map((node) => node.textContent)).toEqual(['', '']);
+    expect(within(container).getAllByRole('status').map((node) => node.textContent)).toEqual(['', '']);
   });
 });
 

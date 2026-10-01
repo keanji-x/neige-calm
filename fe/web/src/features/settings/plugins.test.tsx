@@ -126,7 +126,7 @@ describe('Plugins pane', () => {
     })} />);
 
     for (const state of states) {
-      const chip = screen.getByText(state);
+      const chip = screen.getByText(state).closest('[data-variant]')!;
       expect([state, chip.getAttribute('data-variant')])
         .toEqual([state, tones[state]]);
       expect([state, chip.classList.contains(styles.pluginStateChip)])

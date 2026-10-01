@@ -393,3 +393,21 @@ it('aligns template field labels and descriptions on the same desktop axis', asy
     expect(Math.abs(issueGap - mergeGap)).toBeLessThan(1);
   } finally { view.unmount(); }
 });
+
+
+it('remeasures changed template metadata while its overflow popup is closed', async () => {
+  await page.viewport(600, 844);
+  const template = { id: 'short', title: 'An exceptionally long template name that cannot share the footer', tasks: [] };
+  const view = render(<ModelForm templates={[template]} initialTemplateId={template.id} />);
+  try {
+    await screen.findByRole('button', { name: 'Track options' });
+    expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull();
+    view.rerender(<ModelForm templates={[{ ...template, title: 'A' }]} initialTemplateId={template.id} />);
+    await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
+    expectFullLabel('Template: A');
+    expectFullLabel('Folder: Neige workspace');
+  } finally {
+    view.unmount();
+    await page.viewport(1280, 720);
+  }
+});

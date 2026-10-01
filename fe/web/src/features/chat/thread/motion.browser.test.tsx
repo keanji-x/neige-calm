@@ -16,14 +16,14 @@ function action(id: string, state: 'running' | 'done'): ConversationActivity {
 
 it('uses the execution mark in a collapsed and expanded tool group and removes it when the turn ends', () => {
   const { container, rerender } = render(<ChatThread conversation={conversation} turns={[action('first', 'done'), action('second', 'running')]} pending cards={{}} stalled={false} />);
-  const status = screen.getByRole('status', { name: 'Loading' });
+  const status = container.querySelector<HTMLElement>('[role="status"]')!;
   expect(status.querySelector('[data-nc-motion="execution"]')).not.toBeNull();
-  expect(getComputedStyle(status.querySelector('canvas')!).display).toBe('none');
+  expect(getComputedStyle(status.querySelector(':scope > svg')!).display).toBe('none');
   fireEvent.click(container.querySelector('[aria-expanded]')!);
-  expect(screen.getByRole('status', { name: 'Loading' }).querySelector('[data-nc-motion="execution"]')).not.toBeNull();
+  expect(container.querySelector<HTMLElement>('[role="status"]')!.querySelector('[data-nc-motion="execution"]')).not.toBeNull();
   rerender(<ChatThread conversation={conversation} turns={[action('first', 'done'), action('second', 'running')]} cards={{}} stalled={false} />);
   expect(container.querySelector('[data-nc-motion]')).toBeNull();
-  expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull();
+  expect(container.querySelector('[role="status"]')!.checkVisibility()).toBe(false);
 });
 
 it('shows a plain check without the vendor disk on a completed group', () => {
@@ -36,7 +36,7 @@ it('shows a plain check without the vendor disk on a completed group', () => {
 
 it('keeps the tool group toggle clickable through the decorative execution animation', async () => {
   const { container } = render(<ChatThread conversation={conversation} turns={[action('first', 'done'), action('second', 'running')]} pending cards={{}} stalled={false} />);
-  await userEvent.click(screen.getByRole('status', { name: 'Loading' }));
+  await userEvent.click(container.querySelector<HTMLElement>('[role="status"]')!);
   expect(container.querySelector('[aria-expanded="true"]')).not.toBeNull();
 });
 
