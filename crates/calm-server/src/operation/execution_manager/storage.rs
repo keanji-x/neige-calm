@@ -387,3 +387,39 @@ pub(super) async fn native_writer_available(pool: &SqlitePool, owner: &Owner) ->
     )
     .await
 }
+
+pub(super) async fn native_turn_stopped(
+    pool: &SqlitePool,
+    thread: &str,
+    turn: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM workspace_leases WHERE holder_kind='native' \
+         AND native_provider='codex' AND holder_id=?1 AND native_observed_turn_id=?2 \
+         AND state='released' AND holder_phase='stopped')",
+    )
+    .bind(thread)
+    .bind(turn)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// A legacy owner without execution evidence cannot be mistaken for an absent process.
+pub(super) async fn native_thread_requires_recovery(
+    pool: &SqlitePool,
+    thread: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM worker_sessions session JOIN cards card ON card.session_id=session.id \
+         WHERE session.provider='codex' AND session.thread_id=?1 \
+         AND session.state IN ('starting','running','idle','turn_pending') \
+         AND NOT EXISTS(SELECT 1 FROM workspace_execution_bindings binding \
+             WHERE binding.provider='codex' AND binding.holder_id=?1 AND binding.card_id=card.id \
+             AND binding.scope_phase='new') \
+         AND NOT EXISTS(SELECT 1 FROM workspace_leases execution WHERE execution.holder_kind='native' \
+             AND execution.native_provider='codex' AND execution.holder_id=?1 \
+             AND execution.state='released' AND execution.holder_phase='stopped')) \
+         OR EXISTS(SELECT 1 FROM workspace_execution_bindings binding WHERE binding.provider='codex' \
+             AND binding.holder_id=?1 AND binding.scope_phase='recovering')",
+    ).bind(thread).fetch_one(pool).await?)
+}

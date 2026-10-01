@@ -623,3 +623,94 @@ async fn native_workspace_failed_scope_adoption_keeps_returned_actual_scope_reco
         "failed adoption must retain the actual returned scope so an old reference cannot cover a different live resource"
     );
 }
+
+#[tokio::test]
+async fn native_workspace_interrupt_request_retains_execution_until_provider_stop() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let card = seed_card(&repo, 110).await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let thread = daemon
+        .thread_start_mint_for_card(
+            &card,
+            SharedThreadStartParams {
+                cwd: root.path().to_str().unwrap().into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: ThreadConfig::NoMcp,
+            },
+        )
+        .await
+        .unwrap();
+    let turn = daemon
+        .turn_start(
+            &thread,
+            vec![InputItem::text("stop this generation")],
+            &TurnModelSelection::inherit(),
+            None,
+        )
+        .await
+        .unwrap();
+    let (lease, nonce): (String, String) = sqlx::query_as(
+        "SELECT lease_id,native_client_id FROM workspace_leases \
+         WHERE holder_kind='native' AND holder_id=?1 AND state='held'",
+    )
+    .bind(&thread)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    let path = root
+        .path()
+        .join("run/codex-appserver.sock")
+        .with_extension("thread-read");
+    let mut facts = json!({"thread":{
+        "id":thread,"cwd":root.path(),"status":{"type":"active","activeFlags":[]},
+        "turns":[{"id":turn,"status":"inProgress","items":[
+            {"type":"userMessage","clientId":nonce}
+        ]}]
+    }});
+    std::fs::write(&path, serde_json::to_vec(&facts).unwrap()).unwrap();
+    daemon.turn_interrupt(&thread, &turn).await.unwrap();
+    let state: (String, String) =
+        sqlx::query_as("SELECT state,holder_phase FROM workspace_leases WHERE lease_id=?1")
+            .bind(&lease)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        state,
+        ("held".into(), "stopping".into()),
+        "an accepted interrupt must persist stop intent and retain the still-running execution"
+    );
+    facts["thread"]["status"] = json!({"type":"idle"});
+    facts["thread"]["turns"][0]["status"] = json!("interrupted");
+    std::fs::write(&path, serde_json::to_vec(&facts).unwrap()).unwrap();
+    assert!(
+        daemon
+            .reconcile_native_workspace_guard(&lease)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn native_workspace_cancellation_cannot_assume_unregistered_legacy_thread_stopped() {
+    let repo = repo().await;
+    let card = seed_card(&repo, 111).await;
+    seed_runtime_thread(&repo, &card, "legacy-without-local-cache").await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    assert!(
+        daemon
+            .active_turn_id_for_thread("legacy-without-local-cache")
+            .is_none()
+    );
+    assert!(
+        daemon
+            .interrupt_active_turn("legacy-without-local-cache")
+            .await
+            .is_err(),
+        "missing local cache and execution record cannot prove a persisted legacy thread stopped"
+    );
+}

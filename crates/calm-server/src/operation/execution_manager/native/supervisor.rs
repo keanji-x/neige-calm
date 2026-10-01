@@ -1678,23 +1678,13 @@ impl SharedCodexAppServer {
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            fake.interrupted_turns
-                .lock()
-                .expect("fake shared codex interrupted turns mutex poisoned")
-                .push((thread_id.to_string(), turn_id.to_string()));
-            if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "fixture: turn/interrupt failed".into(),
-                ));
-            }
-            self.active_turns
-                .remove_if(thread_id, |_, active| active == turn_id);
-            return Ok(());
-        }
-        let client = self.connected_client().await?;
-        client.turn_interrupt(thread_id, turn_id).await
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Conflict("managed execution requires durable storage".into())
+        })?;
+        let backend = execution_backend::CodexBackend::for_service(self).await;
+        super::super::ExecutionManager::new(pool)
+            .interrupt_native(&backend, thread_id, turn_id)
+            .await
     }
 
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
@@ -1704,17 +1694,13 @@ impl SharedCodexAppServer {
     }
 
     pub async fn interrupt_active_turn(&self, thread_id: &str) -> Result<()> {
-        let Some(turn_id) = self
-            .active_turns
-            .get(thread_id)
-            .map(|entry| entry.value().clone())
-        else {
-            return Ok(());
-        };
-        self.turn_interrupt(thread_id, &turn_id).await?;
-        self.active_turns
-            .remove_if(thread_id, |_, active| active == &turn_id);
-        Ok(())
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Conflict("managed execution requires durable storage".into())
+        })?;
+        let backend = execution_backend::CodexBackend::for_service(self).await;
+        super::super::ExecutionManager::new(pool)
+            .cancel_native_thread(&backend, thread_id)
+            .await
     }
 
     pub async fn interrupt_active_turn_for_card(&self, card_id: &str) -> Result<()> {
