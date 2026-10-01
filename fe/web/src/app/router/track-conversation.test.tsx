@@ -984,6 +984,29 @@ describe('track conversations', () => {
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
   });
 
+  it.each(['load earlier', 'roll latest page'] as const)('keeps an accepted stop pending when history pages %s', async (change) => {
+    const current = harnessMessage(100, 'agentMessage', { content: [{ text: 'Still working' }] });
+    const historical = { ...harnessMessage(10, '', {}), item_type: null,
+      turn_id: 'previous-turn', method: 'turn/completed',
+      params: JSON.stringify({ id: 'previous-turn', status: 'completed', error: null }) };
+    const { client, requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
+        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null });
+      if (request.path.includes(HISTORY_PATH)) return ok(change === 'load earlier' ? [current] : [current, historical]);
+      if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: true });
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+    await screen.findByRole('button', { name: 'Stopping response', expanded: false });
+    const key = cachedHistoryKey(client, ASSISTANT_CARD.id);
+    await act(async () => { client.setQueryData(key, { pages: change === 'load earlier' ? [[current], [historical]] : [[current]],
+      pageParams: change === 'load earlier' ? [undefined, 100] : [undefined] }); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(screen.getByRole('button', { name: 'Stopping response', expanded: false })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
+  });
+
   it.each(['issuing_turn', 'turn_running'])('shows an unconfirmed stop receipt without inventing a terminal result (%s)', async (phase) => {
     const { requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,

@@ -1,3 +1,4 @@
+import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation.ts';
 import { useConversationStop } from '../conversations/stop.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -427,7 +428,9 @@ export function useConversationStore(
     cardId, canStop: working && !stalled,
     responseEnded: phase === 'idle' || phase === 'turn_completed',
     historyKnown: history.data !== undefined,
-    completedId: serverEntries.filter((entry) => entry.author === 'turn').at(-1)?.id ?? null,
+    newestRowId: items.reduce((latest, row) => Math.max(latest, row.id), 0),
+    completedRowId: items.reduce<number | null>((latest, row) => transcriptRowToTurnOutcome(row) === null
+      ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
     failureText: (error) => errorMessage(error, 'Could not confirm the stop request.'),
   });

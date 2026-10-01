@@ -16,7 +16,7 @@ it('holds a synchronous lease across repeated gestures and releases it after an 
   const pending = pendingRequest();
   const requestStop = vi.fn(() => pending.promise);
   const { result } = renderHook(() => useConversationStop({ cardId: 'a', canStop: true,
-    responseEnded: false, historyKnown: true, completedId: null, requestStop, failureText }));
+    responseEnded: false, historyKnown: true, newestRowId: 100, completedRowId: null, requestStop, failureText }));
   act(() => { result.current.interrupt(); result.current.interrupt(); });
   await act(async () => { await Promise.resolve(); });
   expect(requestStop).toHaveBeenCalledTimes(1);
@@ -31,7 +31,7 @@ it.each(['resolve', 'reject'] as const)('ignores an old view %s and its finalize
   const next = pendingRequest();
   const requestStop = vi.fn().mockImplementationOnce(() => old.promise).mockImplementationOnce(() => next.promise);
   const { result, rerender } = renderHook(({ cardId }) => useConversationStop({ cardId,
-    canStop: true, responseEnded: false, historyKnown: true, completedId: null, requestStop, failureText }), { initialProps: { cardId: 'a' } });
+    canStop: true, responseEnded: false, historyKnown: true, newestRowId: 100, completedRowId: null, requestStop, failureText }), { initialProps: { cardId: 'a' } });
   act(() => { result.current.interrupt(); });
   await act(async () => { await Promise.resolve(); });
   rerender({ cardId: 'b' });
@@ -55,7 +55,7 @@ it.each(['resolve', 'reject'] as const)('ignores an old view %s and its finalize
 it('retired handles cannot dispatch on another view or a no-longer-running response', async () => {
   const requestStop = vi.fn(() => Promise.resolve({ stopped: true }));
   const { result, rerender } = renderHook(({ cardId, canStop }) => useConversationStop({ cardId,
-    canStop, responseEnded: false, historyKnown: true, completedId: null, requestStop, failureText }), { initialProps: { cardId: 'a', canStop: true } });
+    canStop, responseEnded: false, historyKnown: true, newestRowId: 100, completedRowId: null, requestStop, failureText }), { initialProps: { cardId: 'a', canStop: true } });
   const old = result.current.interrupt;
   rerender({ cardId: 'b', canStop: true });
   act(() => { old(); });
@@ -68,22 +68,22 @@ it('retired handles cannot dispatch on another view or a no-longer-running respo
 
 it('new terminal activity retires local uncertainty without manufacturing an outcome', async () => {
   const requestStop = vi.fn(() => Promise.resolve({ stopped: false }));
-  const { result, rerender } = renderHook(({ completedId }) => useConversationStop({ cardId: 'a',
-    canStop: true, responseEnded: false, historyKnown: true, completedId, requestStop, failureText }), { initialProps: { completedId: null as string | null } });
+  const { result, rerender } = renderHook(({ completedRowId }) => useConversationStop({ cardId: 'a',
+    canStop: true, responseEnded: false, historyKnown: true, newestRowId: Math.max(100, completedRowId ?? 0), completedRowId, requestStop, failureText }), { initialProps: { completedRowId: null as number | null } });
   await act(async () => { result.current.interrupt(); await Promise.resolve(); });
   expect(result.current.feedback).toEqual({ kind: 'unconfirmed' });
-  rerender({ completedId: 'terminal-1' });
+  rerender({ completedRowId: 101 });
   expect(result.current.feedback).toBeNull();
 });
 
 it('loading previously unknown history is not evidence that this stop finished', async () => {
   const requestStop = vi.fn(() => Promise.resolve({ stopped: false }));
-  const { result, rerender } = renderHook(({ historyKnown, completedId }) => useConversationStop({ cardId: 'a',
-    canStop: true, responseEnded: false, historyKnown, completedId, requestStop, failureText }), { initialProps: { historyKnown: false, completedId: null as string | null } });
+  const { result, rerender } = renderHook(({ historyKnown, completedRowId }) => useConversationStop({ cardId: 'a',
+    canStop: true, responseEnded: false, historyKnown, newestRowId: historyKnown ? 100 : 0, completedRowId, requestStop, failureText }), { initialProps: { historyKnown: false, completedRowId: null as number | null } });
   await act(async () => { result.current.interrupt(); await Promise.resolve(); });
-  rerender({ historyKnown: true, completedId: 'old-terminal' });
+  rerender({ historyKnown: true, completedRowId: 10 });
   expect(result.current.feedback).toEqual({ kind: 'unconfirmed' });
-  rerender({ historyKnown: true, completedId: 'new-terminal' });
+  rerender({ historyKnown: true, completedRowId: 101 });
   expect(result.current.feedback).toBeNull();
 });
 
@@ -91,7 +91,7 @@ it('does not process an old error after its view unmounts', async () => {
   const request = pendingRequest();
   const failureText = vi.fn(() => 'Old error');
   const { result, unmount } = renderHook(() => useConversationStop({ cardId: 'a', canStop: true,
-    responseEnded: false, historyKnown: true, completedId: null, requestStop: () => request.promise, failureText }));
+    responseEnded: false, historyKnown: true, newestRowId: 100, completedRowId: null, requestStop: () => request.promise, failureText }));
   act(() => { result.current.interrupt(); });
   await act(async () => { await Promise.resolve(); });
   unmount();
@@ -102,7 +102,7 @@ it('does not process an old error after its view unmounts', async () => {
 it('keeps a true receipt pending while runtime reconciliation is unresolved', async () => {
   const requestStop = vi.fn(() => Promise.resolve({ stopped: true }));
   const { result } = renderHook(() => useConversationStop({ cardId: 'a', canStop: true,
-    responseEnded: false, historyKnown: true, completedId: null, requestStop, failureText }));
+    responseEnded: false, historyKnown: true, newestRowId: 100, completedRowId: null, requestStop, failureText }));
   await act(async () => { result.current.interrupt(); await Promise.resolve(); });
   expect(result.current.feedback).toEqual({ kind: 'stopping' });
   expect(result.current.pending).toBe(true);
@@ -114,10 +114,10 @@ it('terminal progress retires a hung request and protects the next response leas
   const old = pendingRequest();
   const next = pendingRequest();
   const requestStop = vi.fn().mockImplementationOnce(() => old.promise).mockImplementationOnce(() => next.promise);
-  const { result, rerender } = renderHook(({ completedId }) => useConversationStop({ cardId: 'a', canStop: true,
-    responseEnded: false, historyKnown: true, completedId, requestStop, failureText }), { initialProps: { completedId: null as string | null } });
+  const { result, rerender } = renderHook(({ completedRowId }) => useConversationStop({ cardId: 'a', canStop: true,
+    responseEnded: false, historyKnown: true, newestRowId: Math.max(100, completedRowId ?? 0), completedRowId, requestStop, failureText }), { initialProps: { completedRowId: null as number | null } });
   await act(async () => { result.current.interrupt(); await Promise.resolve(); });
-  rerender({ completedId: 'old-response-ended' });
+  rerender({ completedRowId: 101 });
   expect(result.current.feedback).toBeNull();
   expect(result.current.pending).toBe(false);
   await act(async () => { result.current.interrupt(); await Promise.resolve(); });
@@ -132,7 +132,7 @@ it('terminal progress retires a hung request and protects the next response leas
 it('an ended runtime retires an accepted request even without a terminal row', async () => {
   const requestStop = vi.fn(() => Promise.resolve({ stopped: true }));
   const { result, rerender } = renderHook(({ responseEnded }) => useConversationStop({ cardId: 'a',
-    canStop: !responseEnded, responseEnded, historyKnown: true, completedId: null, requestStop, failureText }),
+    canStop: !responseEnded, responseEnded, historyKnown: true, newestRowId: 100, completedRowId: null, requestStop, failureText }),
     { initialProps: { responseEnded: false } });
   await act(async () => { result.current.interrupt(); await Promise.resolve(); });
   expect(result.current.feedback).toEqual({ kind: 'stopping' });
@@ -143,14 +143,14 @@ it('an ended runtime retires an accepted request even without a terminal row', a
 
 it('a delayed receipt cannot erase the terminal baseline adopted during the request', async () => {
   const old = pendingRequest();
-  const { result, rerender } = renderHook(({ historyKnown, completedId }) => useConversationStop({ cardId: 'a',
-    canStop: true, responseEnded: false, historyKnown, completedId, requestStop: () => old.promise, failureText }),
-    { initialProps: { historyKnown: false, completedId: null as string | null } });
+  const { result, rerender } = renderHook(({ historyKnown, completedRowId }) => useConversationStop({ cardId: 'a',
+    canStop: true, responseEnded: false, historyKnown, newestRowId: historyKnown ? 100 : 0, completedRowId, requestStop: () => old.promise, failureText }),
+    { initialProps: { historyKnown: false, completedRowId: null as number | null } });
   await act(async () => { result.current.interrupt(); await Promise.resolve(); });
-  rerender({ historyKnown: true, completedId: 'old-terminal' });
+  rerender({ historyKnown: true, completedRowId: 10 });
   await act(async () => { old.resolve({ stopped: false }); await old.promise; });
   expect(result.current.feedback).toEqual({ kind: 'unconfirmed' });
-  rerender({ historyKnown: true, completedId: 'new-terminal' });
+  rerender({ historyKnown: true, completedRowId: 101 });
   expect(result.current.feedback).toBeNull();
 });
 
@@ -159,7 +159,7 @@ it('runtime settlement frees a hung receipt before the next response starts', as
   const next = pendingRequest();
   const requestStop = vi.fn().mockImplementationOnce(() => old.promise).mockImplementationOnce(() => next.promise);
   const { result, rerender } = renderHook(({ responseEnded }) => useConversationStop({ cardId: 'a',
-    canStop: !responseEnded, responseEnded, historyKnown: true, completedId: null, requestStop, failureText }),
+    canStop: !responseEnded, responseEnded, historyKnown: true, newestRowId: 100, completedRowId: null, requestStop, failureText }),
     { initialProps: { responseEnded: false } });
   await act(async () => { result.current.interrupt(); await Promise.resolve(); });
   rerender({ responseEnded: true });
