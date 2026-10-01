@@ -920,7 +920,19 @@ async fn a_restored_entry_lists_one_rev_up_so_the_client_that_saw_it_leave_can_t
     )
     .await;
 
-    let listed = pending(&boot).await;
+    // The refusal counter advances before the asynchronous queue restoration is published.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let listed = loop {
+        let listed = pending(&boot).await;
+        if listed.len() == 1 && listed[0]["entry_id"] == json!(entry_id) {
+            break listed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "restored entry was not published: {listed:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert_eq!(listed[0]["entry_id"], json!(entry_id));
     assert_eq!(listed[0]["text"], json!(TEXT), "the same sentence");
