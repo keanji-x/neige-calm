@@ -123,3 +123,26 @@ describe('CODEX_CARD_ENTRY', () => {
     expect(unknown).toEqual([]);
   });
 });
+
+
+describe('worker presentation contract', () => {
+  it('uses the declared interactive terminal rather than a legacy payload alias', () => {
+    const card = CODEX_CARD_ENTRY.fromKernel({ id: 'worker', kind: 'codex', payload: {
+      worker_presentation: { kind: 'interactive_tui', terminal_id: 'declared-terminal' },
+      terminal_id: 'stale-terminal',
+    } });
+    expect(card).toMatchObject({ presentation: 'interactive_tui', terminalId: 'declared-terminal' });
+  });
+
+  it.each([
+    undefined, null, {},
+    { task_id: 'review', goal: 'Review', status: 'unknown', report: { kind: 'pending' } },
+    { task_id: 'review', goal: 'Review', status: 'done', report: { kind: 'reported', outcome: 'completed' } },
+  ])('rejects malformed native snapshots without a terminal fallback (%j)', (worker_snapshot) => {
+    const registry = createCardRegistry();
+    registerAvailableBuiltinCards(registry);
+    expect(registry.resolve({ id: 'review', kind: 'codex', payload: {
+      worker_presentation: { kind: 'native_only' }, worker_snapshot, terminal_id: 'must-not-mount',
+    } })).toBeNull();
+  });
+});

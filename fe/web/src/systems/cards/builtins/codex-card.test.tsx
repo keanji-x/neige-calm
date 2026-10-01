@@ -110,3 +110,26 @@ describe('native-only worker', () => {
     expect(screen.queryByRole('textbox')).toBeNull();
   });
 });
+
+
+it('refreshes a native worker from pending to a readable structured report', () => {
+  const resolve = (status: string, report: unknown) => {
+    const card = CODEX_CARD_ENTRY.fromKernel({ id: 'review', kind: 'codex', payload: {
+      worker_presentation: { kind: 'native_only' },
+      worker_snapshot: { task_id: 'review-task', goal: 'Check reader fencing', status, report },
+    } });
+    if (card === null) throw new Error('native snapshot must resolve');
+    return card;
+  };
+  const Component = CODEX_CARD_ENTRY.component;
+  const host = fakeHost();
+  const view = render(<Component card={resolve('running', { kind: 'pending' })} host={host} activity={null} />);
+  expect(screen.getByRole('status').textContent).toBe('Reviewing…');
+  view.rerender(<Component card={resolve('done', {
+    kind: 'reported', outcome: 'completed', result: { summary: 'Safe shared readers', findings: ['Writer waits'] },
+  })} host={host} activity={null} />);
+  expect(screen.getByRole('status').textContent).toBe('Review finished');
+  expect(screen.getByText(/Safe shared readers/).textContent).toContain('Writer waits');
+  expect(document.querySelector('[data-nc-terminal-card]')).toBeNull();
+  expect(screen.queryByRole('textbox')).toBeNull();
+});

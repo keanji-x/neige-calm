@@ -1,0 +1,15 @@
+/* Native worker card owns these opt-in selectors; interactive terminal cards
+   retain the existing track-grid rules. Imported through the styles owner. */
+@layer ui {
+  [data-nc-native-worker-goal] {
+    color: var(--text-1);
+    overflow-wrap: anywhere;
+  }
+
+  [data-nc-native-worker-result] {
+    margin: var(--space-0);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: inherit;
+  }
+}

@@ -14,3 +14,4 @@
 /* The file card's frame. `ui`, not `overrides`: it styles a system's own
    component, so anything a feature says about the same box must win. */
 @import "./file-viewer.css" layer(ui);
+@import "./native-worker-card.css" layer(ui);

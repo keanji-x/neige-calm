@@ -4,7 +4,6 @@ import { activityLabelOf, cardActivityState } from '../../../../../core/domain/a
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { PathLabel } from '../../../ui/path-label/public.tsx';
 import { CardHead } from '../ui/card-head.tsx';
-import styles from './native-worker-card.module.css';
 
 export function NativeWorkerCardView({ card, activity, onRemove }: {
   card: { readonly title: string | null; readonly cwd: string | null; readonly snapshot: WorkerSnapshot };
@@ -26,10 +25,10 @@ export function NativeWorkerCardView({ card, activity, onRemove }: {
         state={cardActivityState(activity)} spoken={activityLabelOf(cardActivityState(activity))} />}</>}
       onClose={onRemove} closeAriaLabel="Delete review card" />
     {card.cwd !== null && <PathLabel label="Working directory" path={card.cwd} />}
-    <div className={`term-body ${styles.body}`}>
-      <p className={styles.goal}>{snapshot.goal}</p>
+    <div className="term-body">
+      <p data-nc-native-worker-goal="">{snapshot.goal}</p>
       <p role="status">{label}</p>
-      {result !== null && <pre className={styles.result}>{result}</pre>}
+      {result !== null && <pre data-nc-native-worker-result="">{result}</pre>}
     </div>
   </div>;
 }

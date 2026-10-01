@@ -44,8 +44,9 @@ function nativeSnapshot(value: unknown): WorkerSnapshot | null {
     status: source.status as WorkerSnapshotStatus, report: Object.freeze({ kind: 'pending' }) });
   if (report.kind !== 'reported' || (report.outcome !== 'completed' && report.outcome !== 'failed')
     || !Object.hasOwn(report, 'result')) return null;
+  const outcome = report.outcome;
   return Object.freeze({ task_id: source.task_id, goal: source.goal, status: source.status as WorkerSnapshotStatus,
-    report: Object.freeze({ kind: 'reported' as const, outcome: report.outcome as 'completed' | 'failed', result: report.result }) });
+    report: Object.freeze<WorkerSnapshot['report']>({ kind: 'reported', outcome, result: report.result }) });
 }
 
 const CODEX_FALLBACK_TITLE = 'codex';
@@ -94,6 +95,8 @@ export const CODEX_CARD_ENTRY = Object.freeze({
     if (payload !== null && Object.hasOwn(payload, 'worker_presentation')
       && (presentation?.kind !== 'interactive_tui' || typeof presentation.terminal_id !== 'string')) return null;
     return Object.freeze({ type: 'codex', presentation: 'interactive_tui', id: card.id, title: null,
-      ...terminalSessionFromCard(card), cwd: cwdFromPayload(card.payload), gateCwd: cwdFromPayload(card.payload, 'gate_cwd') });
+      ...terminalSessionFromCard(card),
+      ...(presentation?.kind === 'interactive_tui' ? { terminalId: presentation.terminal_id as string } : {}),
+      cwd: cwdFromPayload(card.payload), gateCwd: cwdFromPayload(card.payload, 'gate_cwd') });
   },
 }) satisfies CardEntry<CodexCard>;
