@@ -1379,10 +1379,12 @@ impl SharedCodexAppServer {
             self.repo.sqlite_pool(),
             self.cached_card_for_thread(thread_id),
         ) {
+            use crate::operation::workspace_lease::execution_guard::{
+                ExecutionReadGuard, NativeTaskGuard,
+            };
             use crate::operation::workspace_lease::task_guard::{
                 PreparedTaskAccess, prepared_task_access,
             };
-            use crate::operation::workspace_lease::execution_guard::{NativeTaskGuard,ExecutionReadGuard};
             match prepared_task_access(&pool,&card).await? {
                 PreparedTaskAccess::Read => Some(NativeTaskGuard::Read(ExecutionReadGuard::acquire_native(&pool,&card,thread_id,crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?)),
                 PreparedTaskAccess::Write {attempt} => Some(NativeTaskGuard::Write(crate::operation::workspace_lease::execution_guard::ExecutionWriteGuard::acquire_native(&pool,&card,thread_id,&attempt,crate::operation::workspace_lease::execution_guard::NativeProvider::Codex).await?)),

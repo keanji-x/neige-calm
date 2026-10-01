@@ -152,12 +152,7 @@ pub fn compute_ready(tasks: &[Task], track_idle: bool) -> Result<Vec<Task>> {
         if !track_idle
             && (task.runs_in_track_checkout()
                 || (task.kind == TaskKind::Terminal
-                    && task
-                        .cwd
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|cwd| !cwd.is_empty())
-                        .is_none()))
+                    && crate::db::sqlite::task_workspace_cwd(task).is_none()))
             && task.workspace_access().map_err(CalmError::BadRequest)?
                 == calm_types::workspace_access::WorkspaceAccess::ReadWrite
         {
@@ -1092,9 +1087,7 @@ impl Scheduler {
                         if frozen.spawn!=calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE
                             && !crate::db::sqlite::workspace_available(tx,track_id.as_str(),&task_id,
                                 frozen.workspace_access().map_err(CalmError::BadRequest)?,
-                                if frozen.kind == TaskKind::Terminal {
-                                    frozen.cwd.as_deref().map(str::trim).filter(|cwd| !cwd.is_empty())
-                                } else { None },None).await?
+                                crate::db::sqlite::task_workspace_cwd(&frozen),None).await?
                         {
                             return Err(race_lost_err());
                         }
