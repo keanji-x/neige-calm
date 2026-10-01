@@ -52,13 +52,25 @@ pub async fn track_available(
             return Ok(false);
         }
     }
+    let declared: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT workspace_path,workspace_worktree_path FROM tracks WHERE id=?1")
+            .bind(track_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let resource = declared
+        .and_then(|(path, worktree)| std::fs::canonicalize(worktree.unwrap_or(path)).ok())
+        .and_then(|path| path.to_str().map(str::to_owned));
     // `'stuck'` is the operations phase of an owner whose outcome is unknown (`PhaseTag::Stuck`).
     let lease_held: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM workspace_leases wl \
          LEFT JOIN operations o ON o.id = wl.lease_owner \
-         WHERE wl.track_id = ?1 AND wl.state IN ('held','releasing') \
+         WHERE (wl.track_id = ?1 OR (?4 IS NOT NULL AND (
+         COALESCE(wl.canonical_path,wl.path)=?4 OR COALESCE(wl.canonical_path,wl.path)='/' OR ?4='/'
+         OR substr(COALESCE(wl.canonical_path,wl.path),1,length(?4)+1)=?4||'/'
+         OR substr(?4,1,length(COALESCE(wl.canonical_path,wl.path))+1)=COALESCE(wl.canonical_path,wl.path)||'/')))
+         AND wl.state IN ('held','releasing') \
          AND o.idempotency_key IS NOT ?2 \
-         AND (o.phase IS NOT 'stuck' OR wl.access_mode='read_only') \
+         AND (o.phase IS NOT 'stuck' OR ?3='read_only' OR wl.holder_kind<>'task') \
          AND (?3='read_write' OR wl.access_mode='read_write'))",
     )
     .bind(track_id)
@@ -67,6 +79,7 @@ pub async fn track_available(
         calm_types::workspace_access::WorkspaceAccess::ReadOnly => "read_only",
         _ => "read_write",
     })
+    .bind(resource.as_deref())
     .fetch_one(&mut *conn)
     .await?;
     if lease_held {

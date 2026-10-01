@@ -146,6 +146,43 @@ pub(crate) async fn acquire_execution_write_tx(
          ORDER BY created_at_ms DESC LIMIT 1"
     ).bind(card).bind(path).fetch_optional(&mut **tx).await?.flatten();
     let root = parent.unwrap_or_else(|| id.clone());
+    insert_execution_reference(
+        tx,
+        ExecutionReference {
+            track,
+            card,
+            holder,
+            kind,
+            path,
+            root: &root,
+        },
+        &id,
+    )
+    .await?;
+    Ok(id)
+}
+
+struct ExecutionReference<'a> {
+    track: &'a str,
+    card: &'a str,
+    holder: &'a str,
+    kind: &'a str,
+    path: &'a str,
+    root: &'a str,
+}
+async fn insert_execution_reference(
+    tx: &mut Tx<'_>,
+    reference: ExecutionReference<'_>,
+    id: &str,
+) -> Result<()> {
+    let ExecutionReference {
+        track,
+        card,
+        holder,
+        kind,
+        path,
+        root,
+    } = reference;
     sqlx::query(
         r#"
 INSERT INTO workspace_leases(lease_id, card_id, track_id, path, state, lease_owner, boot_id,
@@ -164,6 +201,55 @@ created_at_ms, updated_at_ms, access_mode, holder_kind, holder_id, holder_phase,
     .bind(root)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+/// A probe receives a child reference only from its specific live Forge parent.
+pub(crate) async fn acquire_execution_child_tx(
+    tx: &mut Tx<'_>,
+    track: &str,
+    card: &str,
+    holder: &str,
+    kind: &str,
+    cwd: &Path,
+    parent: &str,
+) -> Result<String> {
+    if kind != "forge" {
+        return Err(CalmError::Internal(
+            "unsupported child execution kind".into(),
+        ));
+    }
+    let path = std::fs::canonicalize(cwd).map_err(|error| {
+        CalmError::Conflict(format!("child execution cwd unavailable: {error}"))
+    })?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| CalmError::Conflict("child execution cwd is not UTF-8".into()))?;
+    let root: String = sqlx::query_scalar(
+        "SELECT write_root_id FROM workspace_leases WHERE holder_kind='forge' AND holder_id=?1 \
+         AND card_id=?2 AND track_id=?3 AND state='held' AND path=?4",
+    )
+    .bind(parent)
+    .bind(card)
+    .bind(track)
+    .bind(path)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| CalmError::Conflict("child execution has no matching live parent".into()))?;
+    let id = new_id();
+    insert_execution_reference(
+        tx,
+        ExecutionReference {
+            track,
+            card,
+            holder,
+            kind,
+            path,
+            root: &root,
+        },
+        &id,
+    )
+    .await?;
     Ok(id)
 }
 
@@ -173,16 +259,46 @@ pub(crate) async fn release_stopped_execution(
     kind: &str,
     holder: &str,
 ) -> Result<()> {
+    let mut tx = begin_immediate_tx(pool).await?;
+    release_stopped_execution_tx(&mut tx, kind, holder).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The caller has confirmed the execution stopped; one state transition serves all providers.
+pub(crate) async fn release_stopped_execution_tx(
+    tx: &mut Tx<'_>,
+    kind: &str,
+    holder: &str,
+) -> Result<()> {
     sqlx::query(
         r#"
 UPDATE workspace_leases SET state='released', holder_phase='stopped', released_at_ms=?3,
-updated_at_ms=?3 WHERE holder_kind=?1 AND holder_id=?2 AND state IN ('held', 'releasing')
+updated_at_ms=?3 WHERE holder_kind=?1 AND holder_id=?2 AND state IN ('held','releasing')
 "#,
     )
     .bind(kind)
     .bind(holder)
     .bind(now_ms())
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+pub(crate) async fn record_execution_artifacts(
+    pool: &SqlitePool,
+    kind: &str,
+    holder: &str,
+    artifacts: &super::super::SpawnArtifacts,
+) -> Result<()> {
+    let value = serde_json::to_string(artifacts)?;
+    let changed=sqlx::query("UPDATE workspace_leases SET execution_artifacts_json=?3,holder_phase='running',updated_at_ms=?4 \
+        WHERE holder_kind=?1 AND holder_id=?2 AND state='held'")
+        .bind(kind).bind(holder).bind(value).bind(now_ms()).execute(pool).await?.rows_affected();
+    if changed != 1 {
+        return Err(CalmError::Conflict(
+            "execution guard is not held while recording spawn".into(),
+        ));
+    }
     Ok(())
 }

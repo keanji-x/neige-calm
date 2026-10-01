@@ -11,7 +11,10 @@ CREATE TRIGGER workspace_access_insert BEFORE INSERT ON workspace_leases
 BEGIN
  SELECT RAISE(ABORT,'workspace access conflict') WHERE NEW.state IN ('held','releasing')
   AND EXISTS(SELECT 1 FROM workspace_leases l WHERE l.state IN ('held','releasing')
-    AND (l.path=NEW.path OR COALESCE(l.canonical_path,l.path)=COALESCE(NEW.canonical_path,NEW.path))
+    AND (COALESCE(l.canonical_path,l.path)=COALESCE(NEW.canonical_path,NEW.path)
+      OR COALESCE(l.canonical_path,l.path)='/' OR COALESCE(NEW.canonical_path,NEW.path)='/'
+      OR substr(COALESCE(l.canonical_path,l.path),1,length(COALESCE(NEW.canonical_path,NEW.path))+1)=COALESCE(NEW.canonical_path,NEW.path)||'/'
+      OR substr(COALESCE(NEW.canonical_path,NEW.path),1,length(COALESCE(l.canonical_path,l.path))+1)=COALESCE(l.canonical_path,l.path)||'/')
     AND (NEW.access_mode='read_write' OR l.access_mode='read_write')
     AND (NEW.access_mode='read_only' OR l.access_mode='read_only' OR NEW.write_root_id IS NULL OR l.write_root_id IS NULL OR NEW.write_root_id<>l.write_root_id));
  SELECT RAISE(ABORT,'read workspace cannot deliver code')
@@ -22,7 +25,10 @@ BEGIN
  SELECT RAISE(ABORT,'workspace access conflict') WHERE NEW.state IN ('held','releasing')
   AND EXISTS(SELECT 1 FROM workspace_leases l WHERE l.lease_id<>NEW.lease_id
     AND l.state IN ('held','releasing')
-    AND (l.path=NEW.path OR COALESCE(l.canonical_path,l.path)=COALESCE(NEW.canonical_path,NEW.path))
+    AND (COALESCE(l.canonical_path,l.path)=COALESCE(NEW.canonical_path,NEW.path)
+      OR COALESCE(l.canonical_path,l.path)='/' OR COALESCE(NEW.canonical_path,NEW.path)='/'
+      OR substr(COALESCE(l.canonical_path,l.path),1,length(COALESCE(NEW.canonical_path,NEW.path))+1)=COALESCE(NEW.canonical_path,NEW.path)||'/'
+      OR substr(COALESCE(NEW.canonical_path,NEW.path),1,length(COALESCE(l.canonical_path,l.path))+1)=COALESCE(l.canonical_path,l.path)||'/')
     AND (NEW.access_mode='read_write' OR l.access_mode='read_write')
     AND (NEW.access_mode='read_only' OR l.access_mode='read_only' OR NEW.write_root_id IS NULL OR l.write_root_id IS NULL OR NEW.write_root_id<>l.write_root_id));
  SELECT RAISE(ABORT,'workspace access is immutable') WHERE NEW.access_mode<>OLD.access_mode
@@ -45,3 +51,5 @@ CREATE TABLE workspace_execution_bindings (
  cwd TEXT NOT NULL,
  PRIMARY KEY(provider,holder_id)
 );
+
+ALTER TABLE workspace_leases ADD COLUMN execution_artifacts_json TEXT NULL;
