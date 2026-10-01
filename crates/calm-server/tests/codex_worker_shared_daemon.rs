@@ -22,7 +22,7 @@ use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_d
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
 use calm_server::operation::{
-    Operation, OperationCompletionBus, OperationKey, OperationOutcome, Phase, PhaseTag,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, Phase, PhaseTag,
     ProviderAdapter, SpawnCtx, SqlxOperationRepo, TxOutput,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -488,31 +488,6 @@ async fn ordered_event_rows(repo: &SqlxRepo, kinds: &[&str]) -> Vec<PersistedEve
         .collect()
 }
 
-async fn insert_pending_operation_row(repo: &SqlxRepo, op: &Operation) {
-    let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
-               id, operation_key, kind, idempotency_key, payload_hash,
-               target_type, target_id, target_json, payload_json,
-               phase, created_at_ms, updated_at_ms
-           )
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
-    )
-    .bind(&op.id)
-    .bind(&op.operation_key)
-    .bind(&op.kind)
-    .bind(&op.idempotency_key)
-    .bind(&op.payload_hash)
-    .bind(&op.target_type)
-    .bind(op.target_id.as_deref())
-    .bind(serde_json::to_string(&op.target).unwrap())
-    .bind(serde_json::to_string(&op.payload).unwrap())
-    .bind(now)
-    .execute(repo.pool())
-    .await
-    .unwrap();
-}
-
 async fn seed_dispatched_task(repo: &SqlxRepo, track_id: &TrackId, task_id: &str, kind: &str) {
     let now = now_ms();
     sqlx::query(
@@ -961,28 +936,30 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         acceptance_criteria: None,
     })
     .unwrap();
-    let op = Operation {
-        id: new_id(),
-        operation_key: new_id(),
-        kind: "codex-worker".into(),
-        idempotency_key: Some(idem.into()),
-        payload_hash: "worker-recovery-compensation-turn-hash".into(),
-        target_type: "track".into(),
-        target_id: Some(track_id.to_string()),
-        target: json!({ "type": "track", "id": track_id }),
-        payload: payload.clone(),
-        tx_output: None,
-        phase: Phase::Pending,
-        phase_detail: None,
-        attempt: 0,
-        last_error: None,
-        compensation_state: None,
-        lease_owner: None,
-        lease_until_ms: None,
-        spawn_artifacts: None,
-        parked_at_ms: None,
-        parked_deadline_ms: None,
-    };
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operation_id = operation_repo
+        .insert_operation(
+            "codex-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(idem.to_string()),
+                payload_hash: calm_server::routes::terminal_cards::stable_payload_hash(&payload)
+                    .unwrap(),
+            },
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    let claimed = operation_repo.claim_drive_batch(1).await.unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, operation_id);
+    let op = operation_repo
+        .get_operation(&operation_id)
+        .await
+        .unwrap()
+        .expect("claimed operation must be persisted before preparation");
+    assert_eq!(op.lease_owner, claimed[0].lease_owner);
+    assert!(op.lease_owner.is_some());
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let adapter = CodexWorkerAdapter::new(
         route_repo.clone(),
@@ -993,7 +970,6 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         state.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
-    insert_pending_operation_row(&repo, &op).await;
     let mut tx = repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
@@ -1048,7 +1024,6 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         state.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
-    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
     let completion = OperationCompletionBus::new();
     let spawn_ctx = SpawnCtx::new(
         route_repo,
