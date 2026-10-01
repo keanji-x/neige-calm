@@ -73,7 +73,7 @@ impl ExecutionWriteGuard {
             Path::new(&context.cwd),
         )
         .await?;
-        sqlx::query("UPDATE workspace_leases SET native_provider=?2 WHERE lease_id=?1")
+        sqlx::query("UPDATE workspace_leases SET native_provider=?2,native_client_id=lease_id WHERE lease_id=?1")
             .bind(&id)
             .bind(provider.wire())
             .execute(&mut *tx)
@@ -84,12 +84,48 @@ impl ExecutionWriteGuard {
             id,
         })
     }
+    /// Persist the exact request identity before any provider issuance; rejected requests may retry.
+    pub(crate) async fn client_nonce(&self, preferred: Option<&str>) -> Result<String> {
+        let nonce = preferred.unwrap_or(&self.id);
+        if nonce.is_empty() {
+            return Err(CalmError::BadRequest(
+                "native client identity is empty".into(),
+            ));
+        }
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let reused:bool=sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM workspace_leases prior JOIN workspace_leases current \
+             ON prior.holder_id=current.holder_id AND prior.native_provider=current.native_provider \
+             WHERE current.lease_id=?1 AND prior.lease_id<>current.lease_id AND prior.native_client_id=?2)"
+        ).bind(&self.id).bind(nonce).fetch_one(&mut *tx).await?;
+        if reused {
+            return Err(CalmError::Conflict(
+                "native client identity was already issued".into(),
+            ));
+        }
+        let changed = sqlx::query(
+            "UPDATE workspace_leases SET native_client_id=?2 WHERE lease_id=?1 \
+            AND state='held' AND holder_phase='issuing'",
+        )
+        .bind(&self.id)
+        .bind(nonce)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(CalmError::Conflict(
+                "native issuance guard changed before request".into(),
+            ));
+        }
+        tx.commit().await?;
+        Ok(nonce.to_owned())
+    }
     /// Consumed only when issuance was never attempted or the provider rejected it.
     pub(crate) async fn rejected(self) -> Result<()> {
         let changed = sqlx::query(
             "UPDATE workspace_leases SET state='released',holder_phase='stopped', \
-            released_at_ms=?2,updated_at_ms=?2 WHERE lease_id=?1 AND holder_kind='native' \
-            AND state='held' AND holder_phase='issuing'",
+            released_at_ms=?2,updated_at_ms=?2,native_client_id=NULL WHERE lease_id=?1 AND holder_kind='native' \
+            AND state='held' AND holder_phase IN ('issuing','stopping')",
         )
         .bind(&self.id)
         .bind(now_ms())
@@ -104,17 +140,27 @@ impl ExecutionWriteGuard {
         Ok(())
     }
     pub(crate) async fn started(self, turn: &str) -> Result<()> {
-        sqlx::query(
+        if turn.is_empty() {
+            return Err(CalmError::Conflict(
+                "provider returned empty turn identity".into(),
+            ));
+        }
+        let changed=sqlx::query(
             r#"
-UPDATE workspace_leases SET holder_phase='running', lease_owner=?2, updated_at_ms=?3 WHERE
-lease_id=?1 AND state='held' AND holder_phase='issuing'
+UPDATE workspace_leases SET holder_phase=CASE WHEN holder_phase='stopping' THEN 'stopping' ELSE 'running' END, lease_owner=?2, updated_at_ms=?3 WHERE
+lease_id=?1 AND state='held' AND holder_phase IN ('issuing','stopping')
 "#,
         )
         .bind(&self.id)
         .bind(turn)
         .bind(now_ms())
         .execute(&self.pool)
-        .await?;
+        .await?.rows_affected();
+        if changed != 1 {
+            return Err(CalmError::Conflict(
+                "native guard changed before issuance acknowledgment".into(),
+            ));
+        }
         Ok(())
     }
 }

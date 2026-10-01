@@ -365,6 +365,7 @@ async fn serve_conn(
 
     let thread_id = "fake-thread-0001";
     let turn_id = "fake-turn-0001";
+    let mut thread_cwd=std::env::current_dir().map_err(|e|e.to_string())?.to_string_lossy().into_owned();
 
     while let Some(msg) = read.next().await {
         let msg = msg.map_err(|e| format!("ws read: {e}"))?;
@@ -426,6 +427,10 @@ async fn serve_conn(
             }
             // #1853: each `threadId` is appended to `<sock>.unsubscribed`, socket-keyed like
             // `record_method`, and answered the way codex 0.157 answers a live subscription.
+            "thread/backgroundTerminals/list" => {
+                send_result(&mut write,&id,ReadFixtures::result_or(&reads.sock.with_extension("background-terminals"),json!({"data":[],"nextCursor":null}))).await?;
+            }
+            "thread/backgroundTerminals/clean" => {send_result(&mut write,&id,json!({})).await?;}
             "thread/unsubscribe" => {
                 let requested = req
                     .pointer("/params/threadId")
@@ -452,10 +457,16 @@ async fn serve_conn(
                         continue;
                     }
                 }
+                let response_id=if method=="thread/resume" {
+                    req.pointer("/params/threadId").and_then(Value::as_str).ok_or("resume requires threadId")?
+                } else {
+                    thread_cwd=req.pointer("/params/cwd").and_then(Value::as_str).ok_or("start requires cwd")?.to_owned();
+                    thread_id
+                };
                 send_result(
                     &mut write,
                     &id,
-                    json!({ "thread": { "id": thread_id }, "model": "fake-model" }),
+                    json!({ "thread": { "id": response_id,"cwd":thread_cwd }, "model": "fake-model" }),
                 )
                 .await?;
                 // `thread/started` notification (best-effort; the kernel
@@ -468,6 +479,14 @@ async fn serve_conn(
                 .await?;
             }
             "turn/start" => {
+                if reads.sock.with_extension("turn-start-no-id").exists() {
+                    let requested=req.pointer("/params/threadId").and_then(Value::as_str).ok_or("turn requires threadId")?;
+                    let nonce=req.pointer("/params/clientUserMessageId").and_then(Value::as_str).ok_or("turn requires client identity")?;
+                    let facts=json!({"thread":{"id":requested,"cwd":thread_cwd,"status":{"type":"idle"},"turns":[{"id":turn_id,"status":"completed","items":[{"id":"accepted-user-message","type":"userMessage","clientId":nonce,"content":[]}]}]}});
+                    std::fs::write(reads.sock.with_extension("thread-read"),serde_json::to_vec(&facts).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                    send_result(&mut write,&id,json!({"turn":{}})).await?;
+                    continue;
+                }
                 if env_flag("FAKE_CODEX_FAIL_TURN_START") {
                     send_error(&mut write, &id, -32000, "forced turn/start failure").await?;
                     continue;

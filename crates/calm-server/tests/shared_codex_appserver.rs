@@ -5098,3 +5098,6 @@ mod terminal_approval;
 
 #[path = "cases/shared_codex_thread_release.rs"]
 mod thread_release;
+
+#[path = "cases/native_workspace.rs"]
+mod native_workspace;
