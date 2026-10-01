@@ -4,20 +4,73 @@ use crate::codex_appserver::TurnStatus;
 use crate::operation::execution_manager::backend::{Backend, LaunchOutcome, Observation};
 use crate::operation::execution_manager::{LaunchPermit, Record};
 
-pub(in crate::operation::execution_manager) struct CodexBackend<'a>(pub &'a SharedCodexAppServer);
+enum Connection {
+    Live(Arc<CodexAppServer>),
+    Unavailable(String),
+    #[cfg(feature = "fixtures")]
+    Fixture,
+}
+pub(in crate::operation::execution_manager) struct CodexBackend {
+    connection: Connection,
+    active_turns: Arc<DashMap<String, String>>,
+    sealed_turn_threads: Arc<DashMap<String, ()>>,
+    #[cfg(feature = "fixtures")]
+    fake: Option<Arc<FakeSharedCodexAppServer>>,
+    #[cfg(feature = "fixtures")]
+    notifications: NotificationFanout,
+}
+impl CodexBackend {
+    pub(in crate::operation::execution_manager) async fn for_service(
+        service: &SharedCodexAppServer,
+    ) -> Self {
+        #[cfg(feature = "fixtures")]
+        let connection = if service.fake.is_some() {
+            Connection::Fixture
+        } else {
+            match service.connected_client().await {
+                Ok(client) => Connection::Live(client),
+                Err(error) => Connection::Unavailable(error.to_string()),
+            }
+        };
+        #[cfg(not(feature = "fixtures"))]
+        let connection = match service.connected_client().await {
+            Ok(client) => Connection::Live(client),
+            Err(error) => Connection::Unavailable(error.to_string()),
+        };
+        Self {
+            connection,
+            active_turns: service.active_turns.clone(),
+            sealed_turn_threads: service.sealed_turn_threads.clone(),
+            #[cfg(feature = "fixtures")]
+            fake: service.fake.clone(),
+            #[cfg(feature = "fixtures")]
+            notifications: service.notifications.clone(),
+        }
+    }
+    fn client(&self) -> Result<&CodexAppServer> {
+        match &self.connection {
+            Connection::Live(client) => Ok(client),
+            Connection::Unavailable(error) => Err(CalmError::CodexAppServer(error.clone())),
+            #[cfg(feature = "fixtures")]
+            Connection::Fixture => Err(CalmError::CodexAppServer(
+                "fixture has no provider transport".into(),
+            )),
+        }
+    }
+}
+
 pub(in crate::operation::execution_manager) struct TurnRequest {
     pub thread: String,
     pub items: Vec<InputItem>,
     pub selection: TurnModelSelection,
 }
 #[async_trait::async_trait]
-impl Backend for CodexBackend<'_> {
+impl Backend for CodexBackend {
     type Request = TurnRequest;
     fn kind(&self) -> crate::operation::execution_manager::BackendKind {
         crate::operation::execution_manager::BackendKind::NativeTurn
     }
     async fn launch(&self, permit: LaunchPermit, request: TurnRequest) -> LaunchOutcome {
-        let daemon = self.0;
         if permit.record().holder != request.thread {
             return LaunchOutcome::NotIssued(CalmError::Conflict(
                 "launch permit belongs to another native owner".into(),
@@ -25,7 +78,7 @@ impl Backend for CodexBackend<'_> {
         }
         let nonce = permit.nonce().to_owned();
         #[cfg(feature = "fixtures")]
-        if let Some(fake) = daemon.fake.as_ref() {
+        if let Some(fake) = self.fake.as_ref() {
             if fake.reject_turn_start.load(Ordering::SeqCst) {
                 return LaunchOutcome::NotIssued(CalmError::CodexRefused(
                     "turn/start failed: unknown model (code -32602)".into(),
@@ -59,29 +112,25 @@ impl Backend for CodexBackend<'_> {
                 hook.entered.notify_one();
                 hook.release.notified().await;
             }
-            let _ = daemon.notifications.send(Notification::TurnStarted {
+            let _ = self.notifications.send(Notification::TurnStarted {
                 thread_id: request.thread,
                 turn: serde_json::json!({"id":turn}),
             });
             return LaunchOutcome::Started(turn);
         }
-        let client = match daemon.connected_client().await {
+        let client = match self.client() {
             Ok(client) => client,
             Err(error) => return LaunchOutcome::NotIssued(error),
         };
-        let card = match daemon.cached_card_for_thread(&request.thread) {
-            Some(card) => card,
-            None => {
-                return LaunchOutcome::NotIssued(CalmError::Conflict(
-                    "native owner mapping is missing".into(),
-                ));
-            }
-        };
-        let permissions = match daemon.read_task_permissions(&card).await {
-            Ok(policy) => policy,
-            Err(error) => return LaunchOutcome::NotIssued(error),
-        };
-        let result = match permissions.as_ref() {
+        let permissions = permit.policy();
+        if permit.record().access == calm_types::workspace_access::WorkspaceAccess::ReadOnly
+            && permissions.is_none()
+        {
+            return LaunchOutcome::NotIssued(CalmError::Conflict(
+                "read execution permit lacks its enforced policy".into(),
+            ));
+        }
+        let result = match permissions {
             Some(policy) => {
                 client
                     .turn_start_with_permissions(
@@ -119,13 +168,13 @@ impl Backend for CodexBackend<'_> {
         self.observe(record, record.phase == "stopping").await
     }
     async fn stop(&self, record: &Record) -> Result<Observation> {
-        self.0.seal_turn_thread_for_deletion(&record.holder);
+        self.sealed_turn_threads.insert(record.holder.clone(), ());
         self.observe(record, true).await
     }
 }
-impl CodexBackend<'_> {
+impl CodexBackend {
     async fn observe(&self, record: &Record, stop: bool) -> Result<Observation> {
-        let client = self.0.connected_client().await?;
+        let client = self.client()?;
         let mut facts = client
             .thread_workspace_history(&record.holder)
             .await?
@@ -148,7 +197,7 @@ impl CodexBackend<'_> {
         .id
         .clone();
         if stop {
-            self.0.seal_turn_thread_for_deletion(&record.holder);
+            self.sealed_turn_threads.insert(record.holder.clone(), ());
             client.turn_interrupt(&record.holder, &turn).await?;
             client.clean_background_terminals(&record.holder).await?;
             facts = client
@@ -174,8 +223,7 @@ impl CodexBackend<'_> {
             && facts.stopped()
             && client.background_terminals_stopped(&record.holder).await?;
         if stopped {
-            self.0
-                .active_turns
+            self.active_turns
                 .remove_if(&record.holder, |_, active| active == &turn);
         }
         Ok(Observation {

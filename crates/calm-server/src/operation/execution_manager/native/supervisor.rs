@@ -1393,10 +1393,12 @@ impl SharedCodexAppServer {
                 "native execution owner is closed".into(),
             ));
         }
+        let permissions = self.read_task_permissions(&card).await?;
+        let backend = execution_backend::CodexBackend::for_service(self).await;
         let manager = super::super::ExecutionManager::new(pool);
         let receipt = manager
-            .submit(
-                &execution_backend::CodexBackend(self),
+            .submit_with_policy(
+                &backend,
                 &super::super::Owner {
                     card,
                     holder: thread_id.to_owned(),
@@ -1407,6 +1409,7 @@ impl SharedCodexAppServer {
                     selection: selection.clone(),
                 },
                 client_user_message_id,
+                permissions,
             )
             .await?;
         if !receipt.stopped {
@@ -1414,12 +1417,7 @@ impl SharedCodexAppServer {
                 .insert(thread_id.to_owned(), receipt.identity.clone());
         }
         if self.sealed_turn_threads.contains_key(thread_id) {
-            manager
-                .cancel(
-                    &execution_backend::CodexBackend(self),
-                    &receipt.execution_id,
-                )
-                .await?;
+            manager.cancel(&backend, &receipt.execution_id).await?;
             self.active_turns
                 .remove_if(thread_id, |_, active| active == &receipt.identity);
             return Err(CalmError::Conflict(

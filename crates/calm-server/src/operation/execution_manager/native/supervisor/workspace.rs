@@ -154,8 +154,9 @@ impl SharedCodexAppServer {
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Conflict("execution storage unavailable".into()))?;
+        let backend = super::execution_backend::CodexBackend::for_service(self).await;
         super::super::super::ExecutionManager::new(pool)
-            .cancel(&super::execution_backend::CodexBackend(self), lease)
+            .cancel(&backend, lease)
             .await
     }
 
@@ -165,8 +166,9 @@ impl SharedCodexAppServer {
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Conflict("execution storage unavailable".into()))?;
+        let backend = super::execution_backend::CodexBackend::for_service(self).await;
         super::super::super::ExecutionManager::new(pool)
-            .recover(&super::execution_backend::CodexBackend(self), lease)
+            .recover(&backend, lease)
             .await
     }
 }

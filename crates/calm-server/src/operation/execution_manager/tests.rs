@@ -99,10 +99,12 @@ async fn owner(
     if read {
         let task = crate::model::new_id();
         let operation = crate::model::new_id();
-        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) \
+        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status, \
+             worker_card_id,declared_by,created_at_ms,updated_at_ms) \
             VALUES(?1,?2,?1,'codex','read',?3,'running',?4,'user',0,0)")
             .bind(&task).bind(track).bind(serde_json::json!({"neige_workspace":{"access":"read_only"}}).to_string()).bind(&card).execute(repo.pool()).await.unwrap();
-        sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms) \
+        sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type, \
+             target_json,payload_json,phase,created_at_ms,updated_at_ms) \
             VALUES(?1,?1,'codex-worker',?2,'hash','card','{}','{}','succeeded',0,0)")
             .bind(&operation).bind(task).execute(repo.pool()).await.unwrap();
         sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,access_mode,created_at_ms,updated_at_ms) \
@@ -225,13 +227,16 @@ async fn native_stop_can_precede_writable_task_business_report() {
     let task = crate::model::new_id();
     let operation = crate::model::new_id();
     let lease = crate::model::new_id();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) \
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status, \
+             worker_card_id,declared_by,created_at_ms,updated_at_ms) \
         VALUES(?1,?2,?1,'codex','write','null','running',?3,'user',0,0)")
         .bind(&task).bind(&track).bind(&owner.card).execute(repo.pool()).await.unwrap();
-    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms) \
+    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type, \
+             target_json,payload_json,phase,created_at_ms,updated_at_ms) \
         VALUES(?1,?1,'codex-worker',?2,'hash','card','{}','{}','succeeded',0,0)")
         .bind(&operation).bind(task).execute(repo.pool()).await.unwrap();
-    sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,access_mode,write_root_id,created_at_ms,updated_at_ms) \
+    sqlx::query("INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,access_mode,write_root_id, \
+         created_at_ms,updated_at_ms) \
         VALUES(?1,?2,?3,?4,'held',?5,'read_write',?1,0,0)")
         .bind(&lease).bind(&owner.card).bind(&track).bind(cwd.path().to_str().unwrap()).bind(operation).execute(repo.pool()).await.unwrap();
     let backend = RegisteredBackend {

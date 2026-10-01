@@ -26,6 +26,17 @@ impl ExecutionManager {
         request: B::Request,
         preferred_nonce: Option<&str>,
     ) -> Result<Receipt> {
+        self.submit_with_policy(backend, owner, request, preferred_nonce, None)
+            .await
+    }
+    async fn submit_with_policy<B: Backend>(
+        &self,
+        backend: &B,
+        owner: &Owner,
+        request: B::Request,
+        preferred_nonce: Option<&str>,
+        policy: Option<PermissionsChoice>,
+    ) -> Result<Receipt> {
         let reservation = Reservation::acquire(&self.pool, owner).await?;
         let nonce = match reservation.nonce(preferred_nonce).await {
             Ok(nonce) => nonce,
@@ -39,10 +50,18 @@ impl ExecutionManager {
             .ok_or_else(|| CalmError::Conflict("execution disappeared before launch".into()))?;
         let permit = match record.access {
             calm_types::workspace_access::WorkspaceAccess::ReadOnly => {
-                LaunchPermit::Read(ReadPermit { record, nonce })
+                LaunchPermit::Read(ReadPermit {
+                    record,
+                    nonce,
+                    policy,
+                })
             }
             calm_types::workspace_access::WorkspaceAccess::ReadWrite => {
-                LaunchPermit::Write(WritePermit { record, nonce })
+                LaunchPermit::Write(WritePermit {
+                    record,
+                    nonce,
+                    policy,
+                })
             }
         };
         match backend.launch(permit, request).await {
@@ -85,6 +104,7 @@ impl ExecutionManager {
         let permit = LaunchPermit::Write(WritePermit {
             nonce: record.id.clone(),
             record,
+            policy: None,
         });
         match backend.launch(permit, request).await {
             LaunchOutcome::Started(identity) => {
@@ -152,16 +172,24 @@ impl ExecutionManager {
 pub(crate) struct ReadPermit {
     record: Record,
     nonce: String,
+    policy: Option<PermissionsChoice>,
 }
 pub(crate) struct WritePermit {
     record: Record,
     nonce: String,
+    policy: Option<PermissionsChoice>,
 }
 pub(super) enum LaunchPermit {
     Read(ReadPermit),
     Write(WritePermit),
 }
 impl LaunchPermit {
+    fn policy(&self) -> Option<&PermissionsChoice> {
+        match self {
+            Self::Read(p) => p.policy.as_ref(),
+            Self::Write(p) => p.policy.as_ref(),
+        }
+    }
     pub(super) fn record(&self) -> &Record {
         match self {
             Self::Read(p) => &p.record,
