@@ -171,12 +171,12 @@ export function sentMentionParts(text: string): readonly SentMentionPart[] {
     fences.lastIndex = start;
     let closing = fences.exec(text);
     while (closing !== null && closing[0].length !== opening[1].length) closing = fences.exec(text);
-    if (closing === null) break;
+    if (closing === null) continue;
     let address = text.slice(start, closing.index);
     if (address.startsWith(' ') && address.endsWith(' ')) address = address.slice(1, -1);
     const label = sentMentionLabel(address);
-    openings.lastIndex = fences.lastIndex;
     if (label === null) continue;
+    openings.lastIndex = fences.lastIndex;
     if (opening.index > end) parts.push({ text: text.slice(end, opening.index), label: null });
     end = fences.lastIndex;
     parts.push({ text: text.slice(opening.index, end), label });

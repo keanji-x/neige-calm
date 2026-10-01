@@ -258,7 +258,8 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
               {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
             >{sentMentionParts(turn.text).map((part, index) => part.label === null ? part.text : (
               <span key={index} data-nc-sent-mention="" title={part.text}>
-                <Badge label={part.label} />
+                <Badge className={styles.mentionPill}
+                  label={<span className={styles.mentionLabel}>{part.label}</span>} />
               </span>
             ))}</p>
             {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}

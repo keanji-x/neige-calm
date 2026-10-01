@@ -154,6 +154,18 @@ describe('sentMentionParts', () => {
     ]);
   });
 
+  it('recovers valid picks after incomplete or invalid mention prefixes', () => {
+    for (const prefix of ['literal @``unfinished then ', 'literal @`unfinished then ']) {
+      expect(sentMentionParts(prefix + '@`tag:x`')).toEqual([
+        { text: prefix, label: null }, { text: '@`tag:x`', label: '#x' },
+      ]);
+      expect(sentMentionParts(prefix + '@`area/reports/Deploy notes.md`')).toEqual([
+        { text: prefix, label: null },
+        { text: '@`area/reports/Deploy notes.md`', label: 'Deploy notes' },
+      ]);
+    }
+  });
+
   it('leaves ordinary, unknown and incomplete references unchanged', () => {
     for (const text of ['', '@bob **literal**', '@`/tmp/a`', '@`tag:`',
       '@`area/reports/bad%.md`', '@`area/reports/.md`', '@`area/reports/a.md#`', '@``tag:x`']) {

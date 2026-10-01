@@ -203,6 +203,18 @@
     color: var(--text);
   }
 
+  .mentionPill {
+    max-inline-size: 100%;
+    vertical-align: middle;
+  }
+
+  .mentionLabel {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   /*
    * ── The message the agent has not been handed yet ────────────────────────
    *
