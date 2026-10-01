@@ -199,3 +199,44 @@ for (const failedFirst of [false, true]) {
     }
   });
 }
+
+for (const status of ['interrupted', 'failed'] as const) {
+  test(`continues a ${status} response only after an explicit composer send`, async ({ page, request }) => {
+    const area = await createArea(request, `Continuation ${Date.now()}`);
+    try {
+      const track = await createTrack(request, area.id);
+      let sends = 0;
+      await page.route('**/api/cards/*/harness/items?**', async (route) => {
+        const response = await route.fetch();
+        const cardId = new URL(route.request().url()).pathname.split('/')[3];
+        await route.fulfill({ response, json: [{ id: 99, worker_session_id: 'fixture', card_id: cardId,
+          track_id: track.id, thread_id: 'previous-thread', turn_id: 'previous-turn',
+          item_uuid: null, item_type: null, method: 'turn/completed',
+          params: JSON.stringify({ id: 'previous-turn', status, error: null }),
+          turn_error_text: null, created_at_ms: Date.now() }] });
+      });
+      await page.route('**/api/cards/*/planner/input', async (route) => { sends += 1; await route.continue(); });
+      await page.goto(`/next/track/${track.id}`);
+      await page.getByRole('button', { name: 'Conversation Planner' }).click();
+      const guidance = page.getByText('Send a message to continue.', { exact: true });
+      await expect(guidance).toBeVisible();
+      const disclosure = page.getByRole('button', { name: status === 'failed' ? /^Failed/ : /^Response interrupted/ });
+      await disclosure.click();
+      expect(sends).toBe(0);
+      const composer = page.getByRole('combobox', { name: 'Message' });
+      await composer.fill('Continue from the partial answer');
+      // Reading details keeps the draft; closing a drawer has a separate draft lifecycle.
+      await disclosure.click();
+      await disclosure.click();
+      await expect(composer).toHaveText('Continue from the partial answer');
+      expect(sends).toBe(0);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(guidance).toBeVisible();
+      await composer.press('Enter');
+      await expect.poll(() => sends).toBe(1);
+      await expect(page.locator('[data-nc-thread]').getByText('Continue from the partial answer', { exact: true })).toBeVisible();
+      await expect(guidance).toHaveCount(0);
+      expect(sends).toBe(1);
+    } finally { await request.delete(`/api/areas/${area.id}`); }
+  });
+}

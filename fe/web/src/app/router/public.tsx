@@ -1492,6 +1492,7 @@ function useConversationPanel(
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
                 stalled={store.stalled}
+                canContinue={store.historyReady && !store.sendBlocked && !store.working && !store.stopping}
                 stalledReason={store.blockedReason}
                 stopFeedback={store.stopFeedback}
               />

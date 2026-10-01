@@ -87,7 +87,7 @@ describe('ChatThread', () => {
   it('renders persisted mentions as pills while keeping ordinary text literal', () => {
     const text = 'see @`tag:部署` and @`area/reports/Deploy notes.md` '
       + 'then @`area/reports/Deploy notes.md#b_1a2b` **literal** @bob';
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
       turns={[turn({ text })]} />);
     const message = document.querySelector('[data-nc-turn="you"]')!;
     expect([...message.querySelectorAll('[data-nc-sent-mention]')].map((pill) => pill.textContent))
@@ -98,12 +98,12 @@ describe('ChatThread', () => {
   });
 
   it('renders the empty state before anything is said', () => {
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[]} />);
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]} />);
     expect(screen.getByText('Nothing said yet.')).toBeTruthy();
   });
 
   it('does not call a pending conversation empty while the agent is working', () => {
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[]} pending />);
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]} pending />);
     expect(workingMarks()).toHaveLength(1);
     expect(screen.getByText('The agent is working.')).toBeTruthy();
     expect(screen.getByText('Messages will appear here.')).toBeTruthy();
@@ -113,7 +113,7 @@ describe('ChatThread', () => {
   it('renders an operable system disclosure, not either speaker', async () => {
     const user = userEvent.setup();
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[systemEntry()]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[systemEntry()]} />,
     );
     const system = container.querySelector('[data-nc-turn="system"]');
     expect(system?.tagName).toBe('DETAILS');
@@ -133,7 +133,7 @@ describe('ChatThread', () => {
   it('states a failed turn in the kernel\'s readable words, keeps the raw message as its tooltip, and gives a reason', () => {
     const raw = '{"type":"error","status":400,"error":{"message":"The conversation exceeded the model\'s context window."}}';
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[
           turn({ id: 'you-1', text: 'Summarise everything.' }),
@@ -160,18 +160,18 @@ describe('ChatThread', () => {
 
   it('shows a code it has no sentence for as the raw token, and an unknown status as such', () => {
     const { container, rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[turnOutcome({ message: 'nope', code: 'internalServerError' })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[turnOutcome({ message: 'nope', code: 'internalServerError' })]} />,
     );
     expect(container.querySelector('[data-nc-turn-outcome-hint]')?.textContent).toBe('internalServerError');
     rerender(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[turnOutcome({ rawStatus: 'inProgress' })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[turnOutcome({ rawStatus: 'inProgress' })]} />,
     );
     expect(container.querySelector('[data-nc-turn-outcome-message]')).toBeNull();
     expect(container.querySelector('[data-nc-turn-outcome-hint]')?.textContent).toBe('Ended with status “inProgress”');
   });
 
   it.each([undefined, '', '   '])('keeps the same disclosure for missing details and an unusable code %s', (code) => {
-    const { container, rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+    const { container, rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
       turns={[turnOutcome({ text: '   ', message: 'raw provider payload', code })]} />);
     expect(screen.getByText('Failed', { exact: true })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
@@ -179,13 +179,23 @@ describe('ChatThread', () => {
     expect(container.querySelector('[data-nc-turn-outcome]')?.getAttribute('data-nc-turn-outcome')).toBe('failed');
     expect(screen.getByRole('button', { name: 'Failed', expanded: true })).toBeTruthy();
     expect(container.textContent).not.toContain('raw provider payload');
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
       turns={[turnOutcome({ code: 'rateLimitExceeded' })]} />);
     expect(screen.getByText('Failed', { exact: true })).toBeTruthy();
     expect(screen.queryByText('Unknown error')).toBeNull();
     expect(screen.getByRole('button', { name: 'Failed' })).toBeTruthy();
     expect(container.querySelector('[data-nc-turn-outcome-hint]')?.textContent).toBe('Requests are being rate-limited; try again in a moment.');
     expect(container.querySelector('[data-nc-turn-outcome-fallback]')).toBeNull();
+  });
+
+  it.each(['interrupted', 'failed'] as const)('shows continuation guidance for a settled %s only when sending is available', (status) => {
+    const props = { cards: {}, stalled: false, conversation: conversation(), turns: [turnOutcome({ status })] };
+    const { rerender } = render(<ChatThread {...props} canContinue={false} />);
+    expect(screen.queryByText('Send a message to continue.')).toBeNull();
+    rerender(<ChatThread {...props} canContinue={true} />);
+    expect(screen.getByText('Send a message to continue.')).toBeTruthy();
+    rerender(<ChatThread {...props} canContinue={false} />);
+    expect(screen.queryByText('Send a message to continue.')).toBeNull();
   });
 
   it('shows the restart reason from the production transcript wire', () => {
@@ -196,7 +206,7 @@ describe('ChatThread', () => {
       params: JSON.stringify({ id: 'turn-1', status: 'interrupted', error: { message: text } }),
       turn_error_text: text, created_at_ms: NOW,
     }]);
-    const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+    const { container } = render(<ChatThread canContinue={true} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
     const details = screen.getByRole('button', { name: /^Response interrupted/, expanded: false });
     fireEvent.click(details);
     expect(details.getAttribute('aria-expanded')).toBe('true');
@@ -216,7 +226,7 @@ describe('ChatThread', () => {
       params: JSON.stringify({ id: 'turn-timeout', status: 'failed', error: { message: reason } }),
       turn_error_text: reason, created_at_ms: NOW,
     }]);
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
     fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
     expect(screen.getByText(reason, { exact: true })).toBeTruthy();
     expect(screen.queryByText('The model provider is temporarily unavailable.', { exact: true })).toBeNull();
@@ -224,7 +234,7 @@ describe('ChatThread', () => {
 
   it('does not guess the cause or substitute raw errors for a missing readable reason', () => {
     const raw = '{"internal":"raw error payload"}';
-    const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+    const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
       turns={[turnOutcome({ status: 'interrupted', message: raw })]} />);
     expect(screen.getByRole('status').textContent).toContain('Response interrupted');
     expect(screen.getByText('Response interrupted', { exact: true })).toBeTruthy();
@@ -236,24 +246,24 @@ describe('ChatThread', () => {
   it('keeps historical interruption details but offers continuation guidance only at an idle tail', () => {
     const interrupted = turnOutcome({ status: 'interrupted', text: 'Connection ended.' });
     const props = { cards: {}, stalled: false, conversation: conversation() };
-    const { rerender } = render(<ChatThread {...props} turns={[interrupted, turn({ id: 'new-turn' })]} />);
+    const { rerender } = render(<ChatThread canContinue={true} {...props} turns={[interrupted, turn({ id: 'new-turn' })]} />);
     expect(screen.getByText('Connection ended.')).toBeTruthy();
     expect(screen.queryByText('Send a message to continue.')).toBeNull();
-    rerender(<ChatThread {...props} turns={[interrupted]} pending />);
+    rerender(<ChatThread canContinue={true} {...props} turns={[interrupted]} pending />);
     expect(screen.queryByText('Send a message to continue.')).toBeNull();
-    rerender(<ChatThread {...props} turns={[interrupted]} stalled />);
+    rerender(<ChatThread canContinue={true} {...props} turns={[interrupted]} stalled />);
     expect(screen.queryByText('Send a message to continue.')).toBeNull();
   });
 
   it('says Response interrupted for an interrupted turn and nothing at all for a completed one', () => {
     const { container, rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[turnOutcome({ status: 'interrupted' })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[turnOutcome({ status: 'interrupted' })]} />,
     );
     expect(container.querySelector('[data-nc-turn-outcome="interrupted"]')).not.toBeNull();
     expect(screen.getByRole('status').textContent).toContain('Response interrupted');
     expect(screen.getByText('Response interrupted', { exact: true })).toBeTruthy();
     rerender(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn(), turnOutcome({ status: 'completed' })]}
       />,
@@ -265,7 +275,7 @@ describe('ChatThread', () => {
 
   it('keeps the live mark logic untouched by a trailing outcome', () => {
     render(
-      <ChatThread cards={{ c1: 'working' }} stalled={false}
+      <ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false}
         conversation={conversation({ state: 'running' })}
         turns={[turn(), turnOutcome({ status: 'failed', message: 'boom' })]}
       />,
@@ -275,7 +285,7 @@ describe('ChatThread', () => {
 
   it('does not let a system entry open or merge user exchanges', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[
           turn({ id: 'you-1', text: 'First' }),
@@ -292,12 +302,12 @@ describe('ChatThread', () => {
   /* `null` says only that no live session was found — not that it exited. */
   it('renders a stateless conversation exactly like an idle one', () => {
     const { container: idle } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation({ state: 'idle' })} turns={[turn()]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'idle' })} turns={[turn()]} />,
     );
     const idleHtml = idle.innerHTML;
     cleanup();
     const { container: stateless } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation({ state: null })} turns={[turn()]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: null })} turns={[turn()]} />,
     );
     expect(stateless.innerHTML).toBe(idleHtml);
     expect(workingMarks()).toHaveLength(0);
@@ -323,7 +333,7 @@ describe('ChatThread', () => {
     document.body.append(outer);
     outer.append(pane);
     render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[turn()]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[turn()]} />,
       { container: pane },
     );
     expect(setPaneScroll).toHaveBeenCalledWith(800);
@@ -334,13 +344,13 @@ describe('ChatThread', () => {
   it('does not follow a new turn when the reader has scrolled away', () => {
     const { pane, writes, scrollTo } = followPane();
     const { rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
       { container: pane },
     );
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
 
     scrollTo(100);
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(4)} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(4)} />);
 
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
     expect(pane.scrollTop).toBe(100);
@@ -350,11 +360,11 @@ describe('ChatThread', () => {
   it('follows a new turn for a reader still at the end', () => {
     const { pane, writes, scrollTo } = followPane();
     const { rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
       { container: pane },
     );
     scrollTo(PANE_SCROLL_HEIGHT - PANE_CLIENT_HEIGHT);
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(4)} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(4)} />);
 
     expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT]);
     pane.remove();
@@ -363,11 +373,11 @@ describe('ChatThread', () => {
   it.each([true, false])('follows a new pause only when the reader is at the end (%s)', (atEnd) => {
     const { pane, writes, scrollTo } = followPane();
     const turns = exchangeTurns(3);
-    const { rerender } = render(<ChatThread cards={{}} stalled={false}
+    const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false}
       conversation={conversation()} turns={turns} />, { container: pane });
     const position = atEnd ? PANE_SCROLL_HEIGHT - PANE_CLIENT_HEIGHT : 100;
     scrollTo(position);
-    rerender(<ChatThread cards={{}} stalled stalledReason="Stopping is unconfirmed."
+    rerender(<ChatThread canContinue={false} cards={{}} stalled stalledReason="Stopping is unconfirmed."
       conversation={conversation()} turns={turns} />);
     expect(writes).toEqual(atEnd ? [PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT] : [PANE_SCROLL_HEIGHT]);
     if (!atEnd) expect(pane.scrollTop).toBe(position);
@@ -377,7 +387,7 @@ describe('ChatThread', () => {
   it('does not follow when older turns are loaded in front', () => {
     const { pane, writes, scrollTo } = followPane();
     const { rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
       { container: pane },
     );
     scrollTo(PANE_SCROLL_HEIGHT - PANE_CLIENT_HEIGHT);
@@ -385,12 +395,12 @@ describe('ChatThread', () => {
 
     const earlier = exchangeTurns(2).map((entry) => ({ ...entry, id: `old-${entry.id}` }));
     rerender(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[...earlier, ...exchangeTurns(3)]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...earlier, ...exchangeTurns(3)]} />,
     );
 
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
     rerender(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[...earlier, ...exchangeTurns(3), turn({ id: 'late', author: 'agent' })]}
       />,
@@ -407,14 +417,14 @@ describe('ChatThread', () => {
       turn({ id: 'thought', author: 'agent', text: 'Thought' }),
     ];
     const { rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={thinking} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={thinking} />,
       { container: pane },
     );
     scrollTo(PANE_SCROLL_HEIGHT - PANE_CLIENT_HEIGHT);
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
 
     rerender(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn({ id: 'q1' }), turn({ id: 'answer', author: 'agent', text: 'hi' })]}
       />,
@@ -426,7 +436,7 @@ describe('ChatThread', () => {
 
   it('keeps each turn verbatim and marks who wrote it', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn(), turn({ id: 't2', author: 'agent', text: 'test' })]}
       />,
@@ -438,7 +448,7 @@ describe('ChatThread', () => {
 
   it('prints no author label and no time on an unbroken conversation', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[
           turn(),
@@ -453,7 +463,7 @@ describe('ChatThread', () => {
 
   it('stamps a time where the conversation restarts after a gap', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[
           turn(),
@@ -467,16 +477,16 @@ describe('ChatThread', () => {
 
   it('shows the live mark once while a reply is pending', () => {
     const turns = [turn()];
-    const { rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} pending />);
+    const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} pending />);
     expect(workingMarks()).toHaveLength(1);
 
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
     expect(workingMarks()).toHaveLength(0);
   });
 
   it('renders the reply as markdown — headings, lists and fenced code', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn({
           id: 't2',
@@ -499,7 +509,7 @@ describe('ChatThread', () => {
   /* `headingLevelStart={3}`: the page owns `<h1>` and its sections own `<h2>`. */
   it('starts the reply’s headings below the page’s own', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn({ id: 't2', author: 'agent', text: '# Top' })]}
       />,
@@ -511,7 +521,7 @@ describe('ChatThread', () => {
 
   it('leaves what you typed as literal text, markdown or not', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn({ text: '# not a heading *not* emphasis' })]}
       />,
@@ -523,7 +533,7 @@ describe('ChatThread', () => {
 
   it('states failure in text and exposes activity state through the shared attribute', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ state: 'failed' })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ state: 'failed' })]} />,
     );
     expect(screen.getByText('Failed')).toBeTruthy();
     expect(container.querySelector('[data-nc-state="failed"]')).toBeTruthy();
@@ -532,7 +542,7 @@ describe('ChatThread', () => {
 
   it('prints the reason inside the element that carries the state', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[activity({ state: 'failed', detail: 'error: no test specified' })]}
       />,
@@ -544,7 +554,7 @@ describe('ChatThread', () => {
 
   it('prints nothing but the line itself when the action succeeded', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity()]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity()]} />,
     );
     expect(container.textContent).toBe('Rannpm test');
   });
@@ -557,24 +567,24 @@ describe('ChatThread', () => {
 
   it('times a long action and stays quiet about a fast one', () => {
     const { container, rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 4_320 })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 4_320 })]} />,
     );
     expect(durationText(container)).toBe('4.3s');
 
     rerender(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 120 })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 120 })]} />,
     );
     expect(container.textContent).toBe('Rannpm test');
   });
 
   it('draws the line at one second, to the millisecond', () => {
     const { container, rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 999 })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 999 })]} />,
     );
     expect(container.textContent).toBe('Rannpm test');
 
     rerender(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 1_000 })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 1_000 })]} />,
     );
     expect(durationText(container)).toBe('1.0s');
   });
@@ -583,21 +593,21 @@ describe('ChatThread', () => {
      a `formatActivityDuration` with the `padStart` deleted. `3m 02s` is not. */
   it('reads a multi-minute action in minutes and padded seconds', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 182_000 })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 182_000 })]} />,
     );
     expect(durationText(container)).toBe('3m 02s');
   });
 
   it('never says sixty seconds', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 59_999 })]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 59_999 })]} />,
     );
     expect(durationText(container)).toBe('1m 00s');
   });
 
   it('says nothing about elapsed time while the action is still running', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[activity({ state: 'running', verb: 'Running', durationMs: 5_000 })]}
       />,
@@ -606,13 +616,13 @@ describe('ChatThread', () => {
   });
 
   it('shows exactly one live mark after a completed activity while live', () => {
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity()]} pending />);
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity()]} pending />);
     expect(workingMarks()).toHaveLength(1);
   });
 
   it('shows exactly one live mark on a trailing agent turn while live', () => {
     render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn({ author: 'agent', text: 'Still working.' })]}
         pending
@@ -623,7 +633,7 @@ describe('ChatThread', () => {
 
   it('shows exactly one live mark on a running activity while live', () => {
     render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[activity({ state: 'running', verb: 'Running' })]}
         pending
@@ -633,7 +643,7 @@ describe('ChatThread', () => {
   });
 
   it('shows no live mark when the conversation is not live', () => {
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[activity({ state: 'running' })]} />);
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ state: 'running' })]} />);
     expect(workingMarks()).toHaveLength(0);
   });
 
@@ -641,20 +651,20 @@ describe('ChatThread', () => {
   it('thread live mark follows activity.cards', () => {
     const turns = [turn()];
     const { rerender } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation({ state: 'turn_pending' })} turns={turns} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'turn_pending' })} turns={turns} />,
     );
     expect(workingMarks()).toHaveLength(0);
     expect(screen.queryByText('Working')).toBeNull();
 
-    rerender(<ChatThread cards={{ c1: 'working' }} stalled={false} conversation={conversation({ state: 'idle' })} turns={turns} />);
+    rerender(<ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false} conversation={conversation({ state: 'idle' })} turns={turns} />);
     expect(workingMarks()).toHaveLength(1);
     expect(screen.getByText('Working')).toBeTruthy();
     expect(screen.getAllByText('Working')).toHaveLength(1);
 
-    rerender(<ChatThread cards={{ other: 'working' }} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} />);
+    rerender(<ChatThread canContinue={false} cards={{ other: 'working' }} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} />);
     expect(workingMarks()).toHaveLength(0);
 
-    rerender(<ChatThread cards={{ c1: 'failed' }} stalled={false} conversation={conversation()} turns={turns} />);
+    rerender(<ChatThread canContinue={false} cards={{ c1: 'failed' }} stalled={false} conversation={conversation()} turns={turns} />);
     expect(workingMarks()).toHaveLength(0);
   });
 
@@ -662,21 +672,21 @@ describe('ChatThread', () => {
   it('the local wedge suppresses the kernel’s stale working verdict', () => {
     const turns = [turn()];
     const { rerender } = render(
-      <ChatThread cards={{ c1: 'working' }} stalled conversation={conversation({ state: 'turn_pending' })} turns={turns} />,
+      <ChatThread canContinue={false} cards={{ c1: 'working' }} stalled conversation={conversation({ state: 'turn_pending' })} turns={turns} />,
     );
     expect(workingMarks()).toHaveLength(0);
     expect(screen.queryByText('Working')).toBeNull();
-    rerender(<ChatThread cards={{ c1: 'working' }} stalled pending conversation={conversation()} turns={turns} />);
+    rerender(<ChatThread canContinue={false} cards={{ c1: 'working' }} stalled pending conversation={conversation()} turns={turns} />);
     expect(workingMarks()).toHaveLength(0);
     expect(screen.queryByText('Working')).toBeNull();
-    rerender(<ChatThread cards={{ c1: 'working' }} stalled={false} conversation={conversation()} turns={turns} />);
+    rerender(<ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false} conversation={conversation()} turns={turns} />);
     expect(workingMarks()).toHaveLength(1);
     expect(screen.getByText('Working')).toBeTruthy();
   });
 
   it('a trailing agent reply keeps the drawer’s spoken Working', () => {
     const { rerender } = render(
-      <ChatThread cards={{ c1: 'working' }} stalled={false}
+      <ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false}
         conversation={conversation()}
         turns={[turn(), turn({ id: 'a1', author: 'agent', text: 'Still working.' })]}
       />,
@@ -686,7 +696,7 @@ describe('ChatThread', () => {
     expect(screen.getAllByText('Working')).toHaveLength(1);
 
     rerender(
-      <ChatThread cards={{ c1: 'working' }} stalled={false}
+      <ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false}
         conversation={conversation()}
         turns={[turn(), activity({ state: 'running', verb: 'Running' })]}
       />,
@@ -696,7 +706,7 @@ describe('ChatThread', () => {
     expect(screen.getAllByText('Working')).toHaveLength(1);
 
     rerender(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn(), turn({ id: 'a1', author: 'agent', text: 'Still working.' })]}
       />,
@@ -754,14 +764,14 @@ function boxAt(element: Element, top: number): void {
 describe('ChatThread’s exchange rail', () => {
   it('has no navigation target before the first exchange', () => {
     const { outer, pane } = drawerPane();
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[]} />, { container: pane });
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]} />, { container: pane });
     expect(screen.queryByRole('group', { name: 'Jump to an exchange' })).toBeNull();
     outer.remove();
   });
 
   it('shows the first exchange immediately in the drawer seam', () => {
     const { outer, pane, seam } = drawerPane();
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(1)} />, { container: pane });
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(1)} />, { container: pane });
     expect(railDots()).toHaveLength(1);
     expect(seam.contains(railDots()[0])).toBe(true);
     expect(pane.querySelector('[data-nc-rail-track]')).toBeNull();
@@ -770,7 +780,7 @@ describe('ChatThread’s exchange rail', () => {
 
   it('renders no rail outside a drawer, and the transcript regardless', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES + 3)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES + 3)} />,
     );
     expect(screen.queryByRole('group', { name: 'Jump to an exchange' })).toBeNull();
     expect(container.querySelectorAll('[data-nc-exchange]')).toHaveLength(RAIL_FIXTURE_EXCHANGES + 3);
@@ -779,7 +789,7 @@ describe('ChatThread’s exchange rail', () => {
   it('renders exactly one dot per exchange from the threshold up', () => {
     const { outer, pane } = drawerPane();
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES + 3)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES + 3)} />,
       { container: pane },
     );
     const markers = container.querySelectorAll('[data-nc-exchange]');
@@ -796,7 +806,7 @@ describe('ChatThread’s exchange rail', () => {
     }));
     const { outer, pane } = drawerPane();
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />, { container: pane },
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />, { container: pane },
     );
 
     expect([...container.querySelectorAll('[data-nc-exchange]')]
@@ -811,7 +821,7 @@ describe('ChatThread’s exchange rail', () => {
   it('names each dot with its ordinal and its prompt, and paints no text', () => {
     const { outer, pane } = drawerPane();
     render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     const dots = railDots();
@@ -828,7 +838,7 @@ describe('ChatThread’s exchange rail', () => {
     const turns = exchangeTurns(RAIL_FIXTURE_EXCHANGES).map((entry) =>
       entry.author === 'you' ? { ...entry, text: 'Continue' } : entry);
     const { outer, pane } = drawerPane();
-    render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />, { container: pane });
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />, { container: pane });
     const names = railDots().map((dot) => dot.getAttribute('aria-label'));
     expect(new Set(names).size).toBe(RAIL_FIXTURE_EXCHANGES);
     outer.remove();
@@ -837,7 +847,7 @@ describe('ChatThread’s exchange rail', () => {
   it('holds one tab stop and moves it with the arrows', async () => {
     const { outer, pane } = drawerPane();
     render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     const stops = () => railDots().map((dot) => dot.getAttribute('tabindex'));
@@ -862,7 +872,7 @@ describe('ChatThread’s exchange rail', () => {
   it('scrolls the drawer pane to the pressed exchange, and nothing above it', async () => {
     const { outer, pane, setOuterScroll, setPaneScroll } = drawerPane();
     render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     /* The follow effect has already written once. */
@@ -883,7 +893,7 @@ describe('ChatThread’s exchange rail', () => {
   it('marks the pressed dot as the current one', async () => {
     const { outer, pane } = drawerPane();
     render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     await userEvent.click(railDots()[3]);
@@ -895,7 +905,7 @@ describe('ChatThread’s exchange rail', () => {
   it('does nothing at all when the marker is gone', async () => {
     const { outer, pane, setOuterScroll, setPaneScroll } = drawerPane();
     render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     setPaneScroll.mockClear();
@@ -918,7 +928,7 @@ describe('ChatThread’s exchange rail', () => {
     try {
       const { outer, pane } = drawerPane();
       render(
-        <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
+        <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
         { container: pane },
       );
       const preview = () => document.querySelector('[data-nc-rail-preview]');
@@ -1227,7 +1237,7 @@ describe('ChatComposer', () => {
 
 it('shows a paused runtime with the same disclosure and separator, even without transcript rows', () => {
   const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
-  const { container } = render(<ChatThread cards={{}} stalled stalledReason={reason}
+  const { container } = render(<ChatThread canContinue={false} cards={{}} stalled stalledReason={reason}
     conversation={conversation()} turns={[]} />);
   expect(screen.getByRole('button', { name: 'Conversation paused', expanded: false })).toBeTruthy();
   expect(screen.getByRole('separator')).toBeTruthy();

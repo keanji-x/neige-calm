@@ -56,9 +56,11 @@ export type ChatThreadProps = Readonly<{
   /** The runtime reason is separate from the persisted terminal transcript. */
   stalledReason?: string | null;
   stopFeedback?: ConversationStopFeedback | null;
+  /** The caller declares composer availability; a transcript outcome cannot authorize sends. */
+  canContinue: boolean;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -229,7 +231,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       const hint = turn.status === 'failed' ? outcomeHintText(turn.code, turn.rawStatus) : null;
       const hasHint = hint !== null;
       const label = turn.status === 'interrupted' ? 'Response interrupted' : 'Failed';
-      const guidance = turn.status === 'interrupted' && last && !live && !stalled;
+      const guidance = canContinue && last && !live && !stalled;
       const heading = (
         <span className={styles.outcomeHeader}>
           <span className={styles.outcomeStatusLabel}>{label}</span>

@@ -20,7 +20,7 @@ function outcome(status: 'interrupted' | 'failed', text: string | undefined): Co
 
 it.each(['interrupted', 'failed'] as const)('keeps one native disclosure and normal type for %s', async (status) => {
   const reason = 'The request timed out before the model provider returned a response.';
-  const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[outcome(status, reason)]} />);
+  const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[outcome(status, reason)]} />);
   const label = status === 'failed' ? 'Failed' : 'Response interrupted';
   const title = screen.getByText(label, { exact: true });
   const button = screen.getByRole('button', { name: new RegExp(`^${label}`), expanded: false });
@@ -38,7 +38,7 @@ it.each(['interrupted', 'failed'] as const)('keeps one native disclosure and nor
 });
 
 it.each(['interrupted', 'failed'] as const)('retains the disclosure and default explanation without a reason for %s', async (status) => {
-  const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[outcome(status, undefined)]} />);
+  const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[outcome(status, undefined)]} />);
   const button = screen.getByRole('button', { expanded: false });
   const detail = container.querySelector<HTMLElement>('[data-nc-turn-outcome-fallback]')!;
   expect(detail.checkVisibility()).toBe(false);
@@ -48,12 +48,13 @@ it.each(['interrupted', 'failed'] as const)('retains the disclosure and default 
     ? 'The model provider is temporarily unavailable.' : 'No interruption details are available.');
 });
 
-it.each([320, 390, 1280])('aligns the guidance at the right without overflowing (%ipx)', async (width) => {
+it.each([['interrupted', 320], ['interrupted', 390], ['interrupted', 1280],
+  ['failed', 320], ['failed', 390], ['failed', 1280]] as const)('aligns %s continuation guidance without overflowing (%ipx)', async (status, width) => {
   await page.viewport(width, 844);
   const { container } = render(<div style={{ width: Math.min(width - 32, 600) }}>
-    <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[outcome('interrupted', 'Connection ended.')]} />
+    <ChatThread canContinue={true} cards={{}} stalled={false} conversation={conversation()} turns={[outcome(status, 'Connection ended.')]} />
   </div>);
-  const label = screen.getByText('Response interrupted', { exact: true }).getBoundingClientRect();
+  const label = screen.getByText(status === 'failed' ? 'Failed' : 'Response interrupted', { exact: true }).getBoundingClientRect();
   const guidance = screen.getByText('Send a message to continue.', { exact: true }).getBoundingClientRect();
   const button = screen.getByRole('button', { expanded: false }).getBoundingClientRect();
   expect(guidance.left).toBeGreaterThanOrEqual(label.right);
@@ -64,7 +65,7 @@ it.each([320, 390, 1280])('aligns the guidance at the right without overflowing 
 });
 
 it('uses distinct semantic colors and the same weight for interrupted and failed labels', () => {
-  render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+  render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
     turns={[outcome('interrupted', 'Connection ended.'), outcome('failed', 'The request timed out.')]} />);
   const interrupted = getComputedStyle(screen.getByText('Response interrupted', { exact: true }));
   const failed = getComputedStyle(screen.getByText('Failed', { exact: true }));
@@ -79,7 +80,7 @@ it.each([320, 390, 1280])('places the paused runtime in the transcript without c
   const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
     <Drawer open title="Review" onClose={() => undefined}
       footer={<ChatComposer disabled onSend={() => undefined} />}>
-      <ChatThread cards={{}} stalled stalledReason={reason} conversation={conversation()}
+      <ChatThread canContinue={false} cards={{}} stalled stalledReason={reason} conversation={conversation()}
         turns={[{ id: 'answer', author: 'agent', text: 'Partial answer.', atMs: 1 }]} />
     </Drawer>
   </div>);
@@ -106,7 +107,7 @@ it.each([
   ['unconfirmed', 'Stop unconfirmed'], ['failed', 'Stop request failed'],
 ] as const)('shows %s feedback in the shared disclosure without a terminal record', async (kind, label) => {
   const feedback: ConversationStopFeedback = kind === 'failed' ? { kind, message: 'The connection is unavailable.' } : { kind };
-  const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+  const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
     turns={[]} stopFeedback={feedback} />);
   const disclosure = screen.getByRole('button', { name: label, expanded: false });
   expect(screen.getByRole('separator')).toBeTruthy();
@@ -127,7 +128,7 @@ it.each([320, 390, 1280])('keeps stop feedback inside the transcript and clear o
   await page.viewport(width, 844);
   const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
     <Drawer open title="Review" onClose={() => undefined} footer={<ChatComposer onSend={() => undefined} />}>
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[]}
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]}
         stopFeedback={{ kind: 'failed', message: 'The connection is unavailable. Your response may still be running.' }} />
     </Drawer>
   </div>);
@@ -143,13 +144,13 @@ it.each([320, 390, 1280])('keeps stop feedback inside the transcript and clear o
 });
 
 it.each(['stopping', 'unconfirmed', 'failed'] as const)('preserves focused disclosure and expansion when requesting becomes %s', async (kind) => {
-  const { rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()}
+  const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
     turns={[]} stopFeedback={{ kind: 'requesting' }} />);
   const button = screen.getByRole('button', { name: 'Requesting stop', expanded: false });
   button.focus();
   await userEvent.keyboard('{Enter}');
   const feedback: ConversationStopFeedback = kind === 'failed' ? { kind, message: 'Request failed.' } : { kind };
-  rerender(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[]} stopFeedback={feedback} />);
+  rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]} stopFeedback={feedback} />);
   const label = kind === 'stopping' ? 'Stopping response' : kind === 'failed' ? 'Stop request failed' : 'Stop unconfirmed';
   const current = screen.getByRole('button', { name: label, expanded: true });
   expect(current).toBe(button);

@@ -50,7 +50,7 @@ describe('a run’s key across a render that never committed', () => {
       const source: readonly TranscriptEntry[] = transcripts[mode];
       return (
         <Suspense fallback={<p>Waiting</p>}>
-          <ChatThread cards={{}} stalled={false} conversation={conversation} turns={source.filter(() => true)} />
+          <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={source.filter(() => true)} />
           {mode === suspendsIn && <Suspend />}
         </Suspense>
       );
@@ -142,7 +142,7 @@ describe('a run rebuilt after shrinking to one call, under StrictMode', () => {
     const failed = activity('f', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'test failed' });
     const done = activity('d', { target: 'pwd' });
     const thread = (turns: readonly TranscriptEntry[]) => (
-      <StrictMode><ChatThread cards={{}} stalled={false} conversation={conversation} turns={turns} /></StrictMode>
+      <StrictMode><ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} /></StrictMode>
     );
     const { container, rerender } = render(thread([done, failed]));
     act(() => { fireEvent.click(container.querySelector<HTMLElement>('[aria-expanded]')!); });
@@ -175,7 +175,7 @@ describe('a row leaving and returning while its group stays mounted', () => {
   it.each([['plain', (node: ReactNode) => node], ['StrictMode', (node: ReactNode) => <StrictMode>{node}</StrictMode>]] as const)(
     'restores the opened detail onto the rebuilt row, exactly once (%s)',
     (_, wrap) => {
-      const thread = (turns: readonly TranscriptEntry[]) => wrap(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={turns} />);
+      const thread = (turns: readonly TranscriptEntry[]) => wrap(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />);
       const { rerender } = render(thread(fullRun));
       const group = screen.getByRole('group', { name: '3 tool calls' });
       const header = group.querySelector<HTMLElement>('[aria-expanded]')!;
@@ -211,25 +211,25 @@ describe('a row leaving and returning while its group stays mounted', () => {
   it('moves only the returning row’s detail, not a neighbour the reader left closed or open', () => {
     const alsoFailed = activity('also-failed', { state: 'failed', verb: 'Ran', target: 'cargo test', detail: 'other failure' });
     const run = [failed, alsoFailed, second, third];
-    const { rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={run} />);
+    const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={run} />);
     const header = screen.getByRole('group', { name: '4 tool calls' }).querySelector<HTMLElement>('[aria-expanded]')!;
     act(() => { fireEvent.click(header); });
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*npm test/ })); });
     expect(screen.getByText('retained failure detail')).toBeTruthy();
     expect(screen.queryByText('other failure')).toBeNull();
 
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={run.slice(1)} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={run.slice(1)} />);
     expect(screen.queryByText('retained failure detail')).toBeNull();
     expect(screen.queryByText('other failure')).toBeNull();
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={run} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={run} />);
     expect(screen.getAllByText('retained failure detail')).toHaveLength(1);
     expect(screen.queryByText('other failure')).toBeNull();
 
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*cargo test/ })); });
     expect(screen.getByText('other failure')).toBeTruthy();
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={run.slice(1)} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={run.slice(1)} />);
     expect(screen.getAllByText('other failure')).toHaveLength(1);
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={run} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={run} />);
     expect(screen.getAllByText('retained failure detail')).toHaveLength(1);
     expect(screen.getAllByText('other failure')).toHaveLength(1);
   });
@@ -244,7 +244,7 @@ describe('a run that leaves the window whole and returns', () => {
   it.each([['plain', (node: ReactNode) => node], ['StrictMode', (node: ReactNode) => <StrictMode>{node}</StrictMode>]] as const)(
     'comes back open with its opened detail open (%s)',
     (_, wrap) => {
-      const thread = (turns: readonly TranscriptEntry[]) => wrap(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={turns} />);
+      const thread = (turns: readonly TranscriptEntry[]) => wrap(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />);
       const { container, rerender } = render(thread(run));
       const initialGroup = screen.getByRole('group', { name: '2 tool calls' });
       act(() => { fireEvent.click(initialGroup.querySelector<HTMLElement>('[aria-expanded]')!); });
@@ -270,18 +270,18 @@ describe('a run that leaves the window whole and returns', () => {
   );
 
   it('gives nothing to a stranger, and keeps the returning run and the stranger apart', () => {
-    const { rerender } = render(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={run} />);
+    const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={run} />);
     act(() => { fireEvent.click(screen.getByRole('group', { name: '2 tool calls' }).querySelector<HTMLElement>('[aria-expanded]')!); });
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran\s*npm test/ })); });
 
     const stranger = [activity('s1'), activity('s2', { state: 'failed', verb: 'Ran', target: 'cargo test', detail: 'stranger failure' })];
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={[newer, ...stranger]} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={[newer, ...stranger]} />);
     const strangerGroup = screen.getByRole('group', { name: '2 tool calls' });
     expect(strangerGroup.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('stranger failure')).toBeNull();
     expect(screen.queryByText('whole-run failure detail')).toBeNull();
 
-    rerender(<ChatThread cards={{}} stalled={false} conversation={conversation} turns={[...run, newer, ...stranger]} />);
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={[...run, newer, ...stranger]} />);
     const [original, still] = screen.getAllByRole('group', { name: '2 tool calls' });
     expect(still).toBe(strangerGroup);
     expect(original.querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true');

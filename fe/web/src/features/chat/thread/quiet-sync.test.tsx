@@ -69,7 +69,7 @@ describe('QuietSyncFold in the thread', () => {
   it('folds a report-edit turn into one closed line and keeps the turn under it', async () => {
     const user = userEvent.setup();
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[
           you('u1', 'Please draft the thesis.'), agent('a1', 'Drafted.'),
@@ -97,7 +97,7 @@ describe('QuietSyncFold in the thread', () => {
 
   it('draws a notify as an agent bubble outside the fold', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[
           reportEdited('user'), activity('act1'),
@@ -123,7 +123,7 @@ describe('QuietSyncFold in the thread', () => {
 
   it('draws a failed sync outcome outside the fold, after it', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[
           reportEdited('user'), activity('act1'),
@@ -148,7 +148,7 @@ describe('QuietSyncFold in the thread', () => {
       id: 's1', author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited, text, atMs: NOW,
     };
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[you('u1', 'please add a risks section'), plain, activity('act1'), agent('a1', 'Added.')]}
       />,
@@ -160,7 +160,7 @@ describe('QuietSyncFold in the thread', () => {
 
   it('never folds a turn the user opened', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false}
+      <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[
           you('u1', 'hello'), activity('act1'), agent('a1', 'hi'),
@@ -181,7 +181,7 @@ describe('QuietSyncFold in the thread', () => {
 
   it('draws no fold at all for a conversation without a report-edit wake', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[you('u1', 'hello'), agent('a1', 'hi')]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[you('u1', 'hello'), agent('a1', 'hi')]} />,
     );
     expect(fold(container)).toBeNull();
   });
@@ -189,7 +189,7 @@ describe('QuietSyncFold in the thread', () => {
   it('carries the live mark on the fold line while the sync is running', () => {
     /* Live is the kernel's verdict for this card, not the session state on the row. */
     const { container } = render(
-      <ChatThread cards={{ c1: 'working' }} stalled={false}
+      <ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false}
         conversation={conversation({ state: 'running' })}
         turns={[you('u1', 'hello'), reportEdited('assistant'), activity('act1', { verb: 'Reading report', state: 'running' })]}
       />,
@@ -203,7 +203,7 @@ describe('QuietSyncFold in the thread', () => {
 
   it('says the report was edited when the wake named no author', () => {
     const { container } = render(
-      <ChatThread cards={{}} stalled={false} conversation={conversation()} turns={[reportEdited(null)]} />,
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[reportEdited(null)]} />,
     );
     const details = fold(container);
     expect(details?.getAttribute('data-nc-quiet-sync-author')).toBe('unknown');
@@ -212,7 +212,7 @@ describe('QuietSyncFold in the thread', () => {
 
   it('ends the line with the verdict once the sync has completed', () => {
     const label = (turns: Parameters<typeof ChatThread>[0]['turns']) => {
-      const { container } = render(<ChatThread cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+      const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
       const details = fold(container);
       const result = {
         text: details?.querySelector('[data-nc-quiet-sync-label]')?.textContent ?? '',

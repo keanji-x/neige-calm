@@ -950,6 +950,25 @@ describe('track conversations', () => {
     expect(inputBodies(requests)[1]).toEqual({ text: '', attachments: [ATTACHMENT_ID] });
   });
 
+  it.each(['interrupted', 'failed'] as const)('continues a settled %s only through an explicit composer send', async (status) => {
+    const terminal = { ...harnessMessage(99, '', {}), item_type: null,
+      turn_id: 'previous-turn', method: 'turn/completed',
+      params: JSON.stringify({ id: 'previous-turn', status, error: null }) };
+    const { requests } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok([terminal]);
+      if (request.path.endsWith('/planner/input')) return inputAccepted();
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await screen.findByText('Send a message to continue.', { exact: true });
+    expect(inputBodies(requests)).toHaveLength(0);
+    await typeInto(messageField(), 'Continue from the partial answer');
+    expect(inputBodies(requests)).toHaveLength(0);
+    await submit();
+    await waitFor(() => expect(inputBodies(requests)).toEqual([{ text: 'Continue from the partial answer' }]));
+    expect(screen.queryByText('Send a message to continue.', { exact: true })).toBeNull();
+  });
+
   it('keeps a true receipt as a pending stop until the runtime and transcript confirm completion', async () => {
     let phase = 'turn_running';
     const terminal = { ...harnessMessage(99, '', {}), item_type: null,
