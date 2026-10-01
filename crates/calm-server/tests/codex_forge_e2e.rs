@@ -4,6 +4,9 @@
 
 mod support;
 
+#[path = "cases/codex_builtin_discovery.rs"]
+mod codex_builtin_discovery;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
