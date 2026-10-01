@@ -57,11 +57,11 @@ pub fn capture(pid: i32) -> Result<ProcessArtifacts> {
 /// Call repeatedly under a deadline. An unreadable live member of the original group blocks stop.
 /// The marker is a contract of these trusted providers; it must survive descendant execution.
 pub fn stop_pass(artifacts: &ProcessArtifacts, marker: &str) -> Result<bool> {
-    if artifacts.pgid <= 1 {
-        return Err(Error::Evidence("invalid execution identity".into()));
-    }
     if std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?.trim() != artifacts.boot_id {
         return Ok(true);
+    }
+    if artifacts.pgid <= 1 {
+        return Err(Error::Evidence("invalid execution identity".into()));
     }
     scan_stop(Some(artifacts.pgid), marker)
 }
@@ -152,5 +152,39 @@ mod tests {
         assert!(foreign.try_wait().unwrap().is_none());
         foreign.kill().unwrap();
         foreign.wait().unwrap();
+    }
+    #[test]
+    fn execution_stop_does_not_kill_recycled_foreign_group() {
+        let mut child = Command::new("/usr/bin/setsid")
+            .args(["sleep", "60"])
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(40));
+        let mut a = capture(child.id() as i32).unwrap();
+        a.start_time = a.start_time.saturating_sub(1);
+        assert!(stop_pass(&a, "foreign-unmatched-marker").unwrap());
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    #[test]
+    fn execution_stop_retains_opaque_recorded_group() {
+        let mut child = Command::new("/usr/bin/python3")
+            .args([
+                "-c",
+                "import os,ctypes,time; os.setsid(); ctypes.CDLL(None).prctl(4,0); time.sleep(60)",
+            ])
+            .env(MARKER_KEY, "opaque-owned-group")
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        let a = capture(child.id() as i32).unwrap();
+        let stopped = stop_pass(&a, "opaque-owned-group").unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            !stopped,
+            "hidden original-group environment cannot count as stop proof"
+        );
     }
 }

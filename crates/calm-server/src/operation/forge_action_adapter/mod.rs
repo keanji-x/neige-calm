@@ -1,6 +1,8 @@
 //! `forge-action` operation adapter. The irreversible action is held behind a stdin handshake until the operation row is
 //! durably parked; the post-park observer owns the child + stdin handle and releases the token as its first awaited step.
 
+pub(crate) mod lifecycle;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,9 +21,7 @@ use crate::event::{
     SYNC_EVENT_VERSION,
 };
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
-use crate::proc_identity::{
-    read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
-};
+use crate::proc_identity::{read_boot_id, read_proc_start_time, verify_owned_pid};
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
@@ -47,7 +47,6 @@ pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
 ];
 
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
-const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT_FORGE_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
 /// What a forge child inherits on top of the base allowlist (`PATH`, `HOME`).
@@ -155,11 +154,20 @@ impl FrozenForge {
 mod tests;
 
 #[derive(Clone, Debug)]
-pub struct ForgeActionAdapter;
+pub struct ForgeActionAdapter {
+    observation: ForgeObservation,
+}
+#[derive(Clone, Copy, Debug)]
+enum ForgeObservation {
+    Recovery,
+    Exit(&'static str),
+}
 
 impl ForgeActionAdapter {
     pub fn new() -> Self {
-        Self
+        Self {
+            observation: ForgeObservation::Recovery,
+        }
     }
 }
 
@@ -196,6 +204,7 @@ struct ForgeCompletionRefs<'a> {
     completion: &'a OperationCompletionBus,
     events: &'a EventBus,
     repo: &'a dyn RouteRepo,
+    owner: &'a str,
 }
 
 /// POSIX single-quote escaping: `'` -> `'\''`.
@@ -318,12 +327,6 @@ async fn remove_stale_result_files(result_path: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn kill_artifacts_group(artifacts: &SpawnArtifacts) {
-    if verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
-        signal_process_group(artifacts.pgid, libc::SIGKILL);
-    }
 }
 
 fn forge_passthrough_env_from<F>(mut lookup: F) -> Vec<(&'static str, std::ffi::OsString)>
@@ -811,6 +814,7 @@ async fn complete_forge_op_failed(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
     op_id: &str,
+    owner: &str,
     reason: String,
     last_error_class: Option<String>,
 ) -> Result<()> {
@@ -818,9 +822,15 @@ async fn complete_forge_op_failed(
         last_error: reason,
         last_error_class,
     };
+    lifecycle::confirm_stopped(pool, op_id).await?;
     let mut tx = begin_immediate_tx(pool).await?;
+    super::owned_parked::require_owner_tx(&mut tx, op_id, owner).await?;
     match complete_parked_tx(&mut tx, &op_id.to_string(), &outcome).await? {
         ParkedCompletion::Completed(result) => {
+            super::workspace_lease::execution_guard::release_stopped_execution_tx(
+                &mut tx, "forge", op_id,
+            )
+            .await?;
             tx.commit().await?;
             completion.complete(result);
         }
@@ -833,6 +843,7 @@ async fn complete_forge_op_failed(
             );
         }
     }
+    lifecycle::finish(pool, op_id).await?;
     Ok(())
 }
 
@@ -841,6 +852,7 @@ pub(crate) async fn complete_forge_op_with_result(
     completion: &OperationCompletionBus,
     events: &EventBus,
     op_id: &str,
+    owner: &str,
     frozen: &FrozenForge,
     exit_code: i32,
     stdout: &str,
@@ -850,6 +862,7 @@ pub(crate) async fn complete_forge_op_with_result(
             pool,
             completion,
             op_id,
+            owner,
             format!("gate-infra: forge artifact write failed: {e}"),
             Some("gate-infra".into()),
         )
@@ -862,6 +875,7 @@ pub(crate) async fn complete_forge_op_with_result(
                 pool,
                 completion,
                 op_id,
+                owner,
                 reason,
                 Some("action-failed".into()),
             )
@@ -872,6 +886,7 @@ pub(crate) async fn complete_forge_op_with_result(
                 pool,
                 completion,
                 op_id,
+                owner,
                 reason,
                 Some("gate-infra".into()),
             )
@@ -879,7 +894,10 @@ pub(crate) async fn complete_forge_op_with_result(
         }
     };
 
-    complete_forge_op_succeeded(pool, completion, events, op_id, frozen, event, result).await
+    complete_forge_op_succeeded(
+        pool, completion, events, op_id, owner, frozen, event, result,
+    )
+    .await
 }
 
 async fn complete_forge_op_from_live_result(
@@ -889,11 +907,13 @@ async fn complete_forge_op_from_live_result(
     exit_code: i32,
     stdout: &str,
 ) -> Result<()> {
+    let owner = refs.owner;
     if let Err(e) = persist_forge_artifact_if_needed(frozen, exit_code, stdout).await {
         return complete_forge_op_failed(
             refs.pool,
             refs.completion,
             op_id,
+            owner,
             format!("gate-infra: forge artifact write failed: {e}"),
             Some("gate-infra".into()),
         )
@@ -909,6 +929,7 @@ async fn complete_forge_op_from_live_result(
                 refs.events,
                 refs.repo,
                 op_id,
+                owner,
                 frozen,
                 &format!("action-failed: {reason}"),
             )
@@ -921,6 +942,7 @@ async fn complete_forge_op_from_live_result(
                 refs.events,
                 refs.repo,
                 op_id,
+                owner,
                 frozen,
                 &format!("extraction failed: {reason}"),
             )
@@ -933,6 +955,7 @@ async fn complete_forge_op_from_live_result(
         refs.completion,
         refs.events,
         op_id,
+        owner,
         frozen,
         event,
         result,
@@ -945,12 +968,15 @@ async fn complete_forge_op_succeeded(
     completion: &OperationCompletionBus,
     events: &EventBus,
     op_id: &str,
+    owner: &str,
     frozen: &FrozenForge,
     event: Option<Event>,
     result: Value,
 ) -> Result<()> {
     let outcome = ParkedOutcome::Succeeded { result };
+    lifecycle::confirm_stopped(pool, op_id).await?;
     let mut tx = begin_immediate_tx(pool).await?;
+    super::owned_parked::require_owner_tx(&mut tx, op_id, owner).await?;
     match complete_parked_tx(&mut tx, &op_id.to_string(), &outcome).await? {
         ParkedCompletion::Completed(result) => {
             let envelope = if let Some(event) = event {
@@ -980,6 +1006,10 @@ async fn complete_forge_op_succeeded(
                 "forge-pre-fence-commit:{}",
                 envelope.as_ref().map_or("none", |e| e.event.kind_tag())
             ));
+            super::workspace_lease::execution_guard::release_stopped_execution_tx(
+                &mut tx, "forge", op_id,
+            )
+            .await?;
             tx.commit().await?;
             completion.complete(result);
             if let Some(envelope) = envelope {
@@ -995,6 +1025,7 @@ async fn complete_forge_op_succeeded(
             );
         }
     }
+    lifecycle::finish(pool, op_id).await?;
     Ok(())
 }
 
@@ -1006,49 +1037,36 @@ fn verdict_from_exit_code(exit_code: Option<i32>) -> ProbeVerdict {
     }
 }
 
-async fn run_probe(
-    argv: &[String],
-    cwd: &Path,
-    repo: &dyn RouteRepo,
-) -> Result<(Option<i32>, String)> {
-    if argv.is_empty() {
-        return Err(CalmError::Internal(
-            "forge-action probe argv must not be empty".into(),
-        ));
-    }
-    let mut cmd = tokio::process::Command::new(&argv[0]);
-    cmd.args(&argv[1..])
-        .current_dir(cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    apply_forge_subprocess_env(&mut cmd, repo).await;
-    let output = tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| CalmError::Internal("forge-action probe timed out".into()))??;
-    Ok((
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout).to_string(),
-    ))
-}
-
 async fn complete_from_probe(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
     events: &EventBus,
     repo: &dyn RouteRepo,
     op_id: &str,
+    owner: &str,
     frozen: &FrozenForge,
     probe: &ProbeSpec,
 ) -> Result<ParkedRecovery> {
-    let (exit_code, _) = match run_probe(&probe.probe_argv, &frozen.cwd_lease, repo).await {
-        Ok(result) => result,
-        Err(e) => {
-            return Ok(ParkedRecovery::Fail {
-                reason: format!("forge action probe failed; gate-infra: {e}"),
-            });
-        }
-    };
+    // Action descendants must be stopped before any recovery probe can inspect or mutate.
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT execution_artifacts_json FROM workspace_leases WHERE holder_kind='forge' AND \
+        holder_id=?1 AND state='held' LIMIT 1",
+    )
+    .bind(op_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    let artifacts: Option<SpawnArtifacts> = raw.map(|v| serde_json::from_str(&v)).transpose()?;
+    lifecycle::stop(artifacts.as_ref(), op_id).await?;
+    let (exit_code, _) =
+        match lifecycle::probe(pool, op_id, owner, frozen, &probe.probe_argv, repo).await {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(ParkedRecovery::Fail {
+                    reason: format!("forge action probe failed; gate-infra: {e}"),
+                });
+            }
+        };
     match verdict_from_exit_code(exit_code) {
         ProbeVerdict::Landed => {
             let stdout = if forge_event_spec_needs_json(frozen.event_spec.as_ref()) {
@@ -1059,7 +1077,7 @@ async fn complete_from_probe(
                                 .into(),
                     });
                 };
-                match run_probe(output_probe_argv, &frozen.cwd_lease, repo).await {
+                match lifecycle::probe(pool, op_id, owner, frozen, output_probe_argv, repo).await {
                     Ok((Some(0), stdout)) => stdout,
                     Ok((exit_code, _)) => {
                         return Ok(ParkedRecovery::Fail {
@@ -1077,8 +1095,10 @@ async fn complete_from_probe(
             } else {
                 String::new()
             };
-            complete_forge_op_with_result(pool, completion, events, op_id, frozen, 0, &stdout)
-                .await?;
+            complete_forge_op_with_result(
+                pool, completion, events, op_id, owner, frozen, 0, &stdout,
+            )
+            .await?;
             Ok(ParkedRecovery::LeaveParked)
         }
         ProbeVerdict::NotLanded => Ok(ParkedRecovery::Fail {
@@ -1098,6 +1118,7 @@ async fn resolve_post_release_via_probe(
     events: &EventBus,
     repo: &dyn RouteRepo,
     op_id: &str,
+    owner: &str,
     frozen: &FrozenForge,
     ambiguous_reason: &str,
 ) -> Result<()> {
@@ -1107,6 +1128,7 @@ async fn resolve_post_release_via_probe(
                 pool,
                 completion,
                 op_id,
+                owner,
                 reason.to_string(),
                 Some("action-failed".into()),
             )
@@ -1117,6 +1139,7 @@ async fn resolve_post_release_via_probe(
             pool,
             completion,
             op_id,
+            owner,
             format!("gate-infra: {ambiguous_reason}; no probe to resolve outcome"),
             Some("gate-infra".into()),
         )
@@ -1124,7 +1147,7 @@ async fn resolve_post_release_via_probe(
         return Ok(());
     };
 
-    match complete_from_probe(pool, completion, events, repo, op_id, frozen, probe).await {
+    match complete_from_probe(pool, completion, events, repo, op_id, owner, frozen, probe).await {
         Ok(ParkedRecovery::Fail { reason }) => {
             let last_error_class = if reason.contains("gate-infra") {
                 "gate-infra"
@@ -1135,6 +1158,7 @@ async fn resolve_post_release_via_probe(
                 pool,
                 completion,
                 op_id,
+                owner,
                 reason,
                 Some(last_error_class.into()),
             )
@@ -1147,57 +1171,6 @@ async fn resolve_post_release_via_probe(
 }
 
 /// Prefer the durable result files (written via tmp+rename only after the action completed), fall back to the plugin probe, fail only if neither can answer.
-async fn resolve_dead_outcome(
-    pool: &sqlx::SqlitePool,
-    completion: &OperationCompletionBus,
-    events: &EventBus,
-    repo: &dyn RouteRepo,
-    op_id: &str,
-    frozen: &FrozenForge,
-    ambiguous_reason: &str,
-) {
-    if let Ok(result) = read_result_file(&frozen.result_path).await {
-        if let Err(e) = complete_forge_op_from_live_result(
-            ForgeCompletionRefs {
-                pool,
-                completion,
-                events,
-                repo,
-            },
-            op_id,
-            frozen,
-            result.exit_code,
-            &result.stdout,
-        )
-        .await
-        {
-            tracing::error!(
-                op_id,
-                error = %e,
-                "forge: result-file completion tx failed; falling back to probe"
-            );
-        } else {
-            return;
-        }
-    }
-    if let Err(e) = resolve_post_release_via_probe(
-        pool,
-        completion,
-        events,
-        repo,
-        op_id,
-        frozen,
-        ambiguous_reason,
-    )
-    .await
-    {
-        tracing::error!(
-            op_id,
-            error = %e,
-            "forge: landed-verdict completion tx failed during dead recovery; leaving op parked"
-        );
-    }
-}
 
 #[async_trait]
 impl ProviderAdapter for ForgeActionAdapter {
@@ -1239,6 +1212,17 @@ impl ProviderAdapter for ForgeActionAdapter {
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("track {}", payload.track_id)))?;
 
+        super::workspace_lease::execution_guard::acquire_execution_write_tx(
+            tx,
+            &payload.track_id,
+            &payload.card_id,
+            &op.id,
+            "forge",
+            &payload.cwd_lease,
+        )
+        .await?;
+        let cwd_lease = std::fs::canonicalize(&payload.cwd_lease)?;
+
         let frozen = FrozenForge {
             track_id: payload.track_id,
             area_id,
@@ -1249,7 +1233,7 @@ impl ProviderAdapter for ForgeActionAdapter {
             event_spec: payload.event_spec,
             context: payload.context,
             probe: payload.probe,
-            cwd_lease: payload.cwd_lease,
+            cwd_lease,
             result_path: payload.result_path,
             deadline_ms: payload.deadline_ms,
         };
@@ -1275,7 +1259,7 @@ impl ProviderAdapter for ForgeActionAdapter {
     ) -> Result<SpawnOutcome> {
         let frozen = FrozenForge::from_output(output)?;
         if let Some(artifacts) = &op.spawn_artifacts {
-            kill_artifacts_group(artifacts);
+            lifecycle::stop(Some(artifacts), &op.id).await?;
         }
 
         if let Some(parent) = frozen.result_path.parent()
@@ -1298,9 +1282,14 @@ impl ProviderAdapter for ForgeActionAdapter {
             .current_dir(&frozen.cwd_lease)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
         apply_forge_subprocess_env(&mut cmd, ctx.repo.as_ref()).await;
         cmd.env("NEIGE_FORGE_RESULT_PATH", &frozen.result_path);
+        cmd.env(
+            calm_worker_runtime::execution_process::MARKER_KEY,
+            lifecycle::marker(&op.id),
+        );
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -1327,20 +1316,24 @@ impl ProviderAdapter for ForgeActionAdapter {
             log_path: None,
             extra: json!({
                 "result_path": frozen.result_path.display().to_string(),
+                "execution_marker": lifecycle::marker(&op.id),
             }),
         };
+        super::workspace_lease::execution_guard::record_execution_artifacts(
+            &ctx.operation_repo.sqlite_pool(),
+            "forge",
+            &op.id,
+            &artifacts,
+        )
+        .await?;
         ctx.record_spawn_artifacts(op, &artifacts).await?;
 
-        let pool = ctx.operation_repo.sqlite_pool();
-        let completion = ctx.completion.clone();
-        let events = ctx.events.clone();
-        let op_id = op.id.clone();
+        let observer_ctx = ctx.clone();
+        let observer_op = op.id.clone();
+        #[cfg(feature = "fixtures")]
         let observer_frozen = frozen.clone();
         let observer_artifacts = artifacts.clone();
-        let observer_repo = ctx.repo.clone();
         let observer = Box::pin(async move {
-            // Crash seam, compiled only under the `fixtures` feature; as the FIRST statement of the observer it freezes the window
-            // "op durably parked + wrapper spawned + go token NOT yet written", where the wrapper's `read -r _go` hits EOF and exits 75 without running gh.
             #[cfg(feature = "fixtures")]
             crate::test_seams::crash_point(&format!(
                 "forge-pre-go-token:{}",
@@ -1353,143 +1346,90 @@ impl ProviderAdapter for ForgeActionAdapter {
                 let mut stdin = child.stdin.take().ok_or_else(|| {
                     CalmError::Internal("forge wrapper stdin handle missing".into())
                 })?;
-                stdin
-                    .write_all(b"go\n")
-                    .await
-                    .map_err(|e| CalmError::Internal(format!("forge release write failed: {e}")))?;
+                stdin.write_all(b"go\n").await?;
                 drop(stdin);
                 Ok::<(), CalmError>(())
             };
-            match tokio::time::timeout(RELEASE_TIMEOUT, release).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    kill_artifacts_group(&observer_artifacts);
-                    let _ = complete_forge_op_failed(
-                        &pool,
-                        &completion,
-                        &op_id,
-                        e.to_string(),
-                        Some("gate-infra".into()),
-                    )
-                    .await;
-                    return;
-                }
-                Err(_) => {
-                    kill_artifacts_group(&observer_artifacts);
-                    let _ = complete_forge_op_failed(
-                        &pool,
-                        &completion,
-                        &op_id,
-                        "gate-infra: forge release write did not complete within 60s".into(),
-                        Some("gate-infra".into()),
-                    )
-                    .await;
+            let release_failed = !matches!(
+                tokio::time::timeout(RELEASE_TIMEOUT, release).await,
+                Ok(Ok(()))
+            );
+            if release_failed {
+                if let Err(e) = lifecycle::stop(Some(&observer_artifacts), &observer_op).await {
+                    tracing::error!(op_id=%observer_op, error=%e, "forge release cleanup unresolved; recovery retains guard");
                     return;
                 }
             }
-
-            // The parked-deadline sweep owns timeouts; the first-committer-wins guard makes any late observer completion roll back.
-            match child.wait().await {
-                Ok(status) if status.code().is_some() => {
-                    match read_result_file(&observer_frozen.result_path).await {
-                        Ok(result) => {
-                            if let Err(e) = complete_forge_op_from_live_result(
-                                ForgeCompletionRefs {
-                                    pool: &pool,
-                                    completion: &completion,
-                                    events: &events,
-                                    repo: observer_repo.as_ref(),
-                                },
-                                &op_id,
-                                &observer_frozen,
-                                result.exit_code,
-                                &result.stdout,
-                            )
-                            .await
-                            {
-                                tracing::error!(
-                                    op_id = %op_id,
-                                    error = %e,
-                                    "forge observer: completion tx failed; sweep/reconcile will recover"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                op_id = %op_id,
-                                error = %e,
-                                "forge observer: result file unreadable after post-release wait"
-                            );
-                            if let Err(e) = resolve_post_release_via_probe(
-                                &pool,
-                                &completion,
-                                &events,
-                                observer_repo.as_ref(),
-                                &op_id,
-                                &observer_frozen,
-                                "result file unreadable",
-                            )
-                            .await
-                            {
-                                tracing::error!(
-                                    op_id = %op_id,
-                                    error = %e,
-                                    "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(_) => {
-                    if let Err(e) = resolve_post_release_via_probe(
-                        &pool,
-                        &completion,
-                        &events,
-                        observer_repo.as_ref(),
-                        &op_id,
-                        &observer_frozen,
-                        "forge wrapper killed by signal",
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            op_id = %op_id,
-                            error = %e,
-                            "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        op_id = %op_id,
-                        error = %e,
-                        "forge observer: wrapper wait failed"
-                    );
-                    if let Err(e) = resolve_post_release_via_probe(
-                        &pool,
-                        &completion,
-                        &events,
-                        observer_repo.as_ref(),
-                        &op_id,
-                        &observer_frozen,
-                        "wrapper wait failed",
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            op_id = %op_id,
-                            error = %e,
-                            "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
-                        );
-                    }
-                }
-            }
+            // Reaping is only a wakeup; claimed recovery owns process stop, probes and settlement.
+            let reason = match child.wait().await {
+                _ if release_failed => "forge release write failed",
+                Ok(status) if status.code().is_some() => "result file unreadable",
+                Ok(_) => "forge wrapper killed by signal",
+                Err(_) => "wrapper wait failed",
+            };
+            lifecycle::reconcile_if_claimed(
+                &observer_ctx,
+                &observer_op,
+                ForgeObservation::Exit(reason),
+            )
+            .await;
         });
 
         Ok(SpawnOutcome::Parked {
             deadline_ms: frozen.deadline_ms,
             observer,
         })
+    }
+
+    fn owns_parked_resource(&self) -> bool {
+        true
+    }
+
+    async fn owned_parked_recovery_eligible(&self, op: &Operation) -> bool {
+        op.spawn_artifacts
+            .as_ref()
+            .is_none_or(|a| !verify_owned_pid(a.pid, a.start_time, &a.boot_id))
+    }
+
+    async fn recover_owned_parked(
+        &self,
+        op: &Operation,
+        mode: RecoveryMode,
+        ctx: &SpawnCtx,
+    ) -> Result<ParkedRecovery> {
+        let Some(artifacts) = op.spawn_artifacts.as_ref() else {
+            lifecycle::finish(&ctx.operation_repo.sqlite_pool(), &op.id).await?;
+            return Ok(ParkedRecovery::Complete(ParkedOutcome::Failed {
+                last_error: "forge action missing spawn artifacts".into(),
+                last_error_class: Some("gate-infra".into()),
+            }));
+        };
+        let alive = verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id);
+        if alive && mode != RecoveryMode::PastDeadline {
+            if mode == RecoveryMode::Boot {
+                lifecycle::observe_recovered_exit(ctx.clone(), op.id.clone(), artifacts.clone());
+            }
+            return Ok(ParkedRecovery::LeaveParked);
+        }
+        lifecycle::stop(Some(artifacts), &op.id).await?;
+        lifecycle::finish_children(&ctx.operation_repo.sqlite_pool(), &op.id).await?;
+        match self.recover_parked(op, artifacts, false, mode, ctx).await? {
+            ParkedRecovery::Fail { reason } => {
+                lifecycle::finish(&ctx.operation_repo.sqlite_pool(), &op.id).await?;
+                Ok(ParkedRecovery::Complete(ParkedOutcome::Failed {
+                    last_error: reason,
+                    last_error_class: Some(
+                        if mode == RecoveryMode::PastDeadline {
+                            "parked_deadline"
+                        } else {
+                            "parked_dead"
+                        }
+                        .into(),
+                    ),
+                }))
+            }
+            other => Ok(other),
+        }
     }
 
     async fn recover_parked(
@@ -1505,45 +1445,17 @@ impl ProviderAdapter for ForgeActionAdapter {
             .as_ref()
             .ok_or_else(|| CalmError::Internal("forge-action op missing tx_output".into()))
             .and_then(FrozenForge::from_output)?;
-        if alive && verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
-            return match mode {
-                RecoveryMode::Boot => {
-                    let pool = ctx.operation_repo.sqlite_pool();
-                    let completion = ctx.completion.clone();
-                    let events = ctx.events.clone();
-                    let repo = ctx.repo.clone();
-                    let op_id = op.id.clone();
-                    let artifacts = artifacts.clone();
-                    tokio::spawn(async move {
-                        loop {
-                            if !verify_owned_pid(
-                                artifacts.pid,
-                                artifacts.start_time,
-                                &artifacts.boot_id,
-                            ) {
-                                break;
-                            }
-                            tokio::time::sleep(REATTACH_POLL).await;
-                        }
-                        resolve_dead_outcome(
-                            &pool,
-                            &completion,
-                            &events,
-                            repo.as_ref(),
-                            &op_id,
-                            &frozen,
-                            "forge action process dead",
-                        )
-                        .await;
-                    });
-                    Ok(ParkedRecovery::LeaveParked)
-                }
-                RecoveryMode::PreDeadlineProbe => Ok(ParkedRecovery::LeaveParked),
-                RecoveryMode::PastDeadline => Ok(ParkedRecovery::Fail {
-                    reason: "action-timeout".into(),
-                }),
-            };
+        let owner = op.lease_owner.as_deref().ok_or_else(|| {
+            CalmError::Conflict("forge recovery requires a claimed operation".into())
+        })?;
+        if alive
+            && verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id)
+            && mode != RecoveryMode::PastDeadline
+        {
+            return Ok(ParkedRecovery::LeaveParked);
         }
+
+        lifecycle::stop(Some(artifacts), &op.id).await?;
 
         // The durable result files are authoritative (written via tmp+rename only after the action ran to completion); a read failure falls through to the probe path.
         if let Ok(result) = read_result_file(&frozen.result_path).await {
@@ -1555,6 +1467,7 @@ impl ProviderAdapter for ForgeActionAdapter {
                     completion: &ctx.completion,
                     events: &ctx.events,
                     repo: ctx.repo.as_ref(),
+                    owner,
                 },
                 &op.id,
                 &frozen,
@@ -1567,6 +1480,20 @@ impl ProviderAdapter for ForgeActionAdapter {
 
         // Dead process: the probe is the ONLY truth for whether the irreversible action landed, so run it regardless of the deadline (exactly-once recovery).
         if frozen.probe.is_none() {
+            if let ForgeObservation::Exit(reason) = self.observation {
+                resolve_post_release_via_probe(
+                    &ctx.operation_repo.sqlite_pool(),
+                    &ctx.completion,
+                    &ctx.events,
+                    ctx.repo.as_ref(),
+                    &op.id,
+                    owner,
+                    &frozen,
+                    reason,
+                )
+                .await?;
+                return Ok(ParkedRecovery::LeaveParked);
+            }
             return Ok(ParkedRecovery::Fail {
                 reason: match mode {
                     RecoveryMode::PastDeadline => "action-timeout".into(),
@@ -1580,6 +1507,7 @@ impl ProviderAdapter for ForgeActionAdapter {
             &ctx.events,
             ctx.repo.as_ref(),
             &op.id,
+            owner,
             &frozen,
             "forge action process dead",
         )
@@ -1615,8 +1543,8 @@ impl ProviderAdapter for ForgeActionAdapter {
         &self,
         step: &CompensationStep,
         _output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
+        op: &Operation,
+        ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
             return Ok(());
@@ -1625,9 +1553,9 @@ impl ProviderAdapter for ForgeActionAdapter {
             "kill_forge_action_group" => {
                 if let Some(artifacts) = step.args.get("artifacts").filter(|v| !v.is_null()) {
                     let artifacts: SpawnArtifacts = serde_json::from_value(artifacts.clone())?;
-                    kill_artifacts_group(&artifacts);
+                    lifecycle::stop(Some(&artifacts), &op.id).await?;
                 }
-                Ok(())
+                lifecycle::finish(&ctx.operation_repo.sqlite_pool(), &op.id).await
             }
             other => Err(CalmError::Internal(format!(
                 "forge-action unknown compensation step {other}"

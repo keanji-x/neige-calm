@@ -3221,7 +3221,7 @@ async fn forge_action_dead_past_deadline_uses_probe_and_no_probe_times_out() -> 
 
     let op = boot
         .operation_repo
-        .get_operation(&op_id)
+        .claim_parked(&op_id)
         .await?
         .expect("parked op exists");
     let adapter = ForgeActionAdapter::new();
@@ -3275,7 +3275,7 @@ async fn forge_action_dead_past_deadline_uses_probe_and_no_probe_times_out() -> 
 
     let op = boot
         .operation_repo
-        .get_operation(&op_id)
+        .claim_parked(&op_id)
         .await?
         .expect("parked op exists");
     let adapter = ForgeActionAdapter::new();

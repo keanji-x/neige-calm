@@ -189,22 +189,24 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
         )
         .await
         .expect("insert operation");
-    let frozen = FrozenForge {
-        track_id: payload.track_id,
-        area_id: "area-1".into(),
-        card_id: payload.card_id,
-        subject: payload.subject,
-        argv: payload.argv,
-        idem_key: payload.idem_key,
-        event_spec: payload.event_spec,
-        context: payload.context,
-        probe: payload.probe.clone(),
-        cwd_lease: payload.cwd_lease,
-        result_path: payload.result_path,
-        deadline_ms: payload.deadline_ms,
-    };
-    let mut output = TxOutput::new("track", Some(frozen.track_id.clone()), json!({}));
-    output.data = serde_json::to_value(&frozen).expect("frozen json");
+    let op = operation_repo
+        .get_operation(&op_id)
+        .await
+        .expect("load operation")
+        .expect("operation");
+    let mut tx = begin_immediate_tx(fx.repo.pool())
+        .await
+        .expect("prepare transaction");
+    let output = ForgeActionAdapter::new()
+        .prepare_tx(
+            &mut tx,
+            &serde_json::to_value(&payload).expect("payload json"),
+            &op,
+        )
+        .await
+        .expect("freeze production Forge workspace reference");
+    tx.commit().await.expect("commit prepare");
+    let frozen = FrozenForge::from_output(&output).expect("frozen output");
     let artifacts = SpawnArtifacts {
         pid: 1,
         pgid: 1,
@@ -242,12 +244,18 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
     .await
     .expect("install trigger");
 
+    let claimed = operation_repo
+        .claim_parked(&op_id)
+        .await
+        .expect("claim recovery")
+        .expect("claimed operation");
     let result = resolve_post_release_via_probe(
         fx.repo.pool(),
         &OperationCompletionBus::new(),
         &EventBus::new(),
         fx.repo.as_ref(),
         &op_id,
+        claimed.lease_owner.as_deref().expect("claim owner"),
         &frozen,
         "test ambiguous outcome",
     )
@@ -964,3 +972,6 @@ fn forge_env_key_buckets_are_a_partition() {
         ]
     );
 }
+
+#[path = "tests/guards.rs"]
+mod guards;
