@@ -167,3 +167,39 @@ async fn read_task_initial_turn_uses_prepared_lease_before_worker_card_stamp() {
         "a prepared reader cannot acquire a native writer before the running stamp"
     );
 }
+
+#[tokio::test]
+async fn native_turn_refusal_releases_writer_that_never_started() {
+    let repo = repo().await;
+    let card = seed_card(&repo, 0).await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let thread = daemon
+        .thread_start_mint_mcp_shell(
+            &card,
+            "/tmp".into(),
+            None,
+            std::path::PathBuf::from("/tmp/mcp.sock"),
+            "fixture-token".into(),
+            "workspace-write",
+        )
+        .await
+        .unwrap();
+    daemon.reject_turn_start_for_test();
+    assert!(
+        daemon
+            .turn_start(
+                &thread,
+                vec![InputItem::text("work")],
+                &TurnModelSelection::inherit(),
+                None
+            )
+            .await
+            .is_err()
+    );
+    let held:i64=sqlx::query_scalar("SELECT count(*) FROM workspace_leases WHERE holder_kind='native' AND card_id=?1 AND state='held'")
+        .bind(&card).fetch_one(repo.pool()).await.unwrap();
+    assert_eq!(
+        held, 0,
+        "a provider refusal before issuing cannot retain a writer"
+    );
+}

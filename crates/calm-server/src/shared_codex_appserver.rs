@@ -1388,6 +1388,9 @@ impl SharedCodexAppServer {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.reject_turn_start.load(Ordering::SeqCst) {
+                if let Some(guard) = native_write {
+                    guard.rejected().await?;
+                }
                 return Err(CalmError::CodexRefused(
                     "turn/start failed: unknown model (code -32602)".into(),
                 ));
@@ -1439,10 +1442,29 @@ impl SharedCodexAppServer {
             }
             return Ok(turn_id);
         }
-        let client = self.connected_client().await?;
-        let turn = client
+        let client = match self.connected_client().await {
+            Ok(client) => client,
+            Err(error) => {
+                if let Some(guard) = native_write {
+                    guard.rejected().await?;
+                }
+                return Err(error);
+            }
+        };
+        let turn = match client
             .turn_start_with_client_id(thread_id, items, selection, client_user_message_id)
-            .await?;
+            .await
+        {
+            Ok(turn) => turn,
+            Err(error) => {
+                if matches!(error, CalmError::CodexRefused(_))
+                    && let Some(guard) = native_write
+                {
+                    guard.rejected().await?;
+                }
+                return Err(error);
+            }
+        };
         let turn_id = turn
             .turn_id()
             .map(ToOwned::to_owned)
