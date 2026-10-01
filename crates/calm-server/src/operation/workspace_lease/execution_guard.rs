@@ -333,7 +333,7 @@ pub(crate) async fn record_execution_artifacts(
 /// Captured by an authenticated caller; remains separate from user request idempotency.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct WorkspaceWriteOrigin {
+pub struct WorkspaceWriteOrigin {
     pub(crate) lease_id: String,
     pub(crate) card_id: String,
 }
