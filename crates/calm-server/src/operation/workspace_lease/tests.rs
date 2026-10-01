@@ -984,3 +984,6 @@ mod native_reentry;
 
 #[path = "tests/disposal.rs"]
 mod disposal;
+
+#[path = "tests/read_configuration.rs"]
+mod read_configuration;

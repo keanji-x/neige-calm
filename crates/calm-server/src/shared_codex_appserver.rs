@@ -4,6 +4,7 @@
 #[cfg(target_os = "macos")]
 mod macos_process;
 mod preserving_recovery;
+mod task_permissions;
 mod thread_release;
 pub(crate) mod workspace;
 
@@ -663,6 +664,7 @@ pub type NotificationFanout = broadcast::Sender<Notification>;
 pub struct SharedCodexAppServer {
     sock: PathBuf,
     kernel_mcp_socket_path: PathBuf,
+    protected_runtime_dir: PathBuf,
     home: Arc<SharedCodexHome>,
     repo: Arc<dyn Repo>,
     thread_cache: Arc<DashMap<String, String>>,
@@ -987,6 +989,7 @@ impl SharedCodexAppServer {
         Arc::new(Self {
             sock: root.join("run/codex-appserver.sock"),
             kernel_mcp_socket_path: transport::default_socket_path(&root),
+            protected_runtime_dir: root.clone(),
             home,
             repo,
             thread_cache: Arc::new(DashMap::new()),
@@ -1046,6 +1049,7 @@ impl SharedCodexAppServer {
         Arc::new(Self {
             sock: data_dir.join("run/codex-appserver.sock"),
             kernel_mcp_socket_path: transport::default_socket_path(&data_dir),
+            protected_runtime_dir: data_dir,
             home,
             repo,
             thread_cache: Arc::new(DashMap::new()),
@@ -1258,6 +1262,7 @@ impl SharedCodexAppServer {
         params: SharedThreadStartParams,
     ) -> Result<String> {
         let binding_cwd = params.cwd.clone();
+        let read_permissions = self.read_task_permissions(card_id).await?;
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.fail_next_thread_start.swap(false, Ordering::SeqCst) {
@@ -1287,12 +1292,18 @@ impl SharedCodexAppServer {
         }
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
-        let config = params.config.to_wire_config()?;
+        let mut config = params.config.to_wire_config()?;
+        if read_permissions.is_some() {
+            let settings = config.get_or_insert_with(|| serde_json::json!({}));
+            settings["project_root_markers"] = serde_json::json!([".git"]);
+        }
         let thread = client
             .thread_start_with_params(ThreadStartParams {
                 cwd: params.cwd,
                 approval_policy: params.approval_policy,
-                permissions: crate::codex_appserver::PermissionsChoice::SandboxMode(params.sandbox_mode),
+                permissions: read_permissions.unwrap_or_else(|| {
+                    crate::codex_appserver::PermissionsChoice::SandboxMode(params.sandbox_mode)
+                }),
                 developer_instructions: params.developer_instructions,
                 config,
             })
@@ -1375,6 +1386,10 @@ impl SharedCodexAppServer {
                 "turn/start for thread missing shared daemon card mapping"
             );
         }
+        let read_permissions = match self.cached_card_for_thread(thread_id) {
+            Some(card) => self.read_task_permissions(&card).await?,
+            None => None,
+        };
         let native_write = if let (Some(pool), Some(card)) = (
             self.repo.sqlite_pool(),
             self.cached_card_for_thread(thread_id),
@@ -1470,10 +1485,25 @@ impl SharedCodexAppServer {
                 return Err(error);
             }
         };
-        let turn = match client
-            .turn_start_with_client_id(thread_id, items, selection, client_nonce.as_deref())
-            .await
-        {
+        let response = match read_permissions.as_ref() {
+            Some(permissions) => {
+                client
+                    .turn_start_with_permissions(
+                        thread_id,
+                        items,
+                        selection,
+                        client_nonce.as_deref(),
+                        permissions,
+                    )
+                    .await
+            }
+            None => {
+                client
+                    .turn_start_with_client_id(thread_id, items, selection, client_nonce.as_deref())
+                    .await
+            }
+        };
+        let turn = match response {
             Ok(turn) => turn,
             Err(error) => {
                 if matches!(error, CalmError::CodexRefused(_))
@@ -3593,47 +3623,28 @@ impl SharedCodexAppServer {
                 return;
             }
         };
-        let read_only = match self.repo.sqlite_pool() {
-            Some(pool) => {
-                match crate::operation::workspace_lease::task_guard::is_read_card(&pool, card_id)
-                    .await
-                {
-                    Ok(value) => value,
-                    Err(error) => {
-                        tracing::warn!(%error,%card_id,"resume workspace access lookup failed");
-                        return;
-                    }
-                }
+        let read_permissions = match self.read_task_permissions(card_id).await {
+            Ok(choice) => choice,
+            Err(error) => {
+                tracing::warn!(%error,%card_id,"read worker resume permissions refused");
+                return;
             }
-            None => false,
         };
-        if read_only {
-            let Some(pool) = self.repo.sqlite_pool() else {
-                return;
-            };
-            let lease_id=match sqlx::query_scalar::<_,String>(
-                "SELECT lease_id FROM workspace_leases WHERE card_id=?1 AND access_mode='read_only' AND state='held'")
-                .bind(card_id).fetch_optional(&pool).await {
-                Ok(Some(id))=>id,_=>return,
-            };
-            let verified = async {
-                crate::operation::workspace_lease::task_guard::TaskWorkspaceGuard::restore(
-                    &pool, &lease_id,
-                )
-                .await?
-                .into_sandbox()
-                .await
+        let response = match read_permissions.as_ref() {
+            Some(permissions) => {
+                let mut config = lowered.unwrap_or_else(|| serde_json::json!({}));
+                config["project_root_markers"] = serde_json::json!([".git"]);
+                client
+                    .thread_resume_with_permissions(thread_id, Some(config), permissions)
+                    .await
             }
-            .await;
-            if let Err(error) = verified {
-                tracing::warn!(%error,%card_id,"read worker resume guard refused");
-                return;
+            None => {
+                client
+                    .thread_resume_with_sandbox(thread_id, lowered, None)
+                    .await
             }
-        }
-        match client
-            .thread_resume_with_sandbox(thread_id, lowered, read_only.then_some("read-only"))
-            .await
-        {
+        };
+        match response {
             Ok(response) => {
                 if let Err(error) = self
                     .bind_resumed_workspace(thread_id, card_id, &response.thread)

@@ -158,7 +158,7 @@ impl InputItem {
     }
 }
 
-/// `thread/start` / `thread/resume` result; only `thread.id` is ever read.
+/// Thread identity and resolved named permissions returned by start/resume.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ThreadResult {

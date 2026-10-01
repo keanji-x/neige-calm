@@ -51,8 +51,38 @@ impl TaskWorkspaceGuard {
         }
     }
 }
+impl TaskWorkspaceGuard {
+    pub(crate) async fn into_read_profile(
+        self,
+        protected_paths: Vec<PathBuf>,
+    ) -> Result<crate::shared_codex_home::ReadonlyTaskProfile> {
+        let Self::Read(guard) = self else {
+            return Err(CalmError::Conflict(
+                "named read profile requires a read task guard".into(),
+            ));
+        };
+        guard.verify().await?;
+        let base = guard
+            .lease
+            .base
+            .as_ref()
+            .ok_or_else(|| CalmError::Conflict("read guard base is missing".into()))?;
+        let id = uuid::Uuid::parse_str(&guard.lease.lease_id).map_err(|error| {
+            CalmError::Conflict(format!("read lease identity is invalid: {error}"))
+        })?;
+        crate::shared_codex_home::ReadonlyTaskProfile::new(
+            id,
+            protected_paths,
+            vec![base.git_common_dir.clone()],
+        )
+        .map_err(|error| {
+            CalmError::Conflict(format!("read permissions profile is invalid: {error}"))
+        })
+    }
+}
+
 impl ReadTaskGuard {
-    async fn verify(self) -> Result<()> {
+    async fn verify(&self) -> Result<()> {
         let base = self
             .lease
             .base
@@ -79,6 +109,18 @@ impl ReadTaskGuard {
 }
 /// Read probes cannot execute repository-selected filters or fsmonitor helpers.
 pub(crate) async fn verify_read_tree(path: &Path) -> Result<()> {
+    if path
+        .join(".codex/config.toml")
+        .try_exists()
+        .map_err(|error| {
+            CalmError::Conflict(format!("read project configuration probe failed: {error}"))
+        })?
+    {
+        return Err(CalmError::Conflict(
+            "read task does not support project-local Codex execution configuration".into(),
+        ));
+    }
+
     let keys = read_git(path, &["config", "--null", "--name-only", "--list"]).await?;
     if keys.split(|byte| *byte == 0).any(|key| {
         key.starts_with(b"filter.") && (key.ends_with(b".clean") || key.ends_with(b".process"))
