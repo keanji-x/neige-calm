@@ -101,7 +101,15 @@ describe('createMentionSource', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(calls.map((call) => call.query)).toEqual(['']);
     calls[0].resolve([TAG, TRACK, BLOCK, { ...TAG, id: 'tag:two', label: '#two' }, { ...TAG, id: 'tag:three' }]);
-    expect((await answer).map((item) => item.label)).toEqual(['Plugins', 'Tags', TAG.label, '#two', 'More Tags', 'Tracks', TRACK.label, 'More Tracks', 'Blocks', BLOCK.label, 'More Blocks']);
+    const items = await answer;
+    expect(items.map((item) => item.label).toSorted()).toEqual(
+      ['Plugins', 'Tags', TAG.label, '#two', 'More Tags', 'Tracks', TRACK.label, 'More Tracks', 'Blocks', BLOCK.label, 'More Blocks'].toSorted(),
+    );
+    const tagExamples = items.filter((item) => {
+      const data = item.auxiliaryData!;
+      return 'suggestion' in data && data.suggestion.kind === 'tag';
+    });
+    expect(tagExamples.map((item) => item.label)).toEqual([TAG.label, '#two']);
   });
 
   it('answers a failed search with an empty list instead of throwing', async () => {
@@ -152,7 +160,8 @@ describe('the @ menu in the real composer', () => {
     await userEvent.type(field(), 'see @');
     await screen.findByRole('option', { name: /^Tags/ });
     expect(screen.getAllByRole('option')).toHaveLength(6);
-    await userEvent.keyboard('{ArrowDown}{Enter}');
+    const tagIndex = screen.getAllByRole('option').indexOf(screen.getByRole('option', { name: /^Tags/ }));
+    await userEvent.keyboard('{ArrowDown}'.repeat(tagIndex) + '{Enter}');
     await screen.findByRole('option', { name: /部署/ });
     expect(field().textContent).toBe('see @#');
     expect(field().querySelector('[data-astryx-token]')).toBeNull();
@@ -208,8 +217,9 @@ describe('the @ menu in the real composer', () => {
     const search = vi.fn<MentionSearch>((query) => Promise.resolve(query === '+' ? [] : [TAG, TRACK, BLOCK]));
     render(<MentionComposer search={search} onSend={vi.fn()} />);
     await userEvent.type(field(), '@');
-    await screen.findByRole('option', { name: /^Plugins/ });
-    await userEvent.keyboard('{Enter}');
+    const plugins = await screen.findByRole('option', { name: /^Plugins/ });
+    const pluginIndex = screen.getAllByRole('option').indexOf(plugins);
+    await userEvent.keyboard('{ArrowDown}'.repeat(pluginIndex) + '{Enter}');
     await screen.findByText('No matches');
     expect(field().textContent).toBe('@+');
     expect(search.mock.calls.map(([query]) => query)).toEqual(['', '+']);

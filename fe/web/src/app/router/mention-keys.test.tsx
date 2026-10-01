@@ -45,7 +45,8 @@ describe('Enter in the new-track sentence while the @ menu is open', () => {
     render(<Form search={search} onSubmit={onSubmit} />);
     await userEvent.type(field(), 'fix @');
     await screen.findByRole('option', { name: /^Tags/ });
-    await userEvent.keyboard('{ArrowDown}{Enter}');
+    const tagIndex = screen.getAllByRole('option').indexOf(screen.getByRole('option', { name: /^Tags/ }));
+    await userEvent.keyboard('{ArrowDown}'.repeat(tagIndex) + '{Enter}');
     await screen.findByRole('option', { name: /#zz/ });
     expect(field().textContent).toBe('fix @#');
     expect(search).toHaveBeenLastCalledWith('#', expect.anything());

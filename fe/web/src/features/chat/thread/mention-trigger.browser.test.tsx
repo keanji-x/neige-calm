@@ -73,3 +73,47 @@ it.each([1200])('shows readable type entrances and enters each filtered list by 
   await expect.element(page.getByText('No matches')).toBeVisible();
   expect(document.querySelectorAll('[role="option"]')).toHaveLength(0);
 });
+
+/** Resolve authored color spaces and alpha overlays through the browser's compositor. */
+function captionContrast(caption: Element): number {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 1;
+  const context = canvas.getContext('2d')!;
+  const ancestors: Element[] = [];
+  for (let element: Element | null = caption; element; element = element.parentElement) ancestors.unshift(element);
+  context.fillStyle = 'white';
+  context.fillRect(0, 0, 1, 1);
+  for (const element of ancestors) {
+    context.fillStyle = getComputedStyle(element).backgroundColor;
+    context.fillRect(0, 0, 1, 1);
+  }
+  const background = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  context.clearRect(0, 0, 1, 1);
+  context.fillStyle = getComputedStyle(caption).color;
+  context.fillRect(0, 0, 1, 1);
+  const foreground = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  const luminance = (rgb: number[]) => rgb.map(value => {
+    const channel = value / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+  const first = luminance(foreground), second = luminance(background);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
+it.each(['light', 'dark'])('keeps %s selected menu captions readable', async theme => {
+  const previousTheme = document.documentElement.dataset.theme;
+  document.documentElement.dataset.theme = theme;
+  try {
+    await page.viewport(1200, 900);
+    render(<Composer search={async () => []} onSend={vi.fn()} />);
+    await page.getByRole('combobox', { name: 'Message' }).click();
+    await userEvent.keyboard('@');
+    await expect.element(page.getByRole('option', { name: /^Plugins/ })).toBeVisible();
+    const selected = page.getByRole('option', { selected: true }).element();
+    const caption = selected.querySelector('[data-nc-mention-category]')!.children[1];
+    expect(captionContrast(caption)).toBeGreaterThanOrEqual(4.5);
+  } finally {
+    if (previousTheme === undefined) delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = previousTheme;
+  }
+});

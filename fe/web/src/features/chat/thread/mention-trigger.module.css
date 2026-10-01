@@ -5,7 +5,10 @@
      at body rank on the left, the caption tier on the right, and the caption is
      the part that gives way when the row is narrow. */
   .item {
-    --nc-mention-caption: color-mix(in oklab, var(--text-3) 86%, var(--paper));
+    --nc-mention-caption: light-dark(
+      color-mix(in oklab, var(--text-3) 86%, var(--paper)),
+      color-mix(in oklab, var(--text-3) 90%, var(--paper))
+    );
 
     display: flex;
     flex: 1;

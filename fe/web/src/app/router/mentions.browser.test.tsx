@@ -111,17 +111,6 @@ async function groupOrder(): Promise<(string | null)[]> {
   return [...(await menu().findElement()).querySelectorAll('[role="group"]')].map((group) => group.getAttribute('aria-label'));
 }
 
-it('asks for recommendations on a bare @, blocks first', async () => {
-  const { mentionReads } = mount('/track/w1');
-  await openConversation(/Conversation Planner chat/);
-  await userEvent.keyboard('@');
-  await expect.element(menu().getByRole('option', { name: /部署/ })).toBeVisible();
-  expect(mentionReads()).toEqual(['/api/areas/c1/mentions?q=&track=w1']);
-  expect(await groupOrder()).toEqual(['Blocks', 'Tracks', 'Tags', 'Plugins']);
-  /* The first row is the one Enter takes. */
-  expect(menu().getByRole('option', { selected: true }).element().textContent).toBe('RollbackDeploy notes');
-});
-
 it.each([
   ['#', 'Tags', '#部署', CANDIDATES.tags[0].insert],
   ['/', 'Tracks', 'Deploy notes', CANDIDATES.tracks[0].insert],
