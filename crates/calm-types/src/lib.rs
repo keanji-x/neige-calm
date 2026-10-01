@@ -32,6 +32,7 @@ pub mod track_report;
 pub mod verify_target;
 pub mod worker;
 pub mod worker_flow;
+pub mod worker_presentation;
 
 pub mod task_execution;
 

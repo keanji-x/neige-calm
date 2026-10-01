@@ -12460,6 +12460,43 @@
           }
         }
       },
+      "WorkerPresentation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "native_only"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "terminal_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "interactive_tui"
+                ]
+              },
+              "terminal_id": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Native-only workers expose status and results without an interactive terminal client."
+      },
       "WorkerSessionKind": {
         "type": "string",
         "enum": [
@@ -12481,6 +12518,79 @@
           "failed",
           "superseded"
         ]
+      },
+      "WorkerSnapshot": {
+        "type": "object",
+        "description": "Derived from the task row and its committed report event; never a second persisted report.",
+        "required": [
+          "task_id",
+          "goal",
+          "status",
+          "report"
+        ],
+        "properties": {
+          "goal": {
+            "type": "string"
+          },
+          "report": {
+            "$ref": "#/components/schemas/WorkerSnapshotReport"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkerSnapshotStatus"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkerSnapshotOutcome": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed"
+        ]
+      },
+      "WorkerSnapshotReport": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "pending"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "result",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "reported"
+                ]
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/WorkerSnapshotOutcome"
+              },
+              "result": {}
+            }
+          }
+        ]
+      },
+      "WorkerSnapshotStatus": {
+        "type": "string",
+        "description": "Validated task-status wire label; state transitions remain owned by Truth's TaskStatus."
       }
     }
   },

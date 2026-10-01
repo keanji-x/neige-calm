@@ -726,6 +726,11 @@ export type VerifyTarget = { "kind": "candidate", candidate_id: string, commit_s
 export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sample, reasons: Array<MismatchReason>, } | { "kind": "verified", cwd: string, before: Sample, after: Sample, reasons: Array<MismatchReason>, } | { "kind": "unsampled", phase: SamplePhase, };
 
 /**
+ * Native-only workers expose status and results without an interactive terminal client.
+ */
+export type WorkerPresentation = { "kind": "native_only" } | { "kind": "interactive_tui", terminal_id: string, };
+
+/**
  * Opaque execution-session identifier.
  */
 export type WorkerSessionId = string;
@@ -742,3 +747,17 @@ last_turn_completed_ms?: number, };
  * Session state machine column (`worker_sessions.state`).
  */
 export type WorkerSessionState = "starting" | "running" | "idle" | "turn_pending" | "exited" | "failed" | "superseded";
+
+/**
+ * Derived from the task row and its committed report event; never a second persisted report.
+ */
+export type WorkerSnapshot = { task_id: string, goal: string, status: WorkerSnapshotStatus, report: WorkerSnapshotReport, };
+
+export type WorkerSnapshotOutcome = "completed" | "failed";
+
+export type WorkerSnapshotReport = { "kind": "pending" } | { "kind": "reported", outcome: WorkerSnapshotOutcome, result: unknown, };
+
+/**
+ * Validated task-status wire label; state transitions remain owned by Truth's TaskStatus.
+ */
+export type WorkerSnapshotStatus = "pending" | "dispatched" | "running" | "verifying" | "done" | "failed" | "canceled";

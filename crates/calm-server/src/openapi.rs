@@ -53,6 +53,10 @@ use crate::track_fs_dto::{
     TrackFsRunIndexEntry, TrackFsRunStatus, TrackFsRunVerdict, TrackFsRunVerdictSummary,
 };
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry};
+use calm_types::worker_presentation::{
+    WorkerPresentation, WorkerSnapshot, WorkerSnapshotOutcome, WorkerSnapshotReport,
+    WorkerSnapshotStatus,
+};
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -177,6 +181,7 @@ use utoipa::OpenApi;
         crate::routes::version::get_version,
     ),
     components(schemas(
+        WorkerPresentation, WorkerSnapshot, WorkerSnapshotReport, WorkerSnapshotOutcome, WorkerSnapshotStatus,
         crate::mobile_access::MobileStatus,
         calm_types::mobile_access::MobileProvider,
         calm_types::tailnet::TailnetStatus,
