@@ -383,6 +383,7 @@ impl ProviderAdapter for CodexAdapter {
             "runtime_id": runtime_id,
             "track_id": card.track_id,
             "terminal_id": term.id,
+            "terminal_launch": super::terminal_launch::fresh_state(),
             "cwd": payload.request.cwd,
             "env": env,
             "prompt": payload.request.prompt,

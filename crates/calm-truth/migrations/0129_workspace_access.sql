@@ -55,3 +55,6 @@ CREATE TABLE workspace_execution_bindings (
 ALTER TABLE workspace_leases ADD COLUMN execution_artifacts_json TEXT NULL;
 
 ALTER TABLE workspace_leases ADD COLUMN execution_parent_holder_id TEXT NULL;
+
+-- New native issuance persists its exact client nonce; historical executions have none.
+ALTER TABLE workspace_leases ADD COLUMN native_client_id TEXT NULL;
