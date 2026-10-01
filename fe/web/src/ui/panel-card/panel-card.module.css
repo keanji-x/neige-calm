@@ -27,9 +27,6 @@
   }
 
   .fill { block-size: 100%; max-block-size: 100%; min-block-size: 0; }
-  .fill > .module { flex-shrink: 0; }
-  .fill > .grow { flex: 1 1 auto; min-block-size: 0; }
-  .grow > .body { flex: 1 1 auto; min-block-size: 0; }
 
   .module {
     display: flex;
@@ -110,6 +107,10 @@
     padding-block-end: var(--space-6);
     padding-inline: var(--space-6);
   }
+
+  .fill > .module { flex-shrink: 0; }
+  .fill > .grow { flex: 1 1 auto; min-block-size: 0; }
+  .grow > .body { flex: 1 1 auto; min-block-size: 0; }
 
   /* An empty state occupies a row. Without a row's height it has no half-leading
      to stand on, so it landed 5 from the head where a real row lands ~11 — the
