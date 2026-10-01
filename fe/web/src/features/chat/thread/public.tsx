@@ -53,9 +53,11 @@ export type ChatThreadProps = Readonly<{
   cards: Readonly<Record<string, CardActivity>>;
   /** The drawer's local wedge fact. A wedged planner's kernel verdict is still `working`, so a thread that did not know it was stuck would spin beside "This conversation is stuck". */
   stalled: boolean;
+  /** The runtime reason is separate from the persisted terminal transcript. */
+  stalledReason?: string | null;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -121,14 +123,16 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   const newestId = lastTurn?.id;
   /** The newest turn as of the last run of the follow effect, so *Load earlier* is not mistaken for an arrival. Updated on every run, including runs that decline to scroll. */
   const followedTo = useRef<string | undefined>(undefined);
+  const followedStall = useRef(false);
 
-  /* Follow the newest turn only for a reader already at the bottom, and only when the last turn's id changed — not the count: *Load earlier* grows the count, and a collapsed `Thought` changes the id without it. A pane resize moves the reader without a `scroll`, so the same measurement runs from a `ResizeObserver`. Write the pane's own `scrollTop`: `scrollIntoView` pans every ancestor scrollport. */
+  /* Follow the newest turn only for a reader already at the bottom, when the last turn's id or paused state changes — not the count: *Load earlier* grows the count, and a collapsed `Thought` changes the id without it. A pane resize moves the reader without a `scroll`, so the same measurement runs from a `ResizeObserver`. Write the pane's own `scrollTop`: `scrollIntoView` pans every ancestor scrollport. */
   useEffect(() => {
     const end = endRef.current;
     if (end == null) return;
     const scroller = end.closest<HTMLElement>('[data-nc-drawer-scroll]');
     if (scroller == null) return;
-    const arrived = newestId !== followedTo.current;
+    const arrived = newestId !== followedTo.current || stalled !== followedStall.current;
+    followedStall.current = stalled;
     followedTo.current = newestId;
     if (arrived && followsNewest.current) scroller.scrollTop = scroller.scrollHeight;
     const measure = () => {
@@ -141,7 +145,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       scroller.removeEventListener('scroll', measure);
       unobserve();
     };
-  }, [turns.length, newestId]);
+  }, [turns.length, newestId, stalled]);
 
   /* The lit dot is the last exchange whose opening marker sits at or above an edge: the pane's top while a pane-height of scroll remains, sliding to the bottom as it runs out (a hard switch jumped the mark by a pane's worth). Evaluated on every scroll rather than by an observer. `read()` stops at a zero-height pane, and that guard lives only there so a pane mounted at zero height still gets its listeners. */
   const exchangeKey = JSON.stringify(exchanges.map((exchange) => exchange.id));
@@ -238,18 +242,15 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
           data-nc-turn="outcome"
           data-nc-turn-outcome={turn.status}
         >
-          <div className={styles.outcomeNotice} role="status">
-            <Divider />
-            <Collapsible defaultIsOpen={false} trigger={heading}>
-              {hasReason && <p className={styles.outcomeReason} data-nc-turn-outcome-message="" title={turn.message}>{turn.text}</p>}
-              {hasHint && <p className={styles.outcomeReason} data-nc-turn-outcome-hint="">{hint}</p>}
-              {!hasReason && !hasHint && (
-                <p className={styles.outcomeReason} data-nc-turn-outcome-fallback="">
-                  {turn.status === 'failed' ? 'The model provider is temporarily unavailable.' : 'No interruption details are available.'}
-                </p>
-              )}
-            </Collapsible>
-          </div>
+          <ThreadStatusNotice heading={heading}>
+            {hasReason && <p className={styles.outcomeReason} data-nc-turn-outcome-message="" title={turn.message}>{turn.text}</p>}
+            {hasHint && <p className={styles.outcomeReason} data-nc-turn-outcome-hint="">{hint}</p>}
+            {!hasReason && !hasHint && (
+              <p className={styles.outcomeReason} data-nc-turn-outcome-fallback="">
+                {turn.status === 'failed' ? 'The model provider is temporarily unavailable.' : 'No interruption details are available.'}
+              </p>
+            )}
+          </ThreadStatusNotice>
         </div>
       );
     }
@@ -305,7 +306,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     );
   };
 
-  if (turns.length === 0) {
+  if (turns.length === 0 && !stalled) {
     return (
       <div className={styles.empty} data-nc-thread-empty="">
         <p className={styles.emptyLead}>{live ? 'The agent is working.' : 'Nothing said yet.'}</p>
@@ -375,11 +376,28 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         )}
         {/* The drawer's one accessible "in motion" fact: every indicator is decorative. It sits after the placeholder because the stylesheet spaces `.thread`'s children by adjacency (`.exchange + *`). */}
         {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}
+        {stalled && (
+          <div className={styles.outcome}>
+            <ThreadStatusNotice heading={<span className={styles.outcomeHeader}>
+              <span className={styles.outcomeStatusLabel}>Conversation paused</span>
+            </span>}>
+              <p className={styles.outcomeReason}>{stalledReason ?? 'This conversation is stuck.'}</p>
+            </ThreadStatusNotice>
+          </div>
+        )}
         <div ref={endRef} aria-hidden="true" />
       </div>
     </div>
   );
 
+}
+
+/** Terminal outcomes and runtime pauses share one visual; a pause does not invent a turn. */
+function ThreadStatusNotice({ heading, children }: { heading: ReactNode; children: ReactNode }) {
+  return <div className={styles.outcomeNotice} role="status">
+    <Divider />
+    <Collapsible defaultIsOpen={false} trigger={heading}>{children}</Collapsible>
+  </div>;
 }
 
 /** One thing you said and everything that came back — as far as the rail needs

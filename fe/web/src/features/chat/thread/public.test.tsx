@@ -360,6 +360,20 @@ describe('ChatThread', () => {
     pane.remove();
   });
 
+  it.each([true, false])('follows a new pause only when the reader is at the end (%s)', (atEnd) => {
+    const { pane, writes, scrollTo } = followPane();
+    const turns = exchangeTurns(3);
+    const { rerender } = render(<ChatThread cards={{}} stalled={false}
+      conversation={conversation()} turns={turns} />, { container: pane });
+    const position = atEnd ? PANE_SCROLL_HEIGHT - PANE_CLIENT_HEIGHT : 100;
+    scrollTo(position);
+    rerender(<ChatThread cards={{}} stalled stalledReason="Stopping is unconfirmed."
+      conversation={conversation()} turns={turns} />);
+    expect(writes).toEqual(atEnd ? [PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT] : [PANE_SCROLL_HEIGHT]);
+    if (!atEnd) expect(pane.scrollTop).toBe(position);
+    pane.remove();
+  });
+
   it('does not follow when older turns are loaded in front', () => {
     const { pane, writes, scrollTo } = followPane();
     const { rerender } = render(
@@ -1209,4 +1223,16 @@ describe('ChatComposer', () => {
     await userEvent.click(stop);
     expect(onStop).toHaveBeenCalledTimes(2);
   });
+});
+
+it('shows a paused runtime with the same disclosure and separator, even without transcript rows', () => {
+  const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
+  const { container } = render(<ChatThread cards={{}} stalled stalledReason={reason}
+    conversation={conversation()} turns={[]} />);
+  expect(screen.getByRole('button', { name: 'Conversation paused', expanded: false })).toBeTruthy();
+  expect(screen.getByRole('separator')).toBeTruthy();
+  expect(screen.getByText(reason, { exact: true })).toBeTruthy();
+  expect(screen.queryByText('Nothing said yet.')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Start a new conversation' })).toBeNull();
+  expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
 });

@@ -391,8 +391,8 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:22,33-38,81-95,115-137;
-    fe/web/src/app/router/new-track-route.tsx:68; fe/web/src/app/router/public.tsx:1395,1958-1964;
-    fe/web/src/features/chat/thread/public.tsx:503-507,518,540,545-564,602-604
+    fe/web/src/app/router/new-track-route.tsx:68; fe/web/src/app/router/public.tsx:1388,1955-1961;
+    fe/web/src/features/chat/thread/public.tsx:544-545,559,573-607
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose
   # landing failed arms it again, 327 that redeeming is one-shot, 355 that the mark is struck off even

@@ -3,7 +3,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 
-import { ChatThread } from './public.tsx';
+import { ChatThread, ChatComposer } from './public.tsx';
+import { Drawer } from '../../../ui/drawer/public.tsx';
 import type { Conversation, ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
 
 afterEach(async () => { cleanup(); await page.viewport(1280, 720); });
@@ -69,4 +70,32 @@ it('uses distinct semantic colors and the same weight for interrupted and failed
   expect(interrupted.color).not.toBe(failed.color);
   expect(interrupted.fontWeight).toBe(failed.fontWeight);
   expect(failed.fontWeight).toBe('400');
+});
+
+it.each([320, 390, 1280])('places the paused runtime in the transcript without covering the composer (%ipx)', async (width) => {
+  await page.viewport(width, 844);
+  const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
+  const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
+    <Drawer open title="Review" onClose={() => undefined}
+      footer={<ChatComposer disabled onSend={() => undefined} />}>
+      <ChatThread cards={{}} stalled stalledReason={reason} conversation={conversation()}
+        turns={[{ id: 'answer', author: 'agent', text: 'Partial answer.', atMs: 1 }]} />
+    </Drawer>
+  </div>);
+  const disclosure = screen.getByRole('button', { name: 'Conversation paused', expanded: false });
+  const scroller = container.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  expect(scroller.contains(disclosure)).toBe(true);
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Start a new conversation' })).toBeNull();
+  expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
+  disclosure.focus();
+  await userEvent.keyboard('{Enter}');
+  const detail = screen.getByText(reason, { exact: true });
+  expect(detail.checkVisibility()).toBe(true);
+  scroller.scrollTop = scroller.scrollHeight;
+  expect(detail.getBoundingClientRect().bottom).toBeLessThanOrEqual(scroller.getBoundingClientRect().bottom + 1);
+  const composer = screen.getByRole('textbox');
+  expect(scroller.getBoundingClientRect().bottom).toBeLessThanOrEqual(composer.getBoundingClientRect().top + 1);
+  expect(composer.getAttribute('contenteditable')).toBe('false');
+  expect(document.documentElement.scrollWidth).toBe(width);
 });

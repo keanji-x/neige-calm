@@ -1023,8 +1023,9 @@ describe('planner conversation regressions', () => {
       const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
       if (policy === 'stalled') {
         expect(messageField().getAttribute('contenteditable')).toBe('false');
-        expect((await screen.findByRole('alert')).textContent).toContain('This conversation is stuck');
-        expect(screen.getByRole('button', { name: 'Start a new conversation' })).toBeTruthy();
+        expect(await screen.findByRole('button', { name: 'Conversation paused', expanded: false })).toBeTruthy();
+        expect(screen.getByText('This conversation is stuck.', { exact: true })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Start a new conversation' })).toBeNull();
         /* The wedged row is `failed`, not a request for input: mapped to `attention` it
                    would read as "waiting for you". */
         const row = screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });

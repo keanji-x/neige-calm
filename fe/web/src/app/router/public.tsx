@@ -1027,12 +1027,6 @@ function useConversationPanel(
   };
 
   const startAnother = start;
-  const continueFromStall = () => {
-    start();
-    // Starting another conversation is a recovery handoff: keep the words
-    // the reader was composing, ready to edit before any request is sent.
-    setComposerDraft(composerDraft);
-  };
 
   /* `from` is not decoration: this runs after an `await`, and the reducer records
        the row only if `from` is still held. */
@@ -1326,12 +1320,6 @@ function useConversationPanel(
                 </ChatFooterRemedy>
               </ChatFooterNotice>
             )}
-            {store.stalled && (
-              <ChatFooterNotice>
-                <ChatFooterError message={store.blockedReason ?? "This conversation is stuck. Start a new conversation to continue."} />
-                <ChatFooterRemedy onClick={continueFromStall}>Start a new conversation</ChatFooterRemedy>
-              </ChatFooterNotice>
-            )}
             {store.failedSend !== null && (
               <ChatFooterNotice tone={store.matchingSendMessage ? 'neutral' : 'error'}>
                 {store.matchingSendMessage ? (
@@ -1485,7 +1473,7 @@ function useConversationPanel(
                           `ChatThread` draws its empty state (with the live dot) for an empty list.
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
-            {(store.historyReady || store.turnsOf(open.id).length > 0) && (
+            {(store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled) && (
               <ChatThread
                 key={open.id}
                 conversation={open}
@@ -1494,6 +1482,7 @@ function useConversationPanel(
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
                 stalled={store.stalled}
+                stalledReason={store.blockedReason}
               />
             )}
           </>
