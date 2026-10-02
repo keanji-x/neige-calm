@@ -1,67 +1,87 @@
 # #1933 — pinned review checkouts
 
 **Owner rules.**
-1. Cover the observed pain with the fewest mechanisms. Hypotheticals are one-line KNOWN GAPS.
-2. Compatibility is the 4140 database only.
+1. Cover the observed pain with the fewest mechanisms. Hypotheticals become one-line KNOWN GAPS.
+2. Compatibility means the 4140 database only.
 3. A task option applies to every same-kind path, and errors list the valid choices.
 4. The kernel owns generic lifecycle and authorization; the dev template owns review semantics.
    Nothing infers "review" from goal text.
 
-**Outcome.** A codex task block gains a typed `workspace` field. `track` (the default) behaves
-as today. `pinned {head, base?}` runs against a private, detached `git worktree` of the track's
-repository at exactly `head`. The worker can read it but not write it.
+**Outcome.** A codex task block gains a typed `workspace` field.
+- `track`, the default, behaves exactly as today.
+- `pinned {head, base?}` runs against a private, detached `git worktree` of the track's
+  repository at exactly `head`. The worker can read it but cannot write it.
+- The kernel allocates the work, artifact and build directories, renders the repository remote
+  in the worker header, and runs the gate in the checkout.
+- Pinned trees stay until the track is deleted.
+- There is no migration and no new column. The frontend reader and one wire enum value change.
 
-The kernel allocates its work, artifact and build directories, renders the repository remote
-in the worker header, and runs its gate in the checkout. Pinned trees are removed when the track is closed and quiet, or when it is deleted. There is no
-migration, no new column and no frontend change.
+**Owner decisions (2026-10-01/02).**
 
-**Owner decisions (2026-10-01).** D1: no `track_idle` bypass. D2: Codex only. D3: artifacts
-live until track delete. D5: acceptance on a dev kernel, both channels Codex. D6: a migration
-number, if ever needed, is assigned at merge. D7: subtract persistence. D8: fix the stale
-`event.rs:602` comment. Round 1: no per-attempt reclaim; trees are reclaimed at close or delete.
+| ID | Decision |
+|---|---|
+| D1 | No `track_idle` bypass |
+| D2 | Codex only |
+| D3 | Artifacts stay until track delete |
+| D5 | Acceptance runs on a dev kernel with two Codex channels |
+| D6 | A migration number, if one is ever needed, is assigned at merge |
+| D7 | Subtract persistence |
+| D8 | Fix the stale `event.rs:602` comment |
+| D9 | No close-time reclaim; resources go only at track delete |
+| D10 | The frontend task reader gains the field |
+| D11 | Pinned gets an accurate unbound reason |
+| D12 | Track-task behavior is unchanged |
+| D13 | Ensure runs after side-effect admission |
 
 ## 1. Problem and evidence
 
-PR #1927 (track `e0646de4…`, frozen head `d448361f…`, 4140 at `a4a16f14`, 2026-10-01). Two Codex
-reviewers each hand-ran `git clone --shared --no-checkout` and a detached checkout. Their first
-`gh pr view` failed because the clone's `origin` was a local path, so both added
-`--repo keanji-x/neige-calm`. The Planner hand-assembled base/head, the checkout, the report dir,
-the target dir and the gate cwd in goal text. Nothing reclaimed `/tmp/neige-1545-pr1927-{a,b}-r1`.
+PR #1927 (track `e0646de4…`, frozen head `d448361f…`, 4140 at `a4a16f14`, 2026-10-01):
+- Two Codex reviewers each ran `git clone --shared --no-checkout` and a detached checkout by
+  hand.
+- Their first `gh pr view` failed because the clone's `origin` was a local path, so both added
+  `--repo keanji-x/neige-calm`.
+- The Planner assembled base/head, checkout, report dir, target dir and gate cwd by hand in goal
+  text.
+- Nothing reclaimed `/tmp/neige-1545-pr1927-a-r1`: 47 MB of checkout and 408 MB of `target/`
+  for one channel and one round (`du -sh`).
 
 ## 2. Facts (origin/main `bcd4dec59`)
 
 | # | Fact | Where |
 |---|---|---|
-| F1 | Tasks are declared as report `task` blocks. `calm.plan.upsert` is a retired shim that writes nothing | `track_report_blocks/contracts.rs:258-357`; `tools/plan.rs:398-412` |
+| F1 | Tasks are declared as report `task` blocks. `calm.plan.upsert` is a retired shim | `track_report_blocks/contracts.rs:258-357`; `tools/plan.rs:398-412` |
 | F2 | `TASK_FIELDS` and `validate_task` reject unknown keys, and a test pins the schema to `TASK_FIELDS` | `calm-types/src/report_blocks/kinds.rs:152-173`; `contracts.rs:653-664` |
-| F3 | The root hash covers only the keys present in a payload. Fields that are hashed but not stored (`refs`, `no_gate_reason`) are an explicit test exclusion | `calm-types/src/task_recovery.rs:15-48`; `task_context.rs:1383-1410` |
-| F4 | The claim freezes the root ref (block id plus root hash) in `tasks.claim_context_json`. In the claim tx it re-reads the root block from the report card and treats any hash change as a lost race | `scheduler/mod.rs:941-1050` (fence `:1029-1048`); `task_context.rs:292-330`, `:1159-1176` |
-| F5 | Agent tasks may not set `gate.cwd`. Their gate cwd is the worker card's latest `workspace_leases.path`, in any lease state | `calm-types/src/report_blocks/tasks.rs:283-287`, `:579-595`; `task_verify_adapter/mod.rs:441-462` |
+| F3 | The root hash covers only keys present in the payload. Fields that are hashed but not stored (`refs`, `no_gate_reason`) are an explicit test exclusion | `calm-types/src/task_recovery.rs:15-48`; `task_context.rs:1383-1410` |
+| F4 | The claim freezes the root ref and its hash in `claim_context_json`, and re-reads the root block in its own transaction. Prepare refuses only once the monitor has marked the task `context_stale_at_ms` (`context-stale: …`) | `scheduler/mod.rs:1029-1048`; `task_context.rs:1159-1176`; `operation/mod.rs:85-102`; `codex_adapter/mod.rs:769` |
+| F5 | Agent tasks may not set `gate.cwd`. Their gate cwd is the worker card's latest `workspace_leases.path` | `calm-types/src/report_blocks/tasks.rs:283-287`; `task_verify_adapter/mod.rs:441-462` |
 | F6 | No CLI command declares tasks | `mcp_server/cli/commands.rs:81-247` |
-| F7 | `track_idle` (read by `compute_ready` and the claim) is false in three cases: a codex/claude task is in flight; a lease is held whose owner op is not `stuck`; or a delivery is unsettled | `calm-truth/src/db/sqlite/track_idle.rs:20-57`; `scheduler/mod.rs:151`, `:1079` |
-| F8 | Prepare calls `prepare_worker_lease_tx`, then `acquire_workspace_lease_tx`. That is the only lease INSERT. `lease_owner` is the op id, and `delivery_policy = base.map(Kernel)` | `codex_adapter/mod.rs:762-866`, `:814`; `workspace_lease/worker.rs:92-125`; `workspace_lease/mod.rs:168-205` |
-| F9 | The prepare TxOutput is committed in the same tx as the lease INSERT, and `operations` rows are never deleted. Readers already join on it: the terminal gate's `$.data.cwd` (terminal tasks only) and terminal disposal | `operation/repo_sqlite.rs:273-320`; `grep -rn "DELETE FROM operations" crates` finds 0; `task_verify_adapter/mod.rs:463-477`; `terminal_disposal.rs:31` |
-| F10 | Codex checks the checkout in `app_server_interact`. Recovery from `SpawnStarted` calls `spawn_side_effect` directly, which launches without that check | `codex_adapter/mod.rs:868-886`, `:888-951`, `:1555-1565`; `operation/driver.rs:540` |
-| F11 | Codex workers run `workspace-write` with approval `never`, and cwd is TxOutput `cwd`. Resume sends `threadId` plus shell-env config only. A thread whose `thread_id` is persisted is reused without `thread/start` | `shared_codex_appserver.rs:1225-1246`, `:3472-3500`; `codex_adapter/mod.rs:1164-1166` |
-| F12 | Claude workers have no permission boundary | `claude_adapter/mod.rs:356-375`; `routes/claude_cards.rs:313-341` |
-| F13 | The first prompt holds `Goal/Context/Acceptance` and the completion-ID footer. The system prompt says "the platform commits after you report" | `codex_adapter/mod.rs:1485-1525`; `prompts/worker/head-mcp.md:6` |
-| F14 | Only `delivery_policy='kernel'` inserts a delivery. A NULL-policy lease is gate `Unbound{LegacyLease}`, whose wire doc is "`delivery_policy IS NULL`". An unbound gate passes its verdict through even when `stop_group` fails | `workspace_lease/release.rs:126-150`; `task_verify_adapter/target.rs:199-227`, `:657-700`; `calm-types/src/verify_target.rs:39-50` |
-| F15 | The frontend closed enum lives in the frozen `fe/core/api` | `fe/core/api/schemas.ts:829-843`; `fe/module-file-inventory.yaml:44` |
-| F16 | Completion releases the lease but does not end the session: a completed Codex turn stays alive. Only the sweeper's closed-track arm ends sessions, and only those whose task is not in flight | `decision_sink.rs:148`, `:195`; `calm-provider/src/provider/codex.rs:220`; `terminal_sweeper.rs:69-125` |
-| F17 | Closing stops scheduling only; in-flight tasks and gates continue. Delete stops no gate (`stop_group` has no caller outside `task_verify_adapter`). After commit, delete removes the track worktree | `1876-track-open-closed.md` D2; `routes/tracks.rs:2743-2810`, `:3093-3160`; `workspace_lease/mod.rs:247-363` |
-| F18 | Boot reclaim only flips rows, and only for an older-boot lease whose owner op is not recoverable. Recoverable owners are re-driven. #1830 S2 deleted the #1815 disk reclaim | `release.rs:233-262`; `operation/driver.rs:351`, `:1047` |
+| F7 | `track_idle` is false in three cases: a codex/claude task is in flight, a non-`stuck` owner holds a lease, or a delivery is unsettled | `calm-truth/src/db/sqlite/track_idle.rs:20-57` |
+| F8 | Prepare runs `prepare_worker_lease_tx`, then `acquire_workspace_lease_tx`, which is the only lease INSERT. `lease_owner` is the op id, and the delivery policy is `base.map(Kernel)` | `workspace_lease/worker.rs:92-125`; `workspace_lease/mod.rs:168-205` (policy `:203`); `codex_adapter/mod.rs:814` |
+| F9 | The prepare TxOutput commits in the same transaction as the lease INSERT. A keyed worker operation row (`idempotency_key` = task id) cannot be deleted; unkeyed rows still can | `operation/repo_sqlite.rs:273-320`; `calm-truth/src/db/sqlite/operations_keyed_rows_permanent_tests.rs:35-63`, `:66-71` |
+| F10 | Codex verifies the checkout in `app_server_interact`. Recovery from `SpawnStarted` calls `spawn_side_effect` directly, and that path launches after `admit_task_side_effect` without verifying. Admission must run immediately before new provider or process effects | `codex_adapter/mod.rs:868-886`, `:935`, `:951`; `operation/driver.rs:540`; `operation/mod.rs:105` |
+| F11 | Codex workers run `workspace-write` with cwd = TxOutput `cwd`. Resume sends `threadId` + config only. A persisted `thread_id` is reused | `shared_codex_appserver.rs:1225-1246`, `:3472-3500`; `codex_adapter/mod.rs:1164-1166` |
+| F12 | Claude workers have no permission boundary | `claude_adapter/mod.rs:356-375` |
+| F13 | The first prompt is `Goal/Context/Acceptance` plus the completion-ID footer. The system prompt says "the platform commits after you report" | `codex_adapter/mod.rs:1485-1525`; `prompts/worker/head-mcp.md:6` |
+| F14 | Only `delivery_policy='kernel'` inserts a delivery. Two producers map a NULL-policy lease to `legacy_lease` ("predates kernel delivery"): the gate target and the `calm.plan.list` candidate view | `release.rs:126-150`; `task_verify_adapter/target.rs:95-110`, `:199-227`; `calm-types/src/verify_target.rs:39-50`; `git_candidate/view.rs:167-172`, `:266-269`; `tools/plan.rs:693` |
+| F15 | Frontend strict readers: agent task blocks use `z.strictObject` and degrade an unknown key to `unsupported`. The gate-target enum lives in `fe/core/api`, which is `readonly`; a change there needs an `OWNERSHIP-CHANGE: <path> — <why> (#n)` trailer in the commit and in the PR body | `fe/core/domain/report.ts:135-162`, `:258`; `fe/core/api/schemas.ts:829-843`; `fe/module-file-inventory.yaml:44`; `fe/tools/ownership/validator.ts:37`, `:136`; `fe/core/AGENTS.md`. Precedents: `dccc140ff`, `71112fccd` |
+| F16 | `WEB_COMPAT_VERSION` (35) must be equal in `routes/version.rs:33` and `fe/web/src/app/providers/public.tsx:16` (`scripts/gate-web-compat-version-lockstep.sh`). `SYNC_EVENT_VERSION` is bumped only with a migration default (`calm-types/src/event.rs:225-227`; `gate-sync-event-version-lockstep.sh`) | read |
+| F17 | Track delete holds `lock_for_track_delete()` through its post-commit sweep. The sweep has every `git_common_dir` of the track's lease rows; area delete uses the same sweep | `routes/tracks.rs:3102`, `:126`, `:2976`; `workspace_lease/mod.rs:331-352`; `routes/areas.rs:568` |
+| F18 | Boot reclaim only flips the row of an older-boot lease whose owner is not recoverable; recoverable owners are re-driven | `release.rs:233-262`; `operation/driver.rs:1047` |
 | F19 | Worker forge actions run in the worker's lease path | `mcp_server/transport.rs:1029-1090` |
-| F20 | Dev publish resolves the repository remote as `track_worktree_target(..).repo_root` (the main root), then `head_upstream(main root)`. Track branches have no upstream, so `head_upstream` of the track worktree is `None` | `builtin_plugins/dev/publish.rs:163-200`; `track_worktree.rs:92`; `upstream.rs:84-96` |
-| F21 | `git worktree add` runs repository hooks under the allowlisted environment, and a test pins this for the track worktree | `tests/cases/lease_git_env.rs:1-40` |
-| F22 | isolated-codex-v1 was deleted in #1893 S4, so no second lease kind remains | `71112fccd`; `calm-types/src/event.rs:602` (stale) |
-| F23 | Review semantics live in the dev template, which says nothing about checkouts. The typed data root is `Config.data_dir` | `templates/builtin/issue-development.md:73`; `config.rs:26`, `:174-182` |
+| F20 | Publish resolves the remote as `track_worktree_target(..).repo_root`, then `head_upstream(main root)`. Track branches have no upstream | `builtin_plugins/dev/publish.rs:163-200`; `track_worktree.rs:92`; `upstream.rs:84-96` |
+| F21 | `git worktree add` runs repository hooks under an allowlisted environment, and a test pins this | `tests/cases/lease_git_env.rs:1-40` |
+| F22 | isolated-codex-v1 is deleted, so there is no second lease kind. The doc of `workspace.leased` is stale | `71112fccd`; `calm-types/src/event.rs:602` |
+| F23 | Review semantics belong to the dev template. The data root is `Config.data_dir` | `templates/builtin/issue-development.md:73`; `config.rs:26` |
 
-**4140** (`sqlite3 -readonly ~/.local/share/neige-next/data/calm.db`, 2026-10-01): 118 tasks
-(codex 66, claude 48, terminal 4), none non-terminal. 110 leases, all `released`; one already
-has a base with NULL policy, so NULL policy is not a pinned marker. Every lease has its owner
-operation (`left join operations … where o.id is null` returns 0). Of 429 task blocks in all
-`track_vcs_objects` blobs, 0 have `workspace` or `context.neige_workspace`. Nothing changes
-meaning.
+**4140** (`sqlite3 -readonly ~/.local/share/neige-next/data/calm.db`, 2026-10-01):
+- 118 tasks (codex 66, claude 48, terminal 4); none is non-terminal.
+- 110 leases, all `released`. One already has a base with a NULL policy, so a NULL policy does
+  not mark a pinned lease.
+- Every lease has its owner op: `left join operations … where o.id is null` returns 0.
+- 429 task blocks across all `track_vcs_objects` blobs; 0 carry `workspace` or
+  `context.neige_workspace`.
+
+Nothing changes meaning.
 
 ## 3. Design
 
@@ -72,238 +92,261 @@ meaning.
 "workspace": { "kind": "pinned", "head": "<full sha>", "base": "<full sha>" }
 ```
 
-- `TaskWorkspace` is tagged by `kind` (`deny_unknown_fields`). If omitted it means `track`.
-- It is registered on `TASK_FIELDS`, in the `contracts.rs` properties and tombstone list, and in
-  `TASK_ROOT_HASH_FIELDS`. It is not a drift field, because it is not stored (F3).
-- `head` is required and `base` is optional. Both are full commit ids (40 or 64 lowercase hex).
-- `pinned` is accepted only for `kind: codex` on the track's own route.
-- Errors (`invalid_declaration`) list the valid choices, for example:
+- **Type.** `TaskWorkspace` is tagged by `kind` (`deny_unknown_fields`). Omitted means `track`.
+- **Registration.** The field goes on `TASK_FIELDS`, the `contracts.rs` properties and tombstone
+  list, and `TASK_ROOT_HASH_FIELDS`. It is not a drift field (F3).
+- **Values.** `head` is required and `base` is optional. Both must be full commit ids. `pinned`
+  is allowed only on `kind: codex` tasks on the track's own route.
+- **Errors** (`invalid_declaration`) list the valid choices:
   - `workspace.kind must be one of: track, pinned`
   - `workspace pinned requires kind: codex (got claude)`
-- #1921 adds `track_read` here instead of `context.neige_workspace`.
-- There is no CLI mirror (F6).
+- **Other surfaces.** #1921 adds `track_read` here. There is no CLI mirror (F6).
 
-### 3.2 Persistence: none (D7)
+### 3.2 Persistence: none (D7, D12)
 
-- **Task workspace, read at prepare.** Prepare reads the root block that the claim froze (F4):
-  `frozen_root_block_tx` checks it against the hash in `claim_context_json`, then reads
-  `workspace`. That function is the claim fence's inline read, moved so both callers share it.
-  - Because `workspace` is hashed, an equal hash proves the value was admitted.
-  - A changed hash refuses with `declaration-changed-in-flight`.
-  - `build_worker_payload` is unchanged.
-- **Lease kind.** TxOutput carries `workspace`, `head`, `base` and `checkout`, and is committed
-  with the lease row (F9). The one reader is `lease_workspace_tx`: it reads
-  `json_extract(o.tx_output_json,'$.data.workspace')` through `lease_owner`. Its callers are
-  the forge fence now and #1917 later.
+- **Task workspace at prepare.** Prepare reads the current root block through one
+  `frozen_root_block_tx`, which is the claim fence's inline read (F4) moved so both callers
+  share it.
+  - If the block declares `pinned`, its root hash must equal the claim-frozen hash. Otherwise
+    prepare refuses with the existing `context-stale: frozen closure no longer matches the
+    document`.
+  - Anything else takes today's track path unchanged: no new refusal for track tasks, and the
+    existing context-stale handling (F4) stays as it is.
+  - A pinned→track edit after the claim runs as track. That is safe because both kinds are
+    admitted identically (D1).
+- **Lease kind.** TxOutput carries `workspace`, `head`, `base` and `checkout`, committed with the
+  lease row in the keyed worker op (F9).
+  - The single reader is `lease_workspace_tx`:
+    `json_extract(o.tx_output_json,'$.data.workspace')` via `lease_owner`.
+  - It is used by the forge fence and by the two unbound-reason producers (§3.3 step 4).
 - **Delivery policy.** `acquire_workspace_lease_at_path_tx` takes the policy from the plan
-  instead of `base.map(Kernel)` (`mod.rs:202`): track gives `Kernel`, pinned gives NULL.
+  instead of `base.map(Kernel)` (`mod.rs:203`): `Kernel` for track, NULL for pinned.
 
 ### 3.3 Layout and lifecycle (reuses `workspace_leases`)
 
-`<data_dir>/pinned/<track_id>/` (F23) contains:
+`<data_dir>/pinned/<track_id>/` contains:
 
-| Path | Lifetime |
+| Path | What it holds |
 |---|---|
-| `checkouts/<card_id>/` | the attempt's detached worktree, which the worker cannot write; removed at close or delete |
-| `work/` | the worker cwd, writable, shared by the track's pinned attempts |
-| `work/target/` | the build dir, one per track; removed at close or delete |
-| `work/artifacts/<card_id>/` | reports; removed at delete (D3) |
+| `checkouts/<card_id>/` | The attempt's detached worktree. The worker cannot write it. Gate builds land in its own `target/` |
+| `work/` | The worker cwd, writable, shared by the track's pinned attempts |
+| `work/target/` | The worker's build directory |
+| `work/artifacts/<card_id>/` | Reports |
 
-Sharing `work/` and the target is safe only because pinned tasks serialize under `track_idle`
-(D1, F7). #1917 must revisit both before it admits pinned tasks concurrently. This sharing caps
-disk use at one target per track.
+All of it is removed at track delete (D3, D9). Sharing `work/` relies on the serialization of
+pinned tasks under `track_idle` (D1, F7); #1917 must revisit it.
 
 1. **Prepare.**
-   - It reads the repository root from the track row, as `prepare_worker_lease_tx` does:
-     `track_worktree_target(..).repo_root` for an attached track, `workspace_path` for a managed
-     one.
-   - It probes `git cat-file -e <head>^{commit}` (and `base`) through the bounded `run_git`.
-   - It skips the clean-tree check and supersede.
-   - It plans `checkout: Track{branch} | Pinned{head, base}`.
-   - The lease row gets: `path` = `checkouts/<card>`;
-     `canonical_path` = `canonicalize(data_dir)` joined with the validated segments (nothing
-     exists yet); `git_common_dir` = `lease_git_common_dir(repo_root)`;
-     `base_source='commit'`; `base_sha = head`; policy NULL.
+   - Repository root comes from the track row: `track_worktree_target(..).repo_root` for an
+     attached track, `workspace_path` for a managed one.
+   - Probe `git cat-file -e <head>^{commit}` (and `base`) through the bounded `run_git`.
+   - Skip the clean-tree check and supersede.
+   - Plan `checkout: Track{branch} | Pinned{head, base}`.
+   - Lease row: `path` = `checkouts/<card>`; `canonical_path` = `canonicalize(data_dir)` joined
+     with the validated segments; `git_common_dir` = `lease_git_common_dir(repo_root)`;
+     `base_source='commit'`; `base_sha = head`; delivery policy NULL.
    - TxOutput `cwd` is `work/`.
    - Nothing touches the filesystem before the commit.
-2. **Ensure, at the single launch point (fixes F10).**
-   - The checkout check moves from `app_server_interact` into `spawn_side_effect`. It runs after
-     the "already exited" no-op and before `spawn_codex_worker_via_shared_daemon`. Every fresh
-     launch and every `SpawnStarted` recovery passes through it, for track tasks too.
-   - Track tasks keep today's `verify_worktree_base`.
-   - For pinned, an existing checkout is kept only if it passes every check: it is registered
-     at the path; HEAD == `head` and detached; its realpath equals `canonical_path`; and
-     `git status --porcelain` is empty.
-   - Otherwise (a partial add, or a retry): `remove_workspace_worktree` (guards kept; the target
-     gains `head: Branch | Detached`), then `worktree add --detach` through
-     `isolated_git_command`, then the check again.
-   - A blind recreate would pull the checkout from under a worker already running in the daemon
-     (F11, `:1164`), so the check comes first.
-   - Ensure also creates `work/artifacts/<card>` and `work/target`.
-3. **Read-only on start and on resume, with no sandbox code.**
-   - Codex `workspace-write` with cwd `work/` (F11) leaves `checkouts/` and the common `.git`
-     readable but not writable, and keeps network access.
-   - Resume keeps the thread's cwd, as track workers already require.
+2. **Ensure (pinned only; D12, D13).**
+   - It runs in `spawn_side_effect` after the exited no-op and after `admit_task_side_effect`
+     (`codex_adapter/mod.rs:935`), and before `spawn_codex_worker_via_shared_daemon`. Every
+     fresh launch and every `SpawnStarted` recovery passes through it. The worktree add runs
+     hooks, so it is a process effect and must come after admission (F10).
+   - Track tasks keep `verify_worker_checkout` in `app_server_interact` (`:877`), unchanged;
+     `verify_codex_worker_workspace` skips it for pinned.
+   - An existing checkout is kept only if all of these hold: it is registered at the path, HEAD
+     is detached at `head`, its realpath equals `canonical_path`, and `git status --porcelain` is
+     empty. Otherwise ensure runs `remove_workspace_worktree` (its guards; the target gains
+     `head: Branch | Detached`), then `worktree add --detach` via `isolated_git_command`, then
+     the check again.
+   - Ensure never removes a checkout that passes the check, because a reused thread may
+     already be running in it (F11).
+3. **Read-only on start and on resume.**
+   - Codex `workspace-write` with cwd `work/` leaves `checkouts/` and the common `.git`
+     unwritable, and keeps network access. There is no sandbox code change.
    - A forge action from a pinned worker is refused before `resolve_forge_cwd` (F19) with
      `refused: pinned-checkout-read-only`.
-4. **Release and gate.**
-   - The existing release points flip the row, and NULL policy means no delivery (F14).
-   - The gate cwd is the lease path, which is the checkout (F5).
-   - The gate target is `Unbound{LegacyLease}`, unchanged. Its wire meaning is already
-     "`delivery_policy IS NULL`" (F14), and only its Rust doc comment is reworded to name
-     pinned. A new variant would touch the frozen `fe/core/api/schemas.ts` (F15) and need a
-     WEB_COMPAT bump. Reusing it changes neither WEB_COMPAT nor SYNC_EVENT_VERSION, and the
-     frontend is unchanged.
-5. **Reclaim at close (the terminal sweeper's closed-track arm, F16).** After the arm ends
-   sessions, a new step visits each closed track that has a `pinned/<track>/` directory. Today
-   no point guarantees quiescence (F16, F17), so the step requires all three of:
-   - (i) no current task of the track is `dispatched`, `running` or `verifying`;
-   - (ii) no session of the track is `running` with a live terminal (the arm's own set);
-   - (iii) for each pinned attempt, `stop_group` (F14) re-run on its last gate-op artifacts
-     returns `Ok`.
-
-   It then removes `checkouts/*` (with the guards, then `worktree prune`) and `work/target`.
-   - On `Err`, it keeps the trees, logs, and retries next tick.
-   - A reopen re-arms admission. The step re-reads `closed_at` in an IMMEDIATE transaction
-     right before removal.
-6. **Reclaim at delete.** The post-commit sweep (F17) also removes `pinned/<track>/` whole
-   (artifacts included), using the `repo_root` it already derives for the track worktree. That
-   is the same contract as the track worktree.
-7. **Admission is unchanged (D1).**
+4. **Release, gate and reason.**
+   - Release: a NULL policy means no delivery (F14).
+   - Gate: its cwd is the checkout (F5).
+   - Reason: both producers (F14) ask `lease_workspace_tx` and emit the new `pinned_checkout`
+     for a pinned lease. Existing NULL-policy rows keep `legacy_lease`.
+   - Enum changes: `UnboundReason::PinnedCheckout` in `calm-types/src/verify_target.rs`;
+     `FrozenUnbound::PinnedCheckout` plus its wire arm (`target.rs:95-110`);
+     `git_candidate/view.rs` `UnboundReason::PinnedCheckout` (`:167-172`, `:266-269`).
+5. **Reclaim at track delete only (D9).**
+   - In the post-commit sweep, still under `lock_for_track_delete()` (F17), run
+     `rm -rf <data_dir>/pinned/<track>/`.
+   - Then run `git --git-dir=<common> worktree prune` for every `git_common_dir` the sweep
+     already captured from the track's lease rows. That covers attached and managed tracks, and
+     area delete.
+6. **Admission is unchanged (D1).**
 
 ### 3.4 Worker header and template
 
-`render_task_worker_prompt` (F13) gains a `Workspace:` section, for pinned tasks only:
-- `checkout`: read-only and never committed. This overrides the system prompt's "the platform
-  commits after you report".
-- `head`, and `base` (or "not declared").
-- `remote`: the publish resolver, extracted into one `track_repo_remote(track)` that both
-  callers use (F20), or `none (no upstream remote for <repo>)`.
-- "Run git and gh inside the checkout (`cd <checkout>`); gh resolves the repository from its
-  `origin`. Pass the PR number explicitly."
-- `work` (your cwd), `artifacts/<card>` (write reports here and name them in
-  `calm.task.complete`), and `target` (point build output here).
-- "The gate runs in the checkout."
+`render_task_worker_prompt` (F13) gains a `Workspace:` section for pinned tasks only:
+- `checkout`: read-only and never committed. This overrides "the platform commits after you
+  report".
+- `head`, and `base` or "not declared".
+- `remote`: from one `track_repo_remote(track)`, extracted from publish (F20), or
+  `none (no upstream remote for <repo>)`.
+- "Run git and gh inside the checkout (`cd <checkout>`); pass the PR number explicitly."
+- `work` (cwd), `artifacts/<card>` (name the report file in `calm.task.complete`), and
+  `target`.
+- The gate runs in the checkout.
 
-`templates/builtin/issue-development.md` "Working method" (`:73`) gains one paragraph. Each
-review channel is a `kind: codex` task with
-`workspace: {kind: pinned, head: <PR head>, base: <PR base>}`. Its goal names only the channel
-role and the PR number, with no clone, `--repo`, directory or target commands.
+In `templates/builtin/issue-development.md`, the "Working method" section (`:73`) gains one
+paragraph:
+- Each review channel is a `kind: codex` task with
+  `workspace: {kind: pinned, head: <PR head>, base: <PR base>}`.
+- Its goal names the channel role and the PR number.
+- It contains no clone, `--repo`, directory or target commands.
+
+### 3.5 Frontend and versions (D10, D11)
+
+- **`fe/core/domain/report.ts`** (not `readonly`). `agentTaskBlockPayloadSchema` gains
+  `workspace`: a strict discriminated union on `kind`, either `track` or
+  `pinned {head, base?}`, nullish. Terminal blocks keep refusing the field. Contract coverage
+  goes in `report.test.ts`.
+- **`fe/core/api/schemas.ts:829-831`** gains `'pinned_checkout'`, with a case in
+  `schemas.contract.test.ts`, and `gen:api` regenerates `generated/wire.ts`.
+- **Ownership trailers.** Each `fe/core/api/*` path carries
+  `OWNERSHIP-CHANGE: <path> — <why> (#1933)` in the commit and the PR body (F15). This is the
+  owner-layer change request that `fe/AGENTS.md` and `fe/core/AGENTS.md` require; the
+  orchestrator approved it as D11.
+- **Versions.**
+  - `WEB_COMPAT_VERSION` goes 35 → 36 in both files (F16). A stale bundle would otherwise
+    degrade pinned blocks to `unsupported` and reject `pinned_checkout` gate events; with the
+    bump it shows the server-update notice instead.
+  - `SYNC_EVENT_VERSION` stays: there is no migration default and no stamp (F16).
+  - `REST_API_VERSION` stays: `neige-app` reads none of these types
+    (`grep -rln UnboundReason crates/neige-app` finds 0).
+- **Cost verdict (D11): not prohibitive.**
+  - About 6 production files: 3 Rust enums and maps, 2 FE schemas, 2 version constants.
+  - Their tests.
+  - The trailer lines.
 
 ## 4. Failure and diagnostic matrix
 
 | Case | Detected at | Outcome | Diagnostic |
 |---|---|---|---|
-| Bad shape: abbreviated head, unknown kind, claude, terminal, child route | `validate_task` | block invalid, never scheduled | `invalid_declaration` listing the valid choices |
-| Root changed between claim and prepare | `frozen_root_block_tx` (prepare) | `spawn-failed`, no row | `refused: declaration-changed-in-flight: task block <id> changed after claim; declare again under a new key` |
-| Unknown head or base | prepare | `spawn-failed`, no row, no directory | `refused: pinned-head-unknown: commit <sha> is not in <repo>; push or fetch it, then declare again under a new key` (`pinned-base-unknown` likewise) |
-| Checkout HEAD moved, on a branch, dirty, or partial | ensure (`spawn_side_effect`) | removed and added again at `head` | on failure: `refused: pinned-checkout-unavailable: git worktree add failed in <repo>: <stderr>` |
-| Kernel restart, owner op recoverable | driver re-drive (`driver.rs:1047`), then ensure on `SpawnStarted` | checkout verified or recreated, launch continues | as above |
-| Older machine boot, owner op not recoverable | boot reclaim (F18) | attempt `spawn-failed: <BOOT_RECLAIM_REASON>`, row released with no delivery; trees wait for close | existing text |
-| No repository remote | header | runs | `remote: none (no upstream remote for <repo>)` |
-| Cancel or timeout | existing mark, kill, release | row released; trees wait for close | — |
-| Track closed with a task in flight, a live session, or a gate group not proven stopped | close step terms (i) to (iii) | trees kept; retried every 30 s | `tracing::warn`: `pinned trees kept for track <id>: <term>` |
-| Track deleted | delete post-commit sweep | `pinned/<track>/` removed, registrations pruned | — |
-| Forge action from a pinned worker | `transport.rs`, before `resolve_forge_cwd` | refused | `refused: pinned-checkout-read-only: a pinned worker cannot run forge actions` |
+| Bad shape: abbreviated head, unknown kind, claude, terminal or child route | `validate_task` | Block invalid, never scheduled | `invalid_declaration` listing valid choices |
+| Pinned block changed between claim and prepare | `frozen_root_block_tx` | `spawn-failed`, no row | `context-stale: frozen closure no longer matches the document` (existing text) |
+| Unknown head or base | Prepare | `spawn-failed`, no row, no directory | `refused: pinned-head-unknown: commit <sha> is not in <repo>; push or fetch it, then declare again under a new key` (`pinned-base-unknown` likewise) |
+| Checkout HEAD moved, on a branch, dirty or partial | Ensure (`spawn_side_effect`) | Removed and added again at `head` | On failure: `refused: pinned-checkout-unavailable: git worktree add failed in <repo>: <stderr>` |
+| Attempt not startable at launch | `admit_task_side_effect` before ensure | No worktree add, no hook run | Existing admission text |
+| Kernel restart, owner recoverable | Driver re-drive, then ensure on `SpawnStarted` | Checkout verified or recreated | As above |
+| Older machine boot, owner not recoverable | Boot reclaim (F18) | Attempt `spawn-failed: <BOOT_RECLAIM_REASON>`; row released, no delivery | Existing text |
+| No repository remote | Header | Runs | `remote: none (no upstream remote for <repo>)` |
+| Cancel, timeout, track close | Existing paths | Row released; trees stay until delete | — |
+| Track or area deleted | Post-commit sweep under the delete lock | `pinned/<track>/` removed, registrations pruned | — |
+| Forge action from a pinned worker | `transport.rs` | Refused | `refused: pinned-checkout-read-only: a pinned worker cannot run forge actions` |
 
-Permission, candidate, session and merge fences are unchanged, and track tasks follow F8.
+The permission, candidate, session and merge fences are unchanged, and so is every track-task
+path (D12).
 
 ## 5. Composition
 
-- **#1917.** Pinned keeps today's serialization (D1). Once #1917 decides admission by conflict,
-  it can classify pinned leases through `lease_workspace_tx` as occupying no track checkout.
-  Before admitting pinned tasks concurrently, it must give each attempt its own `work/` and
-  target (§3.3).
-- **#1921.** `track_read` becomes a third variant of this field.
-  - If #1921 keeps its `access_mode` column, pinned rows write `read_only` and
+- **#1917.** Pinned keeps serialization (D1). When #1917 makes admission conflict-based, it can
+  classify pinned leases through `lease_workspace_tx` as using no track checkout. Before pinned
+  tasks run concurrently, it must give each attempt its own `work/` and `target`.
+- **#1921.** `track_read` becomes the third variant of this field.
+  - If #1921 keeps its `access_mode` column, pinned rows write `read_only` there, and
     `lease_workspace_tx` reads that column.
   - `track_read` uses the Codex `read-only` sandbox, because its cwd is the shared checkout.
-  - The forge refusal is shared.
 
-## 6. Slice plan (one PR, about 800 lines: about 430 prod and 370 test)
+## 6. Slice plan (one PR, ~860 lines: ~440 prod, ~420 test, including ~60 FE)
 
-The PR contains:
-- the `calm-types` enum, validator, schema and root-hash registration;
-- `frozen_root_block_tx`;
-- `workspace_lease/pinned.rs`, a new file because `mod.rs` is 791 lines. It holds prepare,
-  ensure, the close step and the delete step;
-- the ensure call moved into `spawn_side_effect`;
-- the policy parameter on `acquire_workspace_lease_at_path_tx`;
-- `track_repo_remote`, extracted from `publish.rs`;
-- the header and the forge fence;
-- the template paragraph;
-- the `LegacyLease` doc comment;
-- `calm-types/src/event.rs:602`, reworded to "a worker attempt's lease of its checkout".
+Contents:
+- **calm-types:** the enum, validator, schema and root-hash registration.
+- **Prepare side:** `frozen_root_block_tx` and the delivery-policy parameter.
+- **`workspace_lease/pinned.rs`:** prepare, ensure and the delete step. It is a new file because
+  `mod.rs` is 791 lines.
+- **Adapter:** the pinned-only ensure in `spawn_side_effect`, the verify skip for pinned, and the
+  forge fence.
+- **Shared code:** `track_repo_remote` extracted from `publish.rs`.
+- **Wire:** the 3 Rust reason enums and maps, the header, the template paragraph, and the
+  `event.rs:602` doc.
+- **Frontend:** `report.ts`, `schemas.ts` and its generated files, `WEB_COMPAT_VERSION` 36 ×2,
+  and the `OWNERSHIP-CHANGE` trailers.
+- **Not included:** no migration, no `Task` change, no Claude change, no sandbox change, and no
+  change to track-task behavior.
 
-There is no migration, no `Task` change, no frontend change, no Claude change and no sandbox
-change.
-
-Must-red tests. Each names the production mutation that turns it red; tests marked * get
+Must-red tests. Each names the production mutation that turns it red; * marks the ones that get
 mutation verification.
 - T1 `pinned_head_must_be_full_commit_id`: remove the full-hex check.
 - T2 `pinned_refused_off_codex_lists_valid_choices`: remove the kind check.
-- T3* `pinned_prepare_uses_claim_frozen_root`: skip the frozen-hash comparison.
-- T4* `pinned_unknown_head_refused_before_any_row`: skip the `cat-file` probe.
-- T5 `pinned_checkout_on_a_branch_is_replaced`: remove the detached check from ensure.
-- T6 `pinned_worker_cwd_contract`: TxOutput `cwd` = checkout. This is a cwd contract only;
-  write denial is acceptance (d).
-- T7* `pinned_checkout_moved_is_replaced_before_launch`: skip the HEAD check.
-- T8* `pinned_recovery_from_spawn_started_ensures_checkout`: leave ensure in
-  `app_server_interact`. The test starts recovery at `SpawnStarted`.
-- T9 `pinned_partial_checkout_recreated`: trust an existing directory without checking it.
-- T10* `pinned_release_writes_no_delivery`: pass `Kernel` for pinned.
-- T11 `pinned_gate_cwd_is_checkout`: lease path = `work/`.
-- T12* `closed_track_reclaims_pinned_only_when_quiet`. It drives a real pinned completion on an
-  open track, closes the track, then runs `terminal_sweeper::sweep`. There are three
-  mutations, one per term: (i), (ii), and (iii) using a live gate descendant that carries the
-  marker.
-- T13 `track_delete_removes_pinned_tree_and_registration`: remove the delete arm.
-- T14* `pinned_worker_forge_action_refused`: remove the fence.
-- T15 `pinned_header_renders_shared_remote_and_checkout_cwd`: resolve through the track
-  worktree's upstream, which yields `none`.
-- T16 `pinned_worktree_hooks_see_only_the_allowlisted_environment`, in `lease_git_env.rs`, with
-  its header updated: a plain `Command` for the add.
-- The existing partition tests (F2, F3) also apply. `projection_drift_fields_equal_hashed_stored_fields`
-  gains `workspace` in its not-stored set.
+- T3* `pinned_prepare_refuses_root_changed_since_claim`: skip the hash comparison.
+- T4 `track_task_root_edit_keeps_todays_prepare_path`: apply the comparison to every task.
+- T5* `pinned_unknown_head_refused_before_any_row`: skip the `cat-file` probe.
+- T6 `pinned_checkout_on_a_branch_is_replaced`: remove the detached check.
+- T7 `pinned_worker_cwd_contract`: TxOutput `cwd` = checkout. Write denial is covered by
+  acceptance (d).
+- T8* `pinned_checkout_moved_is_replaced_before_launch`: skip the HEAD check.
+- T9* `pinned_recovery_from_spawn_started_ensures_checkout`: leave ensure in
+  `app_server_interact`.
+- T10 `pinned_partial_checkout_recreated`: trust an existing directory.
+- T11 `pinned_ensure_runs_after_admission`: call ensure before `admit_task_side_effect`. A
+  non-startable attempt must leave no hook probe.
+- T12 `track_spawn_started_recovery_unchanged`: apply ensure to track tasks.
+- T13* `pinned_release_writes_no_delivery`: pass `Kernel` for pinned.
+- T14 `pinned_gate_cwd_is_checkout`: lease path = `work/`.
+- T15* `pinned_reason_in_gate_target_and_plan_list`: map NULL policy to `legacy_lease`
+  unconditionally, in the gate producer on one run and in the plan.list producer on the other.
+  A legacy NULL-policy row stays `legacy_lease`.
+- T16 `track_delete_removes_pinned_tree_and_prunes`: remove the delete step. Covers an attached
+  and a managed track.
+- T17* `pinned_worker_forge_action_refused`: remove the fence.
+- T18 `pinned_header_renders_shared_remote_and_checkout_cwd`: resolve through the track
+  worktree's upstream.
+- T19 `pinned_worktree_hooks_see_only_the_allowlisted_environment` (`lease_git_env.rs`, header
+  updated): use a plain `Command`.
+- T20 (FE, `report.test.ts`) a pinned agent block parses as a task: drop `workspace` from the
+  shape, and it degrades to `unsupported`.
+- T21 (FE, `schemas.contract.test.ts`) a `pinned_checkout` gate target parses: remove the enum
+  value.
+- The existing partition tests (F2, F3) also apply. The drift test gains `workspace` in its
+  not-stored set.
 
 Gates:
-- `scripts/local-ratchet-gates.sh`. Use the route constants.
+- `scripts/local-ratchet-gates.sh`.
+- `scripts/gate-web-compat-version-lockstep.sh`.
 - Targeted `cargo nextest` for `calm-types` and `calm-server`, then the whole `-p calm-server`
   run, then `scripts/local-rust-gates.sh --quick`.
-- Golden: `tests/goldens/mcp_tool_registry.json`.
-- Golden: `issue_development_planner_prompt.txt` (`REGEN_PLANNER_PROMPT_GOLDEN=1`).
-- Not triggered: migrations, `head_schema_fixture.rs`, column snapshots, `fe/`, `gen:api`,
-  `worker_prompt_*` goldens, event goldens, the `planner.md` caps.
+- Goldens: `mcp_tool_registry.json` and `issue_development_planner_prompt.txt`.
+- `(cd fe && npm ci && npm run gen:api && npm run lint && npm run build && npm test)`. The
+  `lint:js` step runs `check-readonly-change-requests.mjs`, which requires the trailers.
+- Check `fe/tools/mutation/manifest.json` anchors in `schemas.ts`; `71112fccd` re-based one.
+- Not triggered: migrations, `head_schema_fixture.rs`, `SYNC_EVENT_VERSION`, `worker_prompt_*`,
+  `planner.md` caps.
 
 ## 7. Acceptance (issue item 4, D5)
 
-Run a dev kernel built from the PR branch. It is not 4140, and 4140 is not restarted.
-`data_dir` must be outside `/tmp` (KNOWN GAPS). A dev-template track reviews a real open PR of
-this repository with two `kind: codex` pinned channels on the same head. Pass criteria:
+Run a dev kernel built from the PR branch, with `data_dir` outside `/tmp`. Do not use 4140 and do
+not restart it. A dev-template track reviews a real open PR of this repository with two
+`kind: codex` pinned channels on the same head. All of these must hold:
 - (a) The Planner's blocks hold no clone, `--repo`, directory or target commands.
-- (b) Each worker runs `cd <checkout> && gh pr view <n>` without `--repo` successfully, and the
-  header shows the remote.
+- (b) Each worker runs `cd <checkout> && gh pr view <n>` without `--repo`, and the header shows
+  the remote.
 - (c) Each gate log shows its own checkout as cwd.
-- (d) A worker write into the checkout fails, both on start and after a daemon resume.
+- (d) A worker write into the checkout fails on start and after a daemon resume.
 - (e) The track worktree's `git status` and the product diff are unchanged.
-- (f) After the track is closed, `git worktree list` lacks both checkouts, `work/target` is
-  gone, and the artifacts remain.
+- (f) The artifacts are readable while the track exists. After the track is deleted,
+  `pinned/<track>/` is gone and `git worktree list` lacks both checkouts.
 - (g) An unknown head ends with `refused: pinned-head-unknown`.
+- (h) The browser shows the pinned task blocks as tasks.
 
 ## 8. KNOWN GAPS
 
-- Claude cannot use `pinned` (D2, F12). The follow-up is a Claude worker sandbox, then adding
-  claude here.
-- Pinned disk (checkouts and one target per track) is held until the track is closed or deleted.
-- Delete removes pinned trees without a gate stop proof, which is the same contract as the
-  track worktree (F17).
-- A reopen that lands between the close step's re-read and its removal can lose a running
-  build's target.
-- Network access is on, so a pinned worker's shell `gh` can still merge or post a review.
-- Codex `workspace-write` leaves `/tmp` and `$TMPDIR` writable, so a `data_dir` under `/tmp`
-  would make the checkout writable.
-- A head that exists only on a fork or an unfetched remote is refused; the kernel does not fetch.
-- The repository's `AGENTS.md` is not auto-loaded, because the cwd is `work/`. The header names
-  the file.
-- Read-only access rests on Codex `workspace-write` semantics and on resume keeping the cwd.
-  Acceptance (d) proves both.
+- Claude cannot use `pinned` (D2, F12). Follow-up: a Claude worker sandbox, then claude here.
+- Track delete has no worker or gate stop proof, the same contract as the track worktree today.
+- Disk is held until track delete: one checkout plus one cold gate `target/` per attempt (about
+  455 MB per channel and round, per the §1 evidence). Follow-up option: a generic gate
+  build-dir variable.
+- Network is on, so a pinned worker's shell `gh` can still merge or review.
+- `/tmp` and `$TMPDIR` stay writable under `workspace-write`, so `data_dir` must not be under
+  `/tmp`.
+- A head that exists only on a fork or an unfetched remote is refused; there is no kernel fetch.
+- The repository `AGENTS.md` is not auto-loaded (the cwd is `work/`); the header names it.
+- Read-only rests on the Codex `workspace-write` semantics and on resume keeping the cwd. Both
+  are proven by acceptance (d).
