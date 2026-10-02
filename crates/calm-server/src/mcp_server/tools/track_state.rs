@@ -96,8 +96,7 @@ async fn track_state(
         })
         .collect();
 
-    // `tasks_by_track` reads the `current_tasks` view: one row per key, its current execution only,
-    // the same notion of current as `calm.plan.list`.
+    // `tasks_by_track` reads the `current_tasks` view: one row per key, its current execution only.
     let tasks: Vec<Value> = ctx
         .repo
         .tasks_by_track(track.id.as_str())

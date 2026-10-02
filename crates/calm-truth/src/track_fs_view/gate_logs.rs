@@ -1,4 +1,4 @@
-//! Current aliases and immutable execution/gate addresses share one log reader.
+//! Immutable execution/gate addresses read the gate runner's logs.
 use std::path::Path;
 
 use crate::model::{CardRole, Task, Track};
@@ -7,7 +7,7 @@ use super::{TrackFsContent, TrackFsError, TrackFsView, path_not_available};
 
 /// Canonical virtual address for one gate event's full evidence. The existing
 /// task ID delimiter ':' is preserved; gate attempts are a separate path segment
-/// so neither URL fragments nor a current-task alias can change the subject.
+/// so URL fragments cannot change the subject.
 pub fn task_gate_log_path(attempt_id: &str, gate_attempt: i64) -> Result<String, TrackFsError> {
     if attempt_id.is_empty()
         || matches!(attempt_id, "." | "..")
@@ -64,34 +64,6 @@ impl TrackFsView<'_> {
             )));
         }
         self.read_gate_log(&task, gate_attempt, path).await
-    }
-
-    /// Convenience alias follows the currently allocated execution and its most
-    /// recent gate. Event/history observations must use task_gate_log_path.
-    pub(super) async fn cat_gate_log(
-        &self,
-        track: &Track,
-        key: &str,
-    ) -> Result<TrackFsContent, TrackFsError> {
-        let path = format!("plan/{key}/gate.log");
-        self.gate_logs_directory(&path)?;
-        let task = self
-            .repo
-            .task_current_get(track.id.as_str(), key)
-            .await
-            .map_err(|error| TrackFsError::Internal(format!("track_file: task lookup: {error}")))?
-            .ok_or_else(|| path_not_available(&path))?;
-        if task.gate_json.is_none() {
-            return Err(path_not_available(&format!(
-                "{path} (task declares no gate)"
-            )));
-        }
-        if task.gate_attempt < 1 {
-            return Err(path_not_available(&format!(
-                "{path} (no gate attempt has run yet)"
-            )));
-        }
-        self.read_gate_log(&task, task.gate_attempt, &path).await
     }
 
     async fn read_gate_log(

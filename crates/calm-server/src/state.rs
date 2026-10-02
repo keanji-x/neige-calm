@@ -1082,7 +1082,7 @@ impl AppState {
         let plugin_host_cell = Arc::new(tokio::sync::OnceCell::new());
         let operation_runtime_cell = Arc::new(tokio::sync::OnceCell::new());
         // One resolution of the gate-logs dir, shared by the gate runner and the MCP
-        // `gate.log` view, so writer and reader cannot split.
+        // gate-log view, so writer and reader cannot split.
         let gate_logs_dir = cfg.data_dir_resolved().join("gate-logs");
         // One context for both readers: the MCP listener and `RouteState::mcp_context` hold the same `Arc`.
         let mcp_context = crate::mcp_server::registry::AppContext::new(

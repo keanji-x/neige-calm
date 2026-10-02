@@ -142,7 +142,7 @@ async fn track_cat(
         return Err(not_a_report(&path, &selection));
     }
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
-    // `plan/<key>/gate.log` is enabled only here (MCP carries a card identity); the gate-logs dir is the configured one, never recomputed from env.
+    // Gate logs are enabled only here (MCP carries a card identity); the gate-logs dir is the configured one, never recomputed from env.
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)
         .with_gate_log_access(identity.role, ctx.gate_logs_dir.clone());
     let content = view

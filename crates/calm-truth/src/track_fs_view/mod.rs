@@ -29,7 +29,7 @@ pub(crate) const HOOK_EVENT_TRANSCRIPT_CAP: usize = 500;
 pub struct TrackFsView<'a> {
     repo: &'a dyn RouteRepo,
     write: &'a WriteContext,
-    /// `plan/<key>/gate.log` access: `(caller role, gate-logs dir)`. `None` keeps
+    /// `runs/<attempt_id>/gates/<N>.log` access: `(caller role, gate-logs dir)`. `None` keeps
     /// the path unavailable; even when wired, only `CardRole::Planner` passes.
     gate_log_access: Option<(CardRole, std::path::PathBuf)>,
 }
@@ -215,15 +215,6 @@ impl<'a> TrackFsView<'a> {
                 } else {
                     Err(path_not_available(path))
                 }
-            }
-            // The gate runner's log for the task's CURRENT attempt, read off disk; the
-            // row's `gate_result_json.log_tail` is only the trailing 8 KiB.
-            path if path.starts_with("plan/") => {
-                let parts: Vec<&str> = path.split('/').collect();
-                if parts.len() != 3 || parts[2] != "gate.log" {
-                    return Err(path_not_available(path));
-                }
-                self.cat_gate_log(track, parts[1]).await
             }
             other => Err(path_not_available(other)),
         }

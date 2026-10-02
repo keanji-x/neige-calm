@@ -179,7 +179,7 @@ async fn recover(repo: &SqlxRepo, block: &ReportBlock) -> String {
 }
 
 #[tokio::test]
-async fn task_recovery_gate_log_resolves_current_attempt_and_preserves_role_gate() {
+async fn task_recovery_gate_log_reads_the_recovered_attempt_and_preserves_role_gate() {
     use crate::model::CardRole;
     use crate::track_fs_view::TrackFsView;
     let repo = setup().await;
@@ -217,13 +217,14 @@ async fn task_recovery_gate_log_resolves_current_attempt_and_preserves_role_gate
     let track = repo.track_get("w").await.unwrap().unwrap();
     let view =
         TrackFsView::new(&repo, &write).with_gate_log_access(CardRole::Planner, logs.path().into());
+    let current = format!("runs/{attempt_id}/gates/1.log");
     assert_eq!(
-        view.cat(&track, "plan/b/gate.log").await.unwrap().content,
+        view.cat(&track, &current).await.unwrap().content,
         "current log"
     );
     let worker =
         TrackFsView::new(&repo, &write).with_gate_log_access(CardRole::Worker, logs.path().into());
-    assert!(worker.cat(&track, "plan/b/gate.log").await.is_err());
+    assert!(worker.cat(&track, &current).await.is_err());
 }
 
 #[tokio::test]

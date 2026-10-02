@@ -164,7 +164,7 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
             )
         })?;
     let tasks = state_tasks(tool, required_array(value, "tasks", tool)?)?;
-    let cards = state_cards(tool, required_array(value, "cards", tool)?, &tasks)?;
+    let cards = state_cards(tool, required_array(value, "cards", tool)?)?;
 
     let you = cards.iter().find(|card| card.id == caller).ok_or_else(|| {
         shape(
@@ -198,6 +198,13 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     fact("closed_at", &closed_at);
     fact("you", &format!("{} {}", you.id, you.role));
     fact("report", report);
+    if tasks.is_empty() {
+        fact("tasks", "-");
+    }
+    for (index, task) in tasks.iter().enumerate() {
+        let line = format!("{} {}", task.key, task.status.wire_label());
+        fact(if index == 0 { "tasks" } else { "" }, &line);
+    }
     let live: Vec<&StateCard<'_>> = cards.iter().filter(|card| card.live).collect();
     for (index, line) in card_lines(&live, caller).iter().enumerate() {
         fact(if index == 0 { "live" } else { "" }, line);
@@ -205,11 +212,10 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     Ok(out)
 }
 
-/// One current task execution; only the `task <key> <status>` suffix reads tasks.
+/// One current task execution, a `tasks` line `<key> <status>`.
 struct StateTask<'a> {
     key: &'a str,
     status: TaskStatus,
-    worker_card_id: Option<&'a str>,
 }
 
 fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>, RenderError> {
@@ -227,7 +233,6 @@ fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>,
                         task,
                     )
                 })?,
-                worker_card_id: nullable_str(task, "worker_card_id", tool, "task")?,
             })
         })
         .collect()
@@ -241,15 +246,9 @@ struct StateCard<'a> {
     status: &'a str,
     /// The runtime is an active worker session.
     live: bool,
-    /// The current task executions whose worker is this card.
-    tasks: Vec<(&'a str, TaskStatus)>,
 }
 
-fn state_cards<'a>(
-    tool: &str,
-    cards: &'a [Value],
-    tasks: &[StateTask<'a>],
-) -> Result<Vec<StateCard<'a>>, RenderError> {
+fn state_cards<'a>(tool: &str, cards: &'a [Value]) -> Result<Vec<StateCard<'a>>, RenderError> {
     cards
         .iter()
         .map(|card| {
@@ -284,19 +283,14 @@ fn state_cards<'a>(
                 kind: required_str(card, "kind", tool, "card")?,
                 status,
                 live,
-                tasks: tasks
-                    .iter()
-                    .filter(|task| task.worker_card_id == Some(id))
-                    .map(|task| (task.key, task.status))
-                    .collect(),
             })
         })
         .collect()
 }
 
-/// `id  role  kind  session <status>[  task <key> <status>]`, columns (escaped first) padded to the
-/// widest value: the session's status and its tasks' own, never one for the other. The caller's
-/// own row shows `(you)` for its session, which is always mid-turn.
+/// `id  role  kind  session <status>`, columns (escaped first) padded to the widest value; task
+/// status is the `tasks` block's. The caller's own row shows `(you)` for its session, which is
+/// always mid-turn.
 fn card_lines(cards: &[&StateCard<'_>], caller: &str) -> Vec<String> {
     let rows: Vec<[Cow<'_, str>; 4]> = cards
         .iter()
@@ -316,22 +310,10 @@ fn card_lines(cards: &[&StateCard<'_>], caller: &str) -> Vec<String> {
             .max()
             .unwrap_or(0)
     };
-    let (id_w, role_w, kind_w, status_w) = (width(0), width(1), width(2), width(3));
-    cards
-        .iter()
-        .zip(&rows)
-        .map(|(card, [id, role, kind, status])| {
-            let mut line = format!("{id:<id_w$}  {role:<role_w$}  {kind:<kind_w$}  {status}");
-            if !card.tasks.is_empty() {
-                let pad = status_w - status.chars().count();
-                let tasks: Vec<String> = card
-                    .tasks
-                    .iter()
-                    .map(|(key, status)| format!("{key} {}", status.wire_label()))
-                    .collect();
-                line.push_str(&format!("{:pad$}  task {}", "", tasks.join(", ")));
-            }
-            line
+    let (id_w, role_w, kind_w) = (width(0), width(1), width(2));
+    rows.iter()
+        .map(|[id, role, kind, session]| {
+            format!("{id:<id_w$}  {role:<role_w$}  {kind:<kind_w$}  {session}")
         })
         .collect()
 }
@@ -387,25 +369,6 @@ fn required_array<'a>(
                 value,
             )
         })
-}
-
-/// The field must be present: a string, or `null` for no value.
-fn nullable_str<'a>(
-    value: &'a Value,
-    field: &str,
-    tool: &str,
-    what: &str,
-) -> Result<Option<&'a str>, RenderError> {
-    match value.get(field) {
-        Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) => Ok(Some(text)),
-        _ => Err(shape(
-            format!("{tool} {what} missing string-or-null {field}"),
-            tool,
-            what,
-            value,
-        )),
-    }
 }
 
 fn diff(tool: &str, value: &Value) -> Result<String, RenderError> {

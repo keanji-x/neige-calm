@@ -22,8 +22,7 @@ async fn worker(h: &Harness, kind: &str, track: &str, viewer: bool) -> Worker {
     worker_running(h, kind, track, viewer.then_some(ECHO_WORKER)).await
 }
 /// `viewer` is the shell script of the worker's PTY viewer, spawned before
-/// the task row is stamped (as the scheduler does); `None` leaves the task
-/// without a live view.
+/// the task row is stamped; `None` leaves the task without a live view.
 pub(crate) async fn worker_running(
     h: &Harness,
     kind: &str,
@@ -134,7 +133,7 @@ pub(crate) async fn worker_running(
     if let Some(script) = viewer {
         spawn_viewer_running(h, &terminal.id, script).await;
     }
-    // Stamp the task/worker association after its viewer exists, as the scheduler does.
+    // Stamp the task/worker association after its viewer exists.
     sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,'test','[]','running',?5,'user',?6,?6)")
         .bind(&task).bind(track).bind(key).bind(kind).bind(&card).bind(now_ms()).execute(h.sql.pool()).await.unwrap();
     Worker {

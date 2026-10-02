@@ -63,7 +63,6 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to ",
     "cancel a pending task, or a running codex/claude task whose worker the kernel ",
     "then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. ",
-    "Use `calm.plan.list` to inspect status. ",
     "A `codex`/`claude` task requires `goal`, a natural-language objective, and ",
     "forbids `command`. A `terminal` task requires `command`, the exact Shell ",
     "command passed verbatim to `/bin/sh -c`, and forbids `goal`."

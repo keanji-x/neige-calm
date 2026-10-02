@@ -160,7 +160,10 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
         "old second gate"
     );
     assert_eq!(
-        view.cat(&track, "plan/b/gate.log").await.unwrap().content,
+        view.cat(&track, &format!("runs/{attempt_id}/gates/1.log"))
+            .await
+            .unwrap()
+            .content,
         "current gate"
     );
     assert!(view.cat(&track, "runs/w:b/gates/3.log").await.is_err());

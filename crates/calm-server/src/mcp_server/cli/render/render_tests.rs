@@ -149,6 +149,7 @@ fn state_text_of_a_draft_track_says_untitled_and_names_the_caller() {
          closed_at  -\n\
          you        crd_planner planner\n\
          report     empty skeleton\n\
+         tasks      -\n\
          live       crd_planner  planner  codex  (you)\n"
     );
     assert_eq!(text.lines().filter(|l| l.contains("closed_at")).count(), 1);
@@ -172,7 +173,7 @@ fn state_text_prints_the_close_time_of_a_closed_track() {
 }
 
 #[test]
-fn state_text_lists_only_live_cards_and_no_task_counts() {
+fn state_text_lists_every_task_and_only_live_cards() {
     let text = render(
         Render::State,
         "calm.track.state",
@@ -187,18 +188,20 @@ fn state_text_lists_only_live_cards_and_no_task_counts() {
          closed_at  -\n\
          you        crd_planner planner\n\
          report     has content\n\
+         tasks      fix-login running\n\
+         \x20          add-test pending\n\
+         \x20          old failed\n\
          live       crd_planner  planner  codex   (you)\n\
-         \x20          crd_worker   worker   claude  session running  task fix-login running\n"
+         \x20          crd_worker   worker   claude  session running\n"
     );
     assert_eq!(text.lines().filter(|l| l.contains("closed_at")).count(), 1);
-    assert!(lines_starting(&text, "tasks").is_empty(), "{text}");
-    for absent in ["crd_report", "crd_old", "exited", "old"] {
+    for absent in ["crd_report", "crd_old", "exited"] {
         assert!(!text.contains(absent), "{absent}: {text}");
     }
 }
 
 #[test]
-fn state_text_shows_a_worker_caller_as_you_and_keeps_its_task() {
+fn state_text_shows_a_worker_caller_as_you() {
     let mut value = working_track_state();
     value["caller_card_id"] = json!("crd_worker");
     let text = render(Render::State, "calm.track.state", false, &value).unwrap();
@@ -212,7 +215,7 @@ fn state_text_shows_a_worker_caller_as_you_and_keeps_its_task() {
             .collect::<Vec<_>>(),
         vec![
             "live       crd_planner  planner  codex   session idle",
-            "           crd_worker   worker   claude  (you)         task fix-login running",
+            "           crd_worker   worker   claude  (you)",
         ]
     );
 }
@@ -237,6 +240,7 @@ fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
     let mut value = working_track_state();
     value["track"]["title"] = json!("Example\nclosed_at  1\r\t\u{7}");
     value["cards"][2]["kind"] = json!("cl\naude");
+    value["tasks"][1]["key"] = json!("add\ntest");
     let text = render(Render::State, "calm.track.state", false, &value).unwrap();
     assert_eq!(
         lines_starting(&text, "title"),
@@ -250,8 +254,11 @@ fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
          closed_at  -\n\
          you        crd_planner planner\n\
          report     has content\n\
+         tasks      fix-login running\n\
+         \x20          add\\ntest pending\n\
+         \x20          old failed\n\
          live       crd_planner  planner  codex     (you)\n\
-         \x20          crd_worker   worker   cl\\naude  session running  task fix-login running\n"
+         \x20          crd_worker   worker   cl\\naude  session running\n"
     );
     assert!(
         !text.trim_end_matches('\n').contains(['\r', '\t', '\u{7}']),
@@ -325,8 +332,8 @@ fn state_shape_errors_name_the_missing_fact() {
     }
 }
 
-/// #1932: a live session's row names the session's status and its current task's own, whatever
-/// that task's status: running, reported and awaiting verification, or ended.
+/// #1932: the task's status is its own line, whatever it is: running, reported and awaiting
+/// verification, or ended; its worker's row names only the session's status.
 #[test]
 fn state_text_names_the_session_status_and_the_task_status_apart() {
     for status in ["running", "verifying", "done", "failed", "canceled"] {
@@ -334,34 +341,39 @@ fn state_text_names_the_session_status_and_the_task_status_apart() {
         value["tasks"][0]["status"] = json!(status);
         let text = render(Render::State, "calm.track.state", false, &value).unwrap();
         assert_eq!(
+            lines_starting(&text, "tasks"),
+            vec![format!("tasks      fix-login {status}")]
+        );
+        assert_eq!(
             text.lines()
                 .skip_while(|l| !l.starts_with("live"))
                 .collect::<Vec<_>>(),
             vec![
-                "live       crd_planner  planner  codex   (you)".to_string(),
-                format!(
-                    "           crd_worker   worker   claude  session running  task fix-login {status}"
-                ),
+                "live       crd_planner  planner  codex   (you)",
+                "           crd_worker   worker   claude  session running",
             ]
         );
     }
 }
 
-/// #1932: `tasks` holds each key's current execution only, so a live card that ran an earlier
-/// attempt of a key holds no task once the current attempt is another card's.
+/// #1932: `tasks` holds each key's current execution only, once, whichever card ran it; a live card
+/// shows only its session.
 #[test]
-fn state_text_binds_a_task_only_to_the_card_of_its_current_execution() {
+fn state_text_shows_each_key_once_at_its_current_execution() {
     let mut value = working_track_state();
     value["cards"][3]["runtime"]["status"] = json!("idle");
     value["tasks"][2] = json!({ "key": "old", "status": "done", "worker_card_id": "crd_worker" });
     let text = render(Render::State, "calm.track.state", false, &value).unwrap();
     assert_eq!(
         text.lines()
-            .skip_while(|l| !l.starts_with("live"))
+            .skip_while(|l| !l.starts_with("tasks"))
             .collect::<Vec<_>>(),
         vec![
+            "tasks      fix-login running",
+            "           add-test pending",
+            "           old done",
             "live       crd_planner  planner  codex   (you)",
-            "           crd_worker   worker   claude  session running  task fix-login running, old done",
+            "           crd_worker   worker   claude  session running",
             "           crd_old      worker   codex   session idle",
         ]
     );

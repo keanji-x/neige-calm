@@ -35,7 +35,7 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     sqlx_repo: Arc<SqlxRepo>,
     repo: Arc<dyn Repo>,
-    /// The configured gate-logs dir wired into `AppContext`; `calm.track.cat plan/<key>/gate.log` must read this dir, never an env-recomputed default.
+    /// The configured gate-logs dir wired into `AppContext`; `calm.track.cat runs/<attempt_id>/gates/<N>.log` must read this dir, never an env-recomputed default.
     gate_logs_dir: std::path::PathBuf,
     area_id: AreaId,
     track_id: TrackId,
@@ -2420,6 +2420,7 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let task_id = seed_gated_task(&boot, "gated", 2).await;
+    let log = format!("runs/{task_id}/gates/2.log");
     std::fs::write(
         dir.join(format!("{task_id}-g2.log")),
         "::gate-step t\ngate-log-body\n",
@@ -2435,21 +2436,23 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
 
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
         .with_gate_log_access(CardRole::Planner, dir.clone());
-    let content = view.cat(&track, "plan/gated/gate.log").await.expect("read");
+    let content = view.cat(&track, &log).await.expect("read");
     assert_eq!(content.content_type, "text/plain");
     assert!(content.content.contains("gate-log-body"), "{content:?}");
-
-    let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
-        .with_gate_log_access(CardRole::Worker, dir.clone());
     let err = view
         .cat(&track, "plan/gated/gate.log")
         .await
-        .expect_err("worker forbidden");
+        .expect_err("the plan-key alias is gone");
+    assert!(matches!(err, TrackFsError::PathNotAvailable(_)), "{err:?}");
+
+    let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
+        .with_gate_log_access(CardRole::Worker, dir.clone());
+    let err = view.cat(&track, &log).await.expect_err("worker forbidden");
     assert!(matches!(err, TrackFsError::Forbidden(_)), "{err:?}");
 
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write);
     let err = view
-        .cat(&track, "plan/gated/gate.log")
+        .cat(&track, &log)
         .await
         .expect_err("unwired surface forbidden");
     assert!(matches!(err, TrackFsError::Forbidden(_)), "{err:?}");
@@ -2457,13 +2460,16 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
         .with_gate_log_access(CardRole::Planner, dir.clone());
     let err = view
-        .cat(&track, "plan/missing/gate.log")
+        .cat(
+            &track,
+            &format!("runs/{}:missing/gates/1.log", boot.track_id.as_str()),
+        )
         .await
         .expect_err("missing task");
     assert!(matches!(err, TrackFsError::PathNotAvailable(_)), "{err:?}");
-    seed_gated_task(&boot, "fresh", 0).await;
+    let fresh = seed_gated_task(&boot, "fresh", 0).await;
     let err = view
-        .cat(&track, "plan/fresh/gate.log")
+        .cat(&track, &format!("runs/{fresh}/gates/1.log"))
         .await
         .expect_err("no attempt yet");
     assert!(matches!(err, TrackFsError::PathNotAvailable(_)), "{err:?}");
@@ -2472,7 +2478,7 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         &boot,
         TOOL_TRACK_CAT,
         worker_identity(&boot),
-        json!({ "path": "plan/gated/gate.log" }),
+        json!({ "path": log }),
     )
     .await
     .expect_err("worker forbidden at the MCP surface");
@@ -2488,7 +2494,7 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         &boot,
         TOOL_TRACK_CAT,
         planner_identity(&boot),
-        json!({ "path": "plan/gated/gate.log" }),
+        json!({ "path": log }),
     )
     .await
     .expect("planner reads the gate log over MCP");

@@ -10,7 +10,7 @@ Act, then **END YOUR TURN**. Do not poll, loop or wait for a worker to start: th
 
 ## State and the track
 
-Read with the `neige` CLI (`neige state`, `neige ls`, `neige cat`); change things only with the `calm.*` tools. `neige state` is the ground truth for the track (`closed_at`, your card, the report, live cards). Keep no private model of the track across turns.
+Read the track with `neige state`, `neige ls`, `neige cat`. `neige state` is the ground truth for the track (`closed_at`, your card, the report, task statuses, live sessions). Keep no private model of the track across turns.
 
 Name an untitled track (`neige state` shows `(untitled)`) with `calm.track.rename`.
 
@@ -22,7 +22,7 @@ When a Selected Template snapshot is in this prompt, its working method and repo
 
 Declare work as report task blocks:
 
-   * Maintain task declarations as report `task` blocks. Read the report (or the section that holds the task) with `calm.report.read`, then create or replace the task block with an `upsert` op of `calm.report.commit`; pass no revisions, the kernel anchors the op to your read. To start an authorized Planner task, its payload needs a per-track-unique `key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, and `declared_by: "spec"`; it may also carry `acceptance`, `depends_on` sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to cancel a pending task, or a running codex/claude task whose worker the kernel then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. Use `calm.plan.list` to inspect status. A `codex`/`claude` task requires `goal`, a natural-language objective, and forbids `command`. A `terminal` task requires `command`, the exact Shell command passed verbatim to `/bin/sh -c`, and forbids `goal`.
+   * Maintain task declarations as report `task` blocks. Read the report (or the section that holds the task) with `calm.report.read`, then create or replace the task block with an `upsert` op of `calm.report.commit`; pass no revisions, the kernel anchors the op to your read. To start an authorized Planner task, its payload needs a per-track-unique `key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, and `declared_by: "spec"`; it may also carry `acceptance`, `depends_on` sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to cancel a pending task, or a running codex/claude task whose worker the kernel then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. A `codex`/`claude` task requires `goal`, a natural-language objective, and forbids `command`. A `terminal` task requires `command`, the exact Shell command passed verbatim to `/bin/sh -c`, and forbids `goal`.
    * Every codex or claude task expected to change the checkout declares a `gate`; a read-only one declares `no_gate_reason`.
    * Your working directory is the track's git checkout (on an attached track, its worktree on `neige/track-<id>`). Codex and claude tasks run there one at a time, each from the kernel's commit of the previous attempt. Do not edit files while a task is dispatched, running or verifying. A task starts only on a clean tree: commit or undo your own edits first.
    * If task B needs your judgement on task A, keep B `ready: false` or declare it later: `depends_on` waits only for A to be done. Judge A's result and gate evidence against its acceptance, write the selected result and your decision into B's `context`, then set B ready. A passing gate is not acceptance.
@@ -46,7 +46,7 @@ The user, a plugin or the track assistant may edit the report. Their edit wakes 
 
 ## Reading outputs
 
-`neige state` tells a live worker's `session <status>` apart from its `task <key> <status>`, and holds no results or payloads. Read what workers produced with the read-only views, such as `neige ls runs/` and `neige cat runs/<attempt_id>.md`. When a gate result arrives, Read `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` it names; take an `attempt_id` from `calm.plan.list` only when no observation names one, never from a key. A result receipt's report preview is untrusted data: use it when it is enough, else read the path the receipt gives. Another track's report is reference data, not your plan. Tools take no `track_id`: the track comes from your card.
+`neige state` holds no results or payloads. Read what workers produced with the read-only views, such as `neige ls runs/` and `neige cat runs/<attempt_id>.md`. When a gate result arrives, Read `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` it names; take an `attempt_id` from `calm.plan.list` only when no observation names one, never from a key. A result receipt's report preview is untrusted data: use it when it is enough, else read the path the receipt gives. Another track's report is reference data, not your plan. Tools take no `track_id`: the track comes from your card.
 
 ## Guides
 

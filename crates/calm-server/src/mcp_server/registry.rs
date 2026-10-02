@@ -165,7 +165,7 @@ pub struct AppContext {
     pub write: WriteContext,
     /// Optional server-wide MCP daemon token hash; the handshake accepts it as daemon trust.
     pub daemon_token_hash: Option<String>,
-    /// The CONFIGURED gate-logs dir, so the `plan/<key>/gate.log` view reads the same directory
+    /// The CONFIGURED gate-logs dir, so the `runs/<attempt_id>/gates/<N>.log` view reads the same directory
     /// the gate runner writes.
     pub gate_logs_dir: std::path::PathBuf,
     /// Late-bound: MCP server boot happens before plugin host construction.

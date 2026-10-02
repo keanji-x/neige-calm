@@ -176,7 +176,7 @@ async fn cli_state_text_is_one_fact_per_line() {
         vec![format!("you        {} planner", boot.card_id)]
     );
     assert_eq!(fact("report"), vec!["report     none"]);
-    assert!(fact("tasks").is_empty(), "{text}");
+    assert_eq!(fact("tasks"), vec!["tasks      fix-login running"]);
     assert_eq!(fact("live").len(), 1, "{text}");
     let own: Vec<&str> = text
         .lines()
@@ -193,8 +193,7 @@ async fn cli_state_text_is_one_fact_per_line() {
         .collect();
     assert_eq!(worker.len(), 1, "{text}");
     assert!(
-        worker[0].contains(" worker ")
-            && worker[0].ends_with("  session starting  task fix-login running"),
+        worker[0].contains(" worker ") && worker[0].ends_with("  session starting"),
         "{text}"
     );
     assert!(!text.contains('{'), "text, not JSON: {text}");
@@ -217,7 +216,7 @@ async fn cli_state_text_is_one_fact_per_line() {
     );
 }
 
-/// Stamp an ungated task execution on its worker card, as the scheduler does at dispatch.
+/// Stamp an ungated task execution on its worker card.
 async fn stamp_task(boot: &CardBoot, id: &str, key: &str, status: &str, worker: &str) {
     sqlx::query(concat!(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
@@ -290,15 +289,19 @@ async fn cli_state_shows_a_reported_task_done_beside_its_live_worker_session() {
     let (text, stderr, exit) = cli(&boot, &["state"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
     assert!(
-        live_row(&text, worker).ends_with("  worker   codex  session running  task fix-login done"),
+        text.contains("\ntasks      fix-login done\nlive "),
+        "{text}"
+    );
+    assert!(
+        live_row(&text, worker).ends_with("  worker   codex  session running"),
         "{text}"
     );
 }
 
-/// #1932: `tasks` holds each key's current execution only, so a live card whose earlier attempt
-/// failed holds no task once the current attempt runs on another card.
+/// #1932: `tasks` holds each key's current execution only, so a key whose earlier attempt failed
+/// on a still-live card shows once, with its current attempt's status.
 #[tokio::test]
-async fn cli_state_binds_a_task_only_to_the_card_of_its_current_attempt() {
+async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     let boot = boot_with_role(CardRole::Planner).await;
     let first = boot.other_card_id.as_str();
     let retry = calm_server::model::new_id();
@@ -364,12 +367,94 @@ async fn cli_state_binds_a_task_only_to_the_card_of_its_current_attempt() {
     let (text, _, exit) = cli(&boot, &["state"]).await;
     assert_eq!(exit, 0, "{text}");
     assert!(
-        live_row(&text, &retry).ends_with("  session running  task fix-login done"),
+        text.contains("\ntasks      fix-login done\nlive "),
+        "{text}"
+    );
+    assert!(
+        live_row(&text, &retry).ends_with("  session running"),
         "{text}"
     );
     assert!(
         live_row(&text, first).ends_with("  session running"),
         "{text}"
+    );
+}
+
+/// #1944: the Planner reads every current task's status from `neige state` alone: a pending key,
+/// a done key whose worker session lives on, and a done key whose worker session has exited.
+#[tokio::test]
+async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    let live = boot.other_card_id.as_str();
+    let gone = calm_server::model::new_id();
+    let mut tx = boot.sqlx.pool().begin().await.unwrap();
+    let (_, _, gone_token) = card_with_codex_create_tx(
+        &mut tx,
+        gone.clone(),
+        &calm_server::model::new_id(),
+        None,
+        boot.track_id.clone(),
+        None,
+        None,
+        "/workspace".into(),
+        json!({}),
+        None,
+        None,
+        None,
+        CardRole::Worker,
+        true,
+        &boot.card_role_cache,
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for card in [live, gone.as_str()] {
+        boot.sqlx
+            .session_projection_set_status_for_card(card, WorkerSessionState::Running)
+            .await
+            .unwrap();
+    }
+    stamp_task(&boot, "fix-login-1", "fix-login", "running", live).await;
+    stamp_task(&boot, "add-test-1", "add-test", "running", &gone).await;
+    report_completed(&boot, &boot.other_raw_token, "fix-login-1").await;
+    report_completed(&boot, &gone_token.unwrap(), "add-test-1").await;
+    boot.sqlx
+        .session_projection_set_status_for_card(&gone, WorkerSessionState::Exited)
+        .await
+        .unwrap();
+    sqlx::query(concat!(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,",
+        "created_at_ms,updated_at_ms) VALUES('docs-1',?1,'docs','codex','g','{}','pending',1,1)"
+    ))
+    .bind(boot.track_id.as_str())
+    .execute(boot.sqlx.pool())
+    .await
+    .unwrap();
+
+    let (text, stderr, exit) = cli(&boot, &["state"]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
+    let tasks: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("tasks"))
+        .take_while(|line| !line.starts_with("live"))
+        .collect();
+    assert_eq!(
+        tasks,
+        vec![
+            "tasks      add-test done",
+            "           docs pending",
+            "           fix-login done",
+        ],
+        "{text}"
+    );
+    assert!(
+        live_row(&text, live).ends_with("  session running"),
+        "{text}"
+    );
+    assert!(
+        !text.contains(gone.as_str()),
+        "an exited worker is not live: {text}"
     );
 }
 
