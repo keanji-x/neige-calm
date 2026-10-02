@@ -406,7 +406,7 @@ async fn plan_upsert(
         "migration": {
             "use": "calm.report.commit",
             "shape": "{ message, ops: [{ op: \"upsert\", kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" } }] }",
-            "notes": "Read the report with calm.report.read first. The kernel projects ready task blocks, schedules tasks, and runs verification gates; use calm.plan.list for status."
+            "notes": "Read the report with calm.report.read first. The kernel projects ready task blocks, schedules tasks, and runs verification gates; use `neige state` for status."
         }
     }))
 }
@@ -536,7 +536,7 @@ where
                     if !now_canceled {
                         return Err(CalmError::Conflict(format!(
                             "task {key} changed state concurrently; re-check with \
-                             calm.plan.list and retry"
+                             `neige state` and retry"
                         )));
                     }
                 }

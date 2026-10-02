@@ -1490,7 +1490,7 @@ pub(crate) fn render_task_worker_prompt(
 ) -> String {
     let prompt = render_worker_prompt(goal, context, acceptance);
     format!(
-        "{prompt}\n\nTask completion idempotency_key: {task_id}\nEcho this exact task ID when reporting completion or failure."
+        "{prompt}\n\nTask attempt_id: {task_id}\nEcho this exact attempt_id when reporting completion or failure."
     )
 }
 

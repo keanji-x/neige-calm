@@ -84,7 +84,7 @@ mod tests {
             "neige cat 'artifact with spaces'",
             "neige c\\at plan/build/output",
             "/usr/local/bin/neige ls plan",
-            "'neige' task-completed --idempotency-key build",
+            "'neige' task-completed --attempt-id build",
             "neige cat plan/build/output | jq .",
             "neige --help",
             "neige cat --help",

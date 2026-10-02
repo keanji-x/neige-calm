@@ -1839,7 +1839,7 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
 fn assert_receipt_identity(text: &str, expected: &str) {
     let receipt = text
         .lines()
-        .find_map(|line| line.strip_prefix("Original execution idempotency_key: "))
+        .find_map(|line| line.strip_prefix("Original execution attempt_id: "))
         .expect("receipt execution identity");
     let identity: Value = serde_json::from_str(receipt).unwrap();
     assert_eq!(identity["text"], expected);

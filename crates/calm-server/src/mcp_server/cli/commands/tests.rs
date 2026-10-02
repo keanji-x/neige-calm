@@ -269,8 +269,8 @@ fn values_reach_the_tool_unchecked() {
         json!({ "from": "a", "to": "", "path": "" })
     );
     assert_eq!(
-        tool_args(&["task-failed", "--idempotency-key", "", "--reason", " "]),
-        json!({ "idempotency_key": "", "reason": " " })
+        tool_args(&["task-failed", "--attempt-id", "", "--reason", " "]),
+        json!({ "attempt_id": "", "reason": " " })
     );
     assert_eq!(
         tool_args(&["track-gc", "--track-id", "", "--keep", "0", "--force"]),
@@ -332,7 +332,7 @@ fn vacuum_requires_force() {
 fn task_completed_parses_json_result_and_artifacts() {
     let parsed = parse_args(&[
         "task-completed",
-        "--idempotency-key",
+        "--attempt-id",
         "k1",
         "--result",
         r#"{"ok":true}"#,
@@ -345,7 +345,7 @@ fn task_completed_parses_json_result_and_artifacts() {
     .expect("parse");
     assert_eq!(
         parsed.args,
-        json!({ "idempotency_key": "k1", "result": { "ok": true }, "artifacts": ["out.log", "b.txt"] })
+        json!({ "attempt_id": "k1", "result": { "ok": true }, "artifacts": ["out.log", "b.txt"] })
     );
     assert!(parsed.json);
 }
@@ -355,23 +355,23 @@ fn task_completed_keeps_plain_text_result_as_a_string() {
     assert_eq!(
         tool_args(&[
             "task-completed",
-            "--idempotency-key",
+            "--attempt-id",
             "k1",
             "--result",
             "plain text"
         ]),
-        json!({ "idempotency_key": "k1", "result": "plain text" })
+        json!({ "attempt_id": "k1", "result": "plain text" })
     );
     assert_eq!(
         refusal(&["task-completed"]),
-        "task-completed requires --idempotency-key"
+        "task-completed requires --attempt-id"
     );
 }
 
 #[test]
 fn task_failed_requires_reason() {
     assert_eq!(
-        refusal(&["task-failed", "--idempotency-key", "k1"]),
+        refusal(&["task-failed", "--attempt-id", "k1"]),
         "task-failed requires --reason"
     );
 }
@@ -504,4 +504,49 @@ fn prompt_neige_mentions_name_served_commands() {
         "scan is vacuous: {mentions} mentions in {} files",
         files.len()
     );
+}
+
+/// #1944: the task execution id has one agent-facing name, `attempt_id`. No prompt or CLI help may
+/// call it an idempotency key or a kernel task id again.
+#[test]
+fn task_report_surfaces_name_the_execution_id_attempt_id() {
+    // Where `idempotency_key` is a real caller-chosen dedupe key, not a task execution id.
+    const CALLER_DEDUPE_KEY_PROMPTS: [&str; 2] = [
+        "prompts/tools/calm.calendar.create.md",
+        "prompts/tools/calm.track.publish.md",
+    ];
+    const RETIRED_NAMES: [&str; 4] = [
+        "idempotency_key",
+        "idempotency-key",
+        "idempotency key",
+        "kernel task id",
+    ];
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    markdown_files(&crate_dir.join("prompts"), &mut files);
+    for allowed in CALLER_DEDUPE_KEY_PROMPTS {
+        assert!(
+            files.contains(&crate_dir.join(allowed)),
+            "allow-list names a missing prompt: {allowed}"
+        );
+    }
+    files.retain(|file| {
+        !CALLER_DEDUPE_KEY_PROMPTS
+            .iter()
+            .any(|allowed| *file == crate_dir.join(allowed))
+    });
+    files.push(crate_dir.join("src/mcp_server/cli/help.rs"));
+    assert!(files.len() >= 40, "scan is vacuous: {} files", files.len());
+    for file in &files {
+        let text = std::fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("read {}: {e}", file.display()))
+            .to_lowercase();
+        for name in RETIRED_NAMES {
+            assert!(
+                !text.contains(name),
+                "{} calls the task execution id `{name}`; name it `attempt_id`",
+                file.display()
+            );
+        }
+    }
 }

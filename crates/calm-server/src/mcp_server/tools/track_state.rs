@@ -139,9 +139,9 @@ fn task_verdict_descriptor() -> ToolDescriptor {
         ),
         input_schema: json!({
             "type": "object",
-            "required": ["idempotency_key", "status", "message"],
+            "required": ["attempt_id", "status", "message"],
             "properties": {
-                "idempotency_key": { "type": "string", "minLength": 1 },
+                "attempt_id": { "type": "string", "minLength": 1 },
                 "status": { "type": "string", "enum": ["accepted", "rejected"] },
                 "reason": { "type": "string" },
                 "message": message_schema()
@@ -160,14 +160,7 @@ async fn task_verdict(
     require_role(&identity, CardRole::Planner)?;
     let message = parse_write_args(&args, "task_verdict")?;
 
-    let idempotency_key = args
-        .get("idempotency_key")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            RpcError::invalid_params("task_verdict: missing `idempotency_key` (non-empty)")
-        })?
-        .to_string();
+    let attempt_id = crate::mcp_server::tools::emit::required_attempt_id(&args, "task_verdict")?;
     let status = args
         .get("status")
         .and_then(|v| v.as_str())
@@ -179,7 +172,7 @@ async fn task_verdict(
 
     let event = match status {
         "accepted" => Event::TaskCompleted {
-            idempotency_key,
+            idempotency_key: attempt_id,
             // Structured `{status, reason}` so a consumer can tell planner verdicts (`result.status == "accepted"`) apart from workers' free-form self-reports.
             result: json!({
                 "status": "accepted",
@@ -189,7 +182,7 @@ async fn task_verdict(
             agent_message: Some(message.clone()),
         },
         "rejected" => Event::TaskFailed {
-            idempotency_key,
+            idempotency_key: attempt_id,
             // An empty reason is a valid value; the verdict is not second-guessed.
             reason: reason.unwrap_or_default(),
             details: None,
@@ -213,6 +206,7 @@ async fn task_verdict(
             -32403,
             format!("emit {kind_tag}: forbidden: {msg}"),
         )),
+        Err(CalmError::NotFound(msg)) => Err(RpcError::custom(-32404, msg)),
         Err(e) => Err(RpcError::internal(format!("emit {kind_tag}: {e}"))),
     }
 }

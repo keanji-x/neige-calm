@@ -676,7 +676,7 @@ async fn cancel_first_then_late_worker_report_is_rejected_without_delivery() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": {} }),
+        json!({ "attempt_id": task_id, "result": {} }),
     )
     .await
     .expect_err("a report after the cancel is rejected");
@@ -703,7 +703,7 @@ async fn report_first_then_cancel_is_refused_with_the_current_status() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": {} }),
+        json!({ "attempt_id": task_id, "result": {} }),
     )
     .await
     .expect("report wins");

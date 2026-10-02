@@ -22,7 +22,7 @@ fn retired_dispatch_payload() -> serde_json::Value {
         "migration": {
             "use": "calm.report.commit",
             "shape": "{ message, ops: [{ op: \"upsert\", kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" } }] }",
-            "notes": "Read the report with calm.report.read first. The kernel schedules ready task blocks and runs verification gates; use calm.plan.list for status."
+            "notes": "Read the report with calm.report.read first. The kernel schedules ready task blocks and runs verification gates; use `neige state` for status."
         }
     })
 }
@@ -88,7 +88,7 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
             20,
             "calm.task.complete",
             &b.thread_id,
-            json!({"idempotency_key": "tc-1", "result": {"ok": true}}),
+            json!({"attempt_id": "tc-1", "result": {"ok": true}}),
         ),
     )
     .await;
@@ -122,7 +122,7 @@ async fn consumer_summary_authenticated_completion_preserves_entire_result() {
             20,
             "calm.task.complete",
             &b.thread_id,
-            json!({"idempotency_key":"consumer-attempt", "result":result}),
+            json!({"attempt_id":"consumer-attempt", "result":result}),
         ),
     )
     .await;
@@ -167,7 +167,7 @@ async fn task_completed_from_claude_worker_persists_claude_session_actor() {
         tools_call_frame_no_thread(
             23,
             "calm.task.complete",
-            json!({"idempotency_key": "tc-claude", "result": {"ok": true}}),
+            json!({"attempt_id": "tc-claude", "result": {"ok": true}}),
         ),
     )
     .await;
@@ -211,7 +211,7 @@ async fn legacy_alias_task_completed_still_dispatches_via_warn() {
             21,
             "calm.task_completed",
             &b.thread_id,
-            json!({"idempotency_key": "tc-legacy", "result": {"ok": true}}),
+            json!({"attempt_id": "tc-legacy", "result": {"ok": true}}),
         ),
     )
     .await;
@@ -245,7 +245,7 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
             30,
             "calm.task.fail",
             &b.thread_id,
-            json!({"idempotency_key": "tf-1", "reason": "stub failure"}),
+            json!({"attempt_id": "tf-1", "reason": "stub failure"}),
         ),
     )
     .await;
@@ -284,7 +284,7 @@ async fn task_fail_rejects_blank_reason() {
             tools_call_frame_no_thread(
                 id,
                 "calm.task.fail",
-                json!({"idempotency_key": "tf-blank", "reason": reason}),
+                json!({"attempt_id": "tf-blank", "reason": reason}),
             ),
         )
         .await;
@@ -304,13 +304,7 @@ async fn task_fail_rejects_blank_reason() {
     let resp = neige_cli_via_socket(
         &b.socket_path,
         &b.raw_token,
-        &[
-            "task-failed",
-            "--idempotency-key",
-            "tf-blank",
-            "--reason",
-            "  ",
-        ],
+        &["task-failed", "--attempt-id", "tf-blank", "--reason", "  "],
     )
     .await;
     let (stdout, stderr, exit) = cli_output(&resp);
@@ -343,7 +337,7 @@ async fn smuggled_card_id_in_args_is_ignored() {
             "calm.task.complete",
             &b.thread_id,
             json!({
-                "idempotency_key": "tc-smuggle",
+                "attempt_id": "tc-smuggle",
                 "card_id": b.other_card_id, // <-- smuggled
                 "actor": "ai_planner",          // <-- smuggled
             }),

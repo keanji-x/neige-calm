@@ -389,6 +389,7 @@ async fn get_track_state_callable_by_worker() {
 #[tokio::test]
 async fn task_verdict_accepted_emits_task_completed() {
     let boot = boot().await;
+    insert_task(&boot, "job-xyz", "job-xyz", "done", None).await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
@@ -396,7 +397,7 @@ async fn task_verdict_accepted_emits_task_completed() {
         TOOL_TASK_VERDICT,
         planner_identity(&boot),
         json!({
-            "idempotency_key": "job-xyz",
+            "attempt_id": "job-xyz",
             "status": "accepted",
             "reason": "looks great",
             "message": "accept worker result"
@@ -433,6 +434,7 @@ async fn task_verdict_accepted_emits_task_completed() {
 #[tokio::test]
 async fn legacy_alias_update_task_meta_still_dispatches_via_warn() {
     let boot = boot().await;
+    insert_task(&boot, "legacy-job", "legacy-job", "done", None).await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
@@ -440,7 +442,7 @@ async fn legacy_alias_update_task_meta_still_dispatches_via_warn() {
         "calm.update_task_meta",
         planner_identity(&boot),
         json!({
-            "idempotency_key": "legacy-job",
+            "attempt_id": "legacy-job",
             "status": "accepted",
             "reason": "legacy alias forwards",
             "message": "legacy alias forwards"
@@ -473,6 +475,7 @@ async fn legacy_alias_update_task_meta_still_dispatches_via_warn() {
 #[tokio::test]
 async fn task_verdict_rejected_emits_task_failed() {
     let boot = boot().await;
+    insert_task(&boot, "job-xyz", "job-xyz", "done", None).await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
@@ -480,7 +483,7 @@ async fn task_verdict_rejected_emits_task_failed() {
         TOOL_TASK_VERDICT,
         planner_identity(&boot),
         json!({
-            "idempotency_key": "job-xyz",
+            "attempt_id": "job-xyz",
             "status": "rejected",
             "reason": "missed acceptance criterion #3",
             "message": "reject worker result"
@@ -515,7 +518,7 @@ async fn task_verdict_unknown_status_rejected() {
         TOOL_TASK_VERDICT,
         planner_identity(&boot),
         json!({
-            "idempotency_key": "k",
+            "attempt_id": "k",
             "status": "maybe",
             "message": "bad status",
         }),
@@ -534,7 +537,7 @@ async fn task_verdict_worker_refused_at_mcp_entry() {
         TOOL_TASK_VERDICT,
         worker_identity(&boot),
         json!({
-            "idempotency_key": "k",
+            "attempt_id": "k",
             "status": "accepted",
         }),
     )
@@ -553,7 +556,7 @@ async fn task_verdict_requires_non_empty_message() {
         TOOL_TASK_VERDICT,
         planner_identity(&boot),
         json!({
-            "idempotency_key": "missing-message",
+            "attempt_id": "missing-message",
             "status": "accepted"
         }),
     )
@@ -570,7 +573,7 @@ async fn task_verdict_requires_non_empty_message() {
         TOOL_TASK_VERDICT,
         planner_identity(&boot),
         json!({
-            "idempotency_key": "empty-message",
+            "attempt_id": "empty-message",
             "status": "accepted",
             "message": "\t \n"
         }),
@@ -587,6 +590,14 @@ async fn task_verdict_requires_non_empty_message() {
 #[tokio::test]
 async fn task_verdict_records_message_and_leaves_the_track_open() {
     let boot = boot().await;
+    insert_task(
+        &boot,
+        "verdict-no-lifecycle",
+        "verdict-no-lifecycle",
+        "done",
+        None,
+    )
+    .await;
     let mut rx = boot.ctx.events.subscribe();
 
     call_tool(
@@ -594,7 +605,7 @@ async fn task_verdict_records_message_and_leaves_the_track_open() {
         TOOL_TASK_VERDICT,
         planner_identity(&boot),
         json!({
-            "idempotency_key": "verdict-no-lifecycle",
+            "attempt_id": "verdict-no-lifecycle",
             "status": "accepted",
             "reason": "ok",
             "message": "accept without lifecycle"
@@ -639,7 +650,7 @@ async fn task_verdict_with_a_lifecycle_key_is_refused_and_writes_nothing() {
         TOOL_TASK_VERDICT,
         planner_identity(&boot),
         json!({
-            "idempotency_key": "verdict-illegal-lifecycle",
+            "attempt_id": "verdict-illegal-lifecycle",
             "status": "accepted",
             "reason": "ok",
             "message": "illegal verdict lifecycle",
@@ -678,6 +689,71 @@ async fn task_verdict_with_a_lifecycle_key_is_refused_and_writes_nothing() {
                 if idempotency_key == "verdict-illegal-lifecycle")
         ),
         "rolled-back verdict must not be persisted: {events:?}"
+    );
+}
+
+/// A verdict names a task execution of the caller's track: an unknown attempt or another track's
+/// attempt is refused and writes nothing (the runs projection would drop it silently).
+#[tokio::test]
+async fn task_verdict_refuses_an_attempt_outside_the_callers_track() {
+    let boot = boot().await;
+    let other_track = boot
+        .repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: boot.area_id.clone(),
+            title: "other".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query(concat!(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,",
+        "created_at_ms,updated_at_ms) VALUES('foreign-1',?1,'foreign','codex','goal','{}','done',1,1)"
+    ))
+    .bind(other_track.id.as_str())
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .expect("insert foreign task");
+    let mut rx = boot.ctx.events.subscribe();
+
+    for attempt in ["foreign-1", "no-such-attempt"] {
+        let err = call_tool(
+            &boot,
+            TOOL_TASK_VERDICT,
+            planner_identity(&boot),
+            json!({
+                "attempt_id": attempt,
+                "status": "accepted",
+                "message": "verdict on an attempt this track does not own",
+            }),
+        )
+        .await
+        .expect_err("a verdict outside the caller's track is refused");
+        assert_eq!(err.code, -32404, "{err:?}");
+        assert!(
+            err.message
+                .contains(&format!("{attempt} is not a task attempt of this track")),
+            "{err:?}"
+        );
+    }
+    let no_event = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        no_event.is_err(),
+        "a refused verdict emitted an event: {no_event:?}"
+    );
+    let events = boot.repo.events_since(0, 100).await.unwrap();
+    assert!(
+        events.iter().all(|(_, _, _, event)| !matches!(
+            event,
+            Event::TaskCompleted { .. } | Event::TaskFailed { .. }
+        )),
+        "a refused verdict must not be persisted: {events:?}"
     );
 }
 

@@ -191,7 +191,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         positionals: &[],
         too_many: None,
         options: &[
-            opt("--idempotency-key", "idempotency_key", OptValue::Text, true),
+            opt("--attempt-id", "attempt_id", OptValue::Text, true),
             opt("--result", "result", OptValue::JsonOrText, false),
             opt("--artifact", "artifacts", OptValue::TextList, false),
         ],
@@ -204,7 +204,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         positionals: &[],
         too_many: None,
         options: &[
-            opt("--idempotency-key", "idempotency_key", OptValue::Text, true),
+            opt("--attempt-id", "attempt_id", OptValue::Text, true),
             opt("--reason", "reason", OptValue::Text, true),
         ],
         confirm: None,

@@ -80,7 +80,7 @@ async fn dispatch_request(
         "migration": {
             "use": "calm.report.commit",
             "shape": "{ message, ops: [{ op: \"upsert\", kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" } }] }",
-            "notes": "Read the report with calm.report.read first. The kernel schedules ready task blocks and runs verification gates; use calm.plan.list for status."
+            "notes": "Read the report with calm.report.read first. The kernel schedules ready task blocks and runs verification gates; use `neige state` for status."
         }
     }))
 }
@@ -93,9 +93,9 @@ fn task_complete_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "required": ["idempotency_key"],
+            "required": ["attempt_id"],
             "properties": {
-                "idempotency_key": { "type": "string", "minLength": 1 },
+                "attempt_id": { "type": "string", "minLength": 1 },
                 "result": {},
                 "artifacts": { "type": "array" }
             }
@@ -113,14 +113,7 @@ async fn task_complete(
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Worker)?;
 
-    let idempotency_key = args
-        .get("idempotency_key")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            RpcError::invalid_params("task_complete: missing `idempotency_key` (non-empty)")
-        })?
-        .to_string();
+    let attempt_id = required_attempt_id(&args, "task_complete")?;
     let result = args.get("result").cloned().unwrap_or(Value::Null);
     let artifacts_val = args
         .get("artifacts")
@@ -129,9 +122,8 @@ async fn task_complete(
     let artifacts: Vec<crate::event::ArtifactRef> = serde_json::from_value(artifacts_val)
         .map_err(|e| RpcError::invalid_params(format!("task_complete: invalid artifacts: {e}")))?;
 
-    let attempt_id = idempotency_key.clone();
     let event = Event::TaskCompleted {
-        idempotency_key,
+        idempotency_key: attempt_id.clone(),
         result,
         artifacts,
         agent_message: None,
@@ -187,9 +179,9 @@ fn task_fail_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "required": ["idempotency_key", "reason"],
+            "required": ["attempt_id", "reason"],
             "properties": {
-                "idempotency_key": { "type": "string", "minLength": 1 },
+                "attempt_id": { "type": "string", "minLength": 1 },
                 "reason": { "type": "string" }
             }
         }),
@@ -206,14 +198,7 @@ async fn task_fail(
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Worker)?;
 
-    let idempotency_key = args
-        .get("idempotency_key")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            RpcError::invalid_params("task_fail: missing `idempotency_key` (non-empty)")
-        })?
-        .to_string();
+    let attempt_id = required_attempt_id(&args, "task_fail")?;
     let reason = args
         .get("reason")
         .and_then(|v| v.as_str())
@@ -221,9 +206,8 @@ async fn task_fail(
         .ok_or_else(|| RpcError::invalid_params("task_fail: missing `reason` (non-empty)"))?
         .to_string();
 
-    let attempt_id = idempotency_key.clone();
     let event = Event::TaskFailed {
-        idempotency_key,
+        idempotency_key: attempt_id.clone(),
         reason,
         details: None,
         agent_message: None,
@@ -231,6 +215,17 @@ async fn task_fail(
     commit_worker_task_report_for_identity(&ctx, &identity, event).await?;
     submit_reported_delivery(&ctx, &identity, &attempt_id).await;
     Ok(json!({ "status": "emitted" }))
+}
+
+/// The task execution a report or verdict names; persisted as the event's `idempotency_key`.
+pub(crate) fn required_attempt_id(args: &Value, tool: &str) -> Result<String, RpcError> {
+    args.get("attempt_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            RpcError::invalid_params(format!("{tool}: missing `attempt_id` (non-empty)"))
+        })
 }
 
 async fn commit_worker_task_report_for_identity(

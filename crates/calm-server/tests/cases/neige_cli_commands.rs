@@ -234,13 +234,7 @@ async fn stamp_task(boot: &CardBoot, id: &str, key: &str, status: &str, worker: 
 
 /// The worker's own `neige task-completed`: the production report path that ends its task.
 async fn report_completed(boot: &CardBoot, worker_token: &str, task_id: &str) {
-    let argv = [
-        "task-completed",
-        "--idempotency-key",
-        task_id,
-        "--result",
-        "{}",
-    ];
+    let argv = ["task-completed", "--attempt-id", task_id, "--result", "{}"];
     let (_, stderr, exit) =
         cli_output(&neige_cli_via_socket(&boot.socket_path, worker_token, &argv).await);
     assert_eq!((exit, stderr.as_str()), (0, ""), "{task_id}");
@@ -507,9 +501,9 @@ async fn cli_authorization_equals_direct_call() {
     let planner = boot_with_role(CardRole::Planner).await;
     assert_same_refusal(
         &planner,
-        &["task-completed", "--idempotency-key", "k"],
+        &["task-completed", "--attempt-id", "k"],
         "calm.task.complete",
-        json!({ "idempotency_key": "k" }),
+        json!({ "attempt_id": "k" }),
     )
     .await;
 }

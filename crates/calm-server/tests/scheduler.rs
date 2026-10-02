@@ -1199,7 +1199,7 @@ impl ProviderAdapter for FastReportAdapter {
             self.ctx.clone(),
             self.identity.clone(),
             json!({
-                "idempotency_key": self.idempotency_key.clone(),
+                "attempt_id": self.idempotency_key.clone(),
                 "result": { "ok": true }
             }),
         )
@@ -1340,7 +1340,7 @@ async fn plan_to_done_end_to_end() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": t1.id, "result": { "ok": true } }),
+        json!({ "attempt_id": t1.id, "result": { "ok": true } }),
     )
     .await
     .expect("task complete");
@@ -1695,7 +1695,7 @@ async fn worker_report_flips_row_inside_emit_tx() {
         &boot,
         TOOL_TASK_FAIL,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "reason": "could not finish" }),
+        json!({ "attempt_id": task_id, "reason": "could not finish" }),
     )
     .await
     .expect("task fail");
@@ -1735,7 +1735,7 @@ async fn claude_worker_op_target_proves_unstamped_ownership() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect("claude-worker target proves ownership");
@@ -1768,7 +1768,7 @@ async fn duplicate_report_is_idempotent() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": {} }),
+        json!({ "attempt_id": task_id, "result": {} }),
     )
     .await
     .expect("first report");
@@ -1779,7 +1779,7 @@ async fn duplicate_report_is_idempotent() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": {} }),
+        json!({ "attempt_id": task_id, "result": {} }),
     )
     .await
     .expect("repeat success");
@@ -1787,7 +1787,7 @@ async fn duplicate_report_is_idempotent() {
         &boot,
         TOOL_TASK_FAIL,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "reason": "retry confusion" }),
+        json!({ "attempt_id": task_id, "reason": "retry confusion" }),
     )
     .await;
     assert_eq!(conflict.unwrap_err().code, -32409);
@@ -1822,7 +1822,7 @@ async fn gated_success_report_flips_to_verifying() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": {} }),
+        json!({ "attempt_id": task_id, "result": {} }),
     )
     .await
     .expect("task complete");
@@ -1839,7 +1839,7 @@ async fn gated_success_report_flips_to_verifying() {
         &boot,
         TOOL_TASK_FAIL,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "reason": "boom" }),
+        json!({ "attempt_id": task_id, "reason": "boom" }),
     )
     .await
     .expect_err("task fail must not contradict an admitted success");
@@ -1864,7 +1864,7 @@ async fn planner_verdict_never_flips_rows() {
         TOOL_TASK_VERDICT,
         planner_identity(&boot),
         json!({
-            "idempotency_key": task_id,
+            "attempt_id": task_id,
             "status": "accepted",
             "message": "looks good"
         }),
@@ -6175,7 +6175,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         &boot,
         TOOL_TASK_COMPLETE,
         sibling_identity.clone(),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect_err("sibling report against a row stamped to another card must be rejected");
@@ -6199,7 +6199,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         &boot,
         TOOL_TASK_FAIL,
         sibling_identity,
-        json!({ "idempotency_key": task_id, "reason": "not mine" }),
+        json!({ "attempt_id": task_id, "reason": "not mine" }),
     )
     .await
     .expect_err("sibling fail report must be rejected");
@@ -6210,7 +6210,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect("owner complete report");
@@ -6347,7 +6347,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": row.id, "result": { "ok": true } }),
+        json!({ "attempt_id": row.id, "result": { "ok": true } }),
     )
     .await
     .expect("worker report");
@@ -6379,7 +6379,7 @@ async fn dependent_task_is_claimed_by_its_own_worker() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": t1.id, "result": { "ok": true } }),
+        json!({ "attempt_id": t1.id, "result": { "ok": true } }),
     )
     .await
     .expect("t1 complete");
@@ -6432,7 +6432,7 @@ async fn dependent_task_is_claimed_by_its_own_worker() {
         &boot,
         TOOL_TASK_COMPLETE,
         second_identity,
-        json!({ "idempotency_key": t2.id, "result": { "ok": true } }),
+        json!({ "attempt_id": t2.id, "result": { "ok": true } }),
     )
     .await
     .expect("t2 complete");
@@ -6820,7 +6820,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         &boot,
         TOOL_TASK_COMPLETE,
         sibling_identity.clone(),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect_err("sibling without the payload binding must be rejected on an unstamped row");
@@ -6836,7 +6836,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         &boot,
         TOOL_TASK_FAIL,
         sibling_identity,
-        json!({ "idempotency_key": task_id, "reason": "not mine" }),
+        json!({ "attempt_id": task_id, "reason": "not mine" }),
     )
     .await
     .expect_err("sibling fail report must be rejected");
@@ -6859,7 +6859,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect("owning card's report");
@@ -6923,7 +6923,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         &boot,
         TOOL_TASK_COMPLETE,
         sibling_identity.clone(),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect_err("forged payload without an op target must be rejected");
@@ -6939,7 +6939,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         &boot,
         TOOL_TASK_FAIL,
         sibling_identity,
-        json!({ "idempotency_key": task_id, "reason": "forged" }),
+        json!({ "attempt_id": task_id, "reason": "forged" }),
     )
     .await
     .expect_err("forged fail report must be rejected");
@@ -6953,7 +6953,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect("op-target card's report");
@@ -7027,7 +7027,7 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect_err("a legacy-actor op's card must not flip the unstamped row");
@@ -7043,7 +7043,7 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
         &boot,
         TOOL_TASK_FAIL,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "reason": "not the scheduler's worker" }),
+        json!({ "attempt_id": task_id, "reason": "not the scheduler's worker" }),
     )
     .await
     .expect_err("legacy-actor fail report must be rejected");
@@ -7063,7 +7063,7 @@ async fn legacy_report_without_task_row_still_emits() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": "legacy-dispatch-key", "result": { "ok": true } }),
+        json!({ "attempt_id": "legacy-dispatch-key", "result": { "ok": true } }),
     )
     .await
     .expect("legacy report must keep succeeding");
@@ -7084,7 +7084,7 @@ async fn legacy_report_with_pending_task_row_is_rejected() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+        json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
     .await
     .expect_err("a legacy key collision is not ownership");
@@ -7098,7 +7098,7 @@ async fn legacy_report_with_pending_task_row_is_rejected() {
         &boot,
         TOOL_TASK_FAIL,
         worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "reason": "legacy retry" }),
+        json!({ "attempt_id": task_id, "reason": "legacy retry" }),
     )
     .await
     .expect_err("a legacy key collision is not ownership");

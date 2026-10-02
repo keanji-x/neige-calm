@@ -247,6 +247,19 @@ impl CardDecisionSink {
                     card_id_str
                 ))
             })?;
+        let attempt_id = match &event {
+            Event::TaskCompleted {
+                idempotency_key, ..
+            }
+            | Event::TaskFailed {
+                idempotency_key, ..
+            } => idempotency_key.clone(),
+            _ => {
+                return Err(CalmError::Internal(
+                    "a planner verdict lowers only to a task outcome".into(),
+                ));
+            }
+        };
         let scope = EventScope::Track {
             track: track.id.clone(),
             area: track.area_id.clone(),
@@ -254,6 +267,15 @@ impl CardDecisionSink {
 
         let committed = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
+                // A verdict names one task execution of the caller's track; the runs projection would drop any other key silently.
+                let owned = crate::db::sqlite::task_get_tx(tx, &attempt_id)
+                    .await?
+                    .is_some_and(|task| task.track_id == track.id.as_str());
+                if !owned {
+                    return Err(CalmError::NotFound(format!(
+                        "attempt_id {attempt_id} is not a task attempt of this track; verdict refused"
+                    )));
+                }
                 let id = crate::db::sqlite::append_decision_event_in_tx(
                     tx, &actor, &scope, None, &event,
                 )

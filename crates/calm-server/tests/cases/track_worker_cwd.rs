@@ -223,7 +223,7 @@ impl Started {
             &fx.boot,
             "calm.task.fail",
             self.identity.clone(),
-            json!({"idempotency_key": self.task.id, "reason": reason}),
+            json!({"attempt_id": self.task.id, "reason": reason}),
         )
         .await
         .unwrap();

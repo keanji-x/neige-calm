@@ -1079,12 +1079,12 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
     let cases = [
         (
             "calm.task.complete",
-            json!({ "idempotency_key": "report-completed" }),
+            json!({ "attempt_id": "report-completed" }),
         ),
         (
             "calm.task.fail",
             json!({
-                "idempotency_key": "report-failed",
+                "attempt_id": "report-failed",
                 "reason": "should not run"
             }),
         ),
@@ -1092,7 +1092,7 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
         (
             "calm.task.verdict",
             json!({
-                "idempotency_key": "report-meta",
+                "attempt_id": "report-meta",
                 "status": "accepted"
             }),
         ),

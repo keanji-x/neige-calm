@@ -125,6 +125,15 @@ async fn boot() -> Boot {
     let raw_token = mcp_token.expect("Planner card must mint a token");
     let thread_id = format!("thread-{card_id}");
     seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+    // The verdict probe names a task attempt of this track.
+    sqlx::query(concat!(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,",
+        "created_at_ms,updated_at_ms) VALUES('shim-round-trip',?1,'shim','codex','goal','{}','done',1,1)"
+    ))
+    .bind(track.id.as_str())
+    .execute(sqlx_repo.pool())
+    .await
+    .expect("seed the verdict's task attempt");
 
     let events = EventBus::new();
     let registry = build_default_registry();
@@ -236,7 +245,7 @@ async fn shim_round_trip_initialize_and_tools_call_completes() {
         "params": {
             "name": "calm.task.verdict",
             "arguments": {
-                "idempotency_key": "shim-round-trip",
+                "attempt_id": "shim-round-trip",
                 "status": "accepted",
                 "reason": "round-trip probe",
                 "message": "accept shim round-trip probe"

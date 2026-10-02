@@ -79,7 +79,7 @@ async fn neige_task_completed_emits_task_completed_event() {
         &boot,
         &[
             "task-completed",
-            "--idempotency-key",
+            "--attempt-id",
             "cli-completed-1",
             "--result",
             r#"{"ok":true}"#,
@@ -124,7 +124,7 @@ async fn neige_task_failed_emits_task_failed_event() {
         &boot,
         &[
             "task-failed",
-            "--idempotency-key",
+            "--attempt-id",
             "cli-failed-1",
             "--reason",
             "stub failure",

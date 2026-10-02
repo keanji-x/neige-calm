@@ -118,7 +118,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         &boot,
         "calm.task.complete",
         worker_identity(&boot),
-        json!({"idempotency_key":a.id, "result":result}),
+        json!({"attempt_id":a.id, "result":result}),
     )
     .await
     .unwrap();
@@ -205,7 +205,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         &boot,
         "calm.task.verdict",
         planner_identity(&boot),
-        json!({"idempotency_key":a.id,"status":"accepted","reason":decision,"message":decision}),
+        json!({"attempt_id":a.id,"status":"accepted","reason":decision,"message":decision}),
     )
     .await
     .unwrap();
@@ -273,7 +273,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         &boot,
         "calm.task.complete",
         b_identity,
-        json!({"idempotency_key":b.id,"result":recommendation}),
+        json!({"attempt_id":b.id,"result":recommendation}),
     )
     .await
     .unwrap();

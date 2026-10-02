@@ -504,7 +504,7 @@ impl Fx {
             &self.boot,
             "calm.task.complete",
             worker.clone(),
-            json!({"idempotency_key": task_id, "result": {"ok": true}}),
+            json!({"attempt_id": task_id, "result": {"ok": true}}),
         )
         .await
         .unwrap();

@@ -1099,20 +1099,20 @@
   },
   {
     "name": "calm.task.complete",
-    "description_sha256": "48f95909f125d1eeeeb384a810f7f5674f76432df253ed097a52dc4f6f6cd5cc",
+    "description_sha256": "13068d1235821e07f686153dde9f293b44944f9c5fd4f4f261a31bee72645062",
     "input_schema": {
       "properties": {
         "artifacts": {
           "type": "array"
         },
-        "idempotency_key": {
+        "attempt_id": {
           "minLength": 1,
           "type": "string"
         },
         "result": {}
       },
       "required": [
-        "idempotency_key"
+        "attempt_id"
       ],
       "type": "object"
     },
@@ -1130,7 +1130,7 @@
     "description_sha256": "ef955eed54a6a34e0cf7ab684bc3a5f327c50f4298360fbfd925ff0c54ae5711",
     "input_schema": {
       "properties": {
-        "idempotency_key": {
+        "attempt_id": {
           "minLength": 1,
           "type": "string"
         },
@@ -1139,7 +1139,7 @@
         }
       },
       "required": [
-        "idempotency_key",
+        "attempt_id",
         "reason"
       ],
       "type": "object"
@@ -1155,10 +1155,10 @@
   },
   {
     "name": "calm.task.verdict",
-    "description_sha256": "b374381c0ab2822245ac098ad8a868f35732f68165c9bba5e7b7549e889b4c64",
+    "description_sha256": "9b9f307cfeb3e80187baf83f96dc564adfd06ad221631adf4bb60e56e4610b81",
     "input_schema": {
       "properties": {
-        "idempotency_key": {
+        "attempt_id": {
           "minLength": 1,
           "type": "string"
         },
@@ -1179,7 +1179,7 @@
         }
       },
       "required": [
-        "idempotency_key",
+        "attempt_id",
         "status",
         "message"
       ],
@@ -1680,7 +1680,7 @@
   },
   {
     "name": "calm.track.cat",
-    "description_sha256": "ae3a092842b7f54a1b89fede482d6875076f51185cc78303e60a237d518d7e50",
+    "description_sha256": "b6a648b5dd92583baf1d0c22398081844c730f7318725c94ab66e638648afdeb",
     "input_schema": {
       "properties": {
         "blocks": {

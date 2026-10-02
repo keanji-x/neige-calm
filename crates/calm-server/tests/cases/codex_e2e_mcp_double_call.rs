@@ -295,8 +295,8 @@ async fn codex_mcp_double_call_both_complete() {
     let prompt = "You have one MCP tool available: calm.task.verdict. \
 You MUST call it exactly twice, in sequence, with these exact arguments. \
 Do NOT output any text before, between, or after the calls. \
-First call: { \"idempotency_key\": \"double-call-first\", \"status\": \"accepted\", \"reason\": \"first probe\" } \
-Second call: { \"idempotency_key\": \"double-call-second\", \"status\": \"accepted\", \"reason\": \"second probe\" } \
+First call: { \"attempt_id\": \"double-call-first\", \"status\": \"accepted\", \"reason\": \"first probe\" } \
+Second call: { \"attempt_id\": \"double-call-second\", \"status\": \"accepted\", \"reason\": \"second probe\" } \
 After the second call returns, output the single word OK and stop.";
     let turn_id = daemon
         .turn_start(

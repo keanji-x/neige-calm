@@ -263,7 +263,7 @@ async fn worker_completes_with_channel3_stripped() {
     // The prompt is provider-neutral on the reporting mechanism; the only obligation is the completion report.
     let prompt = format!(
         "Your task: there is nothing to build — the work is already done. \
-Your idempotency key K is \"{idempotency_key}\". Following your reporting \
+Your attempt_id is \"{idempotency_key}\". Following your reporting \
 contract, report task completion exactly once now, then stop."
     );
     let turn_id = daemon

@@ -392,7 +392,7 @@ async fn receipt_unicode_and_malicious_fields_are_bounded_quoted_data() {
         assert!(!text.contains('\u{fffd}'));
         assert!(!text.contains(recorded_locator()));
         assert!(text.contains(UNAVAILABLE));
-        for label in ["Original execution idempotency_key: ", "Report preview: "] {
+        for label in ["Original execution attempt_id: ", "Report preview: "] {
             let line = text
                 .lines()
                 .find_map(|line| line.strip_prefix(label))
@@ -591,7 +591,7 @@ async fn receipt_run_locator_validates_original_identity_against_real_reader() {
         assert!(text.contains("original report for locator validation"));
         let preview = text
             .lines()
-            .find_map(|line| line.strip_prefix("Original execution idempotency_key: "))
+            .find_map(|line| line.strip_prefix("Original execution attempt_id: "))
             .unwrap();
         let preview: serde_json::Value = serde_json::from_str(preview).unwrap();
         assert_eq!(preview["text"], identity);

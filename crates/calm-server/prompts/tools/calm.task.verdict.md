@@ -1,1 +1,1 @@
-Planner-only: {task_acceptance_guidance} idempotency_key echoes the original `*.worker_requested`. status "accepted" emits task.completed; "rejected" emits task.failed with reason. message is required. Rejection does not change the task's terminal state.
+Planner-only: {task_acceptance_guidance} attempt_id names a task attempt of this track. status "accepted" emits task.completed; "rejected" emits task.failed with reason. message is required. Rejection does not change the task's terminal state.

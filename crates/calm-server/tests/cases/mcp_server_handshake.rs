@@ -542,7 +542,7 @@ async fn tools_call_before_initialize_is_rejected() {
             3,
             "calm.task.complete",
             "pre-init-thread",
-            json!({"idempotency_key": "x"}),
+            json!({"attempt_id": "x"}),
         ),
     )
     .await;
@@ -704,7 +704,7 @@ async fn planner_role_cannot_call_task_complete_or_fail() {
             12,
             "calm.task.complete",
             &b.thread_id,
-            json!({"idempotency_key": "tc-planner-refused", "result": "ok"}),
+            json!({"attempt_id": "tc-planner-refused", "result": "ok"}),
         ),
     )
     .await;
@@ -720,7 +720,7 @@ async fn planner_role_cannot_call_task_complete_or_fail() {
             13,
             "calm.task.fail",
             &b.thread_id,
-            json!({"idempotency_key": "tf-planner-refused", "reason": "nope"}),
+            json!({"attempt_id": "tf-planner-refused", "reason": "nope"}),
         ),
     )
     .await;

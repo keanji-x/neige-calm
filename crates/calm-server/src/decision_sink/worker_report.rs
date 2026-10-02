@@ -29,7 +29,7 @@ pub(super) async fn admit_worker_report_tx(
     .await?;
     if let Some(expected) = scheduled_keys.iter().find(|key| key.as_str() != task_id) {
         return Err(CalmError::Conflict(format!(
-            "worker card {card_id} belongs to task {expected}; echo that task id as idempotency_key"
+            "worker card {card_id} belongs to attempt_id {expected}; report with that attempt_id"
         )));
     }
     let Some(row) = task_get_tx(tx, task_id).await? else {

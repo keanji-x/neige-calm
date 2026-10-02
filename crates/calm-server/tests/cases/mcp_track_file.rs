@@ -451,13 +451,27 @@ async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) -> i64 
     .await
 }
 
+/// A verdict names a task attempt of the caller's track; the event-only runs above have no row yet.
+async fn seed_task_attempt(boot: &Boot, key: &str) {
+    sqlx::query(concat!(
+        "INSERT OR IGNORE INTO tasks(id,track_id,key,kind,goal,context_json,status,",
+        "created_at_ms,updated_at_ms) VALUES(?1,?2,?1,'codex','goal','{}','done',1,1)"
+    ))
+    .bind(key)
+    .bind(boot.track_id.as_str())
+    .execute(boot.sqlx_repo.pool())
+    .await
+    .expect("seed the verdict's task attempt");
+}
+
 async fn accept_run(boot: &Boot, key: &str, reason: &str) {
+    seed_task_attempt(boot, key).await;
     call_tool(
         boot,
         TOOL_TASK_VERDICT,
         planner_identity(boot),
         json!({
-            "idempotency_key": key,
+            "attempt_id": key,
             "status": "accepted",
             "reason": reason,
             "message": format!("accept {key}"),
@@ -468,12 +482,13 @@ async fn accept_run(boot: &Boot, key: &str, reason: &str) {
 }
 
 async fn reject_run(boot: &Boot, key: &str, reason: &str) {
+    seed_task_attempt(boot, key).await;
     call_tool(
         boot,
         TOOL_TASK_VERDICT,
         planner_identity(boot),
         json!({
-            "idempotency_key": key,
+            "attempt_id": key,
             "status": "rejected",
             "reason": reason,
             "message": format!("reject {key}"),

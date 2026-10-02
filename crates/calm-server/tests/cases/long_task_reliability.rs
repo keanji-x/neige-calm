@@ -53,7 +53,7 @@ async fn long_task_late_success_cannot_contradict_spawn_failure() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({"idempotency_key": task_id, "result": {"late": true}}),
+        json!({"attempt_id": task_id, "result": {"late": true}}),
     )
     .await;
     assert!(
@@ -86,7 +86,7 @@ async fn long_task_scheduled_worker_cannot_report_under_card_id() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({"idempotency_key": boot.worker_card_id, "result": {}}),
+        json!({"attempt_id": boot.worker_card_id, "result": {}}),
     )
     .await;
     assert!(
@@ -237,7 +237,7 @@ async fn long_task_terminal_report_ownership_and_outcome_matrix() {
             &boot,
             tool,
             worker_identity(&boot),
-            json!({"idempotency_key": task_id, "result": {}, "reason": "late report"}),
+            json!({"attempt_id": task_id, "result": {}, "reason": "late report"}),
         )
         .await;
         assert!(
@@ -260,7 +260,7 @@ async fn long_task_bound_worker_without_op_cannot_report_card_id() {
         &boot,
         TOOL_TASK_COMPLETE,
         worker_identity(&boot),
-        json!({"idempotency_key": boot.worker_card_id, "result": {}}),
+        json!({"attempt_id": boot.worker_card_id, "result": {}}),
     )
     .await;
     assert!(
