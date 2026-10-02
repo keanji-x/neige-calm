@@ -11,6 +11,16 @@ pub fn seed_shim_issue_body(repo_selector: &Path, issue: u64, body: &str) {
         .expect("write gh shim seeded issue body");
 }
 
+/// Seed the document the shim's `pr view <pr> --json statusCheckRollup` evaluates `--jq` over;
+/// `rollup` is the `statusCheckRollup` value in gh's export shape (an array, or null).
+pub fn seed_shim_pr_checks(repo_selector: &Path, pr: u64, rollup: &serde_json::Value) {
+    let checks_dir = PathBuf::from(format!("{}.shimstate", repo_selector.display())).join("checks");
+    std::fs::create_dir_all(&checks_dir).expect("create gh shim checks state dir");
+    let document = serde_json::json!({ "statusCheckRollup": rollup });
+    std::fs::write(checks_dir.join(format!("{pr}.json")), document.to_string())
+        .expect("write gh shim seeded checks rollup");
+}
+
 pub fn write_gh_shim(dir: &Path) {
     let path = dir.join("gh");
     std::fs::write(&path, GH_SHIM).expect("write gh shim");
@@ -64,6 +74,9 @@ get_arg() {
   done
   return 1
 }
+
+# gh's export of one finished, passing CheckRun.
+DEFAULT_CHECKS_ROLLUP='{"statusCheckRollup":[{"__typename":"CheckRun","name":"test","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:01:00Z","detailsUrl":"https://github.invalid/shim/checks/1"}]}'
 
 state_dir_for() {
   printf '%s.shimstate\n' "$1"
@@ -280,7 +293,14 @@ case "$area:$verb" in
         fi
         ;;
       statusCheckRollup)
-        printf '{"conclusion":"success"}\n'
+        jq_expr=$(get_arg --jq "$@") || exit 2
+        # gh evaluates --jq over its export of the rollup; a test may seed the document.
+        rollup="$state/checks/$number.json"
+        if [ -f "$rollup" ]; then
+          cat "$rollup"
+        else
+          printf '%s\n' "$DEFAULT_CHECKS_ROLLUP"
+        fi | jq -c "$jq_expr"
         ;;
       *)
         echo "unsupported gh pr view --json $json_fields" >&2

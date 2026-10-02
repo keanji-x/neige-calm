@@ -399,7 +399,11 @@ fn lowers_gh_pr_checks() {
         }),
     )
     .expect("lower gh pr checks with attempt");
-    let jq = "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // .status // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}";
+    // tests/cases/forge_pr_checks.rs runs the filter through the gh shim; here the read and its
+    // output probe must carry the same one.
+    let jq = payload["argv"][9]
+        .as_str()
+        .expect("gh.pr.checks --jq filter");
     let expected_payload = |idem_key: &str| {
         json!({
             "argv": [

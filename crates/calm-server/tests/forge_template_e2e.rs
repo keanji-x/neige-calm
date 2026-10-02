@@ -4,6 +4,8 @@ mod support;
 
 #[path = "cases/forge_issue_comment_recovery.rs"]
 mod issue_comment_recovery;
+#[path = "cases/forge_pr_checks.rs"]
+mod pr_checks;
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};

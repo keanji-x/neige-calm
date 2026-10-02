@@ -295,6 +295,24 @@ fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
     )
 }
 
+/// Folds gh's `statusCheckRollup` export into one conclusion. A CheckRun is pending until its
+/// `status` is COMPLETED (an unfinished run exports `conclusion: ""`), then green only for
+/// SUCCESS, NEUTRAL or SKIPPED; a StatusContext has only `state`, pending while PENDING or
+/// EXPECTED. Any other finished value is a failure, which outranks pending; no checks is pending.
+const PR_CHECKS_JQ: &str = concat!(
+    "{conclusion: ([(.statusCheckRollup // [])[] | ",
+    "if .__typename == \"CheckRun\" then ",
+    "(if .status != \"COMPLETED\" then \"pending\" ",
+    "elif .conclusion == \"SUCCESS\" or .conclusion == \"NEUTRAL\" or .conclusion == \"SKIPPED\" ",
+    "then \"success\" else \"failure\" end) ",
+    "elif .state == \"SUCCESS\" then \"success\" ",
+    "elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" ",
+    "else \"failure\" end] | ",
+    "if any(. == \"failure\") then \"failure\" ",
+    "elif length == 0 or any(. == \"pending\") then \"pending\" ",
+    "else \"success\" end)}",
+);
+
 fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
     // Idempotent read: no mutating landed-verdict probe is attached.
     let repo = required_string(args, "repo")?;
@@ -314,7 +332,7 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         "--json".into(),
         "statusCheckRollup".into(),
         "--jq".into(),
-        "{conclusion: ([.statusCheckRollup[] | .conclusion // .state // .status // empty] | if any(. == \"FAILURE\" or . == \"ERROR\" or . == \"TIMED_OUT\" or . == \"CANCELLED\") then \"failure\" elif any(. == \"PENDING\" or . == \"QUEUED\" or . == \"IN_PROGRESS\" or . == \"EXPECTED\") then \"pending\" else \"success\" end)}".into(),
+        PR_CHECKS_JQ.into(),
     ];
     forge_payload(
         argv.clone(),

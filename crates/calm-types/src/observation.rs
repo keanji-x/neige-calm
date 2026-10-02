@@ -423,7 +423,7 @@ impl Observation {
                 conclusion,
                 ..
             } => format!(
-                "Forge checks completed for PR #{pr_number} with conclusion {conclusion}. Re-read the track state."
+                "Forge checks for PR #{pr_number} read {conclusion}. Re-read the track state."
             ),
             Observation::ForgeIssueClosed { issue_number, .. } => {
                 format!("Forge issue #{issue_number} was closed. Re-read the track state.")
