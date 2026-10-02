@@ -497,9 +497,6 @@ jobs:
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
 
-      # mold via ld takeover rather than RUSTFLAGS: RUSTFLAGS feeds the rust-cache key.
-      - uses: rui314/setup-mold@v1
-
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-test
@@ -724,7 +721,6 @@ jobs:
           fi
       - name: install pinned Rust toolchain
         run: rustup toolchain install --no-self-update
-      - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: worker-boundary
@@ -1120,7 +1116,6 @@ jobs:
           persist-credentials: false
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
-      - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace
@@ -1318,8 +1313,6 @@ jobs:
 
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
-
-      - uses: rui314/setup-mold@v1
 
       - uses: Swatinem/rust-cache@v2
         with:
