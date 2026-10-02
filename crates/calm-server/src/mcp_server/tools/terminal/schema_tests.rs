@@ -105,13 +105,13 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         );
         let mut expected = fields(&common);
         expected.insert("terminal_id".into());
-        expected.insert("task_id".into());
+        expected.insert("attempt_id".into());
         assert_eq!(
             properties(schema),
             expected,
             "{name}: all common properties and both optional selectors"
         );
-        for selector in ["terminal_id", "task_id"] {
+        for selector in ["terminal_id", "attempt_id"] {
             assert_eq!(
                 schema["properties"][selector],
                 json!({"type":"string"}),
@@ -134,10 +134,10 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         assert!(
             descriptor
                 .description
-                .starts_with("Select exactly one terminal_id or task_id")
+                .starts_with("Select exactly one terminal_id or attempt_id")
                 || descriptor
                     .description
-                    .starts_with("Resolve exactly one task_id"),
+                    .starts_with("Resolve exactly one attempt_id"),
             "{name}: exactly-one targeting is the first sentence"
         );
         if name != "calm.terminal.resolve" {

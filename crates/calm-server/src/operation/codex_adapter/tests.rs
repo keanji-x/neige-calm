@@ -257,6 +257,16 @@ async fn prepare_worker_and_op(
 }
 
 #[test]
+fn task_worker_turn_input_names_the_execution_id_attempt_id() {
+    let out = render_task_worker_prompt("t:build", "g", &Value::Null, None);
+    assert!(out.ends_with("\n\nTask attempt_id: t:build\nEcho this exact attempt_id when reporting completion or failure."), "{out}");
+    assert!(
+        !out.contains("idempotency") && !out.contains("task_id"),
+        "{out}"
+    );
+}
+
+#[test]
 fn render_worker_prompt_goal_only() {
     let out = render_worker_prompt("fix the bug", &Value::Null, None);
     assert_eq!(out, "Goal:\nfix the bug");

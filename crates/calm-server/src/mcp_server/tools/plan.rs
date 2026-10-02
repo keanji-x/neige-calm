@@ -657,9 +657,9 @@ async fn plan_list(
                             None => json!({"key":allocation.key,"task_projection":"unavailable"}),
                         }
                     } else {
-                        task.as_ref().map(task_list_entry).unwrap_or_else(
-                            || json!({"id":allocation.attempt_id,"key":allocation.key}),
-                        )
+                        task.as_ref()
+                            .map(task_list_entry)
+                            .unwrap_or_else(|| json!({"key":allocation.key}))
                     };
                     let current = view.current.ok_or_else(|| {
                         CalmError::Internal(
@@ -762,7 +762,6 @@ fn task_list_entry(t: &Task) -> Value {
         .unwrap_or(Value::Null);
 
     let mut entry = json!({
-        "id": t.id,
         "key": t.key,
         "kind": t.kind,
         "status": t.status,

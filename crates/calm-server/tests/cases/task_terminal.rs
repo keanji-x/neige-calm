@@ -178,7 +178,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
     for kind in ["terminal", "codex", "claude"] {
         let w = worker(&h, kind, &h.track, true).await;
         let resolved = h
-            .ok("calm.terminal.resolve", json!({"task_id":w.task}))
+            .ok("calm.terminal.resolve", json!({"attempt_id":w.task}))
             .await;
         assert_eq!(resolved["available"], true);
         assert_eq!(resolved["card_kind"], kind);
@@ -187,17 +187,20 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
         let viewed = h
             .call(
                 "calm.terminal.observe",
-                json!({"task_id":w.task,"wait_ms":50}),
+                json!({"attempt_id":w.task,"wait_ms":50}),
             )
             .await;
         assert!(viewed.get("error").is_none(), "{viewed}");
         let meta = &viewed["result"]["structuredContent"];
-        assert_eq!(meta["task"]["task_id"], w.task);
+        assert_eq!(meta["task"]["attempt_id"], w.task);
         assert_eq!(meta["card_id"], w.card);
-        for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
+        for target in [
+            json!({"attempt_id":w.task}),
+            json!({"terminal_id":w.terminal}),
+        ] {
             let text = h.call("calm.terminal.observe", target).await;
             let text_meta = assert_text_observation(&text);
-            assert_eq!(text_meta["task"]["task_id"], w.task);
+            assert_eq!(text_meta["task"]["attempt_id"], w.task);
             assert_eq!(
                 text_meta["terminal_session_id"],
                 meta["terminal_session_id"]
@@ -211,16 +214,19 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
         let claimed = h
             .ok(
                 "calm.terminal.control",
-                json!({"task_id":w.task,"action":"claim","observe":true,"wait_ms":50}),
+                json!({"attempt_id":w.task,"action":"claim","observe":true,"wait_ms":50}),
             )
             .await;
         assert_eq!(claimed["observation"]["status"], "available");
-        assert_eq!(claimed["observation"]["state"]["task"]["task_id"], w.task);
-        let before = snapshot(&h, json!({"task_id":w.task})).await;
-        let typed=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"text","action":{"type":"text","text":"hello"}})).await;
+        assert_eq!(
+            claimed["observation"]["state"]["task"]["attempt_id"],
+            w.task
+        );
+        let before = snapshot(&h, json!({"attempt_id":w.task})).await;
+        let typed=h.ok("calm.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"text","action":{"type":"text","text":"hello"}})).await;
         assert_eq!(typed["outcome"], "written");
         let before = snapshot(&h, json!({"terminal_id":w.terminal})).await;
-        let entered=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
+        let entered=h.ok("calm.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
         assert_eq!(entered["outcome"], "written");
         let after = h.observe_text(&w.terminal, "WORKER_REPLY:hello").await;
         assert_eq!(before["terminal_session_id"], after["terminal_session_id"]);
@@ -248,7 +254,10 @@ async fn foreign_track_task_and_terminal_are_both_refused() {
         .await
         .unwrap();
     let w = worker(&h, "claude", foreign.id.as_str(), true).await;
-    for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
+    for target in [
+        json!({"attempt_id":w.task}),
+        json!({"terminal_id":w.terminal}),
+    ] {
         let result = h.call("calm.terminal.observe", target).await;
         assert!(result.get("error").is_some(), "{result}");
     }
@@ -260,13 +269,13 @@ async fn task_without_a_viewer_reports_unavailable_without_spawning() {
     let h = Harness::start().await;
     let w = worker(&h, "codex", &h.track, false).await;
     let result = h
-        .ok("calm.terminal.resolve", json!({"task_id":w.task}))
+        .ok("calm.terminal.resolve", json!({"attempt_id":w.task}))
         .await;
     assert_eq!(result["available"], false);
     assert_eq!(result["controllable"], false);
     assert_eq!(result["terminal_id"], w.terminal);
     assert!(
-        h.call("calm.terminal.observe", json!({"task_id":w.task}))
+        h.call("calm.terminal.observe", json!({"attempt_id":w.task}))
             .await
             .get("error")
             .is_some()
@@ -288,8 +297,8 @@ async fn selectors_are_exclusive_and_planner_cards_are_not_worker_terminals() {
     let h = Harness::start().await;
     for args in [
         json!({}),
-        json!({"task_id":"x","terminal_id":"y"}),
-        json!({"task_id":""}),
+        json!({"attempt_id":"x","terminal_id":"y"}),
+        json!({"attempt_id":""}),
     ] {
         let reply = h.call("calm.terminal.resolve", args).await;
         assert_eq!(reply["error"]["code"], -32602, "{reply}");
@@ -320,19 +329,22 @@ async fn task_completion_revokes_control_but_preserves_current_output() {
     let w = worker(&h, "claude", &h.track, true).await;
     h.ok(
         "calm.terminal.control",
-        json!({"task_id":w.task,"action":"claim"}),
+        json!({"attempt_id":w.task,"action":"claim"}),
     )
     .await;
-    let before = snapshot(&h, json!({"task_id":w.task})).await;
+    let before = snapshot(&h, json!({"attempt_id":w.task})).await;
     sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
         .bind(&w.task)
         .bind(now_ms())
         .execute(h.sql.pool())
         .await
         .unwrap();
-    let after = snapshot(&h, json!({"task_id":w.task})).await;
+    let after = snapshot(&h, json!({"attempt_id":w.task})).await;
     assert_eq!(before["terminal_session_id"], after["terminal_session_id"]);
-    for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
+    for target in [
+        json!({"attempt_id":w.task}),
+        json!({"terminal_id":w.terminal}),
+    ] {
         let mut args = target;
         args["observation_id"] = before["observation_id"].clone();
         args["request_id"] = json!("late");
@@ -346,7 +358,7 @@ async fn task_completion_revokes_control_but_preserves_current_output() {
     }
     h.ok(
         "calm.terminal.control",
-        json!({"task_id":w.task,"action":"release"}),
+        json!({"attempt_id":w.task,"action":"release"}),
     )
     .await;
     stop(&h, &w).await;
@@ -358,7 +370,7 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
     let w = worker(&h, "claude", &h.track, true).await;
     h.ok(
         "calm.terminal.control",
-        json!({"task_id":w.task,"action":"claim"}),
+        json!({"attempt_id":w.task,"action":"claim"}),
     )
     .await;
     let entry = h.state.terminal_renderer.get(&w.terminal).unwrap();
@@ -366,7 +378,7 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
     let before = waiters();
     let released = h.call(
         "calm.terminal.control",
-        json!({"task_id":w.task,"action":"release","observe":true,"wait_for":"change","wait_ms":10000}),
+        json!({"attempt_id":w.task,"action":"release","observe":true,"wait_for":"change","wait_ms":10000}),
     );
     let finish = async {
         while waiters() == before {
@@ -402,7 +414,7 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
     );
     assert_eq!(state["task_status"], "done", "{state}");
     assert_eq!(state["controllable"], false, "{state}");
-    assert_eq!(state["task"]["task_id"], w.task);
+    assert_eq!(state["task"]["attempt_id"], w.task);
     stop(&h, &w).await;
 }
 
@@ -419,16 +431,16 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
     h.observe_text(&w.terminal, "WORKER_READY").await;
     h.ok(
         "calm.terminal.control",
-        json!({"task_id":w.task,"action":"claim"}),
+        json!({"attempt_id":w.task,"action":"claim"}),
     )
     .await;
-    let before = snapshot(&h, json!({"task_id":w.task})).await;
+    let before = snapshot(&h, json!({"attempt_id":w.task})).await;
     let entry = h.state.terminal_renderer.get(&w.terminal).unwrap();
     let waiters = || entry.handle.model_view.lock().unwrap().change_waiters();
     let subscribed = waiters();
     let holder = h.call(
         "calm.terminal.input",
-        json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"hold","action":{"type":"text","text":"a"},"observe":true,"wait_for":"change","wait_ms":10000}),
+        json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"hold","action":{"type":"text","text":"a"},"observe":true,"wait_for":"change","wait_ms":10000}),
     );
     let driver = async {
         let start = std::time::Instant::now();
@@ -440,7 +452,7 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
         // task is finished only once that input is waiting for the serial.
         let queued = h.call(
             "calm.terminal.input",
-            json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"queued","action":{"type":"text","text":"b"}}),
+            json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"queued","action":{"type":"text","text":"b"}}),
         );
         let service = h.interaction();
         let finish = async {
@@ -507,11 +519,11 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         if writable {
             h.ok(
                 "calm.terminal.control",
-                json!({"task_id":w.task,"action":"claim"}),
+                json!({"attempt_id":w.task,"action":"claim"}),
             )
             .await;
         }
-        let before = snapshot(&h, json!({"task_id":w.task})).await;
+        let before = snapshot(&h, json!({"attempt_id":w.task})).await;
         let old = h
             .sql
             .session_get_by_id(&w.session.clone().into())
@@ -542,22 +554,22 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         .unwrap();
         tx.commit().await.unwrap();
         let resolved = h
-            .ok("calm.terminal.resolve", json!({"task_id":w.task}))
+            .ok("calm.terminal.resolve", json!({"attempt_id":w.task}))
             .await;
         assert_eq!(resolved["worker_session_id"], next);
         if writable {
             h.ok(
                 "calm.terminal.control",
-                json!({"task_id":w.task,"action":"claim"}),
+                json!({"attempt_id":w.task,"action":"claim"}),
             )
             .await;
         }
-        let fresh = snapshot(&h, json!({"task_id":w.task})).await;
+        let fresh = snapshot(&h, json!({"attempt_id":w.task})).await;
         assert_ne!(before["connection_id"], fresh["connection_id"], "{kind}");
-        let rejected=h.call("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"old","action":{"type":"text","text":"stale"}})).await;
+        let rejected=h.call("calm.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"old","action":{"type":"text","text":"stale"}})).await;
         assert!(rejected.get("error").is_some(), "{rejected}");
         if writable {
-            let accepted=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":fresh["observation_id"],"request_id":"new","action":{"type":"text","text":"current"}})).await;
+            let accepted=h.ok("calm.terminal.input",json!({"attempt_id":w.task,"observation_id":fresh["observation_id"],"request_id":"new","action":{"type":"text","text":"current"}})).await;
             assert_eq!(accepted["outcome"], "written");
         }
         stop(&h, &w).await;
@@ -573,7 +585,7 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
     let w = worker(&h, "terminal", &h.track, true).await;
     h.ok(
         "calm.terminal.control",
-        json!({"task_id":w.task,"action":"claim"}),
+        json!({"attempt_id":w.task,"action":"claim"}),
     )
     .await;
     let task = h.sql.task_get(&w.task).await.unwrap().unwrap();
@@ -617,7 +629,10 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
     .unwrap();
     tx.commit().await.unwrap();
     assert_ne!(recovered, w.task);
-    for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
+    for target in [
+        json!({"attempt_id":w.task}),
+        json!({"terminal_id":w.terminal}),
+    ] {
         assert!(
             h.call("calm.terminal.observe", target)
                 .await
@@ -627,7 +642,7 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
     }
     h.ok(
         "calm.terminal.control",
-        json!({"task_id":w.task,"action":"detach"}),
+        json!({"attempt_id":w.task,"action":"detach"}),
     )
     .await;
     stop(&h, &w).await;
@@ -645,7 +660,7 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
         .await
         .unwrap();
     for target in [
-        json!({"task_id":old.task}),
+        json!({"attempt_id":old.task}),
         json!({"terminal_id":old.terminal}),
     ] {
         assert!(
@@ -682,7 +697,7 @@ async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
     let h = Harness::start().await;
     let w = worker(&h, "codex", &h.track, true).await;
     assert_eq!(
-        h.ok("calm.terminal.resolve", json!({"task_id":w.task}))
+        h.ok("calm.terminal.resolve", json!({"attempt_id":w.task}))
             .await["available"],
         true
     );

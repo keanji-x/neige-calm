@@ -923,7 +923,7 @@ fn turn_text_names_target_mismatch() {
             .expect("gate result must map to an observation")
             .to_turn_text()
     };
-    let tail = "(attempt 3). Log tail:\nrefused\n\nRead the full log at \
+    let tail = "(gate run 3). Log tail:\nrefused\n\nRead the full log at \
                 runs/track-1:impl-parser/gates/3.log; read the worker output at \
                 runs/track-1:impl-parser.md.";
 

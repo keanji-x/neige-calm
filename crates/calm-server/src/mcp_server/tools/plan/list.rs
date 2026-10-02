@@ -134,7 +134,6 @@ pub(super) fn summary(entry: &Value) -> Value {
     let mut omitted_fields = Vec::new();
     omitted(entry, &result, "", &mut omitted_fields);
     // Keep these paths in sync with task_list_entry; registry tests compare both views.
-    omitted_fields.push("/id".into());
     if entry.get("task_projection").is_none() {
         omitted_fields.extend(
             [

@@ -506,7 +506,7 @@ fn gate_result_text(
         }) => format!(
             "Task {key} gate REFUSED — verification target mismatch ({}): \
              expected candidate {candidate_id} ({commit_sha}) at {cwd}; found {}{}{}; \
-             no step ran (attempt {attempt}).",
+             no step ran (gate run {attempt}).",
             render_reasons(reasons),
             before.head,
             dirty_clause("dirty", before, reasons),
@@ -526,7 +526,7 @@ fn gate_result_text(
             "Task {key} gate RESULT DISCARDED — checkout changed during the gate ({}): \
              HEAD {}→{}{}{}; a step that rewrites files (e.g. cargo fmt without --check) \
              does this; no step result is trusted; candidate {candidate_id} is intact \
-             (attempt {attempt}).",
+             (gate run {attempt}).",
             render_reasons(reasons),
             before.head,
             after.head,
@@ -545,7 +545,7 @@ fn gate_result_text(
             };
             format!(
                 "Task {key} gate REFUSED — no candidate to verify: {found}; \
-                 the gate was admitted before settlement; no step ran (attempt {attempt})."
+                 the gate was admitted before settlement; no step ran (gate run {attempt})."
             )
         }
         _ => {
@@ -571,7 +571,7 @@ fn gate_result_text(
                     (Some(class), None, None) => format!("FAILED ({class})"),
                 }
             };
-            format!("Task {key} gate {verdict} (attempt {attempt}).")
+            format!("Task {key} gate {verdict} (gate run {attempt}).")
         }
     }
 }
@@ -754,7 +754,7 @@ mod tests {
         );
         assert!(
             decoded.to_turn_text().starts_with(
-                "Task k gate FAILED at step test (exit 101) (attempt 2). Log tail:\nboom\n"
+                "Task k gate FAILED at step test (exit 101) (gate run 2). Log tail:\nboom\n"
             ),
             "{}",
             decoded.to_turn_text()

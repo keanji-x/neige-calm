@@ -63,7 +63,7 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
 
     // The #1782 redirect: Escape, then the new scope, each with a claim-if-unowned. The replies
     // are judged after the byte check, so a lost refusal shows up as bytes on the PTY.
-    let before = snapshot(&h, json!({"task_id":codex.task})).await;
+    let before = snapshot(&h, json!({"attempt_id":codex.task})).await;
     let mut replies = Vec::new();
     for (request_id, action) in [
         ("interrupt", json!({"type":"key","key":"Escape"})),
@@ -73,7 +73,7 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
         ),
     ] {
         for target in [
-            json!({"task_id":codex.task}),
+            json!({"attempt_id":codex.task}),
             json!({"terminal_id":codex.terminal}),
         ] {
             let mut args = target;
@@ -87,7 +87,7 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
     replies.push(
         h.call(
             "calm.terminal.control",
-            json!({"task_id":codex.task,"action":"claim"}),
+            json!({"attempt_id":codex.task,"action":"claim"}),
         )
         .await,
     );
@@ -96,14 +96,14 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
     // is written after the codex attempts, so their bytes would have landed by now.
     h.ok(
         "calm.terminal.control",
-        json!({"task_id":claude.task,"action":"claim"}),
+        json!({"attempt_id":claude.task,"action":"claim"}),
     )
     .await;
-    let claude_before = snapshot(&h, json!({"task_id":claude.task})).await;
+    let claude_before = snapshot(&h, json!({"attempt_id":claude.task})).await;
     let written = h
         .ok(
             "calm.terminal.input",
-            json!({"task_id":claude.task,"observation_id":claude_before["observation_id"],
+            json!({"attempt_id":claude.task,"observation_id":claude_before["observation_id"],
                 "request_id":"probe","action":{"type":"text","text":"probe"}}),
         )
         .await;
@@ -121,7 +121,7 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
 
     // Resolve and observe stay read-only and succeed; resolve names the refusal up front.
     let resolved = h
-        .ok("calm.terminal.resolve", json!({"task_id":codex.task}))
+        .ok("calm.terminal.resolve", json!({"attempt_id":codex.task}))
         .await;
     assert_eq!(resolved["available"], true, "{resolved}");
     assert_eq!(resolved["card_kind"], "codex", "{resolved}");

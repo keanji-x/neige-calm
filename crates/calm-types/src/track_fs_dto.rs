@@ -69,9 +69,9 @@ pub struct TrackFsRunVerdict {
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackFsRunIndexEntry {
+    pub attempt_id: String,
     #[schema(nullable = true, required = true)]
     pub finished_at: Option<i64>,
-    pub idempotency_key: String,
     pub kind: String,
     #[schema(nullable = true, required = true)]
     pub requested_at: Option<i64>,
@@ -109,10 +109,10 @@ pub struct TrackFsRunEvents {
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackFsRunDetail {
+    pub attempt_id: String,
     pub events: TrackFsRunEvents,
     #[schema(nullable = true, required = true)]
     pub finished_at: Option<i64>,
-    pub idempotency_key: String,
     pub kind: String,
     #[schema(nullable = true, required = true)]
     pub requested_at: Option<i64>,

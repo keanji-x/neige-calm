@@ -141,7 +141,7 @@ pub(super) async fn enrich(
                 let event = &run["events"][kind];
                 // A run projection can advance. Only advertise it when it still contains the queued event,
                 // or (legacy queues lack envelope IDs) the exact recorded payload and identity.
-                if run["idempotency_key"].as_str() == Some(&identity)
+                if run["attempt_id"].as_str() == Some(&identity)
                     && event["payload"]["idempotency_key"].as_str() == Some(&identity)
                     && event["payload"].get(field) == Some(&report)
                     && envelope_id.is_none_or(|id| event["event_id"].as_i64() == Some(id))

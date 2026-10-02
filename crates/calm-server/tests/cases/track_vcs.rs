@@ -3705,3 +3705,6 @@ async fn reserved_run_key_does_not_clobber_runs_index() {
     let index = manifest.entries.get("runs/index.json").expect("runs index");
     assert_eq!(blob_text(&repo, &index.blob_hash).await, "[]");
 }
+
+#[path = "track_vcs_legacy_runs_index.rs"]
+mod legacy_runs_index;

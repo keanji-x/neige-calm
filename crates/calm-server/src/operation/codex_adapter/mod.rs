@@ -1483,14 +1483,14 @@ pub(crate) async fn card_payload_get_tx(
 }
 
 pub(crate) fn render_task_worker_prompt(
-    task_id: &str,
+    attempt_id: &str,
     goal: &str,
     context: &Value,
     acceptance: Option<&str>,
 ) -> String {
     let prompt = render_worker_prompt(goal, context, acceptance);
     format!(
-        "{prompt}\n\nTask attempt_id: {task_id}\nEcho this exact attempt_id when reporting completion or failure."
+        "{prompt}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
     )
 }
 
