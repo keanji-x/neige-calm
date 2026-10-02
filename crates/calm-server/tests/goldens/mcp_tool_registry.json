@@ -50,7 +50,7 @@
   },
   {
     "name": "calm.calendar.create",
-    "description_sha256": "2c69ad2a72ad3a2ed06c1893ce9f3026d0d8031ff5359b936fcea80116800ec6",
+    "description_sha256": "c9a558fcd6d85c59354e8f0b55a22f84db57a8943cd12e12a34ade7ac4f6099d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -168,7 +168,7 @@
   },
   {
     "name": "calm.calendar.update",
-    "description_sha256": "44de33c839727da4ef9f6667e4f9b5118b81a6ef726baa5634ec3e2e93ca00c7",
+    "description_sha256": "c845bb9cbc9272ad95c3a3a1734326df4d758aa2b71fbfe0617c9331ceba6685",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

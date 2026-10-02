@@ -63,8 +63,8 @@ pub async fn list(ctx: &AppContext, access: &Access, window: Window) -> Result<V
     entries.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     Ok(entries)
 }
-pub async fn create(ctx: &AppContext, access: Access, request: Create) -> Result<Entry> {
-    request.task.validate()?;
+pub async fn create(ctx: &AppContext, access: Access, mut request: Create) -> Result<Entry> {
+    request.task.resolve_times()?;
     if request.idempotency_key.trim().is_empty() || request.idempotency_key.len() > 200 {
         return Err(invalid("idempotency_key must contain 1 to 200 bytes"));
     }
@@ -153,9 +153,9 @@ pub async fn update(
     ctx: &AppContext,
     access: Access,
     id: String,
-    request: Update,
+    mut request: Update,
 ) -> Result<Entry> {
-    request.task.validate()?;
+    request.task.resolve_times()?;
     let (entry, _) = write_with_events_typed(
         ctx.repo.as_ref(),
         access.actor.clone(),

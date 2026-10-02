@@ -1,1 +1,1 @@
-Replace this Track's calendar commitment using full task and expected_version from list; cancelled=true cancels. On conflict reread and reconcile. Manual and other Track tasks are inaccessible. No execution or reminders.
+Replace own Track commitment: full task + expected_version from list; cancelled=true cancels. Timed: local YYYY-MM-DDTHH:mm + IANA zone or matching RFC3339 offset. DST ambiguity: ask. Conflict: reread. Own Track only; no execution/reminders.

@@ -1,5 +1,5 @@
 use crate::error::{CalmError, Result};
-use chrono::{DateTime, NaiveDate, Offset};
+use chrono::{DateTime, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -84,7 +84,43 @@ fn instant(value: &str, tz: Tz) -> Result<DateTime<chrono::FixedOffset>> {
     }
     Ok(parsed)
 }
+/// Resolve user-supplied wall time; stored schedules always retain explicit offsets.
+fn resolve_time(value: &str, tz: Tz) -> Result<String> {
+    if DateTime::parse_from_rfc3339(value).is_ok() {
+        instant(value, tz)?;
+        return Ok(value.into());
+    }
+    let local = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
+        .map_err(|_| invalid("expected local YYYY-MM-DDTHH:mm or RFC3339 time with offset"))?;
+    if local.format("%Y-%m-%dT%H:%M").to_string() != value {
+        return Err(invalid("expected local YYYY-MM-DDTHH:mm"));
+    }
+    match tz.from_local_datetime(&local) {
+        LocalResult::Single(time) => Ok(time.fixed_offset().to_rfc3339()),
+        LocalResult::Ambiguous(_, _) => Err(invalid(
+            "local time is ambiguous; provide an explicit RFC3339 offset",
+        )),
+        LocalResult::None => Err(invalid(
+            "local time does not exist in this timezone; choose another time",
+        )),
+    }
+}
 impl Draft {
+    pub fn resolve_times(&mut self) -> Result<()> {
+        if let Schedule::Timed {
+            start,
+            end,
+            timezone: zone,
+        } = &mut self.schedule
+        {
+            let tz = timezone(zone)?;
+            let resolved_start = resolve_time(start, tz)?;
+            let resolved_end = resolve_time(end, tz)?;
+            *start = resolved_start;
+            *end = resolved_end;
+        }
+        self.validate()
+    }
     pub fn validate(&self) -> Result<()> {
         if self.title.trim().is_empty() || self.title.len() > 500 || self.description.len() > 20000
         {

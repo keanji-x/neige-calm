@@ -54,7 +54,10 @@ Human-created entries have no source Track. Request arguments cannot forge sourc
 or creator. Worker roles and forge lowering cannot call the Calendar capability.
 
 Time contracts distinguish an all-day civil date from an RFC3339 instant range
-with an explicit IANA timezone. Offset/timezone mismatches are rejected. Queries
+with an explicit IANA timezone. Create/update also accept local YYYY-MM-DDTHH:mm
+start/end; Calendar resolves unambiguous wall times before storage and returns
+RFC3339 times. DST gaps and overlaps fail clearly unless a valid explicit offset
+resolves the overlap. Offset/timezone mismatches are rejected. Queries
 use a half-open date window and explicit display timezone. Updates compare
 revisions; cancelled entries remain durable. Lost creation responses can be
 retried using the same key and body.
@@ -121,3 +124,20 @@ OWNERSHIP-CHANGE: fe/package.json — add the standard event calendar and Tempor
 OWNERSHIP-CHANGE: fe/package-lock.json — pin the event calendar dependency graph (#1913)
 OWNERSHIP-CHANGE: fe/web/src/styles/vendor.css — load official calendar CSS through the vendor layer (#1913)
 ```
+
+## Local-time Planner acceptance
+
+Issue #1942 removes offset arithmetic from Planner input without changing stored
+schedule shapes. The Calendar native-tool regression covers local create/list,
+retry, local update, and DST refusal without partial writes. Seven Calendar tests
+and four MCP registry/prompt/budget checks passed; the existing catalog budget
+remains unchanged.
+
+A manual real-model probe reused the reviewed #1940 Docker acceptance harness
+against this implementation. The Planner sent local 2026-10-02T09:00 and 10:00
+with Asia/Shanghai; create and subsequent list returned matching persisted
+RFC3339 values and the same ID. The probe completed in 36.19 seconds. The Planner
+reported that it did not need to calculate UTC offsets. It still reported broad
+tool-discovery results; this change does not claim to fix that discovery behavior.
+The probe used an unbound Track and does not establish development-owner access
+or reminders. Temporary acceptance instrumentation was restored after execution.

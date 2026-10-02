@@ -572,3 +572,89 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     .unwrap();
     assert_eq!(error.code, -32601);
 }
+
+#[tokio::test]
+async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
+    let fx = Fixture::new().await;
+    let registry = crate::mcp_server::build_default_registry();
+    let create = registry.lookup("calm.calendar.create").unwrap();
+    let list = registry.lookup("calm.calendar.list").unwrap();
+    let update = registry.lookup("calm.calendar.update").unwrap();
+    let planner = fx.identity(CardRole::Planner).await;
+    let task = json!({"title":"Research","description":"Deliver findings","schedule":{
+        "kind":"timed","start":"2026-10-02T09:00","end":"2026-10-02T10:00","timezone":"Asia/Shanghai"
+    }});
+    let request = json!({"idempotency_key":"local-research","task":task});
+    let first = create(fx.ctx.clone(), planner.clone(), request.clone())
+        .await
+        .unwrap();
+    let first = serde_json::to_value(first).unwrap()["structuredContent"].clone();
+    assert_eq!(
+        first["task"]["schedule"]["start"],
+        "2026-10-02T09:00:00+08:00"
+    );
+    assert_eq!(
+        first["task"]["schedule"]["end"],
+        "2026-10-02T10:00:00+08:00"
+    );
+    let retry = create(fx.ctx.clone(), planner.clone(), request)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(retry).unwrap()["structuredContent"],
+        first
+    );
+    let visible = list(
+        fx.ctx.clone(),
+        planner.clone(),
+        json!({"from":"2026-10-02","until":"2026-10-03","timezone":"Asia/Shanghai"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(visible).unwrap()["structuredContent"],
+        json!([first])
+    );
+    let mut moved = task.clone();
+    moved["schedule"]["start"] = json!("2026-10-02T11:00");
+    moved["schedule"]["end"] = json!("2026-10-02T12:00");
+    let changed = update(
+        fx.ctx.clone(),
+        planner.clone(),
+        json!({"id":first["id"],"expected_version":1,"task":moved,"cancelled":false}),
+    )
+    .await
+    .unwrap();
+    let changed = serde_json::to_value(changed).unwrap()["structuredContent"].clone();
+    assert_eq!(
+        changed["task"]["schedule"]["start"],
+        "2026-10-02T11:00:00+08:00"
+    );
+    assert_eq!(changed["version"], 2);
+    for (start, end, message) in [
+        ("2026-03-08T02:30", "2026-03-08T04:00", "does not exist"),
+        ("2026-11-01T01:30", "2026-11-01T02:30", "ambiguous"),
+    ] {
+        let bad = json!({"title":"DST","description":"","schedule":{"kind":"timed","start":start,"end":end,"timezone":"America/New_York"}});
+        let error = create(
+            fx.ctx.clone(),
+            planner.clone(),
+            json!({"idempotency_key":start,"task":bad.clone()}),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.message.contains(message), "{error:?}");
+        let error = update(
+            fx.ctx.clone(),
+            planner.clone(),
+            json!({"id":first["id"],"expected_version":2,"task":bad,"cancelled":false}),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.message.contains(message), "{error:?}");
+    }
+    let stored = store::list(&fx.ctx, &human(), window()).await.unwrap();
+    assert_eq!(serde_json::to_value(stored).unwrap(), json!([changed]));
+}
