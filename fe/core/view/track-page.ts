@@ -26,7 +26,9 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
  * The Cards module. `kind` is a separate field only when a title took the name slot; `kernel-owned`
  * is the `deletable === false` case. `delete-card` is carried whenever the card is deletable — a host
  * with no callback is a painter that reports the action unsupported. The × takes `Delete card ${name}`
- * with `name` being `row.title` itself, never a second `title ?? card.kind`.
+ * with `name` being `row.title` itself, never a second `title ?? card.kind`. A status that is not a
+ * task's comes from the card's session and says so, in the phrase and in a visible `session` badge:
+ * a superseded worker card keeps its task key as its title (#1946).
  */
 function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPageActivity): PanelRow {
   const title = card.title;
@@ -43,13 +45,15 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa
       description: null,
     });
   }
+  const sessionStatus = taskStatus === null && card.runtime !== undefined ? card.runtime.status : null;
+  const badges: RowBadge[] = card.deletable ? [] : [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }];
+  if (sessionStatus !== null) badges.push({ id: 'session', text: 'session', struck: false });
   return {
     id: card.id,
     title: name,
     kind: title !== null ? card.kind : null,
-    badges: card.deletable ? [] : [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
-    status: taskStatus ?? (card.runtime === undefined ? null
-      : { token: card.runtime.status, phrase: card.runtime.status }),
+    badges,
+    status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}` }),
     activity: rowActivity(activity, card.id),
     actions,
   };
@@ -121,7 +125,7 @@ export function deriveTrackPageView(input: Readonly<{
   const taskRows = groupPanelRows(input.tasks.map((task) => taskRow(task, input.activity, input.openableCards)), 'tasks')
     .flatMap(group => group.rows);
   // A worker process can stay alive after its task ends: the task's current execution is the work
-  // status, the session only a fallback for standalone cards. Keyed by worker card identity, not by
+  // status, the session a labelled fallback for every other card. Keyed by worker card identity, not by
   // `open-card` action; grouped order, so the in-progress task wins a card two tasks name.
   const workerCardByBlock = new Map(input.tasks.map((task) => [task.blockId, taskWorkerCardId(task)] as const));
   const taskStatusByCard = new Map<string, RowStatus>();

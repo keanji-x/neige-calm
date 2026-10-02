@@ -347,3 +347,26 @@ it('groups a completed task’s card as completed even while its worker process 
   });
   expect(view.rowModules[0].rows[0].status?.token).toBe('done');
 });
+
+/* #1946: a worker card the task's current execution no longer names still carries the task key as its title,
+ * so a status read from its live session must say it is the session's, not the task's. */
+it('labels a superseded worker card’s live status as its session’s, leaving the current worker’s task status bare', () => {
+  const [stale, current] = deriveTrackPageView({
+    cards: [
+      card({ id: 'old-worker', title: 'alpha-task', kind: 'codex', runtime: { worker_session_id: 's1', kind: 'codex', status: 'running' } }),
+      card({ id: 'new-worker', title: 'alpha-task', kind: 'codex', runtime: { worker_session_id: 's2', kind: 'codex', status: 'running' } }),
+    ],
+    tasks: [{ ...task({ key: 'alpha-task', status: 'done', kind: 'codex', workerCardId: 'old-worker' }), execution: {
+      attemptId: 'a2', generation: 2, status: 'done', label: 'Done', statusDetail: null, workerCardId: 'new-worker', blockingReason: null,
+    } }],
+    activity: NEUTRAL_ACTIVITY,
+    openableCards: new Set(),
+  }).rowModules[0].rows;
+
+  expect(stale.id).toBe('old-worker');
+  expect(stale.status).toEqual({ token: 'running', phrase: 'session running' });
+  expect(stale.badges).toEqual([{ id: 'session', text: 'session', struck: false }]);
+  expect(current.id).toBe('new-worker');
+  expect(current.status).toEqual({ token: 'done', phrase: 'Done' });
+  expect(current.badges).toEqual([]);
+});
