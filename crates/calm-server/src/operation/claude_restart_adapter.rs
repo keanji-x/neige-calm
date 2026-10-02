@@ -147,7 +147,9 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             let term = terminal_get_by_card_tx(tx, &card_id)
                 .await?
                 .ok_or_else(|| {
-                    CalmError::Internal(format!("worker card {card_id} has no terminal"))
+                    CalmError::Conflict(format!(
+                        "refused: worker card {card_id} has no terminal to check its declared head in"
+                    ))
                 })?;
             verify_declared_head(Path::new(&term.cwd), head)?;
         }

@@ -190,11 +190,14 @@ async fn prepare_worker_lease_with_tx(
     };
     let branch = worker_branch(track_id, worktree.is_some())?;
     ensure_clean_tree(&path).await?;
+    // One HEAD sample: the declared head is compared with the base the lease records, so the
+    // spawn's base check also holds the declared head.
+    let base_commit = directory_base(&path)?;
     let reader = match access {
         TaskAccess::ReadWrite => None,
         TaskAccess::ReadOnly => {
             if let Some(head) = head.as_deref() {
-                verify_declared_head(&path, head)?;
+                check_head_sample(&path, head, &base_commit.base_sha)?;
             }
             Some(ReaderFacts {
                 repo: reader_repo(track_id, worktree.as_deref()),
@@ -205,11 +208,10 @@ async fn prepare_worker_lease_with_tx(
         }
     };
     let superseded = supersede_stuck_leases_tx(tx, &path).await?;
-    let base = directory_base(&path)?;
     Ok(WorkerLeasePlan {
         path,
         branch,
-        base,
+        base: base_commit,
         superseded,
         reader,
     })
@@ -235,7 +237,11 @@ fn reader_repo(track_id: &str, worktree: Option<&str>) -> std::result::Result<St
 /// A refusal is a `Conflict` naming both commits; a head the repository does not have gets its
 /// own word.
 pub(crate) fn verify_declared_head(checkout: &Path, head: &str) -> Result<()> {
-    let actual = super::base::resolve_head_base(checkout)?;
+    check_head_sample(checkout, head, &super::base::resolve_head_base(checkout)?)
+}
+
+/// [`verify_declared_head`] against `actual`, one HEAD sample of `checkout` the caller took.
+fn check_head_sample(checkout: &Path, head: &str, actual: &str) -> Result<()> {
     if actual == head {
         return Ok(());
     }
@@ -259,8 +265,9 @@ pub(crate) fn verify_declared_head(checkout: &Path, head: &str) -> Result<()> {
 /// The output key of a declared head, written only when there is one.
 const DECLARED_HEAD: &str = "declared_head";
 
-/// #1933: record a declared head in a prepare's output, so the spawn checks it again on a fresh
-/// start, on a `SpawnStarted` re-drive and on a Claude restart.
+/// #1933: record a declared head in a prepare's output for the spawns that check it again: the
+/// codex worker's (a `SpawnStarted` re-drive skips `app_server_interact`) and the Claude
+/// restart's. A claude worker's spawn needs none: its base check holds the declared head.
 pub(crate) fn record_declared_head(data: &mut serde_json::Value, head: Option<&str>) {
     if let (Some(head), Some(data)) = (head, data.as_object_mut()) {
         data.insert(DECLARED_HEAD.into(), head.into());

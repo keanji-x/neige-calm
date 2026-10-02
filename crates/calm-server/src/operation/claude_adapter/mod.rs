@@ -24,8 +24,7 @@ use crate::operation::codex_adapter::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
-    release::release_workspace_lease_by_id,
-    worker::{record_declared_head, verify_worker_checkout},
+    release::release_workspace_lease_by_id, worker::verify_worker_checkout,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -882,7 +881,6 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "prompt": rendered_prompt,
             "scope": scope,
         });
-        record_declared_head(&mut output.data, plan.declared_head());
         output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)
