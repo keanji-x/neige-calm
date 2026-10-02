@@ -171,3 +171,6 @@ async fn native_fence_late_sealed_notification_persists_stop_before_interrupt() 
         "late execution must close future admission durably"
     );
 }
+
+#[path = "fences/recovery.rs"]
+mod recovery;

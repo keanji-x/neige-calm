@@ -6,6 +6,8 @@ mod execution_backend;
 #[cfg(target_os = "macos")]
 mod macos_process;
 mod preserving_recovery;
+mod reconciliation;
+pub(crate) use reconciliation::reconcile_native_executions;
 mod task_permissions;
 mod thread_release;
 pub(crate) mod workspace;

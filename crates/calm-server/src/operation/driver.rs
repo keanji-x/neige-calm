@@ -68,6 +68,13 @@ impl OperationRuntime {
         self.spawn_ctx.shared_codex_appserver.as_deref()
     }
 
+    pub(crate) async fn reconcile_executions(&self) -> Result<Vec<crate::ids::TrackId>> {
+        match self.shared_codex() {
+            Some(service) => super::execution_manager::reconcile_native_executions(service).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Kinds installed in this runtime's production adapter registry.
     pub fn registered_adapter_kinds(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.kinds.keys().copied()
@@ -398,6 +405,7 @@ impl OperationRuntime {
             }
         }
         self.sweep_parked_for_boot().await?;
+        self.reconcile_executions().await?;
         Ok(())
     }
 

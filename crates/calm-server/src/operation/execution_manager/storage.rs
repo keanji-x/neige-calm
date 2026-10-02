@@ -633,3 +633,24 @@ async fn confirm_stopped_read_intent_tx(
         .bind(card).bind(cwd).bind(now).execute(&mut **tx).await?;
     Ok(())
 }
+
+/// Rotate attempts fairly without changing their durable launch or stop phase.
+pub(super) async fn native_recovery_candidates(pool: &SqlitePool) -> Result<Vec<(String, String)>> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT lease_id,track_id FROM workspace_leases WHERE holder_kind='native' \
+         AND native_provider='codex' AND state='held' AND holder_phase IN ('issuing','running','stopping') \
+         ORDER BY updated_at_ms,lease_id LIMIT 16"
+    ).fetch_all(&mut *tx).await?;
+    for (id, _) in &rows {
+        sqlx::query(
+            "UPDATE workspace_leases SET updated_at_ms=?2 WHERE lease_id=?1 AND state='held'",
+        )
+        .bind(id)
+        .bind(crate::model::now_ms())
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(rows)
+}

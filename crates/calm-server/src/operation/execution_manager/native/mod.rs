@@ -25,3 +25,5 @@ pub(crate) use session::{
 };
 
 pub(crate) use session::release_unissued_native_session;
+
+pub(crate) use supervisor::reconcile_native_executions;

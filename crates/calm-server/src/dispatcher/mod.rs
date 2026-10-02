@@ -778,6 +778,7 @@ impl Dispatcher {
             write.clone(),
         ));
         let inner = Arc::new(Inner {
+            operation_runtime: Arc::downgrade(&operation_runtime),
             repo,
             write,
             harness,
@@ -906,6 +907,7 @@ impl Dispatcher {
 }
 
 struct Inner {
+    operation_runtime: std::sync::Weak<OperationRuntime>,
     repo: Arc<dyn Repo>,
     write: WriteContext,
     harness: HarnessRegistry,
@@ -926,6 +928,16 @@ struct Inner {
 impl Inner {
     /// The periodic loop and scheduler tests share this exact body.
     async fn reconcile_once(&self) {
+        if let Some(runtime) = self.operation_runtime.upgrade() {
+            match runtime.reconcile_executions().await {
+                Ok(tracks) => {
+                    for track in tracks {
+                        self.scheduler.poke(track);
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "execution recovery scan failed"),
+            }
+        }
         if let Err(error) = self.context_monitor.sweep().await {
             tracing::warn!(%error, "periodic task context sweep failed");
             self.scheduler.sweep_all().await;

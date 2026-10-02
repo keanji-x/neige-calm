@@ -3446,6 +3446,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         scheduler.context_metrics(),
     ));
     let inner = Arc::new(Inner {
+        operation_runtime: std::sync::Weak::new(),
         repo: repo.clone(),
         write,
         harness: registry,
