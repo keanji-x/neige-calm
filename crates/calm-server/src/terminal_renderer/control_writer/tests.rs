@@ -105,6 +105,196 @@ async fn owner_changed(client: &mut Client) {
 }
 
 #[tokio::test]
+async fn terminal_exit_waits_for_the_admitted_input_ack() {
+    let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
+    let registry = Arc::new(Mutex::new(OwnerRegistry::new()));
+    let (events, _) = broadcast::channel(32);
+    let (control, queue) = mpsc::unbounded_channel();
+    let mut user = client(barrier, registry, control, events.clone()).await;
+    let (writer, mut peer) = UnixStream::pair().unwrap();
+    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    user.input
+        .send(ClientMsg::Input {
+            data: vec![3],
+            input_seq: 1,
+        })
+        .await
+        .unwrap();
+    let ControlMsg::WriteStdin(write) = read_frame::<ControlMsg, _>(&mut peer).await.unwrap()
+    else {
+        panic!("expected the admitted physical write");
+    };
+    assert_eq!(write.bytes, vec![3]);
+    // The actual writer is holding its admission guard, waiting for this WriteAck.
+    // An exit-causing write may publish terminal exit before the reply is received.
+    let exit = DaemonMsg::TerminalExited {
+        code: Some(0),
+        pty_seq: 0,
+        render_rev: 0,
+    };
+    while let Ok(message) = user.output.try_recv() {
+        assert!(!matches!(message, DaemonMsg::InputAck { .. }));
+    }
+    assert!(
+        !task.is_finished(),
+        "writer must still await the held WriteAck"
+    );
+    tokio::time::pause();
+    events.send(exit.clone()).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), user.output.recv())
+            .await
+            .is_err(),
+        "terminal exit must not overtake a pending admitted input acknowledgement"
+    );
+    tokio::time::resume();
+    write_frame(
+        &mut peer,
+        &ControlReply::WriteAck {
+            write_seq: write.write_seq.unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+    tokio::task::yield_now().await;
+    assert_eq!(
+        user.output.recv().await,
+        Some(DaemonMsg::InputAck { input_seq: 1 })
+    );
+    assert_eq!(user.output.recv().await, Some(exit));
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn terminal_exit_does_not_fabricate_an_ack_for_cancelled_write() {
+    let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
+    let registry = Arc::new(Mutex::new(OwnerRegistry::new()));
+    let (events, _) = broadcast::channel(32);
+    let (control, queue) = mpsc::unbounded_channel();
+    let mut user = client(barrier.clone(), registry, control, events.clone()).await;
+    let (writer, mut peer) = UnixStream::pair().unwrap();
+    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    user.input
+        .send(ClientMsg::Input {
+            data: vec![3],
+            input_seq: 1,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        read_frame::<ControlMsg, _>(&mut peer).await.unwrap(),
+        ControlMsg::WriteStdin(_)
+    ));
+    while let Ok(message) = user.output.try_recv() {
+        assert!(!matches!(message, DaemonMsg::InputAck { .. }));
+    }
+    let exit = DaemonMsg::TerminalExited {
+        code: Some(0),
+        pty_seq: 0,
+        render_rev: 0,
+    };
+    assert!(
+        !task.is_finished(),
+        "writer must still await the held WriteAck"
+    );
+    tokio::time::pause();
+    events.send(exit.clone()).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), user.output.recv())
+            .await
+            .is_err()
+    );
+    tokio::time::resume();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(user.output.recv().await, Some(exit));
+    assert!(
+        user.output.try_recv().is_err(),
+        "no fabricated successful input ack"
+    );
+    assert!(
+        barrier.grant().await.is_none(),
+        "exit must retain uncertain-write fencing"
+    );
+}
+
+#[tokio::test]
+async fn terminal_exit_closes_direct_replies_before_draining_backpressure() {
+    let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
+    let registry = Arc::new(Mutex::new(OwnerRegistry::new()));
+    let (events, _) = broadcast::channel(32);
+    let (control, mut queue) = mpsc::unbounded_channel();
+    let mut user = client(barrier, registry, control.clone(), events.clone()).await;
+    user.input
+        .send(ClientMsg::Input {
+            data: vec![3],
+            input_seq: 1,
+        })
+        .await
+        .unwrap();
+    let SupervisorControl::Write(queued) = queue.recv().await.unwrap() else {
+        panic!("expected queued input")
+    };
+    let replies = queued.ack.clone().unwrap();
+    control.send(SupervisorControl::Write(queued)).unwrap();
+    let (writer, mut peer) = UnixStream::pair().unwrap();
+    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let ControlMsg::WriteStdin(write) = read_frame::<ControlMsg, _>(&mut peer).await.unwrap()
+    else {
+        panic!("expected physical write")
+    };
+    while let Ok(message) = user.output.try_recv() {
+        assert!(!matches!(message, DaemonMsg::InputAck { .. }));
+    }
+    assert!(!task.is_finished());
+    let exit = DaemonMsg::TerminalExited {
+        code: Some(0),
+        pty_seq: 0,
+        render_rev: 0,
+    };
+    tokio::time::pause();
+    events.send(exit.clone()).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), user.output.recv())
+            .await
+            .is_err()
+    );
+    tokio::time::resume();
+    let queued_reply = DaemonMsg::ProtocolError {
+        code: calm_session::ProtocolErrorCode::NotOwner,
+        message: "queued reply".into(),
+        expected_version: None,
+    };
+    // Twice the fixture's outgoing capacity, so forwarding must encounter backpressure.
+    for _ in 0..64 {
+        replies.send(queued_reply.clone()).unwrap();
+    }
+    write_frame(
+        &mut peer,
+        &ControlReply::WriteAck {
+            write_seq: write.write_seq.unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), replies.closed())
+        .await
+        .expect("exit must stop new direct replies before draining a slow client");
+    assert!(replies.send(queued_reply.clone()).is_err());
+    for _ in 0..64 {
+        assert_eq!(user.output.recv().await, Some(queued_reply.clone()));
+    }
+    assert_eq!(
+        user.output.recv().await,
+        Some(DaemonMsg::InputAck { input_seq: 1 })
+    );
+    assert_eq!(user.output.recv().await, Some(exit));
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
 async fn queued_connection_input_is_revoked_before_the_supervisor_write() {
     let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
     let registry = Arc::new(Mutex::new(OwnerRegistry::new()));

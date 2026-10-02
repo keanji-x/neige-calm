@@ -41,9 +41,16 @@ impl ClientInputScope {
 #[derive(Default)]
 pub struct InputBarrier {
     serial: Arc<Mutex<()>>,
+    write_completion: Arc<Mutex<()>>,
     uncertain: AtomicBool,
 }
 impl InputBarrier {
+    /// Wait for an admitted connection write's outcome to be enqueued before forwarding exit.
+    /// Pending ownership claims do not hold this fence; waiting grants no input authority.
+    pub async fn wait_for_write_completion(&self) {
+        drop(self.write_completion.lock().await);
+    }
+
     pub async fn grant(&self) -> Option<OwnedMutexGuard<()>> {
         let guard = self.serial.clone().lock_owned().await;
         if self.uncertain.load(Ordering::Acquire) {
@@ -70,6 +77,7 @@ impl WriteAuthority {
             Self::TrustedKernel => Some(WriteGuard {
                 ownership: None,
                 _serial: None,
+                _write_completion: None,
                 started: false,
                 completed: false,
             }),
@@ -90,9 +98,14 @@ impl WriteAuthority {
                     InputPermission::Kernel => true,
                     InputPermission::Denied => false,
                 };
-                allowed.then(|| WriteGuard {
+                if !allowed {
+                    return None;
+                }
+                let completion = barrier.write_completion.clone().lock_owned().await;
+                Some(WriteGuard {
                     ownership: Some(barrier.clone()),
                     _serial: Some(serial),
+                    _write_completion: Some(completion),
                     started: false,
                     completed: false,
                 })
@@ -104,6 +117,7 @@ impl WriteAuthority {
 pub struct WriteGuard {
     ownership: Option<Arc<InputBarrier>>,
     _serial: Option<OwnedMutexGuard<()>>,
+    _write_completion: Option<OwnedMutexGuard<()>>,
     started: bool,
     completed: bool,
 }

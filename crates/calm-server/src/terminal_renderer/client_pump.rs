@@ -233,22 +233,15 @@ pub async fn run_client_pump_with_commands(
         return Ok(());
     }
 
+    let down_input_barrier = input_barrier.clone();
     let down_render_plane = render_plane.clone();
     let mut down_event_rx = event_rx;
     let down_outgoing_tx = outgoing_tx.clone();
     let down_task = tokio::spawn(async move {
         loop {
-            tokio::select! {
+            let msg = tokio::select! {
                 broadcast = down_event_rx.recv() => match broadcast {
-                    Ok(msg) => {
-                        let is_exit = matches!(msg, DaemonMsg::TerminalExited { .. });
-                        if down_outgoing_tx.send(msg).await.is_err() {
-                            break;
-                        }
-                        if is_exit {
-                            break;
-                        }
-                    }
+                    Ok(msg) => msg,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(lagged = n, "client lagged; sending SnapshotRequired + fresh snapshot");
                         let snap = {
@@ -278,17 +271,25 @@ pub async fn run_client_pump_with_commands(
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
                 direct = per_client_rx.recv() => match direct {
-                    Some(msg) => {
-                        let is_exit = matches!(msg, DaemonMsg::TerminalExited { .. });
-                        if down_outgoing_tx.send(msg).await.is_err() {
-                            break;
-                        }
-                        if is_exit {
-                            break;
-                        }
-                    }
+                    Some(msg) => msg,
                     None => break,
                 }
+            };
+            let is_exit = matches!(msg, DaemonMsg::TerminalExited { .. });
+            if is_exit {
+                // Exit can beat WriteAck on the supervisor's independent sockets. The writer
+                // enqueues the actual outcome before releasing its completion guard.
+                down_input_barrier.wait_for_write_completion().await;
+                // The final frame must not be postponed by producers adding later replies.
+                per_client_rx.close();
+                while let Some(outcome) = per_client_rx.recv().await {
+                    if down_outgoing_tx.send(outcome).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            if down_outgoing_tx.send(msg).await.is_err() || is_exit {
+                break;
             }
         }
     });
