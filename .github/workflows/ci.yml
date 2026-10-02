@@ -518,12 +518,11 @@ jobs:
 
       - name: upload nextest archive
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: nextest-archive
           path: nextest-archive.tar.zst
-          # Already zstd-compressed.
-          compression-level: 0
+          # Already zstd-compressed: upload the file itself, not a zip of it (the artifact takes the file's name).
+          archive: false
           retention-days: 1
           if-no-files-found: error
 
@@ -542,9 +541,24 @@ jobs:
         with:
           persist-credentials: false
 
-      # The archive carries no toolchain; a few binary-locating fallbacks invoke cargo.
-      - name: install pinned Rust toolchain (rust-toolchain.toml)
-        run: rustup toolchain install --no-self-update
+      # The archive carries no toolchain. This runs in the background while the archive downloads;
+      # the wait step below joins it before the tests.
+      - name: install toolchain and isolated provider fixture dependencies (background)
+        run: |
+          status="$RUNNER_TEMP/background-setup.status"
+          ( set +e; (
+            set -e
+            rustup toolchain install --no-self-update
+            sudo apt-get update
+            sudo apt-get install -y bubblewrap python3
+            test "$RUNNER_ENVIRONMENT" = github-hosted
+            policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+            if [ -f "$policy" ]; then
+              cat "$policy" > "$RUNNER_TEMP/isolated-provider-userns-policy"
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+          ) </dev/null >"$RUNNER_TEMP/background-setup.log" 2>&1
+            echo $? >"$status.tmp" && mv "$status.tmp" "$status" ) &
 
       # Two neige-app tailnet tests build the Go helper at test time.
       - uses: actions/setup-go@v5
@@ -562,24 +576,17 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
-      - name: install isolated provider fixture dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap python3
-          test "$RUNNER_ENVIRONMENT" = github-hosted
-          policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -f "$policy" ]; then
-            cat "$policy" > "$RUNNER_TEMP/isolated-provider-userns-policy"
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-
-      # Those fallbacks build against the registry the archive does not carry.
-      - name: cargo fetch --locked
-        run: cargo fetch --locked
-
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: nextest-archive
+          name: nextest-archive.tar.zst
+
+      - name: wait for toolchain and isolated provider fixture dependencies
+        timeout-minutes: 10
+        run: |
+          status="$RUNNER_TEMP/background-setup.status"
+          while [ ! -f "$status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/background-setup.log"
+          exit "$(cat "$status")"
 
       - name: cargo nextest run --archive-file
         # nextest runs no doctests and this repo has none (every doc fence carries a non-rust tag); add a `cargo test --doc` step if that changes.
