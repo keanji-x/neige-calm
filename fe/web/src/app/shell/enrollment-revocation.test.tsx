@@ -57,14 +57,14 @@ it.each(['origin','node'])('retires QR on authoritative %s change',async(kind)=>
  fireEvent.click(await screen.findByRole('button',{name:'Add phone'}));await screen.findByAltText('Scan once to join and pair this Neige workspace');
  const next=status(true);
  if(kind==='origin'){next.tailnet.origin='https://other.example.ts.net';next.publicUrl=next.tailnet.origin;}else{next.tailnet.nodeId='replacement-node';}
- await view.change(next);expect(screen.queryByAltText('Scan once to join and pair this Neige workspace')).toBeNull();
+ await view.change(next);await waitFor(()=>expect(screen.queryByAltText('Scan once to join and pair this Neige workspace')).toBeNull());
 });
 
 it('keeps an issued QR through offline degraded status without inventing revocation',async()=>{
  const view=mount(()=>Promise.resolve(ok(issued())));
  fireEvent.click(await screen.findByRole('button',{name:'Add phone'}));await screen.findByAltText('Scan once to join and pair this Neige workspace');
  const next=status(true);next.tailnet.phase='degraded';next.tailnet.nodeState='offline';next.tailnet.httpsReady=false;next.tailnet.upstreamReady=false;next.tailnet.origin=null;next.tailnet.nodeId=null;
- await view.change(next);await view.change(status(true));
+ await view.change(next);await screen.findByText('degraded');await view.change(status(true));await screen.findByText('online');
  expect(screen.getByAltText('Scan once to join and pair this Neige workspace')).toBeTruthy();
  expect(view.send.mock.calls.filter(([r])=>r.method==='DELETE')).toHaveLength(0);
 });
