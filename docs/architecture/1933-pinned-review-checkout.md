@@ -120,9 +120,14 @@ Nothing changes meaning.
   always omit it. So the claim's existing write (F4) freezes the choice into the existing
   `claim_context_json`, while recomputed root refs still match frozen ones.
   - Old rows have no key, so they read as `track` (4140: all of them).
-  - `TaskContextRef` is a ts-exported wire type, so `gen:api` regenerates `wire.ts`. The
-    frontend's `task.context_frozen` ref schema is a non-strict `z.object` and is unchanged
-    (`fe/core/api/schemas.ts:512-518`).
+  - `TaskContextRef` is a ts-exported wire type, so `gen:api` regenerates `wire.ts`. ts-rs
+    emits `workspace?: TaskWorkspace`, and `schemas.contract.test.ts:201` pins
+    `z.infer<wireEventSchema>` to the generated `Event`. So `TaskWorkspace` gets `#[derive(TS)]`
+    plus an export, and the refs object of `taskContextFrozenSchema`
+    (`fe/core/api/schemas.ts:505-518`) gains an optional `workspace` (§3.5).
+  - The compiler flags the `TaskContextRef` literals in 6 test files: `event_serde_goldens`,
+    `mcp_track_state`, `task_projection_acceptance`, `task_terminal`,
+    `terminal_lifecycle_task_delete` and `task_attempt_tests`.
 - **Prepare branches on the frozen kind,** read from the root ref in the task row's
   `claim_context_json`.
   - **Frozen `pinned`.** `frozen_root_block_tx` (the claim fence's inline read, F4, moved so
@@ -241,6 +246,9 @@ paragraph:
   goes in `report.test.ts`.
 - **`fe/core/api/schemas.ts:829-831`** gains `'pinned_checkout'`, with a case in
   `schemas.contract.test.ts`, and `gen:api` regenerates `generated/wire.ts`.
+- **`fe/core/api/schemas.ts:505-518`**: the `taskContextFrozenSchema` refs object gains an
+  optional `workspace`. It reuses the `report.ts` workspace schema and is covered by the same
+  `schemas.ts` OWNERSHIP-CHANGE trailer.
 - **Ownership trailers.** Each `fe/core/api/*` path carries
   `OWNERSHIP-CHANGE: <path> — <why> (#1933)` in the commit and the PR body (F15). This is the
   owner-layer change request that `fe/AGENTS.md` and `fe/core/AGENTS.md` require; the
@@ -257,16 +265,18 @@ paragraph:
     (`grep -rln UnboundReason crates/neige-app` finds 0).
 - **Cost verdict (D11): not prohibitive.**
   - 8 hand-written production files: 3 Rust reason producers (`verify_target.rs`, `target.rs`,
-    `view.rs`), `TaskContextRef` (`event.rs`), `routes/version.rs`, `schemas.ts`, `report.ts`
-    and `public.tsx`.
-  - The generated `wire.ts`, the version test, the contract tests, and the trailer lines.
+    `view.rs`), `TaskContextRef` (`event.rs`, plus `TaskWorkspace` `#[derive(TS)]`),
+    `routes/version.rs`, `schemas.ts` (the reason enum and the context-frozen ref),
+    `report.ts` and `public.tsx`.
+  - The generated `wire.ts`, the version test, the contract tests, the 6 `TaskContextRef` test
+    literals, and the trailer lines.
 
 ## 4. Failure and diagnostic matrix
 
 | Case | Detected at | Outcome | Diagnostic |
 |---|---|---|---|
 | Bad shape: abbreviated head, unknown kind, claude, terminal or child route | `validate_task` | Block invalid, never scheduled | `invalid_declaration` listing valid choices |
-| Frozen-pinned block changed, removed or edited to track after claim | `frozen_root_block_tx` (prepare) | `spawn-failed`, no row | `refused: pinned-declaration-changed: task block <id> changed or was removed after claim; declare again under a new key` |
+| Frozen-pinned block changed, removed or edited to track after claim | `frozen_root_block_tx` (prepare) | `spawn-failed`, no row | `refused: pinned-declaration-changed: task block <id> changed or was removed after claim; declare again under a new key`, or `context-stale` if the monitor already marked it. Either way it is a refusal |
 | Frozen-track block edited after claim | — | Today's path, unchanged (D12) | — |
 | Unknown head or base | Prepare | `spawn-failed`, no row, no directory | `refused: pinned-head-unknown: commit <sha> is not in <repo>; push or fetch it, then declare again under a new key` (`pinned-base-unknown` likewise) |
 | Checkout HEAD moved, on a branch, dirty or partial | Ensure (`spawn_side_effect`) | Removed and added again at `head` | On failure: `refused: pinned-checkout-unavailable: <git worktree remove --force \| git worktree add> failed in <repo>: <stderr>` |
@@ -321,8 +331,11 @@ mutation verification.
 - T3* `pinned_prepare_refuses_root_changed_since_claim`: skip the hash comparison. The test
   asserts `context_stale_at_ms IS NULL` right before prepare, so the old fence cannot pass it.
 - T3b `pinned_to_track_edit_after_claim_refused`: branch on the current block's kind instead of
-  the frozen one.
-- T3c `pinned_root_deleted_after_claim_refused`: treat a missing root as track.
+  the frozen one. The test asserts `context_stale_at_ms IS NULL` right before prepare and the
+  `pinned-declaration-changed` diagnostic.
+- T3c `pinned_root_deleted_after_claim_refused`: treat a missing root as track. The test asserts
+  `context_stale_at_ms IS NULL` right before prepare and the `pinned-declaration-changed`
+  diagnostic.
 - T3d `claim_context_without_workspace_reads_as_track`: make the field required, so 4140-shaped
   JSON fails.
 - T4 `track_task_root_edit_keeps_todays_prepare_path`: apply the comparison to every task. It
