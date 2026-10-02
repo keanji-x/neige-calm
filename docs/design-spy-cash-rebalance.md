@@ -180,3 +180,26 @@ errors. The Track remains open. Market was outside the regular session: decision
 stays queued, actual SPY allocation is zero, and there are no submitted broker
 requests or fills. Regular-session broker acceptance and settlement still require
 live verification; queued execution does not schedule a later order by itself.
+
+
+## Regular-session broker acceptance and settlement
+
+On 2026-10-02 the user requested regular-session verification. The private Demo
+service was restored using its persistent configuration. The previous decision
+was expired and verified without an order; Planner refreshed broker state,
+Longbridge quotes and Wisburg research, captured current sources and saved a
+fresh 1000-bps target with same-day validity. A separately delegated Worker
+executed that decision and reconciled actual broker executions.
+
+Exactly one new market-order request was recorded. The official paper account
+bought 13 SPY shares at an average execution price of USD 772.24. Independent
+read-only production SDK queries confirmed the paper channel, `Filled` status,
+matching order/execution identities, full requested quantity and 13-share
+holdings. The allocation ledger reached `settled`, and Planner accepted the
+native Worker report. Actual SPY/cash allocation was approximately 9.85%/90.15%;
+integer sizing and the configured price reserve prevent an exact 10% split.
+The three native tables were verified in an authenticated real browser with no
+page errors, and the Track remained open. No raw CLI order, repeated submission,
+ledger edit or real Codex E2E suite was used. Private runtime evidence retains
+broker identifiers without publishing credentials or account identifiers.
+This regular-session check resolves the pending live verification noted above.
