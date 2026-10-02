@@ -24,8 +24,7 @@ Each step runs under `/bin/sh`. The initial environment contains only inherited
 `PATH`, `HOME`, `LANG`, `LC_ALL`, `TERM` when present, configured HTTP/HTTPS proxy
 settings (upper and lower case), and the verifier's internal exit-file path.
 MCP socket/token and incidental server credentials are absent. Gates cannot use
-`neige cat`, `neige state` or task reporting; the Planner can use those commands
-outside the gate to inspect `plan/<key>/output` and `plan/<key>/gate.log`.
+`neige cat`, `neige state` or task reporting.
 
 Directory precedence is explicit `gate.cwd`, then the bound worker execution's
 durable checkout. Declaration cwd and Track cwd apply only when no execution is
