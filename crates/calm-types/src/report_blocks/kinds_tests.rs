@@ -547,6 +547,83 @@ fn task_access_rules_name_the_valid_choices() {
     );
 }
 
+/// #1933: `head` and `base` are full commit ids that only a read-only task declares (absent and
+/// null = undeclared). Each refusal names where they apply.
+#[test]
+fn task_head_and_base_apply_only_to_read_only_tasks() {
+    const HEAD: &str = "d448361faad48153dd02494d8acd2d7ad791634d";
+    const BASE: &str = "a4a16f1406e7ac9134338823332a2097af0c612e";
+    const WHERE: &str = "applies only to a codex or claude task with access: \"read_only\"";
+    let reader = || {
+        let mut payload = valid_task();
+        payload.as_object_mut().unwrap().remove("gate");
+        payload["access"] = json!("read_only");
+        payload["head"] = json!(HEAD);
+        payload["base"] = json!(BASE);
+        payload
+    };
+    assert_eq!(validate_payload(KIND_TASK, &reader()), Ok(()));
+    let declaration = |payload: Value| {
+        let block = crate::track_report::ReportBlock {
+            id: "b_0001".into(),
+            kind: KIND_TASK.into(),
+            payload,
+            rev: 1,
+        };
+        crate::report_blocks::tasks::project_task_declarations(&[block])
+            .0
+            .remove(0)
+    };
+    let projected = declaration(reader());
+    assert_eq!(
+        (projected.head.as_deref(), projected.base.as_deref()),
+        (Some(HEAD), Some(BASE))
+    );
+    let mut undeclared = reader();
+    undeclared["head"] = Value::Null;
+    undeclared.as_object_mut().unwrap().remove("base");
+    assert_eq!(validate_payload(KIND_TASK, &undeclared), Ok(()));
+    let projected = declaration(undeclared);
+    assert_eq!((projected.head, projected.base), (None, None));
+
+    for field in ["head", "base"] {
+        let mut writer = valid_task();
+        writer[field] = json!(HEAD);
+        let error = validate_payload(KIND_TASK, &writer).unwrap_err();
+        assert!(error.contains(&format!("{field}: {WHERE}")), "{error}");
+        let mut terminal = valid_task();
+        terminal.as_object_mut().unwrap().remove("goal");
+        terminal["kind"] = json!("terminal");
+        terminal["command"] = json!("cargo test");
+        terminal[field] = json!(HEAD);
+        let error = validate_payload(KIND_TASK, &terminal).unwrap_err();
+        assert!(error.contains(&format!("{field}: {WHERE}")), "{error}");
+        for malformed in [
+            json!("d448361f"),
+            json!(HEAD.to_uppercase()),
+            json!(format!("{HEAD}0")),
+            json!(7),
+        ] {
+            let mut payload = reader();
+            payload[field] = malformed;
+            let error = validate_payload(KIND_TASK, &payload).unwrap_err();
+            assert!(
+                error.contains(&format!(
+                    "{field}: must be a full commit id (40 lowercase hex digits)"
+                )),
+                "{error}"
+            );
+        }
+    }
+    let tombstone = json!({"key":"old","tombstone":{},"declared_by":"user",
+        "tombstoned_by":"user","head":HEAD});
+    assert!(
+        validate_payload(KIND_TASK, &tombstone)
+            .unwrap_err()
+            .contains("head: must be absent")
+    );
+}
+
 #[test]
 fn task_priority_rejects_integer_outside_i64_range() {
     let mut payload = valid_task();

@@ -397,12 +397,15 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
         "spawn",
         "child_track_id",
         "access",
+        "head",
+        "base",
     ];
-    // `access` (0130) postdates this upgrade; every other column is carried over.
+    // `access` (0130), `head` and `base` (0131) postdate this upgrade; every other column is
+    // carried over.
     let preserved: Vec<&str> = HEAD_TASK_COLUMNS
         .iter()
         .copied()
-        .filter(|column| *column != "access")
+        .filter(|column| !["access", "head", "base"].contains(column))
         .collect();
 
     let dir = tempfile::tempdir().expect("temporary database directory");

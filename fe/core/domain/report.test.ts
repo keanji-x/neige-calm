@@ -122,6 +122,23 @@ describe('readTrackReport', () => {
     expect(report?.blocks?.[0]?.kind).toBe('task');
   });
 
+  it('keeps a read-only agent task that declares the commits it reviews', () => {
+    const report = readTrackReport([card({
+      payload: {
+        body: 'x',
+        blocks: [{
+          id: 'b-1', kind: 'task', rev: 1,
+          payload: {
+            key: 'review', kind: 'claude', goal: 'Review it', ready: true, declared_by: 'user',
+            access: 'read_only', head: 'd448361faad48153dd02494d8acd2d7ad791634d',
+            base: 'a4a16f1406e7ac9134338823332a2097af0c612e',
+          },
+        }],
+      },
+    })]);
+    expect(report?.blocks?.[0]?.kind).toBe('task');
+  });
+
   it('accepts a 2048-code-point string even when emoji use two UTF-16 code units', () => {
     const src = `/${'😀'.repeat(2047)}`;
     const report = readTrackReport([card({

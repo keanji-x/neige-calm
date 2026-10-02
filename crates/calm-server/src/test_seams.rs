@@ -111,7 +111,7 @@ pub async fn acquire_based_workspace_lease_for_test(
             git_common_dir: path.join(".git"),
         },
         superseded: Vec::new(),
-        access: crate::model::TaskAccess::ReadWrite,
+        reader: None,
     };
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
     acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, &plan).await?;

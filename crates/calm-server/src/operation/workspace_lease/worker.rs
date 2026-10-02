@@ -10,6 +10,8 @@
 //! - D6: a dirty tree refuses the worker before any row is written.
 //! - #1917: a read-only attempt shares the checkout with other read-only attempts. Its lease row
 //!   records no base (so no delivery).
+//! - #1933: a read-only attempt that declares `head` starts only while the checkout is at it, at
+//!   prepare and again at spawn; its prompt states its repo, checkout, head and base.
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -33,6 +35,10 @@ use crate::workspace_materialize::isolated_git_command;
 pub(crate) const TRACK_WITHOUT_WORKTREE: &str = "track-without-worktree";
 pub(crate) const TRACK_WORKTREE_DIRTY: &str = "track-worktree-dirty";
 pub(crate) const TRACK_WORKTREE_UNAVAILABLE: &str = "track-worktree-unavailable";
+/// #1933: the refusals of a read-only task whose declared `head` the track checkout is not at, or
+/// that the repository does not have.
+pub(crate) const TRACK_HEAD_MISMATCH: &str = "track-head-mismatch";
+pub(crate) const TRACK_HEAD_UNKNOWN: &str = "track-head-unknown";
 
 /// The branch a managed track's directory is on: materialization runs `git init` with
 /// `init.defaultBranch=main`.
@@ -53,9 +59,33 @@ pub(crate) struct WorkerLeasePlan {
     pub base: LeaseBase,
     /// `workspace.released` of the stuck owners' leases this prepare superseded (D7).
     pub superseded: Vec<BroadcastEnvelope>,
-    /// The attempt's `tasks.access`, read in this transaction (never from the op payload, which
-    /// feeds `stable_payload_hash`).
-    pub access: TaskAccess,
+    /// A read-only attempt's facts; `None` for one that changes the checkout. Read from its
+    /// `tasks` row in this transaction (never from the op payload, which feeds
+    /// `stable_payload_hash`).
+    pub reader: Option<ReaderFacts>,
+}
+
+impl WorkerLeasePlan {
+    /// The attempt's `tasks.access`.
+    pub(crate) fn access(&self) -> TaskAccess {
+        match self.reader {
+            Some(_) => TaskAccess::ReadOnly,
+            None => TaskAccess::ReadWrite,
+        }
+    }
+}
+
+/// #1933: what a read-only attempt's prompt states as typed facts.
+#[derive(Clone, Debug)]
+pub(crate) struct ReaderFacts {
+    /// The track's remote URL ([`super::upstream::track_remote`]), or why there is none.
+    pub repo: std::result::Result<String, String>,
+    /// The checkout the reader shares: the plan's `path`.
+    pub checkout: PathBuf,
+    /// `tasks.head`: the commit the checkout must be at, checked at prepare and at spawn.
+    pub head: Option<String>,
+    /// `tasks.base`: the commit a review compares against.
+    pub base: Option<String>,
 }
 
 /// The branch rule (D4): `neige/track-<id>` when the track has a worktree, else `main`.
@@ -101,21 +131,36 @@ pub(crate) async fn prepare_worker_lease_tx(
     attempt_id: &str,
     workspace_root: &Path,
 ) -> Result<WorkerLeasePlan> {
-    let access: String = sqlx::query_scalar("SELECT access FROM tasks WHERE id = ?1")
-        .bind(attempt_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("task {attempt_id}")))?;
+    let (access, head, base): (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT access, head, base FROM tasks WHERE id = ?1")
+            .bind(attempt_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("task {attempt_id}")))?;
     let access = TaskAccess::try_from(access).map_err(CalmError::Internal)?;
-    prepare_worker_lease_as_tx(tx, track_id, access, workspace_root).await
+    prepare_worker_lease_with_tx(tx, track_id, access, (head, base), workspace_root).await
 }
 
 /// [`prepare_worker_lease_tx`] for an attempt whose access is already known (a fixture lease
-/// with no `tasks` row).
+/// with no `tasks` row) and that declares no commits.
+#[cfg(any(test, feature = "fixtures"))]
 pub(crate) async fn prepare_worker_lease_as_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
     access: TaskAccess,
+    workspace_root: &Path,
+) -> Result<WorkerLeasePlan> {
+    prepare_worker_lease_with_tx(tx, track_id, access, (None, None), workspace_root).await
+}
+
+/// `(head, base)` are the attempt's declared commits; only a read-only attempt has any (#1933,
+/// enforced where the task block is validated). A declared head the checkout is not at refuses
+/// the attempt here, before any row is written.
+async fn prepare_worker_lease_with_tx(
+    tx: &mut Tx<'_>,
+    track_id: &str,
+    access: TaskAccess,
+    (head, base): (Option<String>, Option<String>),
     workspace_root: &Path,
 ) -> Result<WorkerLeasePlan> {
     validate_path_segment("track_id", track_id)?;
@@ -138,6 +183,20 @@ pub(crate) async fn prepare_worker_lease_as_tx(
     };
     let branch = worker_branch(track_id, worktree.is_some())?;
     ensure_clean_tree(&path).await?;
+    let reader = match access {
+        TaskAccess::ReadWrite => None,
+        TaskAccess::ReadOnly => {
+            if let Some(head) = head.as_deref() {
+                verify_declared_head(&path, head)?;
+            }
+            Some(ReaderFacts {
+                repo: reader_repo(track_id, worktree.as_deref()),
+                checkout: path.clone(),
+                head,
+                base,
+            })
+        }
+    };
     let superseded = supersede_stuck_leases_tx(tx, &path).await?;
     let base = directory_base(&path)?;
     Ok(WorkerLeasePlan {
@@ -145,8 +204,73 @@ pub(crate) async fn prepare_worker_lease_as_tx(
         branch,
         base,
         superseded,
-        access,
+        reader,
     })
+}
+
+/// #1933: the track's remote URL for a reader's prompt, or why there is none. Never fails the
+/// launch.
+fn reader_repo(track_id: &str, worktree: Option<&str>) -> std::result::Result<String, String> {
+    let Some(worktree) = worktree else {
+        return Err("a managed track has no remote".into());
+    };
+    match super::upstream::track_remote(track_id, worktree) {
+        Ok((_, Some(upstream))) => Ok(upstream.url),
+        Ok((target, None)) => Err(format!(
+            "no upstream remote for {}",
+            target.repo_root.display()
+        )),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// #1933: a read-only task that declares `head` starts only while the track checkout is at it.
+/// A refusal is a `Conflict` naming both commits; a head the repository does not have gets its
+/// own word.
+pub(crate) fn verify_declared_head(checkout: &Path, head: &str) -> Result<()> {
+    let actual = super::base::resolve_head_base(checkout)?;
+    if actual == head {
+        return Ok(());
+    }
+    let refusal = if super::upstream::resolve_commit(checkout, head)?.is_some() {
+        format!(
+            "{TRACK_HEAD_MISMATCH}: the track checkout is at {actual}, not the declared head \
+             {head}"
+        )
+    } else {
+        format!(
+            "{TRACK_HEAD_UNKNOWN}: the declared head {head} is not a commit in this repository; \
+             the track checkout is at {actual}"
+        )
+    };
+    Err(CalmError::Conflict(format!(
+        "refused: {refusal}. Move the checkout to the head under review, or declare the task \
+         again under a new key"
+    )))
+}
+
+/// The output key of a declared head, written only when there is one.
+const DECLARED_HEAD: &str = "declared_head";
+
+/// #1933: record the declared head in the prepare's output, so the spawn checks it again on a
+/// fresh start and on a `SpawnStarted` re-drive.
+pub(crate) fn record_declared_head(data: &mut serde_json::Value, plan: &WorkerLeasePlan) {
+    let head = plan.reader.as_ref().and_then(|reader| reader.head.clone());
+    if let (Some(head), Some(data)) = (head, data.as_object_mut()) {
+        data.insert(DECLARED_HEAD.into(), head.into());
+    }
+}
+
+/// #1933, the spawn side: the checkout the prepare froze (`cwd`) is still at the declared head.
+pub(crate) fn verify_recorded_head(output: &TxOutput, ctx: &str) -> Result<()> {
+    let Some(head) = output
+        .data
+        .get(DECLARED_HEAD)
+        .and_then(|head| head.as_str())
+    else {
+        return Ok(());
+    };
+    verify_declared_head(Path::new(&output.output_string("cwd", ctx)?), head)
 }
 
 /// D3, the spawn side of a worker op: the checkout its prepare froze (`cwd`) is still on

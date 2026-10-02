@@ -156,6 +156,17 @@ pub(super) async fn prepare_claude_worker(
     harness: &ClaudeWorkerHarness,
     key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>, String) {
+    let (output, claimed_op_id) = try_prepare_claude_worker(harness, key).await.unwrap();
+    let events = output.post_commit_events.clone();
+    (output, events, claimed_op_id)
+}
+
+/// [`prepare_claude_worker`] that returns the prepare's refusal; a refused prepare commits
+/// nothing. A `tasks` row the test inserted first is kept.
+pub(super) async fn try_prepare_claude_worker(
+    harness: &ClaudeWorkerHarness,
+    key: &str,
+) -> Result<(TxOutput, String)> {
     let payload = claude_worker_payload(&harness.track_id, key);
     let task_id = format!("{}:{key}", harness.track_id);
     sqlx::query(
@@ -191,12 +202,7 @@ pub(super) async fn prepare_claude_worker(
         .unwrap();
     let claimed_op_id = op.id.clone();
     let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let output = harness
-        .adapter
-        .prepare_tx(&mut tx, &payload, &op)
-        .await
-        .unwrap();
-    let events = output.post_commit_events.clone();
+    let output = harness.adapter.prepare_tx(&mut tx, &payload, &op).await?;
     tx.commit().await.unwrap();
-    (output, events, claimed_op_id)
+    Ok((output, claimed_op_id))
 }

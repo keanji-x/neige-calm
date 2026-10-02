@@ -139,6 +139,19 @@ pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
     }))
 }
 
+/// #1933: the remote a track's work goes to. It is the upstream of the branch the track's MAIN
+/// repository has checked out (`track_worktree_target(..).repo_root`): a `neige/track-*` branch
+/// has no upstream. Dev publish pushes there, and a read-only worker's prompt names it. `None`
+/// when that branch has no remote upstream (detached, no complete config, or a local `.`).
+pub(crate) fn track_remote(
+    track_id: &str,
+    worktree: &str,
+) -> Result<(super::WorkspaceLeaseTarget, Option<Upstream>)> {
+    let target = super::track_worktree::track_worktree_target(track_id, worktree)?;
+    let upstream = head_upstream(&target.repo_root)?.filter(|upstream| upstream.remote != ".");
+    Ok((target, upstream))
+}
+
 /// `git ls-remote --get-url <remote>`: the URL a fetch of `remote` would
 /// use from this checkout (no network). A remote git would read as an option
 /// is returned as is; it is never fetched.
@@ -481,7 +494,7 @@ pub(super) fn read_direct_ref(repo_root: &Path, ref_name: &str) -> Result<Option
 
 /// `git rev-parse --verify -q <ref>^{commit}`: `Some(sha)` when the ref names
 /// a commit, `None` when it does not resolve.
-fn resolve_commit(repo_root: &Path, ref_name: &str) -> Result<Option<String>> {
+pub(super) fn resolve_commit(repo_root: &Path, ref_name: &str) -> Result<Option<String>> {
     let rev = format!("{ref_name}^{{commit}}");
     let args = ["rev-parse", "--verify", "-q", rev.as_str()];
     let output = git_output(repo_root, &args)?;

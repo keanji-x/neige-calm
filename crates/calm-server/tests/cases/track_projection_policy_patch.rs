@@ -152,6 +152,8 @@ const TASK_PERSISTENT_COLUMNS: &[&str] = &[
     "spawn",
     "child_track_id",
     "access",
+    "head",
+    "base",
 ];
 
 const TRACK_PERSISTENT_COLUMNS: &[&str] = &[

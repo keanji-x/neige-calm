@@ -15,6 +15,9 @@ use std::sync::Arc;
 mod support;
 use support::*;
 
+#[cfg(test)]
+mod reader_head_tests;
+
 #[test]
 fn claude_worker_command_line_uses_appended_system_prompt_not_mcp_tools() {
     let command = build_claude_worker_command_line(

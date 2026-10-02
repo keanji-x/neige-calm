@@ -213,6 +213,20 @@ async fn prepare_worker_and_op(
     key: &str,
     task_key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>, Operation) {
+    let (output, op) = try_prepare_worker_and_op(harness, key, task_key)
+        .await
+        .unwrap();
+    let events = output.post_commit_events.clone();
+    (output, events, op)
+}
+
+/// [`prepare_worker_and_op`] that returns the prepare's refusal; a refused prepare commits
+/// nothing. A `tasks` row the test inserted first is kept.
+async fn try_prepare_worker_and_op(
+    harness: &WorkerLeaseHarness,
+    key: &str,
+    task_key: &str,
+) -> Result<(TxOutput, Operation)> {
     let payload = worker_payload(&harness.track_id, key);
     let task_id = format!("{}:{key}", harness.track_id);
     sqlx::query(
@@ -247,25 +261,14 @@ async fn prepare_worker_and_op(
         .find(|op| op.id == op_id)
         .unwrap();
     let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let output = harness
-        .adapter
-        .prepare_tx(&mut tx, &payload, &op)
-        .await
-        .unwrap();
-    let events = output.post_commit_events.clone();
+    let output = harness.adapter.prepare_tx(&mut tx, &payload, &op).await?;
     tx.commit().await.unwrap();
-    (output, events, op)
+    Ok((output, op))
 }
 
 #[test]
 fn task_worker_turn_input_names_the_execution_id_attempt_id() {
-    let out = render_task_worker_prompt(
-        "t:build",
-        "g",
-        &Value::Null,
-        None,
-        crate::model::TaskAccess::ReadWrite,
-    );
+    let out = render_task_worker_prompt("t:build", "g", &Value::Null, None, None);
     assert!(out.ends_with("\n\nTask attempt_id: t:build\nEcho this exact attempt_id when reporting completion or failure."), "{out}");
     assert!(
         !out.contains("idempotency") && !out.contains("task_id"),
@@ -640,6 +643,9 @@ async fn codex_worker_prompt_includes_completion_task_id() {
 
 #[cfg(test)]
 mod viewer_cleanup_tests;
+
+#[cfg(test)]
+mod reader_head_tests;
 
 /// #1727 S4 slice 2 — the lease the codex worker's `prepare_tx` takes is a kernel-delivery
 /// lease (`delivery_policy = 'kernel'`, written in the same INSERT as its base); the

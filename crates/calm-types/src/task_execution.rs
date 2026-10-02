@@ -92,6 +92,36 @@ pub(crate) fn validate_task_access(map: &Map<String, Value>, errors: &mut Vec<St
     }
 }
 
+/// #1933: a full commit id as git prints it, 40 lowercase hex digits.
+fn is_full_commit_id(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// #1933: `head` (the commit the track checkout must be at when the task starts) and `base` (the
+/// commit a review compares against) are full commit ids (absent or null = undeclared), declared
+/// only on a read-only task.
+pub(crate) fn validate_reader_commits(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    let read_only =
+        map.get("access").and_then(Value::as_str) == Some(TaskAccess::ReadOnly.as_str());
+    for field in ["head", "base"] {
+        match map.get(field) {
+            None | Some(Value::Null) => continue,
+            Some(Value::String(id)) if is_full_commit_id(id) => {}
+            Some(_) => errors.push(format!(
+                "{field}: must be a full commit id (40 lowercase hex digits)"
+            )),
+        }
+        if !read_only {
+            errors.push(format!(
+                "{field}: applies only to a codex or claude task with access: \"read_only\""
+            ));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TaskAccess;

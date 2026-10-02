@@ -24,7 +24,8 @@ use crate::operation::codex_adapter::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
-    release::release_workspace_lease_by_id, worker::verify_worker_checkout,
+    release::release_workspace_lease_by_id,
+    worker::{record_declared_head, verify_recorded_head, verify_worker_checkout},
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -785,7 +786,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
-            plan.access,
+            plan.reader.as_ref(),
         );
         let command_line = build_claude_worker_command_line(
             &self.codex.claude_bin,
@@ -881,6 +882,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "prompt": rendered_prompt,
             "scope": scope,
         });
+        record_declared_head(&mut output.data, &plan);
         output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)
@@ -1015,6 +1017,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         }
         // #1830 S2 D3: the track's checkout its prepare froze, still at that base on that
         // branch. Nothing is created.
+        // #1933 first, so a reader whose checkout left its head is told so.
+        verify_recorded_head(output, "claude-worker")?;
         verify_worker_checkout(output, "claude-worker")?;
 
         let raw_token = mint_claude_worker_mcp_token(ctx, &card_id, &runtime_id).await?;

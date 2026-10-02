@@ -28,8 +28,7 @@ use crate::mcp_server::transport::{PluginForgePayload, submit_forge_action_with_
 use crate::model::{CardRole, TaskStatus, Track, new_id};
 use crate::operation::OperationOutcome;
 use crate::operation::forge_action_adapter::ProbeSpec;
-use crate::operation::workspace_lease::track_worktree::track_worktree_target;
-use crate::operation::workspace_lease::upstream::head_upstream;
+use crate::operation::workspace_lease::upstream::track_remote;
 use crate::workspace_materialize::isolated_git_command;
 
 pub const TOOL_TRACK_PUBLISH: &str = "calm.track.publish";
@@ -172,10 +171,10 @@ async fn destination(track: &Track) -> Result<Destination, RpcError> {
                 .into(),
         ));
     };
-    let target = track_worktree_target(track.id.as_str(), &worktree).map_err(internal)?;
+    let track_id = track.id.to_string();
     tokio::task::spawn_blocking(move || {
-        let upstream = head_upstream(&target.repo_root).map_err(internal)?;
-        let Some(upstream) = upstream.filter(|upstream| upstream.remote != ".") else {
+        let (target, upstream) = track_remote(&track_id, &worktree).map_err(internal)?;
+        let Some(upstream) = upstream else {
             return Err(refused(format!(
                 "publish-no-upstream: {} has no upstream remote to push to; set one with git \
                  branch --set-upstream-to and retry",

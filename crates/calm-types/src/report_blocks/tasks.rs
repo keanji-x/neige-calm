@@ -144,6 +144,9 @@ pub struct TaskDeclaration {
     pub spawn: String,
     /// #1917: missing and explicit null normalize to `read_write` before projection.
     pub access: TaskAccess,
+    /// #1933: the commits a read-only task declares; missing and explicit null = undeclared.
+    pub head: Option<String>,
+    pub base: Option<String>,
     pub tombstoned_by: Option<String>,
     pub ready: bool,
     pub tombstone: bool,
@@ -857,6 +860,14 @@ pub fn project_task_declarations(
                 .and_then(Value::as_str)
                 .and_then(|access| TaskAccess::try_from(access.to_string()).ok())
                 .unwrap_or(TaskAccess::ReadWrite),
+            head: payload
+                .get("head")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            base: payload
+                .get("base")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             tombstoned_by: payload
                 .get("tombstoned_by")
                 .and_then(Value::as_str)
@@ -1069,6 +1080,8 @@ mod tests {
             released_by_user: false,
             spawn: "in-wave".into(),
             access: TaskAccess::ReadWrite,
+            head: None,
+            base: None,
             tombstoned_by: None,
             ready: true,
             tombstone: false,

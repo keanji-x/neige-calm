@@ -20,11 +20,12 @@ use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
-use crate::model::{Card, CardRole, TaskAccess, new_id, now_ms};
+use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
-    release::release_workspace_lease_by_id, worker::verify_worker_checkout,
+    release::release_workspace_lease_by_id,
+    worker::{ReaderFacts, record_declared_head, verify_recorded_head, verify_worker_checkout},
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::planner_model::TurnModelSelection;
@@ -788,7 +789,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
-            plan.access,
+            plan.reader.as_ref(),
         );
         let scope = card_scope(
             self.repo.as_ref(),
@@ -868,6 +869,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "prompt": rendered_prompt,
             "scope": scope,
         });
+        record_declared_head(&mut output.data, &plan);
         output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)
@@ -940,6 +942,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
 
         let payload: CodexWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
         super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
+        // #1933: a `SpawnStarted` re-drive reaches here without `app_server_interact`.
+        verify_recorded_head(output, "codex-worker")?;
         if !self.shared_codex_appserver.is_running() {
             return Err(self.shared_codex_appserver.not_running_error());
         }
@@ -1490,25 +1494,36 @@ pub(crate) async fn card_payload_get_tx(
 }
 
 /// The task prompt both worker adapters render. A read-only task (#1917) is told it shares the
-/// checkout; nothing enforces it.
+/// checkout, which nothing enforces, and is given its repo, checkout, head and base (#1933).
 pub(crate) fn render_task_worker_prompt(
     attempt_id: &str,
     goal: &str,
     context: &Value,
     acceptance: Option<&str>,
-    access: TaskAccess,
+    reader: Option<&ReaderFacts>,
 ) -> String {
     let prompt = render_worker_prompt(goal, context, acceptance);
-    let access = match access {
-        TaskAccess::ReadWrite => "",
-        TaskAccess::ReadOnly => {
-            "\n\nThis task is read-only: do not modify the checkout (no edits, commits or \
-             generated files). Other read-only tasks may be reading it at the same time."
-        }
-    };
+    let reader = reader.map(render_reader_facts).unwrap_or_default();
     format!(
-        "{prompt}{access}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
+        "{prompt}{reader}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
     )
+}
+
+fn render_reader_facts(reader: &ReaderFacts) -> String {
+    let mut out = "\n\nThis task is read-only: do not modify the checkout (no edits, commits or \
+                   generated files). Other read-only tasks may be reading it at the same time."
+        .to_string();
+    match &reader.repo {
+        Ok(url) => out.push_str(&format!("\nrepo: {url}")),
+        Err(why) => out.push_str(&format!("\nrepo: none ({why})")),
+    }
+    out.push_str(&format!("\ncheckout: {}", reader.checkout.display()));
+    for (name, commit) in [("head", &reader.head), ("base", &reader.base)] {
+        if let Some(commit) = commit {
+            out.push_str(&format!("\n{name}: {commit}"));
+        }
+    }
+    out
 }
 
 pub(crate) fn render_worker_prompt(

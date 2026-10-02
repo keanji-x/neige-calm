@@ -68,6 +68,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0128_drop_planner_dispatch_receipts.sql",
     "0129_plugin_data_changed_event_version.sql",
     "0130_read_only_tasks.sql",
+    "0131_read_only_task_commits.sql",
 ];
 
 #[test]

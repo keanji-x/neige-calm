@@ -145,7 +145,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
     lease_owner: &str,
     plan: &WorkerLeasePlan,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
-    let base = match plan.access {
+    let base = match plan.access() {
         TaskAccess::ReadWrite => Some(&plan.base),
         TaskAccess::ReadOnly => None,
     };
@@ -156,7 +156,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
         lease_owner,
         &plan.path,
         base,
-        plan.access,
+        plan.access(),
     )
     .await
 }

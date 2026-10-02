@@ -1231,7 +1231,7 @@ async fn kernel_lease(
         path,
         branch: track_branch_for(track_id).unwrap(),
         superseded: Vec::new(),
-        access: crate::model::TaskAccess::ReadWrite,
+        reader: None,
     };
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let (lease, _event) = acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)

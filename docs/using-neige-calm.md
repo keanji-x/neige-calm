@@ -89,7 +89,10 @@ or request.
 
 Codex and Claude tasks of a Track run one at a time in the Track's checkout,
 except that tasks declared `access: "read_only"` (e.g. reviews, investigations) run beside
-each other. A task waiting for it shows *Waiting for the track's checkout*.
+each other. A read-only task may also declare `head` (and `base`), full commit
+ids: it starts only while the checkout is at `head`, and its worker is told the
+repository, checkout, head and base. A task waiting for the checkout shows
+*Waiting for the track's checkout*.
 Terminal and child-track tasks are not held.
 
 Worker cards and verification terminals display their directories separately.

@@ -298,7 +298,8 @@ pub(super) fn kinds_table() -> Value {
                                 { "required": ["priority"] }, { "required": ["cwd"] },
                                 { "required": ["context"] }, { "required": ["refs"] },
                                 { "required": ["ready"] }, { "required": ["released_by_user"] },
-                                { "required": ["spawn"] }, { "required": ["access"] }
+                                { "required": ["spawn"] }, { "required": ["access"] },
+                                { "required": ["head"] }, { "required": ["base"] }
                             ] }
                         }
                     ],
@@ -355,6 +356,8 @@ pub(super) fn kinds_table() -> Value {
                             "default": "read_write",
                             "description": "`read_only`: a codex/claude task that leaves the checkout unchanged; no gate, runs beside other readers."
                         },
+                        "head": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "`read_only` only: the commit the checkout must be at; the launch is refused otherwise." },
+                        "base": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "`read_only` only: the commit a review compares against." },
                         "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
                         "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
                     },
