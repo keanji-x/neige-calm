@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, within } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { userEvent } from 'vitest/browser';
 
@@ -43,8 +43,8 @@ it('keeps the tool group toggle clickable through the decorative execution anima
 it('places the lone execution mark before the verb and centers it within the row', () => {
   const { container } = render(<ChatThread canContinue={false} conversation={conversation} turns={[action('single', 'running')]} pending cards={{}} stalled={false} />);
   const marker = container.querySelector('[data-nc-activity="working"]')!;
-  const verb = screen.getByText('Running');
   const row = container.querySelector('[data-nc-state="running"]')!.firstElementChild!;
+  const verb = within(row as HTMLElement).getByText('Running');
   const iconBox = marker.getBoundingClientRect();
   const textBox = verb.getBoundingClientRect();
   const rowBox = row.getBoundingClientRect();

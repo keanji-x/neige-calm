@@ -34,7 +34,7 @@ const thread = (container: HTMLElement) => container.querySelector<HTMLElement>(
 /* Vendor spinners are decorative in 0.6.3; status is announced separately.
  * Count visible paint rather than asking for an aria-hidden live region. */
 const spinners = () => [...document.querySelectorAll('[data-nc-thread] [role="status"]')]
-  .filter((node) => node.checkVisibility({ visibilityProperty: true }));
+  .filter((node) => node.closest('[data-nc-current-meta]') === null && node.checkVisibility({ visibilityProperty: true }));
 /* The thread's working marks are decorative by contract; counted by the marker, not by a label. */
 const workingMarks = () => document.querySelectorAll('[data-nc-activity="working"]');
 const visible = (element: Element) => element.checkVisibility({ visibilityProperty: true });
@@ -487,7 +487,7 @@ describe('what a failed call says to assistive technology', () => {
     header.focus();
     await userEvent.keyboard('{Enter}');
     expect(screen.getByRole('button', { name: /^Error: one suite failed Ran npm test$/ })).not.toBe(header);
-    expect(screen.getByRole('group').textContent?.match(/failed/gi)).toHaveLength(1);
+    expect(screen.getByRole('group', { name: '3 tool calls' }).textContent?.match(/failed/gi)).toHaveLength(1);
     expect(screen.queryByRole('button', { description: /failed/i })).toBeNull();
   });
 

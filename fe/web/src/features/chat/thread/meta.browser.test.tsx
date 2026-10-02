@@ -80,3 +80,40 @@ it('follows the system control token instead of the vendor fixed size', () => {
   const meta = screen.getByRole('status', { name: 'Current response status' });
   for (const button of within(meta).getAllByRole('button')) expect(button.getBoundingClientRect().height).toBe(32);
 });
+
+it.each(['Completed', 'Running'] as const)('keeps focused stopping details on the %s metadata target without scrolling', async (nextHeading) => {
+  const view = (completed: boolean) => <div style={{ height: 160, overflow: 'auto' }} data-testid="pane">
+    <div style={{ height: 300 }} />
+    <ThreadStatusNotice heading={completed ? nextHeading : 'Stopping'} clock={{ elapsedMs: null,
+      timestamp: completed && nextHeading === 'Completed' ? { kind: 'finished', atMs: 1000 } : null }}>
+      {completed ? undefined : <p>Waiting for the response to end.</p>}
+    </ThreadStatusNotice>
+    <div style={{ height: 300 }} />
+  </div>;
+  const { container, rerender } = render(view(false));
+  const trigger = screen.getByRole('button', { name: 'Stopping', expanded: false });
+  trigger.focus(); await userEvent.keyboard('{Enter}');
+  expect(document.activeElement).toBe(trigger);
+  const pane = screen.getByTestId('pane'); pane.scrollTop = 40;
+  const before = pane.scrollTop;
+  rerender(view(true));
+  const target = container.querySelector<HTMLElement>('[data-nc-meta-state]')!;
+  expect(document.activeElement).toBe(target);
+  expect(pane.scrollTop).toBe(before);
+  expect(target.querySelector('time') !== null).toBe(nextHeading === 'Completed');
+});
+
+it('does not take focus from another control when stopping becomes completed', () => {
+  const view = (completed: boolean) => <>
+    <button>Another control</button>
+    <ThreadStatusNotice heading={completed ? 'Completed' : 'Stopping'} clock={{ elapsedMs: null,
+      timestamp: completed ? { kind: 'finished', atMs: 1000 } : null }}>
+      {completed ? undefined : <p>Waiting for the response to end.</p>}
+    </ThreadStatusNotice>
+  </>;
+  const { rerender } = render(view(false));
+  screen.getByRole('button', { name: 'Stopping' }).focus();
+  const other = screen.getByRole('button', { name: 'Another control' }); other.focus();
+  rerender(view(true));
+  expect(document.activeElement).toBe(other);
+});

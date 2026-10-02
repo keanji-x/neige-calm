@@ -282,11 +282,13 @@
      * taste.
      *
      * So: 12.5 is gone (its 32 uses grew 0.5px, which is nothing), and the two
-     * display ranks nobody ever called are gone with it. Five ranks remain,
+     * display ranks nobody ever called are gone with it. Six ranks remain,
      * every one of them in use, each with one job:
      *
      *   --text-xs    11    label      a word you read once — eyebrows, crumbs,
      *                                 counts, units. Never a sentence.
+     *   --text-meta  12    metadata   current-response status and its time;
+     *                                 matches the metadata glyph step.
      *   --text-base  13    interface  everything you operate: rows, buttons,
      *                                 fields, chips, menus. The default.
      *   --text-md    15    section    a title over a group, and prose in a
@@ -296,7 +298,8 @@
      *   --text-xl    22    page       the one title a route gets. §3.3 allows
      *                                 exactly one P0 per surface; this is it.
      *
-     * Steps: 1.18 · 1.15 · 1.20 · 1.22. Even, and every one of them visible.
+     * Metadata is the intentional intermediate telemetry step. The existing
+     * interface, section, prose and page ranks keep their established ratios.
      * A new rank needs a job no rank above has, not a size between two.
      */
     /*

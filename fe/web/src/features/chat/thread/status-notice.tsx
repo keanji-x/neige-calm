@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { Divider } from '@astryxdesign/core/Divider';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { IconButton } from '@astryxdesign/core/IconButton';
@@ -28,6 +28,15 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
   tone?: 'neutral' | 'warning' | 'error';
   outcome?: 'completed' | 'interrupted' | 'failed';
 }) {
+  const stateRef = useRef<HTMLDivElement | null>(null);
+  const lastFocused = useRef<HTMLElement | null>(null);
+  const hasDetails = children !== undefined;
+  useLayoutEffect(() => {
+    const previous = lastFocused.current;
+    if (previous !== null && !previous.isConnected && document.activeElement === document.body) {
+      stateRef.current?.focus({ preventScroll: true });
+    }
+  }, [hasDetails]);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const timestamp = clock.timestamp;
@@ -44,10 +53,13 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
     data-nc-turn-outcome={outcome}>
     <Divider />
     <div className={styles.row}>
-      <div className={styles.state} data-nc-meta-state="" tabIndex={timestamp !== null && children === undefined ? 0 : undefined}
+      <div ref={stateRef} className={styles.state} data-nc-meta-state="" tabIndex={timestamp !== null && !hasDetails ? 0 : -1}
         onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-        onFocus={() => setFocused(true)} onBlur={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
+        onFocus={(event) => { lastFocused.current = event.target; setFocused(true); }} onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) {
+            setFocused(false);
+            if (event.relatedTarget !== null || event.target.isConnected) lastFocused.current = null;
+          }
         }}>
         {children === undefined ? <div className={styles.normal}>{title}</div>
           : <Collapsible defaultIsOpen={false} chevronPosition="start" trigger={title}>{children}</Collapsible>}

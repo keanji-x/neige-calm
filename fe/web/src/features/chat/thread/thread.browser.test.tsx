@@ -496,7 +496,7 @@ describe('the structured system disclosure in a real engine', () => {
 
 /* Measure the revealed error, not the hidden disclosure or enclosing live region. */
 describe('a failed turn in a real engine', () => {
-  it('shows Failed with the message wrapped below it, and nothing for a completed turn', async () => {
+  it('wraps the current failure and replaces it with one completed row', async () => {
     const you: ConversationTurn = { id: 'you-1', author: 'you', text: 'Summarise everything.', atMs: 0 };
     const failed: ConversationTurnOutcome = {
       id: 'outcome-1', author: 'turn', turnId: 'turn-1', status: 'failed',
@@ -507,7 +507,7 @@ describe('a failed turn in a real engine', () => {
     const completed: ConversationTurnOutcome = {
       id: 'outcome-2', author: 'turn', turnId: 'turn-2', status: 'completed', atMs: 0,
     };
-    render(<RailPane turns={[you, failed, { ...you, id: 'you-2' }, completed]} />);
+    const { rerender } = render(<RailPane turns={[you, failed]} />);
     await frame();
 
     const outcomes = document.querySelectorAll<HTMLElement>('[data-nc-turn="outcome"]');
@@ -525,10 +525,14 @@ describe('a failed turn in a real engine', () => {
     const labelBox = disclosure.getBoundingClientRect();
     const messageBox = message.getBoundingClientRect();
     expect(messageBox.top).toBeGreaterThanOrEqual(labelBox.bottom);
-    expect(messageBox.width).toBeLessThanOrEqual(labelBox.width + 1);
+    expect(messageBox.width).toBeLessThanOrEqual(outcome.getBoundingClientRect().width + 1);
     expect(messageBox.height).toBeGreaterThan(Number.parseFloat(getComputedStyle(message).lineHeight) * 1.5);
     expect(outcome.querySelector('[data-nc-turn-outcome-hint]')?.textContent)
       .toBe('The conversation no longer fits in the model’s context window.');
+    rerender(<RailPane turns={[you, failed, { ...you, id: 'you-2' }, completed]} />);
+    expect(document.querySelectorAll('[data-nc-current-meta]')).toHaveLength(1);
+    expect(screen.getByText('Completed', { exact: true }).checkVisibility()).toBe(true);
+    expect(screen.queryByText(failed.text!)).toBeNull();
   });
 });
 
