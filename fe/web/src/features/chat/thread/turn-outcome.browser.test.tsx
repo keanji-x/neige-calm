@@ -1,5 +1,5 @@
 import '../../../styles/entry.css';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 
@@ -65,8 +65,10 @@ it.each([['interrupted', 320], ['interrupted', 390], ['interrupted', 1280],
 });
 
 it('uses distinct semantic colors and the same weight for interrupted and failed labels', () => {
-  render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
-    turns={[outcome('interrupted', 'Connection ended.'), outcome('failed', 'The request timed out.')]} />);
+  render(<>
+    <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[outcome('interrupted', 'Connection ended.')]} />
+    <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[outcome('failed', 'The request timed out.')]} />
+  </>);
   const interrupted = getComputedStyle(screen.getByText('Response interrupted', { exact: true }));
   const failed = getComputedStyle(screen.getByText('Failed', { exact: true }));
   expect(interrupted.color).not.toBe(failed.color);
@@ -155,4 +157,38 @@ it.each(['stopping', 'unconfirmed', 'failed'] as const)('preserves focused discl
   const current = screen.getByRole('button', { name: label, expanded: true });
   expect(current).toBe(button);
   expect(document.activeElement).toBe(button);
+});
+
+it.each([320, 390, 1280])('keeps one current pause and hides historical interruptions (%ipx)', async (width) => {
+  await page.viewport(width, 844);
+  const interrupted = outcome('interrupted', 'Historical interruption.');
+  const later = { id: 'later-reply', author: 'agent' as const, text: 'The conversation continued.', atMs: 2 };
+  const { container, rerender } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
+    <Drawer open title="Review" onClose={() => undefined} footer={<ChatComposer onSend={() => undefined} />}>
+      <ChatThread canContinue cards={{}} stalled={false} conversation={conversation()} turns={[interrupted, later]} />
+    </Drawer>
+  </div>);
+  expect(screen.queryByText('Historical interruption.')).toBeNull();
+  expect(screen.getByText('The conversation continued.')).toBeTruthy();
+  expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
+  for (const status of ['interrupted', 'failed'] as const) {
+    rerender(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
+      <Drawer open title="Review" onClose={() => undefined} footer={<ChatComposer disabled onSend={() => undefined} />}>
+        <ChatThread canContinue={false} cards={{}} stalled stalledReason="The stop remains unconfirmed."
+          conversation={conversation()} turns={[outcome(status, 'Previous outcome reason.')]} />
+      </Drawer>
+    </div>);
+    const pause = screen.getByRole('button', { name: 'Conversation paused' });
+    expect(pause.getAttribute('aria-expanded')).toBe(status === 'interrupted' ? 'false' : 'true');
+    expect(within(container.querySelector<HTMLElement>('[data-nc-thread]')!).getAllByRole('status')).toHaveLength(1);
+    expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
+    if (status === 'interrupted') await userEvent.click(pause);
+    const reason = screen.getByText('The stop remains unconfirmed.', { exact: true });
+    expect(reason.checkVisibility()).toBe(true);
+    const scroller = container.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+    scroller.scrollTop = scroller.scrollHeight;
+    expect(reason.getBoundingClientRect().bottom).toBeLessThanOrEqual(scroller.getBoundingClientRect().bottom + 1);
+    expect(scroller.getBoundingClientRect().bottom).toBeLessThanOrEqual(screen.getByRole('textbox').getBoundingClientRect().top + 1);
+    expect(document.documentElement.scrollWidth).toBe(width);
+  }
 });

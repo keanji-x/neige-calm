@@ -243,11 +243,33 @@ describe('ChatThread', () => {
     expect(container.textContent).not.toContain('restarted');
   });
 
-  it('keeps historical interruption details but offers continuation guidance only at an idle tail', () => {
+  it('hides historical interruptions while retaining the later response and historical failures', () => {
+    const interrupted = turnOutcome({ id: 'old-stop', status: 'interrupted', text: 'Old interrupted reason.' });
+    const failed = turnOutcome({ id: 'old-failure', status: 'failed', text: 'Old failed reason.' });
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
+      turns={[interrupted, failed, turn({ id: 'next-response', text: 'The later response.' })]} />);
+    expect(screen.queryByText('Old interrupted reason.')).toBeNull();
+    expect(screen.getByText('The later response.')).toBeTruthy();
+    expect(screen.getByText('Old failed reason.')).toBeTruthy();
+  });
+
+  it.each(['interrupted', 'failed'] as const)('shows only current paused status over a prior %s result', (status) => {
+    const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
+    const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled stalledReason={reason}
+      conversation={conversation()} turns={[turnOutcome({ status, text: 'Previous outcome reason.' })]} />);
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(screen.queryByText('Previous outcome reason.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Conversation paused' })).toBeTruthy();
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
+      turns={[turnOutcome({ status, text: 'Previous outcome reason.' })]} />);
+    expect(screen.getByText('Previous outcome reason.')).toBeTruthy();
+  });
+
+  it('shows an interruption only at the settled tail and hides it during a new response or pause', () => {
     const interrupted = turnOutcome({ status: 'interrupted', text: 'Connection ended.' });
     const props = { cards: {}, stalled: false, conversation: conversation() };
     const { rerender } = render(<ChatThread canContinue={true} {...props} turns={[interrupted, turn({ id: 'new-turn' })]} />);
-    expect(screen.getByText('Connection ended.')).toBeTruthy();
+    expect(screen.queryByText('Connection ended.')).toBeNull();
     expect(screen.queryByText('Send a message to continue.')).toBeNull();
     rerender(<ChatThread canContinue={true} {...props} turns={[interrupted]} pending />);
     expect(screen.queryByText('Send a message to continue.')).toBeNull();

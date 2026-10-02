@@ -950,6 +950,27 @@ describe('track conversations', () => {
     expect(inputBodies(requests)[1]).toEqual({ text: '', attachments: [ATTACHMENT_ID] });
   });
 
+  it.each(['interrupted', 'failed'] as const)('shows one current paused status over a recorded %s result', async (status) => {
+    const terminal = { ...harnessMessage(99, '', {}), item_type: null,
+      turn_id: 'previous-turn', method: 'turn/completed', turn_error_text: 'Previous outcome reason.',
+      params: JSON.stringify({ id: 'previous-turn', status, error: null }) };
+    const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
+    const { requests } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok([terminal]);
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
+        worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null, blocked_reason: reason });
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await screen.findByRole('button', { name: 'Conversation paused' });
+    const thread = drawerElement().querySelector<HTMLElement>('[data-nc-thread]')!;
+    expect(within(thread).getAllByRole('status')).toHaveLength(1);
+    expect(thread.querySelector('[data-nc-turn-outcome]')).toBeNull();
+    expect(screen.queryByText('Previous outcome reason.')).toBeNull();
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    expect(inputBodies(requests)).toHaveLength(0);
+  });
+
   it.each(['interrupted', 'failed'] as const)('continues a settled %s only through an explicit composer send', async (status) => {
     const terminal = { ...harnessMessage(99, '', {}), item_type: null,
       turn_id: 'previous-turn', method: 'turn/completed',

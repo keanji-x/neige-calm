@@ -29,7 +29,7 @@ import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
 import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
   isQueuedConversationTurn, opensAfterGap, opensExchange,
-  type Conversation, type ConversationActivity, type SendOutcome, type TranscriptEntry,
+  type Conversation, type ConversationActivity, type ConversationTurnOutcome, type SendOutcome, type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
 import styles from './thread.module.css';
@@ -64,6 +64,9 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
+  // Keep persisted outcomes intact; the current pause takes presentation priority.
+  const showOutcome = (turn: ConversationTurnOutcome) => !stalled && turn.status !== 'completed'
+    && (turn.status !== 'interrupted' || (turn === lastTurn && !live));
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -96,7 +99,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   };
   /* Where focus goes when the element under it goes; held on the transcript's element, which outlives every run's. */
   const focus = useToolCallFocus(
-    transcriptGroups.filter(({ entry }) => entry.author !== 'turn' || entry.status !== 'completed'),
+    transcriptGroups.filter(({ entry }) => entry.author !== 'turn' || showOutcome(entry)),
     (activities) => activities.map(toolCallOf),
     (key) => groupUi.get(key) ?? untouchedToolCallGroup(),
   );
@@ -224,9 +227,9 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       );
     }
     if (turn.author === 'turn') {
-      /* Completed turns are silent anchors. Interrupted and failed turns share
+      /* Hidden outcomes remain transcript anchors. Visible outcomes share
          one metadata row; the backend's readable reason lives in its disclosure. */
-      if (turn.status === 'completed') return null;
+      if (!showOutcome(turn)) return null;
       const hasReason = turn.text !== undefined && turn.text.trim() !== '';
       const hint = turn.status === 'failed' ? outcomeHintText(turn.code, turn.rawStatus) : null;
       const hasHint = hint !== null;
