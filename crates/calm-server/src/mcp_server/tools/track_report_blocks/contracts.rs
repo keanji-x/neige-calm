@@ -353,7 +353,7 @@ pub(super) fn kinds_table() -> Value {
                             "type": "string",
                             "enum": ["read_only", "read_write"],
                             "default": "read_write",
-                            "description": "`read_only`: a codex/claude review or audit that leaves the checkout unchanged; no gate, runs beside other readers."
+                            "description": "`read_only`: a codex/claude task that leaves the checkout unchanged; no gate, runs beside other readers."
                         },
                         "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
                         "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
