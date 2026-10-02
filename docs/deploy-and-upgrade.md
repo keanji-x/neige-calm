@@ -25,7 +25,8 @@ now live in the kernel: `--help` requires the agent socket and token, while
 commands with stale semantics.
 
 New attached Tracks use a dedicated Track worktree, and ordinary Codex/Claude
-workers share that checkout one at a time. Older attached Tracks without one
+workers share that checkout one at a time (read-only tasks run beside each
+other). Older attached Tracks without one
 cannot run these workers; create a new Track. The released-worktree cleanup
 sweep concerns eligible older per-attempt worktrees, not the new Track checkout.
 It preserves slice branches and refuses dirty or otherwise unsafe trees;

@@ -87,9 +87,10 @@ and opens the relevant conversation or card. Dismiss a notification after
 handling it; dismissal clears its attention marker, not the underlying task
 or request.
 
-Codex and Claude tasks of a Track run one at a time in the Track's checkout; a
-task waiting for it shows *Waiting for the track's checkout*. Terminal and
-child-track tasks are not held.
+Codex and Claude tasks of a Track run one at a time in the Track's checkout,
+except that tasks declared `access: "read_only"` (reviews, audits) run beside
+each other. A task waiting for it shows *Waiting for the track's checkout*.
+Terminal and child-track tasks are not held.
 
 Worker cards and verification terminals display their directories separately.
 A gate uses its explicit directory override when supplied, otherwise the bound
