@@ -49,3 +49,10 @@ The public `.astryx-chat-send-button` hook preserves circular Send/Stop even
 when a composer publishes a smaller inherited button radius. Continuous
 hasDividers List rows retain Astryx's straight-edge composition. No overflow
 clipping or global pseudo-element overrides are used.
+
+## Conversation metadata scale
+
+The task styles owner approves `--text-meta` and `--glyph-meta` for #1923. Both
+are 12px: the approved metadata font and icon step between existing sizes.
+Metadata rows consume `--control-h`, `--leading-snug`, `--space-2` and semantic
+foreground tokens; component styles do not repeat the pixel values.

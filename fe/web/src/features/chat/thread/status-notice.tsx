@@ -1,34 +1,62 @@
 import type { ReactNode } from 'react';
 import { Divider } from '@astryxdesign/core/Divider';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
-import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
-import styles from './thread.module.css';
+import { IconButton } from '@astryxdesign/core/IconButton';
+import type { ConversationMetaClock } from '../../../../../core/domain/conversation-meta.ts';
+import { useState } from '../../../ui/state/public.ts';
+import styles from './meta.module.css';
 
-/** Terminal outcomes and transient notices share the approved native visual. */
-export function ThreadStatusNotice({ heading, children, error = false }: {
-  heading: ReactNode; children: ReactNode; error?: boolean;
-}) {
-  return <div className={`${styles.outcomeNotice} ${error ? styles.outcomeNoticeError : ''}`} role="status">
-    <Divider />
-    <Collapsible defaultIsOpen={false} trigger={heading}>{children}</Collapsible>
-  </div>;
+function ActionIcon({ kind }: { kind: 'copy' | 'edit' | 'regenerate' }) {
+  return <svg className={styles.icon} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    {kind === 'copy' ? <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>
+      : kind === 'edit' ? <><path d="m16 3 5 5-12 12-6 1 1-6L16 3Z" /><path d="m14 5 5 5" /></>
+        : <><path d="M20 7v5h-5" /><path d="M4 17v-5h5" /><path d="M6 7a7 7 0 0 1 12-1l2 3M18 17a7 7 0 0 1-12 1l-2-3" /></>}
+  </svg>;
 }
 
-export function StopStatusNotice({ feedback }: { feedback: ConversationStopFeedback }) {
-  const labels = {
-    requesting: 'Requesting stop', stopping: 'Stopping response',
-    unconfirmed: 'Stop unconfirmed', failed: 'Stop request failed',
-  };
-  const reason = feedback.kind === 'failed' ? feedback.message
-    : feedback.kind === 'requesting' ? 'Waiting for the stop request to finish.'
-    : feedback.kind === 'stopping' ? 'Waiting for the response to end.'
-    : 'The response may still be starting or may already have ended.';
-  return <div className={styles.outcome}>
-    <ThreadStatusNotice error={feedback.kind === 'failed'}
-      heading={<span className={styles.outcomeHeader}>
-        <span className={styles.outcomeStatusLabel}>{labels[feedback.kind]}</span>
-      </span>}>
-      <p className={styles.outcomeReason}>{reason}</p>
-    </ThreadStatusNotice>
+function elapsedText(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+/** One native metadata row; clocks are evidence, never inferred from transcript gaps. */
+export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral', outcome }: {
+  heading: ReactNode;
+  children?: ReactNode;
+  clock: ConversationMetaClock;
+  tone?: 'neutral' | 'warning' | 'error';
+  outcome?: 'completed' | 'interrupted' | 'failed';
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const timestamp = clock.timestamp;
+  const showTime = timestamp !== null && (hovered || focused);
+  const timeText = timestamp === null ? null
+    : new Date(timestamp.atMs).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const title = <span className={styles.summary}><span className={styles.label}>{heading}</span>
+    {showTime && timestamp !== null ? <span className={styles.clock}>· <time dateTime={new Date(timestamp.atMs).toISOString()}
+      aria-label={`${timestamp.kind === 'paused' ? 'Paused' : 'Finished'} at ${timeText}`}>{timeText}</time></span>
+      : clock.elapsedMs !== null && <span className={styles.clock} data-nc-meta-duration="">· {elapsedText(clock.elapsedMs)}</span>}
+  </span>;
+  return <div className={`${styles.notice} ${tone === 'warning' ? styles.warning : tone === 'error' ? styles.error : ''}`}
+    role="status" aria-label="Current response status" data-nc-current-meta="" data-nc-turn={outcome === undefined ? undefined : 'outcome'}
+    data-nc-turn-outcome={outcome}>
+    <Divider />
+    <div className={styles.row}>
+      <div className={styles.state} data-nc-meta-state="" tabIndex={timestamp !== null && children === undefined ? 0 : undefined}
+        onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+        onFocus={() => setFocused(true)} onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
+        }}>
+        {children === undefined ? <div className={styles.normal}>{title}</div>
+          : <Collapsible defaultIsOpen={false} chevronPosition="start" trigger={title}>{children}</Collapsible>}
+      </div>
+      <div className={styles.actions} role="group" aria-label="Response actions">
+        <IconButton label="Copy response (not available yet)" icon={<ActionIcon kind="copy" />} className={styles.action} variant="ghost" size="sm" isDisabled />
+        <IconButton label="Edit response (not available yet)" icon={<ActionIcon kind="edit" />} className={styles.action} variant="ghost" size="sm" isDisabled />
+        <IconButton label="Regenerate response (not available yet)" icon={<ActionIcon kind="regenerate" />} className={styles.action} variant="ghost" size="sm" isDisabled />
+      </div>
+    </div>
   </div>;
 }

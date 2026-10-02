@@ -42,7 +42,7 @@ const OVERLAYS = [
   '--overlay-hover-faint', '--overlay-hover', '--overlay-hover-strong', '--overlay-active',
 ] as const;
 const TYPE_SCALE = [
-  '--text-xs', '--text-base', '--text-md', '--text-lg', '--text-xl',
+  '--text-xs', '--text-meta', '--text-base', '--text-md', '--text-lg', '--text-xl',
 ] as const;
 const LEADING = [
   '--leading-none', '--leading-tight', '--leading-snug', '--leading-base', '--leading-loose',
@@ -80,7 +80,7 @@ const BOX_SCALE = [
   '--measure-prose', '--measure-form', '--measure-page', '--measure-board',
   '--measure-list', '--measure-doc',
   '--slot-h', '--rule-h', '--dot-sm', '--dot-md',
-  '--glyph-sm', '--glyph', '--menu-w-min', '--menu-w-max',
+  '--glyph-meta', '--glyph-sm', '--glyph', '--menu-w-min', '--menu-w-max',
 ] as const;
 const WEIGHTS = ['--weight-normal', '--weight-medium', '--weight-semibold'] as const;
 const AREA_IDENTITY = [

@@ -99,3 +99,27 @@
     --font-family-code: var(--font-mono);
   }
 }
+
+@layer astryx {
+  /* Published Collapsible theme hook, scoped to the current metadata row.
+     Reversing its two presentation items keeps the native right/down arrow
+     immediately after the label without targeting private component children. */
+  [data-nc-current-meta] .astryx-icon {
+    inline-size: var(--glyph-meta);
+    block-size: var(--glyph-meta);
+    font-size: var(--text-meta);
+    color: var(--text-3);
+  }
+
+  [data-nc-current-meta] .astryx-collapsible-trigger {
+    min-block-size: var(--control-h);
+    inline-size: fit-content;
+    max-inline-size: 100%;
+    flex-direction: row-reverse;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-meta);
+    line-height: var(--leading-snug);
+  }
+}

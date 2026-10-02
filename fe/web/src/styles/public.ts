@@ -25,7 +25,7 @@ export type ColorToken =
   | PositionalColorToken | SurfaceToken | OverlayToken | SemanticColorToken | AreaIdentityToken;
 
 export type TypeScaleToken =
-  | '--text-xs' | '--text-base' | '--text-md'
+  | '--text-xs' | '--text-meta' | '--text-base' | '--text-md'
   | '--text-lg' | '--text-xl';
 
 export type LeadingToken =
@@ -63,7 +63,7 @@ export type BoxScaleToken =
   | '--measure-prose' | '--measure-form' | '--measure-page' | '--measure-board'
   | '--measure-list' | '--measure-doc'
   | '--slot-h' | '--rule-h' | '--dot-sm' | '--dot-md'
-  | '--glyph-sm' | '--glyph' | '--menu-w-min' | '--menu-w-max';
+  | '--glyph-meta' | '--glyph-sm' | '--glyph' | '--menu-w-min' | '--menu-w-max';
 
 /** A composite box-shadow: neither a colour nor a scalar. */
 export type ShadowToken = '--shadow-float';

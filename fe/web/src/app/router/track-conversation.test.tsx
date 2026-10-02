@@ -962,9 +962,9 @@ describe('track conversations', () => {
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
-    await screen.findByRole('button', { name: 'Conversation paused' });
+    await screen.findByRole('button', { name: 'Paused' });
     const thread = drawerElement().querySelector<HTMLElement>('[data-nc-thread]')!;
-    expect(within(thread).getAllByRole('status')).toHaveLength(1);
+    expect(within(thread).getAllByRole('status', { name: 'Current response status' })).toHaveLength(1);
     expect(thread.querySelector('[data-nc-turn-outcome]')).toBeNull();
     expect(screen.queryByText('Previous outcome reason.')).toBeNull();
     expect(messageField().getAttribute('contenteditable')).toBe('false');
@@ -1013,14 +1013,14 @@ describe('track conversations', () => {
     expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
     phase = 'issuing_interrupt';
     await act(async () => { resolve(ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: true })); await pending; });
-    await screen.findByRole('button', { name: 'Stopping response', expanded: false });
+    await screen.findByRole('button', { name: 'Stopping', expanded: false });
     expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
     phase = 'turn_completed';
     rows = [terminal];
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] });
       await client.invalidateQueries({ queryKey: ['harness-items', ASSISTANT_CARD.id] }); });
-    await screen.findByRole('button', { name: /^Response interrupted/ });
-    expect(screen.queryByRole('button', { name: 'Stopping response' })).toBeNull();
+    await screen.findByRole('button', { name: /^Interrupted/ });
+    expect(screen.queryByRole('button', { name: 'Stopping' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
   });
 
@@ -1038,11 +1038,11 @@ describe('track conversations', () => {
     });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
-    await screen.findByRole('button', { name: 'Stopping response', expanded: false });
+    await screen.findByRole('button', { name: 'Stopping', expanded: false });
     const key = cachedHistoryKey(client, ASSISTANT_CARD.id);
     await act(async () => { client.setQueryData(key, { pages: change === 'load earlier' ? [[current], [historical]] : [[current]],
       pageParams: change === 'load earlier' ? [undefined, 100] : [undefined] }); await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(screen.getByRole('button', { name: 'Stopping response', expanded: false })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stopping', expanded: false })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
   });
@@ -1082,7 +1082,7 @@ describe('track conversations', () => {
     });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Stop request failed', expanded: false }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop failed', expanded: false }));
     expect(screen.getByText('The connection is unavailable.', { exact: true })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
@@ -1097,7 +1097,7 @@ describe('track conversations', () => {
       ? ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'wedged', model: null,
         reasoning_effort: null, blocked_reason: reason }) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
-    const disclosure = await screen.findByRole('button', { name: 'Conversation paused', expanded: false });
+    const disclosure = await screen.findByRole('button', { name: 'Paused', expanded: false });
     fireEvent.click(disclosure);
     expect(screen.getAllByText(reason, { exact: true })).toHaveLength(1);
     expect(screen.queryByRole('alert')).toBeNull();
@@ -1121,7 +1121,7 @@ describe('track conversations', () => {
     await typeInto(messageField(), 'Draft written before the stall');
     phase = 'wedged';
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });
-    expect(await screen.findByRole('button', { name: 'Conversation paused', expanded: false })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Paused', expanded: false })).toBeTruthy();
     expect(screen.getByText('This conversation is stuck.', { exact: true })).toBeTruthy();
     expect(drawerWorkingMark()).toBeNull();
     expect(messageField().textContent).toBe('Draft written before the stall');
@@ -1144,7 +1144,7 @@ describe('track conversations', () => {
     await screen.findByText('Queued · sends when this turn ends');
     phase = 'wedged';
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });
-    expect(await screen.findByRole('button', { name: 'Conversation paused', expanded: false })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Paused', expanded: false })).toBeTruthy();
     expect(screen.getByText('This conversation is stuck.', { exact: true })).toBeTruthy();
     expect(within(drawerElement()).getByText('Queued before the stall')).toBeTruthy();
     expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
@@ -1167,7 +1167,7 @@ describe('track conversations', () => {
     expect(drawerWorkingMark()).not.toBeNull();
     phase = 'wedged';
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });
-    expect(await screen.findByRole('button', { name: 'Conversation paused', expanded: false })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Paused', expanded: false })).toBeTruthy();
     expect(screen.getByText('This conversation is stuck.', { exact: true })).toBeTruthy();
     expect(drawerWorkingMark()).toBeNull();
     expect(within(drawerElement()).getByText('Keep the pending message')).toBeTruthy();

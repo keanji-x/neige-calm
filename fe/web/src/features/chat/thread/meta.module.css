@@ -1,0 +1,25 @@
+@layer features {
+  .notice {
+    --text-large-size: var(--text-meta);
+    --text-body-size: var(--text-meta);
+    --font-weight-semibold: var(--weight-normal);
+    color: var(--text-3);
+    font-size: var(--text-meta);
+    line-height: var(--leading-snug);
+    margin-block: var(--space-4);
+  }
+
+  .notice > [role='separator'] { margin-block-end: var(--space-2); }
+  .row { display: flex; align-items: flex-start; gap: var(--space-4); }
+  .state { flex: 1; min-inline-size: 0; }
+  .normal { min-block-size: var(--control-h); display: flex; align-items: center; }
+  .summary { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
+  .label { color: var(--text-3); font-size: var(--text-meta); font-weight: var(--weight-normal); }
+  .warning .label { color: var(--warn-text); }
+  .error .label { color: var(--error-text); }
+  .clock { color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .actions { display: flex; flex-shrink: 0; align-items: center; gap: var(--space-1); }
+  .action { inline-size: var(--control-h); block-size: var(--control-h); min-inline-size: var(--control-h); min-block-size: var(--control-h); }
+  .icon { inline-size: var(--glyph-meta); block-size: var(--glyph-meta); color: var(--text-3); }
+  .reason { margin-block-start: var(--space-4); color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+}

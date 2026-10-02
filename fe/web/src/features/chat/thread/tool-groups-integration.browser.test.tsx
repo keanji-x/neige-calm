@@ -79,7 +79,7 @@ describe('tool groups alongside quiet syncs and turn outcomes', () => {
     expect(toolGroups[1].textContent).toContain('after-2');
     expect(toolGroups[1].textContent).not.toContain('before-1');
     expect(container.querySelector('[data-nc-turn="outcome"]')?.getAttribute('data-nc-turn-outcome') ?? null)
-      // Hidden historical interruptions still separate the two tool runs.
-      .toBe(status === 'failed' ? 'failed' : null);
+      // Historical outcomes still separate the two tool runs without extra status rows.
+      .toBeNull();
   });
 });

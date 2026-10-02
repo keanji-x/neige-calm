@@ -147,7 +147,7 @@ describe('ChatThread', () => {
     );
     const outcome = container.querySelector('[data-nc-turn-outcome="failed"]') as HTMLElement;
     expect(outcome.getAttribute('data-nc-turn')).toBe('outcome');
-    expect(screen.getByRole('status').textContent).toContain('Failed');
+    expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Failed');
     fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
     const line = outcome.querySelector('[data-nc-turn-outcome-message]');
     expect(line?.textContent).toBe('400: The conversation exceeded the model\'s context window.');
@@ -207,14 +207,14 @@ describe('ChatThread', () => {
       turn_error_text: text, created_at_ms: NOW,
     }]);
     const { container } = render(<ChatThread canContinue={true} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
-    const details = screen.getByRole('button', { name: /^Response interrupted/, expanded: false });
+    const details = screen.getByRole('button', { name: /^Interrupted/, expanded: false });
     fireEvent.click(details);
     expect(details.getAttribute('aria-expanded')).toBe('true');
     const line = container.querySelector('[data-nc-turn-outcome-message]');
     expect(line?.textContent).toBe(text);
     expect(line?.getAttribute('title')).toBe(text);
-    expect(screen.getByRole('status').textContent).toContain('Response interrupted');
-    expect(screen.getByText('Response interrupted', { exact: true })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Interrupted');
+    expect(screen.getByText('Interrupted', { exact: true })).toBeTruthy();
     expect(screen.getByText('Send a message to continue.')).toBeTruthy();
   });
 
@@ -236,30 +236,47 @@ describe('ChatThread', () => {
     const raw = '{"internal":"raw error payload"}';
     const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
       turns={[turnOutcome({ status: 'interrupted', message: raw })]} />);
-    expect(screen.getByRole('status').textContent).toContain('Response interrupted');
-    expect(screen.getByText('Response interrupted', { exact: true })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Interrupted');
+    expect(screen.getByText('Interrupted', { exact: true })).toBeTruthy();
     expect(container.querySelector('[data-nc-turn-outcome-message]')).toBeNull();
     expect(container.textContent).not.toContain(raw);
     expect(container.textContent).not.toContain('restarted');
   });
 
-  it('hides historical interruptions while retaining the later response and historical failures', () => {
+  it('shows one current meta for a completed response and never fabricates elapsed duration', () => {
+    const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
+      turns={[turnOutcome({ id: 'old-failure', status: 'failed' }), turnOutcome({ id: 'current-complete', status: 'completed' })]} />);
+    expect(screen.getByText('Completed', { exact: true })).toBeTruthy();
+    expect(container.querySelectorAll('[data-nc-current-meta]')).toHaveLength(1);
+    expect(screen.queryByText('Failed', { exact: true })).toBeNull();
+    expect(container.querySelector('[data-nc-meta-duration]')).toBeNull();
+  });
+
+  it('shows one current meta for a running response above older failures', () => {
+    const { container } = render(<ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false} conversation={conversation()}
+      turns={[turnOutcome({ status: 'failed' }), turn({ id: 'current-reply', author: 'agent' })]} />);
+    expect(screen.getByText('Running', { exact: true })).toBeTruthy();
+    expect(container.querySelectorAll('[data-nc-current-meta]')).toHaveLength(1);
+    expect(screen.queryByText('Failed', { exact: true })).toBeNull();
+  });
+
+  it('hides historical outcomes while retaining the later response', () => {
     const interrupted = turnOutcome({ id: 'old-stop', status: 'interrupted', text: 'Old interrupted reason.' });
     const failed = turnOutcome({ id: 'old-failure', status: 'failed', text: 'Old failed reason.' });
     render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
       turns={[interrupted, failed, turn({ id: 'next-response', text: 'The later response.' })]} />);
     expect(screen.queryByText('Old interrupted reason.')).toBeNull();
     expect(screen.getByText('The later response.')).toBeTruthy();
-    expect(screen.getByText('Old failed reason.')).toBeTruthy();
+    expect(screen.queryByText('Old failed reason.')).toBeNull();
   });
 
   it.each(['interrupted', 'failed'] as const)('shows only current paused status over a prior %s result', (status) => {
     const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
     const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled stalledReason={reason}
       conversation={conversation()} turns={[turnOutcome({ status, text: 'Previous outcome reason.' })]} />);
-    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(screen.getAllByRole('status', { name: 'Current response status' })).toHaveLength(1);
     expect(screen.queryByText('Previous outcome reason.')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Conversation paused' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Paused' })).toBeTruthy();
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}
       turns={[turnOutcome({ status, text: 'Previous outcome reason.' })]} />);
     expect(screen.getByText('Previous outcome reason.')).toBeTruthy();
@@ -277,22 +294,22 @@ describe('ChatThread', () => {
     expect(screen.queryByText('Send a message to continue.')).toBeNull();
   });
 
-  it('says Response interrupted for an interrupted turn and nothing at all for a completed one', () => {
+  it('switches the single current row from Interrupted to Completed', () => {
     const { container, rerender } = render(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[turnOutcome({ status: 'interrupted' })]} />,
     );
     expect(container.querySelector('[data-nc-turn-outcome="interrupted"]')).not.toBeNull();
-    expect(screen.getByRole('status').textContent).toContain('Response interrupted');
-    expect(screen.getByText('Response interrupted', { exact: true })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Interrupted');
+    expect(screen.getByText('Interrupted', { exact: true })).toBeTruthy();
     rerender(
       <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[turn(), turnOutcome({ status: 'completed' })]}
       />,
     );
-    expect(container.querySelector('[data-nc-turn="outcome"]')).toBeNull();
-    expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
-    expect(screen.queryByRole('status')).toBeNull();
+    expect(container.querySelector('[data-nc-turn="outcome"]')).not.toBeNull();
+    expect(container.querySelector('[data-nc-turn-outcome]')?.getAttribute('data-nc-turn-outcome')).toBe('completed');
+    expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Completed');
   });
 
   it('keeps the live mark logic untouched by a trailing outcome', () => {
@@ -1261,7 +1278,7 @@ it('shows a paused runtime with the same disclosure and separator, even without 
   const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
   const { container } = render(<ChatThread canContinue={false} cards={{}} stalled stalledReason={reason}
     conversation={conversation()} turns={[]} />);
-  expect(screen.getByRole('button', { name: 'Conversation paused', expanded: false })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Paused', expanded: false })).toBeTruthy();
   expect(screen.getByRole('separator')).toBeTruthy();
   expect(screen.getByText(reason, { exact: true })).toBeTruthy();
   expect(screen.queryByText('Nothing said yet.')).toBeNull();

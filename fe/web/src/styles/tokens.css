@@ -330,6 +330,7 @@
     --header-baseline: 42px;
 
     --text-xs: 11px;
+    --text-meta: 12px;
     --text-base: 13px;
     --text-md: 15px;
     --text-lg: 18px;
@@ -468,6 +469,7 @@
     --rule-h: 2px;
     --dot-sm: 6px;
     --dot-md: 8px;
+    --glyph-meta: 12px;
     --glyph-sm: 14px;
     --glyph: 16px;
     --menu-w-min: 180px;

@@ -72,7 +72,7 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
     await composer.fill('Keep this unsent draft');
     phase = 'wedged';
     await page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
-    const pause = page.locator('[data-nc-drawer-scroll]').getByRole('button', { name: 'Conversation paused', exact: true });
+    const pause = page.locator('[data-nc-drawer-scroll]').getByRole('button', { name: 'Paused', exact: true });
     await expect(pause).toBeVisible();
     await expect(pause).toHaveAttribute('aria-expanded', 'false');
     await pause.click();
@@ -172,7 +172,7 @@ for (const failedFirst of [false, true]) {
       await composer.fill('Keep this stop request draft');
       await page.getByRole('button', { name: 'Stop', exact: true }).click();
       if (failedFirst) {
-        const failure = page.getByRole('button', { name: 'Stop request failed', exact: true });
+        const failure = page.getByRole('button', { name: 'Stop failed', exact: true });
         await expect(failure).toBeVisible();
         await failure.click();
         await expect(page.getByText('The connection is unavailable.', { exact: true })).toBeVisible();
@@ -220,7 +220,7 @@ for (const status of ['interrupted', 'failed'] as const) {
       await page.getByRole('button', { name: 'Conversation Planner' }).click();
       const guidance = page.getByText('Send a message to continue.', { exact: true });
       await expect(guidance).toBeVisible();
-      const disclosure = page.getByRole('button', { name: status === 'failed' ? /^Failed/ : /^Response interrupted/ });
+      const disclosure = page.getByRole('button', { name: status === 'failed' ? /^Failed/ : /^Interrupted/ });
       await disclosure.click();
       expect(sends).toBe(0);
       const composer = page.getByRole('combobox', { name: 'Message' });

@@ -102,6 +102,8 @@
    * the exchange's own boundaries. A flat list at one distance is what made the
    * first version read as label/text, label/text rather than as a dialogue.
    */
+  .thread > [data-nc-current-meta] { margin-block-start: var(--space-4); }
+
   .thread > * + * {
     margin-block-start: var(--space-5);
   }
@@ -462,7 +464,7 @@
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
     color: var(--text-3);
-    text-align: end;
+    text-align: start;
   }
 
   .outcomeReason {

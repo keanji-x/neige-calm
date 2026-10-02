@@ -208,3 +208,17 @@ Settings 是低频表单页。按用户任务分组，标签和说明直接写�
 - 对话 drawer 的产品形态仍可继续收敛。
 - Managed track 没有 remote 时，Forge/PR 的呈现需要服从工作区能力，不能假装可用。
 - 新页面先复用现有词汇和层级；只有出现无法表达的真实状态时才增加 token、surface 或组件变体。
+
+## Current conversation metadata
+
+One metadata row follows the current response. Normal running and completion
+use the secondary foreground; interrupted, failed and paused states use semantic
+foregrounds. Earlier outcomes remain transcript data and grouping boundaries.
+
+Metadata consumes `--text-meta`, `--glyph-meta`, `--control-h`, `--leading-snug`
+and spacing tokens. Text, disclosure and action icons share the control-row
+center at every supported width; concise labels avoid mixed one/two-line rows.
+The native right/down disclosure sits immediately after the text. Timestamp
+evidence replaces elapsed time in place on hover or keyboard focus, with HH:mm
+precision and no tooltip. Unmeasured elapsed/pause time is absent, never guessed.
+Copy/edit/regenerate are disabled placeholders until their behavior is supplied.
