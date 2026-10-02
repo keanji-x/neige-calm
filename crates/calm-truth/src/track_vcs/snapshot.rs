@@ -192,7 +192,7 @@ pub(super) async fn snapshot_tree_at_tx(
     store_tree(tx, schema_version, entries, object_created_at).await
 }
 
-async fn insert_run_entries(
+pub(super) async fn insert_run_entries(
     tx: &mut Transaction<'_, Sqlite>,
     entries: &mut BTreeMap<String, ManifestEntry>,
     runs: &[RunProjection],
@@ -207,19 +207,19 @@ async fn insert_run_entries(
     )
     .await?;
     for run in runs {
-        if track_fs_view::is_reserved_run_key(&run.idempotency_key) {
+        if track_fs_view::is_reserved_run_key(&run.attempt_id) {
             // Skip rather than error: this runs inside an event write tx and must not roll back unrelated events.
             tracing::error!(
                 target: "track_vcs",
-                idempotency_key = %run.idempotency_key,
-                "runs projection: skipping idempotency_key that collides with reserved path"
+                attempt_id = %run.attempt_id,
+                "runs projection: skipping attempt_id that collides with reserved path"
             );
             continue;
         }
         put_rendered_entry(
             tx,
             entries,
-            format!("runs/{}.json", run.idempotency_key),
+            format!("runs/{}.json", run.attempt_id),
             run_json(run)?,
             created_at,
         )
@@ -227,7 +227,7 @@ async fn insert_run_entries(
         put_rendered_entry(
             tx,
             entries,
-            format!("runs/{}.md", run.idempotency_key),
+            format!("runs/{}.md", run.attempt_id),
             content_markdown(run_markdown(run)),
             created_at,
         )

@@ -312,17 +312,17 @@ impl<'a> TrackFsView<'a> {
 
         let runs = project_runs(self.write, cards, events);
         for run in &runs {
-            if is_reserved_run_key(&run.idempotency_key) {
+            if is_reserved_run_key(&run.attempt_id) {
                 tracing::error!(
                     target: "track_file",
-                    idempotency_key = %run.idempotency_key,
+                    attempt_id = %run.attempt_id,
                     track_id = %track.id,
-                    "runs projection: idempotency_key collides with reserved path `runs/<key>.json`"
+                    "runs projection: attempt_id collides with reserved path `runs/<attempt_id>.json`"
                 );
                 return Err(TrackFsError::Internal(format!(
-                    "runs projection unavailable: idempotency_key `{}` collides with reserved path. \
+                    "runs projection unavailable: attempt_id `{}` collides with reserved path. \
                      Remediation: stop submitting jobs with this key, or update RESERVED_RUN_KEYS.",
-                    run.idempotency_key
+                    run.attempt_id
                 )));
             }
         }
@@ -480,7 +480,7 @@ pub(crate) struct RunVerdictProjection {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RunProjection {
-    pub(crate) idempotency_key: String,
+    pub(crate) attempt_id: String,
     pub(crate) status: TrackFsRunStatus,
     pub(crate) kind: String,
     pub(crate) requested_at: Option<i64>,
@@ -639,7 +639,7 @@ fn project_runs(
                 .to_string();
 
             RunProjection {
-                idempotency_key: key,
+                attempt_id: key,
                 status,
                 kind,
                 requested_at: requested_event.as_ref().map(|event| event.at),
@@ -794,16 +794,13 @@ fn run_listing_updated_at(run: &RunProjection) -> Option<i64> {
 
 fn run_by_key<'a>(runs: &'a [RunProjection], key: &str) -> Result<&'a RunProjection, TrackFsError> {
     runs.iter()
-        .find(|run| run.idempotency_key == key)
+        .find(|run| run.attempt_id == key)
         .ok_or_else(|| path_not_available(&format!("runs/{key}")))
 }
 
 fn run_listing_entry(run: &RunProjection, extension: &str) -> TrackFsEntry {
-    let mut entry = TrackFsEntry::new(format!("{}.{}", run.idempotency_key, extension), "file")
-        .with_extra(
-            "idempotency_key",
-            Value::String(run.idempotency_key.clone()),
-        )
+    let mut entry = TrackFsEntry::new(format!("{}.{}", run.attempt_id, extension), "file")
+        .with_extra("attempt_id", Value::String(run.attempt_id.clone()))
         .with_extra("status", Value::String(run.status.as_str().into()))
         .with_extra("run_kind", Value::String(run.kind.clone()))
         .with_extra(
@@ -827,7 +824,7 @@ fn run_listing_entry(run: &RunProjection, extension: &str) -> TrackFsEntry {
 
 pub(crate) fn run_index_entry(run: &RunProjection) -> TrackFsRunIndexEntry {
     TrackFsRunIndexEntry {
-        idempotency_key: run.idempotency_key.clone(),
+        attempt_id: run.attempt_id.clone(),
         status: run.status,
         kind: run.kind.clone(),
         verdict: run_verdict_index(run),
@@ -839,7 +836,7 @@ pub(crate) fn run_index_entry(run: &RunProjection) -> TrackFsRunIndexEntry {
 
 pub(crate) fn run_json(run: &RunProjection) -> TrackFsRunDetail {
     TrackFsRunDetail {
-        idempotency_key: run.idempotency_key.clone(),
+        attempt_id: run.attempt_id.clone(),
         status: run.status,
         kind: run.kind.clone(),
         verdict: run_verdict_full(run),
@@ -1270,7 +1267,7 @@ fn normalize_hook_event_name(name: &str) -> String {
 pub(crate) fn run_markdown(run: &RunProjection) -> String {
     let mut out = String::new();
     out.push_str("> READ-ONLY PROJECTION: derived from track events and worker card payloads. This is not the source of truth.\n\n");
-    out.push_str(&format!("# Run `{}`\n\n", run.idempotency_key));
+    out.push_str(&format!("# Run `{}`\n\n", run.attempt_id));
     out.push_str(&format!("- Status: {}\n", run.status));
     out.push_str(&format!("- Kind: {}\n", run.kind));
     out.push_str(&format!(

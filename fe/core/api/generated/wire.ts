@@ -532,13 +532,13 @@ export type TrackFsCardMeta = { created_at: number, deletable: boolean, id: Card
 
 export type TrackFsHookEvent = { created_at: number, event_id: number, hook_kind: string, kind: string, payload: unknown, };
 
-export type TrackFsRunDetail = { events: TrackFsRunEvents, finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: TrackFsRunStatus, verdict: TrackFsRunVerdict | null, worker_card_id: CardId | null, worker_card_payload: unknown | null, };
+export type TrackFsRunDetail = { attempt_id: string, events: TrackFsRunEvents, finished_at: number | null, kind: string, requested_at: number | null, status: TrackFsRunStatus, verdict: TrackFsRunVerdict | null, worker_card_id: CardId | null, worker_card_payload: unknown | null, };
 
 export type TrackFsRunEventRef = { created_at: number, event_id: number, kind: string, payload: unknown, };
 
 export type TrackFsRunEvents = { completed: TrackFsRunEventRef | null, failed: TrackFsRunEventRef | null, requested: TrackFsRunEventRef | null, verdict: TrackFsRunEventRef | null, };
 
-export type TrackFsRunIndexEntry = { finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: TrackFsRunStatus, verdict: TrackFsRunVerdictSummary | null, worker_card_id: CardId | null, };
+export type TrackFsRunIndexEntry = { attempt_id: string, finished_at: number | null, kind: string, requested_at: number | null, status: TrackFsRunStatus, verdict: TrackFsRunVerdictSummary | null, worker_card_id: CardId | null, };
 
 export type TrackFsRunStatus = "completed" | "failed" | "running" | "requested" | "unknown";
 

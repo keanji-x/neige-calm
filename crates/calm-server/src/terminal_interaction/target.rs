@@ -6,28 +6,28 @@ use serde::Serialize;
 #[derive(Clone, Debug)]
 pub enum Target {
     Terminal(String),
-    Task(String),
+    Attempt(String),
 }
 impl Target {
-    pub fn from_ids(terminal_id: Option<String>, task_id: Option<String>) -> Result<Self> {
-        let target = match (terminal_id, task_id) {
+    pub fn from_ids(terminal_id: Option<String>, attempt_id: Option<String>) -> Result<Self> {
+        let target = match (terminal_id, attempt_id) {
             (Some(id), None) => Self::Terminal(id),
-            (None, Some(id)) => Self::Task(id),
-            _ => anyhow::bail!("supply exactly one of terminal_id or task_id"),
+            (None, Some(id)) => Self::Attempt(id),
+            _ => anyhow::bail!("supply exactly one of terminal_id or attempt_id"),
         };
         let id = match &target {
-            Self::Terminal(id) | Self::Task(id) => id,
+            Self::Terminal(id) | Self::Attempt(id) => id,
         };
         ensure!(
             !id.is_empty() && id.len() <= 512,
-            "invalid terminal/task identifier"
+            "invalid terminal_id or attempt_id"
         );
         Ok(target)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskBinding {
-    pub task_id: String,
+    pub attempt_id: String,
     pub task_key: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -101,12 +101,12 @@ impl TerminalInteraction {
     ) -> Result<Resolved> {
         let track = Self::authorize(repo, identity).await?;
         let requested_task = match target {
-            Target::Task(id) => Some(Self::current_task(repo, &track, id).await?),
+            Target::Attempt(id) => Some(Self::current_task(repo, &track, id).await?),
             Target::Terminal(_) => None,
         };
         let terminal = match target {
             Target::Terminal(id) => repo.terminal_get(id).await?,
-            Target::Task(_) => {
+            Target::Attempt(_) => {
                 let card = requested_task
                     .as_ref()
                     .and_then(|task| task.worker_card_id.as_ref())
@@ -214,7 +214,7 @@ impl TerminalInteraction {
                 card_id: card.id.to_string(),
                 worker_session_id: session.id.to_string(),
                 task: task.as_ref().map(|task| TaskBinding {
-                    task_id: task.id.clone(),
+                    attempt_id: task.id.clone(),
                     task_key: task.key.clone(),
                 }),
             },

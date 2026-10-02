@@ -899,7 +899,6 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
             "gate_result",
             "generation",
             "goal",
-            "id",
             "key",
             "kind",
             "priority",

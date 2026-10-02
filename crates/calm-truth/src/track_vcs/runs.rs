@@ -205,7 +205,7 @@ pub(super) async fn project_runs_tx(
                 .unwrap_or("unknown")
                 .to_string();
             RunProjection {
-                idempotency_key: key,
+                attempt_id: key,
                 status,
                 kind,
                 requested_at: requested_event.as_ref().map(|event| event.at),
@@ -352,7 +352,7 @@ pub(super) async fn project_run_by_key_tx(
         .to_string();
 
     Ok(Some(RunProjection {
-        idempotency_key: key.to_string(),
+        attempt_id: key.to_string(),
         status,
         kind,
         requested_at: requested_event.as_ref().map(|event| event.at),
@@ -550,8 +550,8 @@ fn run_key_is_visible(key: &str) -> bool {
     if track_fs_view::is_reserved_run_key(key) {
         tracing::error!(
             target: "track_vcs",
-            idempotency_key = %key,
-            "runs projection: skipping idempotency_key that collides with reserved path"
+            attempt_id = %key,
+            "runs projection: skipping attempt_id that collides with reserved path"
         );
         false
     } else {

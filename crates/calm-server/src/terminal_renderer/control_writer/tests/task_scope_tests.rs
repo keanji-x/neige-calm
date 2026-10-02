@@ -116,7 +116,7 @@ async fn queued_task_change(replace_session: bool) {
         card_id: card.clone(),
         worker_session_id: session.clone(),
         task: Some(TaskBinding {
-            task_id: task.clone(),
+            attempt_id: task.clone(),
             task_key: key,
         }),
     };

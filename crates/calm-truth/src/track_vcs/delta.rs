@@ -10,9 +10,9 @@ use super::runs::{idempotency_key_from_payload, project_run_by_key_tx, project_r
 use super::snapshot::{
     card_in_track_tx, card_meta_json, card_payload_json, card_runtime_json, cards_for_track_tx,
     cards_index_json, content_json, content_markdown, conversation_markdown,
-    hook_events_for_card_tx, hook_events_json, index_markdown, load_track_optional_tx,
-    project_runtime_into_cards_tx, report_markdown, run_json, run_markdown, runs_index_json,
-    track_json,
+    hook_events_for_card_tx, hook_events_json, index_markdown, insert_run_entries,
+    load_track_optional_tx, project_runtime_into_cards_tx, report_markdown, run_json, run_markdown,
+    runs_index_json, track_json,
 };
 use super::store::{load_blob_bytes_tx, normalize_path, put_rendered_entry};
 use super::types::{BlobContent, CardVisibility};
@@ -69,7 +69,22 @@ pub(super) async fn apply_delta_tx(
             .retain(|path, _| !path.starts_with(prefix.as_str()));
     }
     let mut run_keys = delta.run_keys;
-    for card_id in delta.run_card_ids {
+    let mut run_card_ids = delta.run_card_ids;
+    if (!run_keys.is_empty() || !run_card_ids.is_empty())
+        && runs_index_predates_attempt_id_tx(tx, &manifest.entries).await?
+    {
+        // A stored index from before #1944 keys runs by `idempotency_key`. Reading it as
+        // `attempt_id` would drop every untouched run, so re-project all runs once instead.
+        manifest
+            .entries
+            .retain(|path, _| !path.starts_with("runs/"));
+        let cards = cards_for_track_tx(tx, track_id, card_visibility).await?;
+        let runs = project_runs_tx(tx, track_id, &cards).await?;
+        insert_run_entries(tx, &mut manifest.entries, &runs, object_created_at).await?;
+        run_keys.clear();
+        run_card_ids.clear();
+    }
+    for card_id in run_card_ids {
         if let Some(key) =
             run_key_for_worker_card_tx(tx, track_id, &card_id, card_visibility).await?
         {
@@ -194,14 +209,14 @@ fn render_run_path(path: &str, runs: &[RunProjection]) -> Result<Option<BlobCont
     if let Some(key) = run_path.strip_suffix(".json") {
         return runs
             .iter()
-            .find(|run| run.idempotency_key == key)
+            .find(|run| run.attempt_id == key)
             .map(run_json)
             .transpose();
     }
     if let Some(key) = run_path.strip_suffix(".md") {
         return Ok(runs
             .iter()
-            .find(|run| run.idempotency_key == key)
+            .find(|run| run.attempt_id == key)
             .map(|run| content_markdown(run_markdown(run))));
     }
     Ok(None)
@@ -223,8 +238,8 @@ async fn apply_run_key_delta_tx(
             // commit-able, so this state deliberately diverges from live `track_file` parity.
             tracing::error!(
                 target: "track_vcs",
-                idempotency_key = %key,
-                "runs projection: skipping idempotency_key that collides with reserved path"
+                attempt_id = %key,
+                "runs projection: skipping attempt_id that collides with reserved path"
             );
             continue;
         }
@@ -270,23 +285,39 @@ async fn apply_run_key_delta_tx(
     .await
 }
 
-async fn load_runs_index_map_tx(
+async fn load_runs_index_values_tx(
     tx: &mut Transaction<'_, Sqlite>,
     entries: &BTreeMap<String, ManifestEntry>,
-) -> Result<BTreeMap<String, Value>> {
+) -> Result<Vec<Value>> {
     let Some(hash) = entries
         .get("runs/index.json")
         .map(|entry| entry.blob_hash.clone())
     else {
-        return Ok(BTreeMap::new());
+        return Ok(Vec::new());
     };
     let Some(bytes) = load_blob_bytes_tx(tx, &hash).await? else {
-        return Ok(BTreeMap::new());
+        return Ok(Vec::new());
     };
-    let values: Vec<Value> = serde_json::from_slice(&bytes)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+async fn runs_index_predates_attempt_id_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    entries: &BTreeMap<String, ManifestEntry>,
+) -> Result<bool> {
+    Ok(load_runs_index_values_tx(tx, entries)
+        .await?
+        .iter()
+        .any(|value| value.get("attempt_id").is_none()))
+}
+
+async fn load_runs_index_map_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    entries: &BTreeMap<String, ManifestEntry>,
+) -> Result<BTreeMap<String, Value>> {
     let mut index = BTreeMap::new();
-    for value in values {
-        if let Some(key) = value.get("idempotency_key").and_then(Value::as_str) {
+    for value in load_runs_index_values_tx(tx, entries).await? {
+        if let Some(key) = value.get("attempt_id").and_then(Value::as_str) {
             index.insert(key.to_string(), value);
         }
     }

@@ -1214,7 +1214,7 @@
   },
   {
     "name": "calm.terminal.control",
-    "description_sha256": "85219042b28531c069da39f4e84f6cded1fcb2486d90edcf2efce5a8327f6ef3",
+    "description_sha256": "aecab2f1f24c40ebcc4456f7b2b9c3e4427f2f0e3bba946ded790026dd07d825",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1224,6 +1224,9 @@
             "release",
             "detach"
           ],
+          "type": "string"
+        },
+        "attempt_id": {
           "type": "string"
         },
         "observe": {
@@ -1247,9 +1250,6 @@
           },
           "minItems": 1,
           "type": "array"
-        },
-        "task_id": {
-          "type": "string"
         },
         "terminal_id": {
           "type": "string"
@@ -1306,7 +1306,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "ad817ca3c00bb5a8a42d4c43f832d68254317fb5d70df1d92506cf08d91d48b6",
+    "description_sha256": "a1fb9423e857248c4a4a9c81868aefc3adc23fd95c647ef6ada945cd92ed3685",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1382,6 +1382,9 @@
           "default": false,
           "type": "boolean"
         },
+        "attempt_id": {
+          "type": "string"
+        },
         "claim": {
           "default": false,
           "type": "boolean"
@@ -1420,9 +1423,6 @@
           },
           "minItems": 1,
           "type": "array"
-        },
-        "task_id": {
-          "type": "string"
         },
         "terminal_id": {
           "type": "string"
@@ -1480,10 +1480,13 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "c2bc482de404c74858d34e583cabbd36f99ce36d651f9c89991158c2d58394e9",
+    "description_sha256": "a533e518fb5795a90ebeb5c8e4cf0636fb67936da9336c63bbc48250db2a93fb",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "attempt_id": {
+          "type": "string"
+        },
         "repaint_ms": {
           "maximum": 5000,
           "minimum": 0,
@@ -1506,9 +1509,6 @@
           },
           "minItems": 1,
           "type": "array"
-        },
-        "task_id": {
-          "type": "string"
         },
         "terminal_id": {
           "type": "string"
@@ -1655,11 +1655,11 @@
   },
   {
     "name": "calm.terminal.resolve",
-    "description_sha256": "ade07b41bb8363c18ceb7910791c7252c3b03ad96572aee2402e60df045f33f6",
+    "description_sha256": "c11a4a27e92d78e45b8c47b1831705122f060bd36230ad43ad46343768032536",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "task_id": {
+        "attempt_id": {
           "type": "string"
         },
         "terminal_id": {
@@ -1680,7 +1680,7 @@
   },
   {
     "name": "calm.track.cat",
-    "description_sha256": "b6a648b5dd92583baf1d0c22398081844c730f7318725c94ab66e638648afdeb",
+    "description_sha256": "effedf2c0d088c82b043c3d4895105d8dafa3ec1995d0a2829ad1314e459fa29",
     "input_schema": {
       "properties": {
         "blocks": {

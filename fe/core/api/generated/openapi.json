@@ -11643,9 +11643,9 @@
       "TrackFsRunDetail": {
         "type": "object",
         "required": [
+          "attempt_id",
           "events",
           "finished_at",
-          "idempotency_key",
           "kind",
           "requested_at",
           "status",
@@ -11654,6 +11654,9 @@
           "worker_card_payload"
         ],
         "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
           "events": {
             "$ref": "#/components/schemas/TrackFsRunEvents"
           },
@@ -11663,9 +11666,6 @@
               "null"
             ],
             "format": "int64"
-          },
-          "idempotency_key": {
-            "type": "string"
           },
           "kind": {
             "type": "string"
@@ -11776,8 +11776,8 @@
       "TrackFsRunIndexEntry": {
         "type": "object",
         "required": [
+          "attempt_id",
           "finished_at",
-          "idempotency_key",
           "kind",
           "requested_at",
           "status",
@@ -11785,15 +11785,15 @@
           "worker_card_id"
         ],
         "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
           "finished_at": {
             "type": [
               "integer",
               "null"
             ],
             "format": "int64"
-          },
-          "idempotency_key": {
-            "type": "string"
           },
           "kind": {
             "type": "string"

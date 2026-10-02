@@ -507,7 +507,7 @@ fn prompt_neige_mentions_name_served_commands() {
 }
 
 /// #1944: the task execution id has one agent-facing name, `attempt_id`. No prompt or CLI help may
-/// call it an idempotency key or a kernel task id again.
+/// call it an idempotency key, a kernel task id or a terminal `task_id` again.
 #[test]
 fn task_report_surfaces_name_the_execution_id_attempt_id() {
     // Where `idempotency_key` is a real caller-chosen dedupe key, not a task execution id.
@@ -515,11 +515,12 @@ fn task_report_surfaces_name_the_execution_id_attempt_id() {
         "prompts/tools/calm.calendar.create.md",
         "prompts/tools/calm.track.publish.md",
     ];
-    const RETIRED_NAMES: [&str; 4] = [
+    const RETIRED_NAMES: [&str; 5] = [
         "idempotency_key",
         "idempotency-key",
         "idempotency key",
         "kernel task id",
+        "task_id",
     ];
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();

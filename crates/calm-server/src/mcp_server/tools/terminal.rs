@@ -25,7 +25,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             "calm.terminal.resolve",
             include_str!("../../../prompts/tools/calm.terminal.resolve.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"}}),
+            json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"}}),
             vec![],
         ),
         (
@@ -37,19 +37,19 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             "calm.terminal.observe",
             include_str!("../../../prompts/tools/calm.terminal.observe.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
+            json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec![],
         ),
         (
             "calm.terminal.control",
             include_str!("../../../prompts/tools/calm.terminal.control.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
+            json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec!["action"],
         ),
         (
             "calm.terminal.input",
             include_str!("../../../prompts/tools/calm.terminal.input.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
+            json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
             "action":{"anyOf":[
                 {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"enum":["text","submit"]},"text":{"type":"string","minLength":1,"maxLength":16384}}},
                 {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"},"repeat":{"type":"integer","minimum":1,"maximum":32,"default":1}}},
@@ -63,7 +63,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
             let name = tool.clone();
             Box::pin(async move { call(&name, ctx, identity, args).await })
         });
-        // No `terminal_id`/`task_id` selector arms: duplicating every root property pushed the schema past the 4000-byte compaction threshold; exactly-one targeting is enforced server-side.
+        // No `terminal_id`/`attempt_id` selector arms: duplicating every root property pushed the schema past the 4000-byte compaction threshold; exactly-one targeting is enforced server-side.
         let input_schema = json!({"type":"object","additionalProperties":false,"properties":properties,"required":required});
         registry.register(ToolDescriptor { name:name.into(),description:description.into(),
             input_schema,
@@ -93,7 +93,7 @@ struct Open {
 #[serde(deny_unknown_fields)]
 struct Observe {
     terminal_id: Option<String>,
-    task_id: Option<String>,
+    attempt_id: Option<String>,
     #[serde(default)]
     scroll_offset: usize,
     wait_ms: Option<u64>,
@@ -108,7 +108,7 @@ struct Observe {
 #[serde(deny_unknown_fields)]
 struct Control {
     terminal_id: Option<String>,
-    task_id: Option<String>,
+    attempt_id: Option<String>,
     action: String,
     #[serde(default)]
     observe: bool,
@@ -124,7 +124,7 @@ struct Control {
 #[serde(deny_unknown_fields)]
 struct Input {
     terminal_id: Option<String>,
-    task_id: Option<String>,
+    attempt_id: Option<String>,
     observation_id: Option<Uuid>,
     request_id: String,
     action: Value,
@@ -148,10 +148,10 @@ struct Input {
 #[serde(deny_unknown_fields)]
 struct Resolve {
     terminal_id: Option<String>,
-    task_id: Option<String>,
+    attempt_id: Option<String>,
 }
-fn target(terminal_id: Option<String>, task_id: Option<String>) -> Result<Target, RpcError> {
-    Target::from_ids(terminal_id, task_id)
+fn target(terminal_id: Option<String>, attempt_id: Option<String>) -> Result<Target, RpcError> {
+    Target::from_ids(terminal_id, attempt_id)
         .map_err(|error| RpcError::invalid_params(error.to_string()))
 }
 fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, RpcError> {
@@ -311,7 +311,7 @@ async fn call(
         "calm.terminal.resolve" => {
             let args: Resolve = parse(args)?;
             let resolved = service
-                .resolve(&identity, &target(args.terminal_id, args.task_id)?)
+                .resolve(&identity, &target(args.terminal_id, args.attempt_id)?)
                 .await
                 .map_err(failure)?;
             let summary = format!(
@@ -472,7 +472,7 @@ async fn call(
             let metadata = service
                 .observe(
                     &identity,
-                    &target(args.terminal_id, args.task_id)?,
+                    &target(args.terminal_id, args.attempt_id)?,
                     args.scroll_offset,
                     wait,
                 )
@@ -498,7 +498,7 @@ async fn call(
             service
                 .control(
                     &identity,
-                    &target(args.terminal_id, args.task_id)?,
+                    &target(args.terminal_id, args.attempt_id)?,
                     &args.action,
                     readback,
                 )
@@ -524,7 +524,7 @@ async fn call(
             service
                 .input(
                     &identity,
-                    &target(args.terminal_id, args.task_id)?,
+                    &target(args.terminal_id, args.attempt_id)?,
                     args.observation_id,
                     &args.request_id,
                     args.action,

@@ -502,11 +502,11 @@ impl TerminalInteraction {
             self.clients.lock().await.retain(|key, client| {
                 let selected = match target {
                     Target::Terminal(id) => &client.binding.terminal_id == id,
-                    Target::Task(id) => client
+                    Target::Attempt(id) => client
                         .binding
                         .task
                         .as_ref()
-                        .is_some_and(|task| &task.task_id == id),
+                        .is_some_and(|task| &task.attempt_id == id),
                 };
                 let detach = selected && key == &client.binding.key(identity);
                 if detach {

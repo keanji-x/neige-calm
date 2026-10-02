@@ -463,7 +463,7 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
     assert!(text.contains("original-attempt-report"));
     assert!(!text.contains("newer-report-must-not-replace-original"));
     let detail = read_details(&fx, text).await;
-    assert_eq!(detail["idempotency_key"], "track:build:attempt-1");
+    assert_eq!(detail["attempt_id"], "track:build:attempt-1");
     assert_eq!(detail["events"]["completed"]["event_id"], original_id);
     // Replay since a crash before delivery picks both observations once. Repeating
     // replay from its advanced watermark must not duplicate either receipt.
@@ -597,7 +597,7 @@ async fn receipt_run_locator_validates_original_identity_against_real_reader() {
         assert_eq!(preview["text"], identity);
         if safe {
             let run = read_details(&fx, &text).await;
-            assert_eq!(run["idempotency_key"], identity);
+            assert_eq!(run["attempt_id"], identity);
             assert_eq!(run["events"]["completed"]["event_id"], id);
         } else {
             assert!(text.contains(UNAVAILABLE), "{identity:?}");

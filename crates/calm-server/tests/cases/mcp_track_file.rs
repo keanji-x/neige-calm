@@ -1157,7 +1157,7 @@ async fn ls_runs_returns_projected_runs_for_bound_track() {
         .find(|run| run["name"] == "run-list.md")
         .unwrap_or_else(|| panic!("missing run-list.md: {runs:?}"));
     assert_eq!(entry["kind"], json!("file"));
-    assert_eq!(entry["idempotency_key"], json!("run-list"));
+    assert_eq!(entry["attempt_id"], json!("run-list"));
     assert_eq!(entry["status"], json!("running"));
     assert_eq!(entry["run_kind"], json!("codex"));
     assert_eq!(entry["worker_card_id"], json!(worker_id.as_str()));
@@ -1198,7 +1198,7 @@ async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads(
     let runs = runs.as_array().expect("runs index is array");
     let keys: Vec<&str> = runs
         .iter()
-        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .map(|run| run["attempt_id"].as_str().unwrap())
         .collect();
     assert_eq!(keys, vec!["real-run"], "runs = {runs:?}");
 }
@@ -1227,7 +1227,7 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
                 .as_str()
                 .is_some_and(|name| name.ends_with(".md"))
         })
-        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .map(|run| run["attempt_id"].as_str().unwrap())
         .collect();
 
     let out = call_tool(
@@ -1243,7 +1243,7 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
     let runs = runs.as_array().expect("runs index is array");
     let index_keys: Vec<&str> = runs
         .iter()
-        .map(|run| run["idempotency_key"].as_str().unwrap())
+        .map(|run| run["attempt_id"].as_str().unwrap())
         .collect();
     assert_eq!(index_keys, ls_keys);
     for run in runs {
@@ -1303,7 +1303,7 @@ async fn completed_run_json_returns_structured_projection() {
     .expect("planner can read run json");
     assert_eq!(out["content_type"], json!("application/json"));
     let run = content_json(&out);
-    assert_eq!(run["idempotency_key"], json!("done-json"));
+    assert_eq!(run["attempt_id"], json!("done-json"));
     assert_eq!(run["status"], json!("completed"));
     assert_eq!(run["kind"], json!("codex"));
     assert_eq!(run["worker_card_id"], json!(worker_id.as_str()));
@@ -1406,7 +1406,7 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|run| run["idempotency_key"] == "accepted-run")
+        .find(|run| run["attempt_id"] == "accepted-run")
         .unwrap_or_else(|| panic!("missing accepted-run: {runs:?}"));
     assert_eq!(entry["status"], json!("completed"));
     assert_eq!(entry["verdict"]["status"], json!("accepted"));
@@ -1466,7 +1466,7 @@ async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
     let runs = out.as_array().expect("runs ls returns array");
     let entry = runs
         .iter()
-        .find(|run| run["idempotency_key"] == "verdict-mtime")
+        .find(|run| run["attempt_id"] == "verdict-mtime")
         .unwrap_or_else(|| panic!("missing verdict-mtime: {runs:?}"));
     assert_eq!(entry["finished_at"], json!(100));
     assert_eq!(entry["verdict"]["at"], json!(200));
@@ -1915,7 +1915,7 @@ async fn assert_reserved_run_key_error(tool: &str, path: &str, expect: &str) {
     assert_eq!(err.code, RpcError::INTERNAL_ERROR);
     assert!(
         err.message
-            .contains("idempotency_key `index` collides with reserved path"),
+            .contains("attempt_id `index` collides with reserved path"),
         "{expect}: err = {err:?}"
     );
     assert!(
@@ -2012,7 +2012,7 @@ async fn run_status_derivation_follows_projection_rules() {
     let runs = runs.as_array().expect("runs index array");
     let status = |key: &str| {
         runs.iter()
-            .find(|run| run["idempotency_key"] == key)
+            .find(|run| run["attempt_id"] == key)
             .unwrap_or_else(|| panic!("missing {key}: {runs:?}"))["status"]
             .as_str()
             .unwrap()

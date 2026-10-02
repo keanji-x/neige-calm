@@ -49,7 +49,7 @@ fn old_card_meta_value(card: &Card, role: Value) -> Value {
 
 fn old_run_index_entry(run: &RunProjection) -> Value {
     json!({
-        "idempotency_key": run.idempotency_key,
+        "attempt_id": run.attempt_id,
         "status": run.status.as_str(),
         "kind": run.kind,
         "verdict": old_run_verdict_index_json(run),
@@ -61,7 +61,7 @@ fn old_run_index_entry(run: &RunProjection) -> Value {
 
 fn old_run_json(run: &RunProjection) -> Value {
     json!({
-        "idempotency_key": run.idempotency_key,
+        "attempt_id": run.attempt_id,
         "status": run.status.as_str(),
         "kind": run.kind,
         "verdict": old_run_verdict_full_json(run),
@@ -156,7 +156,7 @@ fn run_with_verdict_and_events() -> RunProjection {
         json!({"idempotency_key": "run-full", "result": {"status": "accepted"}}),
     );
     RunProjection {
-        idempotency_key: "run-full".into(),
+        attempt_id: "run-full".into(),
         status: TrackFsRunStatus::Completed,
         kind: "codex".into(),
         requested_at: Some(requested_event.at),
@@ -176,7 +176,7 @@ fn run_with_verdict_and_events() -> RunProjection {
 
 fn run_without_verdict_or_events() -> RunProjection {
     RunProjection {
-        idempotency_key: "run-empty".into(),
+        attempt_id: "run-empty".into(),
         status: TrackFsRunStatus::Unknown,
         kind: "unknown".into(),
         requested_at: None,
@@ -301,7 +301,7 @@ fn project_runs_uses_task_dispatched_as_requested_record_fallback() {
     );
     assert_eq!(runs.len(), 1);
     let run = &runs[0];
-    assert_eq!(run.idempotency_key, "w:k");
+    assert_eq!(run.attempt_id, "w:k");
     assert_eq!(
         run.status,
         TrackFsRunStatus::Requested,
