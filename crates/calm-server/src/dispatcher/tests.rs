@@ -197,6 +197,12 @@ fn dispatcher_filter_matches_push_kinds() {
         track_id: track.clone(),
         issue_number: 1,
     })));
+    assert!(filter.matches(&env(Event::TrackWakeRequested {
+        track_id: track.clone(),
+        source: "dev.neige.calendar".into(),
+        key: "entry".into(),
+        text: "due".into(),
+    })));
     assert!(!filter.matches(&env(Event::WorktreeProvisioned {
         track_id: track.clone(),
         card_id: CardId::from("worker"),
@@ -1734,6 +1740,22 @@ fn harness_observation_from_event_mapping_pin() {
             issue_number: 760,
         })
     );
+    let wake = harness_observation_from_event(
+        &track,
+        &Event::TrackWakeRequested {
+            track_id: TrackId::from("payload-track-ignored"),
+            source: "dev.neige.calendar".into(),
+            key: "entry-1".into(),
+            text: "Calendar entry is due.".into(),
+        },
+        None,
+    )
+    .expect("a wake request maps to an observation");
+    assert!(wake.is_hard_fire());
+    assert_eq!(
+        wake.to_turn_text(),
+        "Wake from dev.neige.calendar (entry-1): Calendar entry is due."
+    );
     assert_eq!(
         harness_observation_from_event(
             &track,
@@ -2198,6 +2220,17 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 issue_number: 1,
             },
             ActorId::KernelDispatcher,
+            true,
+            true,
+        ),
+        row(
+            Event::TrackWakeRequested {
+                track_id: track.clone(),
+                source: "dev.neige.calendar".into(),
+                key: "entry".into(),
+                text: "due".into(),
+            },
+            ActorId::Kernel,
             true,
             true,
         ),

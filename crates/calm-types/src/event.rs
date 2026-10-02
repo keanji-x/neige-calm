@@ -224,7 +224,7 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 22;
+pub const SYNC_EVENT_VERSION: u32 = 23;
 
 /// What happened to one entry in the harness pending queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -410,6 +410,16 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent_message: Option<String>,
+    },
+
+    /// Compiled kernel code asks this Track's Planner to wake. `source` names the producer,
+    /// `key` the producer-owned subject, and `text` is the kernel-rendered wake sentence.
+    #[serde(rename = "track.wake_requested")]
+    TrackWakeRequested {
+        track_id: TrackId,
+        source: String,
+        key: String,
+        text: String,
     },
 
     #[serde(rename = "overlay.set")]
@@ -914,6 +924,12 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
+            Event::TrackWakeRequested { track_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: Some("track".into()),
+                entity_id: Some(track_id.to_string()),
+            },
             Event::OverlaySet(o) => EventMetadata {
                 kind_tag,
                 plugin_id: Some(o.plugin_id.clone()),
@@ -1078,6 +1094,7 @@ impl Event {
             Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
             Event::HarnessQueueChanged { .. } => "harness.queue.changed",
             Event::TrackReportEdited { .. } => "track.report_edited",
+            Event::TrackWakeRequested { .. } => "track.wake_requested",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
             Event::TerminalDeleted { .. } => "terminal.deleted",
@@ -1297,7 +1314,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "*".into(),
         ],
 
-        Event::PlanUpdated { track_id, .. } => vec![format!("track:{}", track_id), "*".into()],
+        Event::PlanUpdated { track_id, .. } | Event::TrackWakeRequested { track_id, .. } => {
+            vec![format!("track:{}", track_id), "*".into()]
+        }
     }
 }
 #[cfg(test)]

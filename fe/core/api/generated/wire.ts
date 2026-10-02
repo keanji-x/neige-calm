@@ -158,7 +158,7 @@ card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueue
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`; `None` for every other author.
  */
-author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
+author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "track.wake_requested", "data": { track_id: TrackId, source: string, key: string, text: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so the UI can show it without a
  * separate `/log` fetch; `None` for healthy transitions.

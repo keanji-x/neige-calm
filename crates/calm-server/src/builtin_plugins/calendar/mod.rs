@@ -5,6 +5,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 mod tools;
+mod wake;
 
 pub const PLUGIN_ID: &str = "dev.neige.calendar";
 pub(super) fn component() -> super::BuiltinPlugin {
@@ -19,5 +20,6 @@ pub(super) fn component() -> super::BuiltinPlugin {
     )
     .always_enabled();
     component.router = routes::router;
+    component.background = Some(wake::spawn);
     component
 }

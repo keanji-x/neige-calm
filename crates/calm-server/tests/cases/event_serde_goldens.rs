@@ -469,6 +469,17 @@ golden_test!(
 );
 
 golden_test!(
+    track_wake_requested,
+    "track_wake_requested.json",
+    Event::TrackWakeRequested {
+        track_id: TrackId::from("track-01"),
+        source: "dev.neige.calendar".into(),
+        key: "entry-01".into(),
+        text: "Calendar entry \"Review\" started at 2026-10-02 09:00 Asia/Shanghai.".into(),
+    }
+);
+
+golden_test!(
     overlay_set,
     "overlay_set.json",
     Event::OverlaySet(Overlay {
@@ -1210,7 +1221,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 51] = [
+const ALL_KIND_TAGS: [&str; 52] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1227,6 +1238,7 @@ const ALL_KIND_TAGS: [&str; 51] = [
     "harness.user_message.enqueued",
     "harness.queue.changed",
     "track.report_edited",
+    "track.wake_requested",
     "overlay.set",
     "overlay.deleted",
     "terminal.deleted",
@@ -1293,7 +1305,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 79,
+        files, 80,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1326,6 +1338,7 @@ fn kind_tag_list_matches_enum() {
             Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
             Event::HarnessQueueChanged { .. } => "harness.queue.changed",
             Event::TrackReportEdited { .. } => "track.report_edited",
+            Event::TrackWakeRequested { .. } => "track.wake_requested",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
             Event::TerminalDeleted { .. } => "terminal.deleted",
@@ -1369,7 +1382,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        51,
+        52,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

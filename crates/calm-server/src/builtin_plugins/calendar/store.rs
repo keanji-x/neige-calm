@@ -26,7 +26,7 @@ struct Receipt {
     request: Draft,
     entry_id: String,
 }
-async fn get<T: serde::de::DeserializeOwned>(
+pub(super) async fn get<T: serde::de::DeserializeOwned>(
     tx: &mut Transaction<'_, Sqlite>,
     key: &str,
 ) -> Result<Option<T>> {
@@ -43,7 +43,11 @@ async fn get<T: serde::de::DeserializeOwned>(
         })
         .transpose()
 }
-async fn put<T: Serialize>(tx: &mut Transaction<'_, Sqlite>, key: &str, value: &T) -> Result<()> {
+pub(super) async fn put<T: Serialize>(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    value: &T,
+) -> Result<()> {
     let value = serde_json::to_string(value).map_err(|e| CalmError::Internal(e.to_string()))?;
     sqlx::query("INSERT INTO plugin_kv(plugin_id,key,value,updated_at) VALUES(?,?,?,?) \
         ON CONFLICT(plugin_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
