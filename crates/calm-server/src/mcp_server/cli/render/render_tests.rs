@@ -120,9 +120,9 @@ fn working_track_state() -> Value {
         ],
         "report_startup_read_required": true,
         "tasks": [
-            { "key": "fix-login", "status": "running", "worker_card_id": "crd_worker" },
-            { "key": "add-test", "status": "pending", "worker_card_id": null },
-            { "key": "old", "status": "failed", "worker_card_id": "crd_old" }
+            { "key": "fix-login", "status": "running", "worker_card_id": "crd_worker", "access": "read_write" },
+            { "key": "add-test", "status": "pending", "worker_card_id": null, "access": "read_write" },
+            { "key": "old", "status": "failed", "worker_card_id": "crd_old", "access": "read_write" }
         ]
     })
 }
@@ -284,6 +284,96 @@ fn state_json_is_the_compact_tool_result() {
 }
 
 #[test]
+fn state_text_access_matrix_preserves_the_full_read_write_output() {
+    for status in [
+        "pending",
+        "dispatched",
+        "running",
+        "verifying",
+        "done",
+        "failed",
+        "canceled",
+    ] {
+        for (access, suffix) in [("read_write", ""), ("read_only", " read_only")] {
+            let mut value = working_track_state();
+            value["tasks"][0]["status"] = json!(status);
+            value["tasks"][0]["access"] = json!(access);
+            value["tasks"][0]["key"] = json!("fix\nlogin");
+            assert_eq!(
+                render(Render::State, "calm.track.state", false, &value).unwrap(),
+                format!(
+                    "track      trk_2\ntitle      Fix login redirect\nclosed_at  -\nyou        crd_planner planner\nreport     has content\ntasks      fix\\nlogin {status}{suffix}\n           add-test pending\n           old failed\nlive       crd_planner  planner  codex   (you)\n           crd_worker   worker   claude  session running\n"
+                )
+            );
+        }
+    }
+}
+
+#[test]
+fn state_text_marks_readers_without_a_live_worker() {
+    let mut value = working_track_state();
+    value["tasks"][1]["access"] = json!("read_only");
+    value["tasks"][2]["access"] = json!("read_only");
+    let text = render(Render::State, "calm.track.state", false, &value).unwrap();
+    assert!(
+        text.contains("\n           add-test pending read_only\n           old failed read_only\n"),
+        "{text}"
+    );
+    assert!(!text.contains("crd_old"), "{text}");
+}
+
+#[test]
+fn state_access_is_required_only_for_text_and_json_objects_pass_through() {
+    for access in [
+        None,
+        Some(Value::Null),
+        Some(json!(42)),
+        Some(json!(true)),
+        Some(json!("reader")),
+    ] {
+        let mut value = working_track_state();
+        if let Some(access) = access {
+            value["tasks"][0]["access"] = access;
+        } else {
+            value["tasks"][0].as_object_mut().unwrap().remove("access");
+        }
+        let err = render(Render::State, "calm.track.state", false, &value).unwrap_err();
+        assert_eq!(
+            err.message,
+            if value["tasks"][0]["access"] == "reader" {
+                "calm.track.state task has unknown access \"reader\""
+            } else {
+                "calm.track.state task missing string access"
+            }
+        );
+        assert_eq!(
+            err.detail,
+            json!({"kind":"shape","tool":"calm.track.state","task":value["tasks"][0]})
+        );
+        assert_eq!(
+            render(Render::State, "calm.track.state", true, &value).unwrap(),
+            format!("{value}\n")
+        );
+    }
+    for value in [
+        Value::Null,
+        json!([]),
+        json!("state"),
+        json!(1),
+        json!(false),
+    ] {
+        for json in [false, true] {
+            let err = render(Render::State, "calm.track.state", json, &value).unwrap_err();
+            assert_eq!(
+                err.message,
+                "calm.track.state returned non-object structuredContent"
+            );
+            assert_eq!(err.detail["kind"], "shape");
+        }
+    }
+}
+
+#[test]
 fn state_shape_errors_name_the_missing_fact() {
     type Mutation = fn(&mut Value);
     let cases: [(&str, Mutation); 8] = [
@@ -362,7 +452,7 @@ fn state_text_names_the_session_status_and_the_task_status_apart() {
 fn state_text_shows_each_key_once_at_its_current_execution() {
     let mut value = working_track_state();
     value["cards"][3]["runtime"]["status"] = json!("idle");
-    value["tasks"][2] = json!({ "key": "old", "status": "done", "worker_card_id": "crd_worker" });
+    value["tasks"][2] = json!({ "key": "old", "status": "done", "worker_card_id": "crd_worker", "access": "read_write" });
     let text = render(Render::State, "calm.track.state", false, &value).unwrap();
     assert_eq!(
         text.lines()

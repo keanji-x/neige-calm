@@ -309,6 +309,9 @@ async fn insert_task(boot: &Boot, id: &str, key: &str, status: &str, worker: Opt
     .expect("insert task");
 }
 
+#[path = "mcp_track_state_access.rs"]
+mod access;
+
 fn recovery_origin(boot: &Boot, previous_attempt_id: &str) -> TaskAttemptOrigin {
     TaskAttemptOrigin::Recovery {
         previous_attempt_id: previous_attempt_id.into(),
@@ -336,6 +339,10 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
     let worker = boot.worker_card_id.as_str();
     // `fix-login` failed once and was recovered: generation 2 supersedes generation 1.
     insert_task(&boot, "fix-login-1", "fix-login", "failed", Some(worker)).await;
+    sqlx::query("UPDATE tasks SET access = 'read_only' WHERE id = 'fix-login-1'")
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
     sqlx::query(concat!(
         "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,",
         "created_at_ms) VALUES('fix-login-2',?1,'fix-login',2,?2,2)"
@@ -357,8 +364,8 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
     assert_eq!(
         tasks,
         vec![
-            json!({"key": "docs", "status": "pending", "worker_card_id": null}),
-            json!({"key": "fix-login", "status": "running", "worker_card_id": worker}),
+            json!({"key": "docs", "status": "pending", "worker_card_id": null, "access": "read_write"}),
+            json!({"key": "fix-login", "status": "running", "worker_card_id": worker, "access": "read_write"}),
         ],
         "one entry per key, its current execution only: {out}"
     );

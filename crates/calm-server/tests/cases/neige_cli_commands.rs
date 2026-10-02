@@ -232,6 +232,55 @@ async fn stamp_task(boot: &CardBoot, id: &str, key: &str, status: &str, worker: 
     .unwrap();
 }
 
+#[tokio::test]
+async fn cli_state_marks_stored_readers_without_live_workers() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    stamp_task(&boot, "reader-1", "reader", "pending", &boot.other_card_id).await;
+    stamp_task(&boot, "exited-1", "exited", "failed", &boot.other_card_id).await;
+    stamp_task(&boot, "writer-1", "writer", "pending", &boot.other_card_id).await;
+    sqlx::query("UPDATE tasks SET access = 'read_only' WHERE id IN ('reader-1','exited-1')")
+        .execute(boot.sqlx.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET worker_card_id = NULL WHERE id IN ('reader-1','writer-1')")
+        .execute(boot.sqlx.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
+        .bind(&boot.other_card_id)
+        .execute(boot.sqlx.pool())
+        .await
+        .unwrap();
+    let (text, stderr, exit) = cli(&boot, &["state"]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""));
+    let rows: Vec<_> = text
+        .lines()
+        .skip_while(|row| !row.starts_with("tasks"))
+        .take_while(|row| !row.starts_with("live"))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "tasks      exited failed read_only",
+            "           reader pending read_only",
+            "           writer pending"
+        ]
+    );
+    assert!(!text.contains(&boot.other_card_id), "{text}");
+    let (json_text, stderr, exit) = cli(&boot, &["state", "--json"]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""));
+    let state: Value = serde_json::from_str(&json_text).unwrap();
+    assert_eq!(
+        state["tasks"],
+        json!([
+            {"key":"exited","status":"failed","worker_card_id":boot.other_card_id,"access":"read_only"},
+            {"key":"reader","status":"pending","worker_card_id":null,"access":"read_only"},
+            {"key":"writer","status":"pending","worker_card_id":null,"access":"read_write"}
+        ])
+    );
+    assert_eq!(json_text, format!("{state}\n"));
+}
+
 /// The worker's own `neige task-completed`: the production report path that ends its task.
 async fn report_completed(boot: &CardBoot, worker_token: &str, task_id: &str) {
     let argv = ["task-completed", "--attempt-id", task_id, "--result", "{}"];
@@ -356,12 +405,16 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     .await
     .unwrap();
     stamp_task(&boot, "fix-login-2", "fix-login", "running", &retry).await;
+    sqlx::query("UPDATE tasks SET access = 'read_only' WHERE id = 'fix-login-2'")
+        .execute(boot.sqlx.pool())
+        .await
+        .unwrap();
     report_completed(&boot, &retry_token.unwrap(), "fix-login-2").await;
 
     let (text, _, exit) = cli(&boot, &["state"]).await;
     assert_eq!(exit, 0, "{text}");
     assert!(
-        text.contains("\ntasks      fix-login done\nlive "),
+        text.contains("\ntasks      fix-login done read_only\nlive "),
         "{text}"
     );
     assert!(
@@ -371,6 +424,21 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     assert!(
         live_row(&text, first).ends_with("  session running"),
         "{text}"
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.contains("fix-login"))
+            .count(),
+        1
+    );
+    let (json_text, stderr, exit) = cli(&boot, &["--json", "state"]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""));
+    let state: Value = serde_json::from_str(&json_text).unwrap();
+    assert_eq!(
+        state["tasks"],
+        json!([
+            {"key":"fix-login","status":"done","worker_card_id":retry,"access":"read_only"}
+        ])
     );
 }
 

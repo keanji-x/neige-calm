@@ -107,6 +107,7 @@ async fn track_state(
             json!({
                 "key": task.key,
                 "status": task.status,
+                "access": task.access,
                 "worker_card_id": task.worker_card_id,
             })
         })

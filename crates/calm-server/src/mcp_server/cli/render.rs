@@ -1,8 +1,10 @@
 //! Text and `--json` rendering of one tool's `structuredContent`, moved from the former fat client
-//! (#1801). A missing required field is a render error, never a substituted default.
+//! (#1801). Text rejects missing required fields. State JSON checks only the top-level object
+//! and passes it through compactly, without validating task fields.
 
 use std::borrow::Cow;
 
+use calm_types::task_execution::TaskAccess;
 use chrono::TimeZone as _;
 use serde_json::{Value, json};
 
@@ -202,7 +204,11 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
         fact("tasks", "-");
     }
     for (index, task) in tasks.iter().enumerate() {
-        let line = format!("{} {}", task.key, task.status.wire_label());
+        let suffix = match task.access {
+            TaskAccess::ReadOnly => " read_only",
+            TaskAccess::ReadWrite => "",
+        };
+        let line = format!("{} {}{suffix}", task.key, task.status.wire_label());
         fact(if index == 0 { "tasks" } else { "" }, &line);
     }
     let live: Vec<&StateCard<'_>> = cards.iter().filter(|card| card.live).collect();
@@ -212,10 +218,11 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     Ok(out)
 }
 
-/// One current task execution, a `tasks` line `<key> <status>`.
+/// One current task execution, a `tasks` line `<key> <status>[ read_only]`.
 struct StateTask<'a> {
     key: &'a str,
     status: TaskStatus,
+    access: TaskAccess,
 }
 
 fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>, RenderError> {
@@ -223,11 +230,20 @@ fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>,
         .iter()
         .map(|task| {
             let status = required_str(task, "status", tool, "task")?;
+            let access = required_str(task, "access", tool, "task")?;
             Ok(StateTask {
                 key: required_str(task, "key", tool, "task")?,
                 status: serde_json::from_value(Value::from(status)).map_err(|_| {
                     shape(
                         format!("{tool} task has unknown status {status:?}"),
+                        tool,
+                        "task",
+                        task,
+                    )
+                })?,
+                access: serde_json::from_value(Value::from(access)).map_err(|_| {
+                    shape(
+                        format!("{tool} task has unknown access {access:?}"),
                         tool,
                         "task",
                         task,
