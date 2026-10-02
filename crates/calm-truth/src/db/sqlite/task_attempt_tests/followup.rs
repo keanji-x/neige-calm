@@ -166,7 +166,12 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
             .content,
         "current gate"
     );
-    assert!(view.cat(&track, "runs/w:b/gates/3.log").await.is_err());
+    let unrun = view.cat(&track, "runs/w:b/gates/3.log").await;
+    assert!(
+        matches!(&unrun, Err(TrackFsError::PathNotAvailable(message))
+            if message.ends_with("runs/w:b/gates/3.log (gate run 3 has not run)")),
+        "{unrun:?}"
+    );
     for invalid in [
         "runs/w:b/gates/0.log",
         "runs/w:b/gates/01.log",

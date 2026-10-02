@@ -83,7 +83,7 @@ impl TrackFsView<'_> {
         }
         if gate_attempt > task.gate_attempt {
             return Err(path_not_available(&format!(
-                "{path} (gate attempt has not run)"
+                "{path} (gate run {gate_attempt} has not run)"
             )));
         }
         let log_path = directory.join(format!("{}-g{gate_attempt}.log", task.id));

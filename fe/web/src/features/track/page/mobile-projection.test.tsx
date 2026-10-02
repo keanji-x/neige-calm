@@ -23,6 +23,11 @@ const CARDS: readonly CardWire[] = [
   card({ id: 'card-1', kind: 'terminal', title: 'Build log', deletable: true }),
   /* Untitled and kernel-owned: `kind === null`, one badge. */
   card({ id: 'card-2', kind: 'harness', title: null, deletable: false }),
+  /* Kernel-owned with a live session no task names, as the planner card is: both badges, a session status. */
+  card({
+    id: 'card-3', kind: 'claude', title: 'Planner', deletable: false,
+    runtime: { worker_session_id: 'session-3', kind: 'claude', status: 'running' },
+  }),
 ];
 
 /** The painter the page builds for this render, rebuilt here; `mobile-entry.test.tsx` holds the call. */
@@ -91,11 +96,12 @@ describe('fixture shape guard', () => {
     expect(ROWS.some((row) => row.kind !== null)).toBe(true);
   });
 
-  it('badge counts cover zero and one, which is the whole reachable range', () => {
+  it('badge counts cover zero through two, which is the whole reachable range', () => {
     const counts = ROWS.map((row) => row.badges.length);
     expect(counts).toContain(0);
     expect(counts).toContain(1);
-    expect(Math.max(...counts)).toBe(1);
+    expect(counts).toContain(2);
+    expect(Math.max(...counts)).toBe(2);
   });
 
   it('the derivation offers both unsupported actions, so filtering them is not vacuous', () => {
@@ -105,8 +111,11 @@ describe('fixture shape guard', () => {
     for (const kind of offered) expect(painter().action[kind].supported).toBe(false);
   });
 
-  it('carries no status at all, which is why the status clauses are absent above', () => {
-    expect(ROWS.every((row) => row.status === null)).toBe(true);
+  it('exercises status both null and non-null, the session status phrased wider than its token', () => {
+    expect(ROWS.some((row) => row.status === null)).toBe(true);
+    const withStatus = ROWS.filter((row) => row.status !== null);
+    expect(withStatus.length).toBeGreaterThan(0);
+    for (const row of withStatus) expect(row.status!.phrase).not.toEqual(row.status!.token);
   });
 });
 

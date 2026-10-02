@@ -23,6 +23,11 @@ const CARDS: readonly CardWire[] = [
   card({ id: 'card-1', kind: 'terminal', title: 'Build log', deletable: true }),
   /* Untitled and kernel-owned: `kind === null`, one badge, no delete. */
   card({ id: 'card-2', kind: 'harness', title: null, deletable: false }),
+  /* Kernel-owned with a live session no task names, as the planner card is: both badges, a session status. */
+  card({
+    id: 'card-3', kind: 'claude', title: 'Planner', deletable: false,
+    runtime: { worker_session_id: 'session-3', kind: 'claude', status: 'running' },
+  }),
 ];
 
 const TASKS: readonly ReportTaskRow[] = [
@@ -85,11 +90,12 @@ describe('fixture shape guard', () => {
     expect(ALL_ROWS.some((row) => row.status !== null && row.status.token === '')).toBe(true);
   });
 
-  it('badge counts cover zero and one, which is the whole reachable range', () => {
+  it('badge counts cover zero through two, which is the whole reachable range', () => {
     const counts = ALL_ROWS.map((row) => row.badges.length);
     expect(counts).toContain(0);
     expect(counts).toContain(1);
-    expect(Math.max(...counts)).toBe(1);
+    expect(counts).toContain(2);
+    expect(Math.max(...counts)).toBe(2);
   });
 
   it('every action kind the desktop offers appears at least once', () => {
