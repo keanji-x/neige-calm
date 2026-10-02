@@ -32,6 +32,9 @@ explaining the wait, and is retried each poll until it expires.
 - One unresolved decision per account; a new target requires the previous one to be final.
 - A completed SDK preflight refusal (`not_submitted`) is distinguishable from a possibly accepted write (`unknown`).
 - Requests for an unknown, expired or no longer queued decision are refused at request time and write nothing.
+- No order is submitted after the decision's `valid_until`: the loop rechecks it before committing intent, and the SDK preflight refuses it as `not_after`.
+- Broker history is read only from the oldest unresolved order. Resolved orders outside that window count through their persisted fills, so each poll stays bounded over months.
+- Decision IDs are 1-55 lowercase letters, digits or hyphens, so `spy-exec-<decision_id>` is a valid task key.
 - Unknown active orders, external positions, conflicting execution IDs and incomplete fill totals roll back the whole observation and block execution.
 
 ## Acceptance

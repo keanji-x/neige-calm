@@ -386,3 +386,46 @@ def test_spy_proved_not_submitted_resolves_without_unknown(allocation_rig):
     assert len(r.submits()) == 1
     r.plan(decision_id='fresh-target')
     assert r.status()['decisions'][-1]['state'] == 'queued'
+
+
+def test_spy_decision_expiring_between_reconcile_and_submit_is_never_submitted(allocation_rig):
+    r = allocation_rig
+    deadline = NOW + timedelta(hours=1)
+    r.plan(valid_until=deadline.isoformat())
+    state = r.read(); state['snapshot']['quote']['at'] = (deadline - timedelta(seconds=1)).isoformat(); r.write(state)
+    r.request()
+    times = [deadline - timedelta(seconds=1)]
+    r.app.clock = lambda: times[0]
+
+    class LateBroker(AllocationBroker):
+        def snapshot(self, since):
+            raw = super().snapshot(since)
+            # Reconciliation observes the decision as valid; the deadline passes before submission.
+            r.app.clock = iter([times[0]] + [deadline + timedelta(seconds=1)] * 10).__next__
+            return raw
+
+    r.app.broker = LateBroker(r.config, str(r.root))
+    assert r.step()['decisions'][0]['state'] == 'expired'
+    assert not r.submits()
+
+
+def test_spy_settled_history_leaves_the_reconciliation_window(allocation_rig):
+    r = allocation_rig; r.plan(); r.execute(); r.publish(); r.fill('order-1', 60, '4000', 'buy-fill', 60)
+    assert r.status()['decisions'][0]['state'] == 'settled'
+    # Next trading day: the settled order and its execution are no longer in today's broker lists.
+    state = r.read(); state['snapshot']['orders'] = []; state['snapshot']['fills'] = []; r.write(state)
+    after = r.step()
+    assert after['error'] is None and after['snapshot']['shares'] == 60
+    assert after['decisions'][0]['state'] == 'settled' and len(after['fills']) == 1
+    assert [c['request'] for c in r.calls() if c['method'] == 'snapshot'][-1] == {'since': None}
+
+
+@pytest.mark.parametrize('key', ['Allocation-1', 'allocation_1', 'allocation.1', 'a' * 56])
+def test_spy_decision_id_fits_the_worker_task_key(allocation_rig, key):
+    with pytest.raises(ValueError, match='decision_id'):
+        allocation_rig.plan(decision_id=key)
+    assert allocation_rig.status()['decisions'] == []
+
+
+def test_spy_longest_decision_id_still_plans(allocation_rig):
+    assert allocation_rig.plan(decision_id='a' * 55)['decisions'][0]['id'] == 'a' * 55

@@ -413,12 +413,13 @@ Track instead. The Worker task is `access: "read_only"`, so the checkout must
 only be clean; the App ledger lives in the plugin data directory, not in Git.
 Keep the strategy Track open between messages; close only on explicit request.
 
-The Planner uses `spy.plan` with a stable decision ID, a 0-10000
+The Planner uses `spy.plan` with a stable decision ID (1-55 lowercase letters,
+digits or hyphens, so the task key `spy-exec-<decision_id>` is valid), a 0-10000
 `target_spy_bps`, a rationale, 1-20 captured `neige://source/...` references
 and a timezone-aware validity of at most 24 hours. Only one unresolved decision
 is permitted. The Planner then declares a report `task` block through
 `calm.report.commit` with `kind: "codex"`, `access: "read_only"`, `ready: true`,
-`declared_by: "spec"`, a per-decision `key`, and a `goal` naming the decision ID.
+`declared_by: "spec"`, `key: "spy-exec-<decision_id>"`, and a `goal` naming the decision ID.
 Use a Codex Worker: Claude Workers receive no plugin MCP tools.
 
 All four tools declare `destructiveHint: false` and `openWorldHint: false`, so
@@ -460,7 +461,12 @@ server idempotency cache is an extra guard, not the recovery source of truth.
 A completed SDK preflight refusal returns an exact `not_submitted` outcome and
 resolves the decision as rejected, allowing a fresh target. After the broker
 write may have started, timeout or restart results stay unknown; later loop
-passes reconcile only and never resubmit. Recovery requires one exact remark/payload match. Unknown active orders,
+passes reconcile only and never resubmit. The loop rechecks the decision deadline
+immediately before committing intent, and the SDK preflight refuses the order
+(`not_submitted`) once the decision's `valid_until`, carried as `not_after`, has
+passed. Broker history is read only from the oldest unresolved order; settled,
+canceled, rejected and expired orders keep their reconciled fills locally, so each
+poll stays bounded for an unattended account. Recovery requires one exact remark/payload match. Unknown active orders,
 external positions, conflicting execution IDs and incomplete fill totals block
 execution and roll back the observation; the snapshot `error` names the cause.
 Reconciliation can be retried; deleting

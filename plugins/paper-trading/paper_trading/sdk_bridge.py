@@ -165,7 +165,7 @@ def snapshot(asset, trade, quote, expected, request):
 def prepare_submission(asset, trade, quote, expected, request, policy):
     from longbridge.openapi import OrderSide, OrderType, OutsideRTH, TimeInForceType
     exact(request, {'symbol', 'side', 'quantity', 'order_type', 'time_in_force', 'outside_rth',
-                    'client_request_id', 'remark', 'basis_shares'})
+                    'client_request_id', 'remark', 'basis_shares', 'not_after'})
     if request['symbol'] != 'SPY.US' or request['order_type'] != 'MO' or request['time_in_force'] != 'Day' or request['outside_rth'] != 'RTH_ONLY':
         raise ValueError('only regular-session SPY DAY market orders supported')
     if request['side'] not in ('Buy', 'Sell') or type(request['quantity']) is not int:
@@ -201,6 +201,8 @@ def prepare_submission(asset, trade, quote, expected, request, policy):
     elif request['quantity'] > available_shares:
         raise ValueError('sell shares changed before submission')
     now = datetime.now(timezone.utc)
+    if now >= timestamp(request['not_after']):
+        raise ValueError('allocation decision expired before submission')
     if not timestamp(current['regular_open_at']) <= now < timestamp(current['regular_close_at']):
         raise ValueError('SPY regular trading session closed before submission')
     if not 0 <= (now - timestamp(current['at'])).total_seconds() <= policy['quote_max_age_seconds']:

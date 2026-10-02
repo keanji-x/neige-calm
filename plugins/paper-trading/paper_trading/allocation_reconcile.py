@@ -46,7 +46,7 @@ def reconcile(db, ledger, raw, snapshot):
         if key in details and details[key] != order:
             raise ValueError('conflicting broker order identity')
         details[key] = order
-    owned = {}
+    owned, archived = {}, {}
     for decision in decisions:
         request = requests.get(decision['id'])
         if request is None:
@@ -64,6 +64,10 @@ def reconcile(db, ledger, raw, snapshot):
                 continue  # absence does not prove that an uncertain submission failed
             order_id = matches[0]
         if order_id not in details:
+            # A resolved order outside the history window keeps its reconciled, persisted fills.
+            if decision['state'] in ('settled', 'canceled', 'rejected', 'expired'):
+                archived[order_id] = request
+                continue
             raise ValueError('known allocation order missing from broker history')
         order = details[order_id]
         if any(order[k] != request[k] for k in ('symbol', 'side', 'order_type', 'remark', 'time_in_force', 'outside_rth')):
@@ -104,7 +108,8 @@ def reconcile(db, ledger, raw, snapshot):
             db.execute('INSERT INTO fills VALUES (?,?)', (key, encoded(normalized)))
             ledger.event(db, 'allocation_fill', normalized)
     fills = ledger.fills(db)
-    expected_shares = 0
+    expected_shares = sum(f['quantity'] * (1 if archived[f['order_id']]['side'] == 'Buy' else -1)
+                          for f in fills if f['order_id'] in archived)
     for order_id, decision in owned.items():
         order = details[order_id]
         total = sum(f['quantity'] for f in fills if f['order_id'] == order_id)

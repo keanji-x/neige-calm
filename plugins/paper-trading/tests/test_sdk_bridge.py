@@ -75,7 +75,8 @@ def sdk(monkeypatch):
         def now(cls, zone=None): return NOW
     monkeypatch.setattr(bridge, 'datetime', Clock)
     request = {'symbol':'SPY.US','side':'Buy','quantity':60,'order_type':'MO','time_in_force':'Day',
-               'outside_rth':'RTH_ONLY','client_request_id':'a' * 64,'remark':'nc-spy-' + 'a' * 32,'basis_shares':0}
+               'outside_rth':'RTH_ONLY','client_request_id':'a' * 64,'remark':'nc-spy-' + 'a' * 32,'basis_shares':0,
+               'not_after':NOW.replace(hour=16).isoformat()}
     return NS(asset=Asset(), trade=Trade(), quote=Quote(), state=state, calls=calls,
               module=module, request=request,
               policy={'cash_buffer_bps':200,'max_order_bps':10000,'quote_max_age_seconds':60})
@@ -263,3 +264,14 @@ def test_sdk_native_local_datetime_preserves_epoch(monkeypatch):
         if old is None:os.environ.pop('TZ',None)
         else:os.environ['TZ']=old
         time.tzset()
+
+
+
+def test_sdk_submission_is_bounded_by_the_decision_deadline(sdk):
+    later = NOW.replace(hour=16).isoformat()
+    assert bridge.submit(sdk.asset, sdk.trade, sdk.quote, 'PAPER123',
+                         sdk.request | {'not_after': later}, sdk.policy) == {'order_id': 'sdk-order'}
+    with pytest.raises(bridge.OrderNotSubmitted):
+        bridge.submit(sdk.asset, sdk.trade, sdk.quote, 'PAPER123',
+                      sdk.request | {'not_after': NOW.isoformat()}, sdk.policy)
+    assert len(sdk.calls) == 1

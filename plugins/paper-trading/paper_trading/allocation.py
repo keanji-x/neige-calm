@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
 import json
+import re
 
 from .config import broker_money, exact, identifier, integer, money, timestamp
 from .ledger import Ledger, digest, encoded
@@ -10,6 +11,8 @@ from .allocation_reconcile import reconcile, validate_snapshot
 from .allocation_broker import OrderNotSubmitted
 
 
+# Decision IDs also name the Worker task key `spy-exec-<id>` (`^[a-z0-9][a-z0-9._-]{0,63}$`).
+DECISION_ID = re.compile(r'[a-z0-9][a-z0-9-]{0,54}')
 TOOLS = frozenset(('spy.plan', 'spy.execute', 'spy.status', 'spy.refresh'))
 FINAL = frozenset(('settled', 'noop', 'rejected', 'canceled', 'expired'))
 
@@ -56,7 +59,9 @@ class Allocation:
 
     def plan(self, db, args, caller):
         exact(args, {'decision_id', 'target_spy_bps', 'rationale', 'source_refs', 'valid_until'})
-        key = identifier(args['decision_id'])
+        key = args['decision_id']
+        if not isinstance(key, str) or not DECISION_ID.fullmatch(key):
+            raise ValueError('decision_id must be 1-55 lowercase letters, digits or hyphens, starting with a letter or digit')
         old = db.execute('SELECT body FROM decisions WHERE id=?', (key,)).fetchone()
         if old is not None:
             if old[0] != encoded(args):
@@ -82,8 +87,9 @@ class Allocation:
 
     def refresh(self, db):
         decisions = self.ledger.decisions(db)
-        since = min((d['created_at'] for d in decisions if d['broker_id'] or
-                     d['state'] in ('submitting', 'unknown', 'working')), default=None)
+        # Only unresolved orders need history; settled ones keep their persisted fills.
+        since = min((d['created_at'] for d in decisions
+                     if d['state'] in ('submitting', 'unknown', 'working')), default=None)
         raw = self.broker.snapshot(since)
         snapshot = validate_snapshot(raw, self.account, self.clock())
         reconcile(db, self.ledger, raw, snapshot)
@@ -121,6 +127,7 @@ class Allocation:
             raise ValueError('insufficient settled cash for one SPY share')
         return {'symbol': 'SPY.US', 'side': side, 'quantity': quantity, 'order_type': 'MO',
                 'time_in_force': 'Day', 'outside_rth': 'RTH_ONLY', 'basis_shares': shares,
+                'not_after': plan['valid_until'],
                 'client_request_id': digest({'account': self.account.account_no, 'plan': plan}),
                 'remark': 'nc-spy-' + digest({'account': self.account.account_no, 'plan': plan})[:32]}
 
@@ -154,6 +161,10 @@ class Allocation:
         except ValueError as error:
             # No broker write yet: keep the request and retry each poll until the decision expires.
             self.ledger.change(db, key, 'requested', error=str(error))
+            return
+        # Reconciliation saw the decision valid; the deadline may have passed since.
+        if timestamp(decision['body']['valid_until']) <= self.clock():
+            self.ledger.change(db, key, 'expired')
             return
         if request is None:
             self.ledger.change(db, key, 'noop')
