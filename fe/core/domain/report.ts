@@ -168,6 +168,7 @@ const terminalTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
   kind: z.literal('terminal'),
   command: z.string(),
+  access: z.literal('read_write').nullish(),
   ...liveTaskSharedShape(),
 });
 
@@ -176,6 +177,7 @@ const legacyTerminalTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
   kind: z.literal('terminal'),
   goal: z.string(),
+  access: z.literal('read_write').nullish(),
   ...liveTaskSharedShape(),
 }).transform(({ goal, ...payload }) => ({ ...payload, command: goal }));
 

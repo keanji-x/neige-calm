@@ -16,6 +16,9 @@ use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::new_id;
 use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env};
+use crate::operation::workspace_lease::worker::{
+    card_declared_head_tx, record_declared_head, verify_recorded_head,
+};
 use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
 use crate::routes::codex_cards::shell_single_quote;
@@ -136,6 +139,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             )));
         }
 
+        let declared_head = card_declared_head_tx(tx, &card.payload).await?;
         let claude_session_id = resolve_claude_session_for_card(self.repo.as_ref(), &card_id)
             .await?
             .ok_or_else(|| {
@@ -254,6 +258,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "prev_pty_output": prev_pty_output,
             "prev_pty_output_truncated": prev_pty_output_truncated,
         });
+        record_declared_head(&mut output.data, declared_head.as_deref());
         output.post_commit_events.push(BroadcastEnvelope {
             id: runtime_event_id,
             event_version: SYNC_EVENT_VERSION,
@@ -286,6 +291,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let command_line = output.output_string("command_line", "claude restart")?;
         let cwd = output.output_string("cwd", "claude restart")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
+        // #1933: a resumed reader starts only while its checkout is still at its declared head.
+        verify_recorded_head(output, "claude restart")?;
 
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         ctx.terminal_renderer.drop_entry(&terminal_id).await;

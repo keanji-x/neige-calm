@@ -139,6 +139,19 @@ describe('readTrackReport', () => {
     expect(report?.blocks?.[0]?.kind).toBe('task');
   });
 
+  it('keeps a terminal task that declares read_write access', () => {
+    const report = readTrackReport([card({
+      payload: {
+        body: 'x',
+        blocks: [
+          { id: 'b-1', kind: 'task', rev: 1, payload: { key: 't', kind: 'terminal', command: 'make', ready: true, declared_by: 'user', access: 'read_write' } },
+          { id: 'b-2', kind: 'task', rev: 1, payload: { key: 'l', kind: 'terminal', goal: 'make', ready: true, declared_by: 'user', access: 'read_write' } },
+        ],
+      },
+    })]);
+    expect(report?.blocks?.map((block) => block.kind)).toEqual(['task', 'task']);
+  });
+
   it('accepts a 2048-code-point string even when emoji use two UTF-16 code units', () => {
     const src = `/${'😀'.repeat(2047)}`;
     const report = readTrackReport([card({

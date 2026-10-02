@@ -73,6 +73,13 @@ impl WorkerLeasePlan {
             None => TaskAccess::ReadWrite,
         }
     }
+
+    /// The `head` a read-only attempt declared.
+    pub(crate) fn declared_head(&self) -> Option<&str> {
+        self.reader
+            .as_ref()
+            .and_then(|reader| reader.head.as_deref())
+    }
 }
 
 /// #1933: what a read-only attempt's prompt states as typed facts.
@@ -252,13 +259,31 @@ pub(crate) fn verify_declared_head(checkout: &Path, head: &str) -> Result<()> {
 /// The output key of a declared head, written only when there is one.
 const DECLARED_HEAD: &str = "declared_head";
 
-/// #1933: record the declared head in the prepare's output, so the spawn checks it again on a
-/// fresh start and on a `SpawnStarted` re-drive.
-pub(crate) fn record_declared_head(data: &mut serde_json::Value, plan: &WorkerLeasePlan) {
-    let head = plan.reader.as_ref().and_then(|reader| reader.head.clone());
+/// #1933: record a declared head in a prepare's output, so the spawn checks it again on a fresh
+/// start, on a `SpawnStarted` re-drive and on a Claude restart.
+pub(crate) fn record_declared_head(data: &mut serde_json::Value, head: Option<&str>) {
     if let (Some(head), Some(data)) = (head, data.as_object_mut()) {
         data.insert(DECLARED_HEAD.into(), head.into());
     }
+}
+
+/// #1933: the head a worker card's attempt declared (its payload's `idempotency_key` names the
+/// `tasks` row); `None` for any other card or attempt.
+pub(crate) async fn card_declared_head_tx(
+    tx: &mut Tx<'_>,
+    card_payload: &serde_json::Value,
+) -> Result<Option<String>> {
+    let Some(attempt_id) = card_payload
+        .get("idempotency_key")
+        .and_then(|id| id.as_str())
+    else {
+        return Ok(None);
+    };
+    let head: Option<Option<String>> = sqlx::query_scalar("SELECT head FROM tasks WHERE id = ?1")
+        .bind(attempt_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(head.flatten())
 }
 
 /// #1933, the spawn side: the checkout the prepare froze (`cwd`) is still at the declared head.

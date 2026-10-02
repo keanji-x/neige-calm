@@ -869,7 +869,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "prompt": rendered_prompt,
             "scope": scope,
         });
-        record_declared_head(&mut output.data, &plan);
+        record_declared_head(&mut output.data, plan.declared_head());
         output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)

@@ -882,7 +882,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "prompt": rendered_prompt,
             "scope": scope,
         });
-        record_declared_head(&mut output.data, &plan);
+        record_declared_head(&mut output.data, plan.declared_head());
         output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)
@@ -1017,7 +1017,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         }
         // #1830 S2 D3: the track's checkout its prepare froze, still at that base on that
         // branch. Nothing is created.
-        // #1933 first, so a reader whose checkout left its head is told so.
+        // #1933: the prepare checked the declared head; this recheck refuses a reader whose
+        // checkout moved before a re-drive, naming the declared head rather than the lease base.
         verify_recorded_head(output, "claude-worker")?;
         verify_worker_checkout(output, "claude-worker")?;
 

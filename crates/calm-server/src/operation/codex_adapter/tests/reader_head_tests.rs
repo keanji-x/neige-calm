@@ -182,14 +182,11 @@ async fn codex_reader_prompt_states_repo_checkout_head_and_base() {
     let prompt = output.output_string("prompt", "test").unwrap();
     assert_eq!(
         prompt,
-        render_task_worker_prompt(
-            &format!("{}:writer", harness.track_id),
-            "do writer",
-            &Value::Null,
-            None,
-            None,
+        format!(
+            "Goal:\ndo writer\n\nTask attempt_id: {}:writer\nEcho this exact attempt_id when \
+             reporting completion or failure.",
+            harness.track_id
         )
     );
-    assert!(!prompt.contains("\nrepo: "), "{prompt}");
     assert!(output.data.get("declared_head").is_none());
 }
