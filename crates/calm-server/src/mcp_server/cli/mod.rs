@@ -117,7 +117,7 @@ async fn run(
     if argv
         .iter()
         .find(|name| name.as_str() != "--json")
-        .is_some_and(|name| name == "tools")
+        .is_some_and(|name| name == catalog::COMMAND_NAME)
     {
         return catalog::run(ctx, registry, connection_identity, argv).await;
     }

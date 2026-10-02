@@ -7,6 +7,8 @@ use crate::mcp_server::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+pub(super) const COMMAND_NAME: &str = "tools";
+
 const PAGE_SIZE: usize = 20;
 const NAMES_MAX_BYTES: usize = 4096;
 const DETAIL_MAX_BYTES: usize = 8192;

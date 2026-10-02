@@ -450,6 +450,13 @@ fn every_cli_option_maps_to_a_tool_schema_property() {
     }
 }
 
+// The kernel serves both catalog lookup and the native tool-adapter table.
+fn served_command_names() -> Vec<&'static str> {
+    std::iter::once(super::super::catalog::COMMAND_NAME)
+        .chain(COMMANDS.iter().map(|command| command.name))
+        .collect()
+}
+
 #[test]
 fn help_documents_exactly_the_served_commands() {
     let mut documented: Vec<String> = help::available_commands()
@@ -457,7 +464,10 @@ fn help_documents_exactly_the_served_commands() {
         .map(str::to_string)
         .collect();
     assert_eq!(documented.pop().as_deref(), Some("help"));
-    let served: Vec<String> = COMMANDS.iter().map(|c| c.name.to_string()).collect();
+    let served: Vec<String> = served_command_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     assert_eq!(documented, served);
 }
 
@@ -472,7 +482,7 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// H8: every `` `neige <command>`` in agent-facing prose names a command this table serves, so a rename fails here first.
+/// H8: every `` `neige <command>`` in agent-facing prose names a command the kernel serves, so a rename fails here first.
 #[test]
 fn prompt_neige_mentions_name_served_commands() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -493,7 +503,7 @@ fn prompt_neige_mentions_name_served_commands() {
             }
             mentions += 1;
             assert!(
-                COMMANDS.iter().any(|c| c.name == word),
+                served_command_names().contains(&word.as_str()),
                 "{} mentions `neige {word}`, which the kernel does not serve",
                 file.display()
             );

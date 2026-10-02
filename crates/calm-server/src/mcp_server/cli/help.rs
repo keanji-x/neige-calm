@@ -27,7 +27,7 @@ struct CommandHelp {
 }
 
 macro_rules! command_help {
-    ($name:literal, $summary:literal, $($line:literal),+ $(,)?) => {
+    ($name:expr, $summary:literal, $($line:literal),+ $(,)?) => {
         CommandHelp {
             name: $name,
             summary: $summary,
@@ -38,7 +38,7 @@ macro_rules! command_help {
 
 const COMMANDS: &[CommandHelp] = &[
     command_help!(
-        "tools",
+        super::catalog::COMMAND_NAME,
         "Find tools visible to the current active session",
         "Usage: neige tools names (--prefix PREFIX | --all) [--after NAME] [--json]",
         "       neige tools describe --name NAME [--json]",
