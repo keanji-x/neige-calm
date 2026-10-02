@@ -9,6 +9,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     append_decision_event_in_tx, session_complete_tx, session_projection_active_for_card_tx,
     session_set_status_tx, session_start_runtime_tx, terminal_create_tx, terminal_get_by_card_tx,
+    worker_card_declared_head_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -17,7 +18,7 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::new_id;
 use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env};
 use crate::operation::workspace_lease::worker::{
-    card_declared_head_tx, record_declared_head, verify_recorded_head,
+    record_declared_head, verify_declared_head, verify_recorded_head,
 };
 use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
@@ -139,7 +140,17 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             )));
         }
 
-        let declared_head = card_declared_head_tx(tx, &card.payload).await?;
+        // #1933: a resumed reader is refused before anything is written while its checkout is not
+        // at its declared head; the spawn checks again for a re-drive.
+        let declared_head = worker_card_declared_head_tx(tx, &card_id).await?;
+        if let Some(head) = declared_head.as_deref() {
+            let term = terminal_get_by_card_tx(tx, &card_id)
+                .await?
+                .ok_or_else(|| {
+                    CalmError::Internal(format!("worker card {card_id} has no terminal"))
+                })?;
+            verify_declared_head(Path::new(&term.cwd), head)?;
+        }
         let claude_session_id = resolve_claude_session_for_card(self.repo.as_ref(), &card_id)
             .await?
             .ok_or_else(|| {

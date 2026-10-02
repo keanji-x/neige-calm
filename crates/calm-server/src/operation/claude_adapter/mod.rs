@@ -25,7 +25,7 @@ use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_fail
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
     release::release_workspace_lease_by_id,
-    worker::{record_declared_head, verify_recorded_head, verify_worker_checkout},
+    worker::{record_declared_head, verify_worker_checkout},
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -1017,9 +1017,6 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         }
         // #1830 S2 D3: the track's checkout its prepare froze, still at that base on that
         // branch. Nothing is created.
-        // #1933: the prepare checked the declared head; this recheck refuses a reader whose
-        // checkout moved before a re-drive, naming the declared head rather than the lease base.
-        verify_recorded_head(output, "claude-worker")?;
         verify_worker_checkout(output, "claude-worker")?;
 
         let raw_token = mint_claude_worker_mcp_token(ctx, &card_id, &runtime_id).await?;

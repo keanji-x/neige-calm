@@ -267,25 +267,6 @@ pub(crate) fn record_declared_head(data: &mut serde_json::Value, head: Option<&s
     }
 }
 
-/// #1933: the head a worker card's attempt declared (its payload's `idempotency_key` names the
-/// `tasks` row); `None` for any other card or attempt.
-pub(crate) async fn card_declared_head_tx(
-    tx: &mut Tx<'_>,
-    card_payload: &serde_json::Value,
-) -> Result<Option<String>> {
-    let Some(attempt_id) = card_payload
-        .get("idempotency_key")
-        .and_then(|id| id.as_str())
-    else {
-        return Ok(None);
-    };
-    let head: Option<Option<String>> = sqlx::query_scalar("SELECT head FROM tasks WHERE id = ?1")
-        .bind(attempt_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    Ok(head.flatten())
-}
-
 /// #1933, the spawn side: the checkout the prepare froze (`cwd`) is still at the declared head.
 pub(crate) fn verify_recorded_head(output: &TxOutput, ctx: &str) -> Result<()> {
     let Some(head) = output

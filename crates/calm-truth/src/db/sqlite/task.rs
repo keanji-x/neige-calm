@@ -277,21 +277,36 @@ pub async fn worker_op_targets_card_tx(
     task_id: &str,
     card_id: &str,
 ) -> Result<bool> {
-    let owns: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(
-               SELECT 1 FROM operations
-               WHERE kind IN ('codex-worker', 'terminal-worker', 'claude-worker')
-                 AND idempotency_key = ?1
-                 AND target_type = 'card'
-                 AND target_id = ?2
-                 AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher'
-           )"#,
-    )
-    .bind(task_id)
+    let owns: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS(SELECT 1 {WORKER_SPAWN_OPS_OF_CARD} AND idempotency_key = ?2)"
+    ))
     .bind(card_id)
+    .bind(task_id)
     .fetch_one(&mut **tx)
     .await?;
     Ok(owns)
+}
+
+/// The scheduler's worker-spawn ops that created card `?1` (see [`worker_op_targets_card_tx`]).
+const WORKER_SPAWN_OPS_OF_CARD: &str = "FROM operations \
+     WHERE kind IN ('codex-worker', 'terminal-worker', 'claude-worker') \
+       AND target_type = 'card' AND target_id = ?1 \
+       AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher'";
+
+/// #1933: the `head` declared by the attempt whose worker-spawn op created `card_id`, found
+/// through the same op proof as [`worker_op_targets_card_tx`], never the card's (editable)
+/// payload. `None` for any other card, or an attempt with no head.
+pub async fn worker_card_declared_head_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<Option<String>> {
+    let head: Option<Option<String>> = sqlx::query_scalar(&format!(
+        "SELECT head FROM tasks WHERE id IN (SELECT idempotency_key {WORKER_SPAWN_OPS_OF_CARD})"
+    ))
+    .bind(card_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(head.flatten())
 }
 
 /// Who is asserting a worker-report flip. An UNSTAMPED `dispatched` row needs

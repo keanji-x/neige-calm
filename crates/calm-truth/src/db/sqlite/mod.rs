@@ -118,7 +118,7 @@ pub use task::{
     task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
     task_stamp_missing_running_deadline_tx, task_start_verifying_from_worker_tx,
     task_update_pending_tx, tasks_by_track_tx, track_require_task_gates_tx,
-    worker_op_targets_card_tx,
+    worker_card_declared_head_tx, worker_op_targets_card_tx,
 };
 pub use task_attempt::{
     task_attempt_current_by_track_pool, task_attempt_current_by_track_tx,

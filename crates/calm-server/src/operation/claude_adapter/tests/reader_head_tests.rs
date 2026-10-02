@@ -44,8 +44,10 @@ async fn claude_reader_at_another_head_is_refused_before_spawn() {
     );
 }
 
-/// A reader's worker exits, its checkout moves off the declared head, and the card is restarted
-/// (`--resume`): the restart is refused before the provider is called.
+/// A reader's worker exits and its card is restarted (`--resume`). The attempt is found through
+/// the worker-spawn op even after the card payload's `idempotency_key` is edited away. At its head
+/// the restart prepares; if the checkout then moves, the spawn is refused before the provider is
+/// called, and a new restart is refused in prepare with a conflict, writing nothing.
 #[cfg(feature = "fixtures")]
 #[tokio::test]
 async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
@@ -54,19 +56,41 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     };
     let harness = claude_worker_harness().await;
     let head = git_rev(&harness.worktree, "HEAD");
+    let task_id = format!("{}:resume", harness.track_id);
     sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
          created_at_ms, updated_at_ms, access, head) \
          VALUES (?1, ?2, 'resume', 'claude', 'review', 'null', '[]', 'dispatched', 1, 1, \
          'read_only', ?3)",
     )
-    .bind(format!("{}:resume", harness.track_id))
+    .bind(&task_id)
     .bind(&harness.track_id)
     .bind(&head)
     .execute(harness.repo.pool())
     .await
     .unwrap();
-    let (output, _, _) = prepare_claude_worker(&harness, "resume").await;
+    // The worker op as the scheduler drives it, so the op records its card as its target.
+    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let op_id = op_repo
+        .insert_operation(
+            "claude-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task_id.clone()),
+                payload_hash: "hash-resume".into(),
+            },
+            claude_worker_payload(&harness.track_id, "resume"),
+        )
+        .await
+        .unwrap();
+    let op = op_repo.claim_drive_batch(1).await.unwrap().remove(0);
+    assert_eq!(op.id, op_id);
+    let (op, _) = op_repo
+        .prepare_tx_and_advance(&op, &harness.adapter)
+        .await
+        .unwrap()
+        .unwrap();
+    let output = op.tx_output.unwrap();
     let card_id = output.output_string("card_id", "test").unwrap();
     let terminal_id = output.output_string("terminal_id", "test").unwrap();
     crate::db::RepoOutOfDomain::terminal_set_exit(
@@ -82,22 +106,13 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    assert!(
-        std::process::Command::new("git")
-            .args([
-                "-c",
-                "user.name=T",
-                "-c",
-                "user.email=t@example.invalid",
-                "commit"
-            ])
-            .args(["--allow-empty", "-qm", "moved"])
-            .current_dir(&harness.worktree)
-            .status()
-            .unwrap()
-            .success()
-    );
-    let actual = git_rev(&harness.worktree, "HEAD");
+    sqlx::query(
+        "UPDATE cards SET payload = json_remove(payload, '$.idempotency_key') WHERE id = ?1",
+    )
+    .bind(&card_id)
+    .execute(harness.repo.pool())
+    .await
+    .unwrap();
 
     let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = spawns.clone();
@@ -116,34 +131,81 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     let payload = serde_json::to_value(ClaudeRestartOperationPayload {
         actor: ActorId::KernelDispatcher,
         worker_session_id: None,
-        card_id,
+        card_id: card_id.clone(),
     })
     .unwrap();
-    let op = claude_worker_op("op-restart", payload.clone());
+    let restart_op = claude_worker_op("op-restart", payload.clone());
     let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let restart_output = restart.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    let restart_output = restart
+        .prepare_tx(&mut tx, &payload, &restart_op)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
+
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit"
+            ])
+            .args(["--allow-empty", "-qm", "moved"])
+            .current_dir(&harness.worktree)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let actual = git_rev(&harness.worktree, "HEAD");
+    let refused = |message: &str| {
+        message.contains(&format!("refused: {TRACK_HEAD_MISMATCH}:"))
+            && message.contains(&head)
+            && message.contains(&actual)
+    };
     let ctx = SpawnCtx::new(
         route_repo,
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone())),
+        op_repo,
         Arc::new(DaemonClient::new_stub()),
         TerminalRendererRegistry::new(),
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
-    let message = match restart.spawn_side_effect(&restart_output, &op, &ctx).await {
+    let message = match restart
+        .spawn_side_effect(&restart_output, &restart_op, &ctx)
+        .await
+    {
         Ok(_) => panic!("a restart whose checkout left the declared head must not spawn"),
         Err(error) => error.to_string(),
     };
-    assert!(
-        message.contains(&format!("refused: {TRACK_HEAD_MISMATCH}:"))
-            && message.contains(&head)
-            && message.contains(&actual),
-        "{message}"
-    );
+    assert!(refused(&message), "{message}");
     assert_eq!(
         spawns.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "the provider was called"
     );
+
+    let rows = || async {
+        let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions")
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+        (sessions, events)
+    };
+    let before = rows().await;
+    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let error = restart
+        .prepare_tx(&mut tx, &payload, &restart_op)
+        .await
+        .unwrap_err();
+    tx.rollback().await.unwrap();
+    assert!(
+        matches!(&error, CalmError::Conflict(message) if refused(message)),
+        "{error}"
+    );
+    assert_eq!(rows().await, before, "a refused restart writes nothing");
 }
