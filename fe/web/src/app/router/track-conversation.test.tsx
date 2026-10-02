@@ -973,7 +973,7 @@ describe('track conversations', () => {
     await screen.findByRole('button', { name: 'Regenerate response' });
     await typeInto(messageField(), 'Keep my separate draft');
     await attachAnImage();
-    await waitFor(() => expect(drawerElement().querySelector(`[data-nc-attachments] img[src$="${draftImageId}"]`)).not.toBeNull());
+    await waitFor(() => expect(Array.from(drawerElement().querySelectorAll('[data-nc-attachments] img')).some((image) => image.getAttribute('src')?.endsWith(draftImageId))).toBe(true));
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate response' }));
     await waitFor(() => expect(inputBodies(requests)).toEqual([{ text: 'Original prompt', attachments: [ATTACHMENT_ID] }]));
     fireEvent.click(screen.getByRole('button', { name: /Regenerate response/ }));
@@ -983,7 +983,7 @@ describe('track conversations', () => {
     await act(async () => { resolve(inputAccepted()); await held; });
     expect(messageField().textContent).toBe('Keep my separate draft');
     expect(inputBodies(requests)).toHaveLength(1);
-    expect(drawerElement().querySelector(`[data-nc-attachments] img[src$="${draftImageId}"]`)).not.toBeNull();
+    expect(Array.from(drawerElement().querySelectorAll('[data-nc-attachments] img')).some((image) => image.getAttribute('src')?.endsWith(draftImageId))).toBe(true);
   });
 
   it.each(['interrupted', 'failed'] as const)('shows one current paused status over a recorded %s result', async (status) => {
