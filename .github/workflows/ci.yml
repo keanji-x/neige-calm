@@ -558,7 +558,7 @@ jobs:
               sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
             fi
           ) </dev/null >"$RUNNER_TEMP/background-setup.log" 2>&1
-            echo $? >"$status.tmp" && mv "$status.tmp" "$status" ) &
+            echo $? >"$status.tmp" && mv "$status.tmp" "$status" ) </dev/null >/dev/null 2>&1 &
 
       # Two neige-app tailnet tests build the Go helper at test time.
       - uses: actions/setup-go@v5
@@ -568,10 +568,11 @@ jobs:
 
       # setup-go's cache key is frozen at its first save and never holds these flags' packages, so compile them here in the
       # background (same flags as the tests) while the archive downloads; the tests then hit a warm GOCACHE.
+      # It can outlast the download, so it runs niced to leave the CPU to the tests.
       - name: warm GOCACHE for the tailnet tests (background)
         working-directory: tailnet
         run: |
-          (go test -c -tags ts_omit_logtail -o /dev/null . && go build -tags ts_omit_logtail -o /dev/null .) \
+          (nice -n 19 go test -c -tags ts_omit_logtail -o /dev/null . && nice -n 19 go build -tags ts_omit_logtail -o /dev/null .) \
             </dev/null >"$RUNNER_TEMP/go-warm.log" 2>&1 &
 
       - uses: taiki-e/install-action@nextest
