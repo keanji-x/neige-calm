@@ -76,7 +76,7 @@ get_arg() {
 }
 
 # gh's export of one finished, passing CheckRun.
-DEFAULT_CHECKS_ROLLUP='{"statusCheckRollup":[{"__typename":"CheckRun","name":"test","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:01:00Z","detailsUrl":"https://github.invalid/shim/checks/1"}]}'
+DEFAULT_CHECKS_ROLLUP='{"statusCheckRollup":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:01:00Z","detailsUrl":"https://github.invalid/shim/checks/1"}]}'
 
 state_dir_for() {
   printf '%s.shimstate\n' "$1"

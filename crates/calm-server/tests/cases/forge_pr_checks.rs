@@ -14,7 +14,6 @@ fn check_run(name: &str, status: &str, conclusion: &str) -> Value {
     json!({
         "__typename": "CheckRun",
         "name": name,
-        "workflowName": "CI",
         "status": status,
         "conclusion": conclusion,
         "startedAt": "2026-10-02T15:13:19Z",
