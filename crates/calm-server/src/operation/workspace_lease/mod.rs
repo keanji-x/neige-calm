@@ -10,7 +10,7 @@ use crate::db::sqlite::append_decision_event_in_tx;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
-use crate::model::{new_id, now_ms};
+use crate::model::{TaskAccess, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
 use crate::workspace_materialize::{isolated_git_command, neige_git_command};
 
@@ -36,6 +36,8 @@ pub(crate) use release::{
     ReleaseDelivery, reclaim_dead_workspace_leases_on_boot, release_workspace_lease_for_card_repo,
     release_workspace_lease_for_card_tx,
 };
+#[cfg(any(test, feature = "fixtures"))]
+pub(crate) use worker::prepare_worker_lease_as_tx;
 pub(crate) use worker::{WorkerLeasePlan, prepare_worker_lease_tx, worker_branch_tx};
 
 /// The one SELECT list every reader of a lease row uses
@@ -133,7 +135,9 @@ impl WorkspaceLeaseTarget {
 
 /// INSERT the lease row of one worker attempt at the directory [`prepare_worker_lease_tx`] chose
 /// (#1830 S2 D2): `delivery_policy = 'kernel'` and the five base columns in the one INSERT, then
-/// the track's workspace freeze and `workspace.leased`. Nothing is created on disk.
+/// the track's workspace freeze and `workspace.leased`. Nothing is created on disk. A read-only
+/// attempt's row (#1917) records no base, so it has no `delivery_policy` and its release writes no
+/// delivery row.
 pub(crate) async fn acquire_workspace_lease_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
@@ -141,13 +145,18 @@ pub(crate) async fn acquire_workspace_lease_tx(
     lease_owner: &str,
     plan: &WorkerLeasePlan,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
+    let base = match plan.access {
+        TaskAccess::ReadWrite => Some(&plan.base),
+        TaskAccess::ReadOnly => None,
+    };
     acquire_workspace_lease_at_path_tx(
         tx,
         card_id,
         track_id,
         lease_owner,
         &plan.path,
-        Some(&plan.base),
+        base,
+        plan.access,
     )
     .await
 }
@@ -168,7 +177,16 @@ pub(crate) async fn acquire_plain_workspace_lease_tx(
             path.display()
         ))
     })?;
-    acquire_workspace_lease_at_path_tx(tx, card_id, track_id, lease_owner, path, None).await
+    acquire_workspace_lease_at_path_tx(
+        tx,
+        card_id,
+        track_id,
+        lease_owner,
+        path,
+        None,
+        TaskAccess::ReadWrite,
+    )
+    .await
 }
 
 async fn acquire_workspace_lease_at_path_tx(
@@ -178,6 +196,7 @@ async fn acquire_workspace_lease_at_path_tx(
     lease_owner: &str,
     path: &Path,
     base: Option<&LeaseBase>,
+    access: TaskAccess,
 ) -> Result<(WorkspaceLease, BroadcastEnvelope)> {
     let lease_id = new_id();
     let path_string = path.to_string_lossy().to_string();
@@ -188,9 +207,9 @@ async fn acquire_workspace_lease_at_path_tx(
                lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms,
                base_sha, base_source, base_attempt_id, canonical_path, git_common_dir,
-               delivery_policy
+               delivery_policy, access_mode
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
@@ -203,6 +222,7 @@ async fn acquire_workspace_lease_at_path_tx(
     let delivery_policy = base.map(|_| DeliveryPolicy::Kernel);
     LeaseBase::bind_columns(query, base)?
         .bind(delivery_policy.map(DeliveryPolicy::as_column))
+        .bind(access.as_str())
         .execute(&mut **tx)
         .await?;
 

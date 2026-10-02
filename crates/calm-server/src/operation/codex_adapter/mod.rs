@@ -20,7 +20,7 @@ use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
-use crate::model::{Card, CardRole, new_id, now_ms};
+use crate::model::{Card, CardRole, TaskAccess, new_id, now_ms};
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
@@ -774,7 +774,13 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let track_id = TrackId::from(payload.track_id.clone());
         // `payload.cwd` is forward-compatible only: the worker runs in the track's checkout
         // (#1830 S2), decided and checked clean here and frozen below; the spawn only verifies it.
-        let plan = prepare_worker_lease_tx(tx, track_id.as_str(), &self.workspace_root).await?;
+        let plan = prepare_worker_lease_tx(
+            tx,
+            track_id.as_str(),
+            &payload.idempotency_key,
+            &self.workspace_root,
+        )
+        .await?;
         let cwd = plan.path.to_string_lossy().to_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_task_worker_prompt(
@@ -782,6 +788,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
+            plan.access,
         );
         let scope = card_scope(
             self.repo.as_ref(),
@@ -1482,15 +1489,25 @@ pub(crate) async fn card_payload_get_tx(
         .map_err(|e| CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}")))
 }
 
+/// The task prompt both worker adapters render. A read-only task (#1917) is told it shares the
+/// checkout; nothing enforces it.
 pub(crate) fn render_task_worker_prompt(
     attempt_id: &str,
     goal: &str,
     context: &Value,
     acceptance: Option<&str>,
+    access: TaskAccess,
 ) -> String {
     let prompt = render_worker_prompt(goal, context, acceptance);
+    let access = match access {
+        TaskAccess::ReadWrite => "",
+        TaskAccess::ReadOnly => {
+            "\n\nThis task is read-only: do not modify the checkout (no edits, commits or \
+             generated files). Other read-only tasks may be reading it at the same time."
+        }
+    };
     format!(
-        "{prompt}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
+        "{prompt}{access}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
     )
 }
 

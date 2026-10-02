@@ -5,13 +5,26 @@ use super::SqlxRepo;
 use calm_types::task_recovery::TASK_IN_TRACK_ROUTE;
 use sqlx::sqlite::SqlitePoolOptions;
 
-async fn snapshot(pool: &sqlx::SqlitePool, table: &str, order: &str) -> Vec<String> {
-    let columns: Vec<String> = sqlx::query_scalar(&format!(
+async fn columns_of(pool: &sqlx::SqlitePool, table: &str) -> Vec<String> {
+    sqlx::query_scalar(&format!(
         "SELECT name FROM pragma_table_info('{table}') ORDER BY cid"
     ))
     .fetch_all(pool)
     .await
-    .unwrap();
+    .unwrap()
+}
+
+async fn snapshot(pool: &sqlx::SqlitePool, table: &str, order: &str) -> Vec<String> {
+    snapshot_over(pool, table, order, &columns_of(pool, table).await).await
+}
+
+/// Every row over `columns`: a column a later migration adds is not part of the comparison.
+async fn snapshot_over(
+    pool: &sqlx::SqlitePool,
+    table: &str,
+    order: &str,
+    columns: &[String],
+) -> Vec<String> {
     sqlx::query_scalar(&format!(
         "SELECT json_array({}) FROM {table} ORDER BY {order}",
         columns.join(",")
@@ -64,14 +77,18 @@ async fn task_recovery_migration_preserves_all_execution_values_refs_and_operati
         .execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) VALUES('op','operation-key','codex-worker','nonconventional-running','old-hash','card','{}','{\"frozen\":true}','{\"kept\":1}','pending',5,6)")
         .execute(&pool).await.unwrap();
-    let tasks_before = snapshot(&pool, "tasks", "id").await;
+    let task_columns = columns_of(&pool, "tasks").await;
+    let tasks_before = snapshot_over(&pool, "tasks", "id", &task_columns).await;
     let refs_before = snapshot(&pool, "task_ref_index", "task_id").await;
     let operations_before = snapshot(&pool, "operations", "id").await;
     pool.close().await;
     let repo = SqlxRepo::open(&url)
         .await
         .expect("real startup migrates with FK ON");
-    assert_eq!(snapshot(repo.pool(), "tasks", "id").await, tasks_before);
+    assert_eq!(
+        snapshot_over(repo.pool(), "tasks", "id", &task_columns).await,
+        tasks_before
+    );
     assert_eq!(
         snapshot(repo.pool(), "task_ref_index", "task_id").await,
         refs_before

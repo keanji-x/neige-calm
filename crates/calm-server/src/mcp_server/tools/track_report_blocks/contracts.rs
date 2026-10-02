@@ -298,7 +298,7 @@ pub(super) fn kinds_table() -> Value {
                                 { "required": ["priority"] }, { "required": ["cwd"] },
                                 { "required": ["context"] }, { "required": ["refs"] },
                                 { "required": ["ready"] }, { "required": ["released_by_user"] },
-                                { "required": ["spawn"] }
+                                { "required": ["spawn"] }, { "required": ["access"] }
                             ] }
                         }
                     ],
@@ -349,6 +349,12 @@ pub(super) fn kinds_table() -> Value {
                         "declared_by": { "type": "string", "enum": ["spec", "user"] },
                         "released_by_user": { "type": "boolean", "default": false },
                         "spawn": { "type": "string", "enum": ["in-wave", "sub-wave"], "default": "in-wave" },
+                        "access": {
+                            "type": "string",
+                            "enum": ["read_only", "read_write"],
+                            "default": "read_write",
+                            "description": "`read_only`: a codex/claude review or audit that leaves the checkout unchanged; no gate, runs beside other readers."
+                        },
                         "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
                         "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
                     },

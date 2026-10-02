@@ -1,7 +1,113 @@
 //! Where a task execution runs.
 
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use utoipa::ToSchema;
+
 /// #1830 S2 D5: whether a task runs in its track's checkout — a codex or claude task that is not
-/// on the child-track route. Such tasks share the checkout, so they run one at a time.
+/// on the child-track route. Such tasks share the checkout, so a task that changes it runs alone.
 pub fn runs_in_track_checkout(kind: &str, spawn: &str) -> bool {
     matches!(kind, "codex" | "claude") && spawn != crate::task_recovery::TASK_CHILD_TRACK_ROUTE
+}
+
+/// #1917: what a task declares it does to the track's checkout (`tasks.access`, the task block's
+/// `access`; absent = `read_write`). Read-only tasks may run beside each other; a task that changes
+/// the checkout runs alone. Declared, not enforced: no sandbox changes with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+impl TaskAccess {
+    /// The column and block spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskAccess::ReadOnly => "read_only",
+            TaskAccess::ReadWrite => "read_write",
+        }
+    }
+
+    /// Every spelling, for error messages that name the valid choices.
+    pub const CHOICES: &'static str = "\"read_only\" | \"read_write\"";
+}
+
+impl TryFrom<String> for TaskAccess {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "read_only" => Ok(TaskAccess::ReadOnly),
+            "read_write" => Ok(TaskAccess::ReadWrite),
+            other => Err(format!(
+                "access {other:?} is not one of {}",
+                TaskAccess::CHOICES
+            )),
+        }
+    }
+}
+
+/// #1917: `access` is `"read_only"` or `"read_write"` (absent or null = `"read_write"`). A
+/// read-only task is a codex or claude task in the track's checkout with no gate.
+pub(crate) fn validate_task_access(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    let access = match map.get("access") {
+        None | Some(Value::Null) => return,
+        Some(value) => value
+            .as_str()
+            .map(|access| TaskAccess::try_from(access.to_string())),
+    };
+    match access {
+        Some(Ok(TaskAccess::ReadWrite)) => {}
+        Some(Ok(TaskAccess::ReadOnly)) => {
+            if !matches!(
+                map.get("kind").and_then(Value::as_str),
+                Some("codex" | "claude")
+            ) {
+                errors.push(
+                    "access: \"read_only\" requires kind \"codex\" or \"claude\"; a terminal task \
+                     takes \"read_write\""
+                        .into(),
+                );
+            }
+            if map.get("spawn").and_then(Value::as_str)
+                == Some(crate::task_recovery::TASK_CHILD_TRACK_ROUTE)
+            {
+                errors.push(format!(
+                    "access: \"read_only\" runs in the track's checkout; it requires spawn {:?}, \
+                     not {:?}",
+                    crate::task_recovery::TASK_IN_TRACK_ROUTE,
+                    crate::task_recovery::TASK_CHILD_TRACK_ROUTE
+                ));
+            }
+            if map.get("gate").is_some_and(|gate| !gate.is_null()) {
+                errors.push(
+                    "access: \"read_only\" takes no gate; drop the gate, or declare \
+                     \"read_write\" for a task that changes the checkout"
+                        .into(),
+                );
+            }
+        }
+        _ => errors.push(format!("access: must be one of {}", TaskAccess::CHOICES)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TaskAccess;
+
+    #[test]
+    fn access_spelling_is_the_serde_spelling_and_round_trips() {
+        for access in [TaskAccess::ReadOnly, TaskAccess::ReadWrite] {
+            assert_eq!(
+                serde_json::to_value(access).unwrap(),
+                serde_json::Value::from(access.as_str())
+            );
+            assert_eq!(
+                TaskAccess::try_from(access.as_str().to_string()),
+                Ok(access)
+            );
+        }
+        assert!(TaskAccess::try_from("readonly".to_string()).is_err());
+    }
 }

@@ -240,6 +240,7 @@ async fn seed_task(
         context_stale_at_ms: None,
         declared_by: calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR.into(),
         spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
+        access: calm_server::model::TaskAccess::ReadWrite,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

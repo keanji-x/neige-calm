@@ -10,7 +10,7 @@ use super::candidate::{CandidateRow, candidate_for_attempt_tx};
 use super::delivery::{DeliveryRow, DeliverySettled, delivery_latest_for_attempt_tx};
 use super::verification::{VerificationView, verification_state};
 use crate::error::{CalmError, Result};
-use crate::model::{Task, TaskKind, TaskStatus};
+use crate::model::{Task, TaskAccess, TaskKind, TaskStatus};
 use crate::operation::Tx;
 use crate::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskGateResult, gate_attempt_key};
 use crate::operation::workspace_lease::facts::{
@@ -161,6 +161,8 @@ pub(crate) fn delivery_state(
 pub(crate) enum NoBindingReason {
     Terminal,
     ChildTrack,
+    /// #1917: a read-only task delivers nothing.
+    ReadOnly,
     NoLease,
 }
 
@@ -249,6 +251,11 @@ pub(crate) fn candidate_binding(
     if task.spawn == TASK_CHILD_TRACK_ROUTE {
         return Ok(CandidateBinding::None {
             reason: NoBindingReason::ChildTrack,
+        });
+    }
+    if task.access == TaskAccess::ReadOnly {
+        return Ok(CandidateBinding::None {
+            reason: NoBindingReason::ReadOnly,
         });
     }
     let Some(lease) = lease else {

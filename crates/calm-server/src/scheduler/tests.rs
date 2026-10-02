@@ -1,4 +1,6 @@
 use super::*;
+use crate::db::sqlite::CheckoutOccupancy;
+use crate::model::TaskAccess;
 
 #[test]
 fn acceptance_11_sub_track_sweep_arm_precedes_terminal_and_timeout_arms() {
@@ -55,6 +57,7 @@ fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
+        access: crate::model::TaskAccess::ReadWrite,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -80,7 +83,7 @@ fn ready_set_requires_all_deps_done() {
         task("c", TaskStatus::Pending, &["a", "b"], 0),
         task("d", TaskStatus::Pending, &["ghost"], 0),
     ];
-    let ready = compute_ready(&tasks, true).unwrap();
+    let ready = compute_ready(&tasks, CheckoutOccupancy::Free);
     assert_eq!(keys(&ready), vec!["b"], "only b has all deps done");
 }
 
@@ -93,7 +96,7 @@ fn canceled_and_failed_deps_never_satisfy() {
         task("c", TaskStatus::Pending, &["a"], 0),
         task("d", TaskStatus::Pending, &["b"], 0),
     ];
-    assert!(compute_ready(&tasks, true).unwrap().is_empty());
+    assert!(compute_ready(&tasks, CheckoutOccupancy::Free).is_empty());
 }
 
 /// #1830 S2 D5: a codex/claude task in the track's checkout is ready only while the track is
@@ -113,14 +116,81 @@ fn in_tree_tasks_are_ready_only_while_the_track_is_idle() {
         child,
     ];
     assert_eq!(
-        keys(&compute_ready(&tasks, true).unwrap()),
+        keys(&compute_ready(&tasks, CheckoutOccupancy::Free)),
         vec!["a-codex", "b-claude", "c-terminal", "e-child"],
         "an idle track offers every in-tree task, in scheduler order"
     );
     assert_eq!(
-        keys(&compute_ready(&tasks, false).unwrap()),
+        keys(&compute_ready(&tasks, CheckoutOccupancy::Busy)),
         vec!["c-terminal", "e-child"],
         "a busy track admits no in-tree task"
+    );
+}
+
+fn reader(key: &str) -> Task {
+    let mut task = task(key, TaskStatus::Pending, &[], 0);
+    task.access = TaskAccess::ReadOnly;
+    task
+}
+
+/// #1917: read-only tasks share a free checkout or one only readers use; a task that changes the
+/// checkout needs it free. Every admitted task is offered and the claim tx picks (module docs).
+#[test]
+fn readers_share_the_checkout_and_a_writer_needs_it_free() {
+    let tasks = vec![reader("r1"), reader("r2")];
+    for occupancy in [CheckoutOccupancy::Free, CheckoutOccupancy::Readers] {
+        assert_eq!(
+            keys(&compute_ready(&tasks, occupancy)),
+            vec!["r1", "r2"],
+            "{occupancy:?} admits every reader"
+        );
+    }
+    assert!(compute_ready(&tasks, CheckoutOccupancy::Busy).is_empty());
+    let writer = vec![task("w", TaskStatus::Pending, &[], 0)];
+    assert_eq!(
+        keys(&compute_ready(&writer, CheckoutOccupancy::Free)),
+        vec!["w"]
+    );
+    assert!(
+        compute_ready(&writer, CheckoutOccupancy::Readers).is_empty(),
+        "a writer waits for the readers"
+    );
+}
+
+/// #1917 no starvation: once a deps-ready writer waits, every later reader waits behind it;
+/// readers ahead of it still run, and a writer whose dependency is not done holds nobody back.
+#[test]
+fn a_waiting_writer_holds_back_the_readers_after_it() {
+    let mut blocked_writer = task("b-blocked", TaskStatus::Pending, &["ghost"], 0);
+    blocked_writer.priority = 9;
+    let tasks = vec![
+        blocked_writer,
+        reader("r1"),
+        task("w", TaskStatus::Pending, &[], 0),
+        reader("r2"),
+    ];
+    assert_eq!(
+        keys(&compute_ready(&tasks, CheckoutOccupancy::Readers)),
+        vec!["r1"]
+    );
+    let admission = crate::db::sqlite::checkout_admission(&tasks, CheckoutOccupancy::Readers);
+    let waits: Vec<_> = admission
+        .iter()
+        .map(|(task, wait)| (task.key.as_str(), *wait))
+        .collect();
+    assert_eq!(
+        waits,
+        vec![
+            ("r1", None),
+            ("w", Some(crate::db::sqlite::CheckoutWait::InUse)),
+            ("r2", Some(crate::db::sqlite::CheckoutWait::WriterAhead)),
+        ]
+    );
+    // A free checkout offers all three; the claims pick (the reader's claim then refuses the
+    // writer, and the writer's claim the other reader).
+    assert_eq!(
+        keys(&compute_ready(&tasks, CheckoutOccupancy::Free)),
+        vec!["r1", "w", "r2"]
     );
 }
 
@@ -135,7 +205,7 @@ fn ready_set_preserves_scheduler_order() {
     let mut high = terminal("zz-high", 9);
     high.created_at_ms = 5;
     let tasks = vec![high, terminal("aa-low", 0), terminal("bb-low", 0)];
-    let ready = compute_ready(&tasks, true).unwrap();
+    let ready = compute_ready(&tasks, CheckoutOccupancy::Free);
     assert_eq!(keys(&ready), vec!["zz-high", "aa-low", "bb-low"]);
 }
 

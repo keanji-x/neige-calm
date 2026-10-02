@@ -128,32 +128,15 @@ pub(crate) async fn mark_running_timeout_cleanup_tx(
     })
 }
 
-/// Ready-set computation over one track's plan rows (already in scheduler order): pending rows
-/// whose deps are all `done`. A codex or claude task that runs in the track's checkout is ready
-/// only while the track is idle ([`crate::db::sqlite::track_idle`], #1830 S2 D5); the claim tx
-/// rechecks it, so one claim wins per pass and a claim that fails does not hold the others.
-/// Terminal and child-track tasks are not held.
-pub fn compute_ready(tasks: &[Task], track_idle: bool) -> Result<Vec<Task>> {
-    let done_keys: BTreeSet<&str> = tasks
-        .iter()
-        .filter(|t| t.status == TaskStatus::Done)
-        .map(|t| t.key.as_str())
-        .collect();
-    let mut ready = Vec::new();
-    for task in tasks.iter().filter(|t| t.status == TaskStatus::Pending) {
-        if !task
-            .depends_on()
-            .iter()
-            .all(|dep| done_keys.contains(dep.as_str()))
-        {
-            continue;
-        }
-        if !track_idle && task.runs_in_track_checkout() {
-            continue;
-        }
-        ready.push(task.clone());
-    }
-    Ok(ready)
+/// Ready-set computation over one track's plan rows (already in scheduler order): the tasks
+/// [`crate::db::sqlite::checkout_admission`] admits under `occupancy` (#1830 S2 D5, #1917). The
+/// claim tx re-runs that rule, so a claim that fails does not hold the others.
+pub fn compute_ready(tasks: &[Task], occupancy: crate::db::sqlite::CheckoutOccupancy) -> Vec<Task> {
+    crate::db::sqlite::checkout_admission(tasks, occupancy)
+        .into_iter()
+        .filter(|(_, wait)| wait.is_none())
+        .map(|(task, _)| task.clone())
+        .collect()
 }
 
 /// Build the worker-operation payload as a pure function of the frozen task row, so a
@@ -875,10 +858,13 @@ impl Scheduler {
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        let track_idle =
-            crate::db::sqlite::track_idle(&mut *pool.acquire().await?, track_id.as_str(), "")
-                .await?;
-        for task in compute_ready(&tasks, track_idle)? {
+        let occupancy = crate::db::sqlite::checkout_occupancy(
+            &mut *pool.acquire().await?,
+            track_id.as_str(),
+            "",
+        )
+        .await?;
+        for task in compute_ready(&tasks, occupancy) {
             self.dispatch_task(task, &track).await;
         }
         Ok(())
@@ -1049,6 +1035,20 @@ impl Scheduler {
                                 return Err(race_lost_err());
                             }
                         }
+                        // Revalidate admission against the CURRENT plan and checkout in the same tx: a
+                        // dependency added mid-window, an attempt that took the checkout since the pass
+                        // read it, or a writer now waiting ahead of a reader aborts the claim. Which
+                        // admitted task claims first is deliberately NOT revalidated.
+                        let siblings = tasks_by_track_tx(tx, track_id.as_str()).await?;
+                        let occupancy =
+                            crate::db::sqlite::checkout_occupancy(tx, track_id.as_str(), &task_id)
+                                .await?;
+                        if !crate::db::sqlite::checkout_admission(&siblings, occupancy)
+                            .iter()
+                            .any(|(sibling, wait)| sibling.id == task_id && wait.is_none())
+                        {
+                            return Err(race_lost_err());
+                        }
                         let now = now_ms();
                         let rows =
                             task_claim_pending_tx(tx, &task_id, now, &claim_refs, claim_truncated)
@@ -1058,29 +1058,6 @@ impl Scheduler {
                         }
                         // Post-claim re-read = the frozen row. Gone row = concurrent track delete; treat as lost.
                         let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
-                        // Revalidate the ready predicate against the CURRENT plan in the same tx: a dependency
-                        // added mid-window must abort the claim. Priority ORDER is deliberately NOT revalidated.
-                        let siblings = tasks_by_track_tx(tx, track_id.as_str()).await?;
-                        let done_keys: BTreeSet<&str> = siblings
-                            .iter()
-                            .filter(|t| t.status == TaskStatus::Done)
-                            .map(|t| t.key.as_str())
-                            .collect();
-                        if !frozen
-                            .depends_on()
-                            .iter()
-                            .all(|dep| done_keys.contains(dep.as_str()))
-                        {
-                            return Err(race_lost_err());
-                        }
-                        // #1830 S2 D5: a codex/claude worker runs in the track's checkout, so it
-                        // needs the track idle apart from itself.
-                        if frozen.runs_in_track_checkout()
-                            && !crate::db::sqlite::track_idle(tx, track_id.as_str(), &task_id)
-                                .await?
-                        {
-                            return Err(race_lost_err());
-                        }
                         let events = vec![
                             (
                                 ActorId::KernelDispatcher,

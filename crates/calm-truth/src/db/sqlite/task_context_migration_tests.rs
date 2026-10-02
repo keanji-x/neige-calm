@@ -396,7 +396,14 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
         "context_verify_failures",
         "spawn",
         "child_track_id",
+        "access",
     ];
+    // `access` (0130) postdates this upgrade; every other column is carried over.
+    let preserved: Vec<&str> = HEAD_TASK_COLUMNS
+        .iter()
+        .copied()
+        .filter(|column| *column != "access")
+        .collect();
 
     let dir = tempfile::tempdir().expect("temporary database directory");
     let path = dir.path().join("nonterminal-block-at-0072.sqlite");
@@ -430,7 +437,7 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
     .expect("seed pre-0073 in-flight block task");
     // Migration 0081 renames `wave_id` -> `track_id` and `child_wave_id` ->
     // `child_track_id`, so the pre-0081 snapshot needs its own column names.
-    let pre_0081_columns: Vec<String> = HEAD_TASK_COLUMNS
+    let pre_0081_columns: Vec<String> = preserved
         .iter()
         .map(|c| match *c {
             "track_id" => "wave_id".to_string(),
@@ -440,7 +447,7 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
         .collect();
     let snapshot_sql = format!(
         "SELECT json_array({}) FROM tasks WHERE id='block-flight'",
-        HEAD_TASK_COLUMNS.join(",")
+        preserved.join(",")
     );
     let before_sql = format!(
         "SELECT json_array({}) FROM tasks WHERE id='block-flight'",

@@ -290,15 +290,7 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>> {
-        let sql = format!(
-            "SELECT {TASK_COLUMNS} FROM current_tasks WHERE track_id = ?1 \
-             ORDER BY priority DESC, created_at_ms ASC, key ASC"
-        );
-        let rows = sqlx::query_as::<_, Task>(&sql)
-            .bind(track_id)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows)
+        super::task::tasks_in_scheduler_order(&mut *self.pool.acquire().await?, track_id).await
     }
 
     async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>> {

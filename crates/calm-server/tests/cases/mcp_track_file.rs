@@ -2407,6 +2407,7 @@ async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
+        access: calm_server::model::TaskAccess::ReadWrite,
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),
         finished_at_ms: None,

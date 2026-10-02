@@ -1,13 +1,15 @@
-//! #1830 S2 — where a codex or claude worker runs: its track's `agent_cwd()`, one attempt at a
-//! time, on a clean tree (`docs/architecture/1830-s2-worker-in-track-worktree.md`).
+//! #1830 S2 — where a codex or claude worker runs: its track's `agent_cwd()`, one attempt that
+//! changes it at a time, on a clean tree (`docs/architecture/1830-s2-worker-in-track-worktree.md`).
 //!
 //! - D1: an attached track's worker runs in its track worktree on `neige/track-<id>`, a managed
 //!   track's in its managed directory on `main`; an attached track without a worktree is refused.
 //! - D2: the lease row records that directory, its HEAD as the base (`BaseSource::Commit`), its
 //!   realpath and its common dir.
-//! - D5: `calm_truth`'s `track_idle`, the one predicate that says no other attempt is using the
-//!   checkout.
+//! - D5: `calm_truth`'s `checkout_occupancy` and `checkout_admission`, the one rule that says
+//!   which attempt may use the checkout.
 //! - D6: a dirty tree refuses the worker before any row is written.
+//! - #1917: a read-only attempt shares the checkout with other read-only attempts. Its lease row
+//!   records no base (so no delivery) and it never supersedes a stuck lease.
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -22,7 +24,7 @@ use super::{
 };
 use crate::error::{CalmError, Result};
 use crate::event::BroadcastEnvelope;
-use crate::model::TrackWorkspaceKind;
+use crate::model::{TaskAccess, TrackWorkspaceKind};
 use crate::operation::{PhaseTag, Tx, TxOutput};
 use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
 use crate::workspace_materialize::isolated_git_command;
@@ -51,6 +53,9 @@ pub(crate) struct WorkerLeasePlan {
     pub base: LeaseBase,
     /// `workspace.released` of the stuck owners' leases this prepare superseded (D7).
     pub superseded: Vec<BroadcastEnvelope>,
+    /// The attempt's `tasks.access`, read in this transaction (never from the op payload, which
+    /// feeds `stable_payload_hash`).
+    pub access: TaskAccess,
 }
 
 /// The branch rule (D4): `neige/track-<id>` when the track has a worktree, else `main`.
@@ -87,11 +92,30 @@ async fn track_workspace_tx(
 }
 
 /// The worker's directory, branch and base, inside the worker op's prepare transaction (D1, D2,
-/// D6, D7 supersede). A refusal is a `Conflict` (`refused: <word>: …`), so the op fails once and
-/// the task ends `spawn-failed: refused: …`; nothing is written.
+/// D6, D7 supersede), for the attempt `attempt_id` (its `tasks` row). A refusal is a `Conflict`
+/// (`refused: <word>: …`), so the op fails once and the task ends `spawn-failed: refused: …`;
+/// nothing is written.
 pub(crate) async fn prepare_worker_lease_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
+    attempt_id: &str,
+    workspace_root: &Path,
+) -> Result<WorkerLeasePlan> {
+    let access: String = sqlx::query_scalar("SELECT access FROM tasks WHERE id = ?1")
+        .bind(attempt_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("task {attempt_id}")))?;
+    let access = TaskAccess::try_from(access).map_err(CalmError::Internal)?;
+    prepare_worker_lease_as_tx(tx, track_id, access, workspace_root).await
+}
+
+/// [`prepare_worker_lease_tx`] for an attempt whose access is already known (a fixture lease
+/// with no `tasks` row).
+pub(crate) async fn prepare_worker_lease_as_tx(
+    tx: &mut Tx<'_>,
+    track_id: &str,
+    access: TaskAccess,
     workspace_root: &Path,
 ) -> Result<WorkerLeasePlan> {
     validate_path_segment("track_id", track_id)?;
@@ -114,13 +138,17 @@ pub(crate) async fn prepare_worker_lease_tx(
     };
     let branch = worker_branch(track_id, worktree.is_some())?;
     ensure_clean_tree(&path).await?;
-    let superseded = supersede_stuck_leases_tx(tx, &path).await?;
+    let superseded = match access {
+        TaskAccess::ReadWrite => supersede_stuck_leases_tx(tx, &path).await?,
+        TaskAccess::ReadOnly => Vec::new(),
+    };
     let base = directory_base(&path)?;
     Ok(WorkerLeasePlan {
         path,
         branch,
         base,
         superseded,
+        access,
     })
 }
 

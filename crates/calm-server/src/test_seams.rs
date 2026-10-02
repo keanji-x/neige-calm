@@ -20,9 +20,14 @@ pub async fn prepare_worker_lease_for_test(
     track_id: &str,
     workspace_root: &std::path::Path,
 ) -> crate::error::Result<std::path::PathBuf> {
-    crate::operation::workspace_lease::prepare_worker_lease_tx(tx, track_id, workspace_root)
-        .await
-        .map(|plan| plan.path)
+    crate::operation::workspace_lease::prepare_worker_lease_as_tx(
+        tx,
+        track_id,
+        crate::model::TaskAccess::ReadWrite,
+        workspace_root,
+    )
+    .await
+    .map(|plan| plan.path)
 }
 
 /// Give an attached track its #1830 track worktree the way the create route does: the path
@@ -106,6 +111,7 @@ pub async fn acquire_based_workspace_lease_for_test(
             git_common_dir: path.join(".git"),
         },
         superseded: Vec::new(),
+        access: crate::model::TaskAccess::ReadWrite,
     };
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
     acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, &plan).await?;
@@ -163,9 +169,17 @@ pub async fn take_kernel_workspace_lease_for_test(
     card_id: &str,
     workspace_root: &std::path::Path,
 ) -> crate::error::Result<KernelWorkspaceLease> {
-    use crate::operation::workspace_lease::{acquire_workspace_lease_tx, prepare_worker_lease_tx};
+    use crate::operation::workspace_lease::{
+        acquire_workspace_lease_tx, prepare_worker_lease_as_tx,
+    };
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let plan = prepare_worker_lease_tx(&mut tx, track_id, workspace_root).await?;
+    let plan = prepare_worker_lease_as_tx(
+        &mut tx,
+        track_id,
+        crate::model::TaskAccess::ReadWrite,
+        workspace_root,
+    )
+    .await?;
     let (lease, _event) =
         acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan).await?;
     tx.commit().await?;

@@ -1,5 +1,6 @@
 //! Pure task-block vocabulary and diagnostics shared by report projection and plan upsert.
 
+use crate::task_execution::TaskAccess;
 use crate::track_report::ReportBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -141,6 +142,8 @@ pub struct TaskDeclaration {
     pub released_by_user: bool,
     /// Claim-frozen execution route. Missing and explicit null normalize to `in-wave` before projection.
     pub spawn: String,
+    /// #1917: missing and explicit null normalize to `read_write` before projection.
+    pub access: TaskAccess,
     pub tombstoned_by: Option<String>,
     pub ready: bool,
     pub tombstone: bool,
@@ -571,6 +574,7 @@ pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: boo
             declaration.kind != "terminal"
                 && declaration.gate.is_none()
                 && declaration.no_gate_reason.is_none()
+                && declaration.access != TaskAccess::ReadOnly
         })
         .map(|declaration| declaration.key.clone())
         .collect()
@@ -845,6 +849,12 @@ pub fn project_task_declarations(
                 .and_then(Value::as_str)
                 .unwrap_or("in-wave")
                 .to_string(),
+            // An invalid value already carries the blocking `payload` diagnostic.
+            access: payload
+                .get("access")
+                .and_then(Value::as_str)
+                .and_then(|access| TaskAccess::try_from(access.to_string()).ok())
+                .unwrap_or(TaskAccess::ReadWrite),
             tombstoned_by: payload
                 .get("tombstoned_by")
                 .and_then(Value::as_str)
@@ -1056,6 +1066,7 @@ mod tests {
             declared_by: "spec".into(),
             released_by_user: false,
             spawn: "in-wave".into(),
+            access: TaskAccess::ReadWrite,
             tombstoned_by: None,
             ready: true,
             tombstone: false,
@@ -1078,6 +1089,12 @@ mod tests {
             vec![("a".into(), "missing".into())]
         );
         assert_eq!(gate_rule_violations(&declarations, true), vec!["a", "a"]);
+        // #1917: a read-only task is gate-exempt, like one with a `no_gate_reason`.
+        let reader = TaskDeclaration {
+            access: TaskAccess::ReadOnly,
+            ..declaration("reader", &[])
+        };
+        assert!(gate_rule_violations(&[reader], true).is_empty());
         let graph = declaration_graph(&[declaration("a", &["b"]), declaration("b", &["a"])]);
         assert_eq!(
             find_cycle(&graph),

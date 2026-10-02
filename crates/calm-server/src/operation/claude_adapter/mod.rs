@@ -766,7 +766,13 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let track_id = TrackId::from(payload.track_id.clone());
         // The worker runs in the track's checkout (#1830 S2), decided and checked clean here and
         // frozen below; the spawn only verifies it.
-        let plan = prepare_worker_lease_tx(tx, track_id.as_str(), &self.workspace_root).await?;
+        let plan = prepare_worker_lease_tx(
+            tx,
+            track_id.as_str(),
+            &payload.idempotency_key,
+            &self.workspace_root,
+        )
+        .await?;
         let cwd = plan.path.to_string_lossy().to_string();
         let settings_path = self
             .codex
@@ -779,6 +785,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
+            plan.access,
         );
         let command_line = build_claude_worker_command_line(
             &self.codex.claude_bin,

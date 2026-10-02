@@ -269,9 +269,9 @@ pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task
            (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
             depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
             gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
-            running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms)
+            running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms,access)
            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
-                  ?18,?19,?20,?21,?22,?23,?24)"#,
+                  ?18,?19,?20,?21,?22,?23,?24,?25)"#,
     )
     .bind(&task.id)
     .bind(&task.track_id)
@@ -297,6 +297,7 @@ pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task
     .bind(task.created_at_ms)
     .bind(task.updated_at_ms)
     .bind(task.finished_at_ms)
+    .bind(task.access.as_str())
     .execute(&mut **tx)
     .await?;
     Ok(())

@@ -8,11 +8,20 @@ use crate::model::*;
 pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
-     running_deadline_ms, context_stale_at_ms, declared_by, spawn, created_at_ms, updated_at_ms, \
-     finished_at_ms";
+     running_deadline_ms, context_stale_at_ms, declared_by, spawn, access, created_at_ms, \
+     updated_at_ms, finished_at_ms";
 
 pub async fn tasks_by_track_tx(
     tx: &mut Transaction<'_, Sqlite>,
+    track_id: &str,
+) -> Result<Vec<Task>> {
+    tasks_in_scheduler_order(tx, track_id).await
+}
+
+/// The track's current task executions in scheduler order, the order
+/// [`super::checkout_admission`] reads them in.
+pub(super) async fn tasks_in_scheduler_order(
+    conn: &mut sqlx::SqliteConnection,
     track_id: &str,
 ) -> Result<Vec<Task>> {
     let sql = format!(
@@ -21,7 +30,7 @@ pub async fn tasks_by_track_tx(
     );
     let rows = sqlx::query_as::<_, Task>(&sql)
         .bind(track_id)
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut *conn)
         .await?;
     Ok(rows)
 }

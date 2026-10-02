@@ -147,6 +147,7 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
+        access: crate::model::TaskAccess::ReadWrite,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -258,7 +259,13 @@ async fn prepare_worker_and_op(
 
 #[test]
 fn task_worker_turn_input_names_the_execution_id_attempt_id() {
-    let out = render_task_worker_prompt("t:build", "g", &Value::Null, None);
+    let out = render_task_worker_prompt(
+        "t:build",
+        "g",
+        &Value::Null,
+        None,
+        crate::model::TaskAccess::ReadWrite,
+    );
     assert!(out.ends_with("\n\nTask attempt_id: t:build\nEcho this exact attempt_id when reporting completion or failure."), "{out}");
     assert!(
         !out.contains("idempotency") && !out.contains("task_id"),

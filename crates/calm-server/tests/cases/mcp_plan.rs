@@ -889,6 +889,7 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
     assert_eq!(
         fields,
         std::collections::BTreeSet::from([
+            "access",
             "attempt_id",
             "blocking_reason",
             "candidate",

@@ -8,7 +8,6 @@ use calm_types::report_blocks::tasks::{
     opt_json_eq, task_diagnostic_action, unknown_deps,
 };
 use calm_types::report_links::{format_track_destination, parse_destination, scan_links};
-use calm_types::task_execution::runs_in_track_checkout;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
@@ -370,12 +369,14 @@ fn task_verdict_row_state<'a>(
     }
 }
 
-/// Every input but `track_idle` comes from `track_projection_state`'s one statement; the idle
-/// read is its own statement because a pending reason is presentation, never a projection input.
+/// Every input but `checkout_waits` comes from `track_projection_state`'s one statement; the
+/// admission read is its own because a pending reason is presentation, never a projection input.
+/// `checkout_waits` is [`super::checkout_admission`]'s verdict by task key, so the reason given is
+/// the one the scheduler acts on.
 fn attach_task_pending_reasons(
     state: &TrackProjectionState,
     declarations: &[TaskDeclaration],
-    track_idle: bool,
+    checkout_waits: &BTreeMap<String, super::CheckoutWait>,
     verdicts: &mut [BlockVerdict],
 ) {
     let by_key: BTreeMap<_, _> = state
@@ -436,14 +437,17 @@ fn attach_task_pending_reasons(
                         message,
                         dependencies,
                     });
-                } else if !track_idle
-                    && declarations.get(index).is_some_and(|declaration| {
-                        runs_in_track_checkout(&declaration.kind, &declaration.spawn)
-                    })
-                {
+                } else if let Some(wait) = checkout_waits.get(&row.key) {
+                    let message = match wait {
+                        super::CheckoutWait::InUse => {
+                            "Waiting for the track's checkout: another task is using it"
+                        }
+                        super::CheckoutWait::WriterAhead => {
+                            "Waiting for the track's checkout: a task that changes it goes first"
+                        }
+                    };
                     verdict.pending_reason = Some(TaskPendingReason::TrackBusy {
-                        message: "Waiting for the track's checkout: another task is using it"
-                            .into(),
+                        message: message.into(),
                     });
                 }
                 continue;
@@ -1392,8 +1396,13 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
             &mut verdicts,
         );
         if read.pending_reasons {
-            let track_idle = super::track_idle::track_idle(&mut *conn, track_id, "").await?;
-            attach_task_pending_reasons(&state, declarations, track_idle, &mut verdicts);
+            let tasks = super::task::tasks_in_scheduler_order(&mut *conn, track_id).await?;
+            let occupancy = super::checkout_occupancy(&mut *conn, track_id, "").await?;
+            let checkout_waits = super::checkout_admission(&tasks, occupancy)
+                .into_iter()
+                .filter_map(|(task, wait)| Some((task.key.clone(), wait?)))
+                .collect();
+            attach_task_pending_reasons(&state, declarations, &checkout_waits, &mut verdicts);
         }
     }
     Ok(verdicts)
@@ -1611,10 +1620,10 @@ async fn project_tasks_from_verdicts_tx(
             r#"INSERT INTO tasks(
                    id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
                    depends_on_json,priority,gate_json,status,declared_by,spawn,
-                   decl_ready,decl_released_by_user,created_at_ms,updated_at_ms
+                   decl_ready,decl_released_by_user,created_at_ms,updated_at_ms,access
                ) VALUES(
                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
-                   ?14,?15,?16,?16
+                   ?14,?15,?16,?16,?17
                )
                ON CONFLICT(id) DO UPDATE SET
                    kind=excluded.kind,
@@ -1627,6 +1636,7 @@ async fn project_tasks_from_verdicts_tx(
                    gate_json=excluded.gate_json,
                    declared_by=excluded.declared_by,
                    spawn=excluded.spawn,
+                   access=excluded.access,
                    decl_ready=excluded.decl_ready,
                    decl_released_by_user=excluded.decl_released_by_user,
                    updated_at_ms=excluded.updated_at_ms
@@ -1642,6 +1652,7 @@ async fn project_tasks_from_verdicts_tx(
                      OR tasks.gate_json IS NOT excluded.gate_json
                      OR tasks.declared_by IS NOT excluded.declared_by
                      OR tasks.spawn IS NOT excluded.spawn
+                     OR tasks.access IS NOT excluded.access
                      OR tasks.decl_ready IS NOT excluded.decl_ready
                      OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user
                  )"#,
@@ -1662,6 +1673,7 @@ async fn project_tasks_from_verdicts_tx(
         .bind(i64::from(declaration.ready))
         .bind(i64::from(declaration.released_by_user))
         .bind(now)
+        .bind(declaration.access.as_str())
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() != 0 {

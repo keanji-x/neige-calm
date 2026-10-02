@@ -597,6 +597,7 @@ mod tests {
             context_stale_at_ms: stale.then_some(now),
             declared_by: "spec".into(),
             spawn: "sub-wave".into(),
+            access: crate::model::TaskAccess::ReadWrite,
             created_at_ms: now,
             updated_at_ms: now,
             finished_at_ms: None,

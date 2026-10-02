@@ -13,6 +13,7 @@ pub use calm_types::model::{
     Overlay, Track, TrackConversationSummary, TrackRecipe, TrackWorkspace, TrackWorkspaceKind,
     default_deletable,
 };
+pub use calm_types::task_execution::TaskAccess;
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`; duplicates
 /// `calm_session::TerminalTheme` so the route keeps its own `ToSchema`.
@@ -354,6 +355,9 @@ pub struct Task {
     /// Claim-frozen route selector. Deliberately not exposed through task
     /// read-state DTOs: it is written before claim, unlike child_track_id.
     pub spawn: String,
+    /// #1917: the declared access, frozen with the row like `spawn`.
+    #[sqlx(try_from = "String")]
+    pub access: TaskAccess,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub finished_at_ms: Option<i64>,

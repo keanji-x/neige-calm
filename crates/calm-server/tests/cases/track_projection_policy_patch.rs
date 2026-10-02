@@ -151,6 +151,7 @@ const TASK_PERSISTENT_COLUMNS: &[&str] = &[
     "context_verify_failures",
     "spawn",
     "child_track_id",
+    "access",
 ];
 
 const TRACK_PERSISTENT_COLUMNS: &[&str] = &[

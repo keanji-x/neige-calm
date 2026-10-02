@@ -46,6 +46,7 @@ pub const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
     "priority",
     "declared_by",
     "spawn",
+    "access",
     "tombstone",
     "tombstoned_by",
     "ready",
@@ -1445,6 +1446,7 @@ mod tests {
             ("priority", serde_json::json!(1)),
             ("declared_by", serde_json::json!("user")),
             ("spawn", serde_json::json!({"future": true})),
+            ("access", serde_json::json!("read_only")),
             ("released_by_user", serde_json::json!(true)),
         ] {
             let mut changed = block.clone();

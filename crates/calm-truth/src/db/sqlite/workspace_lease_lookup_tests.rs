@@ -2,7 +2,7 @@ use super::{SqlxRepo, area_create_tx, track_create_tx};
 use crate::db::RepoRead;
 use crate::model::{NewArea, NewTrack, RequestTheme, now_ms};
 
-async fn seed_track(repo: &SqlxRepo) -> String {
+pub(super) async fn seed_track(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.expect("begin seed tx");
     let area = area_create_tx(
         &mut tx,

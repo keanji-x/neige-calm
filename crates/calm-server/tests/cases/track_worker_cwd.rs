@@ -173,6 +173,7 @@ pub(super) struct Started {
     pub(super) identity: ToolCallIdentity,
     pub(super) cwd: PathBuf,
     pub(super) lease_id: String,
+    /// Empty for a read-only attempt's lease, which records no base (#1917).
     pub(super) base_sha: String,
 }
 
@@ -189,7 +190,7 @@ pub(super) async fn wait_running(fx: &Fx, key: &str) -> Started {
             .await
             .unwrap();
     let (lease_id, path, base_sha): (String, String, String) = sqlx::query_as(
-        "SELECT lease_id, path, base_sha FROM workspace_leases WHERE card_id = ?1 \
+        "SELECT lease_id, path, COALESCE(base_sha, '') FROM workspace_leases WHERE card_id = ?1 \
          ORDER BY created_at_ms DESC LIMIT 1",
     )
     .bind(&card_id)

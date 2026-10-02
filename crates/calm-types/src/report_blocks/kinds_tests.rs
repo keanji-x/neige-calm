@@ -1,4 +1,5 @@
 use super::*;
+use crate::task_execution::TaskAccess;
 
 #[test]
 fn inline_tables_reject_prototype_keys_on_writes_and_overlay_reads() {
@@ -467,6 +468,83 @@ fn acceptance_23_sub_track_rejects_claude_and_terminal_at_common_write_validatio
         let error = validate_payload(KIND_TASK, &payload).unwrap_err();
         assert!(error.contains("requires kind \"codex\""), "{kind}: {error}");
     }
+}
+
+/// #1917: `access` is `read_only` | `read_write` (absent and null = `read_write`); a read-only
+/// task is a codex/claude task in the track's checkout with no gate. Each refusal names the
+/// valid choices.
+#[test]
+fn task_access_rules_name_the_valid_choices() {
+    let reader = || {
+        let mut payload = valid_task();
+        payload.as_object_mut().unwrap().remove("gate");
+        payload["access"] = json!("read_only");
+        payload
+    };
+    assert_eq!(validate_payload(KIND_TASK, &reader()), Ok(()));
+    let mut claude = reader();
+    claude["kind"] = json!("claude");
+    assert_eq!(validate_payload(KIND_TASK, &claude), Ok(()));
+    let blocks = |payload: Value| {
+        vec![crate::track_report::ReportBlock {
+            id: "b_0001".into(),
+            kind: KIND_TASK.into(),
+            payload,
+            rev: 1,
+        }]
+    };
+    let access = |payload: Value| {
+        crate::report_blocks::tasks::project_task_declarations(&blocks(payload)).0[0].access
+    };
+    let mut missing = valid_task();
+    missing.as_object_mut().unwrap().remove("access");
+    let mut null = valid_task();
+    null["access"] = Value::Null;
+    let mut writer = valid_task();
+    writer["access"] = json!("read_write");
+    for payload in [&missing, &null, &writer] {
+        assert_eq!(validate_payload(KIND_TASK, payload), Ok(()));
+        assert_eq!(access(payload.clone()), TaskAccess::ReadWrite);
+    }
+    assert_eq!(access(reader()), TaskAccess::ReadOnly);
+
+    let mut unknown = valid_task();
+    unknown["access"] = json!("readonly");
+    let error = validate_payload(KIND_TASK, &unknown).unwrap_err();
+    assert!(
+        error.contains("access: must be one of \"read_only\" | \"read_write\""),
+        "{error}"
+    );
+    let mut gated = reader();
+    gated["gate"] = valid_task()["gate"].clone();
+    let error = validate_payload(KIND_TASK, &gated).unwrap_err();
+    assert!(
+        error.contains("access: \"read_only\" takes no gate"),
+        "{error}"
+    );
+    let mut terminal = reader();
+    terminal["kind"] = json!("terminal");
+    terminal.as_object_mut().unwrap().remove("goal");
+    terminal["command"] = json!("cargo test");
+    let error = validate_payload(KIND_TASK, &terminal).unwrap_err();
+    assert!(
+        error.contains("access: \"read_only\" requires kind \"codex\" or \"claude\""),
+        "{error}"
+    );
+    let mut child = reader();
+    child["spawn"] = json!(crate::task_recovery::TASK_CHILD_TRACK_ROUTE);
+    let error = validate_payload(KIND_TASK, &child).unwrap_err();
+    assert!(
+        error.contains("access: \"read_only\" runs in the track's checkout"),
+        "{error}"
+    );
+    let tombstone = json!({"key":"old","tombstone":{},"declared_by":"user",
+        "tombstoned_by":"user","access":"read_only"});
+    assert!(
+        validate_payload(KIND_TASK, &tombstone)
+            .unwrap_err()
+            .contains("access: must be absent")
+    );
 }
 
 #[test]

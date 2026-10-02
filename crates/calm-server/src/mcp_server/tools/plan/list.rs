@@ -101,6 +101,7 @@ pub(super) fn summary(entry: &Value) -> Value {
             "status",
             "blocking_reason",
             "kind",
+            "access",
             "status_detail",
             "task_projection",
             "worktree/path",

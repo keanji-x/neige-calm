@@ -52,7 +52,9 @@ mod task_attempt_migration_tests;
 mod task_attempt_tests;
 mod task_projection;
 mod track;
-mod track_idle;
+mod track_occupancy;
+#[cfg(test)]
+mod track_occupancy_tests;
 mod track_recipe;
 mod track_tree;
 mod track_workspace;
@@ -138,7 +140,9 @@ pub use track::{
     track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx, track_update_tx,
     track_worktree_path_for,
 };
-pub use track_idle::track_idle;
+pub use track_occupancy::{
+    CheckoutOccupancy, CheckoutWait, checkout_admission, checkout_occupancy,
+};
 pub use track_recipe::track_recipe_get_tx;
 pub use track_tree::{
     DEFAULT_TREE_TASK_BUDGET, MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_BOUNDED_PATH_SQL,

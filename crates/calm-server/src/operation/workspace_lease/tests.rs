@@ -241,9 +241,14 @@ async fn prepare_takes_the_track_worktree_at_its_head() {
         .to_string();
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let plan = prepare_worker_lease_tx(&mut tx, &track_id, &unused_workspace_root())
-        .await
-        .unwrap();
+    let plan = prepare_worker_lease_as_tx(
+        &mut tx,
+        &track_id,
+        crate::model::TaskAccess::ReadWrite,
+        &unused_workspace_root(),
+    )
+    .await
+    .unwrap();
     let (lease, event) = acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &plan)
         .await
         .unwrap();
@@ -279,9 +284,14 @@ async fn prepare_refuses_an_attached_track_without_a_worktree() {
     let (repo, track_id, _card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let err = prepare_worker_lease_tx(&mut tx, &track_id, &unused_workspace_root())
-        .await
-        .unwrap_err();
+    let err = prepare_worker_lease_as_tx(
+        &mut tx,
+        &track_id,
+        crate::model::TaskAccess::ReadWrite,
+        &unused_workspace_root(),
+    )
+    .await
+    .unwrap_err();
     tx.rollback().await.unwrap();
 
     let CalmError::Conflict(message) = err else {
@@ -354,9 +364,14 @@ async fn prepare_supersedes_a_stuck_owners_lease() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, track_id, card_id, _target) = worktree_track_fixture(tmp.path()).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let plan = prepare_worker_lease_tx(&mut tx, &track_id, &unused_workspace_root())
-        .await
-        .unwrap();
+    let plan = prepare_worker_lease_as_tx(
+        &mut tx,
+        &track_id,
+        crate::model::TaskAccess::ReadWrite,
+        &unused_workspace_root(),
+    )
+    .await
+    .unwrap();
     let (stuck, _) = acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-stuck", &plan)
         .await
         .unwrap();
@@ -373,9 +388,14 @@ async fn prepare_supersedes_a_stuck_owners_lease() {
 
     let next_card = new_card(&repo, &track_id).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let plan = prepare_worker_lease_tx(&mut tx, &track_id, &unused_workspace_root())
-        .await
-        .unwrap();
+    let plan = prepare_worker_lease_as_tx(
+        &mut tx,
+        &track_id,
+        crate::model::TaskAccess::ReadWrite,
+        &unused_workspace_root(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         plan.superseded.len(),
         1,
@@ -416,9 +436,14 @@ async fn every_lease_reader_returns_base_and_policy() {
         let track_id = &track_id;
         async move {
             let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-            let plan = prepare_worker_lease_tx(&mut tx, track_id, &unused_workspace_root())
-                .await
-                .unwrap();
+            let plan = prepare_worker_lease_as_tx(
+                &mut tx,
+                track_id,
+                crate::model::TaskAccess::ReadWrite,
+                &unused_workspace_root(),
+            )
+            .await
+            .unwrap();
             let (lease, _event) =
                 acquire_workspace_lease_tx(&mut tx, &card_id, track_id, "op-test", &plan)
                     .await

@@ -497,7 +497,9 @@ mod tests {
         SqlxRepo, begin_immediate_tx, session_insert_tx, session_mark_track_root_tx,
     };
     use crate::model::{CardRole, NewArea, NewCard, NewTrack};
-    use crate::operation::workspace_lease::{acquire_workspace_lease_tx, prepare_worker_lease_tx};
+    use crate::operation::workspace_lease::{
+        acquire_workspace_lease_tx, prepare_worker_lease_as_tx,
+    };
     use crate::recorder_shadow::divergence_count_for_test;
     use crate::track_area_cache::TrackAreaCache;
     use calm_types::worker::{
@@ -672,9 +674,10 @@ mod tests {
         )
         .await;
         let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
-        let plan = prepare_worker_lease_tx(
+        let plan = prepare_worker_lease_as_tx(
             &mut tx,
             track.id.as_str(),
+            crate::model::TaskAccess::ReadWrite,
             &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         )
         .await

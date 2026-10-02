@@ -81,6 +81,8 @@ mod git_delivery;
 mod lease_git_env;
 #[path = "cases/track_publish.rs"]
 mod track_publish;
+#[path = "cases/track_readers.rs"]
+mod track_readers;
 #[path = "cases/track_worker_cwd.rs"]
 mod track_worker_cwd;
 #[path = "cases/track_worker_cwd_ends.rs"]

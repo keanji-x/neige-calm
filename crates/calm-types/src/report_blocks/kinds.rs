@@ -166,6 +166,7 @@ pub const TASK_FIELDS: &[&str] = &[
     "declared_by",
     "released_by_user",
     "spawn",
+    "access",
     "tombstone",
     "tombstoned_by",
 ];
@@ -312,6 +313,7 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
     {
         errors.push("spawn: \"sub-wave\" requires kind \"codex\"".into());
     }
+    crate::task_execution::validate_task_access(map, errors);
 }
 
 fn validate_declared_by(map: &Map<String, Value>, errors: &mut Vec<String>) {

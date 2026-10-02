@@ -197,6 +197,7 @@ async fn insert_task(repo: &SqlxRepo, track_id: &TrackId, key: &str, status: Tas
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
+        access: crate::model::TaskAccess::ReadWrite,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -264,9 +265,10 @@ async fn acquire_test_workspace_lease(
     )
     .await;
     let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
-    let plan = crate::operation::workspace_lease::prepare_worker_lease_tx(
+    let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
         &mut tx,
         track_id.as_str(),
+        crate::model::TaskAccess::ReadWrite,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await

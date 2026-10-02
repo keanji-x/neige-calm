@@ -2,6 +2,8 @@
 mod bounded_track_tree_sql;
 #[path = "events_since_bound.rs"]
 mod events_since_bound;
+#[path = "read_only_tasks_migration.rs"]
+mod read_only_tasks_migration;
 #[path = "track_vcs_prune.rs"]
 mod track_vcs_prune;
 #[path = "track_write_point_registry.rs"]
