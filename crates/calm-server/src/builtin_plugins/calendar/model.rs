@@ -105,6 +105,32 @@ fn resolve_time(value: &str, tz: Tz) -> Result<String> {
         )),
     }
 }
+/// The instants and zone of a timed schedule.
+pub struct TimedSpan {
+    pub start: DateTime<chrono::FixedOffset>,
+    pub end: DateTime<chrono::FixedOffset>,
+    pub tz: Tz,
+}
+impl Schedule {
+    /// `None` for an all-day schedule.
+    pub fn timed_span(&self) -> Result<Option<TimedSpan>> {
+        match self {
+            Schedule::AllDay { .. } => Ok(None),
+            Schedule::Timed {
+                start,
+                end,
+                timezone: zone,
+            } => {
+                let tz = timezone(zone)?;
+                Ok(Some(TimedSpan {
+                    start: instant(start, tz)?,
+                    end: instant(end, tz)?,
+                    tz,
+                }))
+            }
+        }
+    }
+}
 impl Draft {
     pub fn resolve_times(&mut self) -> Result<()> {
         if let Schedule::Timed {

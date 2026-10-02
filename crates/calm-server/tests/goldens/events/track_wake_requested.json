@@ -1,0 +1,12 @@
+{
+  "description": "track.wake_requested names the woken Track, the producing source, its subject key, and the kernel-rendered wake text.",
+  "wire": {
+    "ev": "track.wake_requested",
+    "data": {
+      "track_id": "track-01",
+      "source": "dev.neige.calendar",
+      "key": "entry-01",
+      "text": "Calendar entry \"Review\" started at 2026-10-02 09:00 Asia/Shanghai."
+    }
+  }
+}

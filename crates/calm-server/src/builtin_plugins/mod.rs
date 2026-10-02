@@ -25,6 +25,8 @@ pub struct BuiltinPlugin {
     forge_lower: fn(&str, &Value, &ForgeCallerScope) -> Result<Value, String>,
     instructions: &'static str,
     router: fn() -> axum::Router<crate::state::AppState>,
+    /// Optional background task started once at boot; it must check its own lifecycle.
+    background: Option<fn(Arc<AppContext>)>,
 }
 
 impl BuiltinPlugin {
@@ -43,6 +45,7 @@ impl BuiltinPlugin {
             forge_lower,
             instructions,
             router: axum::Router::new,
+            background: None,
         }
     }
     pub(super) fn always_enabled(mut self) -> Self {
@@ -157,6 +160,13 @@ pub(crate) fn required_owner(template_id: &str) -> Option<&'static str> {
         .iter()
         .find(|p| p.manifest.templates.iter().any(|t| t.id == template_id))
         .map(|p| p.manifest.id.as_str())
+}
+
+/// Start every compiled component's background task once at boot.
+pub fn spawn_background(ctx: &Arc<AppContext>) {
+    for spawn in catalog().iter().filter_map(|plugin| plugin.background) {
+        spawn(ctx.clone());
+    }
 }
 
 pub fn router() -> axum::Router<crate::state::AppState> {

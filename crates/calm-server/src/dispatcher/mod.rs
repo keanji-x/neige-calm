@@ -65,6 +65,7 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "task.git_delivery_settled",
     "task.gate_result",
     "track.report_edited",
+    "track.wake_requested",
     "forge.scan.completed",
     "forge.pr.opened",
     "forge.pr.checks",
@@ -125,6 +126,8 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // User/Plugin/Assistant edits were not authored by the planner, so no self-push loop;
         // Planner/Kernel authors would loop.
         Event::TrackReportEdited { author, .. } => PLANNER_WAKE_AUTHORS.contains(author),
+        // Kernel-only at the role gate; waking the Planner is the event's only purpose.
+        Event::TrackWakeRequested { .. } => true,
         Event::ForgePrMerged { .. }
         | Event::RatifyRequested { .. }
         | Event::RatifyResolved { .. }
@@ -1053,7 +1056,8 @@ impl Inner {
             | Event::ForgeScanCompleted { track_id, .. }
             | Event::ForgePrOpened { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
-            | Event::ForgeIssueClosed { track_id, .. } => {
+            | Event::ForgeIssueClosed { track_id, .. }
+            | Event::TrackWakeRequested { track_id, .. } => {
                 if event_warrants_planner_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(track_id.clone(), &envelope.event, envelope.id)
                         .await;
@@ -1569,6 +1573,13 @@ pub(crate) fn harness_observation_from_event(
                 issue_number: *issue_number,
             })
         }
+        Event::TrackWakeRequested {
+            source, key, text, ..
+        } => Some(HarnessObservation::TrackWake {
+            source: source.clone(),
+            key: key.clone(),
+            text: text.clone(),
+        }),
         Event::WorktreeProvisioned { card_id, path, .. } => {
             Some(HarnessObservation::WorktreeProvisioned {
                 track_id: track_id.clone(),

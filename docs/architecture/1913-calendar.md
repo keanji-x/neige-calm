@@ -89,23 +89,46 @@ shared production host.
 Cover date-only creation, explicit timed creation, retry after response loss,
 owner list/reschedule/cancel, a human edit causing a revision conflict, disabled
 Calendar, a development-bound Planner, and a manually created task. Ask for a
-missing timezone or timed end instead of inventing values. A reminder request
-must be declined clearly unless a real delivery path exists. Future reminder
-acceptance must observe the due-time wake-up, recipient, retries/deduplication,
-rescheduling and cancellation; a stored timestamp does not satisfy that check.
+missing timezone or timed end instead of inventing values. A Track-created
+timed entry wakes that Track's Planner at its start (see Due-time wake); a
+reminder for a human or for an all-day entry must still be declined clearly.
 
 The current review found two unresolved product boundaries: a development-owned
 Track cannot discover or call Calendar under the existing owner-only plugin-tool
-policy, and Calendar has no due-time delivery/wake-up mechanism. Human-created
-entries also remain outside Planner's Track scope. These are not fixed by
-bypassing the generic authorization boundary. A declarative cross-plugin grant
-and a separately designed durable reminder contract are needed before claiming
-that normal development Planners can schedule and receive reminders end to end.
+policy, and human-created entries remain outside Planner's Track scope. These
+are not fixed by bypassing the generic authorization boundary; a declarative
+cross-plugin grant is needed before development-owned Planners can schedule.
 Essential limitations and recovery instructions are included in the standard
 per-tool prompt files, because component instructions are only injected for an
 owning plugin. The three compact tool schemas and action-specific descriptions
 add about 2.3 KiB to the Planner catalog; the aggregate budget is capped at
 29,100 bytes, with the existing per-description bound retained.
+
+## Due-time wake (#1967)
+
+A timed entry created from a Track (`source_track_id` set) wakes that Track's
+Planner once when it starts. Human entries, all-day entries and cancelled
+entries never wake. Calendar declares a generic optional background hook on
+its compiled component; boot starts every declared hook from the catalog, so
+the kernel names no application. The Calendar scanner ticks every 30 seconds,
+skips missed ticks, and acts only while Calendar is running.
+
+For each due occurrence the scanner compares the start instant with the
+entry's `fired:{entry_id}` cursor, a separate plugin record so a wake never
+changes the version a user edit checks. In one immediate transaction it
+advances the cursor and writes the generic Track-scoped kernel event
+`track.wake_requested {track_id, source, key, text}`. The event is kernel-only
+at the role gate, read back by Planner catch-up, and maps to a hard-fire wake
+naming the entry, its local start and zone, and how late the wake is. Delivery
+dedupe stays with the dispatcher watermark.
+
+A wake missed while the server was down fires once on the next scan only while
+the entry has not ended. After the end, or when the Track is closed or missing,
+the cursor advances without an event. Moving an entry to a later start makes it
+fire again at the new start. The kernel does not start Planners: a Track whose
+Planner harness never started holds the event until a harness exists. There is
+no per-entry opt-out or holiday exception; the woken Planner decides to skip.
+Weekly recurrence is a separate slice.
 
 ## Ownership change request and decision
 

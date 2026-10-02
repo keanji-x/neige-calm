@@ -5,6 +5,6 @@
   "min_kernel_version": "0.1.0",
   "kind": "builtin",
   "display_name": "Calendar",
-  "description": "Arrange work on Today: create, view, reschedule and cancel all-day or timed calendar tasks. Calendar commitments do not start agents or execution tasks.",
+  "description": "Arrange work on Today: create, view, reschedule and cancel all-day or timed calendar tasks. A timed task created by a Track wakes that Track's Planner when it starts.",
   "exposes_tools": []
 }

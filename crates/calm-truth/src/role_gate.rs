@@ -76,6 +76,9 @@ pub enum RoleViolation {
     #[error("task.git_delivery_settled requires a kernel actor (actor={actor})")]
     NotKernelForTaskGitDeliverySettled { actor: String },
 
+    #[error("track.wake_requested requires a kernel actor (actor={actor})")]
+    NotKernelForTrackWakeRequested { actor: String },
+
     #[error(
         "task.gate_result is a kernel-only gate-runner record; no card-derived actor may emit it (actor={actor})"
     )]
@@ -283,6 +286,14 @@ pub fn enforce_role(
         && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
     {
         return Err(RoleViolation::NotKernelForTaskGitDeliverySettled {
+            actor: format!("{actor:?}"),
+        });
+    }
+
+    if matches!(event, Event::TrackWakeRequested { .. })
+        && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
+    {
+        return Err(RoleViolation::NotKernelForTrackWakeRequested {
             actor: format!("{actor:?}"),
         });
     }
@@ -1566,6 +1577,39 @@ mod tests {
         for actor in [
             ActorId::User,
             ActorId::Plugin("p".into()),
+            ActorId::AiPlanner("p".into()),
+            ActorId::AiCodex("w".into()),
+            ActorId::AiClaude("w".into()),
+            ActorId::AiPlannerSession("p".into()),
+            ActorId::AiCodexSession("w".into()),
+        ] {
+            assert!(
+                enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).is_err(),
+                "{actor:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn track_wake_requested_is_kernel_only() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let event = Event::TrackWakeRequested {
+            track_id: TrackId::from("w"),
+            source: "dev.neige.calendar".into(),
+            key: "entry".into(),
+            text: "due".into(),
+        };
+        for actor in [ActorId::Kernel, ActorId::KernelDispatcher] {
+            enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).unwrap();
+        }
+        for actor in [ActorId::User, ActorId::Plugin("p".into())] {
+            assert!(matches!(
+                enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc),
+                Err(RoleViolation::NotKernelForTrackWakeRequested { .. })
+            ));
+        }
+        for actor in [
             ActorId::AiPlanner("p".into()),
             ActorId::AiCodex("w".into()),
             ActorId::AiClaude("w".into()),

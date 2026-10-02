@@ -11,7 +11,7 @@ use crate::{
     mcp_server::registry::{AppContext, ToolCallIdentity},
     model::{CardRole, NewArea, NewCard, NewTrack},
     plugin_host::{PluginHost, PluginRegistry},
-    session_projection_repo::AgentProvider,
+    session_projection_repo::{AgentProvider, WorkerSessionKind},
     state::WriteContext,
     track_area_cache::TrackAreaCache,
 };
@@ -77,6 +77,16 @@ impl Fixture {
         fx
     }
     async fn identity(&self, role: CardRole) -> ToolCallIdentity {
+        self.identity_with(role, WorkerSessionKind::CodexCard, None)
+            .await
+    }
+    /// A Track-bound card identity whose live session has `kind` and `handle_state`.
+    async fn identity_with(
+        &self,
+        role: CardRole,
+        kind: WorkerSessionKind,
+        handle_state: Option<serde_json::Value>,
+    ) -> ToolCallIdentity {
         let area = self
             .repo
             .area_create(NewArea {
@@ -135,14 +145,14 @@ impl Fixture {
             crate::session_projection_repo::WorkerSessionInit {
                 id: session_id.clone(),
                 card_id: card.id.to_string(),
-                kind: crate::session_projection_repo::WorkerSessionKind::CodexCard,
+                kind,
                 agent_provider: Some(AgentProvider::Codex),
                 status: crate::session_projection_repo::WorkerSessionState::Running,
                 terminal_run_id: None,
                 thread_id: Some(session_id.clone()),
                 session_id: None,
                 active_turn_id: None,
-                handle_state_json: None,
+                handle_state_json: handle_state,
                 spawn_op_id: None,
                 now_ms: crate::model::now_ms(),
             },
@@ -159,6 +169,27 @@ impl Fixture {
             area_id: area.id.to_string(),
             thread_id: session_id,
         }
+    }
+}
+impl Fixture {
+    /// The production REST surface over this fixture's store.
+    fn http_app(&self) -> axum::Router {
+        let state = crate::state::AppState::from_parts(
+            self.repo.clone(),
+            self.ctx.events.clone(),
+            Arc::new(crate::state::DaemonClient {
+                data_dir: self._dir.path().join("daemon"),
+                proc_supervisor_sock: None,
+            }),
+            self.host.clone(),
+            Arc::new(crate::state::CodexClient::new_stub()),
+            None,
+            None,
+        )
+        .with_mcp_context(self.ctx.clone());
+        crate::routes::protected_router()
+            .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
+            .with_state(state)
     }
 }
 fn human() -> Access {
@@ -367,22 +398,7 @@ async fn calendar_http_create_edit_and_disable_share_the_plugin_store() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
     let fx = Fixture::new().await;
-    let state = crate::state::AppState::from_parts(
-        fx.repo.clone(),
-        fx.ctx.events.clone(),
-        Arc::new(crate::state::DaemonClient {
-            data_dir: fx._dir.path().join("daemon"),
-            proc_supervisor_sock: None,
-        }),
-        fx.host.clone(),
-        Arc::new(crate::state::CodexClient::new_stub()),
-        None,
-        None,
-    )
-    .with_mcp_context(fx.ctx.clone());
-    let app = crate::routes::protected_router()
-        .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
-        .with_state(state);
+    let app = fx.http_app();
     let make = |actor: &str| {
         Request::builder()
             .method("POST")
@@ -794,3 +810,5 @@ async fn calendar_reconcile_rejects_operator_disable_without_mutation() {
     assert_eq!(before.enabled, after.enabled);
     assert_eq!(before.manifest, after.manifest);
 }
+
+mod wake;

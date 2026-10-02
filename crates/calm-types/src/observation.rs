@@ -105,6 +105,13 @@ pub enum Observation {
         #[serde(default)]
         retained_path: Option<String>,
     },
+    /// A `track.wake_requested`: compiled kernel code woke this Track's Planner. Hard-fired: the
+    /// wake is the whole point, so a busy Planner receives it on its next turn.
+    TrackWake {
+        source: String,
+        key: String,
+        text: String,
+    },
     WorkspaceLeased {
         track_id: TrackId,
         card_id: CardId,
@@ -212,6 +219,7 @@ impl Observation {
             Observation::SystemContext { .. }
             | Observation::TaskGateResult { .. }
             | Observation::TaskGitDeliverySettled { .. }
+            | Observation::TrackWake { .. }
             | Observation::WorkspaceLeased { .. }
             | Observation::WorkspaceReleased { .. }
             | Observation::ForgePrMerged { .. }
@@ -236,6 +244,7 @@ impl Observation {
             | Observation::UserMessage { .. }
             | Observation::TaskGateResult { .. }
             | Observation::TaskGitDeliverySettled { .. }
+            | Observation::TrackWake { .. }
             | Observation::ForgePrMerged { .. }
             | Observation::ForgeScanCompleted { .. }
             | Observation::ForgePrOpened { .. }
@@ -399,6 +408,9 @@ impl Observation {
                      another round.",
                     code.wire_str()
                 )
+            }
+            Observation::TrackWake { source, key, text } => {
+                format!("Wake from {source} ({key}): {text}")
             }
             Observation::WorkspaceLeased { path, .. } => {
                 format!("A worker workspace was provisioned at {path}. Re-read the track state.")

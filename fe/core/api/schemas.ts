@@ -331,6 +331,17 @@ export const trackReportEditedSchema = z.object({
   }),
 });
 
+/** Compiled kernel code woke a Track's Planner; `text` is the kernel-rendered wake sentence. */
+export const trackWakeRequestedSchema = z.object({
+  ev: z.literal('track.wake_requested'),
+  data: z.object({
+    track_id: z.string(),
+    source: z.string(),
+    key: z.string(),
+    text: z.string(),
+  }),
+});
+
 export const overlaySetSchema = z.object({
   ev: z.literal('overlay.set'),
   data: overlaySchema,
@@ -900,6 +911,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   harnessUserMessageEnqueuedSchema,
   harnessQueueChangedSchema,
   trackReportEditedSchema,
+  trackWakeRequestedSchema,
   overlaySetSchema,
   overlayDeletedSchema,
   terminalDeletedSchema,
@@ -961,6 +973,7 @@ export type HarnessUserMessageEnqueuedEvent = z.infer<
   typeof harnessUserMessageEnqueuedSchema
 >;
 export type TrackReportEditedEvent = z.infer<typeof trackReportEditedSchema>;
+export type TrackWakeRequestedEvent = z.infer<typeof trackWakeRequestedSchema>;
 export type OverlaySetEvent = z.infer<typeof overlaySetSchema>;
 export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
 export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;

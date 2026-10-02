@@ -1272,6 +1272,7 @@ impl AppState {
                 }
             }
         }
+        crate::builtin_plugins::spawn_background(&mcp_context);
 
         let worker_flow = WorkerFlowDriver::from_state_parts(
             repo.clone(),
