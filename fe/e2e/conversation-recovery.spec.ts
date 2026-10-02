@@ -219,9 +219,10 @@ for (const status of ['interrupted', 'failed'] as const) {
       await page.goto(`/next/track/${track.id}`);
       await page.getByRole('button', { name: 'Conversation Planner' }).click();
       const guidance = page.getByText('Send a message to continue.', { exact: true });
-      await expect(guidance).toBeVisible();
+      await expect(guidance).not.toBeVisible();
       const disclosure = page.getByRole('button', { name: status === 'failed' ? /^Failed/ : /^Interrupted/ });
       await disclosure.click();
+      await expect(guidance).toBeVisible();
       expect(sends).toBe(0);
       const composer = page.getByRole('combobox', { name: 'Message' });
       await composer.fill('Continue from the partial answer');
