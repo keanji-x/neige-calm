@@ -52,8 +52,6 @@ def reconcile(db, ledger, raw, snapshot):
         if request is None:
             if decision['broker_id'] or decision['state'] in ('submitting', 'unknown', 'working', 'settled'):
                 raise ValueError('submitted decision has no persisted request')
-            if decision['state'] in ('queued', 'requested') and timestamp(decision['body']['valid_until']) <= timestamp(snapshot['at']):
-                ledger.change(db, decision['id'], 'expired')
             continue
         order_id = decision['broker_id']
         if not order_id:

@@ -466,7 +466,11 @@ immediately before committing intent, and the SDK preflight refuses the order
 (`not_submitted`) once the decision's `valid_until`, carried as `not_after`, has
 passed. Broker history is read only from the oldest unresolved order; settled,
 canceled, rejected and expired orders keep their reconciled fills locally, so each
-poll stays bounded for an unattended account. Recovery requires one exact remark/payload match. Unknown active orders,
+poll stays bounded for an unattended account. With no unresolved order, the unowned-active-order
+check sees only the broker's orders for the current day: a multi-day order placed
+outside the App on an earlier day stays invisible until its fills make the holdings
+check fail closed. Queued and requested decisions expire locally at `valid_until`
+even when the broker cannot be read; uncertain submissions stay reconciliation-only. Recovery requires one exact remark/payload match. Unknown active orders,
 external positions, conflicting execution IDs and incomplete fill totals block
 execution and roll back the observation; the snapshot `error` names the cause.
 Reconciliation can be retried; deleting

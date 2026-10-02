@@ -429,3 +429,14 @@ def test_spy_decision_id_fits_the_worker_task_key(allocation_rig, key):
 
 def test_spy_longest_decision_id_still_plans(allocation_rig):
     assert allocation_rig.plan(decision_id='a' * 55)['decisions'][0]['id'] == 'a' * 55
+
+
+def test_spy_unsubmitted_decision_expires_while_the_broker_is_unavailable(allocation_rig):
+    r = allocation_rig; r.plan(); r.request()
+    state = r.read(); state['snapshot']['identity']['account_channel'] = 'lb'; r.write(state)
+    r.app.clock = lambda: NOW + timedelta(hours=2)
+    after = r.step()
+    assert 'identity' in after['error']
+    assert after['decisions'][0]['state'] == 'expired' and not r.submits()
+    r.plan(decision_id='replacement', valid_until=(NOW + timedelta(hours=3)).isoformat())
+    assert r.status()['decisions'][-1]['state'] == 'queued'

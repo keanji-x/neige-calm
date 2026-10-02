@@ -201,6 +201,13 @@ class Allocation:
                     for r in db.execute('SELECT * FROM journal ORDER BY seq DESC LIMIT 200')]}
 
     def process_once(self):
+        # Local and broker-independent: an unsubmitted decision must expire even while the
+        # broker is unreadable, or it would block every replacement target.
+        with self.ledger.session() as db:
+            now = self.clock()
+            for d in self.ledger.decisions(db):
+                if d['state'] in ('queued', 'requested') and timestamp(d['body']['valid_until']) <= now:
+                    self.ledger.change(db, d['id'], 'expired')
         try:
             with self.ledger.session() as db:
                 self.advance(db, self.refresh(db))
