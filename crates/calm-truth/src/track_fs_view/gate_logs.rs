@@ -1,7 +1,7 @@
 //! Immutable execution/gate addresses read the gate runner's logs.
 use std::path::Path;
 
-use crate::model::{CardRole, Task, Track};
+use crate::model::{Task, Track};
 
 use super::{TrackFsContent, TrackFsError, TrackFsView, path_not_available};
 
@@ -23,17 +23,11 @@ pub fn task_gate_log_path(attempt_id: &str, gate_attempt: i64) -> Result<String,
 
 impl TrackFsView<'_> {
     fn gate_logs_directory(&self, path: &str) -> Result<&Path, TrackFsError> {
-        let Some((role, directory)) = &self.gate_log_access else {
-            return Err(TrackFsError::Forbidden(format!(
+        self.gate_log_access.as_deref().ok_or_else(|| {
+            TrackFsError::Forbidden(format!(
                 "track_file: forbidden: {path} is not available on this surface"
-            )));
-        };
-        if *role != CardRole::Planner {
-            return Err(TrackFsError::Forbidden(format!(
-                "track_file: forbidden: {path} is planner-only (§6.7); caller role {role:?}"
-            )));
-        }
-        Ok(directory)
+            ))
+        })
     }
 
     pub(super) async fn cat_execution_gate_log(
@@ -57,6 +51,7 @@ impl TrackFsView<'_> {
             .await
             .map_err(|error| TrackFsError::Internal(format!("track_file: task lookup: {error}")))?
             .ok_or_else(|| path_not_available(path))?;
+        // The boundary for every caller: a card reads gate logs of its own bound track only.
         if task.track_id != track.id.as_str() {
             return Err(TrackFsError::Forbidden(format!(
                 "track_file: forbidden: execution {attempt_id} is not in the caller's bound track {}",

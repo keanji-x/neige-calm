@@ -95,7 +95,6 @@ async fn task_recovery_allocation_inventory_caps_page_size_without_silent_miss()
 
 #[tokio::test]
 async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity() {
-    use crate::model::CardRole;
     use crate::track_fs_view::{TrackFsError, TrackFsView, task_gate_log_path};
     let repo = setup().await;
     let mut b = block("b", &[]);
@@ -144,8 +143,7 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
         crate::track_area_cache::TrackAreaCache::new(),
     );
     let track = repo.track_get("w").await.unwrap().unwrap();
-    let view =
-        TrackFsView::new(&repo, &write).with_gate_log_access(CardRole::Planner, logs.path().into());
+    let view = TrackFsView::new(&repo, &write).with_gate_log_access(logs.path().into());
     let historical = task_gate_log_path("w:b", 1).unwrap();
     assert_eq!(historical, "runs/w:b/gates/1.log");
     assert_eq!(
@@ -184,14 +182,6 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
         view.cat(&foreign, "runs/w:b/gates/1.log").await,
         Err(TrackFsError::Forbidden(_))
     ));
-    for role in [CardRole::Worker, CardRole::Assistant] {
-        let restricted =
-            TrackFsView::new(&repo, &write).with_gate_log_access(role, logs.path().into());
-        assert!(matches!(
-            restricted.cat(&track, "runs/w:b/gates/1.log").await,
-            Err(TrackFsError::Forbidden(_))
-        ));
-    }
     assert!(matches!(
         TrackFsView::new(&repo, &write)
             .cat(&track, "runs/w:b/gates/1.log")

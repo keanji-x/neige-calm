@@ -13,7 +13,7 @@ use calm_server::operation::{
 use calm_server::scheduler::{PostClaimDriveTestHook, Scheduler, build_worker_payload};
 use calm_server::state::DaemonClient;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::track_fs_view::{TrackFsError, TrackFsView};
+use calm_server::track_fs_view::TrackFsView;
 use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -157,7 +157,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         .unwrap()
         .unwrap();
     let view = TrackFsView::new(boot.repo.as_ref(), &boot.ctx.write)
-        .with_gate_log_access(CardRole::Planner, dir.path().to_path_buf());
+        .with_gate_log_access(dir.path().to_path_buf());
     let content = view
         .cat(&track, &path)
         .await
@@ -191,12 +191,6 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
             .content
             .contains("audit-json-checked")
     );
-    let worker_view = TrackFsView::new(boot.repo.as_ref(), &boot.ctx.write)
-        .with_gate_log_access(CardRole::Worker, dir.path().to_path_buf());
-    assert!(matches!(
-        worker_view.cat(&track, &gate_path).await,
-        Err(TrackFsError::Forbidden(_))
-    ));
 
     let selected = run["events"]["completed"]["payload"]["result"]["findings"][0].clone();
     assert_eq!(selected["actual"], -1);

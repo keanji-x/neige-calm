@@ -1680,7 +1680,7 @@
   },
   {
     "name": "calm.track.cat",
-    "description_sha256": "effedf2c0d088c82b043c3d4895105d8dafa3ec1995d0a2829ad1314e459fa29",
+    "description_sha256": "0f689d67c112c4e1d70fd60b5e922f68f3bc37974b1b4c3a23060aba096950d2",
     "input_schema": {
       "properties": {
         "blocks": {

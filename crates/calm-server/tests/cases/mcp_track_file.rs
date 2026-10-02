@@ -2383,9 +2383,18 @@ async fn track_json_uses_bound_track_metadata() {
 }
 
 async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
+    seed_gated_task_in(boot, &boot.track_id, key, gate_attempt).await
+}
+
+async fn seed_gated_task_in(
+    boot: &Boot,
+    track_id: &TrackId,
+    key: &str,
+    gate_attempt: i64,
+) -> String {
     let task = calm_server::model::Task {
-        id: format!("{}:{key}", boot.track_id.as_str()),
-        track_id: boot.track_id.as_str().to_string(),
+        id: format!("{}:{key}", track_id.as_str()),
+        track_id: track_id.as_str().to_string(),
         key: key.to_string(),
         kind: calm_server::model::TaskKind::Codex,
         goal: "g".into(),
@@ -2425,7 +2434,7 @@ async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
 }
 
 #[tokio::test]
-async fn gate_log_view_is_planner_only_and_file_backed() {
+async fn gate_log_view_is_file_backed_and_needs_a_card_surface() {
     use calm_server::track_fs_view::{TrackFsError, TrackFsView};
 
     let boot = boot().await;
@@ -2450,8 +2459,7 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         .unwrap();
     let write = boot.ctx.write.clone();
 
-    let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
-        .with_gate_log_access(CardRole::Planner, dir.clone());
+    let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write).with_gate_log_access(dir.clone());
     let content = view.cat(&track, &log).await.expect("read");
     assert_eq!(content.content_type, "text/plain");
     assert!(content.content.contains("gate-log-body"), "{content:?}");
@@ -2461,11 +2469,6 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         .expect_err("the plan-key alias is gone");
     assert!(matches!(err, TrackFsError::PathNotAvailable(_)), "{err:?}");
 
-    let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
-        .with_gate_log_access(CardRole::Worker, dir.clone());
-    let err = view.cat(&track, &log).await.expect_err("worker forbidden");
-    assert!(matches!(err, TrackFsError::Forbidden(_)), "{err:?}");
-
     let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write);
     let err = view
         .cat(&track, &log)
@@ -2473,8 +2476,7 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         .expect_err("unwired surface forbidden");
     assert!(matches!(err, TrackFsError::Forbidden(_)), "{err:?}");
 
-    let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write)
-        .with_gate_log_access(CardRole::Planner, dir.clone());
+    let view = TrackFsView::new(boot.ctx.repo.as_ref(), &write).with_gate_log_access(dir.clone());
     let err = view
         .cat(
             &track,
@@ -2489,16 +2491,6 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
         .await
         .expect_err("no attempt yet");
     assert!(matches!(err, TrackFsError::PathNotAvailable(_)), "{err:?}");
-
-    let err = call_tool(
-        &boot,
-        TOOL_TRACK_CAT,
-        worker_identity(&boot),
-        json!({ "path": log }),
-    )
-    .await
-    .expect_err("worker forbidden at the MCP surface");
-    assert_eq!(err.code, -32403, "{err:?}");
 
     std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
     std::fs::write(
@@ -2524,6 +2516,46 @@ async fn gate_log_view_is_planner_only_and_file_backed() {
     std::fs::remove_dir_all(&boot.gate_logs_dir).ok();
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #1970: a read-only reviewer's test evidence is the producer task's gate log. Any card of the
+/// bound track reads it over `calm.track.cat`; another track's task stays -32403.
+#[tokio::test]
+async fn worker_reads_own_track_gate_log_but_not_another_tracks() {
+    let boot = boot().await;
+    let own = seed_gated_task(&boot, "producer", 1).await;
+    let foreign = seed_gated_task_in(&boot, &boot.other_track_id, "foreign", 1).await;
+    std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
+    for (task_id, body) in [
+        (&own, "own-track-gate-body"),
+        (&foreign, "foreign-gate-body"),
+    ] {
+        std::fs::write(
+            boot.gate_logs_dir.join(format!("{task_id}-g1.log")),
+            format!("::gate-step t\n{body}\n"),
+        )
+        .unwrap();
+    }
+    let read = |task_id: &str| {
+        call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            worker_identity(&boot),
+            json!({ "path": format!("runs/{task_id}/gates/1.log") }),
+        )
+    };
+    let content = read(&own)
+        .await
+        .expect("worker reads its own track's gate log");
+    assert_eq!(content["content"], "::gate-step t\nown-track-gate-body\n");
+    assert_eq!(content["content_type"], "text/plain");
+    let err = read(&foreign).await.expect_err("another track's gate log");
+    assert_eq!(err.code, -32403, "{err:?}");
+    assert!(
+        err.message.contains("not in the caller's bound track"),
+        "{err:?}"
+    );
+    std::fs::remove_dir_all(&boot.gate_logs_dir).ok();
 }
 
 #[path = "mcp_track_file_guides.rs"]

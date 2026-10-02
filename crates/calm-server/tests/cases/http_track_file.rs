@@ -162,3 +162,22 @@ async fn cross_track_card_path_returns_403() {
         "{body}"
     );
 }
+
+/// HTTP carries no card identity, so gate logs stay off this surface (#1970 opened them to workers over MCP only).
+#[tokio::test]
+async fn gate_log_path_returns_403_over_http() {
+    let boot = boot().await;
+    let app = app(&boot);
+    let cookie = login(&app).await;
+    let path = format!("runs/{}:t/gates/1.log", boot.track_id.as_str());
+    let (status, body) =
+        get_json(&app, cat_uri(boot.track_id.as_str(), &path), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("is not available on this surface"),
+        "{body}"
+    );
+}

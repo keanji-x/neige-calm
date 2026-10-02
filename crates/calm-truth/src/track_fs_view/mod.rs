@@ -29,9 +29,9 @@ pub(crate) const HOOK_EVENT_TRANSCRIPT_CAP: usize = 500;
 pub struct TrackFsView<'a> {
     repo: &'a dyn RouteRepo,
     write: &'a WriteContext,
-    /// `runs/<attempt_id>/gates/<N>.log` access: `(caller role, gate-logs dir)`. `None` keeps
-    /// the path unavailable; even when wired, only `CardRole::Planner` passes.
-    gate_log_access: Option<(CardRole, std::path::PathBuf)>,
+    /// The gate-logs dir behind `runs/<attempt_id>/gates/<N>.log`. `None` (a surface without a
+    /// card identity) keeps the path forbidden; when wired, any task of the bound track is readable.
+    gate_log_access: Option<std::path::PathBuf>,
 }
 
 impl<'a> TrackFsView<'a> {
@@ -43,13 +43,8 @@ impl<'a> TrackFsView<'a> {
         }
     }
 
-    /// The role gate is enforced at read time so a worker gets a Forbidden, not a 404.
-    pub fn with_gate_log_access(
-        mut self,
-        role: CardRole,
-        gate_logs_dir: std::path::PathBuf,
-    ) -> Self {
-        self.gate_log_access = Some((role, gate_logs_dir));
+    pub fn with_gate_log_access(mut self, gate_logs_dir: std::path::PathBuf) -> Self {
+        self.gate_log_access = Some(gate_logs_dir);
         self
     }
 
