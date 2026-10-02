@@ -1,6 +1,7 @@
 //! `neige/cli` (#1801): the kernel parses, runs and renders every `neige` command. The forwarder
 //! sends argv and writes back `{stdout, stderr, exit}` verbatim (docs/architecture/1801-kernel-served-cli.md).
 
+mod catalog;
 mod commands;
 pub mod help;
 pub mod render;
@@ -112,6 +113,13 @@ async fn run(
                 None,
             ),
         };
+    }
+    if argv
+        .iter()
+        .find(|name| name.as_str() != "--json")
+        .is_some_and(|name| name == "tools")
+    {
+        return catalog::run(ctx, registry, connection_identity, argv).await;
     }
     let parsed = match commands::parse(argv) {
         Ok(parsed) => parsed,

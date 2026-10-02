@@ -266,6 +266,19 @@ pub struct ToolDescriptor {
     pub visible_to_roles: &'static [CardRole],
 }
 
+impl ToolDescriptor {
+    pub(crate) fn into_mcp_value(self) -> Value {
+        let mut object = serde_json::Map::new();
+        object.insert("name".into(), Value::String(self.name));
+        object.insert("description".into(), Value::String(self.description));
+        object.insert("inputSchema".into(), self.input_schema);
+        if let Some(annotations) = self.annotations {
+            object.insert("annotations".into(), annotations);
+        }
+        Value::Object(object)
+    }
+}
+
 pub fn read_only_annotations() -> Value {
     json!({ "readOnlyHint": true })
 }

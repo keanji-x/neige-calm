@@ -25,3 +25,7 @@ Codex may defer MCP tools until they are requested. Before report work, use tool
 5. Another session may be writing at the same time. A revision conflict means somebody else moved first: re-read and reapply, do not retry blindly.
 
 Keep the report's own structure and conventions; you are a guest in a document the planner agent maintains.
+
+## Tool discovery
+
+For Neige MCP actions, first use `neige tools names --prefix PREFIX`, then `neige tools describe --name NAME`. Native prefixes are `calm.FEATURE.`, plugin prefixes `plugin.ID_`; use one feature; reserve `--all`/`--after` for requested inventories. Returned names are wire names, not JS callables. Resolve selected names with the client's loader; never guess conversions. Inspect `ALL_TOOLS` only for selected actions after CLI lookup. Other services use their own discovery.

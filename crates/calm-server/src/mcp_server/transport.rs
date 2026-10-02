@@ -2,6 +2,8 @@
 //! One socket under `<data_dir>/mcp/kernel.sock` (mode 0600); a connection must `initialize` before any `tools/*` request.
 
 mod call;
+mod catalog;
+pub(crate) use catalog::tool_descriptors_for_connection;
 pub(crate) mod plugin_tool_names;
 pub(crate) use call::call_registered_tool;
 
@@ -356,85 +358,13 @@ async fn dispatch_request(
             let top_meta = request_meta_outcome(request_meta.as_ref());
             let params_meta = extract_request_meta_outcome(&params);
             let thread_id = thread_id_from(&top_meta).or_else(|| thread_id_from(&params_meta));
-            let descriptors = match connection_identity {
-                ConnectionIdentity::DaemonTrust => match thread_id {
-                    Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
-                        .await
-                        .ok()
-                    {
-                        Some(identity) => {
-                            // Plugin tools are scoped to the resolved thread's track.
-                            let scope =
-                                plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
-                            let mut descriptors = registry.descriptors_for_role(identity.role);
-                            extend_plugin_tool_descriptors_for_role(
-                                ctx,
-                                &mut descriptors,
-                                identity.role,
-                                &scope,
-                            )
-                            .await;
-                            descriptors
-                        }
-                        None => bootstrap_tool_descriptors(ctx, registry).await,
-                    },
-                    // Initial discovery may precede thread attribution. The catalog covers all
-                    // running plugins; tools/call still requires a live role and Track binding.
-                    None => bootstrap_tool_descriptors(ctx, registry).await,
-                },
-                ConnectionIdentity::CardBound(bound) => match thread_id {
-                    Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
-                        .await
-                        .ok()
-                    {
-                        Some(identity) if same_bound_session(&identity, bound) => {
-                            let scope =
-                                plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
-                            let mut descriptors = registry.descriptors_for_role(identity.role);
-                            extend_plugin_tool_descriptors_for_role(
-                                ctx,
-                                &mut descriptors,
-                                identity.role,
-                                &scope,
-                            )
-                            .await;
-                            descriptors
-                        }
-                        Some(identity) => {
-                            warn_cross_session_reject(tid, &identity, bound);
-                            Vec::new()
-                        }
-                        _ => Vec::new(),
-                    },
-                    None => {
-                        let card =
-                            ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
-                        let scope = plugin_scope_for_track(ctx, Some(card.track_id.as_str())).await;
-                        let mut descriptors = registry.descriptors_for_role(bound.role);
-                        extend_plugin_tool_descriptors_for_role(
-                            ctx,
-                            &mut descriptors,
-                            card.role,
-                            &scope,
-                        )
-                        .await;
-                        descriptors
-                    }
-                },
-            };
+            let descriptors =
+                tool_descriptors_for_connection(ctx, registry, connection_identity, thread_id)
+                    .await?;
             // Codex's `tools/list` expects `{ "tools": [...] }`.
             let tools: Vec<Value> = descriptors
                 .into_iter()
-                .map(|d| {
-                    let mut obj = serde_json::Map::new();
-                    obj.insert("name".into(), Value::String(d.name));
-                    obj.insert("description".into(), Value::String(d.description));
-                    obj.insert("inputSchema".into(), d.input_schema);
-                    if let Some(annotations) = d.annotations {
-                        obj.insert("annotations".into(), annotations);
-                    }
-                    Value::Object(obj)
-                })
+                .map(ToolDescriptor::into_mcp_value)
                 .collect();
             Ok(json!({ "tools": tools }))
         }

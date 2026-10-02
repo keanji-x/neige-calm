@@ -38,6 +38,16 @@ macro_rules! command_help {
 
 const COMMANDS: &[CommandHelp] = &[
     command_help!(
+        "tools",
+        "Find tools visible to the current active session",
+        "Usage: neige tools names (--prefix PREFIX | --all) [--after NAME] [--json]",
+        "       neige tools describe --name NAME [--json]",
+        "Names are literal MCP wire names, scoped to your role and Track; no regex matching.",
+        "Client runtime callable identifiers can differ; use the client's exact-name loader.",
+        "Names returns at most 20 tools and next_cursor; pass it as --after for the next page.",
+        "Describe returns one visible tool's MCP declaration; lookup never grants invocation rights.",
+    ),
+    command_help!(
         "ls",
         "List files and directories in the current track view",
         "Usage: neige ls [path] [-l] [--json]",

@@ -658,3 +658,53 @@ async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
     let stored = store::list(&fx.ctx, &human(), window()).await.unwrap();
     assert_eq!(serde_json::to_value(stored).unwrap(), json!([changed]));
 }
+
+#[tokio::test]
+async fn scoped_catalog_respects_builtin_lifecycle_and_track_owner() {
+    use crate::mcp_server::registry::{CardIdentity, ConnectionIdentity};
+    use crate::mcp_server::transport::tool_descriptors_for_connection;
+    let fx = Fixture::new().await;
+    let identity = fx.identity(CardRole::Planner).await;
+    let bound = ConnectionIdentity::CardBound(CardIdentity {
+        card_id: identity.card_id.clone().into(),
+        role: identity.role,
+        provider: identity.provider.clone(),
+        session_id: identity.session_id.clone(),
+        track_id: identity.track_id.clone(),
+        area_id: identity.area_id.clone(),
+    });
+    let registry = crate::mcp_server::build_default_registry();
+    let names = tool_descriptors_for_connection(&fx.ctx, &registry, &bound, None)
+        .await
+        .unwrap();
+    assert!(names.iter().any(|tool| tool.name == "calm.calendar.create"));
+    fx.host.disable(PLUGIN_ID).await.unwrap();
+    let names = tool_descriptors_for_connection(&fx.ctx, &registry, &bound, None)
+        .await
+        .unwrap();
+    assert!(
+        !names
+            .iter()
+            .any(|tool| tool.name.starts_with("calm.calendar."))
+    );
+    fx.host.enable(PLUGIN_ID).await.unwrap();
+    fx.host
+        .enable(crate::builtin_plugins::dev::PLUGIN_ID)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET plugin_scope=? WHERE id=?")
+        .bind(crate::builtin_plugins::dev::PLUGIN_ID)
+        .bind(identity.track_id.unwrap())
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+    let names = tool_descriptors_for_connection(&fx.ctx, &registry, &bound, None)
+        .await
+        .unwrap();
+    assert!(
+        !names
+            .iter()
+            .any(|tool| tool.name.starts_with("calm.calendar."))
+    );
+    assert!(names.iter().any(|tool| tool.name == "calm.track.publish"));
+}

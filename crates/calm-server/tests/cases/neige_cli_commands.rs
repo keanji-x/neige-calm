@@ -702,3 +702,86 @@ async fn cli_tag_lists_for_a_worker_and_refuses_its_changes() {
     let (stdout, _, exit) = cli(&boot, &["tag", "report.md"]).await;
     assert_eq!((exit, stdout.as_str()), (0, "\n"));
 }
+
+#[tokio::test]
+async fn cli_tools_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions() {
+    use support::mcp::{connect, handshake, recv_frame, send_frame, tools_list_frame};
+    for role in [CardRole::Planner, CardRole::Assistant, CardRole::Worker] {
+        let boot = boot_with_role(role).await;
+        let (mut read, mut write) = connect(&boot.socket_path).await;
+        handshake(&mut read, &mut write, &boot.raw_token).await;
+        send_frame(&mut write, tools_list_frame(90, &boot.thread_id)).await;
+        let listed = recv_frame(&mut read).await;
+        let declarations = listed["result"]["tools"].as_array().unwrap();
+        assert!(!declarations.is_empty());
+        let mut expected: Vec<String> = declarations
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().into())
+            .collect();
+        expected.sort();
+        let mut names = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let mut args = vec!["tools", "names", "--all", "--json"];
+            if let Some(cursor) = after.as_deref() {
+                args.extend(["--after", cursor]);
+            }
+            let (stdout, stderr, exit) = cli(&boot, &args).await;
+            assert_eq!((stderr, exit), (String::new(), 0));
+            assert!(stdout.len() <= 4097);
+            let page: Value = serde_json::from_str(&stdout).unwrap();
+            let batch = page["names"].as_array().unwrap();
+            assert!(batch.len() <= 20);
+            names.extend(batch.iter().map(|name| name.as_str().unwrap().to_string()));
+            match page["next_cursor"].as_str() {
+                Some(cursor) => {
+                    assert_ne!(after.as_deref(), Some(cursor));
+                    after = Some(cursor.into());
+                }
+                None => break,
+            }
+        }
+        assert_eq!(names, expected);
+        let selected = &declarations[0];
+        let name = selected["name"].as_str().unwrap();
+        let (stdout, stderr, exit) =
+            cli(&boot, &["tools", "describe", "--name", name, "--json"]).await;
+        assert_eq!((stderr, exit), (String::new(), 0));
+        assert_eq!(serde_json::from_str::<Value>(&stdout).unwrap(), *selected);
+        let (stdout, stderr, exit) =
+            cli(&boot, &["tools", "names", "--prefix", name, "--json"]).await;
+        assert_eq!((stderr, exit), (String::new(), 0));
+        let prefix: Value = serde_json::from_str(&stdout).unwrap();
+        assert!(
+            prefix["names"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|value| value.as_str().unwrap().starts_with(name))
+        );
+        let (stdout, _, exit) = cli(
+            &boot,
+            &[
+                "tools",
+                "describe",
+                "--name",
+                "calm.hidden.nonexistent",
+                "--json",
+            ],
+        )
+        .await;
+        assert_eq!(exit, 4);
+        assert!(stdout.is_empty());
+        let (_, _, exit) = cli(&boot, &["tools", "names", "--prefix", "calm.*", "--json"]).await;
+        assert_eq!(exit, 1);
+        sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?")
+            .bind(&boot.card_id)
+            .execute(boot.sqlx.pool())
+            .await
+            .unwrap();
+        send_frame(&mut write, json!({"jsonrpc":"2.0","id":91,"method":"neige/cli","params":{"argv":["tools","names","--all","--json"]}})).await;
+        let rejected = recv_frame(&mut read).await;
+        assert_eq!(rejected["result"]["exit"], 4);
+        assert_eq!(rejected["result"]["stdout"], "");
+    }
+}

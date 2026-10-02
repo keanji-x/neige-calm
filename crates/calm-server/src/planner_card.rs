@@ -2,18 +2,23 @@
 
 /// The planner-agent system prompt template, embedded from `prompts/planner.md`. Placeholders `{track_id}`, `{planner_wake_authors}`, and `{task_acceptance_guidance}` are substituted by [`render_system_prompt`].
 /// Wording is pinned by `tests/goldens/issue_development_planner_prompt.txt` (regenerate with `REGEN_PLANNER_PROMPT_GOLDEN=1`, then hand-verify the diff).
-pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/planner.md");
+pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
+    include_str!("../prompts/planner.md"),
+    include_str!("../prompts/tool-discovery.md")
+);
 
 /// Worker-agent system prompt for the **claude** (CLI-completion) provider; `prompts/worker/tail.md` is shared byte-for-byte with [`WORKER_CODEX_SYSTEM_PROMPT`].
 /// Wording is pinned by `tests/goldens/worker_prompt_cli.txt` (regenerate with `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff).
 pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = concat!(
     include_str!("../prompts/worker/head-cli.md"),
+    include_str!("../prompts/tool-discovery.md"),
     include_str!("../prompts/worker/tail.md")
 );
 
 /// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `calm.task.complete` / `calm.task.fail` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
 pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
     include_str!("../prompts/worker/head-mcp.md"),
+    include_str!("../prompts/tool-discovery.md"),
     include_str!("../prompts/worker/tail.md")
 );
 
@@ -22,7 +27,8 @@ pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
 pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
     include_str!("../prompts/assistant/ordinary-head.md"),
     include_str!("../prompts/assistant/mechanics.md"),
-    include_str!("../prompts/assistant/ordinary-tail.md")
+    include_str!("../prompts/assistant/ordinary-tail.md"),
+    include_str!("../prompts/tool-discovery.md")
 );
 
 /// The assistant on Today's launchpad track: same mechanics, inverted identity (this conversation is the report's writer). Selected by `routes::today::is_launchpad_track` at `thread/start`.
@@ -30,7 +36,8 @@ pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
 pub(crate) const LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
     include_str!("../prompts/assistant/launchpad-head.md"),
     include_str!("../prompts/assistant/mechanics.md"),
-    include_str!("../prompts/assistant/launchpad-tail.md")
+    include_str!("../prompts/assistant/launchpad-tail.md"),
+    include_str!("../prompts/tool-discovery.md")
 );
 
 /// Render the report-edit authors that wake the planner, in the wire spelling the `track.report_edited` payload carries.
@@ -268,11 +275,25 @@ mod tests {
     const LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN: &str =
         include_str!("../tests/goldens/assistant_prompt_launchpad.txt");
 
+    fn assert_assistant_prompt_golden(file: &str, rendered: &str, golden: &str) {
+        if std::env::var_os("REGEN_PROMPT_GOLDENS").is_some() {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/goldens")
+                .join(file);
+            std::fs::write(path, rendered).expect("write regenerated assistant prompt");
+            panic!(
+                "{file} regenerated from the current prompt; inspect and rerun without the flag"
+            );
+        }
+        assert_eq!(rendered, golden);
+    }
+
     /// Whole-document equality: a stray newline at either seam is what a `contains` check cannot see.
     #[test]
     fn the_ordinary_assistant_prompt_matches_its_reviewed_golden() {
-        assert_eq!(
-            render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189"),
+        assert_assistant_prompt_golden(
+            "assistant_prompt.txt",
+            &render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189"),
             ASSISTANT_PROMPT_GOLDEN,
         );
     }
@@ -284,7 +305,11 @@ mod tests {
             LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
             "track-golden-1189",
         );
-        assert_eq!(launchpad, LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN);
+        assert_assistant_prompt_golden(
+            "assistant_prompt_launchpad.txt",
+            &launchpad,
+            LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN,
+        );
 
         let ordinary = render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189");
         assert_ne!(
