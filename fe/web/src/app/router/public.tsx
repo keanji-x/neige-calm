@@ -1,3 +1,4 @@
+import { writeClipboardText } from '../../ui/operation-feedback/clipboard.ts';
 import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation.ts';
 import { useConversationStop } from '../conversations/stop.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
@@ -1492,6 +1493,10 @@ function useConversationPanel(
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
                 stalled={store.stalled}
+                copyText={writeClipboardText}
+                regenerateMessage={store.historyReady && !store.sendBlocked && !store.working && !store.stopping
+                  ? async (message) => { await store.send(open.id, message.text, message.attachments ?? []); }
+                  : undefined}
                 canContinue={store.historyReady && !store.sendBlocked && !store.working && !store.stopping}
                 stalledReason={store.blockedReason}
                 stopFeedback={store.stopFeedback}

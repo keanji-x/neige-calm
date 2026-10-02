@@ -29,10 +29,11 @@ import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
 import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
   isQueuedConversationTurn, opensAfterGap, opensExchange,
-  type Conversation, type ConversationActivity, type SendOutcome, type TranscriptEntry,
+  type Conversation, type ConversationTurn, type ConversationActivity, type SendOutcome, type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
 import styles from './thread.module.css';
+import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
 import { CurrentStatusNotice } from './outcome-notice.tsx';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import {
@@ -58,15 +59,23 @@ export type ChatThreadProps = Readonly<{
   stopFeedback?: ConversationStopFeedback | null;
   /** The caller declares composer availability; a transcript outcome cannot authorize sends. */
   canContinue: boolean;
+  copyText?: (text: string) => Promise<void>;
+  regenerateMessage?: (message: ConversationTurn) => Promise<void>;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
   const currentOutcome = lastTurn?.author === 'turn' ? lastTurn : null;
+  const copyTarget = currentResponseMessage(turns, currentOutcome !== null && !live && !stalled && stopFeedback === null);
+  const copyAction = copyText === undefined || copyTarget === null ? null
+    : { id: `${conversation.id}:${copyTarget.id}`, text: copyTarget.text, run: () => copyText(copyTarget.text) };
+  const regenerateTarget = latestUserMessage(turns);
+  const regenerateAction = regenerateMessage === undefined || regenerateTarget === null || live || stalled || currentOutcome === null
+    ? null : { id: `${conversation.id}:${regenerateTarget.id}`, run: () => regenerateMessage(regenerateTarget) };
   const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue} live={live}
-    stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} />;
+    stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} regenerateAction={regenerateAction} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);

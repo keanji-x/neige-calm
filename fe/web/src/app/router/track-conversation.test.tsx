@@ -950,6 +950,42 @@ describe('track conversations', () => {
     expect(inputBodies(requests)[1]).toEqual({ text: '', attachments: [ATTACHMENT_ID] });
   });
 
+  it('regenerates the original prompt and images once without clearing an unsent draft', async () => {
+    const image = { id: ATTACHMENT_ID, contentType: 'image/png', size: 4,
+      url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/${ATTACHMENT_ID}` };
+    const draftImageId = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e70.png';
+    const user = { ...harnessMessage(91, 'userMessage', { content: [{ text: 'Original prompt' }] }),
+      input_segments: [{ presentation: 'user', text: 'User says:\nOriginal prompt', attachments: [image] }] };
+    const reply = harnessMessage(92, 'agentMessage', { text: 'Original answer' });
+    const terminal = { ...harnessMessage(93, '', {}), item_type: null, turn_id: 'turn', method: 'turn/completed',
+      params: JSON.stringify({ id: 'turn', status: 'completed', error: null }) };
+    let resolve!: (response: ApiTransportResponse) => void;
+    const held = new Promise<ApiTransportResponse>((done) => { resolve = done; });
+    const { requests } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok([user, reply, terminal]);
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', attachments_supported: true });
+      if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: draftImageId, contentType: 'image/png', size: 4,
+        url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/${draftImageId}` });
+      if (request.path.endsWith('/planner/input')) return held;
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await screen.findByRole('button', { name: 'Regenerate response' });
+    await typeInto(messageField(), 'Keep my separate draft');
+    await attachAnImage();
+    await waitFor(() => expect(drawerElement().querySelector(`[data-nc-attachments] img[src$="${draftImageId}"]`)).not.toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate response' }));
+    await waitFor(() => expect(inputBodies(requests)).toEqual([{ text: 'Original prompt', attachments: [ATTACHMENT_ID] }]));
+    fireEvent.click(screen.getByRole('button', { name: /Regenerate response/ }));
+    expect(inputBodies(requests)).toHaveLength(1);
+    expect(messageField().textContent).toBe('Keep my separate draft');
+    expect(screen.getByText('Original answer', { exact: true })).toBeTruthy();
+    await act(async () => { resolve(inputAccepted()); await held; });
+    expect(messageField().textContent).toBe('Keep my separate draft');
+    expect(inputBodies(requests)).toHaveLength(1);
+    expect(drawerElement().querySelector(`[data-nc-attachments] img[src$="${draftImageId}"]`)).not.toBeNull();
+  });
+
   it.each(['interrupted', 'failed'] as const)('shows one current paused status over a recorded %s result', async (status) => {
     const terminal = { ...harnessMessage(99, '', {}), item_type: null,
       turn_id: 'previous-turn', method: 'turn/completed', turn_error_text: 'Previous outcome reason.',

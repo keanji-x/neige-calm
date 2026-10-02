@@ -33,7 +33,7 @@ for (const theme of ['light', 'dark'] as const) {
         </div>);
         const meta = screen.getByRole('status', { name: 'Current response status' });
         const label = screen.getByText(sample.label, { exact: true });
-        const buttons = within(meta).getAllByRole('button', { name: /not available yet/ });
+        const buttons = within(meta).getAllByRole('button', { name: /not available/ });
         expect(buttons).toHaveLength(3);
         expect(buttons.every((button) => button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true')).toBe(true);
         expect(getComputedStyle(label).fontSize).toBe('12px');

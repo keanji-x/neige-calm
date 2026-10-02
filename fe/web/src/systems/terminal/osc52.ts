@@ -1,3 +1,5 @@
+import { writeClipboardText } from '../../ui/operation-feedback/clipboard.ts';
+
 // OSC 52 clipboard writes from PTY apps. Query (`Pd = ?`) is refused so a
 // child cannot read the system clipboard just by printing an escape.
 
@@ -46,14 +48,8 @@ export function parseOsc52Payload(data: string): Osc52Action {
 }
 
 export function copyTextToClipboard(text: string): Promise<boolean> {
-  const clipboard = navigator.clipboard;
-  if (clipboard && typeof clipboard.writeText === 'function') {
-    return clipboard.writeText(text).then(
-      () => true,
-      () => fallbackExecCommandCopy(text),
-    );
-  }
-  return Promise.resolve(fallbackExecCommandCopy(text));
+  // PTY OSC52 retains its existing best-effort legacy contract; explicit UI copies do not use it.
+  return writeClipboardText(text).then(() => true, () => fallbackExecCommandCopy(text));
 }
 
 function fallbackExecCommandCopy(text: string): boolean {

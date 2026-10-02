@@ -1,0 +1,46 @@
+import { expect, test } from '@playwright/test';
+import { createArea, createTrack } from './helpers/seed.js';
+
+test.use({ contextOptions: { reducedMotion: 'reduce' } });
+
+test('copies Markdown and explicitly regenerates while preserving a separate draft', async ({ page, request }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const area = await createArea(request, `Message actions ${Date.now()}`);
+  try {
+    const track = await createTrack(request, area.id);
+    const answer = 'Original answer\n\n```ts\nconst value = 1;\n```';
+    await page.route('**/api/cards/*/harness/items?**', async (route) => {
+      const response = await route.fetch();
+      const cardId = new URL(route.request().url()).pathname.split('/')[3];
+      const common = { worker_session_id: 'fixture', card_id: cardId, track_id: track.id, thread_id: 'thread',
+        turn_id: 'turn', turn_error_text: null, item_uuid: null, created_at_ms: Date.now() };
+      await route.fulfill({ response, json: [
+        { ...common, id: 1, item_type: 'userMessage', method: 'item/completed',
+          params: JSON.stringify({ item: { content: [{ text: 'Original prompt' }] } }) },
+        { ...common, id: 2, item_type: 'agentMessage', method: 'item/completed',
+          params: JSON.stringify({ item: { text: answer } }) },
+        { ...common, id: 3, item_type: null, method: 'turn/completed',
+          params: JSON.stringify({ id: 'turn', status: 'completed', error: null }) },
+      ] });
+    });
+    const sent: unknown[] = [];
+    await page.route('**/api/cards/*/planner/input', async (route) => {
+      sent.push(route.request().postDataJSON()); await route.continue();
+    });
+    await page.goto(`/next/track/${track.id}`);
+    await page.getByRole('button', { name: 'Conversation Planner' }).click();
+    await page.getByRole('button', { name: 'Copy response', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Copied response' })).toBeVisible();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(answer);
+    expect(sent).toHaveLength(0);
+    const composer = page.getByRole('combobox', { name: 'Message' });
+    await composer.fill('Keep this separate draft');
+    await page.getByRole('button', { name: 'Regenerate response', exact: true }).click();
+    await expect.poll(() => sent).toEqual([{ text: 'Original prompt' }]);
+    await expect(composer).toHaveText('Keep this separate draft');
+    await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toBeVisible();
+    expect(sent).toHaveLength(1);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(composer).toHaveText('Keep this separate draft');
+  } finally { await request.delete(`/api/areas/${area.id}`); }
+});
