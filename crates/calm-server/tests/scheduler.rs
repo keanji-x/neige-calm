@@ -475,9 +475,9 @@ async fn seed_task(boot: &Boot, task: Task) {
            (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
             depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
             gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
-            running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms)
+            running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms,access)
            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
-                  ?18,?19,?20,?21,?22,?23,?24)"#,
+                  ?18,?19,?20,?21,?22,?23,?24,?25)"#,
     )
     .bind(task.id)
     .bind(task.track_id)
@@ -503,6 +503,7 @@ async fn seed_task(boot: &Boot, task: Task) {
     .bind(task.created_at_ms)
     .bind(task.updated_at_ms)
     .bind(task.finished_at_ms)
+    .bind(task.access.as_str())
     .execute(&pool)
     .await
     .expect("seed task row");
@@ -551,6 +552,7 @@ async fn seed_projected_task_for(
         ("priority".into(), json!(task.priority)),
         ("declared_by".into(), json!(task.declared_by)),
         ("spawn".into(), json!(task.spawn)),
+        ("access".into(), json!(task.access)),
         ("ready".into(), json!(true)),
     ]);
     let instruction_field = if task.kind == TaskKind::Terminal {
@@ -6770,6 +6772,62 @@ async fn claim_aborts_when_the_track_turns_busy_pre_claim() {
         task_row(&boot, "held").await.status,
         TaskStatus::Pending,
         "in-tx track-idle revalidation must abort the claim"
+    );
+    assert!(event_rows(&boot, "task.dispatched").await.is_empty());
+    assert_eq!(operation_count(&boot, "codex-worker").await, 0);
+}
+
+/// #1917 no starvation, at the claim: the pass offers writer `w` and the reader `r2` after it on a
+/// free checkout; a reader starts before the claims run. `w`'s claim loses (readers hold the
+/// checkout) and `r2`'s claim must lose too, because `w` now waits ahead of it.
+#[tokio::test]
+async fn claim_refuses_a_reader_behind_a_writer_that_started_waiting() {
+    let boot = boot().await;
+    // Through the production projection: the claim resolves each task's report block.
+    let mut writer = plan_task(&boot.track_id, "w", TaskKind::Codex, &[]);
+    writer.priority = 1;
+    seed_projected_task(&boot, writer).await;
+    let mut reader = plan_task(&boot.track_id, "r2", TaskKind::Codex, &[]);
+    reader.access = calm_server::model::TaskAccess::ReadOnly;
+    seed_projected_task(&boot, reader).await;
+    assert_eq!(
+        task_row(&boot, "r2").await.access,
+        calm_server::model::TaskAccess::ReadOnly
+    );
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = Arc::clone(&semaphore)
+        .acquire_owned()
+        .await
+        .expect("test holds the only permit");
+    let (_runtime, scheduler) = build_scheduler_with_semaphore(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+        semaphore,
+    );
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        let track_id = boot.track_id.clone();
+        async move { scheduler.schedule_track(track_id).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let mut running_reader = plan_task(&boot.track_id, "r1", TaskKind::Codex, &[]);
+    running_reader.access = calm_server::model::TaskAccess::ReadOnly;
+    running_reader.status = TaskStatus::Running;
+    seed_task(&boot, running_reader).await;
+
+    drop(permit);
+    handle.await.expect("schedule_track task");
+
+    assert_eq!(task_row(&boot, "w").await.status, TaskStatus::Pending);
+    assert_eq!(
+        task_row(&boot, "r2").await.status,
+        TaskStatus::Pending,
+        "the claim refuses a reader behind a waiting writer"
     );
     assert!(event_rows(&boot, "task.dispatched").await.is_empty());
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);

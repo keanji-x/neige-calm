@@ -282,7 +282,9 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             format!("task key `{}` has an uncleared tombstone", arg(args, "key"))
         }
         "unknown_dependency" => format!("unknown dependency `{}`", arg(args, "dependency")),
-        "gate_required" => "task requires a gate or no_gate_reason".into(),
+        "gate_required" => {
+            "task requires a gate, a no_gate_reason or access: \"read_only\"".into()
+        }
         "gate_cwd_on_agent_task" => {
             "codex/claude tasks do not take gate.cwd: the gate runs in the worker's lease worktree; \
              write a sub-directory gate as `cd <subdir> && …` inside the step"
