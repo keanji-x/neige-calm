@@ -597,9 +597,20 @@ async fn dispatch_plugin_tools_call(
             };
             let called = match &client {
                 // The Track rides along only to LOCAL plugins; a remote connector is a third party that must not learn which Track a reader is looking at.
+                // So does the resolved caller, never anything in the request's `_meta` or `arguments`.
                 ConnectorClient::Stdio(c) => {
-                    c.tools_call(&tool_name, arguments, identity.track_id.as_deref())
-                        .await
+                    let caller = crate::plugin_host::mcp::AgentCaller {
+                        role: identity.role,
+                        card_id: &identity.card_id,
+                        session_id: &identity.session_id,
+                    };
+                    c.tools_call(
+                        &tool_name,
+                        arguments,
+                        identity.track_id.as_deref(),
+                        Some(caller),
+                    )
+                    .await
                 }
                 ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await,
                 // An `Ok` result carries the child's own `isError` verdict, an `Err` is a kernel-side refusal.

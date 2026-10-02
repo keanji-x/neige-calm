@@ -444,7 +444,7 @@ async fn create_via_tool_call(
     // 3. Invoke the tool. Transport-level failures propagate as 502.
     let result = mcp
         // No Track: an iframe asking its own plugin to mint a card already names the destination in `via`.
-        .tools_call(&via.tool_name, via.arguments, None)
+        .tools_call(&via.tool_name, via.arguments, None, None)
         .await
         .map_err(|e| tool_call_bad_gateway(&via.plugin_id, &via.tool_name, &e.to_string()))?;
 

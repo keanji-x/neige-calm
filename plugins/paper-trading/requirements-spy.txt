@@ -1,0 +1,2 @@
+# Official SDK tag; the PyPI mirror may serve the legacy 0.2.x package.
+longbridge @ git+https://github.com/longbridge/openapi.git@v5.2.0#subdirectory=python

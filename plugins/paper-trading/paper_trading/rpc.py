@@ -11,6 +11,9 @@ from .broker import Broker
 from .config import AccountConfig
 from .runtime import Runtime
 from .strategy import Portfolio
+from .allocation import Allocation, TOOLS as ALLOCATION_TOOLS
+from .allocation_config import AllocationConfig
+from .allocation_broker import AllocationBroker
 
 
 class Rpc:
@@ -70,8 +73,13 @@ def serve():
                 if not isinstance(track, str) or not track:
                     raise ValueError("host-provided Track context required")
                 args = params.get("arguments", {})
-                result = runtime.portfolio.call(track, params.get("name"), args)
-                if params.get("name") not in ("paper.status", "paper.journal"):
+                if isinstance(runtime.portfolio, Allocation):
+                    result = runtime.portfolio.call(track, params.get("name"), args,
+                                                   params.get("_meta", {}).get("dev.neige/caller"))
+                else:
+                    result = runtime.portfolio.call(track, params.get("name"), args)
+                # Every write or refresh request wakes the loop that owns broker access.
+                if params.get("name") not in ("paper.status", "paper.journal", "spy.status"):
                     runtime.wake.set()
                 reply(frame["id"], {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=True)}],
                                     "structuredContent": result})
@@ -104,8 +112,17 @@ def serve():
                     if runtime is not None:
                         raise ValueError("already initialized")
                     meta = params.get("_meta", {})
-                    config = AccountConfig.parse(meta.get("dev.neige/config", {}).get("values", {}))
-                    portfolio = Portfolio(root, config, Broker(config.cli_path, config.broker_home, str(root)))
+                    values = meta.get("dev.neige/config", {}).get("values", {})
+                    if values.get('profile') == 'spy_cash':
+                        config = AllocationConfig.parse(values)
+                        portfolio = Allocation(root, config, AllocationBroker(config, str(root)))
+                    else:
+                        if values.get('profile', 'supervised') != 'supervised':
+                            raise ValueError('unknown execution profile')
+                        config = AccountConfig.parse({k: v for k, v in values.items() if k != 'profile'})
+                        if (root / 'spy-cash').exists():
+                            raise ValueError('supervised profile cannot reuse SPY allocation data')
+                        portfolio = Portfolio(root, config, Broker(config.cli_path, config.broker_home, str(root)))
                     runtime = Runtime(portfolio, lambda track, kind, payload: rpc.call("neige.overlay.set", {
                         "entity_kind": "track", "entity_id": track, "kind": kind, "payload": payload}))
                     result = {"protocolVersion": params.get("protocolVersion", "2025-11-25"),
@@ -123,7 +140,8 @@ def serve():
                 elif method == "tools/list":
                     reply(request_id, {"tools": [{"name": t["name"], "description": t["description"],
                                                    "inputSchema": t["input_schema"], "annotations": t["annotations"]}
-                                                  for t in manifest["exposes_tools"]]})
+                                                  for t in manifest["exposes_tools"]
+                                                  if (t['name'] in ALLOCATION_TOOLS) == isinstance(runtime.portfolio, Allocation)]})
                 elif method == "tools/call":
                     work.put_nowait(frame)
                 else:

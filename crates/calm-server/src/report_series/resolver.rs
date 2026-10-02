@@ -571,7 +571,8 @@ impl SeriesResolver {
         let call = async {
             match &client {
                 ConnectorClient::Stdio(c) => {
-                    c.tools_call(&request.tool, arguments, Some(&track_id))
+                    // A background read acts for no agent, so it carries no caller identity.
+                    c.tools_call(&request.tool, arguments, Some(&track_id), None)
                         .await
                 }
                 ConnectorClient::Cli(c) => c.tools_call(&request.tool, arguments).await,

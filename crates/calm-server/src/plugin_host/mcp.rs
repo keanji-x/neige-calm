@@ -186,6 +186,18 @@ pub const KERNEL_CALLBACKS_CAPABILITY: &str = "dev.neige/kernel-callbacks";
 /// `tools/call` carries it, so a plugin must refuse rather than default when it is absent.
 pub const TRACK_META_KEY: &str = "dev.neige/track";
 
+/// `_meta` namespace carrying the calling agent's host-resolved identity to a local plugin.
+/// Never copied from the request: the agent's own `_meta` and `arguments` cannot claim a role.
+pub const CALLER_META_KEY: &str = "dev.neige/caller";
+
+/// The agent identity the kernel resolved for an MCP `tools/call`; absent for kernel-initiated calls.
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct AgentCaller<'a> {
+    pub role: crate::model::CardRole,
+    pub card_id: &'a str,
+    pub session_id: &'a str,
+}
+
 /// Version of the `dev.neige/kernel-callbacks` capability; only an exact match in the plugin's
 /// `initialize` response counts as "capability declared".
 pub const KERNEL_CALLBACKS_CAPABILITY_VERSION: u32 = 1;
@@ -399,20 +411,29 @@ impl McpClient {
         }
     }
 
-    /// MCP `tools/call`. `track_id` rides in `params._meta` under [`TRACK_META_KEY`] rather than in
-    /// `arguments`: the tool's `input_schema` is plugin-authored and often `additionalProperties: false`.
+    /// MCP `tools/call`. `track_id` and `caller` ride in `params._meta` under [`TRACK_META_KEY`] and
+    /// [`CALLER_META_KEY`] rather than in `arguments`: the tool's `input_schema` is plugin-authored
+    /// and often `additionalProperties: false`.
     pub async fn tools_call(
         &self,
         name: &str,
         arguments: Value,
         track_id: Option<&str>,
+        caller: Option<AgentCaller<'_>>,
     ) -> Result<CallToolResult, RpcError> {
+        let mut meta = serde_json::Map::new();
+        if let Some(track_id) = track_id {
+            meta.insert(TRACK_META_KEY.into(), json!({ "id": track_id }));
+        }
+        if let Some(caller) = caller {
+            meta.insert(CALLER_META_KEY.into(), json!(caller));
+        }
         let mut params = json!({
             "name": name,
             "arguments": arguments,
         });
-        if let Some(track_id) = track_id {
-            params["_meta"] = json!({ TRACK_META_KEY: { "id": track_id } });
+        if !meta.is_empty() {
+            params["_meta"] = Value::Object(meta);
         }
         self.call_tool_params(params).await
     }
@@ -916,7 +937,7 @@ mod tests {
         .await
         .expect("connect");
         let result = client
-            .tools_call("make_status_card", json!({ "x": 1 }), None)
+            .tools_call("make_status_card", json!({ "x": 1 }), None, None)
             .await
             .expect("tools_call");
         assert_eq!(result.is_error, Some(false));
