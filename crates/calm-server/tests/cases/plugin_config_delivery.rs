@@ -121,7 +121,7 @@ async fn config_seen_by_plugin(fx: &Fixture) -> Value {
         .await
         .expect("a running app plugin has a live stdio client");
     let result = client
-        .tools_call("report_config", json!({}), None)
+        .tools_call("report_config", json!({}), None, None)
         .await
         .expect("tools/call round trip");
     result

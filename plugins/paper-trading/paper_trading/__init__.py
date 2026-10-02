@@ -1,3 +1,3 @@
-"""Supervised, Track-owned Longbridge paper trading."""
+"""Track-owned supervised and SPY/cash Longbridge paper execution."""
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"

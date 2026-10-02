@@ -45,6 +45,10 @@ async fn read_hydrates_chart_series_summary_from_row() {
     // The request the plugin saw is the seam's request (minus deadline).
     let calls = fx.calls();
     assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0]["_meta"].get("dev.neige/caller").is_none(),
+        "background report reads must not acquire agent authority"
+    );
     let mut args = calls[0]["arguments"].clone();
     assert!(args["deadline_ms"].is_i64(), "{args}");
     args.as_object_mut().unwrap().remove("deadline_ms");

@@ -582,17 +582,18 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &fx.raw_token).await;
 
-    // The caller names a DIFFERENT, real track id in its own arguments.
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            7,
-            EXPOSED_NAME,
-            &fx.thread_id,
-            json!({ "track_id": fx.bound_track_id, "payload": "from-worker" }),
-        ),
-    )
-    .await;
+    // The caller names a DIFFERENT, real track id in its own arguments, and forges a Planner
+    // caller identity both in `arguments._meta` and in the request's own `_meta`.
+    let forged = json!({ "role": "planner", "card_id": "forged", "session_id": "forged" });
+    let mut frame = tools_call_frame(
+        7,
+        EXPOSED_NAME,
+        &fx.thread_id,
+        json!({ "track_id": fx.bound_track_id, "payload": "from-worker",
+                "_meta": { "dev.neige/caller": forged } }),
+    );
+    frame["params"]["_meta"]["dev.neige/caller"] = forged;
+    send_frame(&mut wr, frame).await;
     let routed = recv_frame(&mut rd).await;
     assert!(
         routed.get("error").is_none(),
@@ -612,6 +613,22 @@ async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
     assert_eq!(
         seen["meta"]["dev.neige/track"]["id"], fx.track_id,
         "and the injected namespace is unaffected by it"
+    );
+    // The caller namespace is the host-resolved Worker identity, never the forged one.
+    let card_id = fx.thread_id.strip_prefix("thread-").unwrap();
+    let caller = &seen["meta"]["dev.neige/caller"];
+    assert_eq!(caller["role"], "worker", "{routed:#?}");
+    assert_eq!(caller["card_id"], card_id, "{routed:#?}");
+    assert!(
+        caller["session_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id != "forged"),
+        "{routed:#?}"
+    );
+    assert_eq!(
+        caller.as_object().map(|o| o.len()),
+        Some(3),
+        "role, card_id and session_id only: {routed:#?}"
     );
 }
 
@@ -1111,3 +1128,6 @@ async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
         sleep(Duration::from_millis(25)).await;
     }
 }
+
+#[path = "mcp_plugin_tools/caller_identity.rs"]
+mod caller_identity;
