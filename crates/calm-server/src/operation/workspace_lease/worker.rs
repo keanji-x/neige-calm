@@ -9,7 +9,7 @@
 //!   which attempt may use the checkout.
 //! - D6: a dirty tree refuses the worker before any row is written.
 //! - #1917: a read-only attempt shares the checkout with other read-only attempts. Its lease row
-//!   records no base (so no delivery) and it never supersedes a stuck lease.
+//!   records no base (so no delivery).
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -138,10 +138,7 @@ pub(crate) async fn prepare_worker_lease_as_tx(
     };
     let branch = worker_branch(track_id, worktree.is_some())?;
     ensure_clean_tree(&path).await?;
-    let superseded = match access {
-        TaskAccess::ReadWrite => supersede_stuck_leases_tx(tx, &path).await?,
-        TaskAccess::ReadOnly => Vec::new(),
-    };
+    let superseded = supersede_stuck_leases_tx(tx, &path).await?;
     let base = directory_base(&path)?;
     Ok(WorkerLeasePlan {
         path,

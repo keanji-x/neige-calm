@@ -36,7 +36,7 @@ harms nobody: its report is already in.
    `access_mode` column (same migration, default `read_write`). A reader lease has no base and no
    `delivery_policy`, so its release writes no delivery row and the task ends `done` directly
    (ungated success already flips to `Done`). The active-path unique index becomes unique among
-   `read_write` rows only. Readers never supersede stuck leases.
+   `read_write` rows only.
 3. **Admission (one function).** `track_idle` becomes an occupancy read: `Free` (nothing in
    flight), `Readers` (only read-only tasks/leases in flight, no unsettled delivery) or `Busy`. A
    writer needs `Free`; a reader needs `Free` or `Readers`. The claim transaction rechecks with
@@ -67,8 +67,8 @@ Facts the implementation settled (Phase 0):
   still released at its report. Unchanged from #1830.
 - Readers already running when a writer becomes ready keep it waiting until they report; only
   later readers are held back.
-- A reader lease whose owner op is `stuck` stops counting, like a writer's; the next writer's
-  prepare supersedes it.
+- A reader lease whose owner op is `stuck` stops counting, like a writer's; the next attempt's
+  prepare (reader or writer) supersedes it.
 
 ## Compatibility (4140)
 
