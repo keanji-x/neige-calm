@@ -12,6 +12,7 @@
   .notice > [role='separator'] { margin-block-end: var(--space-2); }
   .row { display: flex; align-items: flex-start; gap: var(--space-4); }
   .state { flex: 1; min-inline-size: 0; }
+  .state:focus-visible { outline: var(--rule-h) solid var(--accent); outline-offset: var(--space-1); border-radius: var(--radius-sm); }
   .normal { min-block-size: var(--control-h); display: flex; align-items: center; }
   .summary { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
   .label { color: var(--text-3); font-size: var(--text-meta); font-weight: var(--weight-normal); }

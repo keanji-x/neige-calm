@@ -41,7 +41,7 @@ for (const theme of ['light', 'dark'] as const) {
         const center = (element: Element) => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; };
         const check = () => {
           const icons = buttons.flatMap((button) => [...button.querySelectorAll('svg')]);
-          const chevron = meta.querySelector('.astryx-icon');
+          const chevron = meta.querySelector('button[aria-expanded] svg');
           for (const icon of [...icons, ...(chevron === null ? [] : [chevron])]) {
             expect(Math.abs(center(icon) - center(label))).toBeLessThanOrEqual(1);
             // Rotation briefly enlarges a chevron's bounding rectangle; its layout box remains token-sized.
