@@ -4,17 +4,23 @@ use crate::error::Result;
 use crate::operation::workspace_lease::execution_guard::{
     ExecutionReadGuard, ExecutionWriteGuard, NativeProvider, NativeTaskGuard,
 };
-use crate::operation::workspace_lease::task_guard::{PreparedTaskAccess, prepared_task_access};
+use crate::operation::workspace_lease::task_guard::{PreparedTaskAccess, prepared_task_access_tx};
 use calm_types::workspace_access::WorkspaceAccess;
 use sqlx::SqlitePool;
 
 pub(super) struct Reservation(NativeTaskGuard);
 impl Reservation {
-    pub(super) async fn acquire(pool: &SqlitePool, owner: &Owner) -> Result<Self> {
-        let guard = match prepared_task_access(pool, &owner.card).await? {
+    pub(super) async fn acquire(
+        pool: &SqlitePool,
+        owner: &Owner,
+        session: Option<&str>,
+    ) -> Result<Self> {
+        let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+        let guard = match prepared_task_access_tx(&mut tx, &owner.card).await? {
             PreparedTaskAccess::Read => NativeTaskGuard::Read(
-                ExecutionReadGuard::acquire_native(
+                ExecutionReadGuard::acquire_native_tx(
                     pool,
+                    &mut tx,
                     &owner.card,
                     &owner.holder,
                     NativeProvider::Codex,
@@ -22,8 +28,9 @@ impl Reservation {
                 .await?,
             ),
             PreparedTaskAccess::Write { attempt } => NativeTaskGuard::Write(
-                ExecutionWriteGuard::acquire_native(
+                ExecutionWriteGuard::acquire_native_tx(
                     pool,
+                    &mut tx,
                     &owner.card,
                     &owner.holder,
                     &attempt,
@@ -32,8 +39,9 @@ impl Reservation {
                 .await?,
             ),
             PreparedTaskAccess::Independent => NativeTaskGuard::Write(
-                ExecutionWriteGuard::acquire_native(
+                ExecutionWriteGuard::acquire_native_tx(
                     pool,
+                    &mut tx,
                     &owner.card,
                     &owner.holder,
                     "",
@@ -42,6 +50,9 @@ impl Reservation {
                 .await?,
             ),
         };
+        super::native::ingress::admit_execution_tx(&mut tx, owner, guard.execution_id(), session)
+            .await?;
+        tx.commit().await?;
         Ok(Self(guard))
     }
     pub(super) fn id(&self) -> &str {
@@ -147,17 +158,36 @@ pub(super) async fn load_in(
 }
 
 pub(super) async fn request_stop(pool: &SqlitePool, execution: &str) -> Result<()> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    request_stop_tx(&mut tx, execution).await?;
+    tx.commit().await?;
+    Ok(())
+}
+pub(super) async fn request_stop_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    execution: &str,
+) -> Result<()> {
     sqlx::query(
         "UPDATE workspace_leases SET holder_phase='stopping' WHERE lease_id=?1 \
         AND state='held' AND (holder_kind='terminal' OR (holder_kind='native' AND native_provider='codex'))",
     )
     .bind(execution)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
 
 pub(super) async fn observe(pool: &SqlitePool, record: &Record, identity: &str) -> Result<()> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    observe_tx(&mut tx, record, identity).await?;
+    tx.commit().await?;
+    Ok(())
+}
+pub(super) async fn observe_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    record: &Record,
+    identity: &str,
+) -> Result<()> {
     if record.backend == BackendKind::NativeSession {
         if identity != record.holder {
             return Err(crate::error::CalmError::Conflict(
@@ -166,14 +196,14 @@ pub(super) async fn observe(pool: &SqlitePool, record: &Record, identity: &str) 
         }
         sqlx::query("UPDATE workspace_leases SET holder_phase=CASE WHEN holder_phase='stopping' \
             THEN 'stopping' ELSE 'running' END WHERE lease_id=?1 AND holder_kind='terminal' AND state='held'")
-            .bind(&record.id).execute(pool).await?;
+            .bind(&record.id).execute(&mut **tx).await?;
     } else {
         let changed=sqlx::query("UPDATE workspace_leases SET lease_owner=?2,native_observed_turn_id=?2, \
             holder_phase=CASE WHEN holder_phase='stopping' THEN 'stopping' ELSE 'running' END \
             WHERE lease_id=?1 AND holder_kind='native' AND native_provider='codex' AND state='held' \
             AND (native_observed_turn_id IS NULL OR native_observed_turn_id=?2)")
-            .bind(&record.id).bind(identity).execute(pool).await?.rows_affected();
-        if changed != 1 && !native_turn_stopped(pool, &record.holder, identity).await? {
+            .bind(&record.id).bind(identity).execute(&mut **tx).await?.rows_affected();
+        if changed != 1 && !native_turn_stopped_in(&mut **tx, &record.holder, identity).await? {
             return Err(crate::error::CalmError::Conflict(
                 "native observed generation changed".into(),
             ));
@@ -319,13 +349,21 @@ pub(super) async fn session_started(
     }
 }
 pub(super) async fn reject_session(pool: &SqlitePool, execution: &str) -> Result<()> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    request_stop_tx(&mut tx, execution).await?;
+    sqlx::query(
+        "INSERT INTO native_session_client_observations(session_execution_id,proof) \
+         SELECT session_execution_id,'not-issued' FROM native_session_ingresses WHERE session_execution_id=?1 \
+         ON CONFLICT DO NOTHING"
+    ).bind(execution).execute(&mut *tx).await?;
     sqlx::query(
         "UPDATE workspace_leases SET state='released',holder_phase='stopped' WHERE lease_id=?1 \
-        AND holder_kind='terminal' AND state='held' AND holder_phase='running'",
-    )
-    .bind(execution)
-    .execute(pool)
-    .await?;
+         AND holder_kind='terminal' AND state='held' AND holder_phase='stopping' \
+         AND NOT EXISTS(SELECT 1 FROM native_session_executions relation JOIN workspace_leases child \
+         ON child.lease_id=relation.execution_id WHERE relation.session_execution_id=?1 \
+         AND (child.state<>'released' OR child.holder_phase IS NOT 'stopped'))"
+    ).bind(execution).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -390,9 +428,12 @@ pub(super) async fn native_executions(pool: &SqlitePool, thread: &str) -> Result
 }
 
 pub(super) async fn native_writer_available(pool: &SqlitePool, owner: &Owner) -> Result<bool> {
-    let mut connection = pool.acquire().await?;
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    if !super::native::ingress::available_tx(&mut tx, owner).await? {
+        return Ok(false);
+    }
     crate::operation::workspace_lease::execution_guard::native_write_available_tx(
-        &mut connection,
+        &mut tx,
         &owner.card,
         &owner.holder,
         "",
@@ -406,6 +447,13 @@ pub(super) async fn native_turn_stopped(
     thread: &str,
     turn: &str,
 ) -> Result<bool> {
+    native_turn_stopped_in(pool, thread, turn).await
+}
+async fn native_turn_stopped_in<'a>(
+    executor: impl sqlx::Executor<'a, Database = sqlx::Sqlite>,
+    thread: &str,
+    turn: &str,
+) -> Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM workspace_leases WHERE holder_kind='native' \
          AND native_provider='codex' AND holder_id=?1 AND native_observed_turn_id=?2 \
@@ -413,7 +461,7 @@ pub(super) async fn native_turn_stopped(
     )
     .bind(thread)
     .bind(turn)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?)
 }
 
@@ -632,6 +680,35 @@ async fn confirm_stopped_read_intent_tx(
         AND live.holder_kind IN ('native','terminal','forge') AND live.state IN ('held','releasing'))")
         .bind(card).bind(cwd).bind(now).execute(&mut **tx).await?;
     Ok(())
+}
+
+pub(super) async fn admit_session_control(
+    pool: &SqlitePool,
+    session: &str,
+    record: &Record,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<i64> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let inserted = sqlx::query(
+        "INSERT INTO native_session_controls(session_execution_id,execution_id,method,params_json) \
+         SELECT relation.session_execution_id,relation.execution_id,?3,?4 \
+         FROM native_session_executions relation \
+         JOIN workspace_leases parent ON parent.lease_id=relation.session_execution_id \
+         JOIN workspace_leases native ON native.lease_id=relation.execution_id \
+         WHERE relation.session_execution_id=?1 AND relation.execution_id=?2 \
+         AND parent.state='held' AND parent.holder_phase='running' \
+         AND native.state='held' AND native.holder_phase='running' AND native.native_observed_turn_id=?5"
+    ).bind(session).bind(&record.id).bind(method).bind(params.to_string()).bind(&record.observed)
+        .execute(&mut *tx).await?;
+    if inserted.rows_affected() != 1 {
+        return Err(crate::error::CalmError::Conflict(
+            "native control session or generation is closed".into(),
+        ));
+    }
+    let id = inserted.last_insert_rowid();
+    tx.commit().await?;
+    Ok(id)
 }
 
 /// Rotate attempts fairly without changing their durable launch or stop phase.

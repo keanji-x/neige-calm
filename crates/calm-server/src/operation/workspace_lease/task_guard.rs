@@ -298,15 +298,21 @@ pub(crate) enum PreparedTaskAccess {
     Write { attempt: String },
     Independent,
 }
-pub(crate) async fn prepared_task_access(
-    pool: &SqlitePool,
+pub(crate) async fn prepared_task_access_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    card: &str,
+) -> Result<PreparedTaskAccess> {
+    prepared_task_access_in(&mut **tx, card).await
+}
+async fn prepared_task_access_in<'a>(
+    executor: impl sqlx::Executor<'a, Database = sqlx::Sqlite>,
     card: &str,
 ) -> Result<PreparedTaskAccess> {
     let row=sqlx::query_as::<_,(String,String,Option<String>)>(
         "SELECT l.access_mode,l.state,o.idempotency_key FROM workspace_leases l \
          LEFT JOIN operations o ON o.id=l.lease_owner \
          WHERE l.card_id=?1 AND l.holder_kind='task' ORDER BY l.created_at_ms DESC,l.lease_id DESC LIMIT 1"
-    ).bind(card).fetch_optional(pool).await?;
+    ).bind(card).fetch_optional(executor).await?;
     match row {
         Some((mode, state, _)) if mode == "read_only" => {
             if state != "held" {

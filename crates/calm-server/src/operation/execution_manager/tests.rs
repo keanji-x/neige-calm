@@ -12,15 +12,19 @@ struct RegisteredBackend {
 #[async_trait::async_trait]
 impl Backend for RegisteredBackend {
     type Request = ();
+    type Output = ();
     fn kind(&self) -> BackendKind {
         BackendKind::NativeTurn
     }
-    async fn launch(&self, permit: LaunchPermit, _: ()) -> LaunchOutcome {
+    async fn launch(&self, permit: LaunchPermit, _: ()) -> LaunchOutcome<()> {
         assert!(!permit.nonce().is_empty());
         if self.uncertain {
             LaunchOutcome::Uncertain(CalmError::CodexAppServer("lost response".into()))
         } else {
-            LaunchOutcome::Started(format!("turn-{}", permit.record().holder))
+            LaunchOutcome::Started {
+                identity: format!("turn-{}", permit.record().holder),
+                output: (),
+            }
         }
     }
     async fn recover(&self, record: &Record) -> Result<Observation> {
@@ -39,7 +43,7 @@ impl Backend for RegisteredBackend {
     }
 }
 
-async fn fixture() -> (crate::db::sqlite::SqlxRepo, tempfile::TempDir, String) {
+pub(super) async fn fixture() -> (crate::db::sqlite::SqlxRepo, tempfile::TempDir, String) {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
@@ -68,7 +72,7 @@ async fn fixture() -> (crate::db::sqlite::SqlxRepo, tempfile::TempDir, String) {
         .unwrap();
     (repo, cwd, track.id.to_string())
 }
-async fn owner(
+pub(super) async fn owner(
     repo: &crate::db::sqlite::SqlxRepo,
     cwd: &std::path::Path,
     track: &str,
@@ -285,14 +289,73 @@ async fn native_stop_can_precede_writable_task_business_report() {
     );
 }
 
+struct ReplyBackend {
+    pool: SqlitePool,
+}
+#[async_trait::async_trait]
+impl Backend for ReplyBackend {
+    type Request = serde_json::Value;
+    type Output = serde_json::Value;
+    fn kind(&self) -> BackendKind {
+        BackendKind::NativeTurn
+    }
+    async fn launch(
+        &self,
+        permit: LaunchPermit,
+        reply: Self::Request,
+    ) -> LaunchOutcome<Self::Output> {
+        let (phase, nonce): (String, String) = sqlx::query_as(
+            "SELECT holder_phase,native_client_id FROM workspace_leases WHERE lease_id=?1 AND state='held'"
+        ).bind(&permit.record().id).fetch_one(&self.pool).await.unwrap();
+        assert_eq!(phase, "issuing");
+        assert_eq!(nonce, permit.nonce());
+        LaunchOutcome::Started {
+            identity: "reply-turn".into(),
+            output: reply,
+        }
+    }
+    async fn recover(&self, _: &Record) -> Result<Observation> {
+        unreachable!()
+    }
+    async fn stop(&self, _: &Record) -> Result<Observation> {
+        unreachable!()
+    }
+}
+#[tokio::test]
+async fn native_ingress_manager_commits_identity_before_returning_complete_output() {
+    let (repo, cwd, track) = fixture().await;
+    let owner = owner(&repo, cwd.path(), &track, "reply-thread", false).await;
+    let manager = ExecutionManager::new(repo.pool().clone());
+    let backend = ReplyBackend {
+        pool: repo.pool().clone(),
+    };
+    let output =
+        serde_json::json!({"turn":{"id":"reply-turn","items":[]},"future":{"preserved":true}});
+    let receipt = manager
+        .submit(&backend, &owner, output.clone(), None)
+        .await
+        .unwrap();
+    let (phase, turn): (String, String) = sqlx::query_as(
+        "SELECT holder_phase,native_observed_turn_id FROM workspace_leases WHERE lease_id=?1",
+    )
+    .bind(receipt.execution_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(phase, "running");
+    assert_eq!(turn, "reply-turn");
+    assert_eq!(receipt.output, output);
+}
+
 struct UncertainSessionBackend;
 #[async_trait::async_trait]
 impl Backend for UncertainSessionBackend {
     type Request = ();
+    type Output = ();
     fn kind(&self) -> BackendKind {
         BackendKind::NativeSession
     }
-    async fn launch(&self, permit: LaunchPermit, _: ()) -> LaunchOutcome {
+    async fn launch(&self, permit: LaunchPermit, _: ()) -> LaunchOutcome<()> {
         assert!(matches!(permit, LaunchPermit::Write(_)));
         LaunchOutcome::Uncertain(CalmError::Conflict(
             "fixture request has no acknowledgement".into(),

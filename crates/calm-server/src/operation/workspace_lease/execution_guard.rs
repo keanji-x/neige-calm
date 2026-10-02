@@ -81,10 +81,32 @@ impl ExecutionLeaseGuard {
         access: WorkspaceAccess,
     ) -> Result<Self> {
         let mut tx = begin_immediate_tx(pool).await?;
-        let context = native_write_context_tx(&mut tx, card, thread, provider).await?;
-        let task_attempt = verify_task_intent_tx(&mut tx, card, &context.cwd, access).await?;
+        let guard = Self::acquire_native_tx(
+            pool,
+            &mut tx,
+            card,
+            thread,
+            except_attempt,
+            provider,
+            access,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(guard)
+    }
+    async fn acquire_native_tx(
+        pool: &SqlitePool,
+        tx: &mut crate::operation::Tx<'_>,
+        card: &str,
+        thread: &str,
+        except_attempt: &str,
+        provider: NativeProvider,
+        access: WorkspaceAccess,
+    ) -> Result<Self> {
+        let context = native_write_context_tx(tx, card, thread, provider).await?;
+        let task_attempt = verify_task_intent_tx(tx, card, &context.cwd, access).await?;
         let except_attempt = task_attempt.as_deref().unwrap_or(except_attempt);
-        if !native_context_available_for_access_tx(&mut tx, card, except_attempt, &context, access)
+        if !native_context_available_for_access_tx(tx, card, except_attempt, &context, access)
             .await?
         {
             return Err(CalmError::Conflict(
@@ -94,7 +116,7 @@ impl ExecutionLeaseGuard {
         let id = new_id();
         let root = context.root.as_deref().unwrap_or(&id);
         insert_execution_reference(
-            &mut tx,
+            tx,
             ExecutionReference {
                 track: &context.track,
                 card,
@@ -112,9 +134,8 @@ impl ExecutionLeaseGuard {
         sqlx::query("UPDATE workspace_leases SET native_provider=?2,native_client_id=lease_id WHERE lease_id=?1")
             .bind(&id)
             .bind(provider.wire())
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        tx.commit().await?;
         Ok(Self {
             pool: pool.clone(),
             id,
@@ -222,6 +243,27 @@ impl ExecutionWriteGuard {
             .await?,
         ))
     }
+    pub(crate) async fn acquire_native_tx(
+        pool: &SqlitePool,
+        tx: &mut crate::operation::Tx<'_>,
+        card: &str,
+        thread: &str,
+        except: &str,
+        provider: NativeProvider,
+    ) -> Result<Self> {
+        Ok(Self(
+            ExecutionLeaseGuard::acquire_native_tx(
+                pool,
+                tx,
+                card,
+                thread,
+                except,
+                provider,
+                WorkspaceAccess::ReadWrite,
+            )
+            .await?,
+        ))
+    }
     pub(crate) async fn started(self, turn: &str) -> Result<()> {
         self.0.started(turn).await
     }
@@ -232,6 +274,7 @@ impl ExecutionWriteGuard {
 }
 pub(crate) struct ExecutionReadGuard(ExecutionLeaseGuard);
 impl ExecutionReadGuard {
+    #[cfg(test)]
     pub(crate) async fn acquire_native(
         pool: &SqlitePool,
         card: &str,
@@ -241,6 +284,26 @@ impl ExecutionReadGuard {
         Ok(Self(
             ExecutionLeaseGuard::acquire_native(
                 pool,
+                card,
+                thread,
+                "",
+                provider,
+                WorkspaceAccess::ReadOnly,
+            )
+            .await?,
+        ))
+    }
+    pub(crate) async fn acquire_native_tx(
+        pool: &SqlitePool,
+        tx: &mut crate::operation::Tx<'_>,
+        card: &str,
+        thread: &str,
+        provider: NativeProvider,
+    ) -> Result<Self> {
+        Ok(Self(
+            ExecutionLeaseGuard::acquire_native_tx(
+                pool,
+                tx,
                 card,
                 thread,
                 "",

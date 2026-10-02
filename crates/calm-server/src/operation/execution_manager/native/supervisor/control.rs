@@ -133,6 +133,75 @@ impl ExecutionManager {
 }
 
 impl ExecutionManager {
+    pub(in crate::operation::execution_manager) async fn steer_native_protocol(
+        &self,
+        backend: &CodexBackend,
+        session: &str,
+        thread: &str,
+        turn: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let record = storage::running_native_turn(&self.pool, thread, turn)
+            .await?
+            .ok_or_else(|| {
+                CalmError::Conflict("native steer requires an active managed generation".into())
+            })?;
+        let id =
+            storage::admit_session_control(&self.pool, session, &record, "turn/steer", &params)
+                .await?;
+        let reply = backend
+            .steer_protocol(
+                TurnControlPermit {
+                    record,
+                    turn: turn.into(),
+                },
+                params,
+            )
+            .await?;
+        sqlx::query("UPDATE native_session_controls SET reply_json=?2 WHERE id=?1")
+            .bind(id)
+            .bind(reply.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(reply)
+    }
+}
+
+impl ExecutionManager {
+    pub(in crate::operation::execution_manager) async fn reply_native_protocol(
+        &self,
+        backend: &CodexBackend,
+        session: &str,
+        thread: &str,
+        turn: &str,
+        frame: serde_json::Value,
+    ) -> Result<()> {
+        let record = storage::running_native_turn(&self.pool, thread, turn)
+            .await?
+            .ok_or_else(|| {
+                CalmError::Conflict("server response belongs to a stopped generation".into())
+            })?;
+        storage::admit_session_control(
+            &self.pool,
+            session,
+            &record,
+            "server/userInputReply",
+            &frame,
+        )
+        .await?;
+        backend
+            .reply_protocol(
+                TurnControlPermit {
+                    record,
+                    turn: turn.into(),
+                },
+                frame,
+            )
+            .await
+    }
+}
+
+impl ExecutionManager {
     async fn restore_native_scope(
         &self,
         backend: &CodexBackend,
@@ -145,7 +214,8 @@ impl ExecutionManager {
                 "discovered native scope identity differs".into(),
             ));
         }
-        let stopped = facts.thread.stopped() && facts.background_stopped;
+        let stopped =
+            facts.thread.stopped() && facts.background_stopped && facts.descendants_stopped;
         let observed = facts
             .thread
             .turns

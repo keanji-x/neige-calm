@@ -121,6 +121,66 @@ impl PendingThreadStartRegistry {
         queue.remove(index).is_some()
     }
 
+    /// Managed ingress supplies exact durable attribution; FIFO is never consulted.
+    pub(crate) async fn bind_managed_thread(
+        &self,
+        terminal: &str,
+        runtime: &str,
+        card: &str,
+        thread: &str,
+    ) -> Result<()> {
+        let entry = {
+            let queue = self.queue.lock().await;
+            queue
+                .iter()
+                .find(|entry| {
+                    entry.terminal_id == terminal
+                        && entry.worker_session_id == runtime
+                        && entry.card_id == card
+                })
+                .cloned()
+        };
+        let entry = match entry {
+            Some(entry) => entry,
+            None => {
+                let projection = self
+                    .repo
+                    .session_projection_by_id(runtime)
+                    .await?
+                    .ok_or_else(|| CalmError::Conflict("managed runtime is missing".into()))?;
+                if projection.card_id.as_str() != card
+                    || projection.terminal_run_id.as_deref() != Some(terminal)
+                    || projection.agent_provider != Some(AgentProvider::Codex)
+                    || !runtime_status_is_active(&projection.status)
+                {
+                    return Err(CalmError::Conflict(
+                        "managed runtime ownership changed".into(),
+                    ));
+                }
+                let owner = self
+                    .repo
+                    .card_get(card)
+                    .await?
+                    .ok_or_else(|| CalmError::Conflict("managed card is missing".into()))?;
+                PendingEntry::new(
+                    card.into(),
+                    Some(owner.track_id.to_string()),
+                    terminal.into(),
+                    runtime.into(),
+                )
+            }
+        };
+        match self.bind_entry(&entry, thread).await? {
+            BindEntryOutcome::Bound => {
+                self.remove_by_runtime(runtime).await;
+                Ok(())
+            }
+            BindEntryOutcome::Orphan { reason } => Err(CalmError::Conflict(format!(
+                "managed runtime attribution refused: {reason}"
+            ))),
+        }
+    }
+
     pub async fn on_thread_started(&self, thread_id: &str) -> Result<Option<String>> {
         loop {
             let Some(entry_to_check) = self.queue.lock().await.front().cloned() else {

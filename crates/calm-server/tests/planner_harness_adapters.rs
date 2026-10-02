@@ -1596,11 +1596,8 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
         "{final_payload}"
     );
     assert!(
-        final_payload
-            .get("appserver_sock")
-            .and_then(Value::as_str)
-            .is_some_and(|sock| !sock.is_empty()),
-        "{final_payload}"
+        final_payload.get("appserver_sock").is_none(),
+        "raw daemon endpoints must remain private: {final_payload}"
     );
     for cleared in [
         "appserver_pgid",

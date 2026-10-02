@@ -420,6 +420,20 @@ async fn serve_conn(
                 )
                 .await?;
             }
+            "thread/list" => {
+                // This peer never spawns sub-agents; its descendant inventory is empty.
+                send_result(&mut write, &id, json!({"data":[],"nextCursor":null})).await?;
+            }
+            "thread/loaded/list" => {
+                let facts =
+                    ReadFixtures::result_or(&reads.sock.with_extension("thread-read"), json!({}));
+                let loaded: Vec<Value> = facts
+                    .pointer("/thread/id")
+                    .and_then(Value::as_str)
+                    .map(|id| vec![json!(id)])
+                    .unwrap_or_default();
+                send_result(&mut write, &id, json!({"data":loaded,"nextCursor":null})).await?;
+            }
             "thread/read" => {
                 send_result(
                     &mut write,

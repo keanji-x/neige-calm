@@ -75,7 +75,7 @@ pub struct InitializeResult {
 
 /// A single `turn/start` / `turn/steer` input item.
 /// codex's `UserInput` is `camelCase` while this enum is `rename_all = "lowercase"`: a variant added without its own `rename` would serialize as `"localimage"`, which codex rejects with no signal on our side.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum InputItem {
     /// `{"type":"text","text":"…"}`.
@@ -458,7 +458,7 @@ fn notification_stream_closed() -> CalmError {
 }
 
 /// In-flight request registry: JSON-RPC id -> sender for its response.
-type Pending = Arc<StdMutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, RpcError>>>>>;
+type Pending = Arc<StdMutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
 /// A JSON-RPC error object as returned by the server (`-32600` etc.).
 #[derive(Debug, Clone, Deserialize)]
@@ -521,7 +521,7 @@ async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state:
 /// Build the `turn/start` params frame, split out so the frame can be asserted on without a daemon.
 /// A `None` in `selection` omits the key entirely, never `null`: codex's overrides are sticky, and an omitted key means "leave the thread's current override alone".
 /// `effort` is spelled `effort` (not `reasoningEffort`); `clientUserMessageId` is echoed back by codex as `item.clientId` on the `userMessage` item, the kernel's only key for matching that echo.
-fn turn_start_params(
+pub(super) fn turn_start_params(
     thread_id: &str,
     input: &[InputItem],
     selection: &TurnModelSelection,
@@ -595,6 +595,7 @@ impl CodexAppServer {
             notif_tx,
             sink.clone(),
             transport.clone(),
+            None,
         ));
         let client = Self {
             sink,
@@ -609,7 +610,19 @@ impl CodexAppServer {
 
     /// Connect to a `codex app-server` on `sock_path`, spawn the reader, return the client and its [`NotificationStream`]. Does NOT send `initialize`.
     pub(super) async fn connect(sock_path: impl AsRef<Path>) -> Result<(Self, NotificationStream)> {
-        let sock_path = sock_path.as_ref();
+        Self::connect_inner(sock_path.as_ref(), None).await
+    }
+    pub(super) async fn connect_ingress(
+        sock_path: &Path,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Value>)> {
+        let (events, receiver) = mpsc::unbounded_channel();
+        let (client, _) = Self::connect_inner(sock_path, Some(events)).await?;
+        Ok((client, receiver))
+    }
+    async fn connect_inner(
+        sock_path: &Path,
+        events: Option<mpsc::UnboundedSender<Value>>,
+    ) -> Result<(Self, NotificationStream)> {
         let stream =
             match tokio::time::timeout(CONNECT_TIMEOUT, UnixStream::connect(sock_path)).await {
                 Ok(Ok(stream)) => stream,
@@ -680,6 +693,7 @@ impl CodexAppServer {
             notif_tx,
             sink.clone(),
             transport.clone(),
+            events,
         ));
 
         tracing::debug!(sock = %sock_path.display(), "codex app-server: connected");
@@ -693,6 +707,22 @@ impl CodexAppServer {
             reader,
         };
         Ok((client, NotificationStream { rx: notif_rx }))
+    }
+
+    /// Bidirectional reply/notification, not a client request or launch authority.
+    pub(super) async fn send_protocol_frame(&self, frame: Value) -> Result<()> {
+        if frame.get("id").is_some() && frame.get("method").is_some() {
+            return Err(CalmError::Conflict(
+                "protocol replies cannot issue requests".into(),
+            ));
+        }
+        let mut sink = self.sink.lock().await;
+        let mut sending = self.transport.sending()?;
+        sink.send(Message::Text(frame.to_string()))
+            .await
+            .map_err(|error| CalmError::CodexAppServer(format!("protocol write: {error}")))?;
+        sending.complete();
+        Ok(())
     }
 
     /// Override the per-request response timeout, builder-style.
@@ -871,6 +901,23 @@ impl CodexAppServer {
     }
 
     /// `thread/loaded/list` — the thread ids currently loaded in daemon memory (pagination cursor dropped).
+    pub(super) async fn descendants_page(
+        &self,
+        root: &str,
+        cursor: Option<&str>,
+        archived: bool,
+    ) -> Result<Value> {
+        self.request(
+            "thread/list",
+            json!({"ancestorThreadId":root,"cursor":cursor,"limit":100,"useStateDbOnly":false,
+                "sourceKinds":["subAgentThreadSpawn"],"modelProviders":[],"archived":archived}),
+        )
+        .await
+    }
+    pub(super) async fn loaded_page(&self, cursor: Option<&str>) -> Result<Value> {
+        self.request("thread/loaded/list", json!({"cursor":cursor,"limit":100}))
+            .await
+    }
     pub(super) async fn thread_loaded_list(&self) -> Result<Vec<String>> {
         let resp: ThreadLoadedListResponse = self.request("thread/loaded/list", json!({})).await?;
         Ok(resp.data)
@@ -904,6 +951,7 @@ impl CodexAppServer {
     }
 
     /// `turn/start` carrying `clientUserMessageId`; the planner drain is the one caller with an id to send.
+    #[cfg(any(test, feature = "fixtures", feature = "codex-e2e"))]
     pub(super) async fn turn_start_with_client_id(
         &self,
         thread_id: &str,
@@ -921,6 +969,7 @@ impl CodexAppServer {
         .await
     }
 
+    #[cfg(any(test, feature = "fixtures", feature = "codex-e2e"))]
     pub(super) async fn turn_start_with_permissions(
         &self,
         thread_id: &str,
@@ -939,6 +988,7 @@ impl CodexAppServer {
         .await
     }
 
+    #[cfg(any(test, feature = "fixtures", feature = "codex-e2e"))]
     async fn turn_start_with_optional_permissions(
         &self,
         thread_id: &str,
@@ -952,6 +1002,10 @@ impl CodexAppServer {
             permissions.apply_turn(&mut value)?;
         }
         self.request("turn/start", value).await
+    }
+
+    pub(super) async fn turn_start_protocol(&self, params: Value) -> Result<Value> {
+        self.request_envelope("turn/start", params).await
     }
 
     /// `model/list` — one page. `includeHidden` is pinned to `false`: the picker-visibility filter is codex's.
@@ -1052,6 +1106,37 @@ impl CodexAppServer {
         params: Value,
         deadline: tokio::time::Instant,
     ) -> Result<T> {
+        let envelope = self
+            .request_envelope_until(method, params, deadline)
+            .await?;
+        if let Some(error) = envelope.get("error") {
+            let rpc: RpcError = serde_json::from_value(error.clone()).map_err(|_| {
+                CalmError::CodexAppServer(format!("malformed error frame: {error}"))
+            })?;
+            return Err(CalmError::CodexRefused(format!(
+                "{method} failed: {} (code {})",
+                rpc.message, rpc.code
+            )));
+        }
+        serde_json::from_value(envelope.get("result").cloned().unwrap_or(Value::Null))
+            .map_err(|error| CalmError::CodexAppServer(format!("decode {method} result: {error}")))
+    }
+
+    /// Manager-only transport: a complete envelope preserves provider error data.
+    pub(super) async fn request_envelope(&self, method: &str, params: Value) -> Result<Value> {
+        self.request_envelope_until(
+            method,
+            params,
+            tokio::time::Instant::now() + self.request_timeout,
+        )
+        .await
+    }
+    async fn request_envelope_until(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: tokio::time::Instant,
+    ) -> Result<Value> {
         // An already-spent budget is answered without touching the wire: writing the frame would put a request on the daemon whose answer we already decided to ignore.
         if tokio::time::Instant::now() >= deadline {
             return Err(CalmError::CodexAppServer(format!(
@@ -1099,19 +1184,9 @@ impl CodexAppServer {
             }
         };
 
-        match outcome {
-            Ok(Ok(value)) => serde_json::from_value(value)
-                .map_err(|e| CalmError::CodexAppServer(format!("decode {method} result: {e}"))),
-            // The one place codex's own refusal is still distinguishable from everything else that can go wrong.
-            Ok(Err(rpc)) => Err(CalmError::CodexRefused(format!(
-                "{method} failed: {} (code {})",
-                rpc.message, rpc.code
-            ))),
-            // Sender dropped without sending: the reader task ended before our response arrived.
-            Err(_) => Err(CalmError::CodexAppServer(format!(
-                "{method}: connection closed before response"
-            ))),
-        }
+        outcome.map_err(|_| {
+            CalmError::CodexAppServer(format!("{method}: connection closed before response"))
+        })
     }
 }
 
@@ -1122,6 +1197,7 @@ async fn reader_loop(
     notif_tx: mpsc::UnboundedSender<Notification>,
     sink: WsSink,
     transport: Arc<TransportAbort>,
+    events: Option<mpsc::UnboundedSender<Value>>,
 ) {
     let mut requests = server_requests::Dispatch::new(sink, transport);
     loop {
@@ -1160,7 +1236,11 @@ async fn reader_loop(
 
         // Bidirectional IDs are independent: a server request must never consume a pending client RPC with the same ID.
         if obj.get("method").is_some() && obj.get("id").is_some() {
-            if !requests.accept(&obj) {
+            if let Some(events) = events.as_ref() {
+                if events.send(obj).is_err() {
+                    break;
+                }
+            } else if !requests.accept(&obj) {
                 break;
             }
             continue;
@@ -1172,25 +1252,26 @@ async fn reader_loop(
         }) {
             let sender = { pending.lock().unwrap().remove(&id) };
             if let Some(sender) = sender {
-                let payload = if let Some(err) = obj.get("error") {
-                    match serde_json::from_value::<RpcError>(err.clone()) {
-                        Ok(rpc) => Err(rpc),
-                        Err(_) => Err(RpcError {
-                            code: 0,
-                            message: format!("malformed error frame: {err}"),
-                        }),
-                    }
-                } else {
-                    Ok(obj.get("result").cloned().unwrap_or(Value::Null))
-                };
-                // Receiver may be gone if the request future was dropped.
-                let _ = sender.send(payload);
+                // Preserve all result/error fields until the owning backend decodes them.
+                let _ = sender.send(obj);
                 continue;
             }
-            // Untracked id — treat as a notification if it carries a method, else drop.
+            // A timed-out launch reply remains evidence for the ingress owner.
+            if let Some(events) = events.as_ref() {
+                if events.send(obj).is_err() {
+                    break;
+                }
+                continue;
+            }
         }
 
         if let Some(method) = obj.get("method").and_then(Value::as_str) {
+            if let Some(events) = events.as_ref() {
+                if events.send(obj).is_err() {
+                    break;
+                }
+                continue;
+            }
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
             let notif = Notification::parse(method.to_string(), params);
             // `unbounded_send` never awaits capacity, so a slow consumer can never block response routing; the only failure is a dropped receiver.
@@ -1361,6 +1442,7 @@ mod tests {
             notif_tx,
             sink.clone(),
             transport.clone(),
+            None,
         ));
 
         let client = CodexAppServer {
@@ -2460,3 +2542,6 @@ mod tests {
         assert_eq!(keys, vec!["path".to_string(), "type".to_string()]);
     }
 }
+
+#[cfg(test)]
+mod envelope_tests;

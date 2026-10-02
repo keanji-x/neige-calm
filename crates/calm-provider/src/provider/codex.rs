@@ -61,7 +61,6 @@ pub struct CodexLivenessFacts {
 pub trait CodexDaemonProbe: Send + Sync {
     fn is_running(&self) -> bool;
     fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<String>;
-    fn remote_uri(&self) -> String;
 
     /// Wall-clock ms of the most recent successful daemon (re)connect; within the rebuild grace the loaded-thread roster is not stable yet.
     fn daemon_connected_at_ms(&self) -> TimestampMs;
@@ -163,12 +162,10 @@ impl WorkerProvider for CodexProvider {
         session: &WorkerSession,
         _ctx: &SpawnCtx,
     ) -> Result<SpawnHandle, CoreError> {
-        let thread_id = session
+        let _thread_id = session
             .thread_id
             .as_deref()
             .ok_or_else(|| CoreError::Internal("codex resume requires session.thread_id".into()))?;
-        let command_line = resume_command(thread_id, &self.daemon.remote_uri());
-        tracing::debug!(command_line, "codex resume command prepared");
         Err(CoreError::Internal(
             "codex resume spawn wiring lands with the reaper (#679 PR8)".into(),
         ))
@@ -283,9 +280,6 @@ mod tests {
         }
         fn active_turn_id_for_thread(&self, _thread_id: &str) -> Option<String> {
             None
-        }
-        fn remote_uri(&self) -> String {
-            "unix:///tmp/fake.sock".into()
         }
         fn daemon_connected_at_ms(&self) -> TimestampMs {
             0

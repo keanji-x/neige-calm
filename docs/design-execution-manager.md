@@ -125,6 +125,42 @@ ordering stay with their existing business owner.
 Completion means the next execution path is constrained by types and module
 visibility by default, rather than relying on a reviewer to remember a guard.
 
+
+## Managed session ingress implementation boundary
+
+The session ingress is a manager-private WebSocket-over-UDS protocol adapter.
+Its durable record freezes the session execution, terminal, card, track,
+canonical directory, permission selection, and provider/socket endpoints.
+Existing lease phases remain the lifecycle state; there is no gateway FSM.
+Session-to-thread and session-to-execution associations are stored before a
+control request is forwarded. Unknown launch replies retain the native record
+and its existing nonce. The transport preserves complete replies; backend
+associated outputs reach callers only after the manager commits launch identity.
+
+Admission checks the held session and frozen owner in the same immediate
+transaction that associates a native reservation. Closing uses the same durable
+session stopping fence, then quiesces transport, confirms client stop, and settles
+all associated native references using existing backend provider observations.
+Only the manager releases the session reservation. Recovery reconstructs the
+socket from the persisted endpoint after validating ownership. A generation-bound
+unmanaged-client observation permanently rejects attachment and retains its
+reservation; an empty known-reference set cannot prove a legacy client stopped.
+
+A dedicated provider connection preserves initialization capabilities and thread
+subscriptions, including a newly created thread before its first rollout exists.
+The ingress forwards only declared inspection methods. Thread creation/resume,
+turn launch/control, and supported approval or input responses pass manager
+scope and permission checks. Unknown mutations and uncorrelated responses are
+refused. Cross-worktree and foreign-owner resumes direct the user to the owning
+card instead of expanding session resources. Exact terminal/runtime attribution
+reuses the existing pending registry binding implementation without FIFO guesses.
+
+Verification uses fake UDS WebSocket and supervisor peers through production
+entry points, covering protocol envelopes and bidirectional IDs, durable
+issuance before forwarding, scope rejection, uncertain reply recovery, stop
+races, socket recovery, and the absence of raw daemon endpoints in client
+commands or public card metadata. No test invokes a model.
+
 ## Native recovery cleanup fence
 
 Permanent projection cleanup closes the native scope in the same durable admission
@@ -140,3 +176,28 @@ The final projection deletion transaction rechecks live references and unknown
 native scope state. Positive legacy stop records evidence without acquiring a
 writer. Only its exact current terminal task's durable read intent can receive
 the stop handoff after all live references are gone.
+
+## Ingress provider proof and validation limits
+
+Native admission associates its existing reference with the unique same-owner,
+same-directory managed session in the reservation transaction. Explicit session
+claims must match exactly; a stopping session rejects both forms. Known unissued
+clients cannot release while admitted remote references remain unresolved.
+
+Provider stop proof covers the complete descendant roster, including archived
+and non-archived pages and the loaded-thread roster. Parent chains, canonical
+directories, active turns, background executions, and the final roster must all
+agree. A new descendant or missing provider fact retains the parent lease. This
+uses backend observations without introducing child task scheduling or nonces.
+
+Protocol fixtures use the offline codex-cli 0.159.2 JSON schema generated with
+`codex app-server generate-json-schema --experimental`. Nullable defaults and
+empty configuration are accepted where declared; non-null scope or capability
+overrides are rejected. Full input, result, and provider error data survive the
+manager boundary except its frozen policy, directory roots, and launch nonce.
+These fake protocol tests do not validate a live TUI or model lifecycle.
+
+This checkpoint does not close the public Shared thread-bootstrap facades, which
+still lack manager launch permits, or SharedDaemonStatus.sock publication. Those
+remaining production surfaces require integration work before claiming that the
+complete native execution graph has no unmanaged entry point.

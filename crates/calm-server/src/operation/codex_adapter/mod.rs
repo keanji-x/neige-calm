@@ -29,8 +29,6 @@ use crate::operation::workspace_lease::{
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::planner_model::TurnModelSelection;
 use crate::routes::cards::card_scope;
-#[cfg(feature = "fixtures")]
-use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::codex_cards::{
     INITIAL_TURN_LIFECYCLE_TIMEOUT, await_shared_initial_turn_lifecycle, default_cwd,
     normalize_optional_css_color,
@@ -543,19 +541,21 @@ impl ProviderAdapter for CodexAdapter {
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
         let is_prompted = output_prompt(output)?.is_some();
         #[cfg(feature = "fixtures")]
-        let command_line = if is_prompted {
-            let thread_id = output.output_string("codex_thread_id", "codex")?;
-            format!(
-                "codex resume {} --remote {}",
-                shell_single_quote(&thread_id),
-                shell_single_quote(&self.shared_codex_appserver.remote_uri()),
-            )
+        let command_thread = if is_prompted {
+            Some(output.output_string("codex_thread_id", "codex")?)
         } else {
-            format!(
-                "codex --remote {}",
-                shell_single_quote(&self.shared_codex_appserver.remote_uri()),
-            )
+            None
         };
+        #[cfg(feature = "fixtures")]
+        let command_line =
+            super::execution_manager::ExecutionManager::new(ctx.operation_repo.sqlite_pool())
+                .prepare_native_session_command(
+                    &term,
+                    &self.shared_codex_appserver,
+                    command_thread.as_deref(),
+                )
+                .await?
+                .1;
 
         if !is_prompted {
             let _pending_spawn_serial_guard = self.pending_codex_threads_spawn_serial.lock().await;
@@ -1204,7 +1204,6 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
 ) -> Result<SpawnHandle> {
     let sandbox_mode = ctx.workspace_guard.into_sandbox().await?;
     let mut notifications = ctx.shared_codex_appserver.subscribe_notifications();
-    let remote_uri = ctx.shared_codex_appserver.remote_uri();
     let card_id = ctx.card.id.as_str();
     let runtime_id = ctx.worker_session_id.to_string();
     let runtime = ctx
@@ -1259,7 +1258,6 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         ctx.card,
         ctx.worker_session_id,
         &thread_id,
-        &remote_uri,
         persisted_turn_id.as_deref(),
     )
     .await?;
@@ -1287,7 +1285,6 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                 ctx.card,
                 ctx.worker_session_id,
                 &thread_id,
-                &remote_uri,
                 Some(&turn_id),
             )
             .await?;
@@ -1485,14 +1482,12 @@ async fn persist_shared_worker_runtime_fields(
     card: &Card,
     runtime_id: &str,
     thread_id: &str,
-    remote_uri: &str,
     active_turn_id: Option<&str>,
 ) -> Result<()> {
     let card_id_for_tx = card.id.to_string();
     let runtime_id_for_tx = runtime_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
     let active_turn_id_for_tx = active_turn_id.map(ToOwned::to_owned);
-    let remote_uri_for_tx = remote_uri.to_string();
     write_in_tx_typed::<Card, _>(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let mut payload = card_payload_get_tx(tx, &card_id_for_tx).await?;
@@ -1501,7 +1496,7 @@ async fn persist_shared_worker_runtime_fields(
                     "worker card {card_id_for_tx} payload is not a JSON object; cannot persist shared codex runtime fields"
                 )));
             };
-            map.insert("appserver_sock".into(), Value::String(remote_uri_for_tx));
+            map.remove("appserver_sock");
             map.remove("appserver_pgid");
             let updated = card_update_tx(
                 tx,

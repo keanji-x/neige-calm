@@ -1149,8 +1149,6 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
                 == Some(idempotency_key.as_str())
                 && c.payload.get("codex_thread_id").and_then(Value::as_str)
                     == Some("fake-thread-0001")
-                // `codex_thread_id` and `appserver_sock` come from two separate non-snapshot reads that the spawn's persist tx can commit between, so require both before settling.
-                && c.payload.get("appserver_sock").and_then(Value::as_str).is_some()
         })
     })
     .await
@@ -1161,7 +1159,10 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
 
     assert!(card.payload.get("codex_source").is_none());
     assert_eq!(card.payload["codex_thread_id"], "fake-thread-0001");
-    assert_eq!(card.payload["appserver_sock"], boot.shared.remote_uri());
+    assert!(
+        card.payload.get("appserver_sock").is_none(),
+        "raw daemon endpoints are private to execution backends"
+    );
     assert!(card.payload.get("appserver_pgid").is_none());
     // Inspect the session projection used by the card payload. The viewer's
     // own exit is independent of the resumable business session.

@@ -2,7 +2,7 @@
 //! daemon for the whole server.
 
 mod control;
-mod execution_backend;
+pub(in crate::operation::execution_manager) mod execution_backend;
 #[cfg(target_os = "macos")]
 mod macos_process;
 mod preserving_recovery;
@@ -1140,6 +1140,7 @@ impl SharedCodexAppServer {
         self.rebuild_thread_cache_from_db().await?;
         let via = self.start_body_locked(serial, false, None).await?;
         self.resume_cached_threads(via.resume_mode()).await;
+        self.restore_managed_session_ingresses().await?;
         Ok(())
     }
 
@@ -1436,8 +1437,12 @@ impl SharedCodexAppServer {
                 },
                 execution_backend::TurnRequest {
                     thread: thread_id.to_owned(),
-                    items,
-                    selection: selection.clone(),
+                    params: super::wire::turn_start_params(
+                        thread_id,
+                        &items,
+                        selection,
+                        client_user_message_id,
+                    ),
                 },
                 client_user_message_id,
                 permissions,
@@ -1754,6 +1759,66 @@ impl SharedCodexAppServer {
             .is_ok_and(|core| matches!(core.state, SupervisorState::Running { .. }))
     }
 
+    pub async fn restore_managed_session_ingresses(self: &Arc<Self>) -> Result<()> {
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Conflict("managed session restore requires durable storage".into())
+        })?;
+        let sessions: Vec<String> = sqlx::query_scalar(
+            "SELECT ingress.session_execution_id FROM native_session_ingresses ingress JOIN workspace_leases lease \
+             ON lease.lease_id=ingress.session_execution_id WHERE lease.state='held' AND lease.holder_phase IN ('issuing','running')"
+        ).fetch_all(&pool).await?;
+        for session in sessions {
+            super::ingress::restore(&pool, &session, self.clone()).await?;
+        }
+        Ok(())
+    }
+    pub(in crate::operation::execution_manager) async fn ingress_thread_start_guard(
+        &self,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.kernel_thread_start_serial.clone().lock_owned().await
+    }
+    pub(in crate::operation::execution_manager) async fn bind_ingress_thread(
+        &self,
+        terminal: &str,
+        card: &str,
+        thread: &str,
+        cwd: &str,
+    ) -> Result<()> {
+        let pool = self.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Conflict("managed ingress requires durable storage".into())
+        })?;
+        let runtime: String = sqlx::query_scalar(
+            "SELECT id FROM worker_sessions WHERE card_id=?1 AND terminal_run_id=?2 \
+             AND state IN ('starting','running','idle','turn_pending') ORDER BY created_at_ms DESC LIMIT 1"
+        ).bind(card).bind(terminal).fetch_one(&pool).await?;
+        if let Some(pending) = self.pending_codex_threads_handle.as_ref() {
+            pending
+                .bind_managed_thread(terminal, &runtime, card, thread)
+                .await?;
+        } else {
+            return Err(CalmError::Conflict(
+                "managed thread attribution registry unavailable".into(),
+            ));
+        }
+        crate::operation::workspace_lease::execution_guard::bind_execution(
+            &pool,
+            crate::operation::workspace_lease::execution_guard::NativeProvider::Codex,
+            card,
+            thread,
+            cwd,
+        )
+        .await?;
+        self.thread_cache.insert(thread.into(), card.into());
+        self.kernel_initiated_threads
+            .lock()
+            .await
+            .insert(thread.into());
+        Ok(())
+    }
+    pub(in crate::operation::execution_manager) fn ingress_endpoints(&self) -> (&Path, &Path) {
+        (&self.sock, &self.protected_runtime_dir)
+    }
+    #[cfg(any(feature = "fixtures", feature = "codex-e2e"))]
     pub fn remote_uri(&self) -> String {
         format!("unix://{}", self.sock.display())
     }
@@ -3327,8 +3392,8 @@ impl SharedCodexAppServer {
                     )
                     .await
                     {
-                        Ok(ThreadStartedHandling::PendingBound) => continue,
-                        Ok(ThreadStartedHandling::DispatchNormally) => {}
+                        Ok(true) => continue,
+                        Ok(false) => {}
                         Err(e) => {
                             tracing::warn!(
                                 target = "shared_codex_daemon::pending_bind",
@@ -3929,7 +3994,7 @@ impl SharedCodexAppServer {
             thread_id,
         )
         .await?;
-        Ok(matches!(handled, ThreadStartedHandling::PendingBound))
+        Ok(handled)
     }
 
     pub fn sock_path(&self) -> &Path {
@@ -4395,11 +4460,6 @@ fn track_active_turn(
     None
 }
 
-enum ThreadStartedHandling {
-    PendingBound,
-    DispatchNormally,
-}
-
 async fn handle_thread_started_notification(
     pending: Option<&Arc<PendingThreadStartRegistry>>,
     repo: &Arc<dyn Repo>,
@@ -4408,7 +4468,7 @@ async fn handle_thread_started_notification(
     forgotten_threads: &Arc<Mutex<ForgottenThreads>>,
     kernel_thread_start_serial: &Arc<Mutex<()>>,
     thread_id: &str,
-) -> Result<ThreadStartedHandling> {
+) -> Result<bool> {
     let _start_guard = kernel_thread_start_serial.lock().await;
     if kernel_initiated_threads.lock().await.contains(thread_id) {
         tracing::debug!(
@@ -4416,11 +4476,11 @@ async fn handle_thread_started_notification(
             %thread_id,
             "shared codex thread/started belongs to a kernel-initiated thread"
         );
-        return Ok(ThreadStartedHandling::DispatchNormally);
+        return Ok(false);
     }
 
-    let Some(pending) = pending else {
-        return Ok(ThreadStartedHandling::DispatchNormally);
+    let Some(_pending) = pending else {
+        return Ok(false);
     };
     let already_mapped = if thread_cache.contains_key(thread_id) {
         true
@@ -4438,7 +4498,7 @@ async fn handle_thread_started_notification(
             %thread_id,
             "shared codex thread/started already has a card mapping"
         );
-        return Ok(ThreadStartedHandling::DispatchNormally);
+        return Ok(false);
     }
 
     // A thread a committed delete forgot is NOT an ownerless thread the FIFO registry may
@@ -4449,16 +4509,12 @@ async fn handle_thread_started_notification(
             %thread_id,
             "shared codex thread/started belongs to a deleted card's forgotten thread; not binding it to a pending card"
         );
-        return Ok(ThreadStartedHandling::DispatchNormally);
+        return Ok(false);
     }
 
-    match pending.on_thread_started(thread_id).await? {
-        Some(card_id) => {
-            thread_cache.insert(thread_id.to_string(), card_id);
-            Ok(ThreadStartedHandling::PendingBound)
-        }
-        None => Ok(ThreadStartedHandling::DispatchNormally),
-    }
+    // Session ingress binds exact terminal/runtime ownership before its reply.
+    // An unowned notification cannot choose an owner from a pending FIFO.
+    Ok(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -4655,10 +4711,6 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
     fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<String> {
         SharedCodexAppServer::active_turn_id_for_thread(self, thread_id)
             .map(|turn_id| turn_id.to_string())
-    }
-
-    fn remote_uri(&self) -> String {
-        SharedCodexAppServer::remote_uri(self)
     }
 
     fn daemon_connected_at_ms(&self) -> calm_types::runtime::TimestampMs {

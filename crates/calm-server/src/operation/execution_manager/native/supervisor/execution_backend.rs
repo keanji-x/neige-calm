@@ -1,4 +1,5 @@
 //! Native backend: launch consumes authority; stop/recovery only produce observations.
+mod descendants;
 use super::*;
 #[cfg(feature = "fixtures")]
 use crate::codex_appserver::ThreadStatus;
@@ -47,6 +48,18 @@ impl CodexBackend {
             notifications: service.notifications.clone(),
         }
     }
+    pub(in crate::operation::execution_manager::native) fn for_ingress(
+        client: Arc<CodexAppServer>,
+    ) -> Self {
+        Self {
+            connection: Connection::Live(client),
+            active_turns: Arc::new(DashMap::new()),
+            #[cfg(feature = "fixtures")]
+            fake: None,
+            #[cfg(feature = "fixtures")]
+            notifications: broadcast::channel(64).0,
+        }
+    }
     // Notifications borrow a live connection without retaining the supervisor or storage.
     pub(super) fn for_notification(
         client: Arc<CodexAppServer>,
@@ -76,22 +89,40 @@ impl CodexBackend {
 
 pub(in crate::operation::execution_manager) struct TurnRequest {
     pub thread: String,
-    pub items: Vec<InputItem>,
-    pub selection: TurnModelSelection,
+    pub params: serde_json::Value,
 }
 #[async_trait::async_trait]
 impl Backend for CodexBackend {
     type Request = TurnRequest;
+    type Output = serde_json::Value;
     fn kind(&self) -> crate::operation::execution_manager::BackendKind {
         crate::operation::execution_manager::BackendKind::NativeTurn
     }
-    async fn launch(&self, permit: LaunchPermit, request: TurnRequest) -> LaunchOutcome {
+    async fn launch(
+        &self,
+        permit: LaunchPermit,
+        request: TurnRequest,
+    ) -> LaunchOutcome<Self::Output> {
         if permit.record().holder != request.thread {
             return LaunchOutcome::NotIssued(CalmError::Conflict(
                 "launch permit belongs to another native owner".into(),
             ));
         }
         let nonce = permit.nonce().to_owned();
+        let mut params = request.params;
+        if params.get("threadId").and_then(serde_json::Value::as_str)
+            != Some(request.thread.as_str())
+        {
+            return LaunchOutcome::NotIssued(CalmError::Conflict(
+                "turn request differs from its owner".into(),
+            ));
+        }
+        params["clientUserMessageId"] = serde_json::json!(nonce);
+        if let Some(policy) = permit.policy() {
+            if let Err(error) = policy.apply_turn(&mut params) {
+                return LaunchOutcome::NotIssued(error);
+            }
+        }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.reject_turn_start.load(Ordering::SeqCst) {
@@ -116,14 +147,32 @@ impl Backend for CodexBackend {
                     nonce: nonce.clone(),
                     status: TurnStatus::InProgress,
                 });
+            let items = match serde_json::from_value(params["input"].clone()) {
+                Ok(items) => items,
+                Err(error) => {
+                    return LaunchOutcome::NotIssued(CalmError::Conflict(format!(
+                        "fixture input: {error}"
+                    )));
+                }
+            };
+            let selection = TurnModelSelection {
+                model: params
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                effort: params
+                    .get("effort")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            };
             fake.started_turns
                 .lock()
                 .expect("started turns")
-                .push((request.thread.clone(), request.items));
+                .push((request.thread.clone(), items));
             fake.started_turn_selections
                 .lock()
                 .expect("turn selections")
-                .push((request.thread.clone(), request.selection));
+                .push((request.thread.clone(), selection));
             fake.started_turn_client_ids
                 .lock()
                 .expect("client IDs")
@@ -141,7 +190,10 @@ impl Backend for CodexBackend {
                 thread_id: request.thread,
                 turn: serde_json::json!({"id":turn}),
             });
-            return LaunchOutcome::Started(turn);
+            return LaunchOutcome::Started {
+                identity: turn.clone(),
+                output: serde_json::json!({"jsonrpc":"2.0","result":{"turn":{"id":turn}}}),
+            };
         }
         let client = match self.client() {
             Ok(client) => client,
@@ -155,32 +207,36 @@ impl Backend for CodexBackend {
                 "read execution permit lacks its enforced policy".into(),
             ));
         }
-        let result = match permissions {
-            Some(policy) => {
-                client
-                    .turn_start_with_permissions(
-                        &request.thread,
-                        request.items,
-                        &request.selection,
-                        Some(&nonce),
-                        policy,
-                    )
-                    .await
-            }
-            None => {
-                client
-                    .turn_start_with_client_id(
-                        &request.thread,
-                        request.items,
-                        &request.selection,
-                        Some(&nonce),
-                    )
-                    .await
-            }
-        };
+        let result = client.turn_start_protocol(params).await;
         match result {
-            Ok(receipt) => match receipt.turn_id().filter(|id| !id.is_empty()) {
-                Some(id) => LaunchOutcome::Started(id.to_owned()),
+            Ok(receipt) if receipt.get("error").is_some() && receipt.get("result").is_some() => {
+                LaunchOutcome::Uncertain(CalmError::CodexAppServer(
+                    "native reply contains both result and error; outcome unknown".into(),
+                ))
+            }
+            Ok(receipt) if receipt.get("error").is_some() => {
+                let error = &receipt["error"];
+                match (error["code"].as_i64(), error["message"].as_str()) {
+                    (Some(code), Some(message)) => LaunchOutcome::Rejected {
+                        error: CalmError::CodexRefused(format!(
+                            "turn/start failed: {message} (code {code})"
+                        )),
+                        output: receipt,
+                    },
+                    _ => LaunchOutcome::Uncertain(CalmError::CodexAppServer(
+                        "malformed native refusal; outcome unknown".into(),
+                    )),
+                }
+            }
+            Ok(receipt) => match receipt
+                .pointer("/result/turn/id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                Some(id) => LaunchOutcome::Started {
+                    identity: id.to_owned(),
+                    output: receipt,
+                },
                 None => LaunchOutcome::Uncertain(CalmError::CodexAppServer(
                     "turn/start returned no turn.id".into(),
                 )),
@@ -199,6 +255,7 @@ impl Backend for CodexBackend {
 pub(in crate::operation::execution_manager) struct ScopeObservation {
     pub thread: super::workspace::NativeThread,
     pub background_stopped: bool,
+    pub descendants_stopped: bool,
 }
 impl CodexBackend {
     pub(in crate::operation::execution_manager) async fn discover(
@@ -217,6 +274,7 @@ impl CodexBackend {
                 return Ok(ScopeObservation {
                     thread: facts,
                     background_stopped: true,
+                    descendants_stopped: true,
                 });
             }
             let history = fake.native_turns.lock().expect("fake provider history");
@@ -256,12 +314,16 @@ impl CodexBackend {
                         .collect(),
                 },
                 background_stopped: true,
+                descendants_stopped: true,
             });
         }
         let client = self.client()?;
+        let facts = client.thread_workspace_history(thread).await?.thread;
+        let descendants_stopped = self.descendants_stopped(thread, &facts.cwd, false).await?;
         Ok(ScopeObservation {
-            thread: client.thread_workspace_history(thread).await?.thread,
+            thread: facts,
             background_stopped: client.background_terminals_stopped(thread).await?,
+            descendants_stopped,
         })
     }
 
@@ -336,7 +398,13 @@ impl CodexBackend {
             }
             None => false,
         };
-        let stopped = target_stopped && facts.thread.stopped() && facts.background_stopped;
+        let descendants_stopped = self
+            .descendants_stopped(&record.holder, &record.cwd, stop)
+            .await?;
+        let stopped = target_stopped
+            && facts.thread.stopped()
+            && facts.background_stopped
+            && descendants_stopped;
         Ok(Observation {
             execution: record.id.clone(),
             identity: turn,
@@ -395,6 +463,32 @@ impl CodexBackend {
 }
 
 impl CodexBackend {
+    pub(in crate::operation::execution_manager) async fn reply_protocol(
+        &self,
+        permit: super::control::TurnControlPermit,
+        frame: serde_json::Value,
+    ) -> Result<()> {
+        if permit.thread().is_empty() || permit.turn().is_empty() {
+            return Err(CalmError::Conflict(
+                "native server reply lacks managed generation".into(),
+            ));
+        }
+        self.client()?.send_protocol_frame(frame).await
+    }
+    pub(in crate::operation::execution_manager) async fn steer_protocol(
+        &self,
+        permit: super::control::TurnControlPermit,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        if params["threadId"].as_str() != Some(permit.thread())
+            || params["expectedTurnId"].as_str() != Some(permit.turn())
+        {
+            return Err(CalmError::Conflict(
+                "native steer differs from its control permit".into(),
+            ));
+        }
+        self.client()?.request_envelope("turn/steer", params).await
+    }
     pub(in crate::operation::execution_manager) async fn steer(
         &self,
         permit: super::control::TurnControlPermit,

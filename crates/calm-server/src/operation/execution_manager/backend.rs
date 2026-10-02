@@ -5,14 +5,27 @@ use crate::error::{CalmError, Result};
 #[async_trait::async_trait]
 pub(super) trait Backend: Send + Sync {
     type Request: Send;
+    type Output: Send;
     fn kind(&self) -> BackendKind;
-    async fn launch(&self, permit: LaunchPermit, request: Self::Request) -> LaunchOutcome;
+    async fn launch(
+        &self,
+        permit: LaunchPermit,
+        request: Self::Request,
+    ) -> LaunchOutcome<Self::Output>;
     async fn recover(&self, record: &Record) -> Result<Observation>;
     async fn stop(&self, record: &Record) -> Result<Observation>;
 }
 
-pub(super) enum LaunchOutcome {
-    Started(String),
+pub(super) enum LaunchOutcome<T> {
+    Started {
+        identity: String,
+        output: T,
+    },
+    /// Provider refusal is known not to have issued; retain its full protocol output.
+    Rejected {
+        error: CalmError,
+        output: T,
+    },
     NotIssued(CalmError),
     Uncertain(CalmError),
 }

@@ -26,7 +26,7 @@ impl ExecutionManager {
         owner: &Owner,
         request: B::Request,
         preferred_nonce: Option<&str>,
-    ) -> Result<Receipt> {
+    ) -> Result<Receipt<B::Output>> {
         self.submit_with_policy(backend, owner, request, preferred_nonce, None)
             .await
     }
@@ -37,13 +37,26 @@ impl ExecutionManager {
         request: B::Request,
         preferred_nonce: Option<&str>,
         policy: Option<PermissionsChoice>,
-    ) -> Result<Receipt> {
+    ) -> Result<Receipt<B::Output>> {
+        self.submit_for_session(backend, owner, request, preferred_nonce, policy, None)
+            .await?
+            .started()
+    }
+    async fn submit_for_session<B: Backend>(
+        &self,
+        backend: &B,
+        owner: &Owner,
+        request: B::Request,
+        preferred_nonce: Option<&str>,
+        policy: Option<PermissionsChoice>,
+        session: Option<&str>,
+    ) -> Result<Submission<B::Output>> {
         if !self.reconcile_before_launch(backend, &owner.holder).await? {
             return Err(CalmError::Conflict(
                 "previous native generation is still executing".into(),
             ));
         }
-        let reservation = Reservation::acquire(&self.pool, owner).await?;
+        let reservation = Reservation::acquire(&self.pool, owner, session).await?;
         let nonce = match reservation.nonce(preferred_nonce).await {
             Ok(nonce) => nonce,
             Err(error) => {
@@ -71,14 +84,19 @@ impl ExecutionManager {
             }
         };
         match backend.launch(permit, request).await {
-            LaunchOutcome::Started(identity) => {
+            LaunchOutcome::Started { identity, output } => {
                 let id = reservation.id().to_owned();
                 let stopped = reservation.started(&self.pool, &identity).await?;
-                Ok(Receipt {
+                Ok(Submission::Started(Receipt {
                     execution_id: id,
                     identity,
                     stopped,
-                })
+                    output,
+                }))
+            }
+            LaunchOutcome::Rejected { error, output } => {
+                reservation.reject().await?;
+                Ok(Submission::Rejected { error, output })
             }
             LaunchOutcome::NotIssued(error) => {
                 reservation.reject().await?;
@@ -113,7 +131,7 @@ impl ExecutionManager {
         backend: &B,
         execution: &str,
         request: B::Request,
-    ) -> Result<Receipt> {
+    ) -> Result<Receipt<B::Output>> {
         let record = storage::load(&self.pool, execution)
             .await?
             .ok_or_else(|| CalmError::Conflict("prepared execution is not held".into()))?;
@@ -133,15 +151,16 @@ impl ExecutionManager {
             policy: None,
         });
         match backend.launch(permit, request).await {
-            LaunchOutcome::Started(identity) => {
+            LaunchOutcome::Started { identity, output } => {
                 let stopped = storage::session_started(&self.pool, execution, &identity).await?;
                 Ok(Receipt {
                     execution_id: execution.to_owned(),
                     identity,
                     stopped,
+                    output,
                 })
             }
-            LaunchOutcome::NotIssued(error) => {
+            LaunchOutcome::NotIssued(error) | LaunchOutcome::Rejected { error, .. } => {
                 storage::reject_session(&self.pool, execution).await?;
                 Err(error)
             }
@@ -234,7 +253,20 @@ pub(super) struct Owner {
     pub card: String,
     pub holder: String,
 }
-pub(super) struct Receipt {
+pub(super) enum Submission<T> {
+    Started(Receipt<T>),
+    Rejected { error: CalmError, output: T },
+}
+impl<T> Submission<T> {
+    fn started(self) -> Result<Receipt<T>> {
+        match self {
+            Self::Started(receipt) => Ok(receipt),
+            Self::Rejected { error, .. } => Err(error),
+        }
+    }
+}
+pub(super) struct Receipt<T> {
+    pub output: T,
     pub execution_id: String,
     pub identity: String,
     pub stopped: bool,

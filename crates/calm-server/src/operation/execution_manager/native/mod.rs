@@ -24,6 +24,8 @@ pub(crate) use session::{
     stop_managed_native_session,
 };
 
+pub(super) mod ingress;
+
 pub(crate) use session::release_unissued_native_session;
 
 pub(crate) use supervisor::reconcile_native_executions;

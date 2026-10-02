@@ -1124,7 +1124,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             serde_json::to_value(&snapshot)?,
             "planner harness",
         )?;
-        let appserver_sock = self.daemon.remote_uri();
 
         // Nothing in this phase reads the `output.result` card snapshot: `operations.tx_output_json` is persisted replay input, so a `Card` serde change would fail every in-flight replay here.
         let scope = card_scope(
@@ -1299,13 +1298,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         cleared_measure = harness_items_measure_by_card_tx(tx, &card_id).await?;
                         harness_items_delete_by_card_tx(tx, &card_id).await?;
                     }
-                    let card = card_apply_harness_start_payload_tx(
-                        tx,
-                        &card_id,
-                        &thread_for_tx,
-                        &appserver_sock,
-                    )
-                    .await?;
+                    let card =
+                        card_apply_harness_start_payload_tx(tx, &card_id, &thread_for_tx).await?;
                     checkpoint_output.result = serde_json::to_value(&card)?;
                     checkpoint_output.target_id = Some(card.id.to_string());
                     checkpoint_app_server_interact_tx(
@@ -2066,7 +2060,6 @@ async fn card_apply_harness_start_payload_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
     thread_id: &str,
-    appserver_sock: &str,
 ) -> Result<Card> {
     let mut payload = card_payload_get_tx(tx, card_id).await?;
     let Some(map) = payload.as_object_mut() else {
@@ -2078,10 +2071,7 @@ async fn card_apply_harness_start_payload_tx(
         "codex_thread_id".into(),
         Value::String(thread_id.to_string()),
     );
-    map.insert(
-        "appserver_sock".into(),
-        Value::String(appserver_sock.to_string()),
-    );
+    map.remove("appserver_sock");
     map.remove("appserver_pgid");
     map.remove("appserver_start_time");
     map.remove("appserver_boot_id");

@@ -13,9 +13,6 @@ impl CodexDaemonProbe for StopProbe {
     fn active_turn_id_for_thread(&self, _: &str) -> Option<String> {
         None
     }
-    fn remote_uri(&self) -> String {
-        String::new()
-    }
     fn daemon_connected_at_ms(&self) -> i64 {
         0
     }

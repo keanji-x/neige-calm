@@ -1,7 +1,7 @@
 //! Typed mutually exclusive native Codex permission selection.
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionsChoice {
     SandboxMode(String),
     NamedProfile(String),
@@ -30,7 +30,10 @@ impl PermissionsChoice {
         }
     }
 
-    pub(super) fn apply_turn(&self, params: &mut Value) -> Result<()> {
+    pub(in crate::operation::execution_manager::native) fn apply_turn(
+        &self,
+        params: &mut Value,
+    ) -> Result<()> {
         match self {
             Self::NamedProfile(profile) => params["permissions"] = json!(profile),
             Self::SandboxMode(_) => return Err(CalmError::CodexAppServer(
