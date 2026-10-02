@@ -1341,8 +1341,6 @@ impl SharedCodexAppServer {
                     "forced turn/start failure for test".into(),
                 ));
             }
-            let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
-            let turn_id = format!("fake-turn-{n:04}");
             fake.started_turns
                 .lock()
                 .expect("fake shared codex started turns mutex poisoned")
@@ -1355,6 +1353,9 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex turn client ids mutex poisoned")
                 .push(client_user_message_id.map(ToOwned::to_owned));
+            // Counted after the records above, so `turn_start_count_for_test` never runs ahead of them.
+            let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
+            let turn_id = format!("fake-turn-{n:04}");
             let hook = fake
                 .turn_start_return_hook
                 .lock()

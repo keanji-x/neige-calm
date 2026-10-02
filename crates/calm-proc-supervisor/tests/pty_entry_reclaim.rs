@@ -77,7 +77,6 @@ async fn expired_pty_entries_are_removed_and_release_ring_and_fds() {
     // 预热一轮，让 tokio / 临时目录相关的 fd 先稳定下来。
     let warm = "pty-reclaim-warmup";
     ensure_noisy_pty(supervisor.sock(), warm).await;
-    await_exit(supervisor.sock(), warm).await;
     await_entry_gone(registry, warm).await;
 
     let fds_before = open_fd_count();
@@ -87,25 +86,9 @@ async fn expired_pty_entries_are_removed_and_release_ring_and_fds() {
     for proc_id in &procs {
         ensure_noisy_pty(supervisor.sock(), proc_id).await;
     }
-    for proc_id in &procs {
-        await_exit(supervisor.sock(), proc_id).await;
-    }
 
-    // 宽限期内 ring 仍完好 —— 移除不能早于宽限期。
-    let buffered_in_grace: usize = procs
-        .iter()
-        .map(|proc_id| {
-            registry
-                .debug_entry_stats(proc_id)
-                .expect("宽限期内 entry 必须仍在")
-                .buffered_bytes
-        })
-        .sum();
-    assert!(
-        buffered_in_grace > NOISY_BYTES,
-        "宽限期内应仍持有 replay 字节，实际 {buffered_in_grace}"
-    );
-
+    // No attach-for-`Exited` and no in-grace check: 300 ms is shorter than this test's own scheduling jitter (#1948).
+    // `replay_and_sticky_exit_survive_within_grace` owns "kept within grace"; removal itself implies sticky exit + master EOF + due.
     for proc_id in &procs {
         await_entry_gone(registry, proc_id).await;
     }

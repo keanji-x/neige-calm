@@ -210,7 +210,8 @@ pub(super) struct Inner {
     /// When the current run of consecutive refusals began; feeds `transient_silence_budget`.
     refusing_since: Mutex<Option<Instant>>,
     /// How many issuance attempts have been refused, so a test can assert the retry is PACED
-    /// without waiting on a wall clock.
+    /// without waiting on a wall clock. Bumped only once the batch is back on the queue, so a
+    /// test that sees the count also sees the re-buffered entry.
     #[cfg(feature = "fixtures")]
     refused_issuances: AtomicU64,
     shutdown: broadcast::Sender<()>,
@@ -3196,9 +3197,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // The two arms differ in what waiting is worth, so they differ in how long we wait and in
             // whether the reader is told.
             apply_refusal(inner, &failure).await;
+            rebuffer_head(inner, drained).await;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
-            rebuffer_head(inner, drained).await;
             *inner.state.lock().await = prior_turn
                 .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
                 .unwrap_or(HarnessState::Idle);
@@ -3271,8 +3272,6 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             let refusal =
                 classify_codex_failure(&e, format!("{stage}: {e}"), IssuanceRefusal::rejected);
             apply_refusal(inner, &refusal).await;
-            #[cfg(feature = "fixtures")]
-            inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
             // The batch goes back on the queue, so the row that said it was sent goes too. A failed delete
             // is logged: the next drain replaces the row under the same key. The phase change that follows
             // the re-buffer is what tells a reader the row is gone.
@@ -3290,6 +3289,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 );
             }
             rebuffer_head(inner, drained).await;
+            #[cfg(feature = "fixtures")]
+            inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
             *inner.state.lock().await = prior_turn
                 .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
                 .unwrap_or(HarnessState::TurnCompleted {
