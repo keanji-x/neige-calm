@@ -128,8 +128,9 @@ after its start. After that deadline, or when the Track is closed or missing,
 the cursor advances without an event. Moving an entry to a later start makes it
 fire again at the new start. A wake reaches a running Planner: it is delivered on
 its next turn and replayed after a restart. The kernel does not start Planners; a
-wake that comes due before the Track's Planner has ever started is recorded as
-fired and not delivered. There is
+wake that comes due before the Track's Planner has ever started is not delivered
+when that Planner starts, though a later server restart may replay it through boot
+catch-up with its original text. There is
 no per-entry opt-out or holiday exception; the woken Planner decides to skip.
 Weekly recurrence is a separate slice.
 

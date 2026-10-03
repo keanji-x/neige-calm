@@ -18,7 +18,7 @@ const TICK: Duration = Duration::from_secs(30);
 /// A missed wake still fires until its end, but never less than two ticks after its start, so
 /// an entry shorter than the tick cannot fall between two scans.
 const GRACE: Duration = Duration::from_secs(2 * TICK.as_secs());
-const CHANGED: &str = "calendar entry changed during wake";
+const CHANGED: &str = "calendar wake decided on changed state";
 
 pub(super) fn spawn(ctx: Arc<AppContext>) {
     tokio::spawn(async move {
@@ -101,7 +101,11 @@ pub(super) async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -
         // Ended, closed or missing: record the occurrence as handled without waking.
         None => {
             write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
-                Box::pin(async move { claim(tx, &id, version, start_ms).await.map(|()| false) })
+                Box::pin(async move {
+                    claim(tx, &id, version, start_ms, None)
+                        .await
+                        .map(|()| false)
+                })
             })
             .await
         }
@@ -112,6 +116,7 @@ pub(super) async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -
                 key: entry.id.clone(),
                 text: wake_text(&entry, &span, now),
             };
+            let track_id = track.id.to_string();
             let scope = EventScope::Track {
                 track: track.id,
                 area: track.area_id,
@@ -124,7 +129,7 @@ pub(super) async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -
                 &ctx.write,
                 move |tx| {
                     Box::pin(async move {
-                        claim(tx, &id, version, start_ms).await?;
+                        claim(tx, &id, version, start_ms, Some(&track_id)).await?;
                         Ok(((), vec![(scope, event)]))
                     })
                 },
@@ -139,16 +144,32 @@ pub(super) async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -
     }
 }
 
-/// Every cursor write first proves the entry is the version the scan decided on; a concurrent
-/// edit or cancel wins and the next tick decides on the new version.
+/// Every cursor write first re-proves what the scan read outside the transaction: the entry is
+/// still that version, the occurrence is not yet handled and, for a wake, the Track is still open.
+/// Anything else changed wins; the next tick decides on the new state.
 async fn claim(
     tx: &mut Transaction<'_, Sqlite>,
     entry_id: &str,
     version: i64,
     start_ms: i64,
+    open_track: Option<&str>,
 ) -> Result<()> {
     let current = get::<Entry>(tx, &format!("entry:{entry_id}")).await?;
-    if current.map(|entry| entry.version) != Some(version) {
+    let fired = get::<i64>(tx, &fired_key(entry_id)).await?;
+    let closed = match open_track {
+        Some(track) => {
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM tracks WHERE id = ? AND closed_at IS NULL")
+                .bind(track)
+                .fetch_optional(&mut **tx)
+                .await?
+                .is_none()
+        }
+        None => false,
+    };
+    if current.map(|entry| entry.version) != Some(version)
+        || fired.is_some_and(|fired| fired >= start_ms)
+        || closed
+    {
         return Err(CalmError::Conflict(CHANGED.into()));
     }
     put(tx, &fired_key(entry_id), &start_ms).await

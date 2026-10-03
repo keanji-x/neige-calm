@@ -543,3 +543,30 @@ async fn end_extended_after_the_scan_read_is_not_recorded_as_expired() {
     assert_eq!(scan(&fx.ctx, now).await.unwrap(), 0);
     assert_eq!(wake_events(&fx).await.len(), 1);
 }
+
+#[tokio::test]
+async fn overlapping_handles_of_one_stale_read_wake_once() {
+    let fx = Fixture::new().await;
+    let planner = fx.identity(CardRole::Planner).await;
+    let read_by_scan = create(
+        &fx,
+        &planner,
+        "overlap",
+        timed("2026-10-02T09:00", "2026-10-02T10:00"),
+    )
+    .await;
+    let now = at("2026-10-02T09:00:10+08:00");
+    // Both read the unhandled cursor before either transaction commits.
+    let (first, second) = tokio::join!(
+        crate::builtin_plugins::calendar::wake::handle(&fx.ctx, read_by_scan.clone(), now),
+        crate::builtin_plugins::calendar::wake::handle(&fx.ctx, read_by_scan.clone(), now),
+    );
+    assert_eq!(
+        [first.unwrap(), second.unwrap()]
+            .iter()
+            .filter(|woke| **woke)
+            .count(),
+        1
+    );
+    assert_eq!(wake_events(&fx).await.len(), 1);
+}
