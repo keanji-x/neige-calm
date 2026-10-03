@@ -43,25 +43,30 @@ impl ClaudePlannerConfig {
     /// `claude_version` (the CLI prints `2.1.280 (Claude Code)`). `env` is the spawn's own
     /// allowlisted environment, so the check runs the binary exactly as the turn will.
     pub async fn verify_version(&self, env: &[(String, std::ffi::OsString)]) -> Result<()> {
-        self.version_problem(env)
-            .await
-            .map_or(Ok(()), |problem| Err(CalmError::Conflict(problem)))
+        self.version_problem(env).await.map_or(Ok(()), |problem| {
+            Err(CalmError::Conflict(problem.to_string()))
+        })
     }
 
-    /// [`Self::verify_version`] for a turn start (#1981): a binary that is not the pinned one is
-    /// refused until an operator fixes it.
+    /// [`Self::verify_version`] for a turn start (#1981): a binary that answered as another version
+    /// is refused until an operator fixes it; one that did not answer may answer next time.
     pub async fn refuse_unless_pinned(
         &self,
         env: &[(String, std::ffi::OsString)],
     ) -> Result<(), TurnStartFailure> {
-        self.version_problem(env)
-            .await
-            .map_or(Ok(()), |problem| Err(needs_an_operator(problem)))
+        match self.version_problem(env).await {
+            None => Ok(()),
+            Some(VersionProblem::NotPinned(problem)) => Err(needs_an_operator(problem)),
+            Some(VersionProblem::NoAnswer(problem)) => Err(CalmError::Conflict(problem).into()),
+        }
     }
 
     /// [`Self::verify_version`]'s check, answering why the binary is refused (`None` = it is not).
     /// Runs through [`super::readiness_command::run`]: bounded, capped, killed and reaped.
-    pub async fn version_problem(&self, env: &[(String, std::ffi::OsString)]) -> Option<String> {
+    pub async fn version_problem(
+        &self,
+        env: &[(String, std::ffi::OsString)],
+    ) -> Option<VersionProblem> {
         let (status, stdout) = match super::readiness_command::run(
             &self.claude_binary,
             &["--version"],
@@ -71,27 +76,45 @@ impl ClaudePlannerConfig {
         .await
         {
             Ok(output) => output,
-            Err(failure) => return Some(version_error(&self.claude_binary, &failure.to_string())),
+            Err(failure) => {
+                let detail = failure.to_string();
+                return Some(VersionProblem::NoAnswer(version_error(
+                    &self.claude_binary,
+                    &detail,
+                )));
+            }
         };
         if !status.success() {
-            return Some(version_error(
+            return Some(VersionProblem::NotPinned(version_error(
                 &self.claude_binary,
                 &format!("exited with {status}"),
-            ));
+            )));
         }
         let printed = String::from_utf8_lossy(&stdout);
         match printed.split_whitespace().next() {
             Some(first) if first == self.claude_version => None,
-            other => Some(version_error(
+            other => Some(VersionProblem::NotPinned(version_error(
                 &self.claude_binary,
                 &format!(
                     "reports {:?}, the config pins {:?}",
                     other.unwrap_or(""),
                     self.claude_version
                 ),
-            )),
+            ))),
         }
     }
+}
+
+/// Why `--version` refuses the binary; `Display` is the reason.
+#[derive(Debug, thiserror::Error)]
+pub enum VersionProblem {
+    /// It answered, and the answer is not the pinned version (or it exited unsuccessfully).
+    #[error("{0}")]
+    NotPinned(String),
+    /// No answer was obtained: it did not start, could not be read or waited for, timed out, or
+    /// printed past the cap.
+    #[error("{0}")]
+    NoAnswer(String),
 }
 
 /// The flag whose absence keeps the Claude Planner unavailable (design #1791 §5.3).

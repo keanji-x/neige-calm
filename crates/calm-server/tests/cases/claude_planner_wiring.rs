@@ -274,6 +274,31 @@ async fn a_version_mismatch_tells_the_reader_why_nothing_is_sent() {
     stack.shutdown().await;
 }
 
+/// #1981 S1: a `--version` that gave no answer establishes no mismatch, so the failed attempt
+/// stays transient: the reader is not told, and the retry keeps its short pace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_version_check_without_an_answer_stays_transient() {
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    let (_, card_id) = stack.create_claude_track().await;
+    let runtime = stack.runtime(&card_id).await;
+    root.remove_fake("claude");
+
+    let harness = stack.harness(&runtime.id);
+    let (status, _) = stack.post_input(&card_id, "hello?").await;
+    assert_eq!(status, StatusCode::OK, "the message is queued");
+    for _ in 0..200 {
+        if harness.refused_issuances_for_test() > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(harness.refused_issuances_for_test() > 0, "the turn failed");
+    // A refusal sets the block before the attempt is counted.
+    assert_eq!(harness.issuance_block().await, None);
+    stack.shutdown().await;
+}
+
 /// #1830 T3: on an attached track the Claude Planner's turn runs in the track worktree, and its
 /// Edit/Write rules are confined to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
