@@ -329,15 +329,15 @@ or generation time. Legacy table source IDs and their payloads are unchanged.
 
 ## Automatic SPY/cash profile
 
-This profile implements message-triggered target allocation with the official
+This profile runs a daily SPY/cash target allocation with the official
 Longbridge paper account. Planner research comes through existing Longbridge
 and Wisburg connectors. The Planner captures source references and persists a
 basis-point target; an ordinary Codex Worker task requests execution of that
 immutable decision. The App's background loop calculates integer shares,
-submits one DAY market order and reconciles actual broker fills. It does not
-periodically create new targets or automatically submit an additional order to
-eliminate residual drift. Sources are durable citation references supplied by
-the Planner; the App does not verify their content.
+submits one DAY market order and reconciles actual broker fills. The App never
+creates targets or submits an additional order to eliminate residual drift;
+new targets come only from the Planner. Sources are durable citation references
+supplied by the Planner; the App does not verify their content.
 
 Use a fresh data directory and a dedicated paper account with no existing
 positions or active orders. This profile and the supervised profile cannot share
@@ -373,7 +373,7 @@ market value as the allocation base. It caps target exposure at the configured
 cash reserve, rounds whole shares down, and sizes buys with an additional 1%
 price reserve. Each decision executes at most one step: by default 10% of current account
 value, including the price reserve. A distant target is approached in that
-step, and the actual remaining drift is reported for the next message. Market
+step, and the actual remaining drift is reported for the next decision. Market
 orders have no guaranteed execution price. It does not use margin buying
 power, spend positive unsettled proceeds or sell unavailable shares. The
 App computes a smaller step when the target requires more than the cap; a
@@ -411,16 +411,23 @@ a managed Track gets its own Git workspace and an attached Track gets its
 worktrees refuses Codex tasks with `track-without-worktree`; create a new
 Track instead. The Worker task is `access: "read_only"`, so the checkout must
 only be clean; the App ledger lives in the plugin data directory, not in Git.
-Keep the strategy Track open between messages; close only on explicit request.
+Only the user closes the strategy Track.
 
-The Planner uses `spy.plan` with a stable decision ID (1-55 lowercase letters,
-digits or hyphens, so the task key `spy-exec-<decision_id>` is valid), a 0-10000
-`target_spy_bps`, a rationale, 1-20 captured `neige://source/...` references
-and a timezone-aware validity of at most 24 hours. Only one unresolved decision
-is permitted. The Planner then declares a report `task` block through
-`calm.report.commit` with `kind: "codex"`, `access: "read_only"`, `ready: true`,
-`declared_by: "spec"`, `key: "spy-exec-<decision_id>"`, and a `goal` naming the decision ID.
-Use a Codex Worker: Claude Workers receive no plugin MCP tools.
+The Recipe runs the Track unattended. On the first user message the Planner
+creates four weekly Calendar entries from the Track, in America/New_York:
+weekday pre-market research 08:45, execution 09:45 and post-close review
+16:30, and a Saturday weekly review at 10:00. Each entry wakes the Planner at
+its start; the kernel needs Calendar wake and weekly recurrence (#1967), and
+it does not start a Planner that never ran. The Planner skips a day the
+Longbridge trading calendar marks closed. Pre-market research ends in either a
+hold or `spy.plan` with decision ID `spy-YYYYMMDD` (the App accepts 1-55
+lowercase letters, digits or hyphens and a validity of at most 24 hours; the
+Recipe ends it at that day's actual regular-session close from the trading
+calendar). At the execution step the Planner
+declares one `codex`, `access: "read_only"` task `spy-exec-<decision_id>`;
+Claude Workers receive no plugin MCP tools. Only one unresolved decision is
+permitted, and every blocked or uncertain state stays in the Report for
+reconciliation instead of a retry.
 
 All four tools declare `destructiveHint: false` and `openWorldHint: false`, so
 Codex agents running with `approval_policy = never` can call them without an
