@@ -24,7 +24,7 @@ use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
 use crate::harness::backend::{PlannerBackend, PlannerEvents, TurnStartFailure};
 use crate::harness::config::HarnessConfig;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
-use crate::harness::live_replies::{LiveReplies, LiveReplyWriter};
+use crate::harness::live_replies::{LiveReplies, LiveReplyClaim, LiveReplyWriter};
 use crate::harness::observation::Observation;
 use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use crate::harness::queue::{
@@ -179,6 +179,8 @@ pub(super) struct Inner {
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     backend: PlannerBackend,
+    /// Installed with the harness; the run loop holds its writer.
+    live_claim: LiveReplyClaim,
     observations: ObservationIngress,
     state: Mutex<HarnessState>,
     last_phase: Mutex<HarnessPhaseTag>,
@@ -409,11 +411,9 @@ impl PlannerHarness {
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let events = params.backend.subscribe_events();
-        let live = params
-            .live_replies
-            .open(&params.card_id, &params.worker_session_id);
         let (inner, announce_dropped_first) =
             inner_from_params(params, ObservationIngress::Running(obs_tx), shutdown_tx);
+        let live = inner.live_claim.writer();
         let handle = Self {
             inner: Arc::clone(&inner),
         };
@@ -723,6 +723,7 @@ impl PlannerHarness {
     /// Called by the registry when this handle becomes its `Live` slot (#1791 §5.1 item 2).
     pub(crate) fn mark_installed(&self) {
         self.inner.backend.mark_installed();
+        self.inner.live_claim.install();
     }
 
     /// Which provider runs this harness's turns.
@@ -974,6 +975,9 @@ fn inner_from_params(
     let last_phase = snapshot.phase;
     let (recent_hook_keys, recent_hook_key_set) =
         recent_hook_keys_from_pending_queue(&pending_queue);
+    let live_claim = params
+        .live_replies
+        .claim(&params.card_id, &params.worker_session_id);
     let inner = Arc::new(Inner {
         worker_session_id: params.worker_session_id,
         track_id: params.track_id,
@@ -984,6 +988,7 @@ fn inner_from_params(
         card_role_cache: params.card_role_cache,
         track_area_cache: params.track_area_cache,
         backend: params.backend,
+        live_claim,
         observations,
         state: Mutex::new(state),
         last_phase: Mutex::new(last_phase),
@@ -1847,6 +1852,7 @@ async fn on_notification(
                     state = ?state_snap,
                     "planner harness ignoring TurnStarted that does not match expected turn"
                 );
+                live_reply::on_unaccepted_start(live, &state_snap, issued.as_deref(), &turn_id);
                 return persist_snapshot(inner).await;
             }
             let already_running_same = matches!(

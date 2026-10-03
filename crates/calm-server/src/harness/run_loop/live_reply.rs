@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 
-use calm_types::harness::HarnessLiveReply;
 use serde_json::{Value, json};
 
 use super::{Inner, emit_item_added, insert_item_row, item_turn_id};
-use crate::harness::live_replies::LiveReplyWriter;
+use crate::harness::live_replies::{LiveReplyWriter, OpenReply};
 use crate::harness::planner_event::ItemPhase;
+use crate::harness::state::{HarnessState, IssuingKind};
 
 /// The stored item type of a reply, the one item type that streams.
 const REPLY_ITEM_TYPE: &str = "agentMessage";
@@ -24,29 +24,53 @@ pub(super) fn on_item(live: &LiveReplyWriter, phase: ItemPhase, params: &Value) 
             if params.pointer("/item/type").and_then(Value::as_str) == Some(REPLY_ITEM_TYPE)
                 && let Some(turn_id) = item_turn_id(params)
             {
-                live.reply_started(turn_id, item_id);
+                live.reply_started(turn_id, item_id, &params["item"]);
             }
         }
         ItemPhase::Completed => live.item_stored(item_id),
     }
 }
 
-/// The settle hook, run on every `TurnCompleted` branch before its outcome row is written. An
-/// `interrupted` or `failed` turn's still-open replies are stored as `_partial` completions, so
-/// they get lower row ids than the outcome; any other outcome discards them. Taking the replies
-/// out of the live state is what makes each write happen at most once per item.
+/// A `TurnStarted` the state machine did not accept still starts the live turn when an interrupt
+/// issued before the start drained targets it: that turn streams, and its interrupted completion
+/// settles it. The state machine is left as it is.
+pub(super) fn on_unaccepted_start(
+    live: &LiveReplyWriter,
+    state: &HarnessState,
+    issued_turn_id: Option<&str>,
+    turn_id: &str,
+) {
+    if let HarnessState::Issuing {
+        kind: IssuingKind::Interrupt { target_turn_id, .. },
+        ..
+    } = state
+        && (target_turn_id == turn_id || issued_turn_id == Some(turn_id))
+    {
+        live.turn_started(turn_id);
+    }
+}
+
+/// The settle hook, run once on every `TurnCompleted` branch before its outcome row is written.
+/// An `interrupted` or `failed` turn's still-open replies are stored as `_partial` completions, so
+/// they get lower row ids than the outcome; any other outcome discards them. Settling the turn is
+/// what makes each write happen at most once per item. A reply leaves the live state only once its
+/// row is stored: one that fails to store stays live until the next turn starts.
 pub(super) async fn settle(
     inner: &Arc<Inner>,
     live: &LiveReplyWriter,
     turn_id: &str,
     turn: &Value,
 ) {
-    let open = live.settle(turn_id);
     let ended_early = matches!(
         turn.get("status").and_then(Value::as_str),
         Some("interrupted" | "failed")
     );
-    if open.is_empty() || !ended_early {
+    if !ended_early {
+        live.discard(turn_id);
+        return;
+    }
+    let open = live.settle(turn_id);
+    if open.is_empty() {
         return;
     }
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
@@ -54,38 +78,42 @@ pub(super) async fn settle(
             worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             turn_id,
-            "planner harness dropping partial replies: no thread is known yet"
+            "planner harness not storing partial replies: no thread is known yet"
         );
         return;
     };
     for reply in open {
         let item_id = reply.item_id.clone();
-        if let Err(error) = store_partial(inner, &thread_id, turn_id, reply).await {
+        if let Err(error) = store_partial(inner, live, &thread_id, turn_id, reply).await {
             tracing::warn!(
                 worker_session_id = %inner.worker_session_id,
                 card_id = %inner.card_id,
                 turn_id,
                 item_id,
                 error = %error,
-                "planner harness could not store a partial reply"
+                "planner harness could not store a partial reply; it stays live"
             );
         }
     }
 }
 
-/// One partial reply as the `item/completed` row Codex's own completion would have written, marked
-/// `_partial` as provenance: the kernel wrote it from the streamed text.
+/// One partial reply as an `item/completed` row: the item its `item/started` carried, with the
+/// streamed text, marked `_partial` as provenance (the kernel wrote it). Once the row is stored
+/// the reply leaves the live state, and the row is announced like any item.
 async fn store_partial(
     inner: &Arc<Inner>,
+    live: &LiveReplyWriter,
     thread_id: &str,
     turn_id: &str,
-    reply: HarnessLiveReply,
+    reply: OpenReply,
 ) -> crate::error::Result<()> {
     let method = ItemPhase::Completed.method();
+    let mut item = reply.started;
+    item["text"] = Value::String(reply.text);
     let params = json!({
         "threadId": thread_id,
         "turnId": turn_id,
-        "item": { "id": reply.item_id, "type": REPLY_ITEM_TYPE, "text": reply.text },
+        "item": item,
         "completedAtMs": crate::model::now_ms(),
         "_partial": true,
     });
@@ -100,6 +128,7 @@ async fn store_partial(
         None,
     )
     .await?;
+    live.item_stored(&reply.item_id);
     emit_item_added(
         inner,
         row_id,

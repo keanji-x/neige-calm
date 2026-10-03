@@ -107,8 +107,9 @@ impl HarnessRegistry {
         Self::default()
     }
 
-    /// The live replies of the harnesses this registry holds; a harness it installs is given this
-    /// instance in [`PlannerHarnessParams`](crate::harness::PlannerHarnessParams).
+    /// The live replies of the harnesses this registry holds. A harness is given this instance in
+    /// [`PlannerHarnessParams`](crate::harness::PlannerHarnessParams), and its writer takes the
+    /// card's entry when the registry installs it.
     pub fn live_replies(&self) -> &Arc<LiveReplies> {
         &self.0.live_replies
     }

@@ -2,21 +2,31 @@
 //! Codex notifications go in through the daemon's fan-out, and the answer comes back from the route the
 //! harness's registry serves.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use calm_server::codex_appserver::Notification;
-use calm_server::harness::{HarnessState, IssuingKind};
+use calm_server::harness::{
+    HarnessConfig, HarnessState, IssuingKind, PlannerHarness, PlannerHarnessParams,
+};
+use calm_server::shared_codex_appserver::TurnStartReturnHook;
 use serde_json::{Value, json};
 
-use crate::support::planner_queue_fixture::{Boot, SEED_THREAD_ID, boot_with, get, idle_snapshot};
+use crate::support::planner_queue_fixture::{
+    Boot, Issuance, SEED_THREAD_ID, boot_with_issuance, get, idle_snapshot, post_input,
+};
 
 const TURN: &str = "turn-live-1";
 /// The transcript's table, renamed away to make an item row fail to store.
 const ITEM_TABLE: &str = "harness_items";
 
 async fn boot() -> Boot {
-    let boot = boot_with(idle_snapshot(vec![])).await;
+    boot_issuing(Issuance::Paused).await
+}
+
+async fn boot_issuing(issuance: Issuance) -> Boot {
+    let boot = boot_with_issuance(idle_snapshot(vec![]), issuance).await;
     let deadline = Instant::now() + Duration::from_secs(5);
     while boot.daemon.notification_receiver_count_for_test() == 0 {
         assert!(Instant::now() < deadline, "the harness never subscribed");
@@ -36,6 +46,19 @@ fn turn_started(boot: &Boot) {
     boot.daemon.emit_turn_started_for_test(SEED_THREAD_ID, TURN);
 }
 
+/// An `agentMessage` item as Codex 0.159 sends it, with `text`.
+fn reply_item(item_id: &str, text: &str) -> Value {
+    json!({
+        "delivery": null,
+        "id": item_id,
+        "memoryCitation": null,
+        "phase": "final_answer",
+        "questions": null,
+        "text": text,
+        "type": "agentMessage",
+    })
+}
+
 fn reply_started(boot: &Boot, turn_id: &str, item_id: &str) {
     item(
         boot,
@@ -43,7 +66,8 @@ fn reply_started(boot: &Boot, turn_id: &str, item_id: &str) {
         json!({
             "threadId": SEED_THREAD_ID,
             "turnId": turn_id,
-            "item": { "id": item_id, "type": "agentMessage", "text": "" },
+            "item": reply_item(item_id, ""),
+            "startedAtMs": 1,
         }),
     );
 }
@@ -63,7 +87,7 @@ fn reply_completed(boot: &Boot, item_id: &str, text: &str) {
         json!({
             "threadId": SEED_THREAD_ID,
             "turnId": TURN,
-            "item": { "id": item_id, "type": "agentMessage", "text": text },
+            "item": reply_item(item_id, text),
         }),
     );
 }
@@ -82,10 +106,14 @@ fn command_started(boot: &Boot, item_id: &str) {
 }
 
 fn turn_completed(boot: &Boot, status: &str) {
+    completed(boot, TURN, status);
+}
+
+fn completed(boot: &Boot, turn_id: &str, status: &str) {
     boot.daemon
         .emit_notification_for_test(Notification::TurnCompleted {
             thread_id: SEED_THREAD_ID.into(),
-            turn: json!({ "id": TURN, "status": status }),
+            turn: json!({ "id": turn_id, "status": status }),
         });
 }
 
@@ -241,8 +269,10 @@ async fn an_interrupted_reply_is_stored_once_as_partial_before_the_outcome() {
     let stored = params(partial);
     assert_eq!(
         stored["item"],
-        json!({ "id": "reply-1", "type": "agentMessage", "text": "Half a reply" })
+        reply_item("reply-1", "Half a reply"),
+        "the item its start carried, with the streamed text"
     );
+    assert_eq!(stored["_partial"], true);
     assert_eq!(stored["threadId"], SEED_THREAD_ID);
     assert_eq!(stored["turnId"], TURN);
     let announced: Vec<Value> = boot
@@ -449,4 +479,164 @@ async fn shutdown_clears_the_cards_live_replies() {
     wait_live(&boot, live_turn(&[("reply-1", "mid-reply")])).await;
     boot.harness.shutdown().await.unwrap();
     wait_live(&boot, no_live_turn()).await;
+}
+
+/// The phase the run loop last stored for the runtime. Every `TurnCompleted` branch stores it after
+/// the settle hook and the outcome row.
+async fn wait_stored_phase(boot: &Boot, phase: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT json_extract(handle_state_json, '$.phase') FROM worker_sessions WHERE id = ?",
+        )
+        .bind(&boot.worker_session_id)
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+        if stored.as_deref() == Some(phase) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the stored phase never became {phase}; last {stored:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A reply leaves the live state only once its row is stored: a partial that fails to store stays
+/// live, so its text is never neither live nor durable.
+#[tokio::test]
+async fn a_partial_reply_that_fails_to_store_stays_live() {
+    let boot = boot().await;
+    turn_started(&boot);
+    reply_started(&boot, TURN, "reply-1");
+    delta(&boot, TURN, "reply-1", "Half");
+    wait_live(&boot, live_turn(&[("reply-1", "Half")])).await;
+
+    rename_table(&boot, ITEM_TABLE, "hidden_rows").await;
+    interrupt(&boot).await;
+    wait_stored_phase(&boot, "turn_completed").await;
+    assert_eq!(live(&boot).await, live_turn(&[("reply-1", "Half")]));
+    rename_table(&boot, "hidden_rows", ITEM_TABLE).await;
+    assert_eq!(shape(&rows(&boot).await), ["item/started"]);
+    boot.harness.shutdown().await.unwrap();
+}
+
+/// A turn Codex ends as interrupted or failed without an interrupt from neige takes the normal
+/// `TurnCompleted` branch, and its partial still precedes the outcome.
+#[tokio::test]
+async fn a_turn_that_ends_interrupted_or_failed_unasked_stores_its_partial_before_the_outcome() {
+    for status in ["interrupted", "failed"] {
+        let boot = boot().await;
+        turn_started(&boot);
+        reply_started(&boot, TURN, "reply-1");
+        delta(&boot, TURN, "reply-1", status);
+        wait_live(&boot, live_turn(&[("reply-1", status)])).await;
+        assert!(matches!(
+            boot.harness.state_for_test().await,
+            HarnessState::TurnRunning { .. }
+        ));
+
+        turn_completed(&boot, status);
+        let rows = wait_rows(&boot, 3).await;
+        assert_eq!(
+            shape(&rows),
+            ["item/started", "item/completed (partial)", "turn/completed"],
+            "{status}"
+        );
+        assert!(rows[1]["id"].as_i64() < rows[2]["id"].as_i64());
+        assert_eq!(params(&rows[1])["item"], reply_item("reply-1", status));
+        wait_live(&boot, no_live_turn()).await;
+        boot.harness.shutdown().await.unwrap();
+    }
+}
+
+/// The interrupt lands while `turn/start` is still in flight, so the run loop drains the turn's
+/// `turn/started` in `IssuingInterrupt`, a state that does not accept it. The turn still streams,
+/// and its interrupted completion stores the partial.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupt_issued_before_its_turn_start_drains_still_streams_the_turn() {
+    let boot = boot_issuing(Issuance::Live).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    boot.daemon
+        .install_turn_start_return_hook_for_test(TurnStartReturnHook {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+    let (status, body) = post_input(boot.app.clone(), boot.planner_card.id.as_str(), "go").await;
+    assert!(status.is_success(), "body={body}");
+    entered.notified().await;
+    let turn = format!("fake-turn-{:04}", boot.daemon.turn_start_count_for_test());
+    // Codex knows the turn before its `turn/started` reaches the harness.
+    boot.daemon.set_active_turn_for_test(SEED_THREAD_ID, &turn);
+    boot.harness.interrupt("test stop".into()).await.unwrap();
+    assert!(matches!(
+        boot.harness.state_for_test().await,
+        HarnessState::Issuing {
+            kind: IssuingKind::Interrupt { ref target_turn_id, .. },
+            ..
+        } if *target_turn_id == turn
+    ));
+    release.notify_one();
+    // `turn/start` returned, so its `turn/started` is queued ahead of the frames below.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while boot.harness.snapshot().await.last_turn_id.as_deref() != Some(turn.as_str()) {
+        assert!(Instant::now() < deadline, "turn/start never returned");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    reply_started(&boot, &turn, "reply-1");
+    delta(&boot, &turn, "reply-1", "cut short");
+    let streaming =
+        json!({ "turn_id": turn, "items": [{ "item_id": "reply-1", "text": "cut short" }] });
+    wait_live(&boot, streaming).await;
+    completed(&boot, &turn, "interrupted");
+    wait_stored_phase(&boot, "turn_completed").await;
+    let rows = rows(&boot).await;
+    let partial = rows
+        .iter()
+        .position(|row| shape(std::slice::from_ref(row)) == ["item/completed (partial)"])
+        .unwrap_or_else(|| panic!("no partial row: {:?}", shape(&rows)));
+    assert_eq!(
+        params(&rows[partial])["item"],
+        reply_item("reply-1", "cut short")
+    );
+    assert_eq!(rows[partial + 1]["method"], "turn/completed");
+    wait_live(&boot, no_live_turn()).await;
+    boot.harness.shutdown().await.unwrap();
+}
+
+/// A concurrent start that loses the registry slot has already built and run its harness. That
+/// harness never takes the card's live replies, so shutting it down leaves the installed one
+/// streaming.
+#[tokio::test]
+async fn a_harness_that_loses_its_start_leaves_the_installed_harness_streaming() {
+    let boot = boot().await;
+    let runtime = "runtime-superseded".to_string();
+    let stale = boot.registry.try_reserve(runtime.clone()).unwrap();
+    let (_winner, _) = boot.registry.reserve_replacing(runtime.clone());
+    let loser = PlannerHarness::run(PlannerHarnessParams {
+        worker_session_id: runtime,
+        track_id: boot.planner_card.track_id.clone(),
+        card_id: boot.planner_card.id.clone(),
+        thread_id: Some(SEED_THREAD_ID.into()),
+        repo: boot.repo.clone(),
+        events: calm_server::event::EventBus::new(),
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
+        backend: boot.daemon.clone().into(),
+        live_replies: boot.registry.live_replies().clone(),
+        config: HarnessConfig::default(),
+        snapshot: idle_snapshot(vec![]),
+    });
+    assert!(!stale.install(loser.clone()), "the start was superseded");
+    loser.shutdown().await.unwrap();
+
+    turn_started(&boot);
+    reply_started(&boot, TURN, "reply-1");
+    delta(&boot, TURN, "reply-1", "still streaming");
+    wait_live(&boot, live_turn(&[("reply-1", "still streaming")])).await;
+    boot.harness.shutdown().await.unwrap();
 }
