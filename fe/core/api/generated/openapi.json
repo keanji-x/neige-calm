@@ -8952,7 +8952,7 @@
               "string",
               "null"
             ],
-            "description": "The turn the items belong to, or `null` while no turn is streaming."
+            "description": "The turn the items belong to: the turn that started last, until it ends with nothing left to\nstore; `null` before any turn of this harness and after one that ended so. A turn that ends\nwithout settling (`turn/aborted`, an interrupt that times out and wedges) or whose partial\nreply failed to store keeps its id here, with the replies it still holds, until the next turn\nstarts."
           }
         }
       },

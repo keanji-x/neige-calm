@@ -6,6 +6,8 @@ mod claude_planner_availability;
 mod claude_planner_catalog;
 #[path = "cases/claude_planner_credentials.rs"]
 mod claude_planner_credentials;
+#[path = "cases/claude_planner_live_replies.rs"]
+mod claude_planner_live_replies;
 #[path = "cases/claude_planner_models.rs"]
 mod claude_planner_models;
 #[path = "cases/claude_planner_retirement.rs"]

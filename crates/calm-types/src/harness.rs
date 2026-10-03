@@ -68,7 +68,11 @@ impl HarnessInterruptionIntent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct HarnessLiveReplies {
-    /// The turn the items belong to, or `null` while no turn is streaming.
+    /// The turn the items belong to: the turn that started last, until it ends with nothing left to
+    /// store; `null` before any turn of this harness and after one that ended so. A turn that ends
+    /// without settling (`turn/aborted`, an interrupt that times out and wedges) or whose partial
+    /// reply failed to store keeps its id here, with the replies it still holds, until the next turn
+    /// starts.
     #[schema(required = true, nullable = true)]
     pub turn_id: Option<String>,
     pub items: Vec<HarnessLiveReply>,

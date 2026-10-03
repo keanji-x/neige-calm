@@ -1,12 +1,18 @@
 //! Fixtures: `tests/fixtures/claude_planner_stream/*.ndjson` are the stdout of the #1791 probes (claude 2.1.280, `claude-haiku-4-5`; ids in the design's evidence companion §E3: `pB_*` P-B,
 //! `pB_emptycfg` P-D, `pE` P-E, `pF_sigint` P-F1, `pF_kill`/`pF_resume_sid_kill` P-F2, `pF_ctlint`
 //! P-F3, `pG` P-G, `pH` P-H, `pI` P-I, `pJ` P-J, `pK` P-K, `pL*` P-L, `pS_strict` P-S1, `pS_nofail`
-//! P-S2), every line except the `stream_event` ones: the probes passed `--include-partial-messages`,
-//! which production never does (design §5.2), and those deltas split paths into fragments no
+//! P-S2), every line except the `stream_event` ones: those deltas split paths into fragments no
 //! line-level redaction can see whole. The rest is redacted line by line, still one JSON value per
 //! line: the probe directory became `/probe`, the home directory `/redacted-home`, the user name
 //! `user`, and the account email, organization, plan, thinking signatures and API request/message ids
 //! became placeholders; [`no_fixture_names_the_recording_machine`] pins it.
+//!
+//! `p1923_stream` (#1923, `stream_tests`) is one `claude -p --output-format stream-json --verbose
+//! --include-partial-messages --model haiku` turn of 2.1.280 that thinks, says a sentence, reads a
+//! file, and answers in a second message, with its `stream_event` lines. Its `system/init` line is
+//! left out (it lists the account's connectors), its directory became `/probe/ws`, its signatures and
+//! message and request ids placeholders, and its tool input deltas are the redacted input re-split
+//! into the same number of pieces.
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -25,13 +31,13 @@ const FIXTURE_DIR: &str = concat!(
     "/tests/fixtures/claude_planner_stream"
 );
 
-fn fixture_lines(name: &str) -> Vec<String> {
+pub(super) fn fixture_lines(name: &str) -> Vec<String> {
     let path = format!("{FIXTURE_DIR}/{name}");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     text.lines().map(str::to_string).collect()
 }
 
-fn decode_fixture(name: &str) -> Vec<Record> {
+pub(super) fn decode_fixture(name: &str) -> Vec<Record> {
     fixture_lines(name)
         .iter()
         .enumerate()
@@ -50,7 +56,7 @@ fn first_replay_client_id(records: &[Record]) -> String {
         .expect("fixture has a replay")
 }
 
-fn context(client_id: String, input: Vec<InputItem>) -> TurnContext {
+pub(super) fn context(client_id: String, input: Vec<InputItem>) -> TurnContext {
     TurnContext {
         thread_id: "thread-1".into(),
         turn_id: "turn-1".into(),
@@ -61,7 +67,7 @@ fn context(client_id: String, input: Vec<InputItem>) -> TurnContext {
     }
 }
 
-fn visible_tools() -> CalmToolNames {
+pub(super) fn visible_tools() -> CalmToolNames {
     CalmToolNames::new(
         [
             "calm.report.write",
@@ -89,7 +95,7 @@ fn translator_after(name: &str, input: Vec<InputItem>) -> (TurnTranslator, Vec<P
     (translator, notifications)
 }
 
-fn items<'a>(notifications: &'a [PlannerEvent], method: &str) -> Vec<&'a Value> {
+pub(super) fn items<'a>(notifications: &'a [PlannerEvent], method: &str) -> Vec<&'a Value> {
     notifications
         .iter()
         .filter_map(|n| match &n.kind {
@@ -131,7 +137,7 @@ fn every_line_of_every_recorded_fixture_decodes() {
         .filter(|name| name.ends_with(".ndjson"))
         .collect();
     names.sort();
-    assert_eq!(names.len(), 17, "fixture set changed: {names:?}");
+    assert_eq!(names.len(), 18, "fixture set changed: {names:?}");
     let mut lines = 0;
     let mut failures = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -147,7 +153,7 @@ fn every_line_of_every_recorded_fixture_decodes() {
         }
     }
     assert!(failures.is_empty(), "undecodable lines: {failures:#?}");
-    assert_eq!(lines, 322);
+    assert_eq!(lines, 368);
     let all = [
         "Assistant",
         "ControlRequestIn",
@@ -155,6 +161,7 @@ fn every_line_of_every_recorded_fixture_decodes() {
         "Ignored",
         "ResultError",
         "ResultSuccess",
+        "Stream",
         "SystemInit",
         "UserReplay",
         "UserText",
@@ -170,6 +177,7 @@ fn variant(record: &Record) -> &'static str {
         Record::UserText { .. } => "UserText",
         Record::UserToolResults { .. } => "UserToolResults",
         Record::Assistant { .. } => "Assistant",
+        Record::Stream(_) => "Stream",
         Record::ResultSuccess(_) => "ResultSuccess",
         Record::ResultError(_) => "ResultError",
         Record::ControlResponseIn { .. } => "ControlResponseIn",
@@ -247,37 +255,38 @@ fn an_unknown_or_ambiguous_calm_tool_keeps_the_claude_name() {
     }
 }
 
+/// A record no stream block started (the CLI's own error message, or a line without its stream) is
+/// stored as a started and completed pair, under its place among the message's records.
 #[test]
-fn text_and_thinking_blocks_of_one_record_get_one_id_each() {
-    let uuid = "6ca4287e-8ed8-4b41-a543-25ddaf55de4e";
-    let line = json!({
-        "type": "assistant", "uuid": uuid, "session_id": "s",
-        "message": { "content": [
-            { "type": "thinking", "thinking": "", "signature": "x" },
-            { "type": "text", "text": "hello" },
-        ] },
-    })
-    .to_string();
-    let record = decode(&line).unwrap();
+fn a_block_without_a_stream_block_is_stored_as_a_pair_under_its_place_in_the_message() {
+    let line = |content: Value| {
+        json!({
+            "type": "assistant", "uuid": "6ca4287e-8ed8-4b41-a543-25ddaf55de4e", "session_id": "s",
+            "message": { "id": "msg_1", "content": content },
+        })
+        .to_string()
+    };
+    let thinking = line(json!([{ "type": "thinking", "thinking": "", "signature": "x" }]));
+    let text = line(json!([{ "type": "text", "text": "hello" }]));
     let mut translator =
         TurnTranslator::new(context("0".repeat(32), Vec::new()), visible_tools()).unwrap();
-    let notifications = translator.translate(&record, 7);
+    let notifications: Vec<PlannerEvent> = [thinking, text]
+        .iter()
+        .flat_map(|line| translator.translate(&decode(line).unwrap(), 7))
+        .collect();
     let completed = items(&notifications, "item/completed");
     assert_eq!(
         completed,
         [
-            &json!({ "id": format!("{uuid}:0"), "type": "reasoning", "content": [], "summary": [] }),
-            &json!({ "id": format!("{uuid}:1"), "type": "agentMessage", "text": "hello" }),
+            &json!({ "id": "msg_1:0", "type": "reasoning", "content": [], "summary": [] }),
+            &json!({ "id": "msg_1:1", "type": "agentMessage", "text": "hello" }),
         ]
     );
     let started: Vec<&Value> = items(&notifications, "item/started")
         .iter()
         .map(|i| &i["id"])
         .collect();
-    assert_eq!(
-        started,
-        [&json!(format!("{uuid}:0")), &json!(format!("{uuid}:1"))]
-    );
+    assert_eq!(started, [&json!("msg_1:0"), &json!("msg_1:1")]);
 }
 
 #[test]

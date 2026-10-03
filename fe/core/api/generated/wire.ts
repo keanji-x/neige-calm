@@ -290,7 +290,11 @@ turn_error_text: string | null, };
  */
 export type HarnessLiveReplies = { 
 /**
- * The turn the items belong to, or `null` while no turn is streaming.
+ * The turn the items belong to: the turn that started last, until it ends with nothing left to
+ * store; `null` before any turn of this harness and after one that ended so. A turn that ends
+ * without settling (`turn/aborted`, an interrupt that times out and wedges) or whose partial
+ * reply failed to store keeps its id here, with the replies it still holds, until the next turn
+ * starts.
  */
 turn_id: string | null, items: Array<HarnessLiveReply>, };
 
