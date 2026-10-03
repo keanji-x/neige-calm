@@ -46,7 +46,8 @@ stop_grace_ms = 5000
 restart_delay_ms = 1000
 
 [systemd]
-unit_path = "~/.config/systemd/user/neige-app.service"
+# Optional fixed legacy target; omit to derive the path from unit_name and scope.
+# unit_path = "~/.config/systemd/user/neige-app.service"
 unit_name = "neige-app"
 bin = "/usr/local/bin/neige-app"
 

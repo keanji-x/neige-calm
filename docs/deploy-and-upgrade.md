@@ -203,7 +203,12 @@ ln -sfn ~/.local/share/neige-app/releases/current-server/bin/neige-app \
 ```
 
 `~/.local/bin/neige-app system install --config ~/.config/neige-app/config.toml`
-writes `~/.config/systemd/user/neige-app.service`. It does **not** copy a
+writes `~/.config/systemd/user/neige-app.service` for the default user-scope
+name with no explicit `unit_path`. Other names and scopes derive their own
+targets; an explicit path takes precedence. See
+[unit names, multiple instances, and migration](neige-app-config.md#unit-names-multiple-instances-and-migration)
+before changing an existing deployment's name or separating instances.
+It does **not** copy a
 release, create the `current-*` symlinks, or start systemd; steps 2.2–2.4 and
 the stable executable link above are prerequisites. Then:
 

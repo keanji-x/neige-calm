@@ -63,7 +63,8 @@ stop_grace_ms = 5000
 restart_delay_ms = 1000
 
 [systemd]
-unit_path = "~/.config/systemd/user/neige-app.service"
+# Optional fixed legacy target; omit to derive the path from unit_name and scope.
+# unit_path = "~/.config/systemd/user/neige-app.service"
 unit_name = "neige-app"
 bin = "~/.local/bin/neige-app"
 
@@ -182,15 +183,83 @@ chmod 600 ~/.config/neige-app/admin.token
 neige-app system install --config ~/.config/neige-app/config.toml
 ```
 
-`install` creates the config if it is missing, writes the user systemd unit to
+`install` creates the config if it is missing, writes the selected systemd unit to
 `systemd.unit_path`, creates `admin.token_file` as a random 32-byte hex token
 with `0600` permissions on Unix if it is missing, and prints the
-`systemctl --user` commands to run next. It does not call `sudo` and does not
+commands to run next: `systemctl --user` for `scope = "user"`, or `systemctl`
+for `scope = "system"`. System scope uses `systemd.user` (or `install --user`)
+and `systemd.home` for the service identity; installation in `/etc/systemd/system`
+requires appropriate permissions. It does not call `sudo` and does not
 start systemd automatically.
 
 `install` refuses to overwrite an existing unit file unless `--force` is
 passed. M1 also rejects systemd `ExecStart` paths containing whitespace or
 control characters instead of trying to quote them.
+
+### Unit names, multiple instances, and migration
+
+Without an explicit `systemd.unit_path`, the final `systemd.unit_name` determines
+the filename: a trailing `.service` is kept, otherwise `.service` is appended.
+The original name is retained in the unit description and printed enable/restart
+commands. User scope installs under the caller's HOME at
+`~/.config/systemd/user/`; system scope installs under `/etc/systemd/system/`.
+`systemd.home` sets the service's HOME, not the installation directory; the
+installation directory does not use XDG_CONFIG_HOME.
+
+In this derived mode, the service stem (name without one final `.service`) must
+be nonempty, cannot be `.` or `..`, cannot begin with `-`, and accepts only ASCII
+letters, digits, and `._-:@`. There may be at most one `@`, with a nonempty prefix
+and instance; uninstantiated templates such as `neige@.service` are rejected.
+The final filename including `.service` must be at most 255 bytes. Paths,
+backslash escapes, whitespace, control characters, shell/glob characters, and
+non-ASCII names are rejected. Names ending in `.socket`, `.target`, `.device`,
+`.mount`, `.automount`, `.swap`, `.timer`, `.path`, `.slice`, or `.scope` are
+rejected: use no type suffix or `.service`. `neige.worker`, `neige@blue`, and
+`foo.socket.service` are accepted. Validation occurs on every config load,
+including serve, upgrade, rollback, and unit printing; `unit --name` does not
+bypass an invalid configured name.
+
+An explicit `unit_path` keeps the old loading semantics and bypasses this name
+validation: absolute, relative, `~`-expanded, empty, and name-mismatched paths
+are preserved. This preserves loading compatibility, not a guarantee that
+systemd accepts the name or that installation succeeds. Keep names and paths
+consistent when configuring them explicitly.
+
+For two instances, use separate configs with no `unit_path`:
+
+```toml
+# blue.toml
+[systemd]
+scope = "user"
+unit_name = "neige@blue"
+```
+
+```toml
+# green.toml
+[systemd]
+scope = "user"
+unit_name = "neige@green.service"
+```
+
+These select `neige@blue.service` and `neige@green.service`. Also isolate admin
+and child ports, token files, release roots and symlinks, databases/data
+directories, plugin data, and source checkout directories for each instance.
+Unit naming does not isolate these other resources automatically.
+
+Previously a custom name without `unit_path` still selected `neige-app.service`.
+Upgrading changes that config's target to the name-derived path. To retain the
+old target and loading behavior, explicitly set its old `unit_path` before
+upgrading. Old copied examples may already pin that path: remove or change it
+when separating instances. For migration, install the new target and arrange
+service switching and old-unit cleanup during planned downtime. Installation
+does not stop, disable, or remove the old unit automatically.
+
+An existing target is refused before token creation. Choose independent names
+and paths for another instance; add `--force` to the same invocation only when
+intentionally replacing that target. Force does not bypass permissions. Later
+render/write failures may leave a newly created token because installation
+keeps the token/render/write order. Installation is not atomic and does not
+provide protection against concurrent writers or symlink races.
 
 ## Enabling the new frontend on an existing source installation
 

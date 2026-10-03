@@ -412,6 +412,81 @@ bin = "/usr/local/bin/neige-app"
 
     assert!(err.to_string().contains("already exists"));
     assert!(!token_path.exists());
+    assert_eq!(std::fs::read(&unit_path).unwrap(), b"existing");
+}
+
+#[test]
+fn system_install_io_advice_only_for_permission_denied() {
+    for scope in [SystemdScope::User, SystemdScope::System] {
+        for action in ["create", "write"] {
+            for kind in [
+                std::io::ErrorKind::PermissionDenied,
+                std::io::ErrorKind::NotADirectory,
+            ] {
+                let err = system_unit_write_error(
+                    action,
+                    Path::new("/tmp/unit.service"),
+                    scope,
+                    Path::new("/tmp/config.toml"),
+                    std::io::Error::new(kind, "original OS reason"),
+                );
+                let message = format!("{err:#}");
+                assert!(message.contains("/tmp/unit.service"));
+                assert!(message.contains("/tmp/config.toml"));
+                assert!(message.contains("original OS reason"));
+                assert_eq!(
+                    message.contains("appropriate permissions"),
+                    kind == std::io::ErrorKind::PermissionDenied
+                );
+                assert!(!message.contains("--force"));
+                assert!(!message.contains("sudo neige-app"));
+            }
+        }
+    }
+    if !current_euid_is_root() {
+        let err = ensure_system_install_permission(
+            SystemdScope::System,
+            Path::new("/etc/systemd/system/example.service"),
+            Path::new("/tmp/example.toml"),
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("requires root"));
+        assert!(message.contains("/tmp/example.toml"));
+        assert!(message.contains("/etc/systemd/system/example.service"));
+        assert!(message.contains("preserving all arguments"));
+        assert!(!message.contains("--force"));
+    }
+}
+
+#[test]
+fn systemd_install_and_upgrade_steps_preserve_service_suffix() {
+    for scope in [SystemdScope::User, SystemdScope::System] {
+        let mut cfg = AppConfig::starter(PathBuf::from("/tmp/config.toml"));
+        cfg.systemd.scope = scope;
+        cfg.systemd.unit_name = "neige@blue.service".into();
+        let prefix = if scope == SystemdScope::User {
+            "systemctl --user"
+        } else {
+            "systemctl"
+        };
+        assert_eq!(
+            install_next_steps(scope, &cfg.systemd.unit_name)[1],
+            format!("{prefix} enable --now neige@blue.service")
+        );
+        let activation = upgrade::ActivationResult {
+            activated: true,
+            mode: "server-only".into(),
+            release_id: "server-1".into(),
+            restart_required: true,
+            changed_symlinks: Vec::new(),
+            db_backup: None,
+        };
+        assert!(
+            upgrade_next_steps(&cfg, Some(&activation))
+                .contains(&format!("{prefix} restart neige@blue.service"))
+        );
+    }
 }
 
 #[test]

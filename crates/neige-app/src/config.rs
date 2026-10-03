@@ -245,7 +245,8 @@ impl AppConfig {
             },
             systemd: SystemdConfig {
                 scope: SystemdScope::User,
-                unit_path: expand_tilde("~/.config/systemd/user/neige-app.service"),
+                unit_path: default_systemd_unit_path(SystemdScope::User, "neige-app")
+                    .expect("valid default service name"),
                 unit_name: "neige-app".into(),
                 bin: PathBuf::from("/usr/local/bin/neige-app"),
                 user: None,
@@ -364,16 +365,13 @@ impl AppConfig {
         if let Some(value) = builder.systemd_scope {
             cfg.systemd.scope = value;
         }
-        cfg.systemd.unit_path = match cfg.systemd.scope {
-            SystemdScope::User => expand_tilde("~/.config/systemd/user/neige-app.service"),
-            SystemdScope::System => PathBuf::from("/etc/systemd/system/neige-app.service"),
-        };
-        if let Some(value) = builder.systemd_unit_path {
-            cfg.systemd.unit_path = expand_tilde(&value);
-        }
         if let Some(value) = builder.systemd_unit_name {
             cfg.systemd.unit_name = value;
         }
+        cfg.systemd.unit_path = match builder.systemd_unit_path {
+            Some(value) => expand_tilde(&value),
+            None => default_systemd_unit_path(cfg.systemd.scope, &cfg.systemd.unit_name)?,
+        };
         if let Some(value) = builder.systemd_bin {
             cfg.systemd.bin = expand_tilde(&value);
         }
@@ -598,6 +596,7 @@ restart_delay_ms = 1000
 
 [systemd]
 scope = "user"
+# Without unit_path, the filename is derived from unit_name and scope.
 unit_name = "neige-app"
 bin = "~/.local/bin/neige-app"
 user = ""
@@ -627,6 +626,63 @@ pub(crate) fn expand_tilde(value: &str) -> PathBuf {
         return home_dir().join(rest);
     }
     PathBuf::from(value)
+}
+
+fn default_systemd_unit_path(scope: SystemdScope, unit_name: &str) -> anyhow::Result<PathBuf> {
+    let invalid = |reason| anyhow!("invalid systemd.unit_name {unit_name:?}: {reason}");
+    let stem = unit_name.strip_suffix(".service").unwrap_or(unit_name);
+    if [
+        ".socket",
+        ".target",
+        ".device",
+        ".mount",
+        ".automount",
+        ".swap",
+        ".timer",
+        ".path",
+        ".slice",
+        ".scope",
+    ]
+    .iter()
+    .any(|suffix| unit_name.ends_with(suffix))
+    {
+        return Err(invalid("use no type suffix or .service"));
+    }
+    if stem.is_empty() || matches!(stem, "." | "..") || stem.starts_with('-') {
+        return Err(invalid(
+            "service stem must be nonempty, not . or .., and not start with -",
+        ));
+    }
+    if !stem
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"._-:@".contains(&b))
+    {
+        return Err(invalid(
+            "service stem accepts only ASCII letters, digits and ._-:@",
+        ));
+    }
+    if let Some((prefix, instance)) = stem.split_once('@')
+        && (prefix.is_empty() || instance.is_empty() || instance.contains('@'))
+    {
+        return Err(invalid(
+            "use at most one @ with nonempty prefix and instance; templates are unsupported",
+        ));
+    }
+    let filename = if unit_name.ends_with(".service") {
+        unit_name.to_owned()
+    } else {
+        format!("{unit_name}.service")
+    };
+    if filename.len() > 255 {
+        return Err(invalid(
+            "service filename must be at most 255 bytes including .service",
+        ));
+    }
+    let directory = match scope {
+        SystemdScope::User => expand_tilde("~/.config/systemd/user"),
+        SystemdScope::System => PathBuf::from("/etc/systemd/system"),
+    };
+    Ok(directory.join(filename))
 }
 
 fn home_dir() -> PathBuf {
@@ -831,6 +887,10 @@ fn strip_comment(value: &str) -> &str {
         .map(|(left, _)| left)
         .unwrap_or(value)
 }
+
+#[cfg(test)]
+#[path = "config_systemd_tests.rs"]
+mod systemd_tests;
 
 #[cfg(test)]
 mod tests {

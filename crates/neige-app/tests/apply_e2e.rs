@@ -37,6 +37,10 @@ bin = "/usr/local/bin/neige-app"
 
     let path_env = fake_bin.display().to_string();
     let output = Command::new(locate_neige_app())
+        .env_clear()
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("home/.config"))
+        .env("USER", "neige-test")
         .arg("system")
         .arg("install")
         .arg("--config")
@@ -64,6 +68,10 @@ bin = "/usr/local/bin/neige-app"
     fs::write(&codex_path, "#!/bin/sh\nexit 0\n")?;
     fs::set_permissions(&codex_path, fs::Permissions::from_mode(0o755))?;
     let output = Command::new(locate_neige_app())
+        .env_clear()
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("home/.config"))
+        .env("USER", "neige-test")
         .arg("system")
         .arg("install")
         .arg("--config")
@@ -111,6 +119,11 @@ data_dir = "{data_dir}"
     )?;
 
     let output = Command::new(locate_neige_app())
+        .env_clear()
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("home/.config"))
+        .env("PATH", "/usr/bin:/bin")
+        .env("USER", "neige-test")
         .arg("system")
         .arg("unit")
         .arg("--bin")

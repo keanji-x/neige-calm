@@ -850,15 +850,19 @@ fn run_install(args: SystemInstallArgs) -> anyhow::Result<()> {
         true
     };
     let cfg = AppConfig::load(Some(&config_path))?;
-    ensure_system_install_permission(cfg.systemd.scope, &cfg.systemd.unit_path)?;
+    ensure_system_install_permission(cfg.systemd.scope, &cfg.systemd.unit_path, &config_path)?;
     if let Some(parent) = cfg.systemd.unit_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| system_unit_write_context("create", parent, cfg.systemd.scope))?;
+        std::fs::create_dir_all(parent).map_err(|err| {
+            system_unit_write_error("create", parent, cfg.systemd.scope, &config_path, err)
+        })?;
     }
     if cfg.systemd.unit_path.exists() && !args.force {
         anyhow::bail!(
-            "systemd unit {} already exists; pass --force to overwrite",
-            cfg.systemd.unit_path.display()
+            include_str!("../templates/system-install-conflict.md"),
+            cfg.systemd.unit_path.display(),
+            config_path.display(),
+            cfg.systemd.unit_name,
+            cfg.systemd.scope
         );
     }
     let path_env = resolve_systemd_path_env(args.path.as_deref())?;
@@ -878,8 +882,14 @@ fn run_install(args: SystemInstallArgs) -> anyhow::Result<()> {
         cfg.systemd.scope,
         run_as.as_ref(),
     )?;
-    std::fs::write(&cfg.systemd.unit_path, unit).with_context(|| {
-        system_unit_write_context("write", &cfg.systemd.unit_path, cfg.systemd.scope)
+    std::fs::write(&cfg.systemd.unit_path, unit).map_err(|err| {
+        system_unit_write_error(
+            "write",
+            &cfg.systemd.unit_path,
+            cfg.systemd.scope,
+            &config_path,
+            err,
+        )
     })?;
     println!(
         "{}",
@@ -907,7 +917,11 @@ fn install_next_steps(scope: SystemdScope, unit_name: &str) -> Vec<String> {
     }
 }
 
-fn ensure_system_install_permission(scope: SystemdScope, unit_path: &Path) -> anyhow::Result<()> {
+fn ensure_system_install_permission(
+    scope: SystemdScope,
+    unit_path: &Path,
+    config_path: &Path,
+) -> anyhow::Result<()> {
     if !matches!(scope, SystemdScope::System)
         || !unit_path.starts_with("/etc/systemd/system")
         || current_euid_is_root()
@@ -915,8 +929,9 @@ fn ensure_system_install_permission(scope: SystemdScope, unit_path: &Path) -> an
         return Ok(());
     }
     anyhow::bail!(
-        "installing a system-scope unit at {} requires root; run `sudo neige-app system install --force` or set systemd.unit_path to a writable test path",
-        unit_path.display()
+        "installing a system-scope unit at {} (config {}) requires root; rerun the same invocation with appropriate permissions, preserving all arguments, or set systemd.unit_path to a writable test path",
+        unit_path.display(),
+        config_path.display()
     );
 }
 
@@ -930,14 +945,24 @@ fn current_euid_is_root() -> bool {
     false
 }
 
-fn system_unit_write_context(action: &str, path: &Path, scope: SystemdScope) -> String {
-    match scope {
-        SystemdScope::User => format!("{action} {}", path.display()),
-        SystemdScope::System => format!(
-            "{action} {} (system units usually require root; try `sudo neige-app system install --force` or set systemd.unit_path to a writable test path)",
-            path.display()
-        ),
-    }
+fn system_unit_write_error(
+    action: &str,
+    path: &Path,
+    scope: SystemdScope,
+    config_path: &Path,
+    err: std::io::Error,
+) -> anyhow::Error {
+    let advice = if err.kind() == std::io::ErrorKind::PermissionDenied {
+        "; rerun the same invocation with appropriate permissions, preserving all arguments, or set systemd.unit_path to a writable test path"
+    } else {
+        ""
+    };
+    anyhow::Error::new(err).context(format!(
+        "{action} {} (config {}, scope {:?}){advice}",
+        path.display(),
+        config_path.display(),
+        scope
+    ))
 }
 
 fn run_upgrade(args: SystemUpgradeArgs) -> anyhow::Result<()> {
