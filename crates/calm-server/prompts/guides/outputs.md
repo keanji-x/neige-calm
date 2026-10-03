@@ -8,7 +8,7 @@ The track views are read-only: `neige ls [path]` lists, `neige cat <path>` print
 - `runs/<attempt_id>.md`: a readable summary of one run.
 - `runs/<attempt_id>.json`: the structured run. `events.completed.payload.result` is the worker's output, `events.failed` holds failures, `verdict` holds your verdict, `worker_card_payload` holds the task context.
 - `runs/<attempt_id>/gates/<N>.log`: the full log of gate run N.
-- `cards/<card_id>/.payload.json`: a card's payload; `cards/<card_id>/runtime.json`: its runtime status, or `null`.
+- `cards/<card_id>/.payload.json`: a card's payload; `cards/<card_id>/runtime.json`: its runtime status, or `null`; `cards/<card_id>/conversation.md`: a worker's conversation, including how each turn ended.
 - `report.md`: your report. `--blocks <id>,<id>` prints only those blocks, each after its marker line.
 
 ## Other tracks' reports

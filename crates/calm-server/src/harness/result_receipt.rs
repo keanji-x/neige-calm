@@ -47,7 +47,7 @@ fn render_detail(detail: &Detail<'_>) -> String {
         } => render_named(
             RECORDED_WITH_EVENT,
             &[
-                ("path_json", &serde_json::json!({"path": path}).to_string()),
+                ("path", path),
                 ("kind", kind),
                 ("event_id", &event_id.to_string()),
             ],
@@ -59,7 +59,7 @@ fn render_detail(detail: &Detail<'_>) -> String {
         } => render_named(
             RECORDED_LEGACY,
             &[
-                ("path_json", &serde_json::json!({"path": path}).to_string()),
+                ("path", path),
                 ("kind", kind),
                 ("event_id", &event_id.to_string()),
             ],

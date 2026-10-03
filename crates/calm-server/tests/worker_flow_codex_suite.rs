@@ -22,6 +22,8 @@ mod worker_flow_codex_tail;
 mod worker_flow_codex_terminal_completion;
 #[path = "cases/worker_flow_codex_torn_line.rs"]
 mod worker_flow_codex_torn_line;
+#[path = "cases/worker_flow_codex_turn_end.rs"]
+mod worker_flow_codex_turn_end;
 #[path = "cases/worker_flow_codex_unknown_content.rs"]
 mod worker_flow_codex_unknown_content;
 #[path = "cases/worker_flow_codex_wrong_file.rs"]

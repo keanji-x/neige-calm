@@ -949,7 +949,7 @@ pub(crate) fn worker_flow_markdown(
     items: &[calm_types::worker_flow::WorkerFlowItem],
 ) -> String {
     use calm_types::worker_flow::{
-        ExecStatus, FileChangeKind, McpStatus, PlanStatus, ReviewKind, WorkerFlowItem,
+        ExecStatus, FileChangeKind, McpStatus, PlanStatus, ReviewKind, TurnOutcome, WorkerFlowItem,
     };
 
     let mut out = String::new();
@@ -1156,6 +1156,18 @@ pub(crate) fn worker_flow_markdown(
                 let label = label.as_deref().unwrap_or("review");
                 out.push_str(&format!("- _{} {}_\n", verb, flow_truncate(label)));
             }
+            // The whole readable error, uncut: it is why the turn ended.
+            WorkerFlowItem::TurnEnded { outcome, .. } => match outcome {
+                TurnOutcome::Completed => out.push_str("- Turn ended: completed\n"),
+                TurnOutcome::Failed { message } => out.push_str(&format!(
+                    "- Turn ended: failed — {}\n",
+                    crate::readable_error_text::readable_error_text(message)
+                )),
+                TurnOutcome::Aborted { reason } => out.push_str(&format!(
+                    "- Turn ended: aborted ({})\n",
+                    flow_truncate(reason)
+                )),
+            },
             WorkerFlowItem::Unknown { raw_type, .. } => {
                 out.push_str(&format!("- ({})\n", flow_truncate(raw_type)));
             }
@@ -1270,9 +1282,8 @@ pub(crate) fn run_markdown(run: &RunProjection) -> String {
         run.worker_card
             .as_ref()
             .map(|card| format!(
-                "[{}](../cards/{}/.payload.json)",
-                card.id.as_str(),
-                card.id.as_str()
+                "[{id}](../cards/{id}/.payload.json), [conversation](../cards/{id}/conversation.md)",
+                id = card.id.as_str()
             ))
             .unwrap_or_else(|| "not materialized".into())
     ));

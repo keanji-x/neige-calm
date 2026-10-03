@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
 use calm_types::worker_flow::{
     CommandAction, ExecSource, ExecStatus, FileChangeKind, FileEdit, FlowEnvelope, McpStatus,
-    MessageBlock, PatchStatus, RawRef, ToolCallId, ToolError, ToolResultBlock, WorkerFlowItem,
+    MessageBlock, PatchStatus, RawRef, ToolCallId, ToolError, ToolResultBlock, TurnOutcome,
+    WorkerFlowItem,
 };
 use serde_json::Value;
 
@@ -87,6 +88,14 @@ pub fn normalize_record_with_state(
     let mut out = Vec::new();
     let mut next_seq = seq;
     match record_type {
+        "assistant" if record.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) => {
+            out.push(WorkerFlowItem::TurnEnded {
+                env: env_for(record, next_seq, turn, session_id, raw_ref),
+                outcome: TurnOutcome::Failed {
+                    message: api_error_message(record),
+                },
+            });
+        }
         "assistant" => {
             let Some(content) = record
                 .get("message")
@@ -279,6 +288,26 @@ fn assistant_block_item(
             raw_type: format!("assistant/{}", content_type(block).unwrap_or("unknown")),
         }),
     }
+}
+
+/// Claude Code records an API error that ended the turn as a synthetic assistant record whose text
+/// is the error; its `error` field is only a code.
+fn api_error_message(record: &Value) -> String {
+    let text = record
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| string_field(block, &["text"]))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if !text.trim().is_empty() {
+        return text;
+    }
+    string_field(record, &["error"]).unwrap_or_else(|| "[api error without text]".to_string())
 }
 
 fn tool_use_item(

@@ -14,3 +14,5 @@ mod worker_flow_claude_tail;
 mod worker_flow_claude_tool_completion;
 #[path = "cases/worker_flow_claude_torn_line.rs"]
 mod worker_flow_claude_torn_line;
+#[path = "cases/worker_flow_claude_turn_end.rs"]
+mod worker_flow_claude_turn_end;

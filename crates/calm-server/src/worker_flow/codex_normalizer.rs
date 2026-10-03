@@ -1,7 +1,7 @@
 use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
 use calm_types::worker_flow::{
     CommandAction, ExecSource, ExecStatus, FileChangeKind, FileEdit, FlowEnvelope, MessageBlock,
-    PatchStatus, RawRef, ToolCallId, ToolResultBlock, WorkerFlowItem,
+    PatchStatus, RawRef, ToolCallId, ToolResultBlock, TurnOutcome, WorkerFlowItem,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,8 +52,26 @@ pub struct CompactedItem {
 pub enum EventMsg {
     ExecCommandBegin {},
     ExecCommandEnd(ExecCommandEndEvent),
+    TaskComplete(TaskCompleteEvent),
+    TurnAborted(TurnAbortedEvent),
     #[serde(other)]
     Other,
+}
+
+/// A turn's end; a turn that failed carries the upstream error in `error.message`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TaskCompleteEvent {
+    pub error: Option<TurnErrorPayload>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TurnErrorPayload {
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TurnAbortedEvent {
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -270,6 +288,21 @@ pub fn normalize_rollout_line(
                 source: exec_source_from_event(&event.source),
             })
         }
+        RolloutItem::EventMsg(EventMsg::TaskComplete(event)) => Some(WorkerFlowItem::TurnEnded {
+            env,
+            outcome: match &event.error {
+                Some(error) => TurnOutcome::Failed {
+                    message: error.message.clone(),
+                },
+                None => TurnOutcome::Completed,
+            },
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnAborted(event)) => Some(WorkerFlowItem::TurnEnded {
+            env,
+            outcome: TurnOutcome::Aborted {
+                reason: event.reason.clone(),
+            },
+        }),
         RolloutItem::Compacted(item) => Some(WorkerFlowItem::Compaction {
             env,
             reason: Some("codex_compacted".to_string()),

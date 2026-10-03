@@ -546,6 +546,81 @@ pub fn compacted(summary: &str) -> Value {
     })
 }
 
+/// Codex's turn-end record; a failed turn carries the upstream error in `error.message`.
+pub fn task_complete(turn_id: &str, error_message: Option<&str>) -> Value {
+    let mut payload = json!({
+        "type": "task_complete",
+        "turn_id": turn_id,
+        "last_agent_message": null,
+        "started_at": 1_790_352_845,
+        "completed_at": 1_790_352_870,
+        "duration_ms": 25_045
+    });
+    if let Some(message) = error_message {
+        payload["error"] = json!({ "message": message, "codex_error_info": "other" });
+    }
+    json!({
+        "timestamp": "2026-06-13T00:00:10Z",
+        "type": "event_msg",
+        "payload": payload
+    })
+}
+
+pub fn turn_aborted(turn_id: &str, reason: &str) -> Value {
+    json!({
+        "timestamp": "2026-06-13T00:00:11Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "turn_aborted",
+            "turn_id": turn_id,
+            "reason": reason,
+            "started_at": 1_790_096_339,
+            "completed_at": 1_790_098_139,
+            "duration_ms": 1_800_071
+        }
+    })
+}
+
+/// Claude Code's synthetic assistant record for an API error that ended the turn.
+pub fn claude_api_error(uuid: &str, cwd: &str, text: &str, error: &str) -> Value {
+    json!({
+        "type": "assistant",
+        "uuid": uuid,
+        "timestamp": "2026-06-13T00:00:05Z",
+        "message": {
+            "model": "<synthetic>",
+            "role": "assistant",
+            "cwd": cwd,
+            "stop_reason": "stop_sequence",
+            "content": [{ "type": "text", "text": text }]
+        },
+        "error": error,
+        "isApiErrorMessage": true,
+        "cwd": cwd
+    })
+}
+
+/// `cards/<card_id>/conversation.md` through the production track view the Planner's `neige cat` reads.
+pub async fn cat_conversation(repo: &SqlxRepo, card: &Card) -> String {
+    let track = repo
+        .track_get(card.track_id.as_str())
+        .await
+        .unwrap()
+        .expect("card track");
+    let write = WriteContext::new(
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::track_area_cache::TrackAreaCache::new(),
+    );
+    calm_server::track_fs_view::TrackFsView::new(repo, &write)
+        .cat(
+            &track,
+            &format!("cards/{}/conversation.md", card.id.as_str()),
+        )
+        .await
+        .expect("cat conversation.md")
+        .content
+}
+
 pub fn write_rollout(path: &Path, lines: &[Value]) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();

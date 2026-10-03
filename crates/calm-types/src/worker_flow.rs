@@ -163,6 +163,12 @@ pub enum WorkerFlowItem {
         kind: ReviewKind,
         label: Option<String>,
     },
+    /// The end of an agent turn, as the provider's own record states it.
+    TurnEnded {
+        #[serde(flatten)]
+        env: FlowEnvelope,
+        outcome: TurnOutcome,
+    },
     Unknown {
         #[serde(flatten)]
         env: FlowEnvelope,
@@ -187,6 +193,7 @@ impl WorkerFlowItem {
             | WorkerFlowItem::Subagent { env, .. }
             | WorkerFlowItem::Compaction { env, .. }
             | WorkerFlowItem::ReviewBoundary { env, .. }
+            | WorkerFlowItem::TurnEnded { env, .. }
             | WorkerFlowItem::Unknown { env, .. } => env,
         }
     }
@@ -207,6 +214,7 @@ impl WorkerFlowItem {
             | WorkerFlowItem::Subagent { .. }
             | WorkerFlowItem::Compaction { .. }
             | WorkerFlowItem::ReviewBoundary { .. }
+            | WorkerFlowItem::TurnEnded { .. }
             | WorkerFlowItem::Unknown { .. } => None,
         }
     }
@@ -342,6 +350,16 @@ pub enum PlanStatus {
     Completed,
 }
 
+/// How an agent turn ended. `Failed` keeps the provider's error message as recorded; `Aborted` keeps
+/// the provider's abort reason (codex: `interrupted`, `replaced`, `review_ended`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum TurnOutcome {
+    Completed,
+    Failed { message: String },
+    Aborted { reason: String },
+}
+
 /// Whether a review boundary marks entry into or exit from a review phase.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -459,6 +477,35 @@ mod tests {
         let value = serde_json::to_value(&item).unwrap();
         assert_eq!(value["type"], json!("unknown"));
         assert_eq!(value["turn"], json!(2));
+    }
+
+    #[test]
+    fn turn_ended_round_trips_with_its_outcome() {
+        let item = WorkerFlowItem::TurnEnded {
+            env: env(),
+            outcome: TurnOutcome::Failed {
+                message: "unexpected status 403 Forbidden".to_string(),
+            },
+        };
+        assert_round_trip(&item);
+
+        let value = serde_json::to_value(&item).unwrap();
+        assert_eq!(value["type"], json!("turnEnded"));
+        assert_eq!(value["outcome"]["status"], json!("failed"));
+        assert_eq!(
+            value["outcome"]["message"],
+            json!("unexpected status 403 Forbidden")
+        );
+        assert_round_trip(&WorkerFlowItem::TurnEnded {
+            env: env(),
+            outcome: TurnOutcome::Completed,
+        });
+        assert_round_trip(&WorkerFlowItem::TurnEnded {
+            env: env(),
+            outcome: TurnOutcome::Aborted {
+                reason: "interrupted".to_string(),
+            },
+        });
     }
 
     #[test]

@@ -9,7 +9,7 @@ use serde_json::json;
 /// The bytes every recorded-detail rendering opens with, up to the advertised address.
 fn recorded_locator() -> &'static str {
     let (prefix, _) = RECORDED_WITH_EVENT
-        .split_once("{path_json}")
+        .split_once("{path}")
         .expect("the recorded fragment advertises an address");
     assert!(RECORDED_LEGACY.starts_with(prefix));
     prefix
@@ -20,12 +20,10 @@ fn recorded_locator() -> &'static str {
 fn advertised_path(text: &str) -> String {
     let locator = recorded_locator();
     let start = text.find(locator).expect("verified detail locator") + locator.len();
-    let args: serde_json::Value = serde_json::Deserializer::from_str(&text[start..])
-        .into_iter()
-        .next()
-        .expect("an address follows the locator")
-        .expect("the advertised address is JSON");
-    args["path"].as_str().unwrap().to_string()
+    let (path, _) = text[start..]
+        .split_once('`')
+        .expect("the advertised address closes its code span");
+    path.to_string()
 }
 
 /// The address the receipt must advertise for `identity` — the
@@ -38,10 +36,7 @@ fn expected_path(identity: &str) -> String {
 /// independently of the production renderer.
 fn expected_detail(fragment: &str, identity: &str, kind: &str, event_id: i64) -> String {
     fragment
-        .replace(
-            "{path_json}",
-            &json!({"path": expected_path(identity)}).to_string(),
-        )
+        .replace("{path}", &expected_path(identity))
         .replace("{kind}", kind)
         .replace("{event_id}", &event_id.to_string())
 }
