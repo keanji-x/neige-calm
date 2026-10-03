@@ -956,8 +956,9 @@ describe('mergeTranscript', () => {
   it('agrees with buildTranscript about a thought under a turn outcome once the echo lands as a row', () => {
     const line = (entry: TranscriptEntry): string =>
       entry.author === 'activity' ? entry.verb : entry.author === 'turn' ? entry.status : entry.text;
-    const userRow = (id: number, text: string) => ({
-      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-1',
+    /* The next message opens the next turn; a row of the stopped turn would sort its outcome below it. */
+    const userRow = (id: number, text: string, turnId = 'turn-1') => ({
+      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: turnId,
       turn_error_text: null, item_uuid: `u${id}`, item_type: 'userMessage', method: 'item/completed',
       params: JSON.stringify({ completedAtMs: 1000 + id, item: { content: [{ text }] } }), created_at_ms: 1000 + id,
     });
@@ -976,7 +977,7 @@ describe('mergeTranscript', () => {
     expect(server.map(line)).toEqual(['go', 'Thought', 'interrupted']);
 
     const withEcho = mergeTranscript(server, [{ id: 'echo', author: 'you', text: 'next', atMs: 1004 }]);
-    const afterTheRow = buildTranscript([...beforeTheRow, userRow(4, 'next')]);
+    const afterTheRow = buildTranscript([...beforeTheRow, userRow(4, 'next', 'turn-2')]);
     expect(withEcho.map(line)).toEqual(['go', 'interrupted', 'next']);
     expect(afterTheRow.map(line)).toEqual(withEcho.map(line));
   });
