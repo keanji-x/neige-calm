@@ -4,6 +4,7 @@ from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
 import json
 import re
+from zoneinfo import ZoneInfo
 
 from .config import broker_money, exact, identifier, integer, money, timestamp
 from .ledger import Ledger, digest, encoded
@@ -15,6 +16,13 @@ from .allocation_broker import OrderNotSubmitted
 DECISION_ID = re.compile(r'[a-z0-9][a-z0-9-]{0,54}')
 TOOLS = frozenset(('spy.plan', 'spy.execute', 'spy.status', 'spy.refresh'))
 FINAL = frozenset(('settled', 'noop', 'rejected', 'canceled', 'expired'))
+NEW_YORK = ZoneInfo('America/New_York')
+HISTORY = 260  # about one year of trading-day valuation samples in status and the overview
+
+
+def valuation_date(quote_at):
+    """The America/New_York calendar date that owns a valuation sample."""
+    return timestamp(quote_at).astimezone(NEW_YORK).date().isoformat()
 
 
 class Allocation:
@@ -27,6 +35,7 @@ class Allocation:
         self.ledger = Ledger(root / 'spy-cash', account)
         with self.ledger.session() as db:
             db.execute('CREATE TABLE IF NOT EXISTS order_requests (id TEXT PRIMARY KEY, body TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS valuations (date TEXT PRIMARY KEY, body TEXT NOT NULL)')
             binding = {'profile': 'spy_cash', 'oauth_client_id': account.oauth_client_id,
                        'broker_home': account.broker_home}
             old = self.ledger.get_meta(db, 'execution_binding')
@@ -95,6 +104,12 @@ class Allocation:
         reconcile(db, self.ledger, raw, snapshot)
         self.ledger.set_meta(db, 'snapshot', snapshot)
         self.ledger.set_meta(db, 'error', None)
+        # One reconciled valuation per New York quote date; the latest observation of that date wins.
+        sample = {'date': valuation_date(snapshot['quote_at']), 'at': snapshot['at'],
+                  'equity_usd': snapshot['equity_usd'], 'cash_usd': snapshot['cash_usd'],
+                  'shares': snapshot['shares'], 'price': snapshot['price']}
+        db.execute('INSERT INTO valuations VALUES (?,?) ON CONFLICT(date) DO UPDATE SET body=excluded.body',
+                   (sample['date'], encoded(sample)))
         return snapshot
 
     def size(self, snapshot, plan):
@@ -191,13 +206,19 @@ class Allocation:
         snapshot = self.ledger.get_meta(db, 'snapshot')
         decisions = self.ledger.decisions(db)
         requests = {r['id']: json.loads(r['body']) for r in db.execute('SELECT * FROM order_requests')}
+        fills = sorted(self.ledger.fills(db), key=lambda f: timestamp(f['time']))
         for d in decisions:
             d['order_request'] = requests.get(d['id'])
+            # Complete per-decision totals: the returned fills list below is bounded.
+            d['filled_quantity'] = sum(f['quantity'] for f in fills if d['broker_id'] and f['order_id'] == d['broker_id'])
         return {'profile': 'spy_cash', 'symbol': 'SPY.US', 'snapshot': snapshot,
                 'policy': {'max_order_bps': self.account.max_order_bps,
                            'cash_buffer_bps': self.account.cash_buffer_bps},
                 'error': self.ledger.get_meta(db, 'error'), 'decisions': decisions[-200:],
-                'fills': self.ledger.fills(db)[-200:], 'journal': [dict(r) | {'body': json.loads(r['body'])}
+                'fills': fills[-200:],
+                'valuations': [json.loads(r[0]) for r in db.execute(
+                    'SELECT body FROM valuations ORDER BY date DESC LIMIT ?', (HISTORY,))][::-1],
+                'journal': [dict(r) | {'body': json.loads(r['body'])}
                     for r in db.execute('SELECT * FROM journal ORDER BY seq DESC LIMIT 200')]}
 
     def process_once(self):

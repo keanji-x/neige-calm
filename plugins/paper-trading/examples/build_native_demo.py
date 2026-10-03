@@ -3,21 +3,17 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).parent
-
-def scalar(amount, unit='$', decimals=0, signed=False, placement='prefix'):
-    return {'state': 'known', 'amount': amount, 'unit': unit, 'decimals': decimals,
-            'signed': signed, 'placement': placement}
+sys.path.insert(0, str(ROOT.parent))
+from paper_trading.report_views import metric, scalar  # noqa: E402 - shared with the live SPY overview
 
 def create_view(facts):
     ui = facts['portfolio']
     assets, total = ui['assets'], ui['total']
     cash = next(asset for asset in assets if asset['id'] == 'cash')
     palettes = [5, 6, 2, 7]
-    def metric(key, label, value, detail, tone='neutral', primary=False):
-        return {'id': key, 'label': label, 'value': value, 'detail': detail, 'tone': tone,
-                'emphasis': 'primary' if primary else 'normal'}
     metrics = {'kind': 'metrics', 'id': 'assets', 'title': '', 'items': [
         metric('nav', '总资产', scalar(total), f"证券 ${total - cash['value']:,.0f} · 现金 ${cash['value']:,.0f}", primary=True),
         metric('previous', '上一交易日收盘 · 09.18', scalar(ui['previous']), 'USD · 演示交易日'),

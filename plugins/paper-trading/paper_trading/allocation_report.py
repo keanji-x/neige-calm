@@ -1,16 +1,6 @@
-"""Read-only native tables for targets and actual broker outcomes."""
-from decimal import Decimal
-
+"""Every SPY/cash Track overlay: the live overview plus detail tables of targets and broker outcomes."""
+from .allocation_views import SIDES, STATES, overview, percent
 from .report import table
-
-
-STATES = {'queued': '等待执行', 'requested': '已请求执行', 'submitting': '正在提交', 'working': '委托处理中',
-          'settled': '已成交', 'noop': '无需调仓', 'unknown': '结果待核实',
-          'rejected': '已拒绝', 'canceled': '已取消', 'expired': '已过期'}
-
-
-def percent(bps):
-    return f'{Decimal(bps) / 100:.2f}%'
 
 
 def tables(state):
@@ -20,9 +10,10 @@ def tables(state):
         request = decision['order_request']
         decisions.append({'id': decision['id'], 'target': percent(decision['body']['target_spy_bps']),
             'state': STATES[decision['state']], 'order': decision['broker_id'] or '',
-            'action': {'Buy': '买入', 'Sell': '卖出'}[request['side']] if request else '',
+            'action': SIDES[request['side']] if request else '',
             'quantity': request['quantity'] if request else '', 'rationale': decision['body']['rationale']})
     return {
+        'spy.overview': overview(state),
         'spy.portfolio': table([('metric', '项目'), ('value', '当前状态')], [
             {'metric': '账户模式', 'value': '长桥官方模拟账户 · SPY／现金'},
             {'metric': '单次调仓上限', 'value': percent(state['policy']['max_order_bps'])},

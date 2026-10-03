@@ -341,7 +341,7 @@ def test_spy_production_stdio_entrypoint_and_overlays(allocation_rig):
         assert not host.tool('spy.refresh', {}, track='owner', caller=WORKER).get('isError')
         result = wait_for(host, lambda s: s['decisions'][0]['state'] == 'settled')
         assert result['snapshot']['shares'] == 60
-        while not {'spy.portfolio', 'spy.decisions', 'spy.fills'} <= {p['kind'] for p in host.overlays}:
+        while not {'spy.overview', 'spy.portfolio', 'spy.decisions', 'spy.fills'} <= {p['kind'] for p in host.overlays}:
             host.receive()
         # A replayed Worker request may read, but may never write another order.
         assert host.tool('spy.execute', {'decision_id': 'stdio-target'}, track='owner', caller=WORKER)['isError']

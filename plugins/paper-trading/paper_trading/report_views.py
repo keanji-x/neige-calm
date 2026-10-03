@@ -9,7 +9,7 @@ from .portfolio import TERMINAL, cost_exposure
 from .report_text import event_text, money_text, state_text
 
 
-def native_view(state, title, rows):
+def native_view(state, title, rows, description=''):
     """Publish inert composition data with an identity derived from this projection.
 
     Reconciliation supplies the observation time. This pure projection has no
@@ -18,24 +18,40 @@ def native_view(state, title, rows):
     """
     observed = state['snapshot']['at'] if state['snapshot'] else None
     observed = int(datetime.fromisoformat(observed.replace('Z', '+00:00')).timestamp() * 1000) if observed is not None else None
-    identity = hashlib.sha256(json.dumps([title, rows, observed], ensure_ascii=False,
+    identity = hashlib.sha256(json.dumps([title, description, rows, observed], ensure_ascii=False,
                                          sort_keys=True, allow_nan=False).encode()).hexdigest()
-    return {'version': 1, 'title': title, 'description': '',
+    return {'version': 1, 'title': title, 'description': description,
             'snapshot': {'id': identity, 'observedAt': observed, 'producedAt': None}, 'rows': rows}
 
 
-def row(identity, cells, title=''):
-    return {'id': identity, 'title': title, 'layout': {1: 'one', 2: 'two', 3: 'three'}[len(cells)], 'cells': cells}
+def row(identity, cells, title='', layout=None):
+    return {'id': identity, 'title': title, 'layout': layout or {1: 'one', 2: 'two', 3: 'three'}[len(cells)],
+            'cells': cells}
 
 
-def record(identity, title, summary, subtitle='', badges=None, facts=None, sections=None):
+def scalar(amount, unit='$', decimals=0, signed=False, placement='prefix'):
+    return {'state': 'known', 'amount': amount, 'unit': unit, 'decimals': decimals,
+            'signed': signed, 'placement': placement}
+
+
+def unknown(reason):
+    return {'state': 'unknown', 'reason': reason}
+
+
+def metric(key, label, value, detail, tone='neutral', primary=False):
+    return {'id': key, 'label': label, 'value': value, 'detail': detail, 'tone': tone,
+            'emphasis': 'primary' if primary else 'normal'}
+
+
+def record(identity, title, summary, subtitle='', badges=None, facts=None, sections=None, disclosures=None):
     return {'id': identity, 'subtitle': subtitle, 'title': title, 'summary': summary,
-            'badges': badges or [], 'facts': facts or [], 'sections': sections or [], 'disclosures': []}
+            'badges': badges or [], 'facts': facts or [], 'sections': sections or [], 'disclosures': disclosures or []}
 
 
-def records(identity, title, empty_text, items):
+def records(identity, title, empty_text, items, label=None, description=''):
     return {'kind': 'records', 'id': identity, 'title': title, 'emptyText': empty_text,
-            'datasets': [{'id': identity + '-items', 'label': title, 'description': '', 'items': items}]}
+            'datasets': [{'id': identity + '-items', 'label': title if label is None else label,
+                          'description': description, 'items': items}]}
 
 
 def overview(state):

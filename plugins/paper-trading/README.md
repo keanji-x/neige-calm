@@ -291,8 +291,12 @@ copy live databases arbitrarily.
 ## Verification
 
 ```sh
+python3 -m pip install 'pytest>=8,<10' 'jsonschema>=4.18,<5'
 python3 -m pytest plugins/paper-trading/tests -q
 ```
+
+`jsonschema` validates the published views against the crate-owned native view
+schema; it is a test-only dependency.
 
 Tests run production Engine and Broker code against a deterministic external CLI
 fixture, plus real stdio and pseudo-terminal operator flows. No real credentials
@@ -452,8 +456,20 @@ and reports that outcome. A `requested` decision's `error` explains why the
 loop is still waiting: outside the regular session, a stale quote, insufficient
 settled cash or unavailable shares. The loop retries each poll until the
 decision expires. Market holidays and half trading days are checked against the
-broker calendar. `spy.portfolio`, `spy.decisions` and `spy.fills` are native live
-tables that can be bound in the Track Report.
+broker calendar.
+
+The Report opens with `spy.overview`, one live native view: total equity,
+the previous New York trading day's valuation and the day's change, equity and
+return history against the SPY price, current and historical SPY/cash weights,
+holdings, and recent decisions with their actual fills. Every successful
+reconciliation upserts one valuation sample (date, reconciliation time, equity,
+cash, shares, price; exact decimal strings) per America/New_York quote date in the ledger's
+`valuations` table, so the latest observation of each date wins; `spy.status`
+returns the latest 260 samples. Values are reconciled paper-account valuations;
+P&L includes no fee or deposit adjustment. `spy.portfolio`, `spy.decisions`
+and `spy.fills` remain native live detail tables. The Planner rewrites the
+research sections (结论, 核心逻辑, 关键数据, 风险与证伪, 催化剂与跟踪, 复盘) to its
+current judgment rather than appending dated notes.
 
 **Known gap:** the App cannot prove that the Planner created the requesting
 Worker task. Any Worker-role caller on the owner Track may request execution of
