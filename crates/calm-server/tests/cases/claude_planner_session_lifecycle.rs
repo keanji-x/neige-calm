@@ -510,7 +510,7 @@ async fn a_shutdown_or_seal_during_the_version_check_mints_nothing() {
         });
         wait_for_file(&rig.bin("version-entered")).await;
         let shutdown = if seal {
-            rig.daemon.seal_turn_thread_for_deletion(&rig.thread);
+            rig.daemon.thread_seals().seal_for_deletion(&rig.thread);
             None
         } else {
             let session = std::sync::Arc::clone(rig.session());

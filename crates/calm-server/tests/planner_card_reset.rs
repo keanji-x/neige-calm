@@ -329,6 +329,7 @@ fn install_failing_planner_start_runtime(boot: &mut Boot) {
             inner: PlannerHarnessStartAdapter::new(
                 boot.repo.clone(),
                 boot.state.shared_codex_appserver.clone(),
+                boot.state.thread_seals().clone(),
                 boot.state.harness.clone(),
                 boot.state.plugin.clone(),
                 boot.state.card_role_cache.clone(),

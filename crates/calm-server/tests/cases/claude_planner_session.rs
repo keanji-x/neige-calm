@@ -436,7 +436,7 @@ async fn a_seal_after_spawn_stops_the_cli_before_any_input() {
     rig.session()
         .set_after_spawn_hook_for_test(Arc::new(move || {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            daemon.seal_turn_thread_for_deletion(&thread);
+            daemon.thread_seals().seal_for_deletion(&thread);
         }));
     let error = assert_refused_before_ok(&rig, rig.text("hello")).await;
     assert!(error.contains("sealed"), "{error}");

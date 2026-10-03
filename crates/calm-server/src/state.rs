@@ -30,6 +30,7 @@ use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state_clients::resolve_mcp_stdio_shim_bin;
 use crate::terminal_renderer::TerminalRendererRegistry;
+use crate::thread_seals::ThreadSeals;
 use crate::track_area_cache::TrackAreaCache;
 use crate::worker_flow::WorkerFlowDriver;
 use axum::extract::FromRef;
@@ -116,6 +117,9 @@ pub struct RouteState {
     pub(crate) track_delete_locks: crate::per_card_lock::KeyedLocks,
     /// One planner attachment upload per card at a time. Takes no other lock.
     pub(crate) planner_attachment_locks: crate::per_card_lock::PerCardLocks,
+    /// The server's one deletion-seal registry, built by the shared Codex daemon; the deletion
+    /// routes seal and unseal through it and recovery skips what it holds.
+    pub(crate) thread_seals: Arc<ThreadSeals>,
     /// Serializes a user-area delete with the ordinary track-create route.
     /// The creator holds it through workspace materialization and planner
     /// startup; deletion therefore snapshots a closed member set.
@@ -215,6 +219,7 @@ impl BootState {
             track_create_mint_rendezvous: None,
             planner_attachment_locks: crate::per_card_lock::new_per_card_locks(),
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
+            thread_seals: self.shared_codex_appserver.thread_seals().clone(),
             area_delete_locks: crate::per_card_lock::new_keyed_locks(),
             claude_planner: self.claude_planner,
             provider_availability: Arc::default(),
@@ -445,6 +450,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         Arc::new(PlannerHarnessStartAdapter::new(
             input.repo.clone(),
             input.shared_codex_appserver.clone(),
+            input.shared_codex_appserver.thread_seals().clone(),
             input.harness.clone(),
             input.plugin.clone(),
             input.card_role_cache.clone(),
@@ -576,6 +582,7 @@ impl AppState {
             self.card_role_cache.clone(),
             self.track_area_cache.clone(),
             self.shared_codex_appserver.clone(),
+            self.route.thread_seals.clone(),
             &self.claude_planner_wiring(),
             &self.harness,
             &self.route.track_delete_locks,
@@ -587,6 +594,11 @@ impl AppState {
     /// What recovery and the start adapter open a Claude Planner session with.
     pub fn claude_planner_wiring(&self) -> ClaudePlannerWiring {
         self.route.claude_planner_wiring()
+    }
+
+    /// The server's one deletion-seal registry, the one the shared Codex daemon consults.
+    pub fn thread_seals(&self) -> &Arc<ThreadSeals> {
+        &self.route.thread_seals
     }
 
     /// Fixtures only: make every provider's cached availability older than the 30 s TTL, so the
@@ -635,6 +647,7 @@ impl AppState {
                 card_role_cache: self.card_role_cache.clone(),
                 track_area_cache: self.track_area_cache.clone(),
                 daemon: self.shared_codex_appserver.clone(),
+                seals: self.route.thread_seals.clone(),
                 claude: self.claude_planner_wiring(),
                 registry: self.harness.clone(),
                 track_delete_locks: self.route.track_delete_locks.clone(),
@@ -849,6 +862,8 @@ impl AppState {
     #[cfg(feature = "fixtures")]
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
         self.shared_codex_appserver = shared.clone();
+        // The routes seal through the registry the daemon's own turn starts consult.
+        self.route.thread_seals = shared.thread_seals().clone();
         self.codex_shell.shared_codex_appserver = shared;
         // An answer about the replaced daemon must not outlive it.
         self.route.provider_availability = Arc::default();

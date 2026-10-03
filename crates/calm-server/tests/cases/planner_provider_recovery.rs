@@ -83,12 +83,14 @@ async fn recover_planner_row(
         calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
             repo.clone(),
         );
+    let recovery_daemon = SharedCodexAppServer::new_stub(repo.clone());
     let outcome = spawn_recovered_harness(
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        recovery_daemon.clone(),
+        recovery_daemon.thread_seals().clone(),
         &claude_wiring,
         &registry,
         &calm_server::harness::new_track_delete_locks(),

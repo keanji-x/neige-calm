@@ -388,6 +388,7 @@ fn dispatcher_operation_runtime(
     let planner_harness_start_adapter = Arc::new(PlannerHarnessStartAdapter::new(
         repo.clone(),
         shared_codex_appserver.clone(),
+        shared_codex_appserver.thread_seals().clone(),
         harness.clone(),
         plugin,
         write.role_cache().clone(),

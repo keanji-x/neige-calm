@@ -656,7 +656,7 @@ async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_
     assert_eq!(b.pending.pending_count().await, 0);
 }
 
-// `sealed_turn_threads` and `active_turns` had no remover on the committed delete path: the seal is dropped
+// The thread seals and `active_turns` had no remover on the committed delete path: the seal is dropped
 // only by a ROLLBACK, the active turn only by a matching interrupt. Both arms are asserted.
 
 /// Give the track's live planner worker session a codex thread id, the shape `quiesce_shared_card_active_turn`
@@ -725,7 +725,7 @@ async fn a_committed_track_delete_converges_the_sealed_and_active_turn_maps() {
     });
     hook.entered.notified().await;
     assert!(
-        b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        b.shared_codex.thread_seals().is_sealed(sealed_thread),
         "premise: quiesce sealed the planner thread before the transaction"
     );
     b.shared_codex
@@ -742,7 +742,7 @@ async fn a_committed_track_delete_converges_the_sealed_and_active_turn_maps() {
     );
 
     assert!(
-        !b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        !b.shared_codex.thread_seals().is_sealed(sealed_thread),
         "#1553: a committed delete must drop the sealed-thread verdict"
     );
     assert_eq!(
@@ -799,7 +799,7 @@ async fn a_committed_area_delete_converges_the_sealed_and_active_turn_maps() {
     });
     hook.entered.notified().await;
     assert!(
-        b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        b.shared_codex.thread_seals().is_sealed(sealed_thread),
         "premise: quiesce sealed the planner thread before the transaction"
     );
     b.shared_codex
@@ -815,7 +815,7 @@ async fn a_committed_area_delete_converges_the_sealed_and_active_turn_maps() {
     );
 
     assert!(
-        !b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        !b.shared_codex.thread_seals().is_sealed(sealed_thread),
         "#1553: a committed area delete must drop the sealed-thread verdict"
     );
     assert_eq!(
@@ -831,7 +831,7 @@ async fn a_committed_area_delete_converges_the_sealed_and_active_turn_maps() {
 }
 
 /// Rollback arm, Track: the compensation path runs and the Cards survive. The observable is `active_turns`,
-/// which no rollback path writes (unlike the seal, which `unseal_turn_thread_after_rollback` clears).
+/// which no rollback path writes (unlike the seal, which `ThreadSeals::unseal_after_rollback` clears).
 #[tokio::test]
 async fn a_rolled_back_track_delete_keeps_the_active_turn_entry() {
     let b = boot().await;

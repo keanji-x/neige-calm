@@ -48,6 +48,7 @@ use crate::session_projection_lookup::{
 };
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
+use crate::thread_seals::ThreadSeals;
 
 pub type TurnId = String;
 
@@ -666,10 +667,10 @@ pub struct SharedCodexAppServer {
     repo: Arc<dyn Repo>,
     thread_cache: Arc<DashMap<String, String>>,
     active_turns: Arc<DashMap<String, String>>,
-    /// Threads whose owning track/area is being deleted. A late turn/start
-    /// response or notification is interrupted instead of becoming active
-    /// after the owning workspace has been recycled.
-    sealed_turn_threads: Arc<DashMap<String, ()>>,
+    /// The server's one deletion-seal registry, built here and shared through [`Self::thread_seals`].
+    /// A late turn/start response or notification on a sealed thread is interrupted instead of
+    /// becoming active after the owning workspace has been recycled.
+    thread_seals: Arc<ThreadSeals>,
     restart_backoff: BackoffState,
     /// Cold-start deadline for a freshly spawned child to bind its socket and answer
     /// `initialize`; codex may spend minutes backfilling its state db before the socket exists.
@@ -720,54 +721,6 @@ pub struct SharedCodexAppServer {
     ingest_url: String,
     #[cfg(feature = "fixtures")]
     fake: Option<Arc<FakeSharedCodexAppServer>>,
-}
-
-/// Owns deletion-time thread seals; dropping an unfinished step rolls every seal back, and
-/// `retain` transfers the quiesced ids to the transaction half of the deletion saga.
-pub(crate) struct DeletionThreadSeals {
-    daemon: Arc<SharedCodexAppServer>,
-    thread_ids: Vec<String>,
-    rollback_on_drop: bool,
-}
-
-impl DeletionThreadSeals {
-    pub(crate) fn new(daemon: Arc<SharedCodexAppServer>) -> Self {
-        Self {
-            daemon,
-            thread_ids: Vec::new(),
-            rollback_on_drop: true,
-        }
-    }
-
-    pub(crate) fn seal(&mut self, thread_id: impl Into<String>) {
-        let thread_id = thread_id.into();
-        if self
-            .thread_ids
-            .iter()
-            .any(|existing| existing == &thread_id)
-        {
-            return;
-        }
-        self.daemon.seal_turn_thread_for_deletion(&thread_id);
-        self.thread_ids.push(thread_id);
-    }
-
-    pub(crate) fn retain(mut self) -> Vec<String> {
-        self.thread_ids.sort();
-        self.thread_ids.dedup();
-        self.rollback_on_drop = false;
-        std::mem::take(&mut self.thread_ids)
-    }
-}
-
-impl Drop for DeletionThreadSeals {
-    fn drop(&mut self) {
-        if self.rollback_on_drop {
-            for thread_id in &self.thread_ids {
-                self.daemon.unseal_turn_thread_after_rollback(thread_id);
-            }
-        }
-    }
 }
 
 #[cfg(feature = "fixtures")]
@@ -986,7 +939,7 @@ impl SharedCodexAppServer {
             repo,
             thread_cache: Arc::new(DashMap::new()),
             active_turns: Arc::new(DashMap::new()),
-            sealed_turn_threads: Arc::new(DashMap::new()),
+            thread_seals: Arc::new(ThreadSeals::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             start_timeout: Duration::from_secs(120),
             stop_grace: Duration::from_secs(60),
@@ -1045,7 +998,7 @@ impl SharedCodexAppServer {
             repo,
             thread_cache: Arc::new(DashMap::new()),
             active_turns: Arc::new(DashMap::new()),
-            sealed_turn_threads: Arc::new(DashMap::new()),
+            thread_seals: Arc::new(ThreadSeals::new()),
             restart_backoff: BackoffState::new(
                 Duration::from_millis(cfg.shared_codex_appserver_restart_initial_delay_ms),
                 Duration::from_millis(cfg.shared_codex_appserver_restart_max_delay_ms),
@@ -1316,7 +1269,7 @@ impl SharedCodexAppServer {
         selection: &TurnModelSelection,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
-        if self.sealed_turn_threads.contains_key(thread_id) {
+        if self.thread_seals.is_sealed(thread_id) {
             return Err(CalmError::Conflict(format!(
                 "thread {thread_id} is sealed because its track is being deleted"
             )));
@@ -1371,7 +1324,7 @@ impl SharedCodexAppServer {
                 thread_id: thread_id.to_string(),
                 turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
             });
-            if self.sealed_turn_threads.contains_key(thread_id) {
+            if self.thread_seals.is_sealed(thread_id) {
                 self.turn_interrupt(thread_id, &turn_id).await?;
                 self.active_turns
                     .remove_if(thread_id, |_, active| active == &turn_id);
@@ -1391,7 +1344,7 @@ impl SharedCodexAppServer {
             .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))?;
         self.active_turns
             .insert(thread_id.to_string(), turn_id.clone());
-        if self.sealed_turn_threads.contains_key(thread_id) {
+        if self.thread_seals.is_sealed(thread_id) {
             self.turn_interrupt(thread_id, &turn_id).await?;
             self.active_turns
                 .remove_if(thread_id, |_, active| active == &turn_id);
@@ -1553,15 +1506,13 @@ impl SharedCodexAppServer {
         dropped.len()
     }
 
-    /// Drop the deletion-time turn bookkeeping for threads a committed delete has sealed and
-    /// quiesced. Deliberately takes no guard: every other writer of these maps uses `DashMap`'s
-    /// per-entry locking only, and taking the start serial across a respawn self-deadlocks.
+    /// Drop the active-turn bookkeeping for threads a committed delete has sealed and quiesced;
+    /// the caller forgets their seals in [`ThreadSeals::forget_deleted`]. Deliberately takes no
+    /// guard: every other writer of this map uses `DashMap`'s per-entry locking only, and taking
+    /// the start serial across a respawn self-deadlocks.
     pub fn forget_turn_state_for_deleted_threads(&self, thread_ids: &[String]) -> usize {
         let mut dropped = 0_usize;
         for thread_id in thread_ids {
-            if self.sealed_turn_threads.remove(thread_id).is_some() {
-                dropped += 1;
-            }
             if self.active_turns.remove(thread_id).is_some() {
                 dropped += 1;
             }
@@ -1586,16 +1537,10 @@ impl SharedCodexAppServer {
             .collect()
     }
 
-    pub fn seal_turn_thread_for_deletion(&self, thread_id: &str) {
-        self.sealed_turn_threads.insert(thread_id.to_string(), ());
-    }
-
-    pub fn unseal_turn_thread_after_rollback(&self, thread_id: &str) {
-        self.sealed_turn_threads.remove(thread_id);
-    }
-
-    pub(crate) fn turn_thread_is_sealed(&self, thread_id: &str) -> bool {
-        self.sealed_turn_threads.contains_key(thread_id)
+    /// The server's deletion-seal registry. The state wiring hands this `Arc` to the deletion
+    /// routes, the harness and a Claude Planner session; nothing else reaches it through here.
+    pub fn thread_seals(&self) -> &Arc<ThreadSeals> {
+        &self.thread_seals
     }
 
     /// `turn/steer` — hand `items` to the turn running on `thread_id`; codex refuses when
@@ -1807,20 +1752,9 @@ impl SharedCodexAppServer {
 
 impl SharedCodexAppServer {
     pub fn effective_proxy_env(settings_value: Option<&str>, env_keys: &[&str]) -> Option<String> {
-        Self::effective_proxy_env_from(settings_value, env_keys, |key| std::env::var(key).ok())
-    }
-
-    pub fn effective_proxy_env_from(
-        settings_value: Option<&str>,
-        env_keys: &[&str],
-        lookup: impl Fn(&str) -> Option<String>,
-    ) -> Option<String> {
-        if let Some(v) = settings_value {
-            return Some(v.to_string());
-        }
-        env_keys
-            .iter()
-            .find_map(|key| lookup(key).filter(|v| !v.is_empty()))
+        crate::proxy_env::effective_proxy_env_from(settings_value, env_keys, |key| {
+            std::env::var(key).ok()
+        })
     }
 
     pub fn compute_env_signature(
@@ -1878,29 +1812,6 @@ impl SharedCodexAppServer {
         Ok(self.env_signature_for_snapshot(&self.load_spawn_env_snapshot().await?))
     }
 
-    /// Settings-first, parent-env-fallback proxy resolution as explicit (UPPER, lower, value)
-    /// pairs; with `env_clear()` the fallback must be SET explicitly.
-    pub fn resolved_proxy_env_pairs(
-        http_settings: Option<&str>,
-        https_settings: Option<&str>,
-        lookup: impl Fn(&str) -> Option<String> + Copy,
-    ) -> Vec<(&'static str, &'static str, String)> {
-        let mut pairs = Vec::new();
-        if let Some(v) =
-            Self::effective_proxy_env_from(http_settings, &["HTTP_PROXY", "http_proxy"], lookup)
-                .filter(|v| !v.is_empty())
-        {
-            pairs.push(("HTTP_PROXY", "http_proxy", v));
-        }
-        if let Some(v) =
-            Self::effective_proxy_env_from(https_settings, &["HTTPS_PROXY", "https_proxy"], lookup)
-                .filter(|v| !v.is_empty())
-        {
-            pairs.push(("HTTPS_PROXY", "https_proxy", v));
-        }
-        pairs
-    }
-
     /// The child env is a pure function of typed config: `env_clear()` plus exactly
     /// [`SPAWN_ENV_PASSTHROUGH`], the computed keys, and (fixture builds only) the fake-codex channel.
     fn apply_spawn_env(&self, cmd: &mut Command, snapshot: &SpawnEnvSnapshot) {
@@ -1931,7 +1842,7 @@ impl SharedCodexAppServer {
             .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
 
         // The snapshot values are already resolved; the lookup here is inert.
-        for (upper, lower, value) in Self::resolved_proxy_env_pairs(
+        for (upper, lower, value) in crate::proxy_env::resolved_proxy_env_pairs(
             snapshot.http_proxy.as_deref(),
             snapshot.https_proxy.as_deref(),
             |_| None,
@@ -3292,7 +3203,7 @@ impl SharedCodexAppServer {
         let repo = self.repo.clone();
         let thread_cache = self.thread_cache.clone();
         let active_turns = self.active_turns.clone();
-        let sealed_turn_threads = self.sealed_turn_threads.clone();
+        let thread_seals = self.thread_seals.clone();
         let kernel_initiated_threads = self.kernel_initiated_threads.clone();
         let forgotten_threads = self.forgotten_threads.clone();
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
@@ -3323,7 +3234,7 @@ impl SharedCodexAppServer {
                     }
                 }
                 if let Some((thread_id, turn_id)) =
-                    track_active_turn(&active_turns, &sealed_turn_threads, &notification)
+                    track_active_turn(&active_turns, &thread_seals, &notification)
                 {
                     let Some(client) = client.upgrade() else {
                         break;
@@ -3659,11 +3570,6 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex turn-steer hook mutex poisoned") = Some(hook);
         }
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn turn_thread_is_sealed_for_test(&self, thread_id: &str) -> bool {
-        self.turn_thread_is_sealed(thread_id)
     }
 
     /// Answer `config/read` with this instead of failing.
@@ -4236,18 +4142,18 @@ pub fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
 
 fn track_active_turn(
     active_turns: &DashMap<String, String>,
-    sealed_turn_threads: &DashMap<String, ()>,
+    thread_seals: &ThreadSeals,
     notification: &Notification,
 ) -> Option<(String, String)> {
     match notification {
         Notification::TurnStarted { thread_id, turn } => {
             if let Some(turn_id) = turn_id(turn) {
-                if sealed_turn_threads.contains_key(thread_id) {
+                if thread_seals.is_sealed(thread_id) {
                     active_turns.insert(thread_id.clone(), turn_id.to_string());
                     return Some((thread_id.clone(), turn_id.to_string()));
                 }
                 active_turns.insert(thread_id.clone(), turn_id.to_string());
-                if sealed_turn_threads.contains_key(thread_id) {
+                if thread_seals.is_sealed(thread_id) {
                     return Some((thread_id.clone(), turn_id.to_string()));
                 }
             }
@@ -4969,42 +4875,6 @@ mod tests {
         assert_ne!(
             salted, pre_salt,
             "compute_env_signature must be salted (env-schema-v3:1784)"
-        );
-    }
-
-    /// With `env_clear()`, a parent-env proxy must be RESOLVED and set explicitly when settings
-    /// are absent; settings still win over the parent env.
-    #[test]
-    fn resolved_proxy_pairs_settings_first_then_explicit_parent_env_fallback() {
-        let pairs = SharedCodexAppServer::resolved_proxy_env_pairs(
-            Some("http://settings-proxy:3128"),
-            None,
-            |key| (key == "HTTP_PROXY").then(|| "http://env-proxy:8080".to_string()),
-        );
-        assert_eq!(
-            pairs,
-            vec![(
-                "HTTP_PROXY",
-                "http_proxy",
-                "http://settings-proxy:3128".to_string()
-            )]
-        );
-
-        let pairs = SharedCodexAppServer::resolved_proxy_env_pairs(None, None, |key| {
-            (key == "HTTPS_PROXY").then(|| "http://env-secure:3129".to_string())
-        });
-        assert_eq!(
-            pairs,
-            vec![(
-                "HTTPS_PROXY",
-                "https_proxy",
-                "http://env-secure:3129".to_string()
-            )]
-        );
-
-        assert!(
-            SharedCodexAppServer::resolved_proxy_env_pairs(None, None, |_| None).is_empty(),
-            "no settings + no parent env => no proxy keys in the child env"
         );
     }
 }

@@ -42,6 +42,7 @@ use crate::session_projection_repo::{
 };
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
+use crate::thread_seals::ThreadSeals;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_binding::{TemplateContract, TrackOwnerBinding, resolve_track_owner_binding};
 
@@ -78,6 +79,8 @@ pub fn fixture_socket_path() -> std::path::PathBuf {
 pub struct PlannerHarnessStartAdapter {
     repo: Arc<dyn Repo>,
     daemon: Arc<SharedCodexAppServer>,
+    /// The server's deletion-seal registry, handed to every Claude Planner session it opens.
+    seals: Arc<ThreadSeals>,
     harness_registry: HarnessRegistry,
     plugin: Arc<PluginHost>,
     card_role_cache: CardRoleCache,
@@ -92,6 +95,7 @@ impl PlannerHarnessStartAdapter {
     pub fn new(
         repo: Arc<dyn Repo>,
         daemon: Arc<SharedCodexAppServer>,
+        seals: Arc<ThreadSeals>,
         harness_registry: HarnessRegistry,
         plugin: Arc<PluginHost>,
         card_role_cache: CardRoleCache,
@@ -102,6 +106,7 @@ impl PlannerHarnessStartAdapter {
         Self {
             repo,
             daemon,
+            seals,
             harness_registry,
             plugin,
             card_role_cache,
@@ -1425,6 +1430,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let backend = PlannerBackend::open(
             provider,
             self.daemon.clone(),
+            self.seals.clone(),
             &self.claude_wiring(),
             self.repo.clone(),
             ClaudePlannerRow {
@@ -2872,9 +2878,11 @@ mod tests {
 
     fn adapter_for(repo: Arc<SqlxRepo>, plugin: Arc<PluginHost>) -> PlannerHarnessStartAdapter {
         let repo_dyn: Arc<dyn Repo> = repo;
+        let daemon = SharedCodexAppServer::new_stub(repo_dyn.clone());
         PlannerHarnessStartAdapter::new(
-            repo_dyn.clone(),
-            SharedCodexAppServer::new_stub(repo_dyn),
+            repo_dyn,
+            daemon.clone(),
+            daemon.thread_seals().clone(),
             HarnessRegistry::new(),
             plugin,
             CardRoleCache::new(),

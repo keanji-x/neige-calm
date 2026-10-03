@@ -37,6 +37,7 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::HarnessInputSegment;
 use crate::planner_attachments::bind::BoundAttachment;
 use crate::planner_model::{FailureKind, TurnModelSelection};
+use crate::thread_seals::{DeletionThreadSeals, ThreadSeals};
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
 
@@ -648,25 +649,23 @@ impl PlannerHarness {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        self.shutdown_inner(false, false).await
+        self.shutdown_inner(false).await
     }
 
     /// Quiesce an owner that is preparing for deletion and return its retained
     /// thread seal. An error/panic releases the seal through the local guard;
     /// the caller owns it only after strict interruption succeeds.
-    pub async fn shutdown_for_deletion(&self) -> Result<Option<String>> {
+    pub async fn shutdown_for_deletion(&self, seals: Arc<ThreadSeals>) -> Result<Option<String>> {
         let thread_id = self.inner.thread_id.read().await.clone();
-        let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
-            self.inner.backend.codex().clone(),
-        );
+        let mut seals = DeletionThreadSeals::new(seals);
         if let Some(thread_id) = thread_id.clone() {
             seals.seal(thread_id);
         }
-        self.shutdown_inner(false, true).await?;
+        self.shutdown_inner(true).await?;
         Ok(seals.retain().pop())
     }
 
-    async fn shutdown_inner(&self, seal_thread: bool, strict_interrupt: bool) -> Result<()> {
+    async fn shutdown_inner(&self, strict_interrupt: bool) -> Result<()> {
         let _durable_guard = self.inner.durable_observation.lock().await;
         {
             let mut closed = self
@@ -678,12 +677,6 @@ impl PlannerHarness {
             self.inner.shutting_down.store(true, Ordering::SeqCst);
         }
         let thread_id = self.inner.thread_id.read().await.clone();
-        if seal_thread && let Some(thread_id) = thread_id.as_deref() {
-            self.inner
-                .backend
-                .codex()
-                .seal_turn_thread_for_deletion(thread_id);
-        }
         let _ = self.inner.shutdown.send(());
         // If turn/start is already in flight, wait until its id is recorded in
         // the shared daemon cache. If shutdown won first, maybe_issue_turn sees

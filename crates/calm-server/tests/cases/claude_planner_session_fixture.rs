@@ -133,7 +133,7 @@ impl Rig {
             proxy: Vec::new(),
             prior_total_tokens: 0,
             repo: self.repo.clone(),
-            seals: Arc::clone(&self.daemon),
+            seals: Arc::clone(self.daemon.thread_seals()),
         })
         .await
         .expect("open session")

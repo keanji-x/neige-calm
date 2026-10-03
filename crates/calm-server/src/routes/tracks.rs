@@ -123,6 +123,7 @@ struct PreparedTrackDeletion {
     area_kind: Option<AreaKind>,
     plan: TrackDeletePlan,
     turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+    thread_seals: std::sync::Arc<crate::thread_seals::ThreadSeals>,
     _operation_guard: tokio::sync::OwnedMutexGuard<()>,
     _delete_guard: crate::per_card_lock::KeyedLockGuard,
 }
@@ -2666,10 +2667,9 @@ async fn teardown_track_deletion(
         w.daemon.proc_supervisor_sock.as_deref(),
     )
     .await?;
-    let mut seals =
-        crate::shared_codex_appserver::DeletionThreadSeals::new(cs.shared_codex_appserver.clone());
+    let mut seals = crate::thread_seals::DeletionThreadSeals::new(s.thread_seals.clone());
     for card in &plan.cards {
-        if let Some(thread_id) = quiesce_shared_card_active_turn(s.repo.as_ref(), cs, card).await? {
+        if let Some(thread_id) = quiesce_shared_card_active_turn(s, cs, card).await? {
             seals.seal(thread_id);
         }
     }
@@ -2692,7 +2692,7 @@ async fn teardown_track_deletion(
     }
     for thread_id in w
         .harness
-        .shutdown_track(&plan.track_id, cs.shared_codex_appserver.clone())
+        .shutdown_track(&plan.track_id, s.thread_seals.clone())
         .await?
     {
         seals.seal(thread_id);
@@ -2868,9 +2868,7 @@ impl QuiescedTrackDeletion {
             Ok(Err(error)) => {
                 if workspace_recycle::workspace_allows_runtime_recovery(&prepared.track) {
                     for thread_id in &sealed_thread_ids {
-                        prepared
-                            .turn_daemon
-                            .unseal_turn_thread_after_rollback(thread_id);
+                        prepared.thread_seals.unseal_after_rollback(thread_id);
                     }
                 }
                 Err(error)
@@ -2878,9 +2876,7 @@ impl QuiescedTrackDeletion {
             Err(_) => {
                 if workspace_recycle::workspace_allows_runtime_recovery(&prepared.track) {
                     for thread_id in &sealed_thread_ids {
-                        prepared
-                            .turn_daemon
-                            .unseal_turn_thread_after_rollback(thread_id);
+                        prepared.thread_seals.unseal_after_rollback(thread_id);
                     }
                 }
                 Err(CalmError::Internal(format!(
@@ -2940,9 +2936,7 @@ impl RecycledTrackDeletion {
                     .write
                     .remember_track(track.id.clone(), track.area_id.clone());
                 for thread_id in &sealed_thread_ids {
-                    prepared
-                        .turn_daemon
-                        .unseal_turn_thread_after_rollback(thread_id);
+                    prepared.thread_seals.unseal_after_rollback(thread_id);
                 }
                 return Err(error);
             }
@@ -2954,6 +2948,7 @@ impl RecycledTrackDeletion {
             .forget_threads_for_deleted_cards(&deleted_card_ids)
             .await;
         // Same committed arm; the error arm keeps both entries because its Cards still exist.
+        prepared.thread_seals.forget_deleted(&sealed_thread_ids);
         prepared
             .turn_daemon
             .forget_turn_state_for_deleted_threads(&sealed_thread_ids);
@@ -2989,7 +2984,7 @@ async fn run_recycled_track_deletion(
     let recovery_track = deletion.prepared.track.clone();
     let recovery_decision = deletion.decision.clone();
     let recovery_thread_ids = deletion.sealed_thread_ids.clone();
-    let recovery_turn_daemon = deletion.prepared.turn_daemon.clone();
+    let recovery_thread_seals = deletion.prepared.thread_seals.clone();
     match std::panic::AssertUnwindSafe(deletion.commit(route, actor))
         .catch_unwind()
         .await
@@ -3007,7 +3002,7 @@ async fn run_recycled_track_deletion(
                     .write
                     .remember_track(recovery_track.id.clone(), recovery_track.area_id.clone());
                 for thread_id in &recovery_thread_ids {
-                    recovery_turn_daemon.unseal_turn_thread_after_rollback(thread_id);
+                    recovery_thread_seals.unseal_after_rollback(thread_id);
                 }
             }
             Err(CalmError::Internal(format!(
@@ -3051,6 +3046,7 @@ async fn finish_prepared_track_deletion_owned(
             route.write.role_cache().clone(),
             route.write.area_cache().clone(),
             codex.shared_codex_appserver.clone(),
+            route.thread_seals.clone(),
             route.claude_planner_wiring(),
             worker.harness.clone(),
             route.track_delete_locks.clone(),
@@ -3153,6 +3149,7 @@ pub(crate) async fn delete_track(
     let prepared = PreparedTrackDeletion {
         plan: snapshot_track_deletion(&s, &track).await?,
         turn_daemon: cs.shared_codex_appserver.clone(),
+        thread_seals: s.thread_seals.clone(),
         track,
         area_kind: owning_area.map(|area| area.kind),
         _operation_guard: operation_guard,

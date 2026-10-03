@@ -8,7 +8,7 @@ use super::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
 use crate::plugin_host::PluginHost;
-use crate::shared_codex_appserver::SharedCodexAppServer;
+use crate::thread_seals::ThreadSeals;
 
 /// Appended to the Planner rendering for Claude only (§5.2).
 const CLAUDE_FRAGMENT: &str = include_str!("../../prompts/claude-planner/long-lived-processes.md");
@@ -35,7 +35,7 @@ impl ClaudePlannerWiring {
     pub async fn open_session(
         &self,
         repo: Arc<dyn Repo>,
-        seals: Arc<SharedCodexAppServer>,
+        seals: Arc<ThreadSeals>,
         row: ClaudePlannerRow<'_>,
     ) -> Result<Arc<ClaudePlannerSession>> {
         let track = repo
@@ -53,7 +53,7 @@ impl ClaudePlannerWiring {
         instructions.push_str("\n\n");
         instructions.push_str(CLAUDE_FRAGMENT.trim_end());
         let settings = crate::routes::settings::load_settings(repo.as_ref()).await?;
-        let proxy = SharedCodexAppServer::resolved_proxy_env_pairs(
+        let proxy = crate::proxy_env::resolved_proxy_env_pairs(
             settings.http_proxy.as_deref(),
             settings.https_proxy.as_deref(),
             |key| std::env::var(key).ok(),

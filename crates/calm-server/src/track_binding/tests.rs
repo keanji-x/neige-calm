@@ -362,9 +362,11 @@ impl Boot {
 
     fn adapter_on(&self, host: &Arc<PluginHost>) -> PlannerHarnessStartAdapter {
         let repo_dyn: Arc<dyn Repo> = self.repo.clone();
+        let daemon = SharedCodexAppServer::new_stub(repo_dyn.clone());
         PlannerHarnessStartAdapter::new(
-            repo_dyn.clone(),
-            SharedCodexAppServer::new_stub(repo_dyn),
+            repo_dyn,
+            daemon.clone(),
+            daemon.thread_seals().clone(),
             HarnessRegistry::new(),
             host.clone(),
             CardRoleCache::new(),

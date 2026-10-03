@@ -17,7 +17,7 @@ impl SharedCodexAppServer {
         // cannot turn a hot read into a cold resume while credentials are chosen.
         let _transition = self.transition_serial.lock().await;
         let _replay = self.resume_replay_serial.lock().await;
-        if self.turn_thread_is_sealed(thread_id) {
+        if self.thread_seals.is_sealed(thread_id) {
             return Err(CalmError::Conflict("conversation is being deleted".into()));
         }
         let snapshot = runtime.handle_state_json.clone().ok_or_else(|| {

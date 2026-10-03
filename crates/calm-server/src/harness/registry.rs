@@ -208,12 +208,12 @@ impl HarnessRegistry {
     pub async fn shutdown_track(
         &self,
         track_id: &TrackId,
-        daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+        thread_seals: std::sync::Arc<crate::thread_seals::ThreadSeals>,
     ) -> crate::error::Result<Vec<String>> {
         let handles = self.live_for_track(track_id);
-        let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(daemon);
+        let mut seals = crate::thread_seals::DeletionThreadSeals::new(thread_seals.clone());
         for (worker_session_id, handle) in handles {
-            if let Some(thread_id) = handle.shutdown_for_deletion().await? {
+            if let Some(thread_id) = handle.shutdown_for_deletion(thread_seals.clone()).await? {
                 seals.seal(thread_id);
             }
             let _ = self.remove(&worker_session_id);

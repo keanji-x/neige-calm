@@ -317,6 +317,7 @@ struct PreparedAreaDeletion {
     tracks: Vec<Track>,
     actor: ActorId,
     turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+    thread_seals: std::sync::Arc<crate::thread_seals::ThreadSeals>,
     _area_guard: crate::per_card_lock::KeyedLockGuard,
     _operation_guard: tokio::sync::OwnedMutexGuard<()>,
     _track_guards: Vec<crate::per_card_lock::KeyedLockGuard>,
@@ -395,15 +396,12 @@ impl PreparedAreaDeletion {
         let mut terminal_ids = Vec::new();
         let mut terminal_card_ids = Vec::new();
         let mut card_ids: HashSet<String> = HashSet::new();
-        let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
-            codex.shared_codex_appserver.clone(),
-        );
+        let mut seals = crate::thread_seals::DeletionThreadSeals::new(route.thread_seals.clone());
         for track in &self.tracks {
             let cards = route.repo.cards_by_track(track.id.as_str()).await?;
             for card in &cards {
                 card_ids.insert(card.id.to_string());
-                if let Some(thread_id) =
-                    quiesce_shared_card_active_turn(route.repo.as_ref(), codex, card).await?
+                if let Some(thread_id) = quiesce_shared_card_active_turn(route, codex, card).await?
                 {
                     seals.seal(thread_id);
                 }
@@ -429,7 +427,7 @@ impl PreparedAreaDeletion {
             .await?;
             for thread_id in worker
                 .harness
-                .shutdown_track(&track.id, codex.shared_codex_appserver.clone())
+                .shutdown_track(&track.id, route.thread_seals.clone())
                 .await?
             {
                 seals.seal(thread_id);
@@ -494,9 +492,7 @@ impl QuiescedAreaDeletion {
                     .all(workspace_recycle::workspace_allows_runtime_recovery)
                 {
                     for thread_id in &sealed_thread_ids {
-                        prepared
-                            .turn_daemon
-                            .unseal_turn_thread_after_rollback(thread_id);
+                        prepared.thread_seals.unseal_after_rollback(thread_id);
                     }
                 }
                 Err(error)
@@ -508,9 +504,7 @@ impl QuiescedAreaDeletion {
                     .all(workspace_recycle::workspace_allows_runtime_recovery)
                 {
                     for thread_id in &sealed_thread_ids {
-                        prepared
-                            .turn_daemon
-                            .unseal_turn_thread_after_rollback(thread_id);
+                        prepared.thread_seals.unseal_after_rollback(thread_id);
                     }
                 }
                 Err(CalmError::Internal(format!(
@@ -614,8 +608,8 @@ impl RecycledAreaDeletion {
                 for thread_id in &self.quiesced.sealed_thread_ids {
                     self.quiesced
                         .prepared
-                        .turn_daemon
-                        .unseal_turn_thread_after_rollback(thread_id);
+                        .thread_seals
+                        .unseal_after_rollback(thread_id);
                 }
                 return Err(error);
             }
@@ -627,6 +621,10 @@ impl RecycledAreaDeletion {
             .forget_threads_for_deleted_cards(&self.quiesced.card_ids)
             .await;
         // Drop the deletion-time seal verdict and any active turn id for the threads this delete sealed.
+        self.quiesced
+            .prepared
+            .thread_seals
+            .forget_deleted(&self.quiesced.sealed_thread_ids);
         self.quiesced
             .prepared
             .turn_daemon
@@ -657,7 +655,7 @@ async fn run_recycled_area_deletion(
     let recovery_report = deletion.recycle_report.clone();
     let recovery_tracks = deletion.quiesced.prepared.tracks.clone();
     let recovery_thread_ids = deletion.quiesced.sealed_thread_ids.clone();
-    let recovery_turn_daemon = deletion.quiesced.prepared.turn_daemon.clone();
+    let recovery_thread_seals = deletion.quiesced.prepared.thread_seals.clone();
     let recovery_area_id = deletion.quiesced.prepared.id.clone();
     match std::panic::AssertUnwindSafe(deletion.commit(route))
         .catch_unwind()
@@ -668,7 +666,7 @@ async fn run_recycled_area_deletion(
             if route.repo.area_get(&recovery_area_id).await?.is_some() {
                 workspace_recycle::restore_area_recycle_report(&recovery_report)?;
                 for thread_id in &recovery_thread_ids {
-                    recovery_turn_daemon.unseal_turn_thread_after_rollback(thread_id);
+                    recovery_thread_seals.unseal_after_rollback(thread_id);
                 }
             } else {
                 for track in &recovery_tracks {
@@ -724,6 +722,7 @@ async fn finish_prepared_area_deletion_owned(
             route.write.role_cache().clone(),
             route.write.area_cache().clone(),
             codex.shared_codex_appserver.clone(),
+            route.thread_seals.clone(),
             route.claude_planner_wiring(),
             worker.harness.clone(),
             route.track_delete_locks.clone(),
@@ -812,6 +811,7 @@ pub(crate) async fn delete_area(
         tracks,
         actor: actor.to_actor_id(),
         turn_daemon: cs.shared_codex_appserver.clone(),
+        thread_seals: s.thread_seals.clone(),
         _area_guard: area_delete_guard,
         _operation_guard: operation_guard,
         _track_guards: track_delete_guards,

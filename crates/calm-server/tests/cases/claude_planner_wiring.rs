@@ -299,6 +299,39 @@ async fn a_version_check_without_an_answer_stays_transient() {
     stack.shutdown().await;
 }
 
+/// #1981 S3: a Claude Planner opened by the production start path checks the server's one seal
+/// registry, the one the deletion routes seal through. A sealed thread starts no turn; once the
+/// seal is rolled back, the same queued message runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_thread_sealed_in_the_server_registry_starts_no_claude_turn() {
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    let (_, card_id) = stack.create_claude_track().await;
+    let runtime = stack.runtime(&card_id).await;
+    let thread = runtime.thread_id.clone().expect("a UUID thread");
+    stack.state.thread_seals().seal_for_deletion(&thread);
+
+    let harness = stack.harness(&runtime.id);
+    let (status, body) = stack.post_input(&card_id, "hello?").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for _ in 0..200 {
+        if harness.refused_issuances_for_test() > 0 || root.read_fake("stdin").is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(root.read_fake("stdin"), None, "a sealed thread ran a turn");
+    assert!(
+        harness.refused_issuances_for_test() > 0,
+        "the turn was refused"
+    );
+
+    stack.state.thread_seals().unseal_after_rollback(&thread);
+    let outcomes = stack.wait_outcomes(&card_id, 1).await;
+    assert_eq!(outcomes[0]["status"], "completed", "{outcomes:?}");
+    stack.shutdown().await;
+}
+
 /// #1830 T3: on an attached track the Claude Planner's turn runs in the track worktree, and its
 /// Edit/Write rules are confined to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

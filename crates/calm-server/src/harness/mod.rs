@@ -32,6 +32,7 @@ use crate::session_projection_repo::{
     AgentProvider, WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
 };
 use crate::shared_codex_appserver::SharedCodexAppServer;
+use crate::thread_seals::ThreadSeals;
 use crate::track_area_cache::TrackAreaCache;
 
 pub use backend::PlannerBackend;
@@ -126,6 +127,7 @@ pub async fn spawn_recovered_harness(
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
+    seals: Arc<ThreadSeals>,
     claude: &ClaudePlannerWiring,
     registry: &HarnessRegistry,
     track_delete_locks: &KeyedLocks,
@@ -178,7 +180,7 @@ pub async fn spawn_recovered_harness(
     };
     if effective_runtime_thread_id(&runtime)
         .as_deref()
-        .is_some_and(|thread_id| daemon.turn_thread_is_sealed(thread_id))
+        .is_some_and(|thread_id| seals.is_sealed(thread_id))
     {
         return Ok(RecoveryOutcome::Skipped);
     }
@@ -263,6 +265,7 @@ pub async fn spawn_recovered_harness(
     let backend = PlannerBackend::open(
         provider,
         daemon,
+        seals,
         claude,
         repo.clone(),
         ClaudePlannerRow {
@@ -439,6 +442,7 @@ pub async fn recover_harnesses_on_boot(
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
+    seals: Arc<ThreadSeals>,
     claude: &ClaudePlannerWiring,
     registry: &HarnessRegistry,
     track_delete_locks: &KeyedLocks,
@@ -457,6 +461,7 @@ pub async fn recover_harnesses_on_boot(
             card_role_cache.clone(),
             track_area_cache.clone(),
             daemon.clone(),
+            seals.clone(),
             claude,
             registry,
             track_delete_locks,
@@ -484,6 +489,7 @@ pub struct HarnessRecoveryContext {
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
+    seals: Arc<ThreadSeals>,
     claude: ClaudePlannerWiring,
     registry: HarnessRegistry,
     track_delete_locks: KeyedLocks,
@@ -497,6 +503,7 @@ impl HarnessRecoveryContext {
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
         daemon: Arc<SharedCodexAppServer>,
+        seals: Arc<ThreadSeals>,
         claude: ClaudePlannerWiring,
         registry: HarnessRegistry,
         track_delete_locks: KeyedLocks,
@@ -507,6 +514,7 @@ impl HarnessRecoveryContext {
             card_role_cache,
             track_area_cache,
             daemon,
+            seals,
             claude,
             registry,
             track_delete_locks,
@@ -532,7 +540,7 @@ pub async fn recover_harnesses_for_tracks(
         if !track_ids.contains(&card.track_id)
             || effective_runtime_thread_id(&runtime)
                 .as_deref()
-                .is_some_and(|thread_id| context.daemon.turn_thread_is_sealed(thread_id))
+                .is_some_and(|thread_id| context.seals.is_sealed(thread_id))
         {
             continue;
         }
@@ -543,6 +551,7 @@ pub async fn recover_harnesses_for_tracks(
             context.card_role_cache.clone(),
             context.track_area_cache.clone(),
             context.daemon.clone(),
+            context.seals.clone(),
             &context.claude,
             &context.registry,
             &context.track_delete_locks,
@@ -574,6 +583,7 @@ pub struct DeferredRecoveryParams {
     pub card_role_cache: CardRoleCache,
     pub track_area_cache: TrackAreaCache,
     pub daemon: Arc<SharedCodexAppServer>,
+    pub seals: Arc<ThreadSeals>,
     pub claude: ClaudePlannerWiring,
     pub registry: HarnessRegistry,
     pub track_delete_locks: KeyedLocks,
@@ -647,6 +657,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                 params.card_role_cache.clone(),
                 params.track_area_cache.clone(),
                 params.daemon.clone(),
+                params.seals.clone(),
                 &params.claude,
                 &params.registry,
                 &params.track_delete_locks,
@@ -1112,6 +1123,7 @@ mod tests {
             role_cache,
             track_area_cache,
             daemon.clone(),
+            daemon.thread_seals().clone(),
             &ClaudePlannerWiring::unconfigured_for_test(repo.clone()),
             &registry,
             &crate::per_card_lock::new_keyed_locks(),

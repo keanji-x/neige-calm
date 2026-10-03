@@ -1100,7 +1100,7 @@ async fn failed_late_turn_interrupt_aborts_delete_and_releases_pre_recycle_seals
         "failed interrupt must retain the late turn id for retry"
     );
     assert!(
-        !b.shared_codex.turn_thread_is_sealed_for_test(&thread_id),
+        !b.shared_codex.thread_seals().is_sealed(&thread_id),
         "pre-recycle failure must roll back the deletion seal"
     );
 }
@@ -1378,7 +1378,7 @@ async fn failed_area_workspace_restore_keeps_the_surviving_thread_sealed() {
     assert!(b.repo.area_get(&area_id).await.unwrap().is_some());
     assert!(b.repo.track_get(&track_id).await.unwrap().is_some());
     assert!(
-        b.shared_codex.turn_thread_is_sealed_for_test(&thread_id),
+        b.shared_codex.thread_seals().is_sealed(&thread_id),
         "a surviving runtime must not resume against an unrestored workspace"
     );
     assert_eq!(
@@ -1405,7 +1405,8 @@ async fn failed_area_workspace_restore_keeps_the_surviving_thread_sealed() {
         EventBus::new(),
         b.roles.clone(),
         b.tracks.clone(),
-        reboot_daemon,
+        reboot_daemon.clone(),
+        reboot_daemon.thread_seals().clone(),
         &claude_wiring,
         &reboot_registry,
         &calm_server::harness::new_track_delete_locks(),

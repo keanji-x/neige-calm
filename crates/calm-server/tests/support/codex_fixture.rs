@@ -440,6 +440,7 @@ pub async fn boot_forge_e2e_fixture(
                 Arc::new(PlannerHarnessStartAdapter::new(
                     repo_dyn.clone(),
                     shared.clone(),
+                    shared.thread_seals().clone(),
                     harness.clone(),
                     plugin_host.clone(),
                     cache.clone(),

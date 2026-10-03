@@ -127,20 +127,19 @@ pub(crate) async fn interrupt_shared_card_active_turn(
 
 /// Deletion-grade form of [`interrupt_shared_card_active_turn`]: every failure is propagated, since a destructive workspace move may only follow a confirmed quiesce.
 pub(crate) async fn quiesce_shared_card_active_turn(
-    repo: &dyn RouteRepo,
+    s: &RouteState,
     cs: &CodexShellState,
     card: &Card,
 ) -> Result<Option<String>> {
-    let active_runtime = repo
+    let active_runtime = s
+        .repo
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
     if card_is_shared_planner(card, active_runtime.as_ref()) {
         let thread_id = active_runtime
             .as_ref()
             .and_then(crate::harness::effective_runtime_thread_id);
-        let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
-            cs.shared_codex_appserver.clone(),
-        );
+        let mut seals = crate::thread_seals::DeletionThreadSeals::new(s.thread_seals.clone());
         if let Some(thread_id) = thread_id.clone() {
             seals.seal(thread_id);
         }
@@ -1305,6 +1304,7 @@ async fn ensure_live_planner_harness(
         s.write.role_cache().clone(),
         s.write.area_cache().clone(),
         cs.shared_codex_appserver.clone(),
+        s.thread_seals.clone(),
         &s.claude_planner_wiring(),
         &s.harness,
         &s.track_delete_locks,

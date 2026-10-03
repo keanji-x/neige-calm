@@ -35,7 +35,7 @@ use crate::codex_appserver::{InputItem, Notification};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
 use crate::planner_model::TurnModelSelection;
-use crate::shared_codex_appserver::SharedCodexAppServer;
+use crate::thread_seals::ThreadSeals;
 use calm_types::worker::WorkerSessionId;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
@@ -68,8 +68,8 @@ pub struct ClaudePlannerSessionParams {
     /// The thread's lifetime token total from the harness snapshot.
     pub prior_total_tokens: i64,
     pub repo: Arc<dyn Repo>,
-    /// The shared daemon, held only for its thread-keyed deletion seals.
-    pub seals: Arc<SharedCodexAppServer>,
+    /// The server's deletion-seal registry: a sealed thread starts no turn.
+    pub seals: Arc<ThreadSeals>,
 }
 
 /// Why a turn is ending, recorded before the path that ends it acts; the first one recorded wins.
@@ -363,11 +363,6 @@ impl ClaudePlannerSession {
         &self.shared.params.host
     }
 
-    /// The shared daemon this session consults for thread seals.
-    pub fn codex(&self) -> &Arc<SharedCodexAppServer> {
-        &self.shared.params.seals
-    }
-
     pub fn active_turn_id_for_thread(&self, thread: &str) -> Option<String> {
         self.shared
             .state()
@@ -418,7 +413,7 @@ impl ClaudePlannerSession {
             CalmError::BadRequest(format!("claude planner thread {thread} is not a UUID"))
         })?;
         let turn_id = Uuid::new_v4().to_string();
-        if params.seals.turn_thread_is_sealed(thread) {
+        if params.seals.is_sealed(thread) {
             return Err(sealed(thread).into());
         }
         let host = &params.host;
@@ -441,7 +436,7 @@ impl ClaudePlannerSession {
                 CalmError::Conflict("claude planner session is shutting down".into()).into(),
             );
         }
-        if params.seals.turn_thread_is_sealed(thread) {
+        if params.seals.is_sealed(thread) {
             return Err(sealed(thread).into());
         }
         // A revocation under a live harness (e.g. one an aborted deletion's recovery could not
@@ -516,7 +511,7 @@ impl ClaudePlannerSession {
                 hook();
             }
         }
-        if params.seals.turn_thread_is_sealed(thread) {
+        if params.seals.is_sealed(thread) {
             return Err(self
                 .abort_before_ok(Some(child), instructions, sealed(thread))
                 .await);

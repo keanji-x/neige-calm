@@ -1,8 +1,8 @@
 //! The runtime a Planner harness drives its turns through.
 //!
 //! Every provider-coupled call the run loop makes on a Planner turn goes through
-//! [`PlannerBackend`], including model resolution and shutdown. Only the thread-keyed deletion
-//! seals still reach the Codex daemon through [`PlannerBackend::codex`].
+//! [`PlannerBackend`], including model resolution and shutdown. The deletion seals are not a
+//! provider's: they live in the shared [`ThreadSeals`].
 //!
 //! `client_id` on [`PlannerBackend::turn_start`] and [`PlannerBackend::turn_steer`] is the
 //! projection row's key; codex hands it back as `item.clientId`.
@@ -21,6 +21,7 @@ use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::planner_model::TurnModelSelection;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
+use crate::thread_seals::ThreadSeals;
 
 /// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
 /// run loop paces its retry and tells the reader from this, never from the error's shape.
@@ -37,8 +38,7 @@ pub enum TurnStartFailure {
 #[derive(Clone)]
 pub enum PlannerBackend {
     Codex(Arc<SharedCodexAppServer>),
-    /// One Claude Planner session (design #1791 §5); it holds the Codex daemon only for the
-    /// thread-keyed deletion seals.
+    /// One Claude Planner session (design #1791 §5).
     Claude(Arc<ClaudePlannerSession>),
 }
 
@@ -50,17 +50,19 @@ impl From<Arc<SharedCodexAppServer>> for PlannerBackend {
 
 impl PlannerBackend {
     /// The backend for `provider`. A Claude session only is opened: nothing is minted or spawned
-    /// before the harness is installed and its first turn runs.
+    /// before the harness is installed and its first turn runs. `seals` is the server's one
+    /// registry, the one the Codex daemon already consults.
     pub async fn open(
         provider: AgentProvider,
         daemon: Arc<SharedCodexAppServer>,
+        seals: Arc<ThreadSeals>,
         claude: &ClaudePlannerWiring,
         repo: Arc<dyn Repo>,
         row: ClaudePlannerRow<'_>,
     ) -> Result<Self> {
         Ok(match provider {
             AgentProvider::Codex => daemon.into(),
-            AgentProvider::Claude => Self::Claude(claude.open_session(repo, daemon, row).await?),
+            AgentProvider::Claude => Self::Claude(claude.open_session(repo, seals, row).await?),
         })
     }
 
@@ -253,14 +255,6 @@ impl PlannerBackend {
         match self {
             Self::Claude(session) => Some(Arc::clone(session)),
             Self::Codex(_) => None,
-        }
-    }
-
-    /// The Codex daemon, for the thread-keyed deletion seals.
-    pub fn codex(&self) -> &Arc<SharedCodexAppServer> {
-        match self {
-            Self::Codex(daemon) => daemon,
-            Self::Claude(session) => session.codex(),
         }
     }
 }

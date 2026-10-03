@@ -568,6 +568,7 @@ pub(crate) mod proc_supervisor;
 /// Runtime-assembled agent prose: `prompts/**.md` fragments rendered through a placeholder seam.
 pub(crate) mod prompts;
 pub mod provider_impls;
+pub mod proxy_env;
 pub(crate) mod ratify_state;
 pub(crate) mod recorder_shadow;
 pub mod replay;
@@ -587,6 +588,7 @@ pub mod terminal_interaction;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod test_seams;
+pub mod thread_seals;
 pub mod track_activity;
 pub mod track_area_cache;
 pub mod validation;

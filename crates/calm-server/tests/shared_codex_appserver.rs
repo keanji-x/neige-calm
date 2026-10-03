@@ -2080,7 +2080,7 @@ fn current_env_signature_changes_with_ingest_url_and_proxy() {
 
 #[test]
 fn current_env_signature_reads_inherited_proxy_when_settings_absent() {
-    let proxy = SharedCodexAppServer::effective_proxy_env_from(
+    let proxy = calm_server::proxy_env::effective_proxy_env_from(
         None,
         &["HTTP_PROXY", "http_proxy"],
         inherited_http_proxy("http://from-env"),
@@ -2092,7 +2092,7 @@ fn current_env_signature_reads_inherited_proxy_when_settings_absent() {
         std::path::Path::new("/k/bin"),
     );
 
-    let other_proxy = SharedCodexAppServer::effective_proxy_env_from(
+    let other_proxy = calm_server::proxy_env::effective_proxy_env_from(
         None,
         &["HTTP_PROXY", "http_proxy"],
         inherited_http_proxy("http://other"),
@@ -2112,7 +2112,7 @@ fn current_env_signature_reads_inherited_proxy_when_settings_absent() {
 
 #[test]
 fn current_env_signature_prefers_settings_over_inherited_env() {
-    let proxy = SharedCodexAppServer::effective_proxy_env_from(
+    let proxy = calm_server::proxy_env::effective_proxy_env_from(
         Some("http://from-settings"),
         &["HTTP_PROXY", "http_proxy"],
         inherited_http_proxy("http://from-env"),
@@ -2124,7 +2124,7 @@ fn current_env_signature_prefers_settings_over_inherited_env() {
         std::path::Path::new("/k/bin"),
     );
 
-    let proxy_no_env = SharedCodexAppServer::effective_proxy_env_from(
+    let proxy_no_env = calm_server::proxy_env::effective_proxy_env_from(
         Some("http://from-settings"),
         &["HTTP_PROXY", "http_proxy"],
         |_| None,
