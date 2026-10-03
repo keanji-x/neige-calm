@@ -10,6 +10,7 @@ use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::mcp_server::registry::AppContext;
 use chrono::{DateTime, FixedOffset, Utc};
+use sqlx::{Sqlite, Transaction};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,49 +96,62 @@ pub(super) async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -
         .await?
         .filter(|track| track.closed_at.is_none());
     let deadline = span.end.max(span.start + GRACE);
-    let Some(track) = track.filter(|_| now < deadline) else {
+    let (id, version) = (entry.id.clone(), entry.version);
+    let written = match track.filter(|_| now < deadline) {
         // Ended, closed or missing: record the occurrence as handled without waking.
-        write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
-            Box::pin(async move { put(tx, &key, &start_ms).await })
-        })
-        .await?;
-        return Ok(false);
-    };
-    let event = Event::TrackWakeRequested {
-        track_id: track.id.clone(),
-        source: PLUGIN_ID.into(),
-        key: entry.id.clone(),
-        text: wake_text(&entry, &span, now),
-    };
-    let scope = EventScope::Track {
-        track: track.id,
-        area: track.area_id,
-    };
-    let entry_key = format!("entry:{}", entry.id);
-    let version = entry.version;
-    let written = write_with_events_typed(
-        ctx.repo.as_ref(),
-        ActorId::Kernel,
-        None,
-        &ctx.events,
-        &ctx.write,
-        move |tx| {
-            Box::pin(async move {
-                // A concurrent edit or cancel wins; the next tick decides on the new version.
-                if get::<Entry>(tx, &entry_key).await?.map(|e| e.version) != Some(version) {
-                    return Err(CalmError::Conflict(CHANGED.into()));
-                }
-                put(tx, &key, &start_ms).await?;
-                Ok(((), vec![(scope, event)]))
+        None => {
+            write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+                Box::pin(async move { claim(tx, &id, version, start_ms).await.map(|()| false) })
             })
-        },
-    )
-    .await;
+            .await
+        }
+        Some(track) => {
+            let event = Event::TrackWakeRequested {
+                track_id: track.id.clone(),
+                source: PLUGIN_ID.into(),
+                key: entry.id.clone(),
+                text: wake_text(&entry, &span, now),
+            };
+            let scope = EventScope::Track {
+                track: track.id,
+                area: track.area_id,
+            };
+            write_with_events_typed(
+                ctx.repo.as_ref(),
+                ActorId::Kernel,
+                None,
+                &ctx.events,
+                &ctx.write,
+                move |tx| {
+                    Box::pin(async move {
+                        claim(tx, &id, version, start_ms).await?;
+                        Ok(((), vec![(scope, event)]))
+                    })
+                },
+            )
+            .await
+            .map(|_| true)
+        }
+    };
     match written {
-        Ok(_) => Ok(true),
         Err(CalmError::Conflict(message)) if message == CHANGED => Ok(false),
-        Err(error) => Err(error),
+        other => other,
     }
+}
+
+/// Every cursor write first proves the entry is the version the scan decided on; a concurrent
+/// edit or cancel wins and the next tick decides on the new version.
+async fn claim(
+    tx: &mut Transaction<'_, Sqlite>,
+    entry_id: &str,
+    version: i64,
+    start_ms: i64,
+) -> Result<()> {
+    let current = get::<Entry>(tx, &format!("entry:{entry_id}")).await?;
+    if current.map(|entry| entry.version) != Some(version) {
+        return Err(CalmError::Conflict(CHANGED.into()));
+    }
+    put(tx, &fired_key(entry_id), &start_ms).await
 }
 
 fn wake_text(entry: &Entry, span: &TimedSpan, now: DateTime<Utc>) -> String {
