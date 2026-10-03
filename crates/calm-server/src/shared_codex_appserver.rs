@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 
 use crate::codex_appserver::{
     AccountRead, ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem, Notification,
-    ThreadStartParams, redact_thread_start_config,
+    ThreadRevertOutcome, ThreadStartParams, redact_thread_start_config,
 };
 use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
@@ -779,6 +779,10 @@ pub struct FakeSharedCodexAppServer {
     /// Same shape as `turn_start_return_hook`: hold `turn/steer` inside the
     /// daemon, after it has recorded the request, until the test releases it.
     turn_steer_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
+    /// Every `thread/revert`: thread, `beforeTurnId`, and how many `turn/start`s preceded it.
+    reverted_threads: std::sync::Mutex<Vec<(String, String, u64)>>,
+    /// Answer `thread/revert` with codex's `turn not found` refusal, as a repeated revert gets.
+    revert_turn_not_found: AtomicBool,
 }
 
 /// One recorded `turn/steer`: thread, `expectedTurnId`, input, `clientUserMessageId`.
@@ -813,6 +817,8 @@ impl FakeSharedCodexAppServer {
             reject_turn_steer: std::sync::Mutex::new(None),
             fail_turn_steer: AtomicBool::new(false),
             turn_steer_return_hook: std::sync::Mutex::new(None),
+            reverted_threads: std::sync::Mutex::new(Vec::new()),
+            revert_turn_not_found: AtomicBool::new(false),
         }
     }
 }
@@ -1605,6 +1611,52 @@ impl SharedCodexAppServer {
             .turn_steer(thread_id, expected_turn_id, items, client_user_message_id)
             .await?;
         Ok(steered.turn_id)
+    }
+
+    /// `thread/revert` before the turn that follows a rewind (#1923). Refused on a sealed thread
+    /// like `turn/start`; the active-turn cache loses only an entry naming the reverted turn.
+    pub async fn thread_revert(
+        &self,
+        thread_id: &str,
+        before_turn_id: &str,
+    ) -> Result<ThreadRevertOutcome> {
+        if self.thread_seals.is_sealed(thread_id) {
+            return Err(CalmError::Conflict(format!(
+                "thread {thread_id} is sealed because its track is being deleted"
+            )));
+        }
+        #[cfg(feature = "fixtures")]
+        let fake_answer = self.fake.as_ref().map(|fake| {
+            fake.reverted_threads
+                .lock()
+                .expect("fake shared codex reverted threads mutex poisoned")
+                .push((
+                    thread_id.to_string(),
+                    before_turn_id.to_string(),
+                    fake.next_turn.load(Ordering::SeqCst).saturating_sub(1),
+                ));
+            if fake.revert_turn_not_found.load(Ordering::SeqCst) {
+                Err(CalmError::CodexRefused(format!(
+                    "thread/revert failed: turn not found: {before_turn_id} (code -32600)"
+                )))
+            } else {
+                Ok(serde_json::json!({ "thread": { "id": thread_id } }))
+            }
+        });
+        #[cfg(not(feature = "fixtures"))]
+        let fake_answer: Option<Result<serde_json::Value>> = None;
+        let outcome = match fake_answer {
+            Some(answer) => crate::codex_appserver::thread_revert_outcome(answer)?,
+            None => {
+                self.connected_client()
+                    .await?
+                    .thread_revert(thread_id, before_turn_id)
+                    .await?
+            }
+        };
+        self.active_turns
+            .remove_if(thread_id, |_, active| active == before_turn_id);
+        Ok(outcome)
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
@@ -3437,6 +3489,33 @@ impl SharedCodexAppServer {
         self.active_turns
             .get(thread_id)
             .map(|entry| entry.value().clone())
+    }
+
+    /// Every `thread/revert` the fake was asked: thread, `beforeTurnId`, `turn/start`s before it.
+    #[cfg(feature = "fixtures")]
+    pub fn reverted_threads_for_test(&self) -> Vec<(String, String, u64)> {
+        self.fake
+            .as_ref()
+            .expect("fake daemon")
+            .reverted_threads
+            .lock()
+            .expect("fake shared codex reverted threads mutex poisoned")
+            .clone()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn answer_revert_turn_not_found_for_test(&self, not_found: bool) {
+        self.fake
+            .as_ref()
+            .expect("fake daemon")
+            .revert_turn_not_found
+            .store(not_found, Ordering::SeqCst);
+    }
+
+    /// What a `turn/completed` does to the cache, for a test that injects the completion itself.
+    #[cfg(feature = "fixtures")]
+    pub fn clear_active_turn_for_test(&self, thread_id: &str) {
+        self.active_turns.remove(thread_id);
     }
 
     #[cfg(feature = "fixtures")]

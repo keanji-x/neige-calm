@@ -280,6 +280,23 @@ pub enum ControlResponseBody {
     },
 }
 
+/// The `uuid` of a line that is an entry of the session's chain (#1923): a `user` or `assistant`
+/// record, the lines the CLI also writes to its session file, where `--resume-session-at` finds
+/// them. A `stream_event` of `--include-partial-messages`, and a system, result or control line,
+/// carries a uuid that is no chain entry.
+pub fn chain_entry_uuid(line: &str) -> Option<Uuid> {
+    #[derive(Deserialize)]
+    struct Head {
+        #[serde(rename = "type")]
+        kind: String,
+        uuid: Option<Uuid>,
+    }
+    let head: Head = serde_json::from_str(line).ok()?;
+    matches!(head.kind.as_str(), "user" | "assistant")
+        .then_some(head.uuid)
+        .flatten()
+}
+
 /// Decode one stdout line.
 pub fn decode(line: &str) -> Result<Record, ProtocolError> {
     let value: Value = serde_json::from_str(line).map_err(ProtocolError::NotJson)?;

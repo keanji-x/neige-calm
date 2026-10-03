@@ -7,7 +7,9 @@
 #        optional),
 #        auth (optional; the `auth status --json` answer, default logged-in),
 #        catalog (optional; the `initialize` answer, default ok)
+#   in (#1923): check (optional; a rewind dry run's refusal reason)
 #   out: spawns, pid, argv, env, pwd, stdin, instructions, orphan, emitted, streamed, mcp_reply,
+#        checks, check-argv,
 #        auth-pid, auth-env, auth-calls, init-calls, init-pid, init-argv, init-env, init-cwd,
 #        init-stdin
 # Needs on PATH: bash, jq, setsid, sleep, seq, touch, yes; `flood` (F_SETPIPE_SZ) and `mcp` (a unix
@@ -50,6 +52,21 @@ if [ "$1" = "--version" ]; then
   if [ "$SCENARIO" = "vanish-after-version" ]; then rm -f -- "$0"; fi
   exit 0
 fi
+
+# #1923: a rewind's dry run carries the cut and no MCP config (a turn spawn carries both); it loads
+# the session and exits without reading stdin. `check` (optional) holds the refusal reason.
+case " $* " in
+  *" --mcp-config "*) ;;
+  *" --resume-session-at="*)
+    printf '%s\n' "$@" > "$D/check-argv"
+    echo "$$" >> "$D/checks"
+    if [ -e "$D/check" ]; then
+      jq -cn --arg reason "$(cat "$D/check")" \
+        '{type: "result", subtype: "error_during_execution", is_error: true, errors: [$reason]}'
+      exit 1
+    fi
+    exit 0 ;;
+esac
 
 case " $* " in
   *" --session-id "*|*" --resume "*) ;;
@@ -165,6 +182,18 @@ ABORTED='{"type":"result","subtype":"error_during_execution","errors":[],"termin
 case "$SCENARIO" in
   exit)
     echo "$TEXT"; echo "$SUCCESS"
+    cat > /dev/null
+    exit 0 ;;
+  exit-trailing)
+    # #1923: the turn's last chain record makes no item (an assistant block neige does not render),
+    # under a uuid of its own per spawn, so the outcome's `lastRecordUuid` and the last item differ;
+    # a stream frame with a uuid of its own follows it, and is not a chain record.
+    TRAIL=$(cat /proc/sys/kernel/random/uuid)
+    FRAME=$(cat /proc/sys/kernel/random/uuid)
+    echo "$TEXT"
+    echo '{"type":"assistant","uuid":"'"$TRAIL"'","message":{"id":"msg_fake_trail","content":[{"type":"server_tool_use"}]}}'
+    echo '{"type":"stream_event","uuid":"'"$FRAME"'","parent_tool_use_id":null,"event":{"type":"message_stop"}}'
+    echo "$SUCCESS"
     cat > /dev/null
     exit 0 ;;
   mcp)

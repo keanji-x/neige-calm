@@ -368,6 +368,17 @@ pub enum Event {
         #[serde(default)]
         card_age_ms_at_clear: Option<i64>,
     },
+    /// `POST /api/cards/{id}/planner/rewind` removed the conversation's latest turn: its transcript
+    /// rows are hard-deleted, so this event is the surviving evidence of the removal.
+    #[serde(rename = "harness.transcript.rewound")]
+    HarnessTranscriptRewound {
+        worker_session_id: String,
+        card_id: CardId,
+        track_id: TrackId,
+        turn_id: String,
+        /// Number of transcript rows deleted with the turn.
+        removed_item_count: i64,
+    },
     /// Emitted when `POST /api/cards/{id}/planner/input` queues a user-authored text observation onto
     /// the planner harness. Body text is intentionally not on the payload; only `char_count` is.
     #[serde(rename = "harness.user_message.enqueued")]
@@ -911,6 +922,7 @@ impl Event {
             Event::HarnessItemAdded { card_id, .. }
             | Event::HarnessPhaseChanged { card_id, .. }
             | Event::HarnessTranscriptCleared { card_id, .. }
+            | Event::HarnessTranscriptRewound { card_id, .. }
             | Event::HarnessUserMessageEnqueued { card_id, .. }
             | Event::HarnessQueueChanged { card_id, .. } => EventMetadata {
                 kind_tag,
@@ -1091,6 +1103,7 @@ impl Event {
             Event::HarnessItemAdded { .. } => "harness.item.added",
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
+            Event::HarnessTranscriptRewound { .. } => "harness.transcript.rewound",
             Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
             Event::HarnessQueueChanged { .. } => "harness.queue.changed",
             Event::TrackReportEdited { .. } => "track.report_edited",
@@ -1194,6 +1207,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
             track_id, card_id, ..
         }
         | Event::HarnessTranscriptCleared {
+            track_id, card_id, ..
+        }
+        | Event::HarnessTranscriptRewound {
             track_id, card_id, ..
         }
         | Event::HarnessUserMessageEnqueued {
@@ -1713,6 +1729,15 @@ mod scope_tests {
             card_age_ms_at_clear: Some(86_400_000),
         };
         assert_eq!(transcript_cleared.kind_tag(), "harness.transcript.cleared");
+
+        let transcript_rewound = Event::HarnessTranscriptRewound {
+            worker_session_id: "runtime-1".into(),
+            card_id: CardId::from("card-1"),
+            track_id: TrackId::from("track-1"),
+            turn_id: "turn-2".into(),
+            removed_item_count: 7,
+        };
+        assert_eq!(transcript_rewound.kind_tag(), "harness.transcript.rewound");
 
         let user_message_enqueued = Event::HarnessUserMessageEnqueued {
             worker_session_id: "runtime-1".into(),
@@ -2514,6 +2539,13 @@ mod scope_tests {
                 cleared_item_count: Some(12),
                 cleared_params_bytes: Some(3_400),
                 card_age_ms_at_clear: Some(86_400_000),
+            },
+            Event::HarnessTranscriptRewound {
+                worker_session_id: "runtime-transcript".into(),
+                card_id: CardId::from("card-runtime"),
+                track_id: TrackId::from("track-1"),
+                turn_id: "turn-2".into(),
+                removed_item_count: 7,
             },
             Event::HarnessUserMessageEnqueued {
                 worker_session_id: "runtime-user-message".into(),

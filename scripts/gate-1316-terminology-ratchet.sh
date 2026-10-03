@@ -6,6 +6,9 @@
 # #1913 bounded exception: spec/fe 59 -> 63 comes solely from the pinned
 # temporal-spec transitive dependency in fe/package-lock.json (dependency key,
 # package path and two archive URL tokens). No retired application concept is added.
+# #1923 bounded exception: harness_item/crates 262 -> 264 comes solely from the two SQL statements
+# of the rewind that read and delete rows of the `harness_items` table, whose name stays; the new
+# Rust names say `transcript`.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

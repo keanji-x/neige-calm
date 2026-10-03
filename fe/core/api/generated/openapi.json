@@ -2047,6 +2047,98 @@
         }
       }
     },
+    "/api/cards/{id}/planner/rewind": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "summary": "Same card gate as `/planner/input`, without its lazy recovery: a dormant harness has no turn\nthat could be rewound safely, so it is the same 409 `planner_harness_dormant` as `/interrupt`.",
+        "operationId": "rewind_planner_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RewindPlannerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The turn is removed; `input` is what its user sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewindPlannerResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nothing changed: no live session (`planner_harness_dormant`), or the reason (`conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provider did not check the edit in time; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/run": {
       "get": {
         "tags": [
@@ -10680,6 +10772,42 @@
           "path": {
             "type": "string",
             "description": "Absolute filesystem path to resolve against every area's folder claims; `null` if no claim covers it."
+          }
+        }
+      },
+      "RewindPlannerRequest": {
+        "type": "object",
+        "required": [
+          "turn_id"
+        ],
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "description": "The turn to remove: the `turnId` of the conversation's latest response."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RewindPlannerResponse": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "turn_id",
+          "input"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HarnessInputSegment"
+            },
+            "description": "The removed turn's user input, prompt then accepted steers in order, each image once."
+          },
+          "turn_id": {
+            "type": "string"
           }
         }
       },

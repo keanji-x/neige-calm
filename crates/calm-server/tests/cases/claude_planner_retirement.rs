@@ -339,6 +339,7 @@ async fn a_stale_harness_tick_after_shutdown_never_mints_over_the_replacer() {
             }],
             &TurnModelSelection::inherit(),
             &uuid::Uuid::new_v4().simple().to_string(),
+            None,
         )
         .await;
     assert!(refused.is_err(), "a shut-down session never starts a turn");

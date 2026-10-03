@@ -16,6 +16,7 @@ pub mod lifecycle;
 pub mod models;
 pub mod protocol;
 pub mod readiness_command;
+pub(crate) mod rewind;
 pub mod session;
 pub mod spawn;
 pub mod stop;
@@ -28,6 +29,8 @@ mod auth_status_tests;
 mod catalog_fetch_tests;
 #[cfg(test)]
 mod driver_tests;
+#[cfg(test)]
+mod rewind_tests;
 #[cfg(test)]
 mod spawn_tests;
 #[cfg(test)]

@@ -9,13 +9,17 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::sync::broadcast::{self, error::RecvError};
+use uuid::Uuid;
 
 use crate::claude_planner::session::ClaudePlannerSession;
+use crate::claude_planner::spawn::ResumeTruncation;
 use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::codex_appserver::InputItem;
 use crate::db::Repo;
+use crate::db::TranscriptRow;
 use crate::error::{CalmError, Result};
 use crate::harness::codex_events::CodexEvents;
 use crate::harness::codex_selection;
@@ -36,6 +40,30 @@ pub enum TurnStartFailure {
     /// Repeating it unchanged reproduces it until someone changes something; `reader` says so now.
     #[error("{error}")]
     Refused { error: CalmError, reader: String },
+}
+
+/// A rewind the provider applies when the conversation's next turn starts (#1923). Its arms are
+/// private like [`PlannerBackend`]'s: the run loop stores, passes and clears it, never reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BackendRewind(RewindArm);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+enum RewindArm {
+    /// `thread/revert {threadId, beforeTurnId}` before the next `turn/start`.
+    Codex { before_turn_id: String },
+    /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
+    Claude { resume_at: Uuid, drops_turn: Uuid },
+}
+
+/// What a provider is told about the turn a rewind removes.
+pub struct RewindTarget<'a> {
+    pub turn_id: &'a str,
+    /// The client id of the turn's first user message (its projection key), when it has one.
+    pub prompt_client_id: Option<&'a str>,
+    /// The rows of the turn before it, or `None` when it is the thread's first.
+    pub previous_turn: Option<&'a [TranscriptRow]>,
 }
 
 /// The provider a Planner harness runs on. Its arms are private to this module, so code outside it
@@ -83,33 +111,91 @@ impl PlannerBackend {
         })
     }
 
+    /// Decide how this provider removes `target` from the conversation, changing nothing. A refusal
+    /// is a `Conflict` the reader is shown. Codex needs no preparation; Claude needs an anchor before
+    /// the turn and a dry run of the cut.
+    pub async fn prepare_rewind(
+        &self,
+        thread_id: &str,
+        target: RewindTarget<'_>,
+    ) -> Result<BackendRewind> {
+        match &self.0 {
+            Arm::Codex(_) => Ok(BackendRewind(RewindArm::Codex {
+                before_turn_id: target.turn_id.to_string(),
+            })),
+            Arm::Claude(session) => {
+                let truncation = crate::claude_planner::rewind::truncation(
+                    target.previous_turn,
+                    target.prompt_client_id,
+                )?;
+                session.check_truncation(thread_id, &truncation).await?;
+                Ok(BackendRewind(RewindArm::Claude {
+                    resume_at: truncation.at,
+                    drops_turn: truncation.drops_turn,
+                }))
+            }
+        }
+    }
+
+    /// Whether the deletion fence has sealed `thread_id`.
+    pub fn thread_sealed(&self, thread_id: &str) -> bool {
+        match &self.0 {
+            Arm::Codex(daemon) => daemon.thread_seals().is_sealed(thread_id),
+            Arm::Claude(session) => session.thread_sealed(thread_id),
+        }
+    }
+
     /// The Claude arm passes the stored model and effort as `--model=` and `--effort=` (#1810,
-    /// #1822 6′); no catalog is consulted here, and the CLI judges the model.
+    /// #1822 6′); no catalog is consulted here, and the CLI judges the model. `rewind` is applied
+    /// first: Codex reverts the thread before `turn/start`, Claude cuts the session in the spawn.
     pub async fn turn_start(
         &self,
         thread_id: &str,
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
         client_id: &str,
+        rewind: Option<&BackendRewind>,
     ) -> std::result::Result<TurnId, TurnStartFailure> {
+        let rewind = rewind.map(|rewind| &rewind.0);
         match &self.0 {
-            Arm::Codex(daemon) => daemon
-                .turn_start(thread_id, items, selection, Some(client_id))
-                .await
-                // Codex answering with a refusal is the one failure known to be its answer.
-                .map_err(|error| match error {
-                    CalmError::CodexRefused(_) => TurnStartFailure::Refused {
-                        error,
-                        reader: "codex refused to start a turn for this conversation, so your \
-                                 message has not been sent. If you changed the model recently, it \
-                                 may not be one this account can run — try another."
-                            .into(),
-                    },
-                    error => TurnStartFailure::Transient(error),
-                }),
+            Arm::Codex(daemon) => {
+                match rewind {
+                    None => {}
+                    Some(RewindArm::Codex { before_turn_id }) => {
+                        revert_codex_thread(daemon, thread_id, before_turn_id).await?
+                    }
+                    Some(RewindArm::Claude { .. }) => return Err(mismatched_rewind()),
+                }
+                daemon
+                    .turn_start(thread_id, items, selection, Some(client_id))
+                    .await
+                    // Codex answering with a refusal is the one failure known to be its answer.
+                    .map_err(|error| match error {
+                        CalmError::CodexRefused(_) => TurnStartFailure::Refused {
+                            error,
+                            reader: "codex refused to start a turn for this conversation, so \
+                                     your message has not been sent. If you changed the model \
+                                     recently, it may not be one this account can run — try \
+                                     another."
+                                .into(),
+                        },
+                        error => TurnStartFailure::Transient(error),
+                    })
+            }
             Arm::Claude(session) => {
+                let truncation = match rewind {
+                    None => None,
+                    Some(RewindArm::Claude {
+                        resume_at,
+                        drops_turn,
+                    }) => Some(ResumeTruncation {
+                        at: *resume_at,
+                        drops_turn: *drops_turn,
+                    }),
+                    Some(RewindArm::Codex { .. }) => return Err(mismatched_rewind()),
+                };
                 session
-                    .turn_start(thread_id, items, selection, client_id)
+                    .turn_start(thread_id, items, selection, client_id, truncation.as_ref())
                     .await
             }
         }
@@ -293,6 +379,36 @@ impl PlannerEvents {
             EventSource::Codex(events) => events.recv().await,
             EventSource::Claude(events) => events.recv().await,
         }
+    }
+}
+
+/// A rewind recorded for the other provider: the runtime's provider never changes, so this is a
+/// corrupt snapshot that no retry clears.
+fn mismatched_rewind() -> TurnStartFailure {
+    TurnStartFailure::Refused {
+        error: CalmError::Internal("a pending rewind names another provider".into()),
+        reader: "this conversation holds an edit for another provider, so your message has not \
+                 been sent. Reset the conversation to continue."
+            .into(),
+    }
+}
+
+/// `thread/revert` before the turn that follows a rewind. A turn the thread no longer has was
+/// reverted by an earlier attempt, so that answer lets the turn start.
+async fn revert_codex_thread(
+    daemon: &SharedCodexAppServer,
+    thread_id: &str,
+    before_turn_id: &str,
+) -> std::result::Result<(), TurnStartFailure> {
+    match daemon.thread_revert(thread_id, before_turn_id).await {
+        Ok(_) => Ok(()),
+        Err(error @ CalmError::CodexRefused(_)) => Err(TurnStartFailure::Refused {
+            error,
+            reader: "codex refused to remove the edited turn from this conversation, so your \
+                     message has not been sent. Reset the conversation to continue."
+                .into(),
+        }),
+        Err(error) => Err(TurnStartFailure::Transient(error)),
     }
 }
 

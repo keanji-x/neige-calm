@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::harness::Observation;
+use crate::harness::backend::BackendRewind;
 use crate::harness::queue::{QueueEntry, QueueEntryId};
 use crate::harness::state::{HarnessState, IssuingKind};
 use crate::harness::token_usage::TokenUsage;
@@ -130,6 +131,12 @@ pub struct HarnessSnapshot {
     /// whereas a bump would turn a lossless rollback into a boot panic.
     #[serde(default)]
     pub token_usage: Option<TokenUsage>,
+    /// A rewind (#1923) the provider applies when the next turn starts, cleared once a turn has
+    /// started. Additive and defaulted with no `schema_version` bump, for `token_usage`'s reason: a
+    /// rolled-back binary ignores the key (its next turn keeps the removed turn in the provider's
+    /// history), whereas a bump would turn the rollback into a boot panic.
+    #[serde(default)]
+    pub pending_rewind: Option<BackendRewind>,
 }
 
 impl HarnessSnapshot {
@@ -153,6 +160,7 @@ impl HarnessSnapshot {
             wedged_reason: None,
             interruption_intent: None,
             token_usage: None,
+            pending_rewind: None,
         };
         snapshot.set_pending_entries(entries);
         snapshot
@@ -189,6 +197,7 @@ impl HarnessSnapshot {
             projection_client_id: None,
             // Set by `snapshot_for` from `Inner`; `from_state` sees only `HarnessState`.
             token_usage: None,
+            pending_rewind: None,
             wedged_reason,
             interruption_intent: match state {
                 HarnessState::Issuing {

@@ -2508,6 +2508,18 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             false,
         ),
         row(
+            Event::HarnessTranscriptRewound {
+                worker_session_id: "rt".into(),
+                card_id: planner.clone(),
+                track_id: track.clone(),
+                turn_id: "turn-2".into(),
+                removed_item_count: 7,
+            },
+            ActorId::User,
+            false,
+            false,
+        ),
+        row(
             Event::HarnessUserMessageEnqueued {
                 worker_session_id: "rt".into(),
                 card_id: planner.clone(),

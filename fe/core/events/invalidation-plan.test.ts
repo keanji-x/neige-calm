@@ -6,7 +6,7 @@ import { invalidationPlanFor } from './invalidation-plan.js';
 /* Hand-maintained on purpose, never derived from the policies. `harness.item.added` is deliberately
  * out: it is the highest-frequency event and is emitted before `persist_snapshot` commits. */
 const CONVERSATION_LIST_KINDS = [
-  'card.added', 'card.updated',
+  'card.added', 'card.updated', 'harness.transcript.rewound',
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'harness.phase.changed', 'harness.user_message.enqueued', 'harness.queue.changed',
 ] as const;
@@ -205,7 +205,7 @@ describe('invalidation plan behavior', () => {
     ]);
   });
 
-  it('refetches the track conversation list from exactly the eight session-writing kinds', () => {
+  it('refetches the track conversation list from exactly the nine session-writing kinds', () => {
     const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = kinds.filter((kind) => invalidationPlanFor({ ev: kind, data: {} } as WireEvent)
       .invalidate.some((key) => key[0] === 'track-conversations'));

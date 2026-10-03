@@ -104,6 +104,19 @@ pub struct SharedCodexDaemonUpdate {
     pub daemon_env_signature: Option<String>,
 }
 
+/// One transcript row of a conversation thread as a rewind reads it (#1923); `input_segments` is
+/// the stored JSON, decoded by the reader that needs it.
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+pub struct TranscriptRow {
+    pub id: i64,
+    pub turn_id: Option<String>,
+    pub item_uuid: Option<String>,
+    pub item_type: Option<String>,
+    pub method: String,
+    pub params: String,
+    pub input_segments: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceLease {
     pub lease_id: String,
@@ -480,6 +493,13 @@ pub trait RepoOutOfDomain: RepoRead {
         params: &str,
         input_segments: Option<&str>,
     ) -> Result<i64>;
+
+    /// Every row of one conversation thread on `card_id`, oldest first and unfiltered by method.
+    async fn transcript_rows_of_thread(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+    ) -> Result<Vec<TranscriptRow>>;
 
     /// Idempotently record a terminal outcome under its exact session/card/
     /// thread/turn identity. Concurrent live and recovery writes return one row.

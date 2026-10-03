@@ -265,6 +265,18 @@ export const harnessTranscriptClearedSchema = z.object({
   }),
 });
 
+/** The conversation's latest turn was removed (#1923); its transcript rows are gone. */
+export const harnessTranscriptRewoundSchema = z.object({
+  ev: z.literal('harness.transcript.rewound'),
+  data: z.object({
+    worker_session_id: z.string(),
+    card_id: z.string(),
+    track_id: z.string(),
+    turn_id: z.string(),
+    removed_item_count: z.number(),
+  }),
+});
+
 export const harnessUserMessageEnqueuedSchema = z.object({
   ev: z.literal('harness.user_message.enqueued'),
   data: z.object({
@@ -908,6 +920,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   harnessItemAddedSchema,
   harnessPhaseChangedSchema,
   harnessTranscriptClearedSchema,
+  harnessTranscriptRewoundSchema,
   harnessUserMessageEnqueuedSchema,
   harnessQueueChangedSchema,
   trackReportEditedSchema,
@@ -968,6 +981,9 @@ export type HarnessItemAddedEvent = z.infer<typeof harnessItemAddedSchema>;
 export type HarnessPhaseChangedEvent = z.infer<typeof harnessPhaseChangedSchema>;
 export type HarnessTranscriptClearedEvent = z.infer<
   typeof harnessTranscriptClearedSchema
+>;
+export type HarnessTranscriptRewoundEvent = z.infer<
+  typeof harnessTranscriptRewoundSchema
 >;
 export type HarnessUserMessageEnqueuedEvent = z.infer<
   typeof harnessUserMessageEnqueuedSchema

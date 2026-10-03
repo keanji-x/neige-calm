@@ -274,6 +274,7 @@ impl Reading<'_> {
             Ok(record) => record,
             Err(error) => return Some(self.protocol_failure(&error)),
         };
+        self.translator.chain_line(line);
         match &record {
             Record::SystemInit(init) => {
                 // The CLI created (or resumed) this thread's session as soon as it names it, even

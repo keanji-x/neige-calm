@@ -160,6 +160,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::HarnessItemAdded { .. }
         | Event::HarnessPhaseChanged { .. }
         | Event::HarnessTranscriptCleared { .. }
+        | Event::HarnessTranscriptRewound { .. }
         | Event::HarnessUserMessageEnqueued { .. }
         | Event::HarnessQueueChanged { .. }
         | Event::OverlaySet(_)
@@ -1099,6 +1100,7 @@ impl Inner {
             | Event::HarnessItemAdded { .. }
             | Event::HarnessPhaseChanged { .. }
             | Event::HarnessTranscriptCleared { .. }
+            | Event::HarnessTranscriptRewound { .. }
             | Event::HarnessUserMessageEnqueued { .. }
             | Event::HarnessQueueChanged { .. }
             | Event::OverlaySet(_)
@@ -1635,6 +1637,7 @@ pub(crate) fn harness_observation_from_event(
         | Event::HarnessItemAdded { .. }
         | Event::HarnessPhaseChanged { .. }
         | Event::HarnessTranscriptCleared { .. }
+        | Event::HarnessTranscriptRewound { .. }
         | Event::HarnessUserMessageEnqueued { .. }
         | Event::HarnessQueueChanged { .. }
         | Event::OverlaySet(_)

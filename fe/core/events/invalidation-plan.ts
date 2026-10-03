@@ -172,6 +172,11 @@ function policies(): PolicyMap {
   'harness.transcript.cleared': plan((event) => result([
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
   ])),
+  /* A rewind deletes the turn's rows and may move the phase; it invalidates what a phase change does. */
+  'harness.transcript.rewound': plan((event) => result([
+    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
+    ...conversationLists(event.data.track_id), ['track', event.data.track_id],
+  ])),
   'harness.user_message.enqueued': plan((event) => result([
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
     ...conversationLists(event.data.track_id),

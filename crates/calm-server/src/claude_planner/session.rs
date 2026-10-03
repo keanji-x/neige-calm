@@ -28,7 +28,7 @@ use uuid::Uuid;
 use super::config::{ClaudePlannerHost, needs_an_operator, unavailable_message};
 use super::driver::{TurnRun, drive};
 use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
-use super::spawn::{self, EnvInputs, InstructionsFile, SessionStart};
+use super::spawn::{self, InstructionsFile, ResumeTruncation, SessionStart};
 use super::stop::stop;
 use super::translate::{CalmToolNames, TurnContext, TurnTranslator};
 use crate::codex_appserver::InputItem;
@@ -364,6 +364,11 @@ impl ClaudePlannerSession {
         &self.shared.params.host
     }
 
+    /// Whether the deletion fence has sealed `thread`.
+    pub fn thread_sealed(&self, thread: &str) -> bool {
+        self.shared.params.seals.is_sealed(thread)
+    }
+
     pub fn active_turn_id_for_thread(&self, thread: &str) -> Option<String> {
         self.shared
             .state()
@@ -373,14 +378,35 @@ impl ClaudePlannerSession {
             .map(|active| active.turn_id.clone())
     }
 
+    /// The dry run of a rewind's cut (#1923), under the issue lock so no turn spawns beside it.
+    pub(crate) async fn check_truncation(
+        &self,
+        thread: &str,
+        cut: &ResumeTruncation,
+    ) -> Result<()> {
+        let _issue = self.shared.issue.lock().await;
+        let busy = {
+            let state = self.shared.state();
+            state.shutting_down || state.active.is_some()
+        };
+        if busy {
+            return Err(CalmError::Conflict(
+                "the Claude conversation is busy".into(),
+            ));
+        }
+        super::rewind::check(&self.shared.params, thread, cut).await
+    }
+
     /// See the module docs for the submission contract. `selection` is the card's stored choice,
-    /// read at issue and passed as it is; the CLI judges the model (#1822 6′).
+    /// read at issue and passed as it is; the CLI judges the model (#1822 6′). `truncation` is a
+    /// rewind's pending cut, applied by this spawn.
     pub async fn turn_start(
         &self,
         thread: &str,
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
         client_id: &str,
+        truncation: Option<&ResumeTruncation>,
     ) -> Result<String, crate::harness::backend::TurnStartFailure> {
         let shared = &self.shared;
         let params = &shared.params;
@@ -421,14 +447,7 @@ impl ClaudePlannerSession {
         let config = host
             .configured()
             .map_err(|_| needs_an_operator(unavailable_message()))?;
-        let kernel_path = crate::kernel_bin_path::kernel_led_path().map_err(CalmError::from)?;
-        let env = spawn::base_env(&EnvInputs {
-            path: kernel_path.path,
-            config_dir: &config.config_dir,
-            mcp_socket: &host.mcp_socket,
-            marker: host.instance.marker(&params.worker_session_id),
-            proxy: &params.proxy,
-        });
+        let env = spawn::session_env(params, &config.config_dir)?;
         config.refuse_unless_pinned(&env).await?;
         // A shutdown or a deletion seal may have landed while `--version` ran; nothing is minted
         // for a session that can no longer start a turn.
@@ -476,6 +495,7 @@ impl ClaudePlannerSession {
         let argv = spawn::argv(
             thread_uuid,
             start,
+            truncation,
             selection,
             &params.cwd,
             &host.mcp_shim,

@@ -1,0 +1,13 @@
+{
+  "description": "harness.transcript.rewound inline struct variant.",
+  "wire": {
+    "ev": "harness.transcript.rewound",
+    "data": {
+      "worker_session_id": "rt-01",
+      "card_id": "card-01",
+      "track_id": "track-01",
+      "turn_id": "turn-02",
+      "removed_item_count": 7
+    }
+  }
+}

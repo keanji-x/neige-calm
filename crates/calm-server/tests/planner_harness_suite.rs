@@ -12,6 +12,8 @@ mod claude_planner_live_replies;
 mod claude_planner_models;
 #[path = "cases/claude_planner_retirement.rs"]
 mod claude_planner_retirement;
+#[path = "cases/claude_planner_rewind.rs"]
+mod claude_planner_rewind;
 #[path = "cases/claude_planner_session.rs"]
 mod claude_planner_session;
 #[path = "cases/claude_planner_session_fixture.rs"]
@@ -60,6 +62,8 @@ mod planner_model_selection;
 mod planner_pending_queue;
 #[path = "cases/planner_queue_mutations.rs"]
 mod planner_queue_mutations;
+#[path = "cases/planner_rewind.rs"]
+mod planner_rewind;
 #[path = "cases/planner_steer.rs"]
 mod planner_steer;
 #[path = "cases/planner_transcript_projection.rs"]

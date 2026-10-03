@@ -1,7 +1,8 @@
 pub use calm_truth::db::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
     SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, TrackEvent,
-    WorkspaceLease, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn, rows,
+    TranscriptRow, WorkspaceLease, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
+    WriteWithEventsFn, rows,
 };
 
 use async_trait::async_trait;
@@ -737,6 +738,11 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         params: &str,
         input_segments: Option<&str>,
     ) -> Result<i64>;
+    async fn transcript_rows_of_thread(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+    ) -> Result<Vec<TranscriptRow>>;
     async fn harness_turn_outcome_put(
         &self,
         worker_session_id: &str,
@@ -887,6 +893,15 @@ where
         )
         .await
         .map_err(Into::into)
+    }
+    async fn transcript_rows_of_thread(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+    ) -> Result<Vec<TranscriptRow>> {
+        calm_truth::db::RepoOutOfDomain::transcript_rows_of_thread(self, card_id, thread_id)
+            .await
+            .map_err(Into::into)
     }
     async fn harness_turn_outcome_put(
         &self,

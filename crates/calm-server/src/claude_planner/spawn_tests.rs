@@ -19,6 +19,7 @@ fn args_with(start: SessionStart, selection: &TurnModelSelection, cwd: &str) -> 
     argv(
         Uuid::parse_str(THREAD).unwrap(),
         start,
+        None,
         selection,
         Path::new(cwd),
         Path::new("/opt/neige/neige-mcp-stdio-shim"),
@@ -147,6 +148,7 @@ fn a_workspace_that_would_split_a_rule_is_refused() {
         let result = argv(
             Uuid::parse_str(THREAD).unwrap(),
             SessionStart::New,
+            None,
             &TurnModelSelection::inherit(),
             Path::new(cwd),
             Path::new("/opt/shim"),

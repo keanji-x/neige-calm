@@ -5,7 +5,7 @@ use sqlx::Transaction;
 
 use super::{SqlxRepo, begin_immediate_tx};
 use crate::area_folder_claim::AreaFolderClaim;
-use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate};
+use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate, TranscriptRow};
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
@@ -48,6 +48,24 @@ pub async fn harness_items_delete_by_card_tx(
         .execute(&mut **tx)
         .await?;
     Ok(())
+}
+
+/// Delete the rows of one conversation thread above `after_id`: the turn a rewind removes.
+/// Returns how many rows went.
+pub async fn transcript_delete_thread_suffix_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    thread_id: &str,
+    after_id: i64,
+) -> Result<i64> {
+    let done =
+        sqlx::query("DELETE FROM harness_items WHERE card_id = ?1 AND thread_id = ?2 AND id > ?3")
+            .bind(card_id)
+            .bind(thread_id)
+            .bind(after_id)
+            .execute(&mut **tx)
+            .await?;
+    Ok(i64::try_from(done.rows_affected()).unwrap_or(i64::MAX))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -408,6 +426,21 @@ impl RepoOutOfDomain for SqlxRepo {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.get::<i64, _>("id"))
+    }
+
+    async fn transcript_rows_of_thread(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+    ) -> Result<Vec<TranscriptRow>> {
+        Ok(sqlx::query_as::<_, TranscriptRow>(
+            "SELECT id, turn_id, item_uuid, item_type, method, params, input_segments \
+             FROM harness_items WHERE card_id = ?1 AND thread_id = ?2 ORDER BY id ASC",
+        )
+        .bind(card_id)
+        .bind(thread_id)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn harness_turn_outcome_put(

@@ -84,13 +84,62 @@ pub enum SessionStart {
     Resume,
 }
 
+/// The stream-json print mode every `claude -p` this module starts runs in.
+const PRINT_MODE: [&str; 6] = [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+];
+
+/// Where a resumed session is cut before its next turn (a rewind, #1923): the chain is kept up to
+/// and including `at`, and the CLI refuses unless everything after it belongs to the one turn whose
+/// prompt is `drops_turn`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResumeTruncation {
+    pub at: Uuid,
+    pub drops_turn: Uuid,
+}
+
+impl ResumeTruncation {
+    /// One token each, like `--model=`, so a value can never be read as a flag.
+    fn flags(&self) -> [OsString; 2] {
+        [
+            format!("--resume-session-at={}", self.at).into(),
+            format!("--resume-drops-turn={}", self.drops_turn).into(),
+        ]
+    }
+}
+
+/// The dry run of a truncation: the turn argv's session loading without a prompt, MCP servers,
+/// tools or instructions. With stdin closed the CLI loads the session, applies the cut and exits.
+pub(crate) fn truncation_check_argv(thread: Uuid, truncation: &ResumeTruncation) -> Vec<OsString> {
+    let mut args: Vec<OsString> = PRINT_MODE.into_iter().map(OsString::from).collect();
+    args.push("--resume".into());
+    args.push(thread.to_string().into());
+    args.extend(truncation.flags());
+    for arg in [
+        "--setting-sources",
+        "project",
+        "--disable-slash-commands",
+        "--strict-mcp-config",
+    ] {
+        args.push(arg.into());
+    }
+    args
+}
+
 /// `selection` is the card's stored choice (#1822 6′): a model rides as `--model=<value>` and an
 /// effort as `--effort=<level>`, one token each so a value can never be read as a flag; the CLI
 /// judges the model and refuses one it cannot run. `None` passes the flag not at all, so the CLI
-/// runs its default.
+/// runs its default. `truncation` rides right after `--resume <thread>`; a new session has nothing
+/// to cut.
 pub(crate) fn argv(
     thread: Uuid,
     start: SessionStart,
+    truncation: Option<&ResumeTruncation>,
     selection: &TurnModelSelection,
     cwd: &Path,
     mcp_shim: &Path,
@@ -100,21 +149,19 @@ pub(crate) fn argv(
         SessionStart::New => "--session-id",
         SessionStart::Resume => "--resume",
     };
-    let mut args: Vec<OsString> = [
-        "-p",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--replay-user-messages",
-        "--include-partial-messages",
-    ]
-    .into_iter()
-    .map(OsString::from)
-    .collect();
+    let mut args: Vec<OsString> = PRINT_MODE.into_iter().map(OsString::from).collect();
+    args.push("--replay-user-messages".into());
+    args.push("--include-partial-messages".into());
     args.push(session_flag.into());
     args.push(thread.to_string().into());
+    if let Some(truncation) = truncation {
+        if start == SessionStart::New {
+            return Err(CalmError::Conflict(
+                "a Claude conversation that has no session yet has no turn to remove".into(),
+            ));
+        }
+        args.extend(truncation.flags());
+    }
     if let Some(model) = &selection.model {
         args.push(format!("--model={model}").into());
     }
@@ -163,6 +210,21 @@ pub(crate) struct EnvInputs<'a> {
     pub marker: String,
     /// `(UPPER, lower, value)` from the server's proxy resolver.
     pub proxy: &'a [(String, String, String)],
+}
+
+/// The allowlisted environment of every spawn of one session (`base_env` of its own inputs).
+pub(crate) fn session_env(
+    params: &super::session::ClaudePlannerSessionParams,
+    config_dir: &Path,
+) -> Result<Vec<(String, OsString)>> {
+    let kernel_path = crate::kernel_bin_path::kernel_led_path().map_err(CalmError::from)?;
+    Ok(base_env(&EnvInputs {
+        path: kernel_path.path,
+        config_dir,
+        mcp_socket: &params.host.mcp_socket,
+        marker: params.host.instance.marker(&params.worker_session_id),
+        proxy: &params.proxy,
+    }))
 }
 
 /// The `env_clear()` environment of the `--version` check: everything but the MCP token.

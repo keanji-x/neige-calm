@@ -154,7 +154,11 @@ cleared_params_bytes: number | null,
 /**
  * Card age at reset in milliseconds; `None` on unmeasured historical rows.
  */
-card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueued", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "harness.queue.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, entry_id: string, change: HarnessQueueChange, actor: ActorId, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
+card_age_ms_at_clear: number | null, } } | { "ev": "harness.transcript.rewound", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, turn_id: string, 
+/**
+ * Number of transcript rows deleted with the turn.
+ */
+removed_item_count: number, } } | { "ev": "harness.user_message.enqueued", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "harness.queue.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, entry_id: string, change: HarnessQueueChange, actor: ActorId, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`; `None` for every other author.
  */

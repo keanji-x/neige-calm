@@ -392,6 +392,18 @@ golden_test!(
 );
 
 golden_test!(
+    harness_transcript_rewound,
+    "harness_transcript_rewound.json",
+    Event::HarnessTranscriptRewound {
+        worker_session_id: "rt-01".into(),
+        card_id: CardId::from("card-01"),
+        track_id: TrackId::from("track-01"),
+        turn_id: "turn-02".into(),
+        removed_item_count: 7,
+    }
+);
+
+golden_test!(
     harness_user_message_enqueued,
     "harness_user_message_enqueued.json",
     Event::HarnessUserMessageEnqueued {
@@ -1221,7 +1233,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 52] = [
+const ALL_KIND_TAGS: [&str; 53] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1235,6 +1247,7 @@ const ALL_KIND_TAGS: [&str; 52] = [
     "harness.item.added",
     "harness.phase.changed",
     "harness.transcript.cleared",
+    "harness.transcript.rewound",
     "harness.user_message.enqueued",
     "harness.queue.changed",
     "track.report_edited",
@@ -1305,7 +1318,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 80,
+        files, 81,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1335,6 +1348,7 @@ fn kind_tag_list_matches_enum() {
             Event::HarnessItemAdded { .. } => "harness.item.added",
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
+            Event::HarnessTranscriptRewound { .. } => "harness.transcript.rewound",
             Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
             Event::HarnessQueueChanged { .. } => "harness.queue.changed",
             Event::TrackReportEdited { .. } => "track.report_edited",
@@ -1382,7 +1396,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        52,
+        53,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use super::protocol::{
     AssistantBlock, BlockKind, ModelUsage, ProtocolError, Record, StreamEvent, ToolResult,
-    ToolResultBlock, ToolResultContent, Usage, client_line_uuid,
+    ToolResultBlock, ToolResultContent, Usage, chain_entry_uuid, client_line_uuid,
 };
 use crate::codex_appserver::InputItem;
 use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
@@ -138,6 +138,9 @@ pub struct TurnTranslator {
     /// The last record's `message.id` and how many of its blocks records have carried: a block
     /// without a stream block takes that count as its index.
     record_blocks: Option<(String, u64)>,
+    /// The uuid of the last chain record this turn produced, whether or not it made an item: the
+    /// point a later rewind keeps the conversation up to (`--resume-session-at`).
+    last_record_uuid: Option<Uuid>,
 }
 
 impl TurnTranslator {
@@ -153,6 +156,7 @@ impl TurnTranslator {
             total_tokens,
             streamed: None,
             record_blocks: None,
+            last_record_uuid: None,
         })
     }
 
@@ -168,15 +172,25 @@ impl TurnTranslator {
             TurnOutcome::Interrupted => ("interrupted", Value::Null),
             TurnOutcome::Failed { message } => ("failed", json!({ "message": message })),
         };
-        self.event(PlannerEventKind::TurnCompleted {
-            turn: json!({ "id": self.ctx.turn_id, "status": status, "error": error }),
-        })
+        let mut turn = json!({ "id": self.ctx.turn_id, "status": status, "error": error });
+        if let Some(uuid) = self.last_record_uuid {
+            turn["lastRecordUuid"] = json!(uuid.to_string());
+        }
+        self.event(PlannerEventKind::TurnCompleted { turn })
     }
 
     fn event(&self, kind: PlannerEventKind) -> PlannerEvent {
         PlannerEvent {
             thread_id: Some(self.ctx.thread_id.clone()),
             kind,
+        }
+    }
+
+    /// Note one stdout line before its record is translated: a chain entry, whether or not it makes
+    /// an item, becomes the turn's last record (the `lastRecordUuid` a later rewind keeps up to).
+    pub fn chain_line(&mut self, line: &str) {
+        if let Some(uuid) = chain_entry_uuid(line) {
+            self.last_record_uuid = Some(uuid);
         }
     }
 
