@@ -1,0 +1,143 @@
+# TEMPORARY experiment for #1983 — measure calm-server local incremental build cost. Do not merge.
+name: incr-measure
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/incr-measure.yml', '.github/incr-measure/**']
+permissions:
+  contents: read
+concurrency:
+  group: incr-measure-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: never
+  RUSTC_WRAPPER: ""
+jobs:
+  measure:
+    if: ${{ github.head_ref == 'arch/1983-incr-measure' }}
+    name: ${{ matrix.target.name }} / ${{ matrix.mode }} / rep${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [noincr, incr]
+        rep: [1, 2]
+        target:
+          - { name: terminal_renderer, kind: body, file: terminal_renderer/model_view.rs, fn: unavailable, suite: terminal_ws_suite }
+          - { name: plugin_host, kind: body, file: plugin_host/managed.rs, fn: is_managed_tree, suite: plugin_suite }
+          - { name: harness, kind: body, file: harness/state.rs, fn: run_status_for, suite: planner_harness_suite }
+          - { name: operation, kind: body, file: operation/planner_harness_start_adapter.rs, fn: is_reusable_thread_missing_card_mcp_token_failure, suite: forge_suite }
+          - { name: routes, kind: body, file: routes/track_recipes.rs, fn: normalize_recipe_body, suite: domain_api_suite }
+          - { name: mcp_server, kind: body, file: mcp_server/wiring.rs, fn: card_mcp_env, suite: mcp_core_suite }
+          - { name: dispatcher, kind: body, file: dispatcher/mod.rs, fn: event_warrants_planner_push, suite: runtime_dispatch_suite }
+          - { name: leaf_kernel_bin_path, kind: body, file: kernel_bin_path.rs, fn: shell_path_prepend, suite: domain_api_suite }
+          - { name: harness_sig, kind: sig, file: harness/state.rs, fn: run_status_for, suite: planner_harness_suite, caller: harness/run_loop.rs, old: 'run_status_for(&state_for_status)', new: 'run_status_for(&state_for_status, 0)' }
+          - { name: terminal_interaction_sig, kind: sig, file: terminal_interaction/client.rs, fn: refers_to_pending_input, suite: terminal_ws_suite, caller: terminal_interaction/client.rs, old: 'refers_to_pending_input(code, &message)', new: 'refers_to_pending_input(code, &message, 0)' }
+    env:
+      CARGO_INCREMENTAL: ${{ matrix.mode == 'incr' && '1' || '0' }}
+      T: ${{ matrix.target.name }}
+      MODE: ${{ matrix.mode }}
+      REP: ${{ matrix.rep }}
+    steps:
+      - name: free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: taiki-e/install-action@nextest
+      - name: measure
+        shell: bash
+        run: |
+          set -euo pipefail
+          S=crates/calm-server/src
+          E=.github/incr-measure/edit.py
+          mkdir -p out
+          R=out/results.csv
+          echo "target,mode,rep,step,seconds,nproc,load1" > "$R"
+          t() { local step=$1; shift; local a b; a=$(date +%s.%N)
+                "$@" > "out/$step.log" 2>&1 || { tail -50 "out/$step.log"; exit 1; }
+                b=$(date +%s.%N)
+                echo "$T,$MODE,$REP,$step,$(echo "$b - $a" | bc),$(nproc),$(cut -d' ' -f1 /proc/loadavg)" | tee -a "$R"
+                grep -c '^\s*Compiling' "out/$step.log" | sed "s/^/  compiled units: /" || true; }
+          echo "nproc=$(nproc)"; free -g; lscpu | grep 'Model name'
+          rustc -V; cargo -V; cargo nextest --version
+          # Warm (cold build of every artifact the loop touches).
+          t warm_check cargo check --locked -p calm-server --features calm-server/fixtures
+          t warm_lib cargo build --locked -p calm-server --lib
+          t warm_tests cargo nextest run --locked --no-run -p calm-server
+          t noop_tests cargo nextest run --locked --no-run -p calm-server
+          # Edit 1 → sequential loop.
+          if [ "${{ matrix.target.kind }}" = body ]; then
+            python3 $E body "$S/${{ matrix.target.file }}" "${{ matrix.target.fn }}" A
+          else
+            python3 $E sig "$S/${{ matrix.target.file }}" "${{ matrix.target.fn }}" u8 "$S/${{ matrix.target.caller }}" '${{ matrix.target.old }}' '${{ matrix.target.new }}'
+          fi
+          git diff --stat; git diff | head -40
+          t e1_check cargo check --locked -p calm-server --features calm-server/fixtures
+          t e1_lib cargo build --locked -p calm-server --lib
+          t e1_suite cargo nextest run --locked --no-run -p calm-server --test "${{ matrix.target.suite }}"
+          t e1_all_after_suite cargo nextest run --locked --no-run -p calm-server
+          # Edit 2 → full test no-run standalone (the agent loop: `cargo nextest run -p calm-server <filter>`).
+          if [ "${{ matrix.target.kind }}" = body ]; then sed -i 's/incr-probe-A/incr-probe-B/' "$S/${{ matrix.target.file }}"
+          else sed -i 's/_incr_probe: u8/_incr_probe: u16/' "$S/${{ matrix.target.file }}"; fi
+          git diff | grep '^[-+][^-+]' | head
+          t e2_all cargo test --locked --no-run -p calm-server --timings
+          cp target/cargo-timings/cargo-timing.html out/ || true
+          # Edit 3 → single suite standalone.
+          if [ "${{ matrix.target.kind }}" = body ]; then sed -i 's/incr-probe-B/incr-probe-C/' "$S/${{ matrix.target.file }}"
+          else sed -i 's/_incr_probe: u16/_incr_probe: u32/' "$S/${{ matrix.target.file }}"; fi
+          t e3_suite cargo nextest run --locked --no-run -p calm-server --test "${{ matrix.target.suite }}"
+          df -h /; du -sh target
+          cat "$R" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: incr-${{ matrix.target.name }}-${{ matrix.mode }}-${{ matrix.rep }}
+          path: |
+            out/results.csv
+            out/cargo-timing.html
+          if-no-files-found: warn
+
+  breakdown:
+    if: ${{ github.head_ref == 'arch/1983-incr-measure' }}
+    name: breakdown (time-passes, plugin_host, noincr)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTC_BOOTSTRAP: "1"
+    steps:
+      - name: free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: time-passes on lib and one test binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cargo build --locked -p calm-server --tests > out/warm.log 2>&1 || { tail -50 out/warm.log; exit 1; }
+          python3 .github/incr-measure/edit.py body crates/calm-server/src/plugin_host/managed.rs is_managed_tree A
+          a=$(date +%s.%N)
+          cargo rustc --locked -p calm-server --test plugin_suite --profile test -- -Ztime-passes > out/suite-time-passes.log 2>&1 || { tail -50 out/suite-time-passes.log; exit 1; }
+          echo "lib rebuild (test profile, no time-passes) + plugin_suite (time-passes) wall $(echo "$(date +%s.%N) - $a" | bc)"
+          grep -E '^\s*(Compiling|Finished)' out/suite-time-passes.log || true
+          a=$(date +%s.%N)
+          cargo rustc --locked -p calm-server --lib --features calm-server/fixtures -- -Ztime-passes > out/lib-time-passes.log 2>&1 || { tail -50 out/lib-time-passes.log; exit 1; }
+          echo "lib (dev profile, fixtures, time-passes) wall $(echo "$(date +%s.%N) - $a" | bc)"
+          for f in out/lib-time-passes.log out/suite-time-passes.log; do
+            echo "== $f"; awk '/time: +[0-9.]+;/ { t=$2; sub(";","",t); if (t+0 >= 0.5) print }' "$f"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: incr-breakdown
+          path: out/*time-passes.log
