@@ -28,8 +28,6 @@ mod planner_attachments_bind;
 mod planner_attachments_guarded_surface;
 #[path = "cases/planner_attachments_rest.rs"]
 mod planner_attachments_rest;
-#[path = "cases/planner_backend_door_invariant.rs"]
-mod planner_backend_door_invariant;
 #[path = "cases/planner_harness_backpressure.rs"]
 mod planner_harness_backpressure;
 #[path = "cases/planner_harness_boot_recovery.rs"]

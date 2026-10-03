@@ -1537,8 +1537,9 @@ impl SharedCodexAppServer {
             .collect()
     }
 
-    /// The server's deletion-seal registry. The state wiring hands this `Arc` to the deletion
-    /// routes, the harness and a Claude Planner session; nothing else reaches it through here.
+    /// The server's deletion-seal registry. Boot wiring (the app state and the dispatcher's own
+    /// runtime) takes the one registry from here and hands it to the deletion routes, the harness
+    /// and a Claude Planner session.
     pub fn thread_seals(&self) -> &Arc<ThreadSeals> {
         &self.thread_seals
     }

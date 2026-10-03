@@ -35,8 +35,13 @@ pub enum TurnStartFailure {
     Refused { error: CalmError, reader: String },
 }
 
+/// The provider a Planner harness runs on. Its arms are private to this module, so code outside it
+/// cannot name or match a provider and goes through the methods below.
 #[derive(Clone)]
-pub enum PlannerBackend {
+pub struct PlannerBackend(Arm);
+
+#[derive(Clone)]
+enum Arm {
     Codex(Arc<SharedCodexAppServer>),
     /// One Claude Planner session (design #1791 §5).
     Claude(Arc<ClaudePlannerSession>),
@@ -44,7 +49,7 @@ pub enum PlannerBackend {
 
 impl From<Arc<SharedCodexAppServer>> for PlannerBackend {
     fn from(daemon: Arc<SharedCodexAppServer>) -> Self {
-        Self::Codex(daemon)
+        Self(Arm::Codex(daemon))
     }
 }
 
@@ -62,14 +67,16 @@ impl PlannerBackend {
     ) -> Result<Self> {
         Ok(match provider {
             AgentProvider::Codex => daemon.into(),
-            AgentProvider::Claude => Self::Claude(claude.open_session(repo, seals, row).await?),
+            AgentProvider::Claude => {
+                Self(Arm::Claude(claude.open_session(repo, seals, row).await?))
+            }
         })
     }
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
-        match self {
-            Self::Codex(daemon) => daemon.subscribe_notifications(),
-            Self::Claude(session) => session.subscribe_notifications(),
+        match &self.0 {
+            Arm::Codex(daemon) => daemon.subscribe_notifications(),
+            Arm::Claude(session) => session.subscribe_notifications(),
         }
     }
 
@@ -82,8 +89,8 @@ impl PlannerBackend {
         selection: &TurnModelSelection,
         client_id: &str,
     ) -> std::result::Result<TurnId, TurnStartFailure> {
-        match self {
-            Self::Codex(daemon) => daemon
+        match &self.0 {
+            Arm::Codex(daemon) => daemon
                 .turn_start(thread_id, items, selection, Some(client_id))
                 .await
                 // Codex answering with a refusal is the one failure known to be its answer.
@@ -97,7 +104,7 @@ impl PlannerBackend {
                     },
                     error => TurnStartFailure::Transient(error),
                 }),
-            Self::Claude(session) => {
+            Arm::Claude(session) => {
                 session
                     .turn_start(thread_id, items, selection, client_id)
                     .await
@@ -108,9 +115,9 @@ impl PlannerBackend {
     /// Whether a queued entry can join the running turn (§5.9): the run loop checks this before
     /// it takes the entry out of the queue.
     pub fn supports_steer(&self) -> bool {
-        match self {
-            Self::Codex(_) => true,
-            Self::Claude(_) => false,
+        match &self.0 {
+            Arm::Codex(_) => true,
+            Arm::Claude(_) => false,
         }
     }
 
@@ -121,36 +128,36 @@ impl PlannerBackend {
         items: Vec<InputItem>,
         client_id: &str,
     ) -> Result<TurnId> {
-        match self {
-            Self::Codex(daemon) => {
+        match &self.0 {
+            Arm::Codex(daemon) => {
                 daemon
                     .turn_steer(thread_id, expected_turn_id, items, Some(client_id))
                     .await
             }
-            Self::Claude(_) => Err(CalmError::Internal(
+            Arm::Claude(_) => Err(CalmError::Internal(
                 "a Claude Planner cannot steer; the run loop checks supports_steer first".into(),
             )),
         }
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
-        match self {
-            Self::Codex(daemon) => daemon.turn_interrupt(thread_id, turn_id).await,
-            Self::Claude(session) => session.turn_interrupt(thread_id, turn_id).await,
+        match &self.0 {
+            Arm::Codex(daemon) => daemon.turn_interrupt(thread_id, turn_id).await,
+            Arm::Claude(session) => session.turn_interrupt(thread_id, turn_id).await,
         }
     }
 
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
-        match self {
-            Self::Codex(daemon) => daemon.active_turn_id_for_thread(thread_id),
-            Self::Claude(session) => session.active_turn_id_for_thread(thread_id),
+        match &self.0 {
+            Arm::Codex(daemon) => daemon.active_turn_id_for_thread(thread_id),
+            Arm::Claude(session) => session.active_turn_id_for_thread(thread_id),
         }
     }
 
     pub fn provider(&self) -> AgentProvider {
-        match self {
-            Self::Codex(_) => AgentProvider::Codex,
-            Self::Claude(_) => AgentProvider::Claude,
+        match &self.0 {
+            Arm::Codex(_) => AgentProvider::Codex,
+            Arm::Claude(_) => AgentProvider::Claude,
         }
     }
 
@@ -160,14 +167,14 @@ impl PlannerBackend {
         &self,
         source: &impl SelectionSource,
     ) -> std::result::Result<TurnModelSelection, IssuanceRefusal> {
-        match self {
-            Self::Codex(daemon) => {
+        match &self.0 {
+            Arm::Codex(daemon) => {
                 let payload = source.card_payload().await?;
                 codex_selection::resolve(daemon, source, &payload).await
             }
             // #1810: a Claude Planner reads its card like Codex does, but nothing is asked of
             // Codex. A server started without its config stops it first.
-            Self::Claude(session) => {
+            Arm::Claude(session) => {
                 if let Err(error) = session.host().configured() {
                     return Err(IssuanceRefusal::needs_a_choice(
                         error.to_string(),
@@ -194,10 +201,10 @@ impl PlannerBackend {
         last_turn_id: &Mutex<Option<String>>,
     ) -> Result<()> {
         let mut interrupt_error = None;
-        match self {
+        match &self.0 {
             // #1791 §5.1: the running turn is recorded `Interrupted` and this waits for `stop`,
             // whether or not a turn runs or a thread is known.
-            Self::Claude(session) => {
+            Arm::Claude(session) => {
                 if let Err(e) = session.shutdown().await {
                     tracing::warn!(
                         worker_session_id = %worker_session_id,
@@ -207,7 +214,7 @@ impl PlannerBackend {
                     interrupt_error = Some(e);
                 }
             }
-            Self::Codex(daemon) => {
+            Arm::Codex(daemon) => {
                 if let Some(thread_id) = thread_id {
                     let last_turn_id = last_turn_id.lock().await.clone();
                     interrupt_codex_thread(
@@ -243,18 +250,24 @@ impl PlannerBackend {
 
     /// The registry installed the harness: a Claude session may start turns from now on.
     pub fn mark_installed(&self) {
-        match self {
-            Self::Codex(_) => {}
-            Self::Claude(session) => session.mark_installed(),
+        match &self.0 {
+            Arm::Codex(_) => {}
+            Arm::Claude(session) => session.mark_installed(),
         }
+    }
+
+    /// Fixtures only: a backend around a Claude session a test opened itself.
+    #[cfg(feature = "fixtures")]
+    pub fn claude_for_test(session: Arc<ClaudePlannerSession>) -> Self {
+        Self(Arm::Claude(session))
     }
 
     /// Fixtures only: the Claude session, for its interleaving hooks.
     #[cfg(feature = "fixtures")]
     pub fn claude_session_for_test(&self) -> Option<Arc<ClaudePlannerSession>> {
-        match self {
-            Self::Claude(session) => Some(Arc::clone(session)),
-            Self::Codex(_) => None,
+        match &self.0 {
+            Arm::Claude(session) => Some(Arc::clone(session)),
+            Arm::Codex(_) => None,
         }
     }
 }
