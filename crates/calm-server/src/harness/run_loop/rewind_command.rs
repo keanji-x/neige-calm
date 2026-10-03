@@ -97,6 +97,20 @@ pub(super) async fn handle_rewind(inner: &Arc<Inner>, turn_id: &str) -> Result<R
     snapshot.phase = HarnessPhaseTag::from(&state);
     snapshot.last_turn_id = plan.previous_turn_id.clone();
     snapshot.pending_rewind = Some(prepared.clone());
+    // The provider forgets the turn's since-last-turn block with the turn, so the watermark goes
+    // back to where that block started. A turn issued before `last_turn_base` existed has none:
+    // its watermark stays advanced (transitional gap, one turn per upgraded conversation).
+    let restored_head = inner
+        .last_turn_base
+        .lock()
+        .await
+        .clone()
+        .filter(|base| base.turn_id == turn_id)
+        .map(|base| base.seen_head);
+    if let Some(head) = &restored_head {
+        snapshot.last_seen_head = head.clone();
+    }
+    snapshot.last_turn_base = None;
     if snapshot
         .interruption_intent
         .as_ref()
@@ -111,7 +125,7 @@ pub(super) async fn handle_rewind(inner: &Arc<Inner>, turn_id: &str) -> Result<R
     let track_id = inner.track_id.clone();
     let removed_turn = turn_id.to_string();
     let committed_thread = thread_id.clone();
-    let boundary = plan.boundary;
+    let (boundary, last_row, planned_rows) = (plan.boundary, plan.last_row, plan.row_count);
     write_with_event_typed(
         inner.repo.as_ref(),
         ActorId::Kernel,
@@ -129,8 +143,14 @@ pub(super) async fn handle_rewind(inner: &Arc<Inner>, turn_id: &str) -> Result<R
                     card_id.as_str(),
                     &committed_thread,
                     boundary,
+                    last_row,
                 )
                 .await?;
+                if removed_item_count != planned_rows {
+                    return Err(refused(
+                        "the conversation changed while the edit was prepared",
+                    ));
+                }
                 // Conditional on this runtime still being the card's carrier: zero rows is a
                 // refusal, and returning it rolls the deletion back.
                 if !crate::db::sqlite::session_set_handle_state_tx(
@@ -170,6 +190,10 @@ pub(super) async fn handle_rewind(inner: &Arc<Inner>, turn_id: &str) -> Result<R
     *inner.state.lock().await = state;
     *inner.last_turn_id.lock().await = plan.previous_turn_id;
     *inner.pending_rewind.lock().await = Some(prepared);
+    if let Some(head) = restored_head {
+        *inner.last_seen_head.lock().await = head;
+    }
+    *inner.last_turn_base.lock().await = None;
     clear_interruption_intent(inner, turn_id).await;
     inner.rewound_turns.lock().await.insert(turn_id.to_string());
     // The ordinary writer announces a phase change (rewinding a first turn leaves `idle`); the

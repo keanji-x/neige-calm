@@ -137,6 +137,17 @@ pub struct HarnessSnapshot {
     /// history), whereas a bump would turn the rollback into a boot panic.
     #[serde(default)]
     pub pending_rewind: Option<BackendRewind>,
+    /// The `last_seen_head` the last issued turn's since-last-turn block started from (#1923), so a
+    /// rewind of that turn puts the watermark back. Additive and defaulted like `token_usage`.
+    #[serde(default)]
+    pub last_turn_base: Option<TurnBase>,
+}
+
+/// See [`HarnessSnapshot::last_turn_base`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TurnBase {
+    pub turn_id: String,
+    pub seen_head: Option<String>,
 }
 
 impl HarnessSnapshot {
@@ -161,6 +172,7 @@ impl HarnessSnapshot {
             interruption_intent: None,
             token_usage: None,
             pending_rewind: None,
+            last_turn_base: None,
         };
         snapshot.set_pending_entries(entries);
         snapshot
@@ -198,6 +210,7 @@ impl HarnessSnapshot {
             // Set by `snapshot_for` from `Inner`; `from_state` sees only `HarnessState`.
             token_usage: None,
             pending_rewind: None,
+            last_turn_base: None,
             wedged_reason,
             interruption_intent: match state {
                 HarnessState::Issuing {

@@ -14,6 +14,10 @@ use crate::planner_attachments::bind::MAX_ATTACHMENTS_PER_MESSAGE;
 pub(crate) struct RewindPlan {
     /// The highest row id that stays: every row of the thread above it belongs to the turn.
     pub boundary: i64,
+    /// The highest row id the plan read, and how many rows it read above the boundary: the
+    /// deletion must remove exactly those.
+    pub last_row: i64,
+    pub row_count: i64,
     /// The turn before it, which becomes the conversation's last; `None` when it was the first.
     pub previous_turn_id: Option<String>,
     /// The previous turn's rows, for a provider that cuts its session at that turn's end.
@@ -59,12 +63,7 @@ pub(crate) fn plan(rows: &[TranscriptRow], turn_id: &str) -> Result<RewindPlan, 
     let user_rows = rows
         .iter()
         .filter(|row| row.id > boundary)
-        .filter(|row| {
-            matches!(
-                row.item_type.as_deref(),
-                Some("userMessage" | "user_message")
-            )
-        })
+        .filter(|row| super::run_loop::is_user_message_type(row.item_type.as_deref()))
         .collect::<Vec<_>>();
     let prompt_client_id = user_rows.first().and_then(|row| client_id(&row.params));
     let mut input = Vec::new();
@@ -108,8 +107,13 @@ pub(crate) fn plan(rows: &[TranscriptRow], turn_id: &str) -> Result<RewindPlan, 
             seen.len()
         ));
     }
+    let suffix = rows.iter().filter(|row| row.id > boundary);
+    let last_row = suffix.clone().map(|row| row.id).max().unwrap_or(boundary);
+    let row_count = i64::try_from(suffix.count()).unwrap_or(i64::MAX);
     Ok(RewindPlan {
         boundary,
+        last_row,
+        row_count,
         previous_turn_id,
         previous_turn_rows,
         prompt_client_id,

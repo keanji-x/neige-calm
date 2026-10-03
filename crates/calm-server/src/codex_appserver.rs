@@ -190,26 +190,18 @@ impl TurnStartResult {
     }
 }
 
-/// How `thread/revert` answered. The response body (`{thread, …Cursor}`) is not read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThreadRevertOutcome {
-    /// The thread's history now ends before the turn.
-    Reverted,
-    /// The thread has no such turn: an earlier revert already removed it.
-    TurnNotFound,
-}
-
-/// Classify a `thread/revert` round-trip. Codex answers a second revert of the same turn with a
-/// JSON-RPC error whose message starts `turn not found`; that is the revert already applied.
-pub fn thread_revert_outcome(response: Result<Value>) -> Result<ThreadRevertOutcome> {
+/// Classify a `thread/revert` round-trip; its response body (`{thread, …Cursor}`) is not read.
+/// Codex answers a second revert of the same turn with a JSON-RPC error whose message starts
+/// `turn not found`; that is the revert already applied, so it is `Ok` too.
+pub fn thread_revert_outcome(response: Result<Value>) -> Result<()> {
     match response {
-        Ok(_) => Ok(ThreadRevertOutcome::Reverted),
+        Ok(_) => Ok(()),
         Err(CalmError::CodexRefused(message))
             if message
                 .strip_prefix("thread/revert failed: ")
                 .is_some_and(|rpc| rpc.starts_with("turn not found")) =>
         {
-            Ok(ThreadRevertOutcome::TurnNotFound)
+            Ok(())
         }
         Err(error) => Err(error),
     }
@@ -912,11 +904,7 @@ impl CodexAppServer {
     /// `thread/revert {threadId, beforeTurnId}` — replace the thread's durable history with the
     /// prefix before `before_turn_id`. Local file changes are not reverted. The vendored protocol
     /// calls this `thread/rollback`, which the pinned binary rejects.
-    pub async fn thread_revert(
-        &self,
-        thread_id: &str,
-        before_turn_id: &str,
-    ) -> Result<ThreadRevertOutcome> {
+    pub async fn thread_revert(&self, thread_id: &str, before_turn_id: &str) -> Result<()> {
         thread_revert_outcome(
             self.request(
                 "thread/revert",

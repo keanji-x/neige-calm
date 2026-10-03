@@ -401,7 +401,7 @@ async fn revert_codex_thread(
     before_turn_id: &str,
 ) -> std::result::Result<(), TurnStartFailure> {
     match daemon.thread_revert(thread_id, before_turn_id).await {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(error @ CalmError::CodexRefused(_)) => Err(TurnStartFailure::Refused {
             error,
             reader: "codex refused to remove the edited turn from this conversation, so your \

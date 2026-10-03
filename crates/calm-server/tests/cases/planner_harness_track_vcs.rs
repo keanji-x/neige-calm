@@ -1849,3 +1849,54 @@ fn assert_receipt_identity(text: &str, expected: &str) {
     assert_eq!(identity["text"], expected);
     assert_eq!(identity["truncated"], false);
 }
+
+/// #1923: the provider forgets a rewound turn together with the since-last-turn block it carried,
+/// so the watermark goes back and the next turn is told those track changes again.
+#[tokio::test]
+async fn a_rewound_turn_gives_its_track_changes_back_to_the_next_turn() {
+    let boot = boot().await;
+    let before = complete_first_turn_and_stamp(&boot).await;
+    add_report_card_event(&boot).await;
+    boot.harness
+        .observe_user_message_durable("what changed?".into(), Vec::new())
+        .await
+        .unwrap();
+    wait_for_turn_count(&boot.daemon, 2).await;
+    let rewound_text = turn_text(&boot.daemon, 1);
+    assert!(
+        rewound_text.contains("report.md new (by kernel)"),
+        "premise: the turn carried the block: {rewound_text}"
+    );
+    let rewound_turn = boot
+        .daemon
+        .active_turn_for_test(&boot.thread_id)
+        .expect("active turn");
+    complete_latest_turn(&boot).await;
+    let advanced = wait_for_in_mem_last_seen_head(&boot).await;
+    assert_ne!(
+        advanced, before,
+        "premise: the completion advanced the watermark"
+    );
+    boot.daemon.clear_active_turn_for_test(&boot.thread_id);
+
+    let rewound = boot.harness.rewind_turn(rewound_turn).await.unwrap();
+    assert!(rewound.input[0].text.contains("what changed?"));
+    wait_for_last_seen_head_eq(&boot, &before).await;
+    assert_eq!(
+        runtime_snapshot(&boot).await.last_seen_head,
+        Some(before.clone())
+    );
+
+    boot.harness
+        .observe_user_message_durable("what changed, again?".into(), Vec::new())
+        .await
+        .unwrap();
+    wait_for_turn_count(&boot.daemon, 3).await;
+    let text = turn_text(&boot.daemon, 2);
+    assert!(
+        text.contains(&format!("HEAD {} -> ", short(&before))),
+        "the block starts where the remaining conversation left off: {text}"
+    );
+    assert!(text.contains("report.md new (by kernel)"), "{text}");
+    boot.harness.shutdown().await.unwrap();
+}

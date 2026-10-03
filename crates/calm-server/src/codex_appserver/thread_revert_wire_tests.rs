@@ -23,8 +23,7 @@ async fn thread_revert_sends_the_pinned_wire_and_reads_a_revert() {
         peer,
         json!({"result": {"thread": {"id": "thread-1"}}}),
     ));
-    let outcome = client.thread_revert("thread-1", "turn-2").await.unwrap();
-    assert_eq!(outcome, ThreadRevertOutcome::Reverted);
+    client.thread_revert("thread-1", "turn-2").await.unwrap();
     let request = answer.await.unwrap();
     assert_eq!(request["method"], "thread/revert");
     assert_eq!(
@@ -42,10 +41,10 @@ async fn turn_not_found_is_an_applied_revert_and_other_refusals_stay_errors() {
         peer,
         json!({"error": {"code": -32600, "message": "turn not found: turn-2"}}),
     ));
-    assert_eq!(
-        client.thread_revert("thread-1", "turn-2").await.unwrap(),
-        ThreadRevertOutcome::TurnNotFound
-    );
+    client
+        .thread_revert("thread-1", "turn-2")
+        .await
+        .expect("`turn not found` is a revert already applied");
     answer.await.unwrap();
 
     let (client, _notifications, peer) = CodexAppServer::connect_pair_for_test().await;

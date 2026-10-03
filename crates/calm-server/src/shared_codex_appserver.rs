@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 
 use crate::codex_appserver::{
     AccountRead, ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem, Notification,
-    ThreadRevertOutcome, ThreadStartParams, redact_thread_start_config,
+    ThreadStartParams, redact_thread_start_config,
 };
 use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
@@ -1615,11 +1615,7 @@ impl SharedCodexAppServer {
 
     /// `thread/revert` before the turn that follows a rewind (#1923). Refused on a sealed thread
     /// like `turn/start`; the active-turn cache loses only an entry naming the reverted turn.
-    pub async fn thread_revert(
-        &self,
-        thread_id: &str,
-        before_turn_id: &str,
-    ) -> Result<ThreadRevertOutcome> {
+    pub async fn thread_revert(&self, thread_id: &str, before_turn_id: &str) -> Result<()> {
         if self.thread_seals.is_sealed(thread_id) {
             return Err(CalmError::Conflict(format!(
                 "thread {thread_id} is sealed because its track is being deleted"
@@ -1645,7 +1641,7 @@ impl SharedCodexAppServer {
         });
         #[cfg(not(feature = "fixtures"))]
         let fake_answer: Option<Result<serde_json::Value>> = None;
-        let outcome = match fake_answer {
+        match fake_answer {
             Some(answer) => crate::codex_appserver::thread_revert_outcome(answer)?,
             None => {
                 self.connected_client()
@@ -1653,10 +1649,10 @@ impl SharedCodexAppServer {
                     .thread_revert(thread_id, before_turn_id)
                     .await?
             }
-        };
+        }
         self.active_turns
             .remove_if(thread_id, |_, active| active == before_turn_id);
-        Ok(outcome)
+        Ok(())
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {

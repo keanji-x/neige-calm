@@ -32,7 +32,7 @@ use crate::harness::queue::{
     QueueMutation, apply_mutation, input_segments_for_entries, locate_entry,
     try_fold_report_edit_tail, try_fold_tail,
 };
-use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
+use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments, TurnBase};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
@@ -204,7 +204,11 @@ pub(super) struct Inner {
     /// See `HarnessSnapshot::pending_rewind`; `maybe_issue_turn` hands it to the next `turn/start`
     /// and clears it once that returns `Ok`.
     pending_rewind: Mutex<Option<BackendRewind>>,
-    /// Turns a rewind removed: a late `item/*`, plan or outcome for one writes no row. Live-only.
+    /// See `HarnessSnapshot::last_turn_base`; written when a turn goes out, read by a rewind.
+    last_turn_base: Mutex<Option<TurnBase>>,
+    /// Turns a rewind removed: a late `item/*` or plan frame for one writes no row. Live-only. An
+    /// outcome needs none: every completion arm requires the running turn, the interrupt target or
+    /// `last_turn_id`, and a rewind leaves none of them naming the removed turn.
     rewound_turns: Mutex<HashSet<String>>,
     debounce: Mutex<DebounceState>,
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
@@ -1060,6 +1064,7 @@ fn inner_from_params(
         // resumed-but-idle thread would otherwise read as having no context usage.
         token_usage: Mutex::new(snapshot.token_usage),
         pending_rewind: Mutex::new(snapshot.pending_rewind),
+        last_turn_base: Mutex::new(snapshot.last_turn_base),
         rewound_turns: Mutex::new(HashSet::new()),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
@@ -2314,7 +2319,7 @@ fn item_turn_id(params: &Value) -> Option<&str> {
 }
 
 /// Live codex sends `userMessage`; the kernel stores `item.type` verbatim and tests have used snake case.
-fn is_user_message_type(item_type: Option<&str>) -> bool {
+pub(super) fn is_user_message_type(item_type: Option<&str>) -> bool {
     matches!(item_type, Some("userMessage" | "user_message"))
 }
 
@@ -3128,6 +3133,10 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // Cleared in the same snapshot that empties the queue, so no restart can pair this key with a later batch.
             *inner.projection_client_id.lock().await = None;
             *inner.pending_rewind.lock().await = None;
+            *inner.last_turn_base.lock().await = Some(TurnBase {
+                turn_id: turn_id.clone(),
+                seen_head: last_seen_head_snapshot.clone(),
+            });
             persist_issuance_outcome(inner).await?;
         }
         Err(failure) => {
@@ -3555,6 +3564,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     snapshot.token_usage = token_usage;
     snapshot.interruption_intent = inner.interruption_intent.lock().await.clone();
     snapshot.pending_rewind = inner.pending_rewind.lock().await.clone();
+    snapshot.last_turn_base = inner.last_turn_base.lock().await.clone();
     snapshot
 }
 
@@ -3629,9 +3639,6 @@ async fn clear_interruption_intent(inner: &Arc<Inner>, turn_id: &str) {
 /// AFTER the arm's gates and BEFORE `persist_snapshot_stamping_issued_head`, so the phase event
 /// doubles as the delivery signal (no item-added event). Best-effort: a failed insert is logged.
 async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -> Option<i64> {
-    if is_rewound(inner, Some(turn_id)).await {
-        return None;
-    }
     // `thread_id` is NOT NULL and Codex's `TurnCompleted.thread_id` is `unwrap_or_default()`
     // upstream, so the harness's own thread is the only value that is never `""`.
     let Some(thread_id) = inner.thread_id.read().await.clone() else {

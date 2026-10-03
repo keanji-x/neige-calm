@@ -224,7 +224,7 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 23;
+pub const SYNC_EVENT_VERSION: u32 = 24;
 
 /// What happened to one entry in the harness pending queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

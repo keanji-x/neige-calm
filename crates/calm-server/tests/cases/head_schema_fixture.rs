@@ -70,6 +70,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0130_read_only_tasks.sql",
     "0131_read_only_task_commits.sql",
     "0132_track_wake_requested_event_version.sql",
+    "0133_harness_transcript_rewound_event_version.sql",
 ];
 
 #[test]
