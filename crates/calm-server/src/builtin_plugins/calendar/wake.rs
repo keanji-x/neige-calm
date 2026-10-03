@@ -60,7 +60,7 @@ pub(super) async fn scan(ctx: &AppContext, now: DateTime<Utc>) -> Result<usize> 
     Ok(woken)
 }
 
-async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -> Result<bool> {
+pub(super) async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -> Result<bool> {
     // Human entries have no source Track and never wake anything.
     let Some(track_id) = entry.source_track_id.clone() else {
         return Ok(false);

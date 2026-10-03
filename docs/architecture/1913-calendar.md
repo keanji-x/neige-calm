@@ -125,8 +125,10 @@ dedupe stays with the dispatcher watermark.
 A wake missed while the server was down fires once on the next scan only while
 the entry has not ended. After the end, or when the Track is closed or missing,
 the cursor advances without an event. Moving an entry to a later start makes it
-fire again at the new start. The kernel does not start Planners: a Track whose
-Planner harness never started holds the event until a harness exists. There is
+fire again at the new start. A wake reaches a running Planner: it is delivered on
+its next turn and replayed after a restart. The kernel does not start Planners; a
+wake that comes due before the Track's Planner has ever started is recorded as
+fired and not delivered. There is
 no per-entry opt-out or holiday exception; the woken Planner decides to skip.
 Weekly recurrence is a separate slice.
 

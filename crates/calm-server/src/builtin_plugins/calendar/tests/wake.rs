@@ -452,3 +452,30 @@ async fn rescheduled_entry_wakes_again_at_its_new_start() {
     assert_eq!(cursor(&fx, &later).await, None);
     planner.harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn edit_landing_after_the_scan_read_wins_over_the_stale_entry() {
+    let fx = Fixture::new().await;
+    let planner = fx.identity(CardRole::Planner).await;
+    let read_by_scan = create(
+        &fx,
+        &planner,
+        "raced",
+        timed("2026-10-02T09:00", "2026-10-02T10:00"),
+    )
+    .await;
+    // The owner cancels after the scan listed version 1 but before its wake transaction.
+    let task = serde_json::to_value(&read_by_scan.task).unwrap();
+    update(&fx, &planner, &read_by_scan, task, true).await;
+    assert!(
+        !crate::builtin_plugins::calendar::wake::handle(
+            &fx.ctx,
+            read_by_scan.clone(),
+            at("2026-10-02T09:00:10+08:00"),
+        )
+        .await
+        .unwrap()
+    );
+    assert!(wake_events(&fx).await.is_empty());
+    assert_eq!(cursor(&fx, &read_by_scan).await, None);
+}
