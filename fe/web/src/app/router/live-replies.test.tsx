@@ -249,10 +249,10 @@ describe('a streamed reply in the Planner conversation', () => {
     await screen.findByText('long ago');
     expect(screen.getByText('Hello, wor')).toBeTruthy();
     expect(screen.queryByText('Hello, world.')).toBeNull();
-    /* The next read of the newest page stands for the ended turn. */
+    /* Load earlier cancelled the client's re-read, so with no further event the client starts it again. */
+    await waitFor(() => expect(gate.waiting).toHaveLength(3));
     gate.hold = false;
-    act(() => { gate.waiting[0]?.(); });
-    await phaseChanged(client, CARD.id);
+    act(() => { gate.waiting.forEach((release) => { release(); }); });
     await waitFor(() => expect(screen.queryByText('Hello, wor')).toBeNull());
     expect(screen.getByText('Hello, world.')).toBeTruthy();
   });

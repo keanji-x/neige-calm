@@ -130,6 +130,7 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
   }, [streaming, cardId]);
   const pollAt = live.dataUpdatedAt;
   const reply = live.data;
+  /* KNOWN GAP: a poll still in flight when streaming stops can land after the next stretch began (one turn ends and the next starts within a round trip) and re-add the old turn's copy briefly; (a) hides it at once if stored, (c) removes it within one poll otherwise. */
   useEffect(() => {
     const since = streamingSince.current;
     if (reply === undefined || since === null || pollAt < since) return;
@@ -146,11 +147,27 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
   /* Only a read started after this point stands for the phase, however late an earlier one lands.
      The transcript is re-read here so that one always starts; the cancel comes first because the
      query layer would hand back an initial read still in flight in place of a new one. */
+  const rereadAfter = useRef<number | null>(null);
+  const reread = useCallback(() => {
+    rereadAfter.current = transcriptReads.latest();
+    cancelThenInvalidate(client, transcriptKey);
+  }, [client, transcriptKey, transcriptReads]);
   useEffect(() => {
     if (phase === null || !awaitsSettling(visible, phase)) return;
     apply({ kind: 'phase', phase, latestReadStart: transcriptReads.latest() });
-    cancelThenInvalidate(client, transcriptKey);
-  }, [apply, client, phase, transcriptKey, transcriptReads, visible]);
+    reread();
+  }, [apply, phase, reread, transcriptReads, visible]);
+  /* A read started after the re-read can cancel it (Load earlier does) and keep the stored newest page,
+     so while a settled copy still shows, an idle transcript is read again until a later read lands. */
+  const transcriptIdle = useSyncExternalStore(
+    subscribeToQueries, () => client.getQueryState(transcriptKey)?.fetchStatus === 'idle',
+  );
+  const awaitsRead = visible.some((copy) => copy.settledAt !== null);
+  useEffect(() => {
+    const after = rereadAfter.current;
+    if (!transcriptIdle || !awaitsRead || after === null || transcriptReads.latest() <= after) return;
+    reread();
+  }, [awaitsRead, reread, transcriptIdle, transcriptReads]);
   useEffect(() => {
     if (visible !== copies) apply({ kind: 'transcript', items, readStart: transcriptStart });
   }, [apply, copies, items, transcriptStart, visible]);
