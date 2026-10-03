@@ -274,7 +274,6 @@ impl Reading<'_> {
             Ok(record) => record,
             Err(error) => return Some(self.protocol_failure(&error)),
         };
-        self.translator.chain_line(line);
         match &record {
             Record::SystemInit(init) => {
                 // The CLI created (or resumed) this thread's session as soon as it names it, even
@@ -324,7 +323,10 @@ impl Reading<'_> {
             }
             _ => {}
         }
-        for event in self.translator.translate(&record, crate::model::now_ms()) {
+        for event in self
+            .translator
+            .translate_line(line, &record, crate::model::now_ms())
+        {
             self.total_tokens = usage_total(&event).or(self.total_tokens);
             let _ = self.shared.events.send(event);
         }

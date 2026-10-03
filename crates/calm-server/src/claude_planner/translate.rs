@@ -186,12 +186,18 @@ impl TurnTranslator {
         }
     }
 
-    /// Note one stdout line before its record is translated: a chain entry, whether or not it makes
+    /// [`Self::translate`] for one stdout line and its record: a chain entry, whether or not it makes
     /// an item, becomes the turn's last record (the `lastRecordUuid` a later rewind keeps up to).
-    pub fn chain_line(&mut self, line: &str) {
+    pub fn translate_line(
+        &mut self,
+        line: &str,
+        record: &Record,
+        now_ms: i64,
+    ) -> Vec<PlannerEvent> {
         if let Some(uuid) = chain_entry_uuid(line) {
             self.last_record_uuid = Some(uuid);
         }
+        self.translate(record, now_ms)
     }
 
     /// The events one record produces, in order. Terminal records yield at most the usage

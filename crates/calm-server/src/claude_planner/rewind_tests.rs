@@ -43,12 +43,11 @@ fn translator() -> TurnTranslator {
     .unwrap()
 }
 
-/// Feed stdout lines as the driver does: decode, note the line, translate.
+/// Feed stdout lines through the translator's line entry point, as the driver does.
 fn feed(translator: &mut TurnTranslator, lines: &[String]) {
     for (n, line) in lines.iter().enumerate() {
         let record = decode(line).unwrap_or_else(|e| panic!("line {}: {e}", n + 1));
-        translator.chain_line(line);
-        translator.translate(&record, n as i64);
+        translator.translate_line(line, &record, n as i64);
     }
 }
 
