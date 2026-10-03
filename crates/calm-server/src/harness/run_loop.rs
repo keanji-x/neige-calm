@@ -2597,9 +2597,7 @@ async fn apply_refusal(inner: &Arc<Inner>, failure: &IssuanceRefusal) {
         // Nobody can act, and repeating may work. Silent while that is
         // plausibly still true; see `transient_notice`.
         FailureKind::Retryable => (TRANSIENT_RETRY_DELAY, transient_notice(inner).await),
-        // Codex answered no, or Claude's preflight found a binary that is not the pinned one. Retried
-        // slowly rather than not at all (the fix may land from another tab or the operator), but the
-        // reader is told now.
+        // The provider refused. Retried slowly rather than not at all, but the reader is told now.
         FailureKind::Rejected => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
         FailureKind::NeedsAChoice => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
     };
@@ -3218,8 +3216,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .map(|attachment| InputItem::local_image(attachment.path.clone())),
     );
     // A projection row that could not be written is a LOCAL failure before the provider was asked; a
-    // failed `turn/start` is the backend's, which classifies it (Codex's answer, or Claude's preflight
-    // before any turn process starts). The log must not call the first "turn/start failed".
+    // failed `turn/start` is classified by the backend that raised it. The log must not call the first
+    // "turn/start failed".
     enum IssueFailure {
         ProjectionWrite(CalmError),
         TurnStart(TurnStartFailure),
