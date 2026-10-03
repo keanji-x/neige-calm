@@ -265,19 +265,19 @@ async fn an_interrupted_reply_is_stored_once_as_a_partial() {
     );
 }
 
-/// The reply's text arrives as 300 deltas (the captured delta line, repeated): none stores a row,
-/// logs an event or writes the snapshot, which every write of `handle_state_json` does.
+/// The reply's text arrives as 300 deltas (the captured delta line, repeated), which the fake holds
+/// until the baseline is read: none stores a row, logs an event or writes the snapshot, which every
+/// write of `handle_state_json` does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claude_delta_writes_no_row_no_event_and_no_snapshot() {
     const DELTAS: usize = 300;
     let root = Root::new("stream");
     let lines = stream_lines();
     let first_delta = line_of(&lines, &format!(r#""text":"{CUT_AT}""#));
-    let mut head = lines[..first_delta].to_vec();
     let piece = lines[first_delta].replace(CUT_AT, "x");
-    head.extend(std::iter::repeat_n(piece, DELTAS));
     let rest = lines[line_of(&lines, r#""text":"malade."}"#) + 1..].to_vec();
-    write_fake(&root, "stream", &head);
+    write_fake(&root, "stream", &lines[..first_delta]);
+    write_fake(&root, "stream-burst", &vec![piece; DELTAS]);
     write_fake(&root, "stream-rest", &rest);
     let stack = Stack::boot(&root).await;
     let (_, card_id) = stack.create_claude_track().await;
@@ -310,7 +310,7 @@ async fn a_claude_delta_writes_no_row_no_event_and_no_snapshot() {
     let events = || count("SELECT COUNT(*) FROM events");
 
     start_turn(&stack, &root, &card_id).await;
-    // The reply's start is stored, so everything before the deltas has been handled.
+    // The reply's start is stored, so everything before the held deltas has been handled.
     let deadline = Instant::now() + Duration::from_secs(20);
     while !model_items(&item_rows(&stack, &card_id).await).contains(&row(
         "item/started",
@@ -326,6 +326,7 @@ async fn a_claude_delta_writes_no_row_no_event_and_no_snapshot() {
         events().await,
         transcript(&stack, &card_id).await.len(),
     );
+    std::fs::write(root.fake_dir().join("release-burst"), "").expect("release the deltas");
     wait_live_items(
         &stack,
         &card_id,

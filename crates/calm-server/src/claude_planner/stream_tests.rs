@@ -292,6 +292,48 @@ fn a_record_takes_its_stream_blocks_index() {
     assert_eq!(deltas(&events), [("msg_1:1".to_owned(), "hi".to_owned())]);
 }
 
+/// A nested stream's frames (a non-null `parent_tool_use_id`) are ignored: they neither open a
+/// reply nor move the top-level message's open block.
+#[test]
+fn a_nested_streams_frames_are_ignored() {
+    let nested = |event: Value| {
+        let mut line: Value = serde_json::from_str(&stream_line(event)).unwrap();
+        line["parent_tool_use_id"] = json!("toolu_parent");
+        line.to_string()
+    };
+    let lines = [
+        stream_line(json!({ "type": "message_start", "message": { "id": "msg_1" } })),
+        stream_line(json!({ "type": "content_block_start", "index": 0,
+            "content_block": { "type": "text", "text": "" } })),
+        nested(json!({ "type": "message_start", "message": { "id": "msg_sub" } })),
+        nested(json!({ "type": "content_block_start", "index": 0,
+            "content_block": { "type": "thinking", "thinking": "" } })),
+        nested(json!({ "type": "content_block_delta", "index": 0,
+            "delta": { "type": "text_delta", "text": "nested" } })),
+        stream_line(json!({ "type": "content_block_delta", "index": 0,
+            "delta": { "type": "text_delta", "text": "hi" } })),
+        text_record("msg_1", "hi"),
+    ];
+    let records: Vec<Record> = lines.iter().map(|line| decode(line).unwrap()).collect();
+    for record in &records[2..5] {
+        assert_eq!(
+            *record,
+            Record::Ignored {
+                kind: "stream_event/nested".into()
+            }
+        );
+    }
+    let events = translate(&records);
+    assert_eq!(
+        item_events(&events),
+        [
+            event("item/started", "msg_1:0", "agentMessage"),
+            event("item/completed", "msg_1:0", "agentMessage"),
+        ]
+    );
+    assert_eq!(deltas(&events), [("msg_1:0".to_owned(), "hi".to_owned())]);
+}
+
 #[test]
 fn stream_events_decode_only_what_a_live_reply_needs() {
     let decoded = |event: Value| decode(&stream_line(event));

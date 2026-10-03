@@ -3,7 +3,8 @@
 # copies it into a private directory next to a `scenario` file; the spawn's environment is an
 # allowlist, so everything the fake needs or records lives in that directory:
 #   in:  scenario, version (optional; default 2.1.280), result_line (optional),
-#        stream, stream-rest (the `stream*` scenarios' records; stream-rest optional),
+#        stream, stream-burst, stream-rest (the `stream*` scenarios' records; burst and rest
+#        optional),
 #        auth (optional; the `auth status --json` answer, default logged-in),
 #        catalog (optional; the `initialize` answer, default ok)
 #   out: spawns, pid, argv, env, pwd, stdin, instructions, orphan, emitted, streamed, mcp_reply,
@@ -256,9 +257,9 @@ PY
     exec yes '{"type":"system","subtype":"status","status":"requesting"}' ;;
   stream|stream-hold)
     # #1923: the records of `stream` (a captured `--include-partial-messages` stdout, results left
-    # out), then `streamed`. `stream` then waits for `release` before `stream-rest`, if the test
-    # wrote one, and succeeds; `stream-hold` ends at the next stdin line (an interrupt) as the CLI
-    # does after one.
+    # out), then `streamed`. `stream` then waits for `release-burst` before `stream-burst` and for
+    # `release` before `stream-rest`, each if the test wrote it, and succeeds; `stream-hold` ends at
+    # the next stdin line (an interrupt) as the CLI does after one.
     jq -c 'select(.type != "result")' "$D/stream"
     touch "$D/streamed"
     if [ "$SCENARIO" = stream-hold ]; then
@@ -266,6 +267,10 @@ PY
       printf '%s\n' "$CONTROL" >> "$D/stdin"
       echo "$ABORTED"
     else
+      if [ -e "$D/stream-burst" ]; then
+        while [ ! -e "$D/release-burst" ]; do sleep 0.05; done
+        jq -c 'select(.type != "result")' "$D/stream-burst"
+      fi
       if [ -e "$D/stream-rest" ]; then
         while [ ! -e "$D/release" ]; do sleep 0.05; done
         jq -c 'select(.type != "result")' "$D/stream-rest"

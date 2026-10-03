@@ -12,7 +12,8 @@
 //! file, and answers in a second message, with its `stream_event` lines. Its `system/init` line is
 //! left out (it lists the account's connectors), its directory became `/probe/ws`, its signatures and
 //! message and request ids placeholders, and its tool input deltas are the redacted input re-split
-//! into the same number of pieces.
+//! into the same number of pieces. Its session id is a placeholder, its `rate_limit_info` a neutral
+//! one, and its costs zero.
 
 use serde_json::{Value, json};
 use uuid::Uuid;

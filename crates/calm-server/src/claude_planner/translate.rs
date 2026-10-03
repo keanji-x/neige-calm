@@ -1,6 +1,6 @@
 //! Pure translation of one Claude turn's [`Record`]s into the [`PlannerEvent`]s the Planner harness
-//! consumes (design #1791 §4.3, §6.1, #1981 S4): `TurnStarted`, `TurnCompleted`, `Item` and
-//! `TokenUsage`, nothing else.
+//! consumes (design #1791 §4.3, §6.1, #1981 S4): `TurnStarted`, `TurnCompleted`, `Item`,
+//! `TokenUsage` and `ReplyDelta` (#1923), nothing else.
 //!
 //! Item envelope `{threadId, turnId, item, startedAtMs | completedAtMs}`. Item ids: `tool_use.id` for
 //! tools, `<message.id>:<stream block index>` for text and thinking blocks (#1923), the replay's uuid

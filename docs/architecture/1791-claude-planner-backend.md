@@ -165,8 +165,9 @@ turn records stay the stored JSON, so the FE converters are unchanged.)
 Synthesis is honest: stored rows were always "the item the transcript renders" (Codex rows are filtered,
 H9; projection rows are kernel-written in the same shape, H8), every row's provider is recoverable via
 `worker_session_id`, and Claude keeps its raw record in its own session file. The Claude backend emits
-only `TurnStarted`, `TurnCompleted`, `Item` (started or completed) and `TokenUsage`; since #1981 S4 these
-are the run loop's neige-owned `PlannerEvent`s, not Codex `Notification`s.
+only `TurnStarted`, `TurnCompleted`, `Item` (started or completed), `TokenUsage` and, since #1923, a reply's
+`ReplyDelta` (memory only, §6.1); since #1981 S4 these are the run loop's neige-owned `PlannerEvent`s, not
+Codex `Notification`s.
 It writes two things itself: the durable turn outcome (`turn_outcome::record`, idempotent, H10) and
 `agent_session_id` through the existing attribution bind (`crates/calm-truth/src/db/sqlite/session_mirror.rs:420-440`).
 
@@ -764,7 +765,7 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
   driver writes first (D13); the frontend's ordering rule places it (#1923 P4).
 - Plugin calm tools keep the Claude spelling `mcp__calm__<sanitized>` in the transcript: the dotted name is
   restored only from the kernel's Planner tool descriptors (`claude_planner/config.rs:106-111`,
-  `claude_planner/translate.rs:305-311` keeps an unknown name and warns).
+  `claude_planner/translate.rs:411-418` keeps an unknown name and warns).
 
 ### 9.4 Risks and conflicts
 
@@ -783,8 +784,8 @@ Resident process per harness; approval responder; **steer** (r2); **provider-neu
 (r2, formerly PR7). The Claude model catalog and create/PUT validation were cut in r2 too, and were
 later delivered by #1810 and made the CLI's live list by #1822 (§5.8). Also cut: the r1 journal, recorded process
 identity, process-wide registry and provider-keyed seal API (r2); Claude for PlainChat/Assistant; SDK-served
-`Recover`; streaming deltas, per-request usage, rate-limit surfacing, todo → plan; renaming the card kind;
-a provider-neutral item model.
+`Recover`; reasoning and tool-output streaming deltas (a reply's text streams since #1923, §6.1),
+per-request usage, rate-limit surfacing, todo → plan; renaming the card kind; a provider-neutral item model.
 
 ### 9.6 Owner decisions
 

@@ -440,8 +440,14 @@ struct WireText {
 }
 
 /// `{"type":"stream_event","event":{"type":…}}`: `message_start`, `content_block_start` and a
-/// `text_delta` decode; every other event, and every other delta kind, is ignored.
+/// `text_delta` decode; every other event, every other delta kind, and every frame of a nested
+/// stream (a non-null `parent_tool_use_id`) is ignored.
 fn decode_stream_event(mut value: Value) -> Result<Record, ProtocolError> {
+    if !value["parent_tool_use_id"].is_null() {
+        return Ok(Record::Ignored {
+            kind: "stream_event/nested".to_string(),
+        });
+    }
     let event = value["event"].take();
     let Some(event_type) = event.get("type").and_then(Value::as_str) else {
         return Err(ProtocolError::NoSubtype {
