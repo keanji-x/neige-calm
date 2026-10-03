@@ -138,13 +138,6 @@ impl PlannerBackend {
         }
     }
 
-    pub async fn interrupt_active_turn(&self, thread_id: &str) -> Result<()> {
-        match self {
-            Self::Codex(daemon) => daemon.interrupt_active_turn(thread_id).await,
-            Self::Claude(session) => session.interrupt_active_turn(thread_id).await,
-        }
-    }
-
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
         match self {
             Self::Codex(daemon) => daemon.active_turn_id_for_thread(thread_id),

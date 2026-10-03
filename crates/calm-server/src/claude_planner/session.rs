@@ -644,13 +644,6 @@ impl ClaudePlannerSession {
         }
     }
 
-    pub async fn interrupt_active_turn(&self, thread: &str) -> Result<()> {
-        match self.active_turn_id_for_thread(thread) {
-            Some(turn) => self.turn_interrupt(thread, &turn).await,
-            None => Ok(()),
-        }
-    }
-
     /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and stop the marker
     /// whether or not a turn runs. The `stop` result is returned for strict callers. A session that
     /// was never installed (an install-race loser) minted and spawned nothing, so it signals nothing:

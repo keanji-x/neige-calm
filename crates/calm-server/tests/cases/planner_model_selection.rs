@@ -543,7 +543,7 @@ async fn a_refused_turn_is_retried_on_a_pace_rather_than_every_tick() {
 }
 
 /// Driven through the unreadable-payload state rather than null-config: the fixtures daemon answers no RPC and so
-/// cannot produce "codex answered, and the answer named no model". The two share this arm (`resolve_model_selection`).
+/// cannot produce "codex answered, and the answer named no model". The two share this arm (`codex_selection::resolve`).
 #[tokio::test]
 async fn a_refusal_that_cannot_clear_itself_tells_the_reader_what_to_do() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
