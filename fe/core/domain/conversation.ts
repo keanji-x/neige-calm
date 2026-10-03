@@ -1183,6 +1183,8 @@ function isTranscriptMethod(method: string): boolean {
 export function buildTranscript(items: readonly HarnessItem[]): readonly TranscriptEntry[] {
   const order: string[] = [];
   const byKey = new Map<string, TranscriptEntry>();
+  /** The turn of the row that placed each entry; `null` for a row that belongs to no turn. */
+  const turnOf = new Map<string, string | null>();
 
   for (const item of [...items].sort((left, right) => left.id - right.id)) {
     if (!isTranscriptMethod(item.method)) continue;
@@ -1191,6 +1193,7 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     if (outcome !== null) {
       order.push(outcome.id);
       byKey.set(outcome.id, outcome);
+      turnOf.set(outcome.id, outcome.turnId);
       continue;
     }
     const turns = harnessItemToTurns(item);
@@ -1200,7 +1203,7 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
            the bubble replaces the line in place. */
         const key = turn.author === 'agent' && turn.origin === 'notify'
           ? `activity-${item.item_uuid ?? item.id}` : `turn-${turn.id}`;
-        if (!byKey.has(key)) order.push(key);
+        if (!byKey.has(key)) { order.push(key); turnOf.set(key, item.turn_id); }
         byKey.set(key, turn);
       }
       continue;
@@ -1209,16 +1212,44 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     if (activity === null) continue;
     // Pair on the wire's own item id when it has one; a row without one is its own line.
     const key = `activity-${item.item_uuid ?? item.id}`;
-    if (!byKey.has(key)) order.push(key);
+    if (!byKey.has(key)) { order.push(key); turnOf.set(key, item.turn_id); }
     byKey.set(key, { ...activity, id: key });
   }
 
-  const entries = order.flatMap((key) => {
+  const entries = placeTurnOutcomes(order, turnOf, (key) => byKey.get(key)?.author === 'turn').flatMap((key) => {
     const entry = byKey.get(key);
     return entry === undefined ? [] : [entry];
   });
 
   return retireFollowedThoughts(entries);
+}
+
+/**
+ * Each outcome moves to just after the last entry of its own turn, never past the first entry of a
+ * later turn; a row with no turn id belongs to no turn. A provider can store a turn's outcome before
+ * its last reply (the Claude driver does), and the reply still reads above the line that ends it.
+ */
+function placeTurnOutcomes(
+  order: readonly string[], turnOf: ReadonlyMap<string, string | null>, isOutcome: (key: string) => boolean,
+): readonly string[] {
+  const placed = [...order];
+  for (const key of order) {
+    const turn = turnOf.get(key) ?? null;
+    if (!isOutcome(key) || turn === null) continue;
+    const from = placed.indexOf(key);
+    let to = from;
+    for (let index = from + 1; index < placed.length; index += 1) {
+      const other = placed[index];
+      const otherTurn = turnOf.get(other) ?? null;
+      if (otherTurn === null) continue;
+      if (otherTurn !== turn || isOutcome(other)) break;
+      to = index;
+    }
+    if (to === from) continue;
+    placed.splice(from, 1);
+    placed.splice(to, 0, key);
+  }
+  return placed;
 }
 
 /**
@@ -1232,7 +1263,7 @@ function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly T
   });
 }
 
-/** Append optimistic user echoes, retiring the thought they now follow. */
+/** Append entries the server has not stored yet (optimistic user echoes, live replies), retiring the thought they now follow. */
 export function mergeTranscript(
   serverEntries: readonly TranscriptEntry[],
   echoes: readonly ConversationTurn[],

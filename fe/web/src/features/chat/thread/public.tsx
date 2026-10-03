@@ -136,20 +136,25 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   /** The turn at the end of the transcript as of this render — what the follow
    *  effect below both depends on and decides by. */
   const newestId = lastTurn?.id;
+  /** How much of the newest reply there is: a streamed reply grows in place under one id. */
+  const newestLength = lastTurn?.author === 'agent' ? lastTurn.text.length : 0;
   /** The newest turn as of the last run of the follow effect, so *Load earlier* is not mistaken for an arrival. Updated on every run, including runs that decline to scroll. */
   const followedTo = useRef<string | undefined>(undefined);
+  const followedLength = useRef(0);
   const followedNotice = useRef<string | null>(null);
   const noticeKind = stalled ? 'paused' : stopFeedback?.kind ?? null;
 
-  /* Follow the newest turn only for a reader already at the bottom, when the last turn's id or runtime notice changes — not the count: *Load earlier* grows the count, and a collapsed `Thought` changes the id without it. A pane resize moves the reader without a `scroll`, so the same measurement runs from a `ResizeObserver`. Write the pane's own `scrollTop`: `scrollIntoView` pans every ancestor scrollport. */
+  /* Follow the newest turn only for a reader already at the bottom, when the last turn's id, its streamed length or the runtime notice changes — not the count: *Load earlier* grows the count, and a collapsed `Thought` changes the id without it. A pane resize moves the reader without a `scroll`, so the same measurement runs from a `ResizeObserver`; text growing below the fold fires neither, so a reader at the bottom stays one. Write the pane's own `scrollTop`: `scrollIntoView` pans every ancestor scrollport. */
   useEffect(() => {
     const end = endRef.current;
     if (end == null) return;
     const scroller = end.closest<HTMLElement>('[data-nc-drawer-scroll]');
     if (scroller == null) return;
-    const arrived = newestId !== followedTo.current || noticeKind !== followedNotice.current;
+    const arrived = newestId !== followedTo.current || newestLength !== followedLength.current
+      || noticeKind !== followedNotice.current;
     followedNotice.current = noticeKind;
     followedTo.current = newestId;
+    followedLength.current = newestLength;
     if (arrived && followsNewest.current) scroller.scrollTop = scroller.scrollHeight;
     const measure = () => {
       followsNewest.current = scroller.scrollHeight - scroller.scrollTop
@@ -161,7 +166,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       scroller.removeEventListener('scroll', measure);
       unobserve();
     };
-  }, [turns.length, newestId, noticeKind]);
+  }, [turns.length, newestId, newestLength, noticeKind]);
 
   /* The lit dot is the last exchange whose opening marker sits at or above an edge: the pane's top while a pane-height of scroll remains, sliding to the bottom as it runs out (a hard switch jumped the mark by a pane's worth). Evaluated on every scroll rather than by an observer. `read()` stops at a zero-height pane, and that guard lives only there so a pane mounted at zero height still gets its listeners. */
   const exchangeKey = JSON.stringify(exchanges.map((exchange) => exchange.id));
@@ -417,7 +422,7 @@ function jumpToExchange(frame: HTMLElement | null, id: string): boolean {
   return true;
 }
 
-/** The reply is markdown via Astryx's `Markdown`. `isStreaming` is deliberately not passed: it is a typewriter that withholds text and splits it into spans. `headingLevelStart={3}` because the page owns `<h1>` and its sections `<h2>`. */
+/** The reply is markdown via Astryx's `Markdown`, streamed or stored alike. `isStreaming` is deliberately not passed: it is a typewriter that withholds text and splits it into spans, and it restarts from nothing when a streamed reply mounts mid-way. `headingLevelStart={3}` because the page owns `<h1>` and its sections `<h2>`. */
 function Reply({ text }: { text: string }) {
   return <Markdown density="compact" headingLevelStart={3}>{text}</Markdown>;
 }

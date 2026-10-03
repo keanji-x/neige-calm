@@ -1,6 +1,7 @@
 import { writeClipboardText } from '../../ui/operation-feedback/clipboard.ts';
 import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation.ts';
 import { useConversationStop } from '../conversations/stop.ts';
+import { useLiveReplies } from '../conversations/live-replies.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 // Code-based TanStack Router setup, built inside a factory so a test can inject the
@@ -283,9 +284,11 @@ export function useConversationStore(
   const scopeState = scope?.state ?? null;
   const serverRows = routeIntent.rows;
   const rememberOn = routeIntent.rememberOn;
-  const history = useInfiniteQuery({
-    ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
-  });
+  /* Held across renders: the live replies read and re-read this query by its key. */
+  const transcriptQuery = useMemo(
+    () => harnessItemsQueryOptions(transport, cardId, unauthorized), [transport, cardId, unauthorized],
+  );
+  const history = useInfiniteQuery({ ...transcriptQuery, enabled: scope !== null });
   const run = useQuery({ ...plannerRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
   /* The catalog rides alongside the run query: the trigger has to render the chosen
        model's name, and `planner-run` gives only its slug. */
@@ -405,6 +408,10 @@ export function useConversationStore(
     () => [...serverTurns, ...confirmedEchoes].sort((left, right) => left.atMs - right.atMs),
     [confirmedEchoes, serverTurns],
   );
+  /* The running turn's streamed replies: drawn at the tail, never remembered, never counted. */
+  const liveReplies = useLiveReplies({
+    transport, unauthorized, cardId, enabled: scope !== null, phase, transcriptKey: transcriptQuery.queryKey, items,
+  });
   /* An echo belongs after everything the server has confirmed; a completed action
        keeps the started row's place. */
   const transcript = useMemo(
@@ -417,9 +424,9 @@ export function useConversationStore(
         .filter((turn) => turn.entryId === null || !pendingQueueIds.has(turn.entryId))
         .map((turn) => stalled || turn.id === unconfirmedEchoId
           ? { ...turn, queued: false } : turn);
-      return mergeTranscript(serverEntries, displayedEchoes);
+      return mergeTranscript(mergeTranscript(serverEntries, liveReplies), displayedEchoes);
     },
-    [echoes, pendingQueueIds, serverEntries, stalled, unconfirmedEchoId],
+    [echoes, liveReplies, pendingQueueIds, serverEntries, stalled, unconfirmedEchoId],
   );
   const confirmedTranscript = useMemo(
     () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],

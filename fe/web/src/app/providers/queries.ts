@@ -60,6 +60,7 @@ import {
   type Conversation, type ModelCatalogScope, type ModelSelection, type ModelSelectionResult,
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
+import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
@@ -165,6 +166,8 @@ export const queryKeys = Object.freeze({
   /* The Today launchpad resolve. One entry, not keyed by track: `purpose = 'launchpad'` is a singleton. */
   todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
+  /** The running turn's streamed reply text (#1923). Polled while a reply may stream; no event reaches it. */
+  harnessLive: (cardId: string) => ['harness-live', cardId] as const,
   plannerRun: (cardId: string) => ['planner-run', cardId] as const,
   /**
    * `GET /api/models` for one scope: a card (its default resolves against that card's workspace) or a
@@ -193,6 +196,14 @@ export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: st
     initialPageParam: 0,
     getNextPageParam: (page: HarnessItem[]) =>
       page.length === HARNESS_ITEMS_PAGE_LIMIT ? page[0]?.id : undefined,
+  };
+}
+
+export function harnessLiveQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.harnessLive(cardId),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      runOperation(transport, { ...harnessLiveOperation(cardId), signal }, unauthorized),
   };
 }
 

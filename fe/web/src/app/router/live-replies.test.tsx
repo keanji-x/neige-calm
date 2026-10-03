@@ -1,0 +1,238 @@
+// @vitest-environment jsdom
+// The Planner's reply as it streams (#1923 S2 P4), through the production router and a fake transport.
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { RouterProvider } from '@tanstack/react-router';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { HarnessLiveReplies, HarnessPhaseTag } from '../../../../core/api/generated/wire.ts';
+import type { buildTranscript } from '../../../../core/domain/conversation.ts';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { ThemeProvider } from '../theme/public.tsx';
+import { queryKeys } from '../providers/queries.ts';
+import { APP_BASEPATH, createAppRouter } from './public.tsx';
+import { bootTestCardRuntime } from './test-card-runtime.ts';
+
+const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
+const CARD = { id: 'card-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
+/* A second conversation on the same track: a track assistant, listed by the track's conversations. */
+const OTHER = { ...CARD, id: 'conv-2', title: 'Other chat', payload: { harness_profile: 'assistant' }, sort: 2 };
+const OTHER_ROW = { id: OTHER.id, trackId: TRACK.id, title: OTHER.title, kind: 'track-assistant', state: 'running', updatedAt: 5, lastTurnCompletedAt: null };
+const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+
+function ok(body: unknown): ApiTransportResponse {
+  return { status: 200, statusText: 'OK', body };
+}
+
+/** One card's server side: what each of the three reads answers right now. */
+type Row = Parameters<typeof buildTranscript>[0][number];
+type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies };
+
+function row(id: number, method: string, itemType: string | null, params: unknown, extra: Partial<Row> = {}): Row {
+  return {
+    id, worker_session_id: 'runtime', card_id: CARD.id, track_id: TRACK.id, thread_id: 'thread', turn_id: 'T1',
+    turn_error_text: null, item_uuid: null, item_type: itemType, method, params: JSON.stringify(params), created_at_ms: id,
+    ...extra,
+  };
+}
+const asked = (id: number, text: string) => row(id, 'item/completed', 'userMessage', { item: { content: [{ text }] } });
+const replyStarted = (id: number, uuid: string) =>
+  row(id, 'item/started', 'agentMessage', { item: { id: uuid, type: 'agentMessage', text: '' } }, { item_uuid: uuid });
+const replied = (id: number, uuid: string, text: string, partial = false) => row(id, 'item/completed', 'agentMessage', {
+  item: { id: uuid, type: 'agentMessage', text }, completedAtMs: id, ...(partial ? { _partial: true } : {}),
+}, { item_uuid: uuid });
+const ended = (id: number, status: 'completed' | 'interrupted') =>
+  row(id, 'turn/completed', null, { id: 'T1', status });
+const streaming = (turnId: string | null, items: Record<string, string>): HarnessLiveReplies =>
+  ({ turn_id: turnId, items: Object.entries(items).map(([item_id, text]) => ({ item_id, text })) });
+
+type Gate = { hold: boolean; waiting: (() => void)[] };
+
+function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, waiting: [] }) {
+  const requests: ApiRequest[] = [];
+  const themeValues = new Map<string, string>();
+  const transport: ApiTransportPort = {
+    async send(request) {
+      requests.push(request);
+      const card = /\/api\/cards\/([^/]+)\//.exec(request.path)?.[1];
+      const server = card === undefined ? undefined : servers[decodeURIComponent(card)];
+      if (server !== undefined && request.path.includes('/harness/items')) {
+        /* What the transcript says when the read is made, answered when the gate opens. */
+        const rows = [...server.rows];
+        if (gate.hold) await new Promise<void>((resolve) => { gate.waiting.push(resolve); });
+        return ok(rows);
+      }
+      if (server !== undefined && request.path.endsWith('/harness/live')) return ok(server.live);
+      if (server !== undefined && request.path.endsWith('/planner/run')) return ok({
+        card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, blocked_reason: null,
+      });
+      if (request.path === '/api/areas') return ok([AREA]);
+      if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
+      if (request.path === '/api/overlays?entity_kind=track') return ok([]);
+      if (request.path === '/api/tracks/w1') return ok({
+        track: TRACK, can_reopen: false, can_close: true, cards: [CARD, OTHER], overlays: [],
+      });
+      if (request.path === '/api/tracks/w1/conversations') return ok([OTHER_ROW]);
+      if (request.path === '/api/settings') return ok({});
+      return ok([]);
+    },
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
+  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+  render(<QueryClientProvider client={client}><ThemeProvider storage={{
+    getItem: (key) => themeValues.get(key) ?? null, setItem: (key, value) => { themeValues.set(key, value); },
+  }}>
+    <RouterProvider router={router} />
+  </ThemeProvider></QueryClientProvider>);
+  return { client, requests };
+}
+
+async function open(name: string) {
+  const closer = screen.queryByRole('button', { name: 'Close conversation' });
+  if (closer !== null) fireEvent.click(closer);
+  fireEvent.click(await screen.findByRole('button', { name: new RegExp(`^Conversation ${name}`) }));
+  await screen.findByRole('complementary', { name });
+}
+
+const META_HEADING = /^(Running|Completed|Interrupted|Failed|Paused)/;
+
+/** The thread's speakers and its status row's heading, in document order. */
+function threadLines(): string[] {
+  return [...document.querySelectorAll<HTMLElement>('[data-nc-thread] [data-nc-turn], [data-nc-current-meta]')]
+    .map((element) => element.hasAttribute('data-nc-current-meta')
+      ? `[${META_HEADING.exec(element.querySelector('[data-nc-meta-state]')?.textContent?.trim() ?? '')?.[1] ?? '?'}]`
+      : (element.textContent ?? '').trim());
+}
+
+/** The transcript's query, by the key the kernel's events are planned against. */
+const transcriptKey = (cardId: string) => ['harness-items', cardId] as const;
+
+/** What the kernel's `harness.phase.changed` refreshes; `transcript: false` leaves the transcript to the client. */
+async function phaseChanged(client: QueryClient, cardId: string, { transcript = true } = {}) {
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) });
+    if (transcript) await client.invalidateQueries({ queryKey: transcriptKey(cardId) });
+  });
+}
+
+beforeEach(() => {
+  window.history.pushState({}, '', `${APP_BASEPATH}/track/w1`);
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe('a streamed reply in the Planner conversation', () => {
+  it('shows the running turn\'s text at the tail and grows it with each poll', async () => {
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello' }) };
+    const { requests } = setup({ [CARD.id]: server });
+    await open('Planner chat');
+    await screen.findByText('Hello');
+    expect(threadLines()).toEqual(['question', 'Hello', '[Running]']);
+    server.live = streaming('T1', { m: 'Hello, world' });
+    await screen.findByText('Hello, world');
+    expect(threadLines()).toEqual(['question', 'Hello, world', '[Running]']);
+    expect(requests.filter((request) => request.path === `/api/cards/${CARD.id}/harness/live`).length).toBeGreaterThan(1);
+  });
+
+  it('replaces the live text with the stored reply exactly once, and stops polling', async () => {
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
+    const { client, requests } = setup({ [CARD.id]: server });
+    await open('Planner chat');
+    await screen.findByText('Hello, wor');
+    server.rows = [...server.rows, replied(3, 'm', 'Hello, world.'), ended(4, 'completed')];
+    server.live = streaming(null, {});
+    server.phase = 'turn_completed';
+    await phaseChanged(client, CARD.id);
+    await waitFor(() => expect(threadLines()).toEqual(['question', 'Hello, world.', '[Completed]']));
+    const polls = requests.filter((request) => request.path.endsWith('/harness/live')).length;
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 700); }); });
+    expect(requests.filter((request) => request.path.endsWith('/harness/live')).length).toBe(polls);
+  });
+
+  it('draws an interrupted turn\'s partial row once, above the Interrupted line', async () => {
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Half a' }) };
+    const { client } = setup({ [CARD.id]: server });
+    await open('Planner chat');
+    await screen.findByText('Half a');
+    server.phase = 'issuing_interrupt';
+    server.live = streaming('T1', { m: 'Half a rep' });
+    await phaseChanged(client, CARD.id);
+    await screen.findByText('Half a rep');
+    server.rows = [...server.rows, replied(3, 'm', 'Half a rep', true), ended(4, 'interrupted')];
+    server.live = streaming(null, {});
+    server.phase = 'turn_completed';
+    await phaseChanged(client, CARD.id);
+    await waitFor(() => expect(threadLines()).toEqual(['question', 'Half a rep', '[Interrupted]']));
+  });
+
+  it('retires an abandoned reply at the first transcript read that started after the turn ended', async () => {
+    const gate: Gate = { hold: false, waiting: [] };
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
+    const { client } = setup({ [CARD.id]: server }, gate);
+    await open('Planner chat');
+    await screen.findByText('Abandoned');
+    /* A transcript read made while the turn was still running, answered only after it ended. */
+    gate.hold = true;
+    act(() => { void client.invalidateQueries({ queryKey: transcriptKey(CARD.id) }); });
+    await waitFor(() => expect(gate.waiting).toHaveLength(1));
+    server.rows = [...server.rows, ended(3, 'completed')];
+    server.live = streaming(null, {});
+    server.phase = 'turn_completed';
+    /* The kernel's event refreshes the phase; the client itself re-reads the transcript. */
+    await phaseChanged(client, CARD.id, { transcript: false });
+    await waitFor(() => expect(gate.waiting).toHaveLength(2));
+    await act(async () => { gate.waiting[0]?.(); await new Promise((resolve) => { setTimeout(resolve, 20); }); });
+    expect(screen.getByText('Abandoned')).toBeTruthy();
+    act(() => { gate.waiting[1]?.(); });
+    await waitFor(() => expect(screen.queryByText('Abandoned')).toBeNull());
+    expect(threadLines()).toEqual(['question', '[Completed]']);
+  });
+
+  it('retires the copy of a turn that wedged without any outcome', async () => {
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Stuck' }) };
+    const { client } = setup({ [CARD.id]: server });
+    await open('Planner chat');
+    await screen.findByText('Stuck');
+    server.live = streaming(null, {});
+    server.phase = 'wedged';
+    await phaseChanged(client, CARD.id, { transcript: false });
+    await waitFor(() => expect(screen.queryByText('Stuck')).toBeNull());
+    expect(threadLines()).toEqual(['question', '[Paused]']);
+  });
+
+  it('retires the old turn\'s copy when a poll names a new turn', async () => {
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Old turn' }) };
+    setup({ [CARD.id]: server });
+    await open('Planner chat');
+    await screen.findByText('Old turn');
+    server.live = streaming('T2', { n: 'New turn' });
+    await screen.findByText('New turn');
+    expect(screen.queryByText('Old turn')).toBeNull();
+    expect(threadLines()).toEqual(['question', 'New turn', '[Running]']);
+  });
+
+  it('never shows one conversation\'s live text in another', async () => {
+    const first: CardServer = { phase: 'turn_running', rows: [asked(1, 'first question')], live: streaming('T1', { m: 'First live' }) };
+    const second: CardServer = {
+      phase: 'turn_running',
+      rows: [{ ...asked(1, 'second question'), card_id: OTHER.id }],
+      live: streaming('T9', { m: 'Second live' }),
+    };
+    setup({ [CARD.id]: first, [OTHER.id]: second });
+    await open('Planner chat');
+    await screen.findByText('First live');
+    await open('Other chat');
+    await screen.findByText('Second live');
+    expect(screen.queryByText('First live')).toBeNull();
+    await open('Planner chat');
+    await screen.findByText('First live');
+    expect(screen.queryByText('Second live')).toBeNull();
+  });
+});
