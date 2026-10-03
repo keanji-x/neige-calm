@@ -468,8 +468,10 @@ cash, shares, price; exact decimal strings) per America/New_York quote date in t
 projection reads the latest 260 samples; agent tool responses omit them. Values are reconciled paper-account valuations;
 P&L includes no fee or deposit adjustment. `spy.portfolio`, `spy.decisions`
 and `spy.fills` remain native live detail tables. The Planner rewrites the
-research sections (结论, 核心逻辑, 关键数据, 风险与证伪, 催化剂与跟踪, 复盘) to its
-current judgment rather than appending dated notes.
+research sections (结论, 待你定, 核心逻辑, 关键数据, 风险与证伪, 催化剂与跟踪, 复盘,
+来源与边界) to its current judgment rather than appending dated notes. 更多明细 is
+the last section and is never rewritten: it holds the detail tables, and each
+upserted execution task block is appended there at the end of the Report.
 
 **Known gap:** the App cannot prove that the Planner created the requesting
 Worker task. Any Worker-role caller on the owner Track may request execution of

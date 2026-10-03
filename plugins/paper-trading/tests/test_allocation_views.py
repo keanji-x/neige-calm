@@ -227,12 +227,18 @@ def test_spy_recipe_contract_matches_body_and_published_views(allocation_rig):
     body = re.sub(r'<!--.*?-->', '', text, flags=re.S)
     headings = re.findall(r'^# (.+)$', body, flags=re.M)
     assert headings == [s['h1'] for s in contract['sections']]
-    assert headings[0] == '组合概览' and headings[-1] == '来源与边界'
+    assert headings[0] == '组合概览' and headings[-1] == '更多明细'
+    # Upserted execution task blocks append at the end of the Report, so no routine step may rewrite
+    # the last section: a rewrite that omitted a declared task block would be refused.
+    steps = re.findall(r'^- (?:Pre-market|Post-close|Weekly):.*$', text, flags=re.M)
+    assert len(steps) == 3 and not any(headings[-1] in step for step in steps)
+    assert 'No step rewrites 更多明细' in text
     assert [s['h1'] for s in contract['sections'] if s.get('omit_if_empty')] == ['待你定']
     sources = re.findall(r'"source":"neige://plugin/dev-neige-paper-trading/([^"]+)"', body)
     assert sources == ['spy.overview', 'spy.portfolio', 'spy.decisions', 'spy.fills']
     assert set(sources) == set(tables(projected(allocation_rig)))
-    assert body.rstrip().endswith('仅作研究，不构成交易建议。')
+    sections = re.split(r'^# ', body, flags=re.M)
+    assert next(s for s in sections if s.startswith('来源与边界')).rstrip().endswith('仅作研究，不构成交易建议。')
 
 
 class Filling(Prescribed):
