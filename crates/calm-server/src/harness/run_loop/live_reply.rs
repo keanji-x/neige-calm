@@ -50,11 +50,14 @@ pub(super) fn on_unaccepted_start(
     }
 }
 
-/// The settle hook, run once on every `TurnCompleted` branch before its outcome row is written.
-/// An `interrupted` or `failed` turn's still-open replies are stored as `_partial` completions, so
-/// they get lower row ids than the outcome; any other outcome discards them. Settling the turn is
-/// what makes each write happen at most once per item. A reply leaves the live state only once its
-/// row is stored: one that fails to store stays live until the next turn starts.
+/// The settle hook, run once on every `TurnCompleted` branch before the run loop writes its
+/// outcome row. An `interrupted` or `failed` turn's still-open replies are stored as `_partial`
+/// completions; any other outcome discards them. A Codex partial row precedes the outcome row;
+/// the Claude driver writes the outcome row itself before it emits `TurnCompleted` (#1791 D13),
+/// so a Claude partial row follows it, and the frontend's outcome-ordering rule places it
+/// (#1923 P4). Settling the turn is what makes each write happen at most once per item. A reply
+/// leaves the live state only once its row is stored: one that fails to store stays live until
+/// the next turn starts.
 pub(super) async fn settle(
     inner: &Arc<Inner>,
     live: &LiveReplyWriter,
