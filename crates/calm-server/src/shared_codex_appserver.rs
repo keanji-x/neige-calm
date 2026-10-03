@@ -4130,7 +4130,8 @@ fn turn_id(turn: &serde_json::Value) -> Option<&str> {
     turn.get("id").and_then(serde_json::Value::as_str)
 }
 
-fn other_turn_id(params: &serde_json::Value) -> Option<&str> {
+/// The turn a frame outside the modelled ones names: `turn.id`, else a flat `turnId`.
+pub(crate) fn other_turn_id(params: &serde_json::Value) -> Option<&str> {
     params
         .get("turn")
         .and_then(turn_id)

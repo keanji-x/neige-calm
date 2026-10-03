@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::claude_planner::session::ClaudePlannerSession;
 use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
@@ -19,7 +20,7 @@ use crate::error::{CalmError, Result};
 use crate::harness::codex_events::CodexEvents;
 use crate::harness::codex_selection;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
-use crate::harness::planner_event::PlannerEvents;
+use crate::harness::planner_event::PlannerEvent;
 use crate::planner_model::TurnModelSelection;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
@@ -76,10 +77,10 @@ impl PlannerBackend {
     }
 
     pub fn subscribe_events(&self) -> PlannerEvents {
-        match &self.0 {
-            Arm::Codex(daemon) => CodexEvents::subscribe(daemon).into(),
-            Arm::Claude(session) => session.subscribe_events().into(),
-        }
+        PlannerEvents(match &self.0 {
+            Arm::Codex(daemon) => EventSource::Codex(CodexEvents::subscribe(daemon)),
+            Arm::Claude(session) => EventSource::Claude(session.subscribe_events()),
+        })
     }
 
     /// The Claude arm passes the stored model and effort as `--model=` and `--effort=` (#1810,
@@ -270,6 +271,27 @@ impl PlannerBackend {
         match &self.0 {
             Arm::Claude(session) => Some(Arc::clone(session)),
             Arm::Codex(_) => None,
+        }
+    }
+}
+
+/// One harness's subscription to its provider's events, from
+/// [`PlannerBackend::subscribe_events`], with `broadcast`'s receive semantics: `Lagged` when it
+/// fell behind, `Closed` once the provider's sender is gone.
+pub struct PlannerEvents(EventSource);
+
+/// Private like [`Arm`]: code outside this module receives events without naming a provider.
+enum EventSource {
+    Codex(CodexEvents),
+    Claude(broadcast::Receiver<PlannerEvent>),
+}
+
+impl PlannerEvents {
+    /// Cancel safe, like the `broadcast::Receiver::recv` it wraps: the run loop selects on it.
+    pub async fn recv(&mut self) -> std::result::Result<PlannerEvent, RecvError> {
+        match &mut self.0 {
+            EventSource::Codex(events) => events.recv().await,
+            EventSource::Claude(events) => events.recv().await,
         }
     }
 }

@@ -6,15 +6,15 @@
 //! byte for byte into the transcript item rows and the turn-outcome rows.
 
 use serde_json::Value;
-use tokio::sync::broadcast::{self, error::RecvError};
-
-use crate::harness::codex_events::CodexEvents;
 
 /// One event about a Planner thread.
 #[derive(Debug, Clone)]
 pub struct PlannerEvent {
-    /// The thread the event is about, `None` when the provider named none. The run loop acts only
-    /// on an event whose thread equals its own, so `None` passes only while no thread is known.
+    /// The thread the event is about, as the provider reported it: not normalized. A Codex
+    /// `thread/status/changed`, `turn/started` or `turn/completed` without a `threadId` keeps the
+    /// `Some("")` its parse gives it, the empty thread no harness runs; its `thread/started`,
+    /// `item/*` and other frames without one are `None`. The run loop acts only on an event whose
+    /// thread equals its own, so `None` passes only while no thread is known, and `Some("")` never.
     pub thread_id: Option<String>,
     pub kind: PlannerEventKind,
 }
@@ -52,12 +52,13 @@ pub enum PlannerEventKind {
     TokenUsage {
         params: Value,
     },
-    /// An approval request. A Planner runs with `approval_policy=never`: it is logged and dropped.
+    /// An approval request. A Planner runs with `approval_policy=never`: it is logged and dropped,
+    /// the one event that does not write the snapshot.
     Approval {
         method: String,
     },
     /// Nothing the run loop acts on, such as a streaming delta or a frame it does not model. It
-    /// still passes the thread filter and, like every event, writes the snapshot.
+    /// still passes the thread filter and, like every event but `Approval`, writes the snapshot.
     Ignored,
 }
 
@@ -73,37 +74,6 @@ impl ItemPhase {
         match self {
             ItemPhase::Started => "item/started",
             ItemPhase::Completed => "item/completed",
-        }
-    }
-}
-
-/// One harness's subscription to its provider's events, with `broadcast`'s receive semantics:
-/// `Lagged` when it fell behind, `Closed` once the provider's sender is gone.
-pub struct PlannerEvents(Source);
-
-enum Source {
-    Codex(CodexEvents),
-    Claude(broadcast::Receiver<PlannerEvent>),
-}
-
-impl From<CodexEvents> for PlannerEvents {
-    fn from(events: CodexEvents) -> Self {
-        Self(Source::Codex(events))
-    }
-}
-
-impl From<broadcast::Receiver<PlannerEvent>> for PlannerEvents {
-    fn from(events: broadcast::Receiver<PlannerEvent>) -> Self {
-        Self(Source::Claude(events))
-    }
-}
-
-impl PlannerEvents {
-    /// Cancel safe, like the `broadcast::Receiver::recv` it wraps: the run loop selects on it.
-    pub async fn recv(&mut self) -> Result<PlannerEvent, RecvError> {
-        match &mut self.0 {
-            Source::Codex(events) => events.recv().await,
-            Source::Claude(events) => events.recv().await,
         }
     }
 }

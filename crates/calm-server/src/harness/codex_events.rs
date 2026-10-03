@@ -7,7 +7,7 @@ use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::codex_appserver::Notification;
 use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
-use crate::shared_codex_appserver::SharedCodexAppServer;
+use crate::shared_codex_appserver::{SharedCodexAppServer, other_turn_id};
 
 /// A subscription to the Codex daemon's notifications, received as [`PlannerEvent`]s.
 pub struct CodexEvents(broadcast::Receiver<Notification>);
@@ -76,12 +76,4 @@ pub(crate) fn planner_event(notification: Notification) -> PlannerEvent {
         },
     };
     PlannerEvent { thread_id, kind }
-}
-
-fn other_turn_id(params: &Value) -> Option<&str> {
-    params
-        .get("turn")
-        .and_then(|turn| turn.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| params.get("turnId").and_then(Value::as_str))
 }

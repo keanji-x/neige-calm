@@ -21,11 +21,11 @@ use crate::codex_appserver::InputItem;
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
-use crate::harness::backend::{PlannerBackend, TurnStartFailure};
+use crate::harness::backend::{PlannerBackend, PlannerEvents, TurnStartFailure};
 use crate::harness::config::HarnessConfig;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::harness::observation::Observation;
-use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind, PlannerEvents};
+use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use crate::harness::queue::{
     FoldOutcome, MutationApplied, MutationRefused, MutationResult, QueueEntry, QueueEntryId,
     QueueMutation, apply_mutation, input_segments_for_entries, locate_entry,
