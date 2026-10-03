@@ -2,6 +2,8 @@ import { writeClipboardText } from '../../ui/operation-feedback/clipboard.ts';
 import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation.ts';
 import { useConversationStop } from '../conversations/stop.ts';
 import { useLiveReplies, useTranscriptReads } from '../conversations/live-replies.ts';
+import { useConversationEdit } from '../conversations/edit.ts';
+import type { PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 // Code-based TanStack Router setup, built inside a factory so a test can inject the
@@ -164,6 +166,8 @@ type ConversationStore = Readonly<{
   contextUsage: PlannerRunTokenUsage | null;
   uploadAttachment: UploadAttachment;
   interrupt: () => void;
+  /** Remove this card's latest turn and hand back its input (#1923). */
+  rewind: (turnId: string) => Promise<PlannerRewind>;
   retryHistory: () => void;
   loadEarlier: () => void;
   /** Why the queue is not draining, when the reader has to act; a standing condition of the conversation, unlike `actionError`. */
@@ -693,6 +697,7 @@ export function useConversationStore(
     contextUsage: run.data?.token_usage ?? null,
     uploadAttachment: mutations.uploadAttachment,
     interrupt: stop.interrupt,
+    rewind: mutations.rewind,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
     blockedReason: run.data?.blocked_reason ?? null,
@@ -932,6 +937,11 @@ function useConversationPanel(
   /* The composer's pending images, keyed to the open card so moving to another
        conversation does not carry a picked image into it. */
   const attachments = usePlannerAttachments(store.uploadAttachment, scope?.cardId ?? '');
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const focusComposer = useCallback(() => setComposerFocusRequest((count) => count + 1), []);
+  /* After the attachments hook: its reset on a card change must run before a refill restores the strip. */
+  const edit = useConversationEdit({ conversationId: scope?.cardId ?? null, rewind: store.rewind,
+    draft: composerDraft, setDraft: setComposerDraft, attachments, focusComposer });
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const registry = useConversationRegistry();
@@ -1408,8 +1418,9 @@ function useConversationPanel(
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
                                when the drawer closes. */
               focusOnMount={composerFocusFor === open.id}
+              focusRequest={composerFocusRequest}
               draft={{ text: composerDraft, onChange: setComposerDraft }}
-              disabled={store.sendBlocked || !store.historyReady}
+              disabled={store.sendBlocked || !store.historyReady || edit.requesting}
               /* `delivered` is the one outcome that licenses forgetting the images; every
                                other one leaves the message with the reader. */
               onSend={(text) => {
@@ -1453,7 +1464,7 @@ function useConversationPanel(
                       available: store.attachmentsSupported,
                       reason: ATTACHED_WORKSPACE_REASON,
                     }}
-                    disabled={store.sendBlocked || !store.historyReady}
+                    disabled={store.sendBlocked || !store.historyReady || edit.requesting}
                   />
                   <ModelPill
                     /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
@@ -1505,9 +1516,11 @@ function useConversationPanel(
                 cards={source.cards}
                 stalled={store.stalled}
                 copyText={writeClipboardText}
-                regenerateMessage={store.historyReady && !store.sendBlocked && !store.working && !store.stopping
+                regenerateMessage={store.historyReady && !store.sendBlocked && !store.working && !store.stopping && edit.idle
                   ? async (message) => { await store.send(open.id, message.text, message.attachments ?? []); }
                   : undefined}
+                editMessage={store.historyReady && !store.sendBlocked && !store.working && !store.stopping
+                  && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0 ? edit.run : undefined}
                 canContinue={store.historyReady && !store.sendBlocked && !store.working && !store.stopping}
                 stalledReason={store.blockedReason}
                 stopFeedback={store.stopFeedback}

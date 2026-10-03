@@ -40,6 +40,8 @@ export type PlannerAttachments = Readonly<{
   attach: (file: File) => Promise<void>;
   remove: (id: string) => void;
   clear: () => void;
+  /** Put back images this card already holds (an Edit's removed message); replaces the strip. */
+  restore: (items: readonly PlannerAttachment[]) => void;
   busy: boolean;
   /** Last refusal, shown beside the strip. Cleared by the next successful pick. */
   error: string | null;
@@ -107,6 +109,7 @@ export function usePlannerAttachments(
     setItems((current) => current.filter((item) => item.id !== id));
   }, []);
   const clear = useCallback(() => { setItems([]); setError(null); }, []);
+  const restore = useCallback((restored: readonly PlannerAttachment[]) => { setItems(restored); setError(null); }, []);
 
   return {
     items,
@@ -114,6 +117,7 @@ export function usePlannerAttachments(
     attach,
     remove,
     clear,
+    restore,
     busy,
     error,
     atCapacity: items.length >= MAX_ATTACHMENTS_PER_MESSAGE,

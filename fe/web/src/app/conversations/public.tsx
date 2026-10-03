@@ -3,6 +3,7 @@ import {
 } from 'react';
 
 import type { ModelSelection, Conversation, OptimisticConversationTurn, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import type { ComposerRefill } from '../../../../core/domain/conversation-rewind.ts';
 import { useReducer, useState } from '../../ui/state/public.ts';
 
 /**
@@ -97,6 +98,12 @@ export type FailedConversationSend = Readonly<{
   delivery: 'rejected' | 'unknown' | 'refused';
 }>;
 
+/**
+ * An Edit's rewind for one conversation (#1923): the request still out, or the removed input
+ * waiting for that conversation's composer. Held here so neither a switch nor a remount drops it.
+ */
+export type ConversationEdit = Readonly<{ kind: 'requesting' } | { kind: 'ready'; refill: ComposerRefill }>;
+
 export type RememberedConversation = Readonly<{
   conversation: Conversation;
   turns: readonly TranscriptEntry[];
@@ -138,6 +145,13 @@ export type ConversationRegistry = Readonly<{
   tryBeginSend: (conversationId: string) => boolean;
   finishSend: (conversationId: string, failure: FailedConversationSend | null) => void;
   clearFailedSend: (conversationId: string, echoId: string) => void;
+  editOf: (conversationId: string) => ConversationEdit | null;
+  /** One rewind per conversation until its refill is taken; false while one is held. */
+  tryBeginEdit: (conversationId: string) => boolean;
+  /** The request settled: its refill now waits for the composer, or (`null`) nothing changed. */
+  finishEdit: (conversationId: string, refill: ComposerRefill | null) => void;
+  /** The composer took this refill; a newer one is left alone. */
+  takeRefill: (conversationId: string, refill: ComposerRefill) => void;
   /* Deliberately no "open the planner conversation of track W" slot: the track being left is still
        mounted when a create states it, so that intent travels in the history entry instead. */
 }>;
@@ -191,6 +205,28 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       setFailedSends((current) => ({ ...current, [conversationId]: failure }));
     }
   }, []);
+  const editsRef = useRef<Readonly<Record<string, ConversationEdit>>>({});
+  const [edits, setEdits] = useState<Readonly<Record<string, ConversationEdit>>>({});
+  const writeEdit = useCallback((conversationId: string, edit: ConversationEdit | null) => {
+    const next = { ...editsRef.current };
+    if (edit === null) delete next[conversationId]; else next[conversationId] = edit;
+    editsRef.current = next;
+    setEdits(next);
+  }, []);
+  const tryBeginEdit = useCallback((conversationId: string) => {
+    if (conversationId in editsRef.current) return false;
+    writeEdit(conversationId, { kind: 'requesting' });
+    return true;
+  }, [writeEdit]);
+  const finishEdit = useCallback((conversationId: string, refill: ComposerRefill | null) => {
+    if (editsRef.current[conversationId]?.kind !== 'requesting') return;
+    writeEdit(conversationId, refill === null ? null : { kind: 'ready', refill });
+  }, [writeEdit]);
+  const takeRefill = useCallback((conversationId: string, refill: ComposerRefill) => {
+    const edit = editsRef.current[conversationId];
+    if (edit?.kind === 'ready' && edit.refill === refill) writeEdit(conversationId, null);
+  }, [writeEdit]);
+  const editOf = useCallback((conversationId: string) => edits[conversationId] ?? null, [edits]);
   const clearFailedSend = useCallback((conversationId: string, echoId: string) => {
     setFailedSends((current) => {
       if (current[conversationId]?.echo.id !== echoId) return current;
@@ -261,11 +297,12 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       pendingSendIds, failedSends, tryBeginSend, finishSend, clearFailedSend,
+      editOf, tryBeginEdit, finishEdit, takeRefill,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      discardUnsentDraft, draftOf, editDraft, finishDraftAdoption, finishSend, pendingSendIds,
+      discardUnsentDraft, draftOf, editDraft, editOf, finishDraftAdoption, finishEdit, finishSend, pendingSendIds,
       remember, requestOpen, failedSends, clearFailedSend,
-      requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginSend, turnsOf,
+      requestedOpenFocusesComposer, requestedOpenId, startDraft, takeRefill, tryBeginEdit, tryBeginSend, turnsOf,
       updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;

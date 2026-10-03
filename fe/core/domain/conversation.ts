@@ -151,7 +151,7 @@ const plannerAttachmentSchema: z.ZodType<PlannerAttachment> = z.object({
   id: z.string(), contentType: z.string(), size: z.number(), url: z.string(),
 });
 
-const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.object({
+export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.object({
   presentation: harnessInputPresentationSchema,
   text: z.string(),
   /* Defaulted rather than required: older segments have no such key, and a row that fails to decode disappears. */
@@ -820,6 +820,13 @@ function userNotifyToTurn(
   };
 }
 
+/** The words one input segment shows: a user segment loses the kernel's `User says:` lead. */
+export function inputSegmentText(segment: HarnessInputSegment): string {
+  const text = segment.presentation === 'user' && segment.text.startsWith(USER_SAYS)
+    ? segment.text.slice(USER_SAYS.length) : segment.text;
+  return text.trim();
+}
+
 export function harnessItemToTurns(item: HarnessItem): readonly ConversationMessage[] {
   const notify = userNotifyToTurn(item);
   if (notify !== null) return [notify];
@@ -843,11 +850,7 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
        not any one segment. */
     const quiet = segments.every((segment) => segment.presentation === 'system_report_edited');
     return segments.flatMap<ConversationMessage>((segment, index) => {
-      let text = segment.text;
-      if (segment.presentation === 'user' && text.startsWith(USER_SAYS)) {
-        text = text.slice(USER_SAYS.length);
-      }
-      text = text.trim();
+      const text = inputSegmentText(segment);
       const attachments = segment.attachments;
       /* An image with no words is a message. */
       if (text === '' && attachments.length === 0) return [];

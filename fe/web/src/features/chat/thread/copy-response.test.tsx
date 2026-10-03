@@ -68,3 +68,39 @@ it('regenerates only the delivered prompt after an explicit click, including its
   await waitFor(() => expect(regenerate).toHaveBeenCalledExactlyOnceWith(user));
   expect(screen.getByText('Answer', { exact: true })).toBeTruthy();
 });
+
+const EDIT_CONVERSATION = { id: 'c', trackId: 't', title: null, kind: 'codex' as const, state: 'idle' as const, updatedAt: 0 };
+const editTurns = (first: 'you' | 'system' = 'you') => [
+  first === 'you' ? { id: 'u', author: 'you' as const, text: 'Prompt', atMs: 1 }
+    : { id: 'wake', author: 'system' as const, label: 'Wake', text: 'Automatic turn', atMs: 1 },
+  { id: 'a', author: 'agent' as const, text: 'Answer', atMs: 2 },
+  { id: 'end', author: 'turn' as const, turnId: 'turn-7', status: 'completed' as const, atMs: 3 },
+];
+
+it('edits the current turn once under repeated clicks and shows a refusal in the action itself', async () => {
+  let reject!: (reason: Error) => void;
+  const edit = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+  render(<ChatThread conversation={EDIT_CONVERSATION} cards={{}} stalled={false} canContinue={false}
+    editMessage={edit} turns={editTurns()} />);
+  expect(edit).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+  expect(edit).toHaveBeenCalledExactlyOnceWith('turn-7');
+  reject(new Error('Send the edited message first.'));
+  await screen.findByRole('button', { name: 'Edit failed: Send the edited message first.' });
+  expect(edit).toHaveBeenCalledTimes(1);
+  expect(screen.getByText('Answer', { exact: true })).toBeTruthy();
+});
+
+it.each([
+  ['no callback', { editMessage: undefined, cards: {}, turns: editTurns() }],
+  ['a live response', { editMessage: vi.fn(), cards: { c: 'working' as const }, turns: editTurns() }],
+  ['an automatic turn', { editMessage: vi.fn(), cards: {}, turns: editTurns('system') }],
+])('offers no Edit with %s', (_, { editMessage, cards, turns }) => {
+  render(<ChatThread conversation={EDIT_CONVERSATION} cards={cards} stalled={false} canContinue={false}
+    editMessage={editMessage} turns={turns} />);
+  const button = screen.getByRole('button', { name: 'Edit message (not available now)' });
+  expect(button.getAttribute('aria-disabled')).toBe('true');
+  fireEvent.click(button);
+  if (editMessage !== undefined) expect(editMessage).not.toHaveBeenCalled();
+});

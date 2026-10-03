@@ -61,9 +61,11 @@ export type ChatThreadProps = Readonly<{
   canContinue: boolean;
   copyText?: (text: string) => Promise<void>;
   regenerateMessage?: (message: ConversationTurn) => Promise<void>;
+  /** Rewind the turn `turnId` and give its message back to the composer; rejects with the reason nothing changed. */
+  editMessage?: (turnId: string) => Promise<void>;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -74,8 +76,12 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   const regenerateTarget = latestUserMessage(turns);
   const regenerateAction = regenerateMessage === undefined || regenerateTarget === null || live || stalled || currentOutcome === null
     ? null : { id: `${conversation.id}:${regenerateTarget.id}`, run: () => regenerateMessage(regenerateTarget) };
+  /* Only the latest turn, and only one the reader started: its outcome names the turn the server removes. */
+  const editAction = editMessage === undefined || regenerateTarget === null || live || stalled || currentOutcome === null
+    || currentOutcome.turnId === '' ? null
+    : { id: `${conversation.id}:${currentOutcome.turnId}`, run: () => editMessage(currentOutcome.turnId) };
   const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue} live={live}
-    stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} regenerateAction={regenerateAction} />;
+    stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -506,7 +512,7 @@ function isThenable(value: unknown): value is Promise<SendOutcome> {
 
 /** Astryx's ChatComposer; we own the value and the send callback so the kernel path stays a string. */
 export function ChatComposer({
-  onSend, onStop, onNewConversation, disabled = false, focusOnMount = false, draft: controlledDraft,
+  onSend, onStop, onNewConversation, disabled = false, focusOnMount = false, focusRequest = 0, draft: controlledDraft,
   footerActions, sendAdornment,
   drawer, headerActions, allowEmptyText = false, mentionTrigger,
 }: {
@@ -521,6 +527,8 @@ export function ChatComposer({
   disabled?: boolean;
   /** Put the caret in the field as this composer mounts. Read once, at mount; the composer has no `key` on the router's path, so raising the flag again on a mounted composer does nothing — one mount per intent is the caller's job. */
   focusOnMount?: boolean;
+  /** Each new value asks once for the caret, on a mounted composer (an Edit's refill); the same wait as after a send. */
+  focusRequest?: number;
   /** Per-conversation controls beside the field: a pass-through to Astryx's `footerActions` slot, because the controls need router state and `features/**` may not import `app/**`. */
   footerActions?: ReactNode;
   /** Something to stand immediately before Send, in the `sendActions` slot; rendered before the send-door button, not instead of it. */
@@ -547,9 +555,15 @@ export function ChatComposer({
   const wantsFieldFocus = useRef(focusOnMount);
   /** The element this component last put focus on; `null` while no restore is in flight. */
   const parkedFocus = useRef<Element | null>(null);
+  const answeredFocusRequest = useRef(focusRequest);
 
   /* Put the caret back after a send, as a standing request: `disabled` goes true inside the very click that sends, Astryx turns the field `contenteditable="false"`, and Chromium hands the focus to `<body>`. While the field refuses focus it is parked on the composer's own box, and the restore continues only while focus is exactly where it was parked. */
   useEffect(() => {
+    if (answeredFocusRequest.current !== focusRequest) {
+      answeredFocusRequest.current = focusRequest;
+      wantsFieldFocus.current = true;
+      parkedFocus.current = null;
+    }
     if (!wantsFieldFocus.current) return;
     const root = rootRef.current;
     if (root === null) return;
@@ -568,7 +582,7 @@ export function ChatComposer({
     }
     if (!root.contains(document.activeElement)) root.focus({ preventScroll: true });
     parkedFocus.current = document.activeElement;
-  }, [sendCount, disabled]);
+  }, [sendCount, disabled, focusRequest]);
 
   const commandTrigger = useMemo<ChatComposerTrigger>(() => ({
     character: '/',

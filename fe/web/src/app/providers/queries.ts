@@ -61,6 +61,7 @@ import {
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
+import { rewindPlannerTurnOperation } from '../../../../core/domain/conversation-rewind.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
@@ -262,6 +263,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   return {
     send: (text: string, attachments: readonly string[] = []) => runOperation(transport, sendPlannerInputOperation(cardId, text, attachments), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
+    /* A refusal changed nothing, so only an accepted rewind refreshes; `harness.transcript.rewound` does too. */
+    rewind: (turnId: string) => runOperation(transport, rewindPlannerTurnOperation(cardId, turnId), unauthorized).then(refreshAfter),
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>

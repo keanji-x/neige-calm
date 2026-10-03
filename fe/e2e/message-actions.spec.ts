@@ -44,3 +44,48 @@ test('copies Markdown and explicitly regenerates while preserving a separate dra
     await expect(composer).toHaveText('Keep this separate draft');
   } finally { await request.delete(`/api/areas/${area.id}`); }
 });
+
+test('edits the latest message back into the composer with its image and drops the turn', async ({ page, request }) => {
+  const area = await createArea(request, `Message edit ${Date.now()}`);
+  try {
+    const track = await createTrack(request, area.id);
+    const imageId = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png';
+    let removed = false;
+    const rewinds: unknown[] = [];
+    const input = (cardId: string) => [{ presentation: 'user', text: 'User says:\nOriginal prompt',
+      attachments: [{ id: imageId, contentType: 'image/png', size: 68, url: `/api/cards/${cardId}/planner/attachments/${imageId}` }] }];
+    await page.route('**/api/cards/*/harness/items?**', async (route) => {
+      const response = await route.fetch();
+      const cardId = new URL(route.request().url()).pathname.split('/')[3];
+      const common = { worker_session_id: 'fixture', card_id: cardId, track_id: track.id, thread_id: 'thread',
+        turn_id: 'turn', turn_error_text: null, item_uuid: null, created_at_ms: Date.now() };
+      await route.fulfill({ response, json: removed ? [] : [
+        { ...common, id: 1, item_type: 'userMessage', method: 'item/completed', input_segments: input(cardId),
+          params: JSON.stringify({ item: { content: [{ text: 'Original prompt' }] } }) },
+        { ...common, id: 2, item_type: 'agentMessage', method: 'item/completed',
+          params: JSON.stringify({ item: { text: 'Original answer' } }) },
+        { ...common, id: 3, item_type: null, method: 'turn/completed',
+          params: JSON.stringify({ id: 'turn', status: 'completed', error: null }) },
+      ] });
+    });
+    await page.route(`**/planner/attachments/${imageId}`, (route) => route.fulfill({ contentType: 'image/png',
+      body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64') }));
+    await page.route('**/api/cards/*/planner/rewind', async (route) => {
+      rewinds.push(route.request().postDataJSON());
+      removed = true;
+      const cardId = new URL(route.request().url()).pathname.split('/')[3];
+      await route.fulfill({ json: { card_id: cardId, turn_id: 'turn', input: input(cardId) } });
+    });
+    await page.goto(`/next/track/${track.id}`);
+    await page.getByRole('button', { name: 'Conversation Planner' }).click();
+    await page.getByRole('button', { name: 'Edit message', exact: true }).click();
+    const composer = page.getByRole('combobox', { name: 'Message' });
+    await expect(composer).toHaveText('Original prompt');
+    await expect(composer).toBeFocused();
+    await expect(page.locator('[data-nc-attachments] img')).toHaveAttribute('src', new RegExp(`${imageId}$`));
+    await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toHaveCount(0);
+    expect(rewinds).toEqual([{ turn_id: 'turn' }]);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(composer).toHaveText('Original prompt');
+  } finally { await request.delete(`/api/areas/${area.id}`); }
+});

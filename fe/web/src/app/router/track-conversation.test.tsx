@@ -505,6 +505,7 @@ describe('track conversations', () => {
     await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(true));
 
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    console.log('DBG2', screen.queryAllByRole('button').map((b) => b.getAttribute('aria-label') ?? b.textContent).join(' | '));
     fireEvent.click(screen.getByRole('button', { name: /Conversation Assistant/ }));
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     await act(async () => { release(); await held; });
@@ -984,6 +985,144 @@ describe('track conversations', () => {
     expect(messageField().textContent).toBe('Keep my separate draft');
     expect(inputBodies(requests)).toHaveLength(1);
     expect(Array.from(drawerElement().querySelectorAll('[data-nc-attachments] img')).some((image) => image.getAttribute('src')?.endsWith(draftImageId))).toBe(true);
+  });
+
+  /* Edit (#1923): the rewind removes the latest turn and its input comes back to the composer. */
+  const REWIND_IMAGE = { id: ATTACHMENT_ID, contentType: 'image/png', size: 4,
+    url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/${ATTACHMENT_ID}` };
+  const REWIND_INPUT = [{ presentation: 'user', text: 'User says:\nOriginal prompt', attachments: [REWIND_IMAGE] }];
+  const rewindAccepted = () => ok({ card_id: ASSISTANT_CARD.id, turn_id: 'turn', input: REWIND_INPUT });
+  const rewindBodies = (requests: readonly ApiRequest[]) =>
+    requests.filter((request) => request.path.endsWith('/planner/rewind')).map((request) => request.body);
+  const composerImages = () => Array.from(drawerElement().querySelectorAll('[data-nc-attachments] img'))
+    .map((image) => image.getAttribute('src'));
+
+  /** The assistant conversation's one turn until a rewind is accepted, then nothing, as the server would page it. */
+  function editSetup(rewind: () => ApiTransportResponse | Promise<ApiTransportResponse>, run: Record<string, unknown> = {}) {
+    let removed = false;
+    const user = { ...harnessMessage(91, 'userMessage', { content: [{ text: 'Original prompt' }] }), turn_id: 'turn',
+      input_segments: REWIND_INPUT };
+    const reply = { ...harnessMessage(92, 'agentMessage', { text: 'Original answer' }), turn_id: 'turn' };
+    const terminal = { ...harnessMessage(93, '', {}), item_type: null, turn_id: 'turn', method: 'turn/completed',
+      params: JSON.stringify({ id: 'turn', status: 'completed', error: null }) };
+    return setup(async (request) => {
+      if (request.path.includes(HISTORY_PATH)) {
+        return ok(pathCardId(request.path) === ASSISTANT_CARD.id && !removed ? [user, reply, terminal] : []);
+      }
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null,
+          reasoning_effort: null, blocked_reason: null, attachments_supported: true, ...run });
+      }
+      if (request.path.endsWith('/planner/attachments')) {
+        const draftImageId = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e70.png';
+        return ok({ attachmentId: draftImageId, contentType: 'image/png', size: 4,
+          url: `/api/cards/${pathCardId(request.path)}/planner/attachments/${draftImageId}` });
+      }
+      if (request.path.endsWith('/planner/rewind')) {
+        const response = await rewind();
+        if (response.status === 200) removed = true;
+        return response;
+      }
+      return undefined;
+    });
+  }
+
+  async function openEditableAssistant() {
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await screen.findByRole('button', { name: 'Edit message' });
+  }
+
+  it('edits the latest turn once: the composer is read-only meanwhile, then holds its words and image', async () => {
+    let resolve!: (response: ApiTransportResponse) => void;
+    const held = new Promise<ApiTransportResponse>((done) => { resolve = done; });
+    const { requests } = editSetup(() => held);
+    await openEditableAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    fireEvent.click(screen.getByRole('button', { name: /Edit message/ }));
+    await waitFor(() => expect(rewindBodies(requests)).toEqual([{ turn_id: 'turn' }]));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('false'));
+    expect(screen.getByRole('button', { name: 'Attach an image' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: /Regenerate response/ }).getAttribute('aria-disabled')).toBe('true');
+    await act(async () => { resolve(rewindAccepted()); await held; });
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    expect(composerImages()).toEqual([REWIND_IMAGE.url]);
+    await waitFor(() => expect(document.activeElement).toBe(messageField()));
+    await waitFor(() => expect(screen.queryByText('Original answer', { exact: true })).toBeNull());
+    expect(rewindBodies(requests)).toHaveLength(1);
+  });
+
+  it.each([
+    ['an unsent draft', {}, () => typeInto(messageField(), 'Keep my draft')],
+    ['an attached image', {}, attachAnImage],
+    ['a queued message', { pending: [{ entry_id: 'entry-1', text: 'queued', rev: 0, queued_at_ms: 5 }] }, async () => {}],
+    ['a running turn', { phase: 'turn_running' }, async () => {}],
+  ] as const)('offers no Edit with %s', async (_, run, arrange) => {
+    const { requests } = editSetup(rewindAccepted, run);
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await screen.findByText('Original answer', { exact: true });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await arrange();
+    const edit = await screen.findByRole('button', { name: 'Edit message (not available now)' });
+    fireEvent.click(edit);
+    expect(rewindBodies(requests)).toEqual([]);
+  });
+
+  it('shows the server’s refusal on Edit and leaves the conversation and composer as they were', async () => {
+    const { requests } = editSetup(() => failure(409, 'conflict', 'Send the edited message first.'));
+    await openEditableAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    await screen.findByRole('button', { name: 'Edit failed: Send the edited message first.' });
+    expect(rewindBodies(requests)).toEqual([{ turn_id: 'turn' }]);
+    expect(messageField().textContent).toBe('');
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+    expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull();
+    expect(screen.getByText('Original answer', { exact: true })).toBeTruthy();
+  });
+
+  it('delivers an Edit answered after a switch to its own conversation’s composer, not the open one', async () => {
+    let resolve!: (response: ApiTransportResponse) => void;
+    const held = new Promise<ApiTransportResponse>((done) => { resolve = done; });
+    editSetup(() => held);
+    await openEditableAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('false'));
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
+    await screen.findByRole('complementary', { name: 'Planner chat' });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await act(async () => { resolve(rewindAccepted()); await held; });
+    await act(async () => { await Promise.resolve(); });
+    expect(messageField().textContent).toBe('');
+    expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    /* Named after its first message once the transcript is known. */
+    fireEvent.click(screen.getByRole('button', { name: /^Conversation Original prompt/ }));
+    await screen.findByRole('complementary', { name: 'Original prompt' });
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    expect(composerImages()).toEqual([REWIND_IMAGE.url]);
+  });
+
+  it('keeps one Edit request across a switch and a return while it is out', async () => {
+    let resolve!: (response: ApiTransportResponse) => void;
+    const held = new Promise<ApiTransportResponse>((done) => { resolve = done; });
+    const { requests } = editSetup(() => held);
+    await openEditableAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    await waitFor(() => expect(rewindBodies(requests)).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
+    await screen.findByRole('complementary', { name: 'Planner chat' });
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Conversation Original prompt/ }));
+    await screen.findByRole('complementary', { name: 'Original prompt' });
+    /* Still read-only: the request belongs to this conversation, whichever drawer sent it. */
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('false'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(rewindBodies(requests)).toHaveLength(1);
+    await act(async () => { resolve(rewindAccepted()); await held; });
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    expect(rewindBodies(requests)).toHaveLength(1);
   });
 
   it.each(['interrupted', 'failed'] as const)('shows one current paused status over a recorded %s result', async (status) => {

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import type { ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import type { ConversationMetaClock } from '../../../../../core/domain/conversation-meta.ts';
-import { ThreadStatusNotice, type CopyResponseAction } from './status-notice.tsx';
+import { ThreadStatusNotice, type CopyResponseAction, type ResponseAction } from './status-notice.tsx';
 import styles from './thread.module.css';
 
 /** One plain sentence for the `codexErrorInfo` values a reader can act on; every other code is shown as the token codex sent. */
@@ -14,7 +14,7 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** One stable row across live, request, pause and terminal transitions. */
-export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stalledReason, feedback, copyAction, regenerateAction }: {
+export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction }: {
   outcome: ConversationTurnOutcome | null;
   canContinue: boolean;
   live: boolean;
@@ -22,7 +22,8 @@ export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stall
   stalledReason: string | null;
   feedback: ConversationStopFeedback | null;
   copyAction: CopyResponseAction | null;
-  regenerateAction: Readonly<{ id: string; run: () => Promise<void> }> | null;
+  editAction: ResponseAction | null;
+  regenerateAction: ResponseAction | null;
 }) {
   let heading: string;
   let tone: 'neutral' | 'warning' | 'error' = 'neutral';
@@ -60,7 +61,7 @@ export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stall
       </>;
     }
   } else return null;
-  return <ThreadStatusNotice heading={heading} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
+  return <ThreadStatusNotice heading={heading} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
 }
 
 function outcomeHintText(code: string | undefined, rawStatus: string | undefined): string | null {

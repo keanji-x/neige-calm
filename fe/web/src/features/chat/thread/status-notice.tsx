@@ -7,6 +7,35 @@ import { useState } from '../../../ui/state/public.ts';
 import styles from './meta.module.css';
 
 export type CopyResponseAction = Readonly<{ id: string; text: string; run: () => Promise<void> }>;
+/** `id` names the response it acts on; a rejection's message is the reader's feedback. */
+export type ResponseAction = Readonly<{ id: string; run: () => Promise<void> }>;
+
+type ActionView = { readonly key: string; active: boolean };
+type ActionResult = Readonly<{ view: ActionView; kind: 'pending' | 'done' | 'failed'; error: string | null }>;
+
+/** One run at a time per committed view; a completion for a view no longer shown says nothing. */
+function useFencedAction(key: string | null) {
+  const view = useMemo<ActionView | null>(() => key === null ? null : { key, active: false }, [key]);
+  const committed = useRef<ActionView | null>(null);
+  useLayoutEffect(() => {
+    committed.current = view;
+    return () => { committed.current = null; };
+  }, [view]);
+  const [result, setResult] = useState<ActionResult | null>(null);
+  const perform = async (run: () => Promise<void>, fallback: string) => {
+    if (view === null || committed.current !== view || view.active) return;
+    view.active = true;
+    setResult({ view, kind: 'pending', error: null });
+    try {
+      await run();
+      if (committed.current === view) setResult({ view, kind: 'done', error: null });
+    } catch (reason) {
+      if (committed.current === view) setResult({ view, kind: 'failed',
+        error: reason instanceof Error && reason.message.trim() !== '' ? reason.message : fallback });
+    } finally { view.active = false; }
+  };
+  return { feedback: result?.view === view ? result : null, perform };
+}
 
 function ActionIcon({ kind }: { kind: 'copy' | 'copied' | 'edit' | 'regenerate' }) {
   return <svg className={styles.icon} viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -23,14 +52,15 @@ function elapsedText(ms: number): string {
 }
 
 /** One native metadata row; clocks are evidence, never inferred from transcript gaps. */
-export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral', outcome, copyAction = null, regenerateAction = null }: {
+export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null }: {
   heading: ReactNode;
   children?: ReactNode;
   clock: ConversationMetaClock;
   tone?: 'neutral' | 'warning' | 'error';
   outcome?: 'completed' | 'interrupted' | 'failed';
   copyAction?: CopyResponseAction | null;
-  regenerateAction?: Readonly<{ id: string; run: () => Promise<void> }> | null;
+  editAction?: ResponseAction | null;
+  regenerateAction?: ResponseAction | null;
 }) {
   const stateRef = useRef<HTMLDivElement | null>(null);
   const lastFocused = useRef<HTMLElement | null>(null);
@@ -43,31 +73,10 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
   }, [hasDetails]);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
-  const copyId = copyAction?.id ?? null;
-  const copyBody = copyAction?.text ?? null;
-  const copyView = useMemo(() => copyId === null || copyBody === null ? null : { id: copyId, text: copyBody, active: false },
-    [copyId, copyBody]);
-  const committedCopy = useRef<typeof copyView>(null);
-  useLayoutEffect(() => {
-    committedCopy.current = copyView;
-    return () => { committedCopy.current = null; };
-  }, [copyView]);
-  const [copyResult, setCopyResult] = useState<Readonly<{ view: NonNullable<typeof copyView>; kind: 'pending' | 'copied' | 'failed'; error: string | null }> | null>(null);
-  const feedback = copyResult?.view === copyView ? copyResult : null;
-  const performCopy = async () => {
-    const view = copyView;
-    const action = copyAction;
-    if (view === null || action === null || committedCopy.current !== view || view.active) return;
-    view.active = true;
-    setCopyResult({ view, kind: 'pending', error: null });
-    try {
-      await action.run();
-      if (committedCopy.current === view) setCopyResult({ view, kind: 'copied', error: null });
-    } catch (reason) {
-      if (committedCopy.current === view) setCopyResult({ view, kind: 'failed',
-        error: reason instanceof Error && reason.message.trim() !== '' ? reason.message : 'Could not copy response.' });
-    } finally { view.active = false; }
-  };
+  const copy = useFencedAction(copyAction === null ? null : JSON.stringify([copyAction.id, copyAction.text]));
+  const feedback = copy.feedback;
+  const edit = useFencedAction(editAction?.id ?? null);
+  const editFailure = edit.feedback?.kind === 'failed' ? `Edit failed: ${edit.feedback.error}` : null;
   const committedRegenerate = useRef<typeof regenerateAction>(null);
   useLayoutEffect(() => {
     committedRegenerate.current = regenerateAction;
@@ -104,10 +113,15 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
       </div>
       <div className={styles.actions} role="group" aria-label="Response actions">
         <IconButton label={copyAction === null ? 'Copy response (not available yet)' : feedback === null || feedback.kind === 'pending' ? 'Copy response'
-          : feedback.kind === 'copied' ? 'Copied response' : `Copy failed: ${feedback.error}`}
-          icon={<ActionIcon kind={feedback?.kind === 'copied' ? 'copied' : 'copy'} />} className={styles.action}
-          variant="ghost" size="sm" isDisabled={copyAction === null || feedback?.kind === 'pending'} onClick={() => { void performCopy(); }} />
-        <IconButton label="Edit response (not available yet)" icon={<ActionIcon kind="edit" />} className={styles.action} variant="ghost" size="sm" isDisabled />
+          : feedback.kind === 'done' ? 'Copied response' : `Copy failed: ${feedback.error}`}
+          icon={<ActionIcon kind={feedback?.kind === 'done' ? 'copied' : 'copy'} />} className={styles.action}
+          variant="ghost" size="sm" isDisabled={copyAction === null || feedback?.kind === 'pending'}
+          onClick={() => { if (copyAction !== null) void copy.perform(copyAction.run, 'Could not copy response.'); }} />
+        <IconButton label={editAction === null ? 'Edit message (not available now)' : editFailure ?? 'Edit message'}
+          tooltip={editFailure ?? 'Take this message and its response out of the conversation and put the message back in the composer. Files stay as they are.'}
+          icon={<ActionIcon kind="edit" />}
+          className={styles.action} variant="ghost" size="sm" isDisabled={editAction === null || edit.feedback?.kind === 'pending'}
+          onClick={() => { if (editAction !== null) void edit.perform(editAction.run, 'Could not edit the message.'); }} />
         <IconButton label={regenerateAction === null ? "Regenerate response (not available now)" : "Regenerate response"} tooltip="Send the original prompt again in this conversation; keep existing history." icon={<ActionIcon kind="regenerate" />} className={styles.action} variant="ghost" size="sm" isDisabled={regenerateAction === null} clickAction={performRegenerate} />
       </div>
     </div>
