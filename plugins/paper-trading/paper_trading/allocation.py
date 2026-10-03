@@ -215,11 +215,13 @@ class Allocation:
                 'policy': {'max_order_bps': self.account.max_order_bps,
                            'cash_buffer_bps': self.account.cash_buffer_bps},
                 'error': self.ledger.get_meta(db, 'error'), 'decisions': decisions[-200:],
-                'fills': fills[-200:],
-                'valuations': [json.loads(r[0]) for r in db.execute(
-                    'SELECT body FROM valuations ORDER BY date DESC LIMIT ?', (HISTORY,))][::-1],
-                'journal': [dict(r) | {'body': json.loads(r['body'])}
+                'fills': fills[-200:], 'journal': [dict(r) | {'body': json.loads(r['body'])}
                     for r in db.execute('SELECT * FROM journal ORDER BY seq DESC LIMIT 200')]}
+
+    def projection(self, db):
+        """Overlay input: status plus the valuation history, which no agent tool returns."""
+        return self.status(db) | {'valuations': [json.loads(r[0]) for r in db.execute(
+            'SELECT body FROM valuations ORDER BY date DESC LIMIT ?', (HISTORY,))][::-1]}
 
     def process_once(self):
         # Local and broker-independent: an unsubmitted decision must expire even while the
@@ -238,4 +240,4 @@ class Allocation:
             with self.ledger.session() as db:
                 self.ledger.set_meta(db, 'error', f'Broker reconciliation failed ({reason}); previous snapshot retained')
         with self.ledger.session() as db:
-            return [(self.account.owner_track_id, self.status(db))]
+            return [(self.account.owner_track_id, self.projection(db))]

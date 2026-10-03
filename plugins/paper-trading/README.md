@@ -464,8 +464,8 @@ return history against the SPY price, current and historical SPY/cash weights,
 holdings, and recent decisions with their actual fills. Every successful
 reconciliation upserts one valuation sample (date, reconciliation time, equity,
 cash, shares, price; exact decimal strings) per America/New_York quote date in the ledger's
-`valuations` table, so the latest observation of each date wins; `spy.status`
-returns the latest 260 samples. Values are reconciled paper-account valuations;
+`valuations` table, so the latest observation of each date wins. The overview
+projection reads the latest 260 samples; agent tool responses omit them. Values are reconciled paper-account valuations;
 P&L includes no fee or deposit adjustment. `spy.portfolio`, `spy.decisions`
 and `spy.fills` remain native live detail tables. The Planner rewrites the
 research sections (结论, 核心逻辑, 关键数据, 风险与证伪, 催化剂与跟踪, 复盘) to its

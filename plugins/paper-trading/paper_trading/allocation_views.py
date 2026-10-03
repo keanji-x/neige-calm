@@ -153,7 +153,7 @@ def overview(state):
     previous = next((s for s in reversed(samples) if today and s['date'] < today), None)
     items = [decision_record(d, state['fills']) for d in reversed(state['decisions'][-DECISIONS:])]
     decisions = records('decisions', '', 'Planner 保存目标比例后，调仓决策会显示在这里。', items, label='调仓决策',
-                        description=f'最近 {DECISIONS} 项，最新在前；完整记录见“更多明细”。')
+                        description=f'最近 {DECISIONS} 项决策，最新在前；每项最多列出 20 笔成交。')
     description = '长桥官方模拟账户 · USD · 数值为对账估值，盈亏未扣除费用与出入金。'
     if state['error']:
         description += ' 最近一次对账失败，当前显示上次成功对账的数据。'

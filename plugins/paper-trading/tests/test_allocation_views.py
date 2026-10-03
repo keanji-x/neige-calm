@@ -40,8 +40,14 @@ def observe(r, quote_at, price, now=None):
 
 def filled(r):
     """60 SPY shares bought at 100 on 2026-09-30 (New York); 4000 USD cash remains."""
-    r.plan(); r.execute(); r.publish(); r.fill('order-1', 60, '4000', 'buy-fill', 60)
-    return r.status()
+    r.plan(); r.execute(); r.publish()
+    return r.fill('order-1', 60, '4000', 'buy-fill', 60)
+
+
+def projected(r):
+    """The publication input without a broker pass."""
+    with r.app.ledger.session() as db:
+        return r.app.projection(db)
 
 
 def in_process(r):
@@ -92,7 +98,9 @@ def test_valuation_sample_per_new_york_quote_date_latest_wins(allocation_rig):
     failed = observe(r, next_day + timedelta(hours=1), '150')
     assert 'identity' in failed['error'] and failed['valuations'] == state['valuations']
     r.restart()
-    assert r.status()['valuations'] == state['valuations']
+    assert projected(r)['valuations'] == state['valuations']
+    # Agents poll spy.status; the history is publication-only input.
+    assert 'valuations' not in r.status() and set(projected(r)) == set(r.status()) | {'valuations'}
 
 
 def test_previous_day_pnl_uses_a_strictly_earlier_new_york_date(allocation_rig):
@@ -155,7 +163,8 @@ def test_returns_and_benchmark_are_rebased_at_each_range_start(allocation_rig):
 def test_decision_records_show_targets_states_and_actual_fills(allocation_rig):
     r = allocation_rig
     filled(r)
-    state = r.plan(decision_id='allocation-2', target_spy_bps=3000)
+    r.plan(decision_id='allocation-2', target_spy_bps=3000)
+    state = r.step()
     view = valid(overview(state))
     records = cell(view, 'decisions')
     [dataset] = records['datasets']
@@ -171,7 +180,7 @@ def test_decision_records_show_targets_states_and_actual_fills(allocation_rig):
     assert sections['来源'] == 'neige://source/research-1\nneige://source/market-1'
     [fill] = second['disclosures']
     assert '60 股' in fill['body'] and '$100' in fill['body'] and 'buy-fill' in fill['body']
-    empty = cell(valid(overview(r.status() | {'decisions': [], 'fills': []})), 'decisions')
+    empty = cell(valid(overview(state | {'decisions': [], 'fills': []})), 'decisions')
     assert empty['datasets'][0]['items'] == [] and empty['emptyText']
 
 
@@ -196,12 +205,12 @@ def test_history_and_records_stay_bounded(allocation_rig):
 
 def test_overview_is_valid_before_reconciliation_and_after_errors(allocation_rig):
     r = allocation_rig
-    state = r.status()
+    state = projected(r)
     view = valid(overview(state))
     assert view['snapshot']['observedAt'] is None and view['snapshot']['producedAt'] is None
     assert all(item['value']['state'] == 'unknown' for item in metrics(view).values())
     assert cell(view, 'weights')['slices'] == [] and cell(view, 'holdings')['table']['rows'] == []
-    assert overview(state) == view and state == r.status()
+    assert overview(state) == view and state == projected(r)
     filled(r)
     broken = r.read(); broken['snapshot']['identity']['account_no'] = 'OTHER'; r.write(broken)
     state = r.step()
@@ -222,7 +231,7 @@ def test_spy_recipe_contract_matches_body_and_published_views(allocation_rig):
     assert [s['h1'] for s in contract['sections'] if s.get('omit_if_empty')] == ['待你定']
     sources = re.findall(r'"source":"neige://plugin/dev-neige-paper-trading/([^"]+)"', body)
     assert sources == ['spy.overview', 'spy.portfolio', 'spy.decisions', 'spy.fills']
-    assert set(sources) == set(tables(allocation_rig.status()))
+    assert set(sources) == set(tables(projected(allocation_rig)))
     assert body.rstrip().endswith('仅作研究，不构成交易建议。')
 
 
