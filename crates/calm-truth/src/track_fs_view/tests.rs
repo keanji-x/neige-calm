@@ -765,10 +765,21 @@ fn worker_flow_markdown_renders_each_turn_end() {
         WorkerFlowItem::TurnEnded {
             env: flow_env(2, 3),
             outcome: TurnOutcome::Failed {
-                message:
+                message: Some(
                     "{\"status\":400,\"error\":{\"message\":\"model requires a newer Codex\"}}"
                         .into(),
+                ),
             },
+        },
+        WorkerFlowItem::TurnEnded {
+            env: flow_env(3, 4),
+            outcome: TurnOutcome::Failed {
+                message: Some("upstream said no\n## not a heading\n\n  - nor a list item".into()),
+            },
+        },
+        WorkerFlowItem::TurnEnded {
+            env: flow_env(4, 5),
+            outcome: TurnOutcome::Failed { message: None },
         },
     ];
     let md = worker_flow_markdown(&CardId::from("card-turn-ends"), &items);
@@ -784,6 +795,15 @@ fn worker_flow_markdown_renders_each_turn_end() {
         md.contains("### Turn 3\n\n- Turn ended: failed — 400: model requires a newer Codex\n"),
         "{md}"
     );
+    // A multi-line plain-text error stays one list line: no line of it may open a heading or item.
+    assert!(
+        md.contains(
+            "### Turn 4\n\n- Turn ended: failed — upstream said no ## not a heading - nor a list item\n"
+        ),
+        "{md}"
+    );
+    assert!(!md.contains("\n## not a heading"), "{md}");
+    assert!(md.contains("### Turn 5\n\n- Turn ended: failed\n"), "{md}");
 }
 
 #[test]

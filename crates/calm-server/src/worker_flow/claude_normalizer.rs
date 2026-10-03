@@ -291,8 +291,8 @@ fn assistant_block_item(
 }
 
 /// Claude Code records an API error that ended the turn as a synthetic assistant record whose text
-/// is the error; its `error` field is only a code.
-fn api_error_message(record: &Value) -> String {
+/// is the error; its `error` field is only a code, used when the record has no text.
+fn api_error_message(record: &Value) -> Option<String> {
     let text = record
         .pointer("/message/content")
         .and_then(Value::as_array)
@@ -305,9 +305,9 @@ fn api_error_message(record: &Value) -> String {
         })
         .unwrap_or_default();
     if !text.trim().is_empty() {
-        return text;
+        return Some(text);
     }
-    string_field(record, &["error"]).unwrap_or_else(|| "[api error without text]".to_string())
+    string_field(record, &["error"])
 }
 
 fn tool_use_item(

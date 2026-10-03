@@ -292,7 +292,7 @@ pub fn normalize_rollout_line(
             env,
             outcome: match &event.error {
                 Some(error) => TurnOutcome::Failed {
-                    message: error.message.clone(),
+                    message: Some(error.message.clone()),
                 },
                 None => TurnOutcome::Completed,
             },

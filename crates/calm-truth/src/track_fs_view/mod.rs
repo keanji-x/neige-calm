@@ -1156,12 +1156,18 @@ pub(crate) fn worker_flow_markdown(
                 let label = label.as_deref().unwrap_or("review");
                 out.push_str(&format!("- _{} {}_\n", verb, flow_truncate(label)));
             }
-            // The whole readable error, uncut: it is why the turn ended.
+            // The whole readable error, uncut but on one line: it is why the turn ended.
             WorkerFlowItem::TurnEnded { outcome, .. } => match outcome {
                 TurnOutcome::Completed => out.push_str("- Turn ended: completed\n"),
-                TurnOutcome::Failed { message } => out.push_str(&format!(
+                TurnOutcome::Failed { message: None } => out.push_str("- Turn ended: failed\n"),
+                TurnOutcome::Failed {
+                    message: Some(message),
+                } => out.push_str(&format!(
                     "- Turn ended: failed — {}\n",
                     crate::readable_error_text::readable_error_text(message)
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 )),
                 TurnOutcome::Aborted { reason } => out.push_str(&format!(
                     "- Turn ended: aborted ({})\n",

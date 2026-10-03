@@ -50,3 +50,35 @@ async fn claude_api_error_shows_as_a_failed_turn_end_in_conversation_md() {
         "conversation.md = {conversation}"
     );
 }
+
+#[test]
+fn claude_api_error_without_text_keeps_only_what_the_record_says() {
+    use calm_server::worker_flow::claude_normalizer::normalize_record;
+    use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
+    use calm_types::worker_flow::{RawRef, TurnOutcome, WorkerFlowItem};
+
+    let cwd = "/tmp/claude-turn-end";
+    let code_only = wf::claude_api_error("err-code", cwd, "", "authentication_failed");
+    let mut bare = wf::claude_api_error("err-bare", cwd, "", "unused");
+    bare.as_object_mut().unwrap().remove("error");
+    for (record, expected) in [
+        (code_only, Some("authentication_failed".to_string())),
+        (bare, None),
+    ] {
+        let raw_ref = RawRef {
+            provider: WorkerProviderKind::Claude,
+            source_path: None,
+            line: None,
+            record_type: None,
+        };
+        let item = normalize_record(&record, 0, 1, &WorkerSessionId::from("s"), raw_ref);
+        let Some(WorkerFlowItem::TurnEnded {
+            outcome: TurnOutcome::Failed { message },
+            ..
+        }) = item
+        else {
+            panic!("expected a failed turn end, got {item:?}");
+        };
+        assert_eq!(message, expected);
+    }
+}

@@ -350,13 +350,14 @@ pub enum PlanStatus {
     Completed,
 }
 
-/// How an agent turn ended. `Failed` keeps the provider's error message as recorded; `Aborted` keeps
-/// the provider's abort reason (codex: `interrupted`, `replaced`, `review_ended`).
+/// How an agent turn ended. `Failed` keeps the provider's error message as recorded, `None` when the
+/// record carries none; `Aborted` keeps the provider's abort reason (codex: `interrupted`, `replaced`,
+/// `review_ended`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum TurnOutcome {
     Completed,
-    Failed { message: String },
+    Failed { message: Option<String> },
     Aborted { reason: String },
 }
 
@@ -484,7 +485,7 @@ mod tests {
         let item = WorkerFlowItem::TurnEnded {
             env: env(),
             outcome: TurnOutcome::Failed {
-                message: "unexpected status 403 Forbidden".to_string(),
+                message: Some("unexpected status 403 Forbidden".to_string()),
             },
         };
         assert_round_trip(&item);
@@ -499,6 +500,10 @@ mod tests {
         assert_round_trip(&WorkerFlowItem::TurnEnded {
             env: env(),
             outcome: TurnOutcome::Completed,
+        });
+        assert_round_trip(&WorkerFlowItem::TurnEnded {
+            env: env(),
+            outcome: TurnOutcome::Failed { message: None },
         });
         assert_round_trip(&WorkerFlowItem::TurnEnded {
             env: env(),
