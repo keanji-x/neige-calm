@@ -46,12 +46,12 @@ async fn access(s: &RouteState, actor: &Actor) -> Result<Access> {
 }
 #[utoipa::path(get, path="/api/calendar/tasks", tag="calendar", params(
     ("from"=String, Query), ("until"=String, Query), ("timezone"=String, Query)
-), responses((status=200, body=Vec<Entry>)))]
+), responses((status=200, body=Vec<Listed>)))]
 pub async fn list(
     State(s): State<RouteState>,
     actor: Actor,
     Query(window): Query<Window>,
-) -> Result<Json<Vec<Entry>>> {
+) -> Result<Json<Vec<Listed>>> {
     let access = access(&s, &actor).await?;
     Ok(Json(store::list(&s.mcp_context, &access, window).await?))
 }

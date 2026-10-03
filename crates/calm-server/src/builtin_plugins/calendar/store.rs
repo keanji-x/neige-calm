@@ -54,17 +54,22 @@ pub(super) async fn put<T: Serialize>(
         .bind(PLUGIN_ID).bind(key).bind(value).bind(now_ms()).execute(&mut **tx).await?;
     Ok(())
 }
-pub async fn list(ctx: &AppContext, access: &Access, window: Window) -> Result<Vec<Entry>> {
+pub async fn list(ctx: &AppContext, access: &Access, window: Window) -> Result<Vec<Listed>> {
     window.validate()?;
     let mut entries = Vec::new();
     for (_, value) in ctx.repo.plugin_kv_list(PLUGIN_ID, "entry:").await? {
         let entry: Entry = serde_json::from_value(value)
             .map_err(|e| CalmError::Internal(format!("calendar record: {e}")))?;
         if access.permits(&entry) && !entry.cancelled && window.contains(&entry.task.schedule)? {
-            entries.push(entry);
+            let occurrences = window.occurrences(&entry.task.schedule)?;
+            entries.push(Listed {
+                entry,
+                occurrences: occurrences.iter().map(TimedSpan::occurrence).collect(),
+            });
         }
     }
-    entries.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+    entries
+        .sort_by(|a, b| (a.entry.created_at, &a.entry.id).cmp(&(b.entry.created_at, &b.entry.id)));
     Ok(entries)
 }
 pub async fn create(ctx: &AppContext, access: Access, mut request: Create) -> Result<Entry> {

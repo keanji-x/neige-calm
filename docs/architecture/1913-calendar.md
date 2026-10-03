@@ -132,7 +132,31 @@ wake that comes due before the Track's Planner has ever started is not delivered
 when that Planner starts, though a later server restart may replay it through boot
 catch-up with its original text. There is
 no per-entry opt-out or holiday exception; the woken Planner decides to skip.
-Weekly recurrence is a separate slice.
+
+## Weekly recurrence (#1967)
+
+A third schedule kind repeats a local `HH:MM` start and end on the same day:
+`{kind: weekly, weekdays, start, end, timezone, from, until?}`. Weekdays are
+nonempty, unique lowercase three-letter names; `from` and the optional `until`
+are inclusive local dates. A wall time that a DST change skips drops that day's
+occurrence; a repeated wall time takes its earlier instant. All-day and timed
+rows are unchanged.
+
+One function in the Calendar model expands a weekly schedule into occurrences.
+The window projection uses it to decide whether an entry is listed and to return
+each listed entry's `occurrences` (RFC3339 start/end overlapping the window; a
+timed entry has its own span, an all-day entry none). The wake scanner uses it
+to find the latest occurrence that has started and applies the same cursor rules
+as a timed entry, per occurrence: one wake per start, a missed occurrence wakes
+late only before its deadline, older ones are passed over, and the wake text
+names that occurrence's local date and time.
+
+Today counts and lists entries from the server's occurrences, so the browser has
+no recurrence arithmetic. A weekly entry opens read-only with a note to change it
+through its Track; there is no human recurrence editor. REST revision 19 and web
+revision 38 gate the required `occurrences` field and the new schedule kind. The
+weekly variant in the create/update schemas and its wording raise the measured
+Planner tool surface to 29,984 bytes; the budget is now 30,000.
 
 ## Ownership change request and decision
 

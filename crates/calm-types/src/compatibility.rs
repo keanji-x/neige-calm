@@ -8,4 +8,5 @@
 // Revision 16 (#1897): plugin list rows declare required can_uninstall for built-in capabilities.
 // Revision 17 (#1913): Calendar REST and plugin data invalidation.
 // Revision18 (#1913 follow-up): plugin list requires lifecycle can_disable.
-pub const REST_API_VERSION: &str = "18";
+// Revision 19 (#1967): calendar schedules may be weekly, and listed entries carry required occurrences.
+pub const REST_API_VERSION: &str = "19";

@@ -1,4 +1,4 @@
-//! A Track-created timed entry wakes that Track's Planner once when it starts.
+//! A Track-created timed or weekly entry wakes that Track's Planner once per occurrence start.
 use super::{
     PLUGIN_ID,
     model::{Entry, TimedSpan},
@@ -72,13 +72,11 @@ pub(super) async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -
     if entry.cancelled {
         return Ok(false);
     }
-    let Some(span) = entry.task.schedule.timed_span()? else {
+    // Only the latest started occurrence counts; older missed ones are passed over silently.
+    let Some(span) = entry.task.schedule.latest_occurrence(now)? else {
         return Ok(false);
     };
     let start_ms = span.start.timestamp_millis();
-    if start_ms > now.timestamp_millis() {
-        return Ok(false);
-    }
     let key = fired_key(&entry.id);
     let fired = ctx
         .repo

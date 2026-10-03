@@ -3,10 +3,10 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CalendarTasks, type CalendarTasksProps } from './public.tsx';
 import { CalendarEditor } from './editor.tsx';
-import type { CalendarEntry } from '../../../../core/domain/calendar.ts';
+import type { CalendarListedEntry } from '../../../../core/domain/calendar.ts';
 
 afterEach(cleanup);
-const entry: CalendarEntry = { id: 'one', task: { title: 'Research', description: 'Compare options', schedule: { kind: 'all_day', date: '2026-10-02' } }, version: 3, cancelled: false, source_track_id: 'source', created_by: 'agent', created_at: 1, updated_at: 1 };
+const entry: CalendarListedEntry = { id: 'one', task: { title: 'Research', description: 'Compare options', schedule: { kind: 'all_day', date: '2026-10-02' } }, version: 3, cancelled: false, source_track_id: 'source', created_by: 'agent', created_at: 1, updated_at: 1, occurrences: [] };
 function props(overrides: Partial<CalendarTasksProps> = {}): CalendarTasksProps {
   return { date: '2026-10-02', timezone: 'Asia/Shanghai', month: { entries: [], loading: false, error: null }, day: { entries: [], loading: false, error: null }, enabled: true, pending: false, onDateChange: vi.fn(), onWindowChange: vi.fn(), onRetry: vi.fn(), onSettings: vi.fn(), onOpenTrack: vi.fn(), onSave: vi.fn(() => Promise.resolve()), ...overrides };
 }
@@ -52,7 +52,7 @@ it('retains the open dialog date and draft when the background date changes', as
   expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ task: { title: 'Read the report', description: '', schedule: { kind: 'all_day', date: '2026-10-02' } } }));
 });
 it('discloses an existing task timezone and cross-day end while editing', () => {
-  const timed: CalendarEntry = { ...entry, task: { ...entry.task, schedule: { kind: 'timed', start: '2026-10-02T23:00:00-04:00', end: '2026-10-03T01:00:00-04:00', timezone: 'America/New_York' } } };
+  const timed: CalendarListedEntry = { ...entry, task: { ...entry.task, schedule: { kind: 'timed', start: '2026-10-02T23:00:00-04:00', end: '2026-10-03T01:00:00-04:00', timezone: 'America/New_York' } } };
   render(<CalendarEditor entry={timed} date="2026-10-02" timezone="Asia/Shanghai" pending={false} onClose={() => undefined} onSave={() => Promise.resolve()} />);
   expect(screen.getByText('Times in America/New_York')).toBeTruthy();
   expect(screen.getByRole('combobox', { name: 'End date' })).toBeTruthy();
@@ -67,8 +67,31 @@ it('preserves the offset of an ambiguous existing time when changing the title',
   expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ task: { ...task, title: 'Research updated' } }));
 });
 it('orders daily tasks all-day first then by start time, independent of creation order', () => {
-  const timed = (id: string, hour: string): CalendarEntry => ({ ...entry, id, task: { ...entry.task, title: id, schedule: { kind: 'timed', start: `2026-10-02T${hour}:00:00+08:00`, end: `2026-10-02T${hour}:30:00+08:00`, timezone: 'Asia/Shanghai' } } });
-  render(<CalendarTasks {...props({ day: { entries: [timed('Evening', '17'), timed('Morning', '09'), entry], loading: false, error: null } })} />);
+  const span = (hour: string) => ({ start: `2026-10-02T${hour}:00:00+08:00`, end: `2026-10-02T${hour}:30:00+08:00` });
+  const timed = (id: string, hour: string): CalendarListedEntry => ({ ...entry, id, task: { ...entry.task, title: id, schedule: { kind: 'timed', ...span(hour), timezone: 'Asia/Shanghai' } }, occurrences: [span(hour)] });
+  // A weekly entry is placed by the occurrence the server projected onto the selected day.
+  const weekly: CalendarListedEntry = { ...entry, id: 'Standup', task: { ...entry.task, title: 'Standup', schedule: { kind: 'weekly', weekdays: ['fri'], start: '12:00', end: '12:30', timezone: 'Asia/Shanghai', from: '2026-09-01' } }, occurrences: [span('12')] };
+  render(<CalendarTasks {...props({ day: { entries: [timed('Evening', '17'), weekly, timed('Morning', '09'), entry], loading: false, error: null } })} />);
   const buttons = within(screen.getByRole('region', { name: 'Selected day tasks' })).getAllByRole('button');
-  expect(buttons.map((button) => button.textContent)).toEqual(['', 'ResearchAll day', 'Morning09:00 – 09:30', 'Evening17:00 – 17:30']);
+  expect(buttons.map((button) => button.textContent)).toEqual(['', 'ResearchAll day', 'Morning09:00 – 09:30', 'Standup12:00 – 12:30 · Weekly', 'Evening17:00 – 17:30']);
+});
+it('shows a weekly entry read-only and points edits to its Track', async () => {
+  const onSave = vi.fn(() => Promise.resolve());
+  const weekly: CalendarListedEntry = { ...entry, task: { ...entry.task, schedule: { kind: 'weekly', weekdays: ['mon', 'wed'], start: '09:30', end: '10:00', timezone: 'Asia/Shanghai', from: '2026-10-05', until: '2026-12-31' } },
+    occurrences: [{ start: '2026-10-05T09:30:00+08:00', end: '2026-10-05T10:00:00+08:00' }] };
+  const onOpenTrack = vi.fn();
+  render(<CalendarTasks {...props({ date: '2026-10-05', onSave, onOpenTrack, day: { entries: [weekly], loading: false, error: null } })} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: /Research.*Weekly/ }));
+  const dialog = within(screen.getByRole('dialog', { name: 'Weekly task' }));
+  expect(dialog.getByText('Mon, Wed · 09:30 – 10:00 · Asia/Shanghai', { exact: false })).toBeTruthy();
+  expect(dialog.getByText('From 2026-10-05 through 2026-12-31', { exact: false })).toBeTruthy();
+  expect(dialog.getByText('Repeats weekly — edit it through the Track.')).toBeTruthy();
+  expect(dialog.queryByRole('textbox')).toBeNull();
+  expect(dialog.queryByRole('button', { name: 'Cancel task' })).toBeNull();
+  await user.click(dialog.getByRole('button', { name: 'Source track' }));
+  expect(onOpenTrack).toHaveBeenCalledWith('source');
+  await user.click(dialog.getByRole('button', { name: 'Close' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(onSave).not.toHaveBeenCalled();
 });

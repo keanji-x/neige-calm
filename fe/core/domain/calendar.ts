@@ -3,22 +3,32 @@ import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 
 export const CALENDAR_PLUGIN_ID = 'dev.neige.calendar';
+export const CALENDAR_WEEKDAYS = Object.freeze(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const);
 export const calendarScheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('all_day'), date: z.string() }),
   z.object({ kind: z.literal('timed'), start: z.string(), end: z.string(), timezone: z.string() }),
+  z.object({
+    kind: z.literal('weekly'), weekdays: z.array(z.enum(CALENDAR_WEEKDAYS)), start: z.string(), end: z.string(),
+    timezone: z.string(), from: z.string(), until: z.string().optional(),
+  }),
 ]);
 export const calendarDraftSchema = z.object({ title: z.string(), description: z.string(), schedule: calendarScheduleSchema });
 export const calendarEntrySchema = z.object({
   id: z.string(), task: calendarDraftSchema, version: z.number(), cancelled: z.boolean(),
   source_track_id: z.string().nullable(), created_by: z.string(), created_at: z.number(), updated_at: z.number(),
 });
+/** The server's window projection: timed occurrences overlapping the listed window; none for all-day. */
+const calendarOccurrenceSchema = z.object({ start: z.string(), end: z.string() });
+export const calendarListedEntrySchema = z.object({ ...calendarEntrySchema.shape, occurrences: calendarOccurrenceSchema.array() });
+export type CalendarOccurrence = z.infer<typeof calendarOccurrenceSchema>;
+export type CalendarListedEntry = z.infer<typeof calendarListedEntrySchema>;
 export type CalendarWindow = Readonly<{ from: string; until: string }>;
 export type CalendarDraft = z.infer<typeof calendarDraftSchema>;
 export type CalendarEntry = z.infer<typeof calendarEntrySchema>;
 export type CalendarWrite = Readonly<{ idempotency_key: string; task: CalendarDraft }> |
   Readonly<{ id: string; expected_version: number; task: CalendarDraft; cancelled: boolean }>;
-export function calendarListOperation(from: string, until: string, timezone: string): ApiOperation<CalendarEntry[]> {
-  return { method: 'GET', path: `/api/calendar/tasks?from=${encodeURIComponent(from)}&until=${encodeURIComponent(until)}&timezone=${encodeURIComponent(timezone)}`, responseSchema: calendarEntrySchema.array() };
+export function calendarListOperation(from: string, until: string, timezone: string): ApiOperation<CalendarListedEntry[]> {
+  return { method: 'GET', path: `/api/calendar/tasks?from=${encodeURIComponent(from)}&until=${encodeURIComponent(until)}&timezone=${encodeURIComponent(timezone)}`, responseSchema: calendarListedEntrySchema.array() };
 }
 export function calendarWriteOperation(write: CalendarWrite): ApiOperation<CalendarEntry> {
   if ('id' in write) {
@@ -63,10 +73,13 @@ export function calendarInstant(input: string, timezone: string): string {
   return `${input}:00${sign}${hours}:${rest}`;
 }
 
-/** Project a validated half-open schedule into a display date without losing nanoseconds. */
-export function calendarScheduleIncludesDate(schedule: CalendarDraft['schedule'], day: string, timezone: string): boolean {
-  if (schedule.kind === 'all_day') return schedule.date === day;
-  const first = Temporal.Instant.from(schedule.start).toZonedDateTimeISO(timezone).toPlainDate().toString();
-  const last = Temporal.Instant.from(schedule.end).subtract({ nanoseconds: 1 }).toZonedDateTimeISO(timezone).toPlainDate().toString();
-  return first <= day && last >= day;
+/** The listed entry's first occurrence touching `day` in the display timezone; ends are exclusive and keep server precision. */
+export function calendarOccurrenceOn(entry: CalendarListedEntry, day: string, timezone: string): CalendarOccurrence | undefined {
+  const date = (instant: Temporal.Instant) => instant.toZonedDateTimeISO(timezone).toPlainDate().toString();
+  return entry.occurrences.find((span) => date(Temporal.Instant.from(span.start)) <= day
+    && date(Temporal.Instant.from(span.end).subtract({ nanoseconds: 1 })) >= day);
+}
+export function calendarEntryIncludesDate(entry: CalendarListedEntry, day: string, timezone: string): boolean {
+  const schedule = entry.task.schedule;
+  return schedule.kind === 'all_day' ? schedule.date === day : calendarOccurrenceOn(entry, day, timezone) !== undefined;
 }

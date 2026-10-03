@@ -1,5 +1,8 @@
 use crate::error::{CalmError, Result};
-use chrono::{DateTime, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone};
+use chrono::{
+    DateTime, Datelike, Days, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone,
+    Utc,
+};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -16,6 +19,30 @@ pub enum Schedule {
         end: String,
         timezone: String,
     },
+    /// Local `start..end` ("HH:MM", same day) on each listed weekday from `from` through `until`
+    /// (inclusive; open-ended when absent). A wall time that a DST change skips drops that
+    /// occurrence; a repeated wall time takes its earlier instant.
+    Weekly {
+        weekdays: Vec<Weekday>,
+        start: String,
+        end: String,
+        timezone: String,
+        from: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<String>,
+    },
+}
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "lowercase")]
+#[schema(as = CalendarWeekday)]
+pub enum Weekday {
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+    Sun,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +78,22 @@ pub struct Entry {
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+/// One timed occurrence as RFC3339 instants.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+#[schema(as = CalendarOccurrence)]
+pub struct Occurrence {
+    pub start: String,
+    pub end: String,
+}
+/// A listed entry with its timed occurrences inside the requested window, in start order; an
+/// all-day entry has none.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+#[schema(as = CalendarListedEntry)]
+pub struct Listed {
+    #[serde(flatten)]
+    pub entry: Entry,
+    pub occurrences: Vec<Occurrence>,
 }
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -105,30 +148,138 @@ fn resolve_time(value: &str, tz: Tz) -> Result<String> {
         )),
     }
 }
-/// The instants and zone of a timed schedule.
+/// One timed occurrence: its instants and the zone it is written in.
 pub struct TimedSpan {
     pub start: DateTime<chrono::FixedOffset>,
     pub end: DateTime<chrono::FixedOffset>,
     pub tz: Tz,
 }
+impl TimedSpan {
+    pub fn occurrence(&self) -> Occurrence {
+        Occurrence {
+            start: self.start.to_rfc3339(),
+            end: self.end.to_rfc3339(),
+        }
+    }
+}
+fn wall_clock(value: &str) -> Result<NaiveTime> {
+    let parsed =
+        NaiveTime::parse_from_str(value, "%H:%M").map_err(|_| invalid("expected HH:MM"))?;
+    if parsed.format("%H:%M").to_string() != value {
+        return Err(invalid("expected HH:MM"));
+    }
+    Ok(parsed)
+}
+/// A validated weekly schedule.
+struct Weekly {
+    weekdays: Vec<chrono::Weekday>,
+    start: NaiveTime,
+    end: NaiveTime,
+    tz: Tz,
+    from: NaiveDate,
+    until: Option<NaiveDate>,
+}
+impl Weekly {
+    /// The single weekly occurrence rule: occurrences that start on local dates `first..=last`.
+    fn occurrences(&self, first: NaiveDate, last: NaiveDate) -> Vec<TimedSpan> {
+        let last = self.until.map_or(last, |until| until.min(last));
+        let at = |day: NaiveDate, time: NaiveTime| {
+            // `earliest` is None in a DST gap and the earlier instant in an overlap.
+            self.tz
+                .from_local_datetime(&day.and_time(time))
+                .earliest()
+                .map(|instant| instant.fixed_offset())
+        };
+        first
+            .max(self.from)
+            .iter_days()
+            .take_while(|day| *day <= last)
+            .filter(|day| self.weekdays.contains(&day.weekday()))
+            .filter_map(|day| {
+                Some(TimedSpan {
+                    start: at(day, self.start)?,
+                    end: at(day, self.end)?,
+                    tz: self.tz,
+                })
+            })
+            .collect()
+    }
+}
+fn timed(start: &str, end: &str, zone: &str) -> Result<TimedSpan> {
+    let tz = timezone(zone)?;
+    Ok(TimedSpan {
+        start: instant(start, tz)?,
+        end: instant(end, tz)?,
+        tz,
+    })
+}
 impl Schedule {
-    /// `None` for an all-day schedule.
-    pub fn timed_span(&self) -> Result<Option<TimedSpan>> {
-        match self {
-            Schedule::AllDay { .. } => Ok(None),
+    fn weekly(&self) -> Result<Option<Weekly>> {
+        let Schedule::Weekly {
+            weekdays,
+            start,
+            end,
+            timezone: zone,
+            from,
+            until,
+        } = self
+        else {
+            return Ok(None);
+        };
+        let weekly = Weekly {
+            weekdays: weekdays
+                .iter()
+                .map(|day| match day {
+                    Weekday::Mon => chrono::Weekday::Mon,
+                    Weekday::Tue => chrono::Weekday::Tue,
+                    Weekday::Wed => chrono::Weekday::Wed,
+                    Weekday::Thu => chrono::Weekday::Thu,
+                    Weekday::Fri => chrono::Weekday::Fri,
+                    Weekday::Sat => chrono::Weekday::Sat,
+                    Weekday::Sun => chrono::Weekday::Sun,
+                })
+                .collect(),
+            start: wall_clock(start)?,
+            end: wall_clock(end)?,
+            tz: timezone(zone)?,
+            from: date(from)?,
+            until: until.as_deref().map(date).transpose()?,
+        };
+        let unique = weekly
+            .weekdays
+            .iter()
+            .enumerate()
+            .all(|(index, day)| !weekly.weekdays[..index].contains(day));
+        if weekly.weekdays.is_empty() || !unique {
+            return Err(invalid("weekdays must be nonempty and unique"));
+        }
+        if weekly.end <= weekly.start {
+            return Err(invalid("end must be later than start on the same day"));
+        }
+        if weekly.until.is_some_and(|until| until < weekly.from) {
+            return Err(invalid("until must not be before from"));
+        }
+        Ok(Some(weekly))
+    }
+    /// The latest occurrence that has started by `now`; `None` for an all-day schedule.
+    pub fn latest_occurrence(&self, now: DateTime<Utc>) -> Result<Option<TimedSpan>> {
+        let span = match self {
+            Schedule::AllDay { .. } => None,
             Schedule::Timed {
                 start,
                 end,
                 timezone: zone,
-            } => {
-                let tz = timezone(zone)?;
-                Ok(Some(TimedSpan {
-                    start: instant(start, tz)?,
-                    end: instant(end, tz)?,
-                    tz,
-                }))
-            }
-        }
+            } => Some(timed(start, end, zone)?),
+            Schedule::Weekly { .. } => self.weekly()?.and_then(|weekly| {
+                let today = now.with_timezone(&weekly.tz).date_naive();
+                // Eight local days hold every listed weekday's latest start.
+                weekly
+                    .occurrences(today.checked_sub_days(Days::new(7))?, today)
+                    .into_iter()
+                    .rfind(|span| span.start <= now)
+            }),
+        };
+        Ok(span.filter(|span| span.start <= now))
     }
 }
 impl Draft {
@@ -168,6 +319,9 @@ impl Draft {
                     return Err(invalid("end must be later than start"));
                 }
             }
+            Schedule::Weekly { .. } => {
+                self.schedule.weekly()?;
+            }
         }
         Ok(())
     }
@@ -184,21 +338,42 @@ impl Window {
         Ok(())
     }
     pub fn contains(&self, schedule: &Schedule) -> Result<bool> {
+        match schedule {
+            Schedule::AllDay { date: value } => {
+                Ok(date(value)? >= date(&self.from)? && date(value)? < date(&self.until)?)
+            }
+            _ => Ok(!self.occurrences(schedule)?.is_empty()),
+        }
+    }
+    /// Timed occurrences that overlap the window's local days, in start order; none when all-day.
+    pub fn occurrences(&self, schedule: &Schedule) -> Result<Vec<TimedSpan>> {
         let from = date(&self.from)?;
         let until = date(&self.until)?;
-        match schedule {
-            Schedule::AllDay { date: value } => Ok(date(value)? >= from && date(value)? < until),
+        let tz = timezone(&self.timezone)?;
+        let candidates = match schedule {
+            Schedule::AllDay { .. } => Vec::new(),
             Schedule::Timed {
                 start,
                 end,
                 timezone: zone,
-            } => {
-                let tz = timezone(&self.timezone)?;
-                let start = instant(start, timezone(zone)?)?.with_timezone(&tz);
+            } => vec![timed(start, end, zone)?],
+            // Zone offsets differ by at most 26 hours, so two extra local days cover each side.
+            Schedule::Weekly { .. } => schedule.weekly()?.map_or_else(Vec::new, |weekly| {
+                let margin = Days::new(2);
+                weekly.occurrences(
+                    from.checked_sub_days(margin).unwrap_or(NaiveDate::MIN),
+                    until.checked_add_days(margin).unwrap_or(NaiveDate::MAX),
+                )
+            }),
+        };
+        Ok(candidates
+            .into_iter()
+            .filter(|span| {
                 // Half-open range: an event ending at midnight is absent from the next day.
-                let last = instant(end, timezone(zone)?)? - chrono::Duration::nanoseconds(1);
-                Ok(start.date_naive() < until && last.with_timezone(&tz).date_naive() >= from)
-            }
-        }
+                let last = span.end - chrono::Duration::nanoseconds(1);
+                span.start.with_timezone(&tz).date_naive() < until
+                    && last.with_timezone(&tz).date_naive() >= from
+            })
+            .collect())
     }
 }

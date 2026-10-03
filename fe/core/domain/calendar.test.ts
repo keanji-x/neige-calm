@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calendarDate, calendarInstant, calendarScheduleIncludesDate, calendarListOperation, calendarWriteOperation, shiftCalendarDate } from './calendar.js';
+import { calendarDate, calendarEntryIncludesDate, calendarInstant, calendarListOperation, calendarListedEntrySchema, calendarOccurrenceOn, calendarWriteOperation, shiftCalendarDate, type CalendarListedEntry } from './calendar.js';
 
 describe('calendar time contracts', () => {
   it('uses the selected timezone across midnight and calendar boundaries', () => {
@@ -23,9 +23,30 @@ describe('calendar time contracts', () => {
   });
 });
 
+const listed = (schedule: CalendarListedEntry['task']['schedule'], occurrences: CalendarListedEntry['occurrences']): CalendarListedEntry => ({
+  id: 'entry', task: { title: 'Review', description: '', schedule }, version: 1, cancelled: false, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1, occurrences,
+});
+
 it('projects exclusive ends with server precision in the display timezone', () => {
-  const schedule = { kind: 'timed' as const, start: '2026-10-02T23:00:00+08:00', end: '2026-10-03T00:00:00.000001+08:00', timezone: 'Asia/Shanghai' };
-  expect(calendarScheduleIncludesDate(schedule, '2026-10-03', 'Asia/Shanghai')).toBe(true);
-  expect(calendarScheduleIncludesDate(schedule, '2026-10-03', 'UTC')).toBe(false);
-  expect(calendarScheduleIncludesDate({ ...schedule, end: '2026-10-03T00:00:00+08:00' }, '2026-10-03', 'Asia/Shanghai')).toBe(false);
+  const span = { start: '2026-10-02T23:00:00+08:00', end: '2026-10-03T00:00:00.000001+08:00' };
+  const entry = listed({ kind: 'timed', ...span, timezone: 'Asia/Shanghai' }, [span]);
+  expect(calendarEntryIncludesDate(entry, '2026-10-03', 'Asia/Shanghai')).toBe(true);
+  expect(calendarEntryIncludesDate(entry, '2026-10-03', 'UTC')).toBe(false);
+  const exact = { ...span, end: '2026-10-03T00:00:00+08:00' };
+  expect(calendarEntryIncludesDate(listed({ kind: 'timed', ...exact, timezone: 'Asia/Shanghai' }, [exact]), '2026-10-03', 'Asia/Shanghai')).toBe(false);
+  expect(calendarEntryIncludesDate(listed({ kind: 'all_day', date: '2026-10-03' }, []), '2026-10-03', 'UTC')).toBe(true);
+});
+
+it('decodes a listed weekly entry and places each projected occurrence on its display date', () => {
+  const wire = { ...listed({ kind: 'weekly', weekdays: ['mon', 'wed'], start: '09:30', end: '10:00', timezone: 'Asia/Shanghai', from: '2026-10-05' }, [
+    { start: '2026-10-05T09:30:00+08:00', end: '2026-10-05T10:00:00+08:00' },
+    { start: '2026-10-07T09:30:00+08:00', end: '2026-10-07T10:00:00+08:00' },
+  ]) };
+  const entry = calendarListedEntrySchema.parse(wire);
+  expect(entry.task.schedule).toEqual(wire.task.schedule);
+  expect(['2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07'].map((day) => calendarEntryIncludesDate(entry, day, 'Asia/Shanghai'))).toEqual([false, true, false, true]);
+  // Monday morning in Shanghai is Sunday evening in Los Angeles.
+  expect(calendarOccurrenceOn(entry, '2026-10-04', 'America/Los_Angeles')?.start).toBe('2026-10-05T09:30:00+08:00');
+  expect(calendarListedEntrySchema.safeParse({ ...wire, task: { ...wire.task, schedule: { ...wire.task.schedule, weekdays: ['monday'] } } }).success).toBe(false);
+  expect(calendarListedEntrySchema.safeParse({ ...wire, occurrences: undefined }).success).toBe(false);
 });

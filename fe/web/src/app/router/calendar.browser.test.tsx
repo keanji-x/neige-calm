@@ -4,13 +4,13 @@ import { afterEach, expect, it } from 'vitest';
 import '../../styles/entry.css';
 import { CalendarTasks, type CalendarEntriesView } from '../../features/calendar/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
-import type { CalendarEntry, CalendarWrite } from '../../../../core/domain/calendar.ts';
+import type { CalendarEntry, CalendarListedEntry, CalendarWrite } from '../../../../core/domain/calendar.ts';
 
 afterEach(async () => {
   cleanup();
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 });
-const ready = (entries: CalendarEntry[]): CalendarEntriesView => ({ entries, loading: false, error: null });
+const ready = (entries: CalendarListedEntry[]): CalendarEntriesView => ({ entries, loading: false, error: null });
 
 it('creates a task for the date selected inside the integrated sidebar week', async () => {
   await page.viewport(1440, 1000);
@@ -40,7 +40,7 @@ it('queries the visible month and selected day separately through the real adapt
   const { calendarDraftSchema } = await import('../../../../core/domain/calendar.ts');
   type Request = import('../../../../core/api/types.ts').ApiRequest;
   const requests: Request[] = [];
-  let visible: CalendarEntry[] = [];
+  let visible: CalendarListedEntry[] = [];
   let saved: CalendarEntry | null = null;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const transport: import('../../../../core/api/types.ts').ApiTransportPort = {
@@ -52,7 +52,7 @@ it('queries the visible month and selected day separately through the real adapt
       else if (request.path === '/api/calendar/tasks') {
         const payload = request.body as { task: unknown };
         saved = { id: 'browser-task', task: calendarDraftSchema.parse(payload.task), version: 1, cancelled: false, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1 };
-        visible = [saved]; body = saved;
+        visible = [{ ...saved, occurrences: [] }]; body = saved;
       } else { body = { ...saved, version: 2, cancelled: true }; visible = []; }
       return Promise.resolve({ status: 200, statusText: 'OK', body });
     },
@@ -92,9 +92,10 @@ it('does not mount the calendar on compact viewports', async () => {
 
 it('shows counts in both views and keeps task titles and times in the list', async () => {
   await page.viewport(1440, 1000);
-  const entry: CalendarEntry = { id: 'same-entry', task: { title: 'Review approach', description: 'Compare the options.', schedule: {
-    kind: 'timed', start: '2026-10-02T14:00:00+08:00', end: '2026-10-02T15:00:00+08:00', timezone: 'Asia/Shanghai',
-  } }, version: 1, cancelled: false, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1 };
+  const span = { start: '2026-10-02T14:00:00+08:00', end: '2026-10-02T15:00:00+08:00' };
+  const entry: CalendarListedEntry = { id: 'same-entry', task: { title: 'Review approach', description: 'Compare the options.', schedule: {
+    kind: 'timed', ...span, timezone: 'Asia/Shanghai',
+  } }, version: 1, cancelled: false, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1, occurrences: [span] };
   render(<CalendarTasks date="2026-10-02" timezone="Asia/Shanghai" trackCountOn={(date) => date === '2026-10-02' ? 3 : 0} enabled pending={false}
     onDateChange={() => undefined} onWindowChange={() => undefined} onRetry={() => undefined} onSettings={() => undefined}
     onOpenTrack={() => undefined} onSave={() => Promise.resolve()} month={ready([entry])} day={ready([entry])} />);
@@ -134,20 +135,22 @@ it('selects the whole date badge and keeps Week compact while switching dates', 
 });
 it('counts a task ending just after midnight on the next day', async () => {
   await page.viewport(1440, 1000);
-  const entry: CalendarEntry = { id: 'precision', version: 1, cancelled: false, source_track_id: null, created_by: 'agent', created_at: 1, updated_at: 1,
-    task: { title: 'Midnight review', description: '', schedule: { kind: 'timed', start: '2026-10-02T23:00:00+08:00', end: '2026-10-03T00:00:00.000001+08:00', timezone: 'Asia/Shanghai' } } };
+  const span = { start: '2026-10-02T23:00:00+08:00', end: '2026-10-03T00:00:00.000001+08:00' };
+  const entry: CalendarListedEntry = { id: 'precision', version: 1, cancelled: false, source_track_id: null, created_by: 'agent', created_at: 1, updated_at: 1,
+    task: { title: 'Midnight review', description: '', schedule: { kind: 'timed', ...span, timezone: 'Asia/Shanghai' } }, occurrences: [span] };
   const props = { date: '2026-10-02', timezone: 'Asia/Shanghai', enabled: true, pending: false, onDateChange: () => undefined,
     onWindowChange: () => undefined, onRetry: () => undefined, onSettings: () => undefined, onOpenTrack: () => undefined, onSave: () => Promise.resolve() };
   const view = render(<CalendarTasks {...props} month={ready([entry])} day={ready([entry])} />);
   await expect.element(page.getByRole('link', { name: /October 3, 2026, 1 tasks/ })).toBeVisible();
-  const exact: CalendarEntry = { ...entry, task: { ...entry.task, schedule: { kind: 'timed', start: '2026-10-02T23:00:00+08:00', end: '2026-10-03T00:00:00+08:00', timezone: 'Asia/Shanghai' } } };
+  const exactSpan = { ...span, end: '2026-10-03T00:00:00+08:00' };
+  const exact: CalendarListedEntry = { ...entry, task: { ...entry.task, schedule: { kind: 'timed', ...exactSpan, timezone: 'Asia/Shanghai' } }, occurrences: [exactSpan] };
   view.rerender(<CalendarTasks {...props} month={ready([exact])} day={ready([exact])} />);
   await expect.element(page.getByRole('link', { name: /October 3, 2026, 0 tasks/ })).toBeVisible();
 });
 it('keeps a six-week Month card inside the screen by shrinking both lists', async () => {
   await page.viewport(1440, 768);
-  const entries: CalendarEntry[] = Array.from({ length: 20 }, (_, index) => ({ id: `height-${index}`, version: 1, cancelled: false,
-    source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1,
+  const entries: CalendarListedEntry[] = Array.from({ length: 20 }, (_, index) => ({ id: `height-${index}`, version: 1, cancelled: false,
+    source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1, occurrences: [],
     task: { title: `Task ${index}`, description: '', schedule: { kind: 'all_day', date: '2026-08-31' } } }));
   const { NEUTRAL_ACTIVITY } = await import('../../../../core/domain/track.ts');
   const tracks = Array.from({ length: 20 }, (_, index) => ({ ...NEUTRAL_ACTIVITY, id: `height-track-${index}`, areaId: 'height-area', title: `Track ${index}`,
@@ -170,4 +173,28 @@ it('keeps a six-week Month card inside the screen by shrinking both lists', asyn
     expect(list.clientHeight).toBeGreaterThan(0);
     expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
   }
+});
+it('counts a weekly entry on each projected occurrence in Week and Month and shows it read-only', async () => {
+  await page.viewport(1440, 1000);
+  const at = (day: string) => ({ start: `2026-10-${day}T09:30:00+08:00`, end: `2026-10-${day}T10:00:00+08:00` });
+  const weekly: CalendarListedEntry = { id: 'weekly', version: 1, cancelled: false, source_track_id: 'track', created_by: 'card:planner', created_at: 1, updated_at: 1,
+    task: { title: 'Open review', description: 'Check the overnight moves.', schedule: { kind: 'weekly', weekdays: ['mon', 'wed', 'fri'], start: '09:30', end: '10:00', timezone: 'Asia/Shanghai', from: '2026-10-01' } },
+    occurrences: ['02', '05', '07', '09', '12', '14', '16', '19', '21', '23', '26', '28', '30'].map(at) };
+  const today: CalendarListedEntry = { ...weekly, occurrences: [at('02')] };
+  render(<CalendarTasks date="2026-10-02" timezone="Asia/Shanghai" enabled pending={false} onDateChange={() => undefined} onWindowChange={() => undefined}
+    onRetry={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={() => Promise.resolve()} month={ready([weekly])} day={ready([today])} />);
+  // Wednesday September 30 precedes the series' first date.
+  await expect.element(page.getByRole('link', { name: /September 30, 2026, 0 tasks/ })).toBeVisible();
+  await expect.element(page.getByRole('link', { name: /October 2, 2026, selected, 1 tasks/ })).toBeVisible();
+  await expect.element(page.getByRole('link', { name: /October 3, 2026, 0 tasks/ })).toBeVisible();
+  await expect.element(page.getByRole('region', { name: 'Task list' }).getByRole('button', { name: /Open review.*09:30 – 10:00 · Weekly/ })).toBeVisible();
+  await page.screenshot({ path: '../../../../test-results/calendar-weekly-week.png' });
+  await page.getByRole('radio', { name: 'Month', exact: true }).click();
+  for (const day of [5, 7, 9, 30]) await expect.element(page.getByRole('link', { name: new RegExp(`October ${day}, 2026, 1 tasks`) })).toBeVisible();
+  for (const day of [6, 8, 31]) await expect.element(page.getByRole('link', { name: new RegExp(`October ${day}, 2026, 0 tasks`) })).toBeVisible();
+  await page.screenshot({ path: '../../../../test-results/calendar-weekly-month.png' });
+  await page.getByRole('region', { name: 'Task list' }).getByRole('button', { name: /Open review/ }).click();
+  await expect.element(page.getByRole('dialog', { name: 'Weekly task' }).getByText('Repeats weekly — edit it through the Track.')).toBeVisible();
+  await expect.element(page.getByRole('textbox', { name: 'Task title' })).not.toBeInTheDocument();
+  await page.screenshot({ path: '../../../../test-results/calendar-weekly-details.png' });
 });

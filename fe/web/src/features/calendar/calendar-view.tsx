@@ -7,13 +7,13 @@ import FullCalendar, { type CalendarRef } from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/react/daygrid';
 import interactionPlugin from '@fullcalendar/react/interaction';
 import themePlugin from '@fullcalendar/react/themes/monarch';
-import { calendarDate, calendarScheduleIncludesDate, type CalendarEntry, type CalendarWindow } from '../../../../core/domain/calendar.ts';
+import { calendarDate, calendarEntryIncludesDate, type CalendarListedEntry, type CalendarWindow } from '../../../../core/domain/calendar.ts';
 import styles from './calendar.module.css';
 
 export function TaskCalendar({ date, timezone, entries, children, trackCountOn, onDateChange, onWindowChange }: Readonly<{
   trackCountOn?: (date: string) => number | null;
   children: ReactNode;
-  date: string; timezone: string; entries: readonly CalendarEntry[];
+  date: string; timezone: string; entries: readonly CalendarListedEntry[];
   onDateChange(date: string): void; onWindowChange(window: CalendarWindow): void;
 }>) {
   const [mode, setMode] = useState('week');
@@ -27,7 +27,7 @@ export function TaskCalendar({ date, timezone, entries, children, trackCountOn, 
   const countsOn = (value: Date) => {
     const day = calendarDate(value.getTime(), timezone);
     const tracks = trackCountOn?.(day);
-    const tasks = entries.filter((entry) => calendarScheduleIncludesDate(entry.task.schedule, day, timezone)).length;
+    const tasks = entries.filter((entry) => calendarEntryIncludesDate(entry, day, timezone)).length;
     return { day, tracks, tasks };
   };
   const dateBadge = (value: Date) => {

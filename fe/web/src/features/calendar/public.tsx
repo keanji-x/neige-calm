@@ -5,12 +5,12 @@ import { useState } from '../../ui/state/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { ListText } from '../../ui/list-typography/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
-import { calendarDate, type CalendarEntry, type CalendarWindow, type CalendarWrite } from '../../../../core/domain/calendar.ts';
-import { CalendarEditor } from './editor.tsx';
+import { calendarDate, calendarOccurrenceOn, type CalendarListedEntry, type CalendarWindow, type CalendarWrite } from '../../../../core/domain/calendar.ts';
+import { CalendarEditor, WeeklyEntryDetails } from './editor.tsx';
 import { TaskCalendar } from './calendar-view.tsx';
 import styles from './calendar.module.css';
 
-export type CalendarEntriesView = Readonly<{ entries: readonly CalendarEntry[] | undefined; loading: boolean; error: string | null }>;
+export type CalendarEntriesView = Readonly<{ entries: readonly CalendarListedEntry[] | undefined; loading: boolean; error: string | null }>;
 export type CalendarTasksProps = Readonly<{
   trackCountOn?: (date: string) => number | null;
   date: string; timezone: string; month: CalendarEntriesView; day: CalendarEntriesView;
@@ -20,9 +20,11 @@ export type CalendarTasksProps = Readonly<{
   onOpenTrack(id: string): void; onSave(write: CalendarWrite): Promise<void>;
 }>;
 export function CalendarTasks({ date, timezone, trackCountOn, month, day, enabled, pending, onDateChange, onWindowChange, onRetry, onSettings, onOpenTrack, onSave }: CalendarTasksProps) {
-  const [editing, setEditing] = useState<Readonly<{ entry: CalendarEntry | null; date: string }> | null>(null);
+  const [editing, setEditing] = useState<Readonly<{ entry: CalendarListedEntry | null; date: string }> | null>(null);
   const dateLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', weekday: 'short', timeZone: 'UTC' }).format(new Date(`${date}T12:00:00Z`));
-  const open = (entry: CalendarEntry) => setEditing({ entry, date });
+  const open = (entry: CalendarListedEntry) => setEditing({ entry, date });
+  const schedule = editing?.entry?.task.schedule;
+  const weekly = schedule?.kind === 'weekly' ? schedule : null;
   return <>
     <TaskCalendar trackCountOn={trackCountOn} date={date} timezone={timezone} entries={enabled ? month.entries ?? [] : []}
       onDateChange={onDateChange} onWindowChange={onWindowChange}>
@@ -39,7 +41,7 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
         : day.loading ? <p role="status" className={styles.empty}>Loading tasks…</p>
         : day.entries?.length === 0 ? <p className={styles.empty}>No tasks for this day.</p>
         : <List density="compact">
-            {day.entries?.toSorted(compareSchedule).map((entry) => <ListItem key={entry.id} className={styles.taskItem} label={<span className={styles.detailRow}>
+            {day.entries?.toSorted((a, b) => compareSchedule(a, b, date, timezone)).map((entry) => <ListItem key={entry.id} className={styles.taskItem} label={<span className={styles.detailRow}>
               <span aria-hidden="true" /><ListText tone="primary" className={styles.detailTitle}>{entry.task.title}</ListText>
               <span className={styles.detailTime}>{scheduleLabel(entry, date, timezone)}</span>
             </span>} onClick={() => open(entry)} />)}
@@ -47,27 +49,31 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
       </div>
     </section>
     </TaskCalendar>
-    {editing !== null && <Dialog open onClose={() => { if (!pending) setEditing(null); }} title={editing.entry ? 'Edit task' : 'New task'}>
-      <CalendarEditor key={editing.entry ? `${editing.entry.id}:${editing.entry.version}` : 'new'} entry={editing.entry}
-        date={editing.date} timezone={timezone} pending={pending} onClose={() => setEditing(null)} onSave={onSave} />
+    {editing !== null && <Dialog open onClose={() => { if (!pending) setEditing(null); }} title={weekly ? 'Weekly task' : editing.entry ? 'Edit task' : 'New task'}>
+      {weekly && editing.entry ? <WeeklyEntryDetails task={editing.entry.task} schedule={weekly} />
+        : <CalendarEditor key={editing.entry ? `${editing.entry.id}:${editing.entry.version}` : 'new'} entry={editing.entry}
+          date={editing.date} timezone={timezone} pending={pending} onClose={() => setEditing(null)} onSave={onSave} />}
       {editing.entry?.source_track_id && <Button label="Source track" size="sm" variant="ghost" onClick={() => onOpenTrack(editing.entry!.source_track_id!)} />}
     </Dialog>}
   </>;
 }
-function scheduleLabel(entry: CalendarEntry, date: string, timezone: string): string {
-  const schedule = entry.task.schedule;
-  if (schedule.kind === 'all_day') return 'All day';
+function scheduleLabel(entry: CalendarListedEntry, date: string, timezone: string): string {
+  if (entry.task.schedule.kind === 'all_day') return 'All day';
+  const span = calendarOccurrenceOn(entry, date, timezone);
+  if (span === undefined) return '';
   const format = (value: string) => new Intl.DateTimeFormat('en-US', {
     timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
     ...(calendarDate(Date.parse(value), timezone) !== date ? { month: 'short' as const, day: 'numeric' as const } : {}),
   }).format(new Date(value));
-  return `${format(schedule.start)} – ${format(schedule.end)}`;
+  return `${format(span.start)} – ${format(span.end)}${entry.task.schedule.kind === 'weekly' ? ' · Weekly' : ''}`;
 }
 
-function compareSchedule(a: CalendarEntry, b: CalendarEntry): number {
-  const left = a.task.schedule;
-  const right = b.task.schedule;
-  if (left.kind === 'all_day') return right.kind === 'all_day' ? left.date.localeCompare(right.date) : -1;
-  if (right.kind === 'all_day') return 1;
-  return Date.parse(left.start) - Date.parse(right.start);
+/** All-day entries first, then by the start of the occurrence shown on `date`. */
+function compareSchedule(a: CalendarListedEntry, b: CalendarListedEntry, date: string, timezone: string): number {
+  const start = (entry: CalendarListedEntry) => calendarOccurrenceOn(entry, date, timezone)?.start;
+  const left = start(a);
+  const right = start(b);
+  if (left === undefined) return right === undefined ? 0 : -1;
+  if (right === undefined) return 1;
+  return Date.parse(left) - Date.parse(right);
 }

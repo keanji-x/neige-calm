@@ -168,9 +168,10 @@ mod tests {
     /// compact input schema. One-sided caps; a change that shrinks the surface lowers them.
     #[test]
     fn planner_tool_surface_fits_its_byte_budget() {
-        // Three Calendar tools add compact schemas and action-specific guidance (#1913).
+        // Three Calendar tools add compact schemas and action-specific guidance (#1913); the
+        // weekly schedule variant in create/update and its wording measure 29,984 bytes (#1967).
         // Keep the measured aggregate bound and the unchanged per-description cap.
-        const SURFACE_MAX_BYTES: usize = 29_100;
+        const SURFACE_MAX_BYTES: usize = 30_000;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);

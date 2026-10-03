@@ -34,7 +34,8 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
 pub fn register(registry: &mut ToolRegistry) {
     let schedule = json!({"oneOf":[
         {"type":"object","additionalProperties":false,"required":["kind","date"],"properties":{"kind":{"const":"all_day"},"date":{"type":"string"}}},
-        {"type":"object","additionalProperties":false,"required":["kind","start","end","timezone"],"properties":{"kind":{"const":"timed"},"start":{"type":"string"},"end":{"type":"string"},"timezone":{"type":"string"}}}
+        {"type":"object","additionalProperties":false,"required":["kind","start","end","timezone"],"properties":{"kind":{"const":"timed"},"start":{"type":"string"},"end":{"type":"string"},"timezone":{"type":"string"}}},
+        {"type":"object","additionalProperties":false,"required":["kind","weekdays","start","end","timezone","from"],"properties":{"kind":{"const":"weekly"},"weekdays":{"type":"array","items":{"enum":["mon","tue","wed","thu","fri","sat","sun"]}},"start":{"type":"string"},"end":{"type":"string"},"timezone":{"type":"string"},"from":{"type":"string"},"until":{"type":"string"}}}
     ]});
     let task = json!({"type":"object","additionalProperties":false,"required":["title","description","schedule"],"properties":{"title":{"type":"string"},"description":{"type":"string"},"schedule":schedule}});
     for action in ["list", "create", "update"] {

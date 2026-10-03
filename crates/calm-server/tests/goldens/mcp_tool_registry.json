@@ -50,7 +50,7 @@
   },
   {
     "name": "calm.calendar.create",
-    "description_sha256": "a6aeaaf005ebf5c99b2071ff864a5a48c0320520f589b6394caa5eb126210487",
+    "description_sha256": "249d0709f53afd55bf9280346966bb4fe02747e9918cb8c9cdf4456b2caa573b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -104,6 +104,52 @@
                     "timezone"
                   ],
                   "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "weekly"
+                    },
+                    "start": {
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "weekdays": {
+                      "items": {
+                        "enum": [
+                          "mon",
+                          "tue",
+                          "wed",
+                          "thu",
+                          "fri",
+                          "sat",
+                          "sun"
+                        ]
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "weekdays",
+                    "start",
+                    "end",
+                    "timezone",
+                    "from"
+                  ],
+                  "type": "object"
                 }
               ]
             },
@@ -137,7 +183,7 @@
   },
   {
     "name": "calm.calendar.list",
-    "description_sha256": "c83d1133077f6f369adcbdf235bc940a18c29c556e7efd72aba89d96f40da3db",
+    "description_sha256": "7b893526b6dec8a21670e3c568a444913e732e1c8df5c358213454856dc86f07",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -226,6 +272,52 @@
                     "start",
                     "end",
                     "timezone"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "weekly"
+                    },
+                    "start": {
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "weekdays": {
+                      "items": {
+                        "enum": [
+                          "mon",
+                          "tue",
+                          "wed",
+                          "thu",
+                          "fri",
+                          "sat",
+                          "sun"
+                        ]
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "weekdays",
+                    "start",
+                    "end",
+                    "timezone",
+                    "from"
                   ],
                   "type": "object"
                 }

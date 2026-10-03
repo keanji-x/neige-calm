@@ -8,7 +8,7 @@ import { Banner } from '@astryxdesign/core/Banner';
 import type { ISODateString } from '@astryxdesign/core/Calendar';
 import type { ISOTimeString } from '@astryxdesign/core/utils';
 import { useState } from '../../ui/state/public.ts';
-import { calendarInstant, wallTime, type CalendarEntry, type CalendarWrite } from '../../../../core/domain/calendar.ts';
+import { calendarInstant, wallTime, type CalendarDraft, type CalendarEntry, type CalendarWrite } from '../../../../core/domain/calendar.ts';
 import styles from './calendar.module.css';
 
 export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave }: Readonly<{
@@ -76,4 +76,18 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
       </div>
     </div>
   </form>;
+}
+
+/** A weekly entry has no recurrence editor here: it is shown read-only and changed through its Track. */
+export function WeeklyEntryDetails({ task, schedule }: Readonly<{
+  task: CalendarDraft; schedule: Extract<CalendarDraft['schedule'], { kind: 'weekly' }>;
+}>) {
+  const days = schedule.weekdays.map((day) => day[0].toUpperCase() + day.slice(1)).join(', ');
+  return <div className={styles.form}>
+    <p>{task.title}</p>
+    <p className={styles.time}>{days} · {schedule.start} – {schedule.end} · {schedule.timezone}<br />
+      From {schedule.from}{schedule.until === undefined ? '' : ` through ${schedule.until}`}</p>
+    {task.description && <p>{task.description}</p>}
+    <Banner status="info" title="Repeats weekly — edit it through the Track." />
+  </div>;
 }

@@ -215,6 +215,13 @@ fn request() -> Create {
         task: draft(),
     }
 }
+/// A timed entry as the list projects it: with its single occurrence.
+fn listed(entry: &serde_json::Value) -> serde_json::Value {
+    let schedule = &entry["task"]["schedule"];
+    let mut listed = entry.clone();
+    listed["occurrences"] = json!([{"start": schedule["start"], "end": schedule["end"]}]);
+    listed
+}
 fn window() -> Window {
     Window {
         from: "2026-10-02".into(),
@@ -482,7 +489,9 @@ async fn calendar_concurrent_creation_and_edits_are_serialized() {
         "only one concurrent edit owns the revision"
     );
     assert_eq!(
-        store::list(&fx.ctx, &human(), window()).await.unwrap()[0].version,
+        store::list(&fx.ctx, &human(), window()).await.unwrap()[0]
+            .entry
+            .version,
         2
     );
 }
@@ -520,7 +529,7 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     .unwrap();
     assert_eq!(
         serde_json::to_value(visible).unwrap()["structuredContent"],
-        json!([first])
+        json!([listed(&first)])
     );
     let mut moved = timed.clone();
     moved["schedule"]["start"] = json!("2026-10-02T11:00:00+08:00");
@@ -538,7 +547,10 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     assert_eq!(revised["version"], 2);
     let human_view = store::list(&fx.ctx, &human(), window()).await.unwrap();
     assert_eq!(human_view.len(), 1);
-    assert_eq!(serde_json::to_value(&human_view[0].task).unwrap(), moved);
+    assert_eq!(
+        serde_json::to_value(&human_view[0].entry.task).unwrap(),
+        moved
+    );
     update(
         fx.ctx.clone(),
         planner.clone(),
@@ -633,7 +645,7 @@ async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
     .unwrap();
     assert_eq!(
         serde_json::to_value(visible).unwrap()["structuredContent"],
-        json!([first])
+        json!([listed(&first)])
     );
     let mut moved = task.clone();
     moved["schedule"]["start"] = json!("2026-10-02T11:00");
@@ -676,7 +688,10 @@ async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
         assert!(error.message.contains(message), "{error:?}");
     }
     let stored = store::list(&fx.ctx, &human(), window()).await.unwrap();
-    assert_eq!(serde_json::to_value(stored).unwrap(), json!([changed]));
+    assert_eq!(
+        serde_json::to_value(stored).unwrap(),
+        json!([listed(&changed)])
+    );
 }
 
 #[tokio::test]
@@ -758,7 +773,9 @@ async fn calendar_always_enabled_policy_preserves_legacy_data_and_rejects_disabl
             .enabled
     );
     assert_eq!(
-        store::list(&fx.ctx, &human(), window()).await.unwrap()[0].id,
+        store::list(&fx.ctx, &human(), window()).await.unwrap()[0]
+            .entry
+            .id,
         entry.id
     );
 }
@@ -812,3 +829,4 @@ async fn calendar_reconcile_rejects_operator_disable_without_mutation() {
 }
 
 mod wake;
+mod weekly;

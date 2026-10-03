@@ -718,7 +718,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/CalendarEntry"
+                    "$ref": "#/components/schemas/CalendarListedEntry"
                   }
                 }
               }
@@ -7526,6 +7526,44 @@
           }
         }
       },
+      "CalendarListedEntry": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CalendarEntry"
+          },
+          {
+            "type": "object",
+            "required": [
+              "occurrences"
+            ],
+            "properties": {
+              "occurrences": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CalendarOccurrence"
+                }
+              }
+            }
+          }
+        ],
+        "description": "A listed entry with its timed occurrences inside the requested window, in start order; an\nall-day entry has none."
+      },
+      "CalendarOccurrence": {
+        "type": "object",
+        "description": "One timed occurrence as RFC3339 instants.",
+        "required": [
+          "start",
+          "end"
+        ],
+        "properties": {
+          "end": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string"
+          }
+        }
+      },
       "CalendarSchedule": {
         "oneOf": [
           {
@@ -7571,6 +7609,50 @@
                 "type": "string"
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "Local `start..end` (\"HH:MM\", same day) on each listed weekday from `from` through `until`\n(inclusive; open-ended when absent). A wall time that a DST change skips drops that\noccurrence; a repeated wall time takes its earlier instant.",
+            "required": [
+              "weekdays",
+              "start",
+              "end",
+              "timezone",
+              "from",
+              "kind"
+            ],
+            "properties": {
+              "end": {
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "weekly"
+                ]
+              },
+              "start": {
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              },
+              "until": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "weekdays": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CalendarWeekday"
+                }
+              }
+            }
           }
         ]
       },
@@ -7594,6 +7676,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "CalendarWeekday": {
+        "type": "string",
+        "enum": [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri",
+          "sat",
+          "sun"
+        ]
       },
       "Card": {
         "type": "object",

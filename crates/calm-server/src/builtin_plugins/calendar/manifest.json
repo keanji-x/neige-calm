@@ -5,6 +5,6 @@
   "min_kernel_version": "0.1.0",
   "kind": "builtin",
   "display_name": "Calendar",
-  "description": "Arrange work on Today: create, view, reschedule and cancel all-day or timed calendar tasks. A timed task created by a Track wakes that Track's Planner when it starts.",
+  "description": "Arrange work on Today: create, view, reschedule and cancel all-day, timed or weekly calendar tasks. A timed or weekly task created by a Track wakes that Track's Planner when each occurrence starts.",
   "exposes_tools": []
 }

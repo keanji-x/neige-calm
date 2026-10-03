@@ -12,14 +12,14 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use chrono::{DateTime, Utc};
 use std::time::{Duration, Instant};
 
-struct Planner {
-    identity: ToolCallIdentity,
-    harness: PlannerHarness,
+pub(super) struct Planner {
+    pub(super) identity: ToolCallIdentity,
+    pub(super) harness: PlannerHarness,
     _dispatcher: Dispatcher,
 }
 
 /// A Planner identity with a live harness in the registry a spawned Dispatcher consults.
-async fn planner(fx: &Fixture) -> Planner {
+pub(super) async fn planner(fx: &Fixture) -> Planner {
     let persisted = serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap();
     let identity = fx
         .identity_with(
@@ -78,7 +78,12 @@ fn timed(start: &str, end: &str) -> serde_json::Value {
     }})
 }
 
-async fn create(fx: &Fixture, who: &ToolCallIdentity, key: &str, task: serde_json::Value) -> Entry {
+pub(super) async fn create(
+    fx: &Fixture,
+    who: &ToolCallIdentity,
+    key: &str,
+    task: serde_json::Value,
+) -> Entry {
     let registry = crate::mcp_server::build_default_registry();
     let create = registry.lookup("calm.calendar.create").unwrap();
     let result = create(
@@ -112,11 +117,11 @@ async fn update(
         .unwrap()
 }
 
-fn at(value: &str) -> DateTime<Utc> {
+pub(super) fn at(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value).unwrap().to_utc()
 }
 
-async fn wake_events(fx: &Fixture) -> Vec<Event> {
+pub(super) async fn wake_events(fx: &Fixture) -> Vec<Event> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT kind, payload FROM events WHERE kind = 'track.wake_requested' ORDER BY id",
     )
@@ -130,14 +135,14 @@ async fn wake_events(fx: &Fixture) -> Vec<Event> {
         .collect()
 }
 
-async fn cursor(fx: &Fixture, entry: &Entry) -> Option<serde_json::Value> {
+pub(super) async fn cursor(fx: &Fixture, entry: &Entry) -> Option<serde_json::Value> {
     fx.repo
         .plugin_kv_get(PLUGIN_ID, &format!("fired:{}", entry.id))
         .await
         .unwrap()
 }
 
-fn start_ms(value: &str) -> serde_json::Value {
+pub(super) fn start_ms(value: &str) -> serde_json::Value {
     json!(at(value).timestamp_millis())
 }
 
@@ -151,7 +156,7 @@ async fn queued_wakes(harness: &PlannerHarness) -> Vec<Observation> {
 }
 
 /// Wait until the Dispatcher delivered `count` wakes, then give a stray extra delivery time to land.
-async fn delivered_wakes(harness: &PlannerHarness, count: usize) -> Vec<Observation> {
+pub(super) async fn delivered_wakes(harness: &PlannerHarness, count: usize) -> Vec<Observation> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while queued_wakes(harness).await.len() < count {
         assert!(
