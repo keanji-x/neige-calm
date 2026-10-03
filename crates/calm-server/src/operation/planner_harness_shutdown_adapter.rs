@@ -9,6 +9,7 @@ use crate::db::Repo;
 use crate::db::sqlite::{session_mark_superseded_runtime_tx, session_projection_by_id_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
+use crate::harness::backend::{CodexInterruptStep, interrupt_codex_thread};
 use crate::session_projection_repo::{AgentProvider, WorkerSessionKind};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
@@ -149,27 +150,27 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
             let Some(thread_id) = runtime.thread_id.as_deref() else {
                 return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
             };
-            let cached_turn = self.daemon.active_turn_id_for_thread(thread_id);
-            if let Err(e) = self.daemon.interrupt_active_turn(thread_id).await {
-                tracing::warn!(
-                    runtime_id = %worker_session_id,
-                    thread_id,
-                    error = %e,
-                    "planner harness shutdown replay thread interrupt failed"
-                );
-            }
-            if cached_turn.is_none()
-                && let Some(persisted_turn) = runtime.active_turn_id.as_deref()
-                && let Err(e) = self.daemon.turn_interrupt(thread_id, persisted_turn).await
-            {
-                tracing::warn!(
-                    runtime_id = %worker_session_id,
-                    thread_id,
-                    turn_id = persisted_turn,
-                    error = %e,
-                    "planner harness shutdown replay persisted-turn interrupt failed"
-                );
-            }
+            interrupt_codex_thread(
+                &self.daemon,
+                thread_id,
+                runtime.active_turn_id.as_deref(),
+                |step, e| match step {
+                    CodexInterruptStep::ActiveTurn => tracing::warn!(
+                        runtime_id = %worker_session_id,
+                        thread_id,
+                        error = %e,
+                        "planner harness shutdown replay thread interrupt failed"
+                    ),
+                    CodexInterruptStep::FallbackTurn(persisted_turn) => tracing::warn!(
+                        runtime_id = %worker_session_id,
+                        thread_id,
+                        turn_id = persisted_turn,
+                        error = %e,
+                        "planner harness shutdown replay persisted-turn interrupt failed"
+                    ),
+                },
+            )
+            .await;
         }
         Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }

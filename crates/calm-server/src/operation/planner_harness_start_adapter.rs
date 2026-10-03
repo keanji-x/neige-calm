@@ -1418,31 +1418,26 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
             startable_provider(op_profile(_op)?, &card)?
         };
-        let backend: PlannerBackend = match provider {
-            AgentProvider::Codex => self.daemon.clone().into(),
-            AgentProvider::Claude => {
-                #[cfg(feature = "fixtures")]
-                claude_spawn_failure::fire(&card_id).await?;
-                // The session only: nothing is minted or spawned before the harness is installed and its first turn runs.
-                PlannerBackend::Claude(
-                    self.claude_wiring()
-                        .open_session(
-                            self.repo.clone(),
-                            self.daemon.clone(),
-                            ClaudePlannerRow {
-                                worker_session_id: &worker_session_id,
-                                card_id: &card_id,
-                                track_id: &track_id,
-                                prior_total_tokens: snapshot
-                                    .token_usage
-                                    .as_ref()
-                                    .map_or(0, |usage| usage.total_tokens),
-                            },
-                        )
-                        .await?,
-                )
-            }
-        };
+        #[cfg(feature = "fixtures")]
+        if provider == AgentProvider::Claude {
+            claude_spawn_failure::fire(&card_id).await?;
+        }
+        let backend = PlannerBackend::open(
+            provider,
+            self.daemon.clone(),
+            &self.claude_wiring(),
+            self.repo.clone(),
+            ClaudePlannerRow {
+                worker_session_id: &worker_session_id,
+                card_id: &card_id,
+                track_id: &track_id,
+                prior_total_tokens: snapshot
+                    .token_usage
+                    .as_ref()
+                    .map_or(0, |usage| usage.total_tokens),
+            },
+        )
+        .await?;
         // Atomic replace claim: `reserve_replacing` swaps the slot to Reserved in one entry op and hands back the previous Live handle for shutdown outside the map lock.
         let (reservation, previous_live) = self
             .harness_registry

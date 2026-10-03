@@ -31,6 +31,16 @@ pub enum AgentProvider {
     Claude,
 }
 
+impl AgentProvider {
+    /// The provider's name on the wire, as its serde form spells it.
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WorkerSessionProjection {
@@ -52,4 +62,19 @@ pub struct WorkerSessionProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub last_turn_completed_ms: Option<TimestampMs>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentProvider;
+
+    #[test]
+    fn agent_provider_wire_name_is_its_serde_spelling() {
+        for provider in [AgentProvider::Codex, AgentProvider::Claude] {
+            assert_eq!(
+                serde_json::to_value(&provider).unwrap(),
+                provider.wire_name()
+            );
+        }
+    }
 }

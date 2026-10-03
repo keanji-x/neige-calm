@@ -1,19 +1,23 @@
 //! The runtime a Planner harness drives its turns through.
 //!
 //! Every provider-coupled call the run loop makes on a Planner turn goes through
-//! [`PlannerBackend`]. Calls with no provider-neutral meaning (thread seals, the Codex
-//! config and model catalog) reach the Codex daemon through [`PlannerBackend::codex`].
+//! [`PlannerBackend`], including model resolution and shutdown. Only the thread-keyed deletion
+//! seals still reach the Codex daemon through [`PlannerBackend::codex`].
 //!
 //! `client_id` on [`PlannerBackend::turn_start`] and [`PlannerBackend::turn_steer`] is the
 //! projection row's key; codex hands it back as `item.clientId`.
 
 use std::sync::Arc;
 
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, broadcast};
 
 use crate::claude_planner::session::ClaudePlannerSession;
+use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::codex_appserver::{InputItem, Notification};
+use crate::db::Repo;
 use crate::error::{CalmError, Result};
+use crate::harness::codex_selection;
+use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::planner_model::TurnModelSelection;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
@@ -45,6 +49,21 @@ impl From<Arc<SharedCodexAppServer>> for PlannerBackend {
 }
 
 impl PlannerBackend {
+    /// The backend for `provider`. A Claude session only is opened: nothing is minted or spawned
+    /// before the harness is installed and its first turn runs.
+    pub async fn open(
+        provider: AgentProvider,
+        daemon: Arc<SharedCodexAppServer>,
+        claude: &ClaudePlannerWiring,
+        repo: Arc<dyn Repo>,
+        row: ClaudePlannerRow<'_>,
+    ) -> Result<Self> {
+        Ok(match provider {
+            AgentProvider::Codex => daemon.into(),
+            AgentProvider::Claude => Self::Claude(claude.open_session(repo, daemon, row).await?),
+        })
+    }
+
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
         match self {
             Self::Codex(daemon) => daemon.subscribe_notifications(),
@@ -140,6 +159,93 @@ impl PlannerBackend {
         }
     }
 
+    /// What this turn runs under, read from the card as it stands now. The provider decides what
+    /// else it asks and how each failure is refused; `source` answers the provider-neutral reads.
+    pub(crate) async fn resolve_selection(
+        &self,
+        source: &impl SelectionSource,
+    ) -> std::result::Result<TurnModelSelection, IssuanceRefusal> {
+        match self {
+            Self::Codex(daemon) => {
+                let payload = source.card_payload().await?;
+                codex_selection::resolve(daemon, source, &payload).await
+            }
+            // #1810: a Claude Planner reads its card like Codex does, but nothing is asked of
+            // Codex. A server started without its config stops it first.
+            Self::Claude(session) => {
+                if let Err(error) = session.host().configured() {
+                    return Err(IssuanceRefusal::needs_a_choice(
+                        error.to_string(),
+                        format!(
+                            "{}. Your message is still queued and will be sent once the server runs with it.",
+                            crate::claude_planner::config::unavailable_message()
+                        ),
+                    ));
+                }
+                let payload = source.card_payload().await?;
+                // #1822 6′: no catalog is consulted at issue; the CLI judges the model it is given.
+                crate::claude_planner::models::turn_selection(&payload)
+                    .map_err(|(log, reader)| IssuanceRefusal::needs_a_choice(log, reader))
+            }
+        }
+    }
+
+    /// Stop this harness's turns. `Err` is the last step that failed, for strict callers; every
+    /// failure is logged here. `last_turn_id` is read only when Codex has a thread to interrupt.
+    pub async fn shutdown(
+        &self,
+        worker_session_id: &str,
+        thread_id: Option<&str>,
+        last_turn_id: &Mutex<Option<String>>,
+    ) -> Result<()> {
+        let mut interrupt_error = None;
+        match self {
+            // #1791 §5.1: the running turn is recorded `Interrupted` and this waits for `stop`,
+            // whether or not a turn runs or a thread is known.
+            Self::Claude(session) => {
+                if let Err(e) = session.shutdown().await {
+                    tracing::warn!(
+                        worker_session_id = %worker_session_id,
+                        error = %e,
+                        "planner harness shutdown: the Claude Planner stop did not confirm"
+                    );
+                    interrupt_error = Some(e);
+                }
+            }
+            Self::Codex(daemon) => {
+                if let Some(thread_id) = thread_id {
+                    let last_turn_id = last_turn_id.lock().await.clone();
+                    interrupt_codex_thread(
+                        daemon,
+                        thread_id,
+                        last_turn_id.as_deref(),
+                        |step, e| {
+                            match step {
+                                CodexInterruptStep::ActiveTurn => tracing::warn!(
+                                    thread_id,
+                                    error = %e,
+                                    "planner harness shutdown thread interrupt failed"
+                                ),
+                                CodexInterruptStep::FallbackTurn(last_turn_id) => tracing::warn!(
+                                    thread_id,
+                                    turn_id = %last_turn_id,
+                                    error = %e,
+                                    "planner harness shutdown last-known turn interrupt failed"
+                                ),
+                            }
+                            interrupt_error = Some(e);
+                        },
+                    )
+                    .await;
+                }
+            }
+        }
+        match interrupt_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     /// The registry installed the harness: a Claude session may start turns from now on.
     pub fn mark_installed(&self) {
         match self {
@@ -148,12 +254,49 @@ impl PlannerBackend {
         }
     }
 
-    /// The Codex daemon, for the thread-keyed deletion seals and the Codex-only config and
-    /// model-catalog reads.
+    /// Fixtures only: the Claude session, for its interleaving hooks.
+    #[cfg(feature = "fixtures")]
+    pub fn claude_session_for_test(&self) -> Option<Arc<ClaudePlannerSession>> {
+        match self {
+            Self::Claude(session) => Some(Arc::clone(session)),
+            Self::Codex(_) => None,
+        }
+    }
+
+    /// The Codex daemon, for the thread-keyed deletion seals.
     pub fn codex(&self) -> &Arc<SharedCodexAppServer> {
         match self {
             Self::Codex(daemon) => daemon,
             Self::Claude(session) => session.codex(),
         }
+    }
+}
+
+/// Which step of [`interrupt_codex_thread`] failed.
+pub(crate) enum CodexInterruptStep<'a> {
+    /// Interrupting the turn the daemon has cached for the thread.
+    ActiveTurn,
+    /// Interrupting the caller's known turn, tried only when the daemon had none cached.
+    FallbackTurn(&'a str),
+}
+
+/// Codex's shutdown interrupt for one thread: the cached active turn, then `fallback_turn_id`
+/// when the daemon had no turn cached before the first step. Each failure goes to `on_error`
+/// as it happens and does not stop the next step.
+pub(crate) async fn interrupt_codex_thread(
+    daemon: &SharedCodexAppServer,
+    thread_id: &str,
+    fallback_turn_id: Option<&str>,
+    mut on_error: impl FnMut(CodexInterruptStep<'_>, CalmError),
+) {
+    let active_turn_id = daemon.active_turn_id_for_thread(thread_id);
+    if let Err(e) = daemon.interrupt_active_turn(thread_id).await {
+        on_error(CodexInterruptStep::ActiveTurn, e);
+    }
+    if active_turn_id.is_none()
+        && let Some(turn_id) = fallback_turn_id
+        && let Err(e) = daemon.turn_interrupt(thread_id, turn_id).await
+    {
+        on_error(CodexInterruptStep::FallbackTurn(turn_id), e);
     }
 }

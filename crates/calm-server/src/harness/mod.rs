@@ -1,6 +1,8 @@
 pub mod backend;
 pub(crate) mod catch_up;
+mod codex_selection;
 pub mod config;
+pub(crate) mod issuance;
 pub mod lock;
 pub mod observation;
 pub mod profile;
@@ -254,35 +256,26 @@ pub async fn spawn_recovered_harness(
             }
         }
     };
-    let backend: PlannerBackend = match provider {
-        AgentProvider::Codex => daemon.into(),
-        AgentProvider::Claude => {
-            record_interrupted_claude_turn(
-                repo.as_ref(),
-                &runtime,
-                card.track_id.as_str(),
-                &snapshot,
-            )
+    if provider == AgentProvider::Claude {
+        record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
             .await?;
-            PlannerBackend::Claude(
-                claude
-                    .open_session(
-                        repo.clone(),
-                        daemon,
-                        ClaudePlannerRow {
-                            worker_session_id: &runtime.id,
-                            card_id: &runtime.card_id,
-                            track_id: card.track_id.as_str(),
-                            prior_total_tokens: snapshot
-                                .token_usage
-                                .as_ref()
-                                .map_or(0, |usage| usage.total_tokens),
-                        },
-                    )
-                    .await?,
-            )
-        }
-    };
+    }
+    let backend = PlannerBackend::open(
+        provider,
+        daemon,
+        claude,
+        repo.clone(),
+        ClaudePlannerRow {
+            worker_session_id: &runtime.id,
+            card_id: &runtime.card_id,
+            track_id: card.track_id.as_str(),
+            prior_total_tokens: snapshot
+                .token_usage
+                .as_ref()
+                .map_or(0, |usage| usage.total_tokens),
+        },
+    )
+    .await?;
     let handle = PlannerHarness::run(PlannerHarnessParams {
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id,

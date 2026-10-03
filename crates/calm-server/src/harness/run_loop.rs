@@ -23,6 +23,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
 use crate::harness::backend::{PlannerBackend, TurnStartFailure};
 use crate::harness::config::HarnessConfig;
+use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::harness::observation::Observation;
 use crate::harness::queue::{
     FoldOutcome, MutationApplied, MutationRefused, MutationResult, QueueEntry, QueueEntryId,
@@ -35,10 +36,7 @@ use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::HarnessInputSegment;
 use crate::planner_attachments::bind::BoundAttachment;
-use crate::planner_model::{
-    CardModelSelection, FailureKind, InstallationDefaults, TurnModelSelection,
-    effective_model_for_catalog_lookup, resolve_turn_selection,
-};
+use crate::planner_model::{FailureKind, TurnModelSelection};
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
 
@@ -692,46 +690,16 @@ impl PlannerHarness {
         // `shutting_down` under this same mutex and never calls the daemon.
         let _issuance_guard = self.inner.issuance.lock().await;
         self.persist_snapshot().await?;
-        let mut interrupt_error = None;
-        if let PlannerBackend::Claude(session) = &self.inner.backend {
-            // #1791 §5.1: the running turn is recorded `Interrupted` and this waits for `stop`,
-            // whether or not a turn runs or a thread is known.
-            if let Err(e) = session.shutdown().await {
-                tracing::warn!(
-                    worker_session_id = %self.inner.worker_session_id,
-                    error = %e,
-                    "planner harness shutdown: the Claude Planner stop did not confirm"
-                );
-                interrupt_error = Some(e);
-            }
-        } else if let Some(thread_id) = thread_id {
-            let last_turn_id = self.inner.last_turn_id.lock().await.clone();
-            let active_turn_id = self.inner.backend.active_turn_id_for_thread(&thread_id);
-            if let Err(e) = self.inner.backend.interrupt_active_turn(&thread_id).await {
-                tracing::warn!(
-                    thread_id,
-                    error = %e,
-                    "planner harness shutdown thread interrupt failed"
-                );
-                interrupt_error = Some(e);
-            }
-            if active_turn_id.is_none()
-                && let Some(last_turn_id) = last_turn_id
-                && let Err(e) = self
-                    .inner
-                    .backend
-                    .turn_interrupt(&thread_id, &last_turn_id)
-                    .await
-            {
-                tracing::warn!(
-                    thread_id,
-                    turn_id = %last_turn_id,
-                    error = %e,
-                    "planner harness shutdown last-known turn interrupt failed"
-                );
-                interrupt_error = Some(e);
-            }
-        }
+        let interrupt_error = self
+            .inner
+            .backend
+            .shutdown(
+                &self.inner.worker_session_id,
+                thread_id.as_deref(),
+                &self.inner.last_turn_id,
+            )
+            .await
+            .err();
         let abort = self
             .inner
             .abort_handle
@@ -766,10 +734,7 @@ impl PlannerHarness {
     pub fn claude_session_for_test(
         &self,
     ) -> Option<Arc<crate::claude_planner::session::ClaudePlannerSession>> {
-        match &self.inner.backend {
-            PlannerBackend::Claude(session) => Some(Arc::clone(session)),
-            PlannerBackend::Codex(_) => None,
-        }
+        self.inner.backend.claude_session_for_test()
     }
 
     /// Why this conversation's queue is not draining, or `None`. `None` does NOT mean waiting is
@@ -2403,10 +2368,6 @@ const SINCE_LAST_TURN_DIFF_TIMEOUT: Duration = Duration::from_secs(5);
 const TRANSCRIPT_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Budget for the two codex reads a model resolution may need, together. Generous because
-/// elapsing costs a refused turn the person then has to retry.
-const MODEL_RESOLUTION_BUDGET: Duration = Duration::from_secs(15);
-
 /// How long to leave a card alone after an attempt that could still succeed on its own; without
 /// it the re-buffered batch re-arms `hard_fire` and the next tick tries again 50 ms later.
 const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -2415,180 +2376,43 @@ const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// rather than a full stop because the fix may arrive from outside this process.
 const NEEDS_A_CHOICE_RETRY_DELAY: Duration = Duration::from_secs(30);
 
-/// Read the card as it stands NOW — the last moment before the frame is built; reading any
-/// earlier is the staleness bug this exists to prevent. A vanished card is an `Err`.
-async fn resolve_model_selection_for_issue(
-    inner: &Arc<Inner>,
-) -> std::result::Result<TurnModelSelection, IssuanceRefusal> {
-    // #1810: a Claude Planner reads its card like Codex does, but nothing is asked of Codex. A
-    // server started without its config stops it first.
-    let claude = match &inner.backend {
-        PlannerBackend::Claude(session) => match session.host().configured() {
-            Ok(_) => true,
-            Err(error) => {
-                return Err(IssuanceRefusal::needs_a_choice(
-                    error.to_string(),
-                    format!(
-                        "{}. Your message is still queued and will be sent once the server runs with it.",
-                        crate::claude_planner::config::unavailable_message()
-                    ),
-                ));
-            }
-        },
-        PlannerBackend::Codex(_) => false,
-    };
-    let card = match inner.repo.card_get(inner.card_id.as_str()).await {
-        // A read that failed is a read that can succeed next time.
-        Err(e) => {
-            return Err(IssuanceRefusal::retryable(format!(
+impl SelectionSource for Inner {
+    /// Read the card as it stands NOW — the last moment before the frame is built; reading any
+    /// earlier is the staleness bug this exists to prevent.
+    async fn card_payload(&self) -> std::result::Result<Value, IssuanceRefusal> {
+        match self.repo.card_get(self.card_id.as_str()).await {
+            // A read that failed is a read that can succeed next time.
+            Err(e) => Err(IssuanceRefusal::retryable(format!(
                 "could not re-read the card to resolve its model: {e}"
-            )));
-        }
-        // A card that is gone has nobody left to tell; transient keeps the loop cheap without
-        // putting a message on a surface no one is looking at.
-        Ok(None) => {
-            return Err(IssuanceRefusal::retryable(
+            ))),
+            // A card that is gone has nobody left to tell; transient keeps the loop cheap without
+            // putting a message on a surface no one is looking at.
+            Ok(None) => Err(IssuanceRefusal::retryable(
                 "the card this conversation belongs to no longer exists".into(),
-            ));
-        }
-        Ok(Some(card)) => card,
-    };
-    if claude {
-        // #1822 6′: no catalog is consulted at issue; the CLI judges the model it is given.
-        return crate::claude_planner::models::turn_selection(&card.payload)
-            .map_err(|(log, reader)| IssuanceRefusal::needs_a_choice(log, reader));
-    }
-    resolve_model_selection(inner, &card.payload).await
-}
-
-/// A refusal to issue, and what waiting will do about it.
-#[derive(Debug, Clone)]
-struct IssuanceRefusal {
-    kind: FailureKind,
-    /// For the log. No advice, no audience.
-    log: String,
-    /// For the reader. Used by every kind except [`FailureKind::Retryable`], which supplies its
-    /// own text via `transient_notice`.
-    reader: String,
-}
-
-/// Classify a codex call that failed: codex ANSWERING with a refusal becomes `refused(log)`,
-/// every other failure is retryable. The Codex-only reads on the issuance path (`config/read`,
-/// `model/list`) go through this; `turn/start` is classified by its backend.
-fn classify_codex_failure(
-    e: &CalmError,
-    log: String,
-    refused: impl FnOnce(String) -> IssuanceRefusal,
-) -> IssuanceRefusal {
-    if matches!(e, CalmError::CodexRefused(_)) {
-        refused(log)
-    } else {
-        IssuanceRefusal::retryable(log)
-    }
-}
-
-impl IssuanceRefusal {
-    fn retryable(log: String) -> Self {
-        Self {
-            kind: FailureKind::Retryable,
-            log,
-            reader: String::new(),
+            )),
+            Ok(Some(card)) => Ok(card.payload),
         }
     }
 
-    /// The provider refused; `reader` is its own account of why.
-    fn rejected(log: String, reader: String) -> Self {
-        Self {
-            kind: FailureKind::Rejected,
-            log,
-            reader,
+    /// It must be the path `thread/start` was given, or `config/read` answers a question we did
+    /// not ask; an unreadable track is an `Err`, not a `None`.
+    async fn installation_cwd(&self) -> std::result::Result<String, IssuanceRefusal> {
+        // Deterministic card-read-then-track-read window. No-op in production.
+        wait_at_planner_harness_cwd_race_hook(self.worker_session_id.as_str()).await;
+        match self.repo.track_get(self.track_id.as_str()).await {
+            Ok(Some(track)) => Ok(track.workspace.agent_cwd().to_string()),
+            // "There is no workspace" and "we could not read the workspace" are different facts, and
+            // neither means "read the global layers instead". `Ok(None)` IS reachable: a
+            // `track_delete_tx` can commit between the card read and this one.
+            Ok(None) => Err(IssuanceRefusal::retryable(format!(
+                "track {} is not readable, so this conversation's config scope is unknown",
+                self.track_id
+            ))),
+            Err(e) => Err(IssuanceRefusal::retryable(format!(
+                "could not read the track workspace for a config/read cwd: {e}"
+            ))),
         }
     }
-
-    fn needs_a_choice(log: String, reader: String) -> Self {
-        Self {
-            kind: FailureKind::NeedsAChoice,
-            log,
-            reader,
-        }
-    }
-}
-
-/// Work out what this turn must tell codex about the model, from the card's payload plus —
-/// only where the payload cannot answer alone — codex's own config and catalog. `Err` when the
-/// answer cannot be established; the turn is not sent under an unknown model.
-async fn resolve_model_selection(
-    inner: &Arc<Inner>,
-    payload: &Value,
-) -> std::result::Result<TurnModelSelection, IssuanceRefusal> {
-    // A payload we cannot read does not start reading itself. Somebody has to
-    // write a selection over it, and `PUT /planner/model` does exactly that.
-    let card = CardModelSelection::from_payload(payload).map_err(|e| {
-        IssuanceRefusal::needs_a_choice(
-            e.to_string(),
-            "This conversation's saved model selection cannot be read. Pick a model to replace it."
-                .into(),
-        )
-    })?;
-    if !card.needs_installation_defaults() {
-        // The overwhelmingly common path: the payload is the whole answer.
-        return resolve_turn_selection(&card, None, None).map_err(unresolved);
-    }
-
-    let deadline = tokio::time::Instant::now() + MODEL_RESOLUTION_BUDGET;
-    let cwd = installation_cwd(inner).await?;
-    // Codex not answering and codex answering "no model" are different facts; only the first
-    // is worth waiting out, so the read's failure returns here rather than degrading to `None`.
-    let config = inner
-        .backend
-        .codex()
-        .config_read(Some(cwd.as_str()), deadline)
-        .await
-        .map_err(|e| {
-            // The sentence is DERIVED: this branch is entered by a disjunction (model, effort, or both
-            // follow the default) and a fixed string is right for at most one of them.
-            let needed = card.defaults_needed_for();
-            let reader = match (needed.subject(), needed.choice_to_make()) {
-                (Some(subject), Some(choice)) => format!(
-                    "codex will not report this conversation's configuration, so the default \
-                     {subject} cannot be resolved and your message has not been sent. Pick \
-                     {choice} explicitly to send it."
-                ),
-                // Unreachable: this read only happens when something is
-                // needed. Fail closed with no advice rather than invent some.
-                _ => "codex will not report this conversation's configuration, so your message \
-                      has not been sent."
-                    .to_string(),
-            };
-            classify_codex_failure(
-                &e,
-                format!("config/read failed while resolving this conversation's defaults: {e}"),
-                |log| IssuanceRefusal::needs_a_choice(log, reader),
-            )
-        })?;
-    let defaults = Some(InstallationDefaults {
-        model: config.model,
-        reasoning_effort: config.model_reasoning_effort,
-    });
-
-    // Only the effort's last fallback wants the catalog, and only when the
-    // config did not already answer it.
-    let catalog_effort = if card.needs_catalog()
-        && defaults
-            .as_ref()
-            .is_none_or(|d| d.reasoning_effort.is_none())
-    {
-        catalog_default_effort(inner, &card, defaults.as_ref(), deadline).await?
-    } else {
-        None
-    };
-
-    resolve_turn_selection(&card, defaults.as_ref(), catalog_effort.as_deref()).map_err(unresolved)
-}
-
-/// Only reached once codex has answered, so the answer did not name a model — a person must act.
-fn unresolved(e: crate::planner_model::UnresolvedSelection) -> IssuanceRefusal {
-    IssuanceRefusal::needs_a_choice(e.log_reason().to_string(), e.reason().to_string())
 }
 
 /// Record a refusal: how long before the next attempt, and what (if anything) the reader is told.
@@ -2614,10 +2438,7 @@ async fn transient_notice(inner: &Arc<Inner>) -> Option<String> {
         let mut since = inner.refusing_since.lock().await;
         *since.get_or_insert(now)
     };
-    let provider = match inner.backend.provider() {
-        crate::session_projection_repo::AgentProvider::Codex => "codex",
-        crate::session_projection_repo::AgentProvider::Claude => "claude",
-    };
+    let provider = inner.backend.provider().wire_name();
     (now.duration_since(began) >= inner.config.transient_silence_budget).then(|| {
         format!(
             "Waiting for {provider} — it has not accepted this conversation's last few turns. \
@@ -2669,62 +2490,6 @@ async fn wait_at_planner_harness_cwd_race_hook(worker_session_id: &str) {
     }
     #[cfg(not(feature = "fixtures"))]
     let _ = worker_session_id;
-}
-
-/// The workspace whose config layers apply to this thread. It must be the path `thread/start`
-/// was given, or `config/read` answers a question we did not ask; an unreadable track is an
-/// `Err`, not a `None`.
-async fn installation_cwd(inner: &Arc<Inner>) -> std::result::Result<String, IssuanceRefusal> {
-    // Deterministic card-read-then-track-read window. No-op in production.
-    wait_at_planner_harness_cwd_race_hook(inner.worker_session_id.as_str()).await;
-    match inner.repo.track_get(inner.track_id.as_str()).await {
-        Ok(Some(track)) => Ok(track.workspace.agent_cwd().to_string()),
-        // "There is no workspace" and "we could not read the workspace" are different facts, and
-        // neither means "read the global layers instead". `Ok(None)` IS reachable: a
-        // `track_delete_tx` can commit between the card read and this one.
-        Ok(None) => Err(IssuanceRefusal::retryable(format!(
-            "track {} is not readable, so this conversation's config scope is unknown",
-            inner.track_id
-        ))),
-        Err(e) => Err(IssuanceRefusal::retryable(format!(
-            "could not read the track workspace for a config/read cwd: {e}"
-        ))),
-    }
-}
-
-/// Codex's own preset effort for the model that will actually run. `Ok(None)` means the
-/// catalog genuinely has no answer; a read that failed is an `Err`.
-async fn catalog_default_effort(
-    inner: &Arc<Inner>,
-    card: &CardModelSelection,
-    defaults: Option<&InstallationDefaults>,
-    deadline: tokio::time::Instant,
-) -> std::result::Result<Option<String>, IssuanceRefusal> {
-    let Some(slug) = effective_model_for_catalog_lookup(card, defaults) else {
-        // Nothing names a model, so there is no catalog entry to look up. A
-        // real absence, not a failed read.
-        return Ok(None);
-    };
-    match inner.backend.codex().model_list(deadline).await {
-        Ok(models) => Ok(models
-            .into_iter()
-            .find(|m| m.model == slug)
-            .map(|m| m.default_reasoning_effort)),
-        // Only the effort can want the catalog, so a fixed sentence is honest here.
-        Err(e) => Err(classify_codex_failure(
-            &e,
-            format!("model/list failed while resolving this conversation's default effort: {e}"),
-            |log| {
-                IssuanceRefusal::needs_a_choice(
-                    log,
-                    "codex will not list its models, so the default reasoning effort cannot be \
-                     resolved and your message has not been sent. Pick a reasoning effort \
-                     explicitly to send it."
-                        .to_string(),
-                )
-            },
-        )),
-    }
 }
 
 /// Consume only successful bookkeeping for a Done Track; the event log and accepted push
@@ -3176,7 +2941,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // The model is resolved HERE, as late as possible: the transcript refresh and diff above can
     // be tens of seconds, and a person who changed the model inside that window would otherwise
     // watch the turn run under the model they just replaced.
-    let selection = match resolve_model_selection_for_issue(inner).await {
+    let selection = match inner.backend.resolve_selection(inner.as_ref()).await {
         Ok(selection) => selection,
         Err(failure) => {
             // Not a wedge: `HarnessState::Wedged` has no exit in this tree, and wedging on a codex restart

@@ -71,10 +71,7 @@ impl Checked {
         match &self.verdict {
             Verdict::Ready => Ok(()),
             Verdict::Unavailable(reason) | Verdict::NotConfigured(reason) => {
-                let name = match self.provider {
-                    AgentProvider::Codex => "codex",
-                    AgentProvider::Claude => "claude",
-                };
+                let name = self.provider.wire_name();
                 Err(format!("`{name}` is unavailable: {reason}"))
             }
         }
