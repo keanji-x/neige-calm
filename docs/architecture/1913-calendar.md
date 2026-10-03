@@ -123,7 +123,8 @@ naming the entry, its local start and zone, and how late the wake is. Delivery
 dedupe stays with the dispatcher watermark.
 
 A wake missed while the server was down fires once on the next scan only while
-the entry has not ended. After the end, or when the Track is closed or missing,
+the entry has not ended; an entry shorter than two scan ticks keeps that grace
+after its start. After that deadline, or when the Track is closed or missing,
 the cursor advances without an event. Moving an entry to a later start makes it
 fire again at the new start. A wake reaches a running Planner: it is delivered on
 its next turn and replayed after a restart. The kernel does not start Planners; a
