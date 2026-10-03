@@ -28,7 +28,8 @@ function ok(body: unknown): ApiTransportResponse {
 
 /** One card's server side: what each of the three reads answers right now. */
 type Row = Parameters<typeof buildTranscript>[0][number];
-type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies };
+/** With `earlier` rows, the newest page is full, so Load earlier has a page to read. */
+type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[] };
 
 function row(id: number, method: string, itemType: string | null, params: unknown, extra: Partial<Row> = {}): Row {
   return {
@@ -59,8 +60,13 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
       const card = /\/api\/cards\/([^/]+)\//.exec(request.path)?.[1];
       const server = card === undefined ? undefined : servers[decodeURIComponent(card)];
       if (server !== undefined && request.path.includes('/harness/items')) {
-        /* What the transcript says when the read is made, answered when the gate opens. */
-        const rows = [...server.rows];
+        /* What the transcript says when the read is made, answered when the gate opens; a read
+           past the newest page (Load earlier) gets the rows before it. */
+        const newest = request.path.includes('after_id=0&');
+        const limit = Number(new URL(request.path, 'http://localhost').searchParams.get('limit'));
+        const filler = newest && server.earlier !== undefined
+          ? Array.from({ length: limit - server.rows.length }, (_, index) => asked(index + 10, `filler ${index}`)) : [];
+        const rows = [...filler, ...(newest ? server.rows : server.earlier ?? [])];
         if (gate.hold) await new Promise<void>((resolve) => { gate.waiting.push(resolve); });
         return ok(rows);
       }
@@ -193,6 +199,80 @@ describe('a streamed reply in the Planner conversation', () => {
     act(() => { gate.waiting[1]?.(); });
     await waitFor(() => expect(screen.queryByText('Abandoned')).toBeNull());
     expect(threadLines()).toEqual(['question', '[Completed]']);
+  });
+
+  it('does not let a read that started before the turn ended retire the copy, however late it lands', async () => {
+    const gate: Gate = { hold: false, waiting: [] };
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
+    const { client } = setup({ [CARD.id]: server }, gate);
+    await open('Planner chat');
+    await screen.findByText('Hello, wor');
+    /* A read whose answer the query layer already holds but has not stored yet cannot be cancelled:
+       the transcript query is made deaf to cancelling, so the old read lands whatever the client does. */
+    const query = client.getQueryCache().find({ queryKey: transcriptKey(CARD.id) });
+    expect(query).toBeDefined();
+    vi.spyOn(query!, 'cancel').mockResolvedValue(undefined);
+    gate.hold = true;
+    act(() => { void client.invalidateQueries({ queryKey: transcriptKey(CARD.id) }); });
+    await waitFor(() => expect(gate.waiting).toHaveLength(1));
+    server.rows = [...server.rows, replied(3, 'm', 'Hello, world.'), ended(4, 'completed')];
+    server.live = streaming(null, {});
+    server.phase = 'turn_completed';
+    await phaseChanged(client, CARD.id, { transcript: false });
+    await waitFor(() => expect(gate.waiting).toHaveLength(2));
+    /* The read made while the turn ran lands after the phase was seen, and does not stand for it. */
+    await act(async () => { gate.waiting[0]?.(); await new Promise((resolve) => { setTimeout(resolve, 20); }); });
+    expect(screen.getByText('Hello, wor')).toBeTruthy();
+    act(() => { gate.waiting[1]?.(); });
+    await waitFor(() => expect(threadLines()).toEqual(['question', 'Hello, world.', '[Completed]']));
+  });
+
+  it('does not let Load earlier, pressed as the turn ends, retire the copy', async () => {
+    const gate: Gate = { hold: false, waiting: [] };
+    const server: CardServer = {
+      phase: 'turn_running', rows: [asked(400, 'question'), replyStarted(401, 'm')],
+      live: streaming('T1', { m: 'Hello, wor' }), earlier: [asked(1, 'long ago')],
+    };
+    const { client } = setup({ [CARD.id]: server }, gate);
+    await open('Planner chat');
+    await screen.findByText('Hello, wor');
+    gate.hold = true;
+    server.rows = [...server.rows, replied(402, 'm', 'Hello, world.'), ended(403, 'completed')];
+    server.live = streaming(null, {});
+    server.phase = 'turn_completed';
+    await phaseChanged(client, CARD.id, { transcript: false });
+    await waitFor(() => expect(gate.waiting).toHaveLength(1));
+    /* Load earlier reads only an older page; it says nothing about the turn that just ended. */
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    await waitFor(() => expect(gate.waiting).toHaveLength(2));
+    await act(async () => { gate.waiting[1]?.(); await new Promise((resolve) => { setTimeout(resolve, 20); }); });
+    await screen.findByText('long ago');
+    expect(screen.getByText('Hello, wor')).toBeTruthy();
+    expect(screen.queryByText('Hello, world.')).toBeNull();
+    /* The next read of the newest page stands for the ended turn. */
+    gate.hold = false;
+    act(() => { gate.waiting[0]?.(); });
+    await phaseChanged(client, CARD.id);
+    await waitFor(() => expect(screen.queryByText('Hello, wor')).toBeNull());
+    expect(screen.getByText('Hello, world.')).toBeTruthy();
+  });
+
+  it('re-reads the transcript when the turn ends before its first read has answered', async () => {
+    const gate: Gate = { hold: true, waiting: [] };
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
+    const { client } = setup({ [CARD.id]: server }, gate);
+    await open('Planner chat');
+    await screen.findByText('Abandoned');
+    expect(gate.waiting).toHaveLength(1);
+    server.rows = [...server.rows, ended(3, 'completed')];
+    server.live = streaming(null, {});
+    server.phase = 'turn_completed';
+    await phaseChanged(client, CARD.id, { transcript: false });
+    /* The first read started before the turn ended, so it cannot stand for it: a second one starts. */
+    await waitFor(() => expect(gate.waiting).toHaveLength(2));
+    gate.hold = false;
+    act(() => { gate.waiting.forEach((release) => { release(); }); });
+    await waitFor(() => expect(threadLines()).toEqual(['question', '[Completed]']));
   });
 
   it('retires the copy of a turn that wedged without any outcome', async () => {

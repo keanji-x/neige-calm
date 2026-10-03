@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { replaceEqualDeep, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -17,20 +17,80 @@ const NO_COPIES: readonly LiveReplyCopy[] = Object.freeze([]);
 
 type HeldCopies = Readonly<{ cardId: string; copies: readonly LiveReplyCopy[] }>;
 
+/** A page of transcript rows, as far as numbering its read needs it. */
+type TranscriptPage = readonly LiveReplyTranscriptRow[];
+type TranscriptResult = InfiniteData<TranscriptPage, number>;
+type TranscriptQueryOptions = Readonly<{ queryFn: (context: { pageParam: number }) => Promise<TranscriptPage> }>;
+
+/**
+ * The order the transcript's reads started in (#1923 S2, rule b). Each page read is numbered as it
+ * starts, and a result carries the number of the read its newest page came from. A result this
+ * view did not read carries 0, which no copy retires by.
+ */
+export type TranscriptReads = Readonly<{
+  /** The transcript query, with its page reads numbered and its results stamped. */
+  track: <Options extends TranscriptQueryOptions>(options: Options) => Options & {
+    structuralSharing: (previous: unknown, next: unknown) => unknown;
+  };
+  startOf: (result: TranscriptResult | undefined) => number;
+  /** The number of the latest read started so far. */
+  latest: () => number;
+}>;
+
+/** The transcript reads of one conversation view, held for its lifetime. */
+export function useTranscriptReads(): TranscriptReads {
+  const [reads] = useState(createTranscriptReads);
+  return reads;
+}
+
+function createTranscriptReads(): TranscriptReads {
+  let started = 0;
+  /* Keyed by a result's newest page. Load earlier keeps that page, and so its number. Structural
+     sharing stores a page other than the one read (the stored one when nothing changed, a copy
+     otherwise), so each result stamps the page it keeps with its newest page's number. */
+  const pageStarts = new WeakMap<TranscriptPage, number>();
+  const startOf = (result: TranscriptResult | undefined) => {
+    const newest = result?.pages[0];
+    return newest === undefined ? 0 : pageStarts.get(newest) ?? 0;
+  };
+  return {
+    track: (options) => ({
+      ...options,
+      queryFn: async (context) => {
+        started += 1;
+        const start = started;
+        const page = await options.queryFn(context);
+        pageStarts.set(page, start);
+        return page;
+      },
+      structuralSharing: (previous, next) => {
+        const shared = replaceEqualDeep(previous, next) as TranscriptResult;
+        const newest = shared.pages[0];
+        if (newest !== undefined) pageStarts.set(newest, startOf(next as TranscriptResult));
+        return shared;
+      },
+    }),
+    startOf,
+    latest: () => started,
+  };
+}
+
 /**
  * The open conversation's streamed replies (#1923 S2), as agent turns for the transcript's tail.
  * Polls `GET …/harness/live` only while this card is mounted and a reply may stream; the query
  * layer's recovery gating applies as it does to every read. The copies are held per card, so a
  * switch never shows one card's text in another.
  */
-export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase, transcriptKey, items }: {
+export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase, transcriptKey, transcriptReads, items }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   cardId: string;
   enabled: boolean;
   phase: HarnessPhaseTag | null;
-  /** The key of the transcript query the rows come from: its results are counted and re-read here. */
+  /** The key of the transcript query the rows come from: its results are read and re-read here. */
   transcriptKey: readonly unknown[];
+  /** The numbering that query's reads were tracked with. */
+  transcriptReads: TranscriptReads;
   /** Every loaded transcript row. */
   items: readonly LiveReplyTranscriptRow[];
 }): readonly ConversationTurn[] {
@@ -54,13 +114,14 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
       return next === base && current.cardId === cardId ? current : { cardId, copies: next };
     });
   }, [cardId]);
-  /* How many transcript results this card has had. Counted rather than timed: a result in the
-     same millisecond as a phase observation would otherwise be ambiguous. */
-  const readTranscriptVersion = useCallback(
-    () => client.getQueryState(transcriptKey)?.dataUpdateCount ?? 0, [client, transcriptKey],
+  /* Which read the stored transcript's newest page came from. Numbered rather than timed: a read
+     started in the same millisecond as a phase observation would otherwise be ambiguous. */
+  const readTranscriptStart = useCallback(
+    () => transcriptReads.startOf(client.getQueryData<TranscriptResult>(transcriptKey)),
+    [client, transcriptKey, transcriptReads],
   );
   const subscribeToQueries = useCallback((notify: () => void) => client.getQueryCache().subscribe(notify), [client]);
-  const transcriptVersion = useSyncExternalStore(subscribeToQueries, readTranscriptVersion);
+  const transcriptStart = useSyncExternalStore(subscribeToQueries, readTranscriptStart);
 
   /* A poll answered before this stretch of streaming began is an older turn's, kept in the cache. */
   const streamingSince = useRef<number | null>(null);
@@ -78,20 +139,21 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
   /* Drawn from the copies the current transcript does not retire, so a stored row and its live
      copy never share a frame; the effect below forgets the retired ones. */
   const visible = useMemo(
-    () => reconcileLiveReplies(copies, { kind: 'transcript', items, version: transcriptVersion }),
-    [copies, items, transcriptVersion],
+    () => reconcileLiveReplies(copies, { kind: 'transcript', items, readStart: transcriptStart }),
+    [copies, items, transcriptStart],
   );
 
-  /* The transcript reads in flight are cancelled, synchronously, before the version is read, so
-     every result counted after it comes from a fetch that started after the phase was seen. */
+  /* Only a read started after this point stands for the phase, however late an earlier one lands.
+     The transcript is re-read here so that one always starts; the cancel comes first because the
+     query layer would hand back an initial read still in flight in place of a new one. */
   useEffect(() => {
     if (phase === null || !awaitsSettling(visible, phase)) return;
+    apply({ kind: 'phase', phase, latestReadStart: transcriptReads.latest() });
     cancelThenInvalidate(client, transcriptKey);
-    apply({ kind: 'phase', phase, transcriptVersion: readTranscriptVersion() });
-  }, [apply, client, phase, readTranscriptVersion, transcriptKey, visible]);
+  }, [apply, client, phase, transcriptKey, transcriptReads, visible]);
   useEffect(() => {
-    if (visible !== copies) apply({ kind: 'transcript', items, version: transcriptVersion });
-  }, [apply, copies, items, transcriptVersion, visible]);
+    if (visible !== copies) apply({ kind: 'transcript', items, readStart: transcriptStart });
+  }, [apply, copies, items, transcriptStart, visible]);
 
   return useMemo(() => liveReplyTurns(visible), [visible]);
 }

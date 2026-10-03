@@ -1,6 +1,8 @@
 // A reply as far as it has streamed (#1923 S2). The server serves the text of the running turn's
 // replies that are not stored yet; the client holds its own copy of each until the transcript can
-// stand for it, so the text is always shown once: live or durable, never both and never neither.
+// stand for it, so the shown text converges to the durable text and is never drawn twice. It can
+// be briefly absent: on Codex's systemError branch the phase turns `wedged` before the partial row
+// is stored, so the copy can retire a moment before that row arrives.
 
 import { z } from 'zod';
 
@@ -41,28 +43,30 @@ export type LiveReplyCopy = Readonly<{
   /** When the client first saw it; nothing has stored a time for it yet. */
   atMs: number;
   /**
-   * The transcript version current when a phase in which no reply streams was observed while this
-   * copy was held, or `null` before that. Any later version retires the copy.
+   * The latest transcript read start when a phase in which no reply streams was observed while this
+   * copy was held, or `null` before that. A transcript whose newest page a later read fetched
+   * retires the copy.
    */
   settledAt: number | null;
 }>;
 
 /**
- * One thing the client learned. A `transcript` version counts transcript results. The version a
- * `phase` observation carries is the caller's promise that every later result comes from a fetch
- * that started after the phase was seen: it cancels the reads in flight as it reports the phase,
- * and counts in a read already answered.
+ * One thing the client learned. Transcript reads are numbered in the order they start. A `phase`
+ * observation carries the number of the latest read started when the phase was seen; a
+ * `transcript` observation carries the number of the read its newest page came from, so a result
+ * that only adds older pages keeps the number of the read before it.
  */
 export type LiveReplyObservation =
   | Readonly<{ kind: 'poll'; reply: HarnessLiveReplies; atMs: number }>
-  | Readonly<{ kind: 'phase'; phase: HarnessPhaseTag; transcriptVersion: number }>
-  | Readonly<{ kind: 'transcript'; items: readonly LiveReplyTranscriptRow[]; version: number }>;
+  | Readonly<{ kind: 'phase'; phase: HarnessPhaseTag; latestReadStart: number }>
+  | Readonly<{ kind: 'transcript'; items: readonly LiveReplyTranscriptRow[]; readStart: number }>;
 
 /**
  * The copies after one observation; the same array when nothing changed. A copy of item X of turn
- * T is retired at the first of: (a) X's `item/completed` row is in the transcript; (b) a transcript
- * version later than the one at which a non-streaming phase was seen; (c) a poll names a turn
- * other than T. A poll that omits X does not retire it, and no poll shortens a held text.
+ * T is retired at the first of: (a) X's `item/completed` row is in the transcript; (b) the
+ * transcript's newest page comes from a read that started after a non-streaming phase was seen;
+ * (c) a poll names a turn other than T. A poll that omits X does not retire it, and no poll
+ * shortens a held text.
  */
 export function reconcileLiveReplies(
   copies: readonly LiveReplyCopy[], observation: LiveReplyObservation,
@@ -71,13 +75,13 @@ export function reconcileLiveReplies(
     case 'poll': return withPoll(copies, observation.reply, observation.atMs);
     case 'phase': {
       if (!awaitsSettling(copies, observation.phase)) return copies;
-      const version = observation.transcriptVersion;
-      return copies.map((copy) => copy.settledAt === null ? { ...copy, settledAt: version } : copy);
+      const start = observation.latestReadStart;
+      return copies.map((copy) => copy.settledAt === null ? { ...copy, settledAt: start } : copy);
     }
     case 'transcript': {
       const stored = storedItemIds(observation.items);
       const kept = copies.filter((copy) => !stored.has(copy.itemId)
-        && (copy.settledAt === null || observation.version <= copy.settledAt));
+        && (copy.settledAt === null || observation.readStart <= copy.settledAt));
       return kept.length === copies.length ? copies : kept;
     }
   }

@@ -10,10 +10,10 @@ const poll = (turnId: string | null, items: Record<string, string>, atMs = 1): L
   kind: 'poll', atMs,
   reply: { turn_id: turnId, items: Object.entries(items).map(([item_id, text]) => ({ item_id, text })) } satisfies HarnessLiveReplies,
 });
-const phase = (tag: HarnessPhaseTag, transcriptVersion: number): LiveReplyObservation =>
-  ({ kind: 'phase', phase: tag, transcriptVersion });
-const transcript = (version: number, items: readonly LiveReplyTranscriptRow[] = []): LiveReplyObservation =>
-  ({ kind: 'transcript', items, version });
+const phase = (tag: HarnessPhaseTag, latestReadStart: number): LiveReplyObservation =>
+  ({ kind: 'phase', phase: tag, latestReadStart });
+const transcript = (readStart: number, items: readonly LiveReplyTranscriptRow[] = []): LiveReplyObservation =>
+  ({ kind: 'transcript', items, readStart });
 
 function completed(itemUuid: string, method = 'item/completed'): LiveReplyTranscriptRow {
   return { method, item_uuid: itemUuid };
@@ -53,10 +53,10 @@ describe('reconcileLiveReplies', () => {
     expect(texts(reconcileLiveReplies(held, transcript(1, [completed('x')])))).toEqual(['T/y:More']);
   });
 
-  it('(b) retires a copy at a transcript result counted after a non-streaming phase was seen', () => {
+  it('(b) retires a copy at a transcript whose newest page a read started after a non-streaming phase fetched', () => {
     const settled = run(poll('T', { x: 'Hello' }), phase('turn_completed', 4));
     expect(settled.map((copy) => copy.settledAt)).toEqual([4]);
-    /* Result 4 was already counted when the phase was seen: its fetch started earlier. */
+    /* Read 4 had started when the phase was seen, however late its result lands. */
     expect(texts(reconcileLiveReplies(settled, transcript(4)))).toEqual(['T/x:Hello']);
     expect(reconcileLiveReplies(settled, transcript(5))).toEqual([]);
   });
@@ -71,7 +71,7 @@ describe('reconcileLiveReplies', () => {
     }
   });
 
-  it('(b) keeps the first settling version, and does not settle copies that arrive after it', () => {
+  it('(b) keeps the first settling read, and does not settle copies that arrive after it', () => {
     const held = run(poll('T', { x: 'Hello' }), phase('turn_completed', 2), phase('idle', 7), poll('T', { y: 'late' }));
     expect(held.map((copy) => copy.settledAt)).toEqual([2, null]);
     expect(texts(reconcileLiveReplies(held, transcript(3)))).toEqual(['T/y:late']);
