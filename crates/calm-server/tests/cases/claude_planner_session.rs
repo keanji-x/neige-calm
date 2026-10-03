@@ -10,7 +10,8 @@ use calm_server::claude_planner::stop::{
     SeamPolicy, clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
     sigkill_verified_for_test, stop, sweep,
 };
-use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::codex_appserver::InputItem;
+use calm_server::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use calm_server::planner_model::TurnModelSelection;
 use calm_server::proc_identity::read_proc_start_time;
 use serde_json::Value;
@@ -27,11 +28,11 @@ fn oversized_text() -> Vec<InputItem> {
     }]
 }
 
-fn item_types(seen: &[Notification]) -> Vec<(String, String)> {
+fn item_types(seen: &[PlannerEvent]) -> Vec<(String, String)> {
     seen.iter()
-        .filter_map(|n| match n {
-            Notification::Item { method, params } => Some((
-                method.clone(),
+        .filter_map(|n| match &n.kind {
+            PlannerEventKind::Item { phase, params } => Some((
+                phase.method().to_string(),
                 params["item"]["type"].as_str().unwrap_or("").to_string(),
             )),
             _ => None,
@@ -48,7 +49,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     };
     rig.session()
         .set_before_turn_completed_pause_for_test(pause.clone());
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
 
     let turn = rig
         .session()
@@ -85,12 +86,12 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     assert!(
         !before
             .iter()
-            .any(|n| matches!(n, Notification::TurnCompleted { .. })),
+            .any(|n| matches!(n.kind, PlannerEventKind::TurnCompleted { .. })),
         "TurnCompleted must not precede the durable outcome: {before:?}"
     );
     assert!(matches!(
-        before.first(),
-        Some(Notification::TurnStarted { .. })
+        before.first().map(|n| &n.kind),
+        Some(PlannerEventKind::TurnStarted { .. })
     ));
     assert!(
         rig.instructions_files().is_empty(),
@@ -109,9 +110,11 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     let items = item_types(&before);
     assert!(items.contains(&("item/completed".into(), "userMessage".into())));
     assert!(items.contains(&("item/completed".into(), "agentMessage".into())));
-    assert!(before.iter().any(
-        |n| matches!(n, Notification::Other { method, .. } if method == "thread/tokenUsage/updated")
-    ));
+    assert!(
+        before
+            .iter()
+            .any(|n| matches!(n.kind, PlannerEventKind::TokenUsage { .. }))
+    );
     assert_eq!(rig.session().active_turn_id_for_thread(&rig.thread), None);
 
     let argv = rig.read_bin("argv").expect("argv");
@@ -209,7 +212,7 @@ async fn assert_env_is_the_allowlist(rig: &Rig) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_completed() {
     let rig = Rig::new("exit-with-orphan").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -241,7 +244,7 @@ async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_compl
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_killed_cli_settles_failed_with_its_exit_status() {
     let rig = Rig::new("hold").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -258,8 +261,8 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
             .await
             .expect("the tool call starts")
             .expect("notification");
-        if matches!(&next, Notification::Item { method, params }
-            if method == "item/started" && params["item"]["id"] == "toolu_hold")
+        if matches!(&next.kind, PlannerEventKind::Item { phase, params }
+            if *phase == ItemPhase::Started && params["item"]["id"] == "toolu_hold")
         {
             break;
         }
@@ -283,9 +286,9 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
     assert_eq!(completed["status"], "failed");
     let message = completed["error"]["message"].as_str().unwrap_or("");
     assert!(message.starts_with("claude exited"), "{message}");
-    let closed = seen.iter().find_map(|n| match n {
-        Notification::Item { method, params }
-            if method == "item/completed" && params["item"]["id"] == "toolu_hold" =>
+    let closed = seen.iter().find_map(|n| match &n.kind {
+        PlannerEventKind::Item { phase, params }
+            if *phase == ItemPhase::Completed && params["item"]["id"] == "toolu_hold" =>
         {
             Some(params["item"]["status"].clone())
         }
@@ -306,7 +309,7 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
     let rig = Rig::new("linger").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -329,7 +332,7 @@ async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_undecodable_line_fails_the_turn_as_protocol() {
     let rig = Rig::new("undecodable").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -365,7 +368,7 @@ fn spawned(spawns: &std::sync::atomic::AtomicUsize) -> usize {
 }
 
 async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let started = Instant::now();
     let error = rig
         .session()
@@ -478,7 +481,7 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
     let parsed: Value = serde_json::from_str(&p_d_result).expect("json");
     assert_eq!(parsed["is_error"], true, "the P-D result is is_error:true");
     std::fs::write(rig.bin("result_line"), format!("{p_d_result}\n")).expect("result line");
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -507,7 +510,7 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
 async fn the_private_instructions_never_reach_a_cmdline() {
     let sentinel = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
     let rig = Rig::with_instructions("hold", &format!("Planner. {sentinel}")).await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -622,7 +625,7 @@ async fn the_boot_sweep_ignores_the_seam() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     let rig = Rig::new("hold").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -660,7 +663,7 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
     let image = rig.dir.path().join(format!("{}.png", uuid::Uuid::new_v4()));
     std::fs::write(&image, b"PNGDATA").expect("image");
     let path = image.to_string_lossy().into_owned();
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -688,8 +691,8 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
     );
     let stored = seen
         .iter()
-        .find_map(|n| match n {
-            Notification::Item { params, .. } if params["item"]["type"] == "userMessage" => {
+        .find_map(|n| match &n.kind {
+            PlannerEventKind::Item { params, .. } if params["item"]["type"] == "userMessage" => {
                 Some(params["item"]["content"].clone())
             }
             _ => None,

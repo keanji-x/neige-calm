@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::codex_appserver::{InputItem, Notification};
+use crate::codex_appserver::InputItem;
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
@@ -25,6 +25,7 @@ use crate::harness::backend::{PlannerBackend, TurnStartFailure};
 use crate::harness::config::HarnessConfig;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::harness::observation::Observation;
+use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind, PlannerEvents};
 use crate::harness::queue::{
     FoldOutcome, MutationApplied, MutationRefused, MutationResult, QueueEntry, QueueEntryId,
     QueueMutation, apply_mutation, input_segments_for_entries, locate_entry,
@@ -404,7 +405,7 @@ impl PlannerHarness {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
-        let notifications = params.backend.subscribe_notifications();
+        let events = params.backend.subscribe_events();
         let (inner, announce_dropped_first) =
             inner_from_params(params, ObservationIngress::Running(obs_tx), shutdown_tx);
         let handle = Self {
@@ -414,7 +415,7 @@ impl PlannerHarness {
             inner,
             obs_rx,
             shutdown_rx,
-            notifications,
+            events,
             announce_dropped_first,
         ));
         let abort = task.abort_handle();
@@ -1081,7 +1082,7 @@ async fn run_loop(
     inner: Arc<Inner>,
     mut observations: mpsc::Receiver<HarnessObservationCommand>,
     mut shutdown: broadcast::Receiver<()>,
-    mut notifications: broadcast::Receiver<Notification>,
+    mut events: PlannerEvents,
     announce_dropped_first: bool,
 ) {
     // Early flush before the first command is served. Correctness does not rest on it:
@@ -1156,10 +1157,10 @@ async fn run_loop(
                     }
                 }
             }
-            notif = notifications.recv() => {
-                match notif {
-                    Ok(notif) => {
-                        if let Err(e) = on_notification(&inner, notif).await {
+            event = events.recv() => {
+                match event {
+                    Ok(event) => {
+                        if let Err(e) = on_notification(&inner, event).await {
                             tracing::warn!(error = %e, "planner harness notification handling failed");
                         }
                     }
@@ -1769,27 +1770,23 @@ async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, entry: &QueueEntry) ->
     false
 }
 
-async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> {
-    let current_thread = inner.thread_id.read().await.clone();
-    if notif.thread_id() != current_thread.as_deref() {
+async fn on_notification(inner: &Arc<Inner>, event: PlannerEvent) -> Result<()> {
+    let PlannerEvent { thread_id, kind } = event;
+    if thread_id != *inner.thread_id.read().await {
         return Ok(());
     }
 
-    if let Notification::Other { method, .. } = &notif
-        && method.starts_with("approval/")
-    {
-        tracing::warn!(
-            method,
-            "planner harness ignoring approval-shaped notification under approval_policy=never"
-        );
-        return Ok(());
-    }
-
-    match notif {
-        Notification::ThreadStarted { params } => {
-            if let Some(thread_id) = crate::shared_codex_appserver::thread_id_from_started(&params)
-            {
-                *inner.thread_id.write().await = Some(thread_id.to_string());
+    match kind {
+        PlannerEventKind::Approval { method } => {
+            tracing::warn!(
+                method,
+                "planner harness ignoring approval-shaped notification under approval_policy=never"
+            );
+            return Ok(());
+        }
+        PlannerEventKind::ThreadStarted => {
+            if let Some(thread_id) = thread_id {
+                *inner.thread_id.write().await = Some(thread_id);
             }
             let mut state = inner.state.lock().await;
             if matches!(
@@ -1799,26 +1796,21 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 *state = HarnessState::Idle;
             }
         }
-        Notification::ThreadStatusChanged { status, .. } => {
-            if status.get("type").and_then(Value::as_str) == Some("systemError") {
-                *inner.state.lock().await = HarnessState::Wedged {
-                    since: Instant::now(),
-                    reason: HARNESS_SYSTEM_ERROR_REASON.into(),
-                };
-                *inner.issued_turn_id.lock().await = None;
-                *inner.interrupt_deadline.lock().await = None;
-            } else if status.get("type").and_then(Value::as_str) == Some("idle") {
-                let mut state = inner.state.lock().await;
-                if matches!(*state, HarnessState::Resumed { .. }) {
-                    *state = HarnessState::Idle;
-                }
+        PlannerEventKind::ThreadSystemError => {
+            *inner.state.lock().await = HarnessState::Wedged {
+                since: Instant::now(),
+                reason: HARNESS_SYSTEM_ERROR_REASON.into(),
+            };
+            *inner.issued_turn_id.lock().await = None;
+            *inner.interrupt_deadline.lock().await = None;
+        }
+        PlannerEventKind::ThreadIdle => {
+            let mut state = inner.state.lock().await;
+            if matches!(*state, HarnessState::Resumed { .. }) {
+                *state = HarnessState::Idle;
             }
         }
-        Notification::TurnStarted { turn, .. } => {
-            let Some(turn_id) = turn.get("id").and_then(Value::as_str).map(str::to_string) else {
-                tracing::debug!(?turn, "planner harness ignoring TurnStarted without id");
-                return persist_snapshot(inner).await;
-            };
+        PlannerEventKind::TurnStarted { turn_id } => {
             let state_snap = inner.state.lock().await.clone();
             let last_seen = inner.last_turn_id.lock().await.clone();
             let issued = inner.issued_turn_id.lock().await.clone();
@@ -1858,7 +1850,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             *inner.issued_turn_id.lock().await = None;
             *inner.interrupt_deadline.lock().await = None;
         }
-        Notification::TurnCompleted { turn, .. } => {
+        PlannerEventKind::TurnCompleted { turn } => {
             let fallback_turn_id = inner.last_turn_id.lock().await.clone();
             let turn_id = turn
                 .get("id")
@@ -1948,11 +1940,9 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
         }
         // Codex has no `turn/aborted` notification; an interrupt arrives as `turn/completed` with
         // `status: "interrupted"`.
-        Notification::Other { method, params } if method == "turn/aborted" => {
-            let Some(aborted_turn_id) = other_turn_id(&params).map(ToOwned::to_owned) else {
-                tracing::debug!("planner harness ignoring turn/aborted without a turn id");
-                return persist_snapshot(inner).await;
-            };
+        PlannerEventKind::TurnAborted {
+            turn_id: aborted_turn_id,
+        } => {
             let interrupt_target = {
                 let state = inner.state.lock().await;
                 match &*state {
@@ -1989,7 +1979,8 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             announce_restored_entries(inner, restored).await;
             return Ok(());
         }
-        Notification::Item { method, params } if should_persist_item_method(&method) => {
+        PlannerEventKind::Item { phase, params } => {
+            let method = phase.method();
             let Some(item) = params.get("item") else {
                 tracing::debug!(
                     method,
@@ -2039,8 +2030,8 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             } else {
                 None
             };
-            let item_db_id = match (projection_client_id.as_deref(), method.as_str()) {
-                (Some(client_id), "item/completed") => {
+            let item_db_id = match (projection_client_id.as_deref(), phase) {
+                (Some(client_id), ItemPhase::Completed) => {
                     let upgraded = match item_uuid.as_deref() {
                         Some(codex_item_id) => {
                             inner
@@ -2065,7 +2056,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                                 turn_id.as_deref(),
                                 item_uuid.as_deref(),
                                 item_type.as_deref(),
-                                &method,
+                                method,
                                 &params_json,
                                 legacy_segments_json.as_deref(),
                             )
@@ -2073,7 +2064,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                         }
                     }
                 }
-                (Some(client_id), "item/started")
+                (Some(client_id), ItemPhase::Started)
                     if inner
                         .repo
                         .transcript_projection_id(inner.card_id.as_str(), client_id)
@@ -2095,21 +2086,30 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                         turn_id.as_deref(),
                         item_uuid.as_deref(),
                         item_type.as_deref(),
-                        &method,
+                        method,
                         &params_json,
                         legacy_segments_json.as_deref(),
                     )
                     .await?
                 }
             };
-            if method == "item/completed" && legacy_segments_json.is_some() {
+            if phase == ItemPhase::Completed && legacy_segments_json.is_some() {
                 *inner.legacy_issued_input_segments.lock().await = None;
             }
-            emit_item_added(inner, item_db_id, item_uuid, item_type, turn_id, method).await?;
+            emit_item_added(
+                inner,
+                item_db_id,
+                item_uuid,
+                item_type,
+                turn_id,
+                method.into(),
+            )
+            .await?;
         }
         // `turn/plan/updated` — codex's whole TODO checklist for the running turn, superseding the
         // previous one. Persisted only; no UI reads it yet.
-        Notification::Other { method, params } if method == "turn/plan/updated" => {
+        PlannerEventKind::PlanUpdated { params } => {
+            let method = "turn/plan/updated";
             // `harness_items.thread_id` is NOT NULL, so there is no row to write without one.
             let Some(thread_id) = inner.thread_id.read().await.clone() else {
                 tracing::warn!(
@@ -2135,7 +2135,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     // No `item_uuid` and no `item_type`: a plan is not an item.
                     None,
                     None,
-                    &method,
+                    method,
                     &params_json,
                     None,
                 )
@@ -2147,7 +2147,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
         // `thread/tokenUsage/updated`: `tokenUsage.total` is a LIFETIME sum and routinely exceeds the
         // window; `tokenUsage.last` is the occupancy proxy. Storage is the runtime snapshot (latest-wins).
         // The prologue's thread-id check is the only thing keeping card A's meter from showing card B's.
-        Notification::Other { method, params } if method == "thread/tokenUsage/updated" => {
+        PlannerEventKind::TokenUsage { params } => {
             match TokenUsage::from_params(&params, crate::model::now_ms()) {
                 Some(incoming) => {
                     let mut slot = inner.token_usage.lock().await;
@@ -2174,23 +2174,15 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     target: "planner.harness.token_usage",
                     runtime_id = %inner.worker_session_id,
                     card_id = %inner.card_id,
-                    method,
+                    method = "thread/tokenUsage/updated",
                     "planner harness dropping thread/tokenUsage/updated: no usable \
                      (non-negative integer) tokenUsage.last.totalTokens in the frame"
                 ),
             }
         }
-        Notification::Item { .. } | Notification::Other { .. } => {}
+        PlannerEventKind::Ignored => {}
     }
     persist_snapshot(inner).await
-}
-
-fn other_turn_id(params: &Value) -> Option<&str> {
-    params
-        .get("turn")
-        .and_then(|turn| turn.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| params.get("turnId").and_then(Value::as_str))
 }
 
 fn item_turn_id(params: &Value) -> Option<&str> {
@@ -2200,10 +2192,6 @@ fn item_turn_id(params: &Value) -> Option<&str> {
         .and_then(Value::as_str)
         .or_else(|| params.get("turn_id").and_then(Value::as_str))
         .or_else(|| params.get("turnId").and_then(Value::as_str))
-}
-
-fn should_persist_item_method(method: &str) -> bool {
-    matches!(method, "item/started" | "item/completed")
 }
 
 /// Live codex sends `userMessage`; the kernel stores `item.type` verbatim and tests have used snake case.
@@ -3512,7 +3500,7 @@ async fn clear_interruption_intent(inner: &Arc<Inner>, turn_id: &str) {
 /// AFTER the arm's gates and BEFORE `persist_snapshot_stamping_issued_head`, so the phase event
 /// doubles as the delivery signal (no item-added event). Best-effort: a failed insert is logged.
 async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -> Option<i64> {
-    // `thread_id` is NOT NULL and `Notification::TurnCompleted.thread_id` is `unwrap_or_default()`
+    // `thread_id` is NOT NULL and Codex's `TurnCompleted.thread_id` is `unwrap_or_default()`
     // upstream, so the harness's own thread is the only value that is never `""`.
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         tracing::warn!(
@@ -3734,10 +3722,7 @@ fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        HarnessObservationDelivery, harness_tick, map_observation_send_error,
-        should_persist_item_method,
-    };
+    use super::{HarnessObservationDelivery, harness_tick, map_observation_send_error};
     use crate::error::CalmError;
     use crate::harness::observation::Observation;
     use crate::harness::queue::QueueEntry;
@@ -3758,17 +3743,6 @@ mod tests {
             tokio::time::MissedTickBehavior::Skip,
             "run loop tick must not burst-replay a backlog against the other select! branches"
         );
-    }
-
-    #[test]
-    fn item_persistence_filter_keeps_terminal_items_and_drops_deltas() {
-        assert!(should_persist_item_method("item/started"));
-        assert!(should_persist_item_method("item/completed"));
-
-        assert!(!should_persist_item_method("item/agentMessage/delta"));
-        assert!(!should_persist_item_method("item/reasoning/delta"));
-        assert!(!should_persist_item_method("turn/completed"));
-        assert!(!should_persist_item_method("item/other"));
     }
 
     #[tokio::test]

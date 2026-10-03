@@ -31,9 +31,10 @@ use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
 use super::spawn::{self, EnvInputs, InstructionsFile, SessionStart};
 use super::stop::stop;
 use super::translate::{CalmToolNames, TurnContext, TurnTranslator};
-use crate::codex_appserver::{InputItem, Notification};
+use crate::codex_appserver::InputItem;
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
+use crate::harness::planner_event::PlannerEvent;
 use crate::planner_model::TurnModelSelection;
 use crate::thread_seals::ThreadSeals;
 use calm_types::worker::WorkerSessionId;
@@ -231,7 +232,7 @@ struct State {
 
 pub(crate) struct Shared {
     pub(crate) params: ClaudePlannerSessionParams,
-    pub(crate) notifications: broadcast::Sender<Notification>,
+    pub(crate) events: broadcast::Sender<PlannerEvent>,
     state: Mutex<State>,
     /// Serializes `turn_start` and `shutdown`, so no spawn outlives a shutdown.
     issue: tokio::sync::Mutex<()>,
@@ -250,13 +251,13 @@ impl Shared {
     }
 
     /// The driver's last step: the session's facts move forward, the slot is freed and the turn's
-    /// last notifications go out under one state lock, the same lock under which `turn_start`
+    /// last events go out under one state lock, the same lock under which `turn_start`
     /// registers the next turn and sends its `TurnStarted`, so a subscriber never sees the next
     /// turn start before this one completed.
     pub(crate) fn finish_turn(
         &self,
         ended: FinishedTurn,
-        notifications: impl IntoIterator<Item = Notification>,
+        events: impl IntoIterator<Item = PlannerEvent>,
     ) {
         let mut state = self.state();
         if ended.named_session {
@@ -269,8 +270,8 @@ impl Shared {
             state.total_tokens = total_tokens;
         }
         state.active = None;
-        for notification in notifications {
-            let _ = self.notifications.send(notification);
+        for event in events {
+            let _ = self.events.send(event);
         }
     }
 }
@@ -326,7 +327,7 @@ impl ClaudePlannerSession {
         } else {
             SessionStart::New
         };
-        let (notifications, _) = broadcast::channel(1024);
+        let (events, _) = broadcast::channel(1024);
         let state = State {
             start,
             row_bound,
@@ -339,7 +340,7 @@ impl ClaudePlannerSession {
         Ok(Self {
             shared: Arc::new(Shared {
                 params,
-                notifications,
+                events,
                 state: Mutex::new(state),
                 issue: tokio::sync::Mutex::new(()),
                 installed: AtomicBool::new(false),
@@ -349,8 +350,8 @@ impl ClaudePlannerSession {
         })
     }
 
-    pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
-        self.shared.notifications.subscribe()
+    pub fn subscribe_events(&self) -> broadcast::Receiver<PlannerEvent> {
+        self.shared.events.subscribe()
     }
 
     /// The registry installed the harness holding this session; turns may start from now on.
@@ -540,7 +541,7 @@ impl ClaudePlannerSession {
                 turn_id: turn_id.clone(),
                 slot: Arc::clone(&slot),
             });
-            let _ = shared.notifications.send(translator.turn_started());
+            let _ = shared.events.send(translator.turn_started());
         }
         tokio::spawn(drive(
             Arc::clone(shared),

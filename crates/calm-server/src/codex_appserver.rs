@@ -385,7 +385,7 @@ impl Notification {
     }
 
     /// Never fails: unknown / malformed shapes degrade to [`Notification::Other`].
-    fn parse(method: String, params: Value) -> Self {
+    pub(crate) fn parse(method: String, params: Value) -> Self {
         let thread_id = |p: &Value| {
             p.get("threadId")
                 .and_then(Value::as_str)

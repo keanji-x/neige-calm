@@ -1,5 +1,5 @@
 //! Claude Code as a Planner backend (#1791). `protocol` is the wire and `translate` the pure
-//! translation of a Claude turn into the Codex-shaped notifications the Planner harness consumes;
+//! translation of a Claude turn into the `PlannerEvent`s the Planner harness consumes;
 //! `session` runs one `claude -p` process per turn (`spawn` is its argv, environment and
 //! instructions file, `driver` its read loop and settlement), `stop` is the marker sweep,
 //! `config` the typed configuration. `availability` is the readiness check (#1817): `auth_status`

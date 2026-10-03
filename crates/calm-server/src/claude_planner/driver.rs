@@ -18,8 +18,8 @@ use super::session::{
 use super::spawn::InstructionsFile;
 use super::stop::{STOP_BOUND, stop_by};
 use super::translate::{TurnOutcome, TurnTranslator};
-use crate::codex_appserver::Notification;
 use crate::error::CalmError;
+use crate::harness::planner_event::{PlannerEvent, PlannerEventKind};
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::worker::WorkerSessionId;
 
@@ -323,9 +323,9 @@ impl Reading<'_> {
             }
             _ => {}
         }
-        for notification in self.translator.translate(&record, crate::model::now_ms()) {
-            self.total_tokens = usage_total(&notification).or(self.total_tokens);
-            let _ = self.shared.notifications.send(notification);
+        for event in self.translator.translate(&record, crate::model::now_ms()) {
+            self.total_tokens = usage_total(&event).or(self.total_tokens);
+            let _ = self.shared.events.send(event);
         }
         match record {
             Record::ResultSuccess(success) => Some(Ending::Result(TerminalEvent::ResultSuccess {
@@ -426,10 +426,10 @@ impl Reading<'_> {
     }
 }
 
-/// The lifetime total a `thread/tokenUsage/updated` frame carries.
-fn usage_total(notification: &Notification) -> Option<i64> {
-    match notification {
-        Notification::Other { method, params } if method == "thread/tokenUsage/updated" => {
+/// The lifetime total a usage reading carries.
+fn usage_total(event: &PlannerEvent) -> Option<i64> {
+    match &event.kind {
+        PlannerEventKind::TokenUsage { params } => {
             params["tokenUsage"]["total"]["totalTokens"].as_i64()
         }
         _ => None,
@@ -532,7 +532,7 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
     };
     let outcome = decide(slot.cause().as_ref(), &event);
     let completed = translator.turn_completed(&outcome);
-    let Notification::TurnCompleted { turn, .. } = &completed else {
+    let PlannerEventKind::TurnCompleted { turn } = &completed.kind else {
         unreachable!("turn_completed builds TurnCompleted");
     };
     let turn_id = turn["id"].as_str().unwrap_or_default().to_string();

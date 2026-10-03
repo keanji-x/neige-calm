@@ -1,6 +1,6 @@
-//! Pure translation of one Claude turn's [`Record`]s into the Codex-shaped [`Notification`]s the
-//! Planner harness already consumes (design #1791 §4.3, §6.1): `TurnStarted`, `TurnCompleted`,
-//! `Item{item/started|item/completed}` and `Other{thread/tokenUsage/updated}`, nothing else.
+//! Pure translation of one Claude turn's [`Record`]s into the [`PlannerEvent`]s the Planner harness
+//! consumes (design #1791 §4.3, §6.1, #1981 S4): `TurnStarted`, `TurnCompleted`, `Item` and
+//! `TokenUsage`, nothing else.
 //!
 //! Item envelope `{threadId, turnId, item, startedAtMs | completedAtMs}`. Item ids: `tool_use.id` for
 //! tools, `<record uuid>:<block index>` for text and thinking blocks, the replay's uuid for the user
@@ -16,7 +16,8 @@ use super::protocol::{
     AssistantBlock, ModelUsage, ProtocolError, Record, ToolResult, ToolResultBlock,
     ToolResultContent, Usage, client_line_uuid,
 };
-use crate::codex_appserver::{InputItem, Notification};
+use crate::codex_appserver::InputItem;
+use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 /// The server name neige registers the calm MCP shim under.
 const CALM_MCP_PREFIX: &str = "mcp__calm__";
@@ -130,35 +131,40 @@ impl TurnTranslator {
         })
     }
 
-    pub fn turn_started(&self) -> Notification {
-        Notification::TurnStarted {
-            thread_id: self.ctx.thread_id.clone(),
-            turn: json!({ "id": self.ctx.turn_id, "status": "inProgress", "error": null }),
-        }
+    pub fn turn_started(&self) -> PlannerEvent {
+        self.event(PlannerEventKind::TurnStarted {
+            turn_id: self.ctx.turn_id.clone(),
+        })
     }
 
-    pub fn turn_completed(&self, outcome: &TurnOutcome) -> Notification {
+    pub fn turn_completed(&self, outcome: &TurnOutcome) -> PlannerEvent {
         let (status, error) = match outcome {
             TurnOutcome::Completed => ("completed", Value::Null),
             TurnOutcome::Interrupted => ("interrupted", Value::Null),
             TurnOutcome::Failed { message } => ("failed", json!({ "message": message })),
         };
-        Notification::TurnCompleted {
-            thread_id: self.ctx.thread_id.clone(),
+        self.event(PlannerEventKind::TurnCompleted {
             turn: json!({ "id": self.ctx.turn_id, "status": status, "error": error }),
+        })
+    }
+
+    fn event(&self, kind: PlannerEventKind) -> PlannerEvent {
+        PlannerEvent {
+            thread_id: Some(self.ctx.thread_id.clone()),
+            kind,
         }
     }
 
-    /// The notifications one record produces, in order. Terminal records yield at most the usage
+    /// The events one record produces, in order. Terminal records yield at most the usage
     /// frame; the outcome is the caller's (design §6.2).
-    pub fn translate(&mut self, record: &Record, now_ms: i64) -> Vec<Notification> {
+    pub fn translate(&mut self, record: &Record, now_ms: i64) -> Vec<PlannerEvent> {
         match record {
             Record::SystemInit(init) => {
                 self.init_model = Some(init.model.clone());
                 Vec::new()
             }
             Record::UserReplay { uuid, .. } if *uuid == self.line_uuid => {
-                vec![self.item("item/completed", self.user_message(uuid), now_ms)]
+                vec![self.item(ItemPhase::Completed, self.user_message(uuid), now_ms)]
             }
             Record::Assistant { uuid, blocks } => blocks
                 .iter()
@@ -205,7 +211,7 @@ impl TurnTranslator {
 
     /// Completes every tool item still open as `failed`, oldest first, and forgets them: a turn
     /// that settles without a tool's result (killed, crashed) must not leave it running.
-    pub fn close_open(&mut self, now_ms: i64) -> Vec<Notification> {
+    pub fn close_open(&mut self, now_ms: i64) -> Vec<PlannerEvent> {
         let mut open: Vec<(i64, String, Value)> = self
             .open
             .drain()
@@ -223,16 +229,15 @@ impl TurnTranslator {
             .map(|(started_at_ms, _, mut item)| {
                 item["status"] = json!("failed");
                 item["durationMs"] = json!(now_ms.saturating_sub(started_at_ms));
-                self.item("item/completed", item, now_ms)
+                self.item(ItemPhase::Completed, item, now_ms)
             })
             .collect()
     }
 
-    fn item(&self, method: &str, item: Value, now_ms: i64) -> Notification {
-        let at_key = if method == "item/started" {
-            "startedAtMs"
-        } else {
-            "completedAtMs"
+    fn item(&self, phase: ItemPhase, item: Value, now_ms: i64) -> PlannerEvent {
+        let at_key = match phase {
+            ItemPhase::Started => "startedAtMs",
+            ItemPhase::Completed => "completedAtMs",
         };
         let mut params = json!({
             "threadId": self.ctx.thread_id,
@@ -240,10 +245,7 @@ impl TurnTranslator {
             "item": item,
         });
         params[at_key] = json!(now_ms);
-        Notification::Item {
-            method: method.to_string(),
-            params,
-        }
+        self.event(PlannerEventKind::Item { phase, params })
     }
 
     fn user_message(&self, uuid: &Uuid) -> Value {
@@ -261,24 +263,24 @@ impl TurnTranslator {
         index: usize,
         block: &AssistantBlock,
         now_ms: i64,
-    ) -> Vec<Notification> {
+    ) -> Vec<PlannerEvent> {
         let id = format!("{uuid}:{index}");
         match block {
             AssistantBlock::Thinking { .. } => {
                 let item = json!({ "id": id, "type": "reasoning", "content": [], "summary": [] });
                 vec![
-                    self.item("item/started", item.clone(), now_ms),
-                    self.item("item/completed", item, now_ms),
+                    self.item(ItemPhase::Started, item.clone(), now_ms),
+                    self.item(ItemPhase::Completed, item, now_ms),
                 ]
             }
             AssistantBlock::Text { text } => vec![
                 self.item(
-                    "item/started",
+                    ItemPhase::Started,
                     json!({ "id": id, "type": "agentMessage", "text": "" }),
                     now_ms,
                 ),
                 self.item(
-                    "item/completed",
+                    ItemPhase::Completed,
                     json!({ "id": id, "type": "agentMessage", "text": text }),
                     now_ms,
                 ),
@@ -296,7 +298,7 @@ impl TurnTranslator {
         name: &str,
         input: &Value,
         now_ms: i64,
-    ) -> Option<Notification> {
+    ) -> Option<PlannerEvent> {
         if name == "ToolSearch" {
             self.open.insert(id.to_string(), OpenTool::Suppressed);
             return None;
@@ -338,7 +340,7 @@ impl TurnTranslator {
             });
             (ShownTool::Dynamic, item)
         };
-        let started = self.item("item/started", item.clone(), now_ms);
+        let started = self.item(ItemPhase::Started, item.clone(), now_ms);
         self.open.insert(
             id.to_string(),
             OpenTool::Shown {
@@ -355,7 +357,7 @@ impl TurnTranslator {
         result: &ToolResult,
         structured: &Value,
         now_ms: i64,
-    ) -> Option<Notification> {
+    ) -> Option<PlannerEvent> {
         let Some(open) = self.open.remove(&result.tool_use_id) else {
             tracing::debug!(
                 tool_use_id = %result.tool_use_id,
@@ -397,16 +399,16 @@ impl TurnTranslator {
             }
             ShownTool::FileChange | ShownTool::Dynamic => {}
         }
-        Some(self.item("item/completed", item, now_ms))
+        Some(self.item(ItemPhase::Completed, item, now_ms))
     }
 
-    /// `thread/tokenUsage/updated` from a result with at least one iteration, success or error;
-    /// nothing otherwise, so the harness keeps its previous reading.
+    /// A usage reading from a result with at least one iteration, success or error; nothing
+    /// otherwise, so the harness keeps its previous reading.
     fn usage_frame(
         &mut self,
         usage: &Usage,
         model_usage: &BTreeMap<String, ModelUsage>,
-    ) -> Option<Notification> {
+    ) -> Option<PlannerEvent> {
         let last = usage.iterations.last()?;
         let last_total = last.input_tokens
             + last.cache_read_input_tokens
@@ -428,18 +430,15 @@ impl TurnTranslator {
                 "claude planner: no modelUsage entry for the init model; context window unknown"
             );
         }
-        Some(Notification::Other {
-            method: "thread/tokenUsage/updated".to_string(),
+        Some(self.event(PlannerEventKind::TokenUsage {
             params: json!({
-                "threadId": self.ctx.thread_id,
-                "turnId": self.ctx.turn_id,
                 "tokenUsage": {
                     "last": { "totalTokens": last_total },
                     "total": { "totalTokens": self.total_tokens },
                     "modelContextWindow": window,
                 },
             }),
-        })
+        }))
     }
 }
 

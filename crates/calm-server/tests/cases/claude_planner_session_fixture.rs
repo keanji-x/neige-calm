@@ -16,12 +16,13 @@ use calm_server::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost
 use calm_server::claude_planner::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
 use calm_server::claude_planner::stop::{MARKER_KEY, sigkill_verified_for_test};
 use calm_server::claude_planner::translate::CalmToolNames;
-use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, session_set_harness_observation_runtime_tx,
     session_start_runtime_tx,
 };
+use calm_server::harness::planner_event::{PlannerEvent, PlannerEventKind};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::proc_identity::read_proc_start_time;
 use calm_server::session_projection_repo::{
@@ -366,15 +367,15 @@ pub fn cmdline(pid: i32) -> String {
         .unwrap_or_default()
 }
 
-/// Every notification up to and including the next `TurnCompleted`.
-pub async fn until_completed(rx: &mut broadcast::Receiver<Notification>) -> Vec<Notification> {
+/// Every event up to and including the next `TurnCompleted`.
+pub async fn until_completed(rx: &mut broadcast::Receiver<PlannerEvent>) -> Vec<PlannerEvent> {
     let mut seen = Vec::new();
     loop {
         let next = tokio::time::timeout(Duration::from_secs(40), rx.recv())
             .await
             .expect("TurnCompleted within 40 s")
             .expect("notification");
-        let done = matches!(next, Notification::TurnCompleted { .. });
+        let done = matches!(next.kind, PlannerEventKind::TurnCompleted { .. });
         seen.push(next);
         if done {
             return seen;
@@ -382,9 +383,9 @@ pub async fn until_completed(rx: &mut broadcast::Receiver<Notification>) -> Vec<
     }
 }
 
-pub fn completed_turn(seen: &[Notification]) -> Value {
-    match seen.last() {
-        Some(Notification::TurnCompleted { turn, .. }) => turn.clone(),
+pub fn completed_turn(seen: &[PlannerEvent]) -> Value {
+    match seen.last().map(|n| &n.kind) {
+        Some(PlannerEventKind::TurnCompleted { turn }) => turn.clone(),
         other => panic!("expected TurnCompleted last, got {other:?}"),
     }
 }

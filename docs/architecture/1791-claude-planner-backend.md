@@ -158,7 +158,8 @@ A neutral event enum would rewrite `on_notification` (~400 lines, H5–H9) and t
 Synthesis is honest: stored rows were always "the item the transcript renders" (Codex rows are filtered,
 H9; projection rows are kernel-written in the same shape, H8), every row's provider is recoverable via
 `worker_session_id`, and Claude keeps its raw record in its own session file. The Claude backend emits
-only `TurnStarted`, `TurnCompleted`, `Item{item/started|item/completed}`, `Other{thread/tokenUsage/updated}`.
+only `TurnStarted`, `TurnCompleted`, `Item` (started or completed) and `TokenUsage`; since #1981 S4 these
+are the run loop's neige-owned `PlannerEvent`s, not Codex `Notification`s.
 It writes two things itself: the durable turn outcome (`turn_outcome::record`, idempotent, H10) and
 `agent_session_id` through the existing attribution bind (`crates/calm-truth/src/db/sqlite/session_mirror.rs:420-440`).
 
@@ -595,7 +596,7 @@ capability (listed in `system/init`, unprobed).
 
 ### 5.10 Token usage
 
-On `ResultSuccess` or `ResultError` with a non-empty `usage.iterations`: emit `thread/tokenUsage/updated` `{threadId,
+On `ResultSuccess` or `ResultError` with a non-empty `usage.iterations`: emit a `TokenUsage` event `{
 tokenUsage:{last:{totalTokens: input+cache_read+cache_creation+output of the last iteration},
 total:{totalTokens: previous total + this turn}, modelContextWindow: modelUsage[init.model].contextWindow}}`;
 otherwise emit nothing (P-D, P-F3), keeping the previous reading (H11). The total is seeded from the
@@ -603,14 +604,14 @@ snapshot. KNOWN GAP: the 12k baseline is Codex-derived (Claude's fixed prefix ~1
 
 ## 6. Mapping
 
-### 6.1 Claude record → notification → stored item
+### 6.1 Claude record → event → stored item
 
 Envelope `{threadId, turnId, item, startedAtMs | completedAtMs}`. Ids: `tool_use.id` for tools,
 `<record uuid>:<block index>` for text/thinking.
 
-| Claude record | Notification | Stored `item` |
+| Claude record | `PlannerEvent` | Stored `item` |
 |---|---|---|
-| our line written | `TurnStarted{turn:{id}}` (handled after `turn_start` returns) | — |
+| our line written | `TurnStarted{turn_id}` (handled after `turn_start` returns) | — |
 | `UserReplay` (our uuid) | `item/completed` `userMessage` | `{id, clientId, content:[text, localImage…]}` → upgrades the projection (H8) |
 | `UserReplay` of `<local-command-stdout>`, `UserText`, `system/*`, `stream_event`, `rate_limit_event`, `command_lifecycle`, `tool_use ToolSearch` | none | — |
 | `thinking` / `text` block | started + completed `reasoning` / `agentMessage` | `{content:[],summary:[]}` / `{text}` |
@@ -638,7 +639,7 @@ A recorded cause wins over the event that follows it; otherwise the first event 
 | — | spawn / write fails before `Ok` | **no turn** (projection deleted, batch re-buffered) | — |
 
 An interrupted turn emits `TurnCompleted` by `settle_by` (§5.1: interrupt + 22 s), inside the harness's 30 s budget; Claude never emits
-`ThreadStatusChanged`, so `Wedged(systemError)` does not apply.
+`ThreadSystemError`, so `Wedged(systemError)` does not apply.
 Tool items still open at settlement are completed as `failed` (`close_open`): Codex item statuses have no
 interrupted variant, and the turn row carries `interrupted`.
 

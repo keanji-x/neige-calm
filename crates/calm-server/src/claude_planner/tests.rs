@@ -17,7 +17,8 @@ use super::protocol::{
     client_line_uuid, decode,
 };
 use super::translate::{CalmToolNames, TurnContext, TurnOutcome, TurnTranslator};
-use crate::codex_appserver::{InputItem, Notification};
+use crate::codex_appserver::InputItem;
+use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 const FIXTURE_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -73,11 +74,11 @@ fn visible_tools() -> CalmToolNames {
 }
 
 /// Every record of the fixture through one translator, one millisecond apart from 1000.
-fn translate_fixture(name: &str, input: Vec<InputItem>) -> Vec<Notification> {
+fn translate_fixture(name: &str, input: Vec<InputItem>) -> Vec<PlannerEvent> {
     translator_after(name, input).1
 }
 
-fn translator_after(name: &str, input: Vec<InputItem>) -> (TurnTranslator, Vec<Notification>) {
+fn translator_after(name: &str, input: Vec<InputItem>) -> (TurnTranslator, Vec<PlannerEvent>) {
     let records = decode_fixture(name);
     let ctx = context(first_replay_client_id(&records), input);
     let mut translator = TurnTranslator::new(ctx, visible_tools()).unwrap();
@@ -88,21 +89,25 @@ fn translator_after(name: &str, input: Vec<InputItem>) -> (TurnTranslator, Vec<N
     (translator, notifications)
 }
 
-fn items<'a>(notifications: &'a [Notification], method: &str) -> Vec<&'a Value> {
+fn items<'a>(notifications: &'a [PlannerEvent], method: &str) -> Vec<&'a Value> {
     notifications
         .iter()
-        .filter_map(|n| match n {
-            Notification::Item { method: m, params } if m == method => Some(&params["item"]),
+        .filter_map(|n| match &n.kind {
+            PlannerEventKind::Item { phase, params } if phase.method() == method => {
+                Some(&params["item"])
+            }
             _ => None,
         })
         .collect()
 }
 
-fn usage_frames(notifications: &[Notification]) -> Vec<&Value> {
+/// Every usage reading's params; each names the issued thread.
+fn usage_frames(notifications: &[PlannerEvent]) -> Vec<&Value> {
     notifications
         .iter()
-        .filter_map(|n| match n {
-            Notification::Other { method, params } if method == "thread/tokenUsage/updated" => {
+        .filter_map(|n| match &n.kind {
+            PlannerEventKind::TokenUsage { params } => {
+                assert_eq!(n.thread_id.as_deref(), Some("thread-1"));
                 Some(params)
             }
             _ => None,
@@ -356,8 +361,6 @@ fn a_success_with_iterations_emits_one_usage_frame() {
     assert_eq!(
         frames,
         [&json!({
-            "threadId": "thread-1",
-            "turnId": "turn-1",
             "tokenUsage": {
                 "last": { "totalTokens": 23_388 },
                 "total": { "totalTokens": 70_189 },
@@ -578,12 +581,16 @@ fn stdin_lines_serialize_to_the_probed_shapes() {
 fn turn_frames_carry_the_issued_turn_id() {
     let translator =
         TurnTranslator::new(context("0".repeat(32), Vec::new()), visible_tools()).unwrap();
-    let Notification::TurnStarted { thread_id, turn } = translator.turn_started() else {
+    let PlannerEvent {
+        thread_id,
+        kind: PlannerEventKind::TurnStarted { turn_id },
+    } = translator.turn_started()
+    else {
         panic!("turn_started");
     };
     assert_eq!(
-        (thread_id.as_str(), &turn["id"]),
-        ("thread-1", &json!("turn-1"))
+        (thread_id.as_deref(), turn_id.as_str()),
+        (Some("thread-1"), "turn-1")
     );
     let failed = TurnOutcome::Failed {
         message: "Not logged in".into(),
@@ -603,7 +610,8 @@ fn turn_frames_carry_the_issued_turn_id() {
         ),
     ];
     for (outcome, expected) in cases {
-        let Notification::TurnCompleted { turn, .. } = translator.turn_completed(&outcome) else {
+        let PlannerEventKind::TurnCompleted { turn } = translator.turn_completed(&outcome).kind
+        else {
             panic!("turn_completed");
         };
         assert_eq!(turn, expected);
@@ -634,8 +642,6 @@ fn an_error_result_with_iterations_emits_a_usage_frame() {
     assert_eq!(
         usage_frames(&frames),
         [&json!({
-            "threadId": "thread-1",
-            "turnId": "turn-1",
             "tokenUsage": {
                 "last": { "totalTokens": 12_657 },
                 "total": { "totalTokens": 13_657 },
@@ -646,7 +652,7 @@ fn an_error_result_with_iterations_emits_a_usage_frame() {
     // P-S1: the sandbox refusal has no iteration and no frame.
     let mut translator =
         TurnTranslator::new(context("0".repeat(32), Vec::new()), visible_tools()).unwrap();
-    let strict: Vec<Notification> = decode_fixture("pS_strict.ndjson")
+    let strict: Vec<PlannerEvent> = decode_fixture("pS_strict.ndjson")
         .iter()
         .flat_map(|record| translator.translate(record, 1))
         .collect();
@@ -679,9 +685,10 @@ fn closing_a_turn_fails_every_tool_item_left_without_a_result() {
         assert_eq!(started.len(), 1, "{name}");
         let started_at = notifications
             .iter()
-            .find_map(|n| match n {
-                Notification::Item { method, params }
-                    if method == "item/started" && params["item"]["type"] == "commandExecution" =>
+            .find_map(|n| match &n.kind {
+                PlannerEventKind::Item { phase, params }
+                    if *phase == ItemPhase::Started
+                        && params["item"]["type"] == "commandExecution" =>
                 {
                     params["startedAtMs"].as_i64()
                 }

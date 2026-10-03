@@ -20,7 +20,7 @@ const SETTLE_BUDGET: Duration = STOP_TIMER
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
     let rig = Rig::new("ignore-interrupt").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -57,7 +57,7 @@ async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stdout_that_is_not_utf8_fails_the_turn_as_protocol() {
     let rig = Rig::new("invalid-utf8").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -79,7 +79,7 @@ async fn stdout_that_is_not_utf8_fails_the_turn_as_protocol() {
 async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
     let rig = Rig::new("exit").await;
     assert_eq!(rig.agent_session_id().await, None);
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -96,7 +96,7 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
     );
 
     let reopened = rig.open_session().await;
-    let mut rx = reopened.subscribe_notifications();
+    let mut rx = reopened.subscribe_events();
     reopened
         .turn_start(
             &rig.thread,
@@ -119,7 +119,7 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_ready_result_wins_over_a_stop_that_fires_with_it() {
     let rig = Rig::new("flood").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -152,7 +152,7 @@ async fn the_mcp_token_is_minted_once_at_the_first_turn() {
     );
     let mut tokens = Vec::new();
     for text in ["one", "two"] {
-        let mut rx = rig.session().subscribe_notifications();
+        let mut rx = rig.session().subscribe_events();
         rig.session()
             .turn_start(
                 &rig.thread,
@@ -202,7 +202,7 @@ async fn a_session_that_was_never_installed_refuses_without_minting() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_interrupted_cli_that_stopped_reading_stdin_settles_within_budget() {
     let rig = Rig::new("flood").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -238,7 +238,7 @@ async fn an_interrupted_cli_that_stopped_reading_stdin_settles_within_budget() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cli_that_never_stops_writing_is_stopped_within_budget() {
     let rig = Rig::new("chatty-after-interrupt").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -267,7 +267,7 @@ async fn a_cli_that_never_stops_writing_is_stopped_within_budget() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_init_check_still_binds_the_session_it_named() {
     let rig = Rig::new("bad-init").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -310,7 +310,7 @@ async fn the_bind_leaves_active_turn_id_to_the_harness() {
     let rig = Rig::new("exit").await;
     rig.set_active_turn_id(Some("turn-owned-by-the-run-loop"))
         .await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -338,7 +338,7 @@ async fn the_bind_leaves_active_turn_id_to_the_harness() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_stop_timer_runs_from_the_interrupt_not_from_its_write() {
     let rig = Rig::new("flood-no-result").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -373,7 +373,7 @@ async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
     let margin = Duration::from_secs(3);
     let rig = Rig::new("stubborn-after-interrupt").await;
     rig.session().set_settle_after_stop_for_test(margin);
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
         .turn_start(
@@ -450,7 +450,7 @@ async fn a_first_turn_mint_on_a_superseded_row_fails_and_writes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_bind_is_retried_on_the_next_turn() {
     let rig = Rig::new("slow-bind").await;
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,
@@ -474,7 +474,7 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
     assert_eq!(rig.agent_session_id().await, None, "the bind was cut off");
 
     std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
-    let mut rx = rig.session().subscribe_notifications();
+    let mut rx = rig.session().subscribe_events();
     rig.session()
         .turn_start(
             &rig.thread,

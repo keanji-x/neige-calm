@@ -1,10 +1,14 @@
 pub mod backend;
 pub(crate) mod catch_up;
+pub(crate) mod codex_events;
+#[cfg(test)]
+mod codex_events_tests;
 mod codex_selection;
 pub mod config;
 pub(crate) mod issuance;
 pub mod lock;
 pub mod observation;
+pub mod planner_event;
 pub mod profile;
 pub mod queue;
 pub mod registry;

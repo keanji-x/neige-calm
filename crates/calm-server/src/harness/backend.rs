@@ -9,15 +9,17 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::Mutex;
 
 use crate::claude_planner::session::ClaudePlannerSession;
 use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
-use crate::codex_appserver::{InputItem, Notification};
+use crate::codex_appserver::InputItem;
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
+use crate::harness::codex_events::CodexEvents;
 use crate::harness::codex_selection;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
+use crate::harness::planner_event::PlannerEvents;
 use crate::planner_model::TurnModelSelection;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
@@ -73,10 +75,10 @@ impl PlannerBackend {
         })
     }
 
-    pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
+    pub fn subscribe_events(&self) -> PlannerEvents {
         match &self.0 {
-            Arm::Codex(daemon) => daemon.subscribe_notifications(),
-            Arm::Claude(session) => session.subscribe_notifications(),
+            Arm::Codex(daemon) => CodexEvents::subscribe(daemon).into(),
+            Arm::Claude(session) => session.subscribe_events().into(),
         }
     }
 
