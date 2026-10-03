@@ -251,11 +251,12 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     };
   }
   const setModelWrite = setModelRef.current.write;
+  const refreshTranscript = () => client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) });
   const refreshAfter = <T,>(result: T): T => {
     /* A 200 from the write is the acknowledgement; refetch is reconciliation and its failure must not
            turn an accepted send into a failed write. Not awaited: a hung read must not retain the send lease. */
     void Promise.all([
-      client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }),
+      refreshTranscript(),
       client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }),
     ]).catch(() => undefined);
     return result;
@@ -263,8 +264,15 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   return {
     send: (text: string, attachments: readonly string[] = []) => runOperation(transport, sendPlannerInputOperation(cardId, text, attachments), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
-    /* A refusal changed nothing, so only an accepted rewind refreshes; `harness.transcript.rewound` does too. */
-    rewind: (turnId: string) => runOperation(transport, rewindPlannerTurnOperation(cardId, turnId), unauthorized).then(refreshAfter),
+    /* A refusal changed nothing, so only an accepted rewind refreshes. The transcript read is awaited: the
+     * refill must not land beside the removed turn, where Regenerate could send it again. A failed read
+     * does not fail the rewind. */
+    rewind: (turnId: string) => runOperation(transport, rewindPlannerTurnOperation(cardId, turnId), unauthorized)
+      .then(async (rewound) => {
+        await refreshTranscript().catch(() => undefined);
+        void client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }).catch(() => undefined);
+        return rewound;
+      }),
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>

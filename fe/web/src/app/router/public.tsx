@@ -942,6 +942,8 @@ function useConversationPanel(
   /* After the attachments hook: its reset on a card change must run before a refill restores the strip. */
   const edit = useConversationEdit({ conversationId: scope?.cardId ?? null, rewind: store.rewind,
     draft: composerDraft, setDraft: setComposerDraft, attachments, focusComposer });
+  /* The one readiness every response action and the continue guidance share. */
+  const canContinue = store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const registry = useConversationRegistry();
@@ -1425,10 +1427,10 @@ function useConversationPanel(
                                other one leaves the message with the reader. */
               onSend={(text) => {
                 const sent = attachments.items;
-                return store.send(open.id, text, sent).then((outcome) => {
+                return edit.send(() => store.send(open.id, text, sent).then((outcome) => {
                   if (outcome === 'delivered') attachments.clear();
                   return outcome;
-                });
+                }));
               }}
               allowEmptyText={attachments.items.length > 0}
               /* The queue lives inside the composer, above the field: these messages have
@@ -1516,12 +1518,11 @@ function useConversationPanel(
                 cards={source.cards}
                 stalled={store.stalled}
                 copyText={writeClipboardText}
-                regenerateMessage={store.historyReady && !store.sendBlocked && !store.working && !store.stopping && edit.idle
+                regenerateMessage={canContinue && edit.idle
                   ? async (message) => { await store.send(open.id, message.text, message.attachments ?? []); }
                   : undefined}
-                editMessage={store.historyReady && !store.sendBlocked && !store.working && !store.stopping
-                  && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0 ? edit.run : undefined}
-                canContinue={store.historyReady && !store.sendBlocked && !store.working && !store.stopping}
+                editMessage={canContinue && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0 ? edit.run : undefined}
+                canContinue={canContinue}
                 stalledReason={store.blockedReason}
                 stopFeedback={store.stopFeedback}
               />

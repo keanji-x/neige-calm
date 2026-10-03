@@ -99,8 +99,8 @@ export type FailedConversationSend = Readonly<{
 }>;
 
 /**
- * An Edit's rewind for one conversation (#1923): the request still out, or the removed input
- * waiting for that conversation's composer. Held here so neither a switch nor a remount drops it.
+ * An Edit's rewind for one conversation (#1923): the request still out, or the removed input as the
+ * reader is editing it. Held here until it is sent or emptied, so no close, switch or remount drops it.
  */
 export type ConversationEdit = Readonly<{ kind: 'requesting' } | { kind: 'ready'; refill: ComposerRefill }>;
 
@@ -150,8 +150,8 @@ export type ConversationRegistry = Readonly<{
   tryBeginEdit: (conversationId: string) => boolean;
   /** The request settled: its refill now waits for the composer, or (`null`) nothing changed. */
   finishEdit: (conversationId: string, refill: ComposerRefill | null) => void;
-  /** The composer took this refill; a newer one is left alone. */
-  takeRefill: (conversationId: string, refill: ComposerRefill) => void;
+  /** What a held refill now is (the composer's words and images), or `null` once it is sent or emptied. */
+  holdRefill: (conversationId: string, refill: ComposerRefill | null) => void;
   /* Deliberately no "open the planner conversation of track W" slot: the track being left is still
        mounted when a create states it, so that intent travels in the history entry instead. */
 }>;
@@ -222,9 +222,9 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     if (editsRef.current[conversationId]?.kind !== 'requesting') return;
     writeEdit(conversationId, refill === null ? null : { kind: 'ready', refill });
   }, [writeEdit]);
-  const takeRefill = useCallback((conversationId: string, refill: ComposerRefill) => {
-    const edit = editsRef.current[conversationId];
-    if (edit?.kind === 'ready' && edit.refill === refill) writeEdit(conversationId, null);
+  const holdRefill = useCallback((conversationId: string, refill: ComposerRefill | null) => {
+    if (editsRef.current[conversationId]?.kind !== 'ready') return;
+    writeEdit(conversationId, refill === null ? null : { kind: 'ready', refill });
   }, [writeEdit]);
   const editOf = useCallback((conversationId: string) => edits[conversationId] ?? null, [edits]);
   const clearFailedSend = useCallback((conversationId: string, echoId: string) => {
@@ -297,12 +297,12 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       pendingSendIds, failedSends, tryBeginSend, finishSend, clearFailedSend,
-      editOf, tryBeginEdit, finishEdit, takeRefill,
+      editOf, tryBeginEdit, finishEdit, holdRefill,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
       discardUnsentDraft, draftOf, editDraft, editOf, finishDraftAdoption, finishEdit, finishSend, pendingSendIds,
       remember, requestOpen, failedSends, clearFailedSend,
-      requestedOpenFocusesComposer, requestedOpenId, startDraft, takeRefill, tryBeginEdit, tryBeginSend, turnsOf,
+      requestedOpenFocusesComposer, requestedOpenId, holdRefill, startDraft, tryBeginEdit, tryBeginSend, turnsOf,
       updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;

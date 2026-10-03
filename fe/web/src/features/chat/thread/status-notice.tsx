@@ -13,24 +13,21 @@ export type ResponseAction = Readonly<{ id: string; run: () => Promise<void> }>;
 type ActionView = { readonly key: string; active: boolean };
 type ActionResult = Readonly<{ view: ActionView; kind: 'pending' | 'done' | 'failed'; error: string | null }>;
 
-/** One run at a time per committed view; a completion for a view no longer shown says nothing. */
+/** One run at a time per view; a completion speaks only while its run is still the latest one. */
 function useFencedAction(key: string | null) {
   const view = useMemo<ActionView | null>(() => key === null ? null : { key, active: false }, [key]);
-  const committed = useRef<ActionView | null>(null);
-  useLayoutEffect(() => {
-    committed.current = view;
-    return () => { committed.current = null; };
-  }, [view]);
   const [result, setResult] = useState<ActionResult | null>(null);
   const perform = async (run: () => Promise<void>, fallback: string) => {
-    if (view === null || committed.current !== view || view.active) return;
+    if (view === null || view.active) return;
     view.active = true;
-    setResult({ view, kind: 'pending', error: null });
+    const started: ActionResult = { view, kind: 'pending', error: null };
+    const settle = (next: ActionResult) => setResult((current) => current === started ? next : current);
+    setResult(started);
     try {
       await run();
-      if (committed.current === view) setResult({ view, kind: 'done', error: null });
+      settle({ view, kind: 'done', error: null });
     } catch (reason) {
-      if (committed.current === view) setResult({ view, kind: 'failed',
+      settle({ view, kind: 'failed',
         error: reason instanceof Error && reason.message.trim() !== '' ? reason.message : fallback });
     } finally { view.active = false; }
   };
@@ -77,15 +74,7 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
   const feedback = copy.feedback;
   const edit = useFencedAction(editAction?.id ?? null);
   const editFailure = edit.feedback?.kind === 'failed' ? `Edit failed: ${edit.feedback.error}` : null;
-  const committedRegenerate = useRef<typeof regenerateAction>(null);
-  useLayoutEffect(() => {
-    committedRegenerate.current = regenerateAction;
-    return () => { committedRegenerate.current = null; };
-  }, [regenerateAction]);
-  const performRegenerate = async () => {
-    if (regenerateAction === null || committedRegenerate.current !== regenerateAction) return;
-    await regenerateAction.run();
-  };
+  const regenerate = useFencedAction(regenerateAction?.id ?? null);
   const timestamp = clock.timestamp;
   const showTime = timestamp !== null && (hovered || focused);
   const timeText = timestamp === null ? null
@@ -118,11 +107,14 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
           variant="ghost" size="sm" isDisabled={copyAction === null || feedback?.kind === 'pending'}
           onClick={() => { if (copyAction !== null) void copy.perform(copyAction.run, 'Could not copy response.'); }} />
         <IconButton label={editAction === null ? 'Edit message (not available now)' : editFailure ?? 'Edit message'}
-          tooltip={editFailure ?? 'Take this message and its response out of the conversation and put the message back in the composer. Files stay as they are.'}
+          tooltip={editFailure ?? 'Edit this message. Files are not reverted.'}
           icon={<ActionIcon kind="edit" />}
           className={styles.action} variant="ghost" size="sm" isDisabled={editAction === null || edit.feedback?.kind === 'pending'}
           onClick={() => { if (editAction !== null) void edit.perform(editAction.run, 'Could not edit the message.'); }} />
-        <IconButton label={regenerateAction === null ? "Regenerate response (not available now)" : "Regenerate response"} tooltip="Send the original prompt again in this conversation; keep existing history." icon={<ActionIcon kind="regenerate" />} className={styles.action} variant="ghost" size="sm" isDisabled={regenerateAction === null} clickAction={performRegenerate} />
+        <IconButton label={regenerateAction === null ? 'Regenerate response (not available now)' : 'Regenerate response'}
+          tooltip="Send the original prompt again in this conversation; keep existing history." icon={<ActionIcon kind="regenerate" />}
+          className={styles.action} variant="ghost" size="sm" isDisabled={regenerateAction === null || regenerate.feedback?.kind === 'pending'}
+          onClick={() => { if (regenerateAction !== null) void regenerate.perform(regenerateAction.run, 'Could not regenerate the response.'); }} />
       </div>
     </div>
   </div>;
