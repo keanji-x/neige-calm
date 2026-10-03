@@ -14,7 +14,12 @@ use crate::ids::CardId;
 use crate::model::HarnessInputSegment;
 use crate::per_card_lock::lock_card;
 use crate::routes::cards::card_runs_headless_harness;
+use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::RouteState;
+
+const ACTOR_SUBJECT: &str = "planner rewind";
+const ACTOR_REDIRECT: &str =
+    "Removing a turn deletes the person's own message and its replies; agents have no path to it.";
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -32,7 +37,8 @@ pub struct RewindPlannerResponse {
     pub input: Vec<HarnessInputSegment>,
 }
 
-/// Same card gate as `/planner/input`, without its lazy recovery: a dormant harness has no turn
+/// The person only, like the queued-input edits; then the same card gate as `/planner/input`,
+/// without its lazy recovery: a dormant harness has no turn
 /// that could be rewound safely, so it is the same 409 `planner_harness_dormant` as `/interrupt`.
 #[utoipa::path(
     post,
@@ -42,7 +48,7 @@ pub struct RewindPlannerResponse {
     request_body = RewindPlannerRequest,
     responses(
         (status = 200, description = "The turn is removed; `input` is what its user sent", body = RewindPlannerResponse),
-        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
+        (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 409, description = "Nothing changed: no live session (`planner_harness_dormant`), or the reason (`conflict`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -55,6 +61,8 @@ pub(crate) async fn rewind_planner_card(
     Path(id): Path<String>,
     Json(body): Json<RewindPlannerRequest>,
 ) -> Result<Json<RewindPlannerResponse>> {
+    require_rest_user_actor_for(&actor, ACTOR_SUBJECT, ACTOR_REDIRECT)?;
+
     let card = s
         .repo
         .card_get(&id)

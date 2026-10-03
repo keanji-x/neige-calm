@@ -9,6 +9,7 @@ use calm_server::db::prelude::*;
 use calm_server::harness::{HarnessState, Observation};
 use serde_json::{Value, json};
 
+use super::planner_harness_live_replies::ITEM_TABLE;
 use crate::support::planner_queue_fixture::{
     Boot, Issuance, SEED_THREAD_ID, boot_with_issuance, get, idle_snapshot, post_input,
     post_input_with_attachments, send_json, upload_png,
@@ -19,6 +20,10 @@ const TURN_B: &str = "fake-turn-0002";
 const TURN_C: &str = "fake-turn-0003";
 
 async fn rewind(boot: &Boot, turn_id: &str) -> (StatusCode, Value) {
+    rewind_as(boot, "user", turn_id).await
+}
+
+async fn rewind_as(boot: &Boot, actor: &str, turn_id: &str) -> (StatusCode, Value) {
     send_json(
         boot.app.clone(),
         "POST",
@@ -26,7 +31,7 @@ async fn rewind(boot: &Boot, turn_id: &str) -> (StatusCode, Value) {
             "/api/cards/{}/planner/rewind",
             boot.planner_card.id.as_str()
         ),
-        "user",
+        actor,
         json!({ "turn_id": turn_id }),
     )
     .await
@@ -503,4 +508,101 @@ async fn a_conversation_with_no_live_harness_is_dormant() {
     let (status, body) = rewind(&boot, TURN_A).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert_eq!(body["code"], json!("planner_harness_dormant"));
+}
+
+/// Removing a turn deletes the person's own message: an agent actor is refused before the card is
+/// even read, and nothing changes.
+#[tokio::test]
+async fn an_agent_actor_cannot_rewind() {
+    let boot = two_turns().await;
+    let rows_before = rows(&boot).await;
+    let snapshot_before = stored_snapshot(&boot).await;
+    for actor in ["ai:codex", "ai:claude", "ai:planner"] {
+        let (status, body) = rewind_as(&boot, actor, TURN_B).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{actor}: body={body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("X-Calm-Actor: user"),
+            "{actor}: {body}"
+        );
+    }
+    assert_eq!(rows(&boot).await, rows_before);
+    assert_eq!(stored_snapshot(&boot).await, snapshot_before);
+    assert!(
+        boot.event_payloads("harness.transcript.rewound")
+            .await
+            .is_empty()
+    );
+}
+
+async fn rename_table(boot: &Boot, from: &str, to: &str) {
+    sqlx::query(&format!("ALTER TABLE {from} RENAME TO {to}"))
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+}
+
+async fn live(boot: &Boot) -> Value {
+    let (status, body) = get(
+        boot.app.clone(),
+        format!("/api/cards/{}/harness/live", boot.planner_card.id.as_str()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    body
+}
+
+/// A partial reply whose row failed to store stays live until the next turn starts; once its turn
+/// is rewound away, its text goes with it.
+#[tokio::test]
+async fn a_rewind_clears_the_live_text_of_the_removed_turn() {
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    let (turn, _client) = start_turn(&boot, "stream something", &[]).await;
+    let reply = json!({ "id": "reply-1", "type": "agentMessage", "text": "" });
+    boot.daemon.emit_notification_for_test(Notification::Item {
+        method: "item/started".into(),
+        params: json!({ "threadId": SEED_THREAD_ID, "turnId": turn, "item": reply }),
+    });
+    boot.daemon.emit_notification_for_test(Notification::Item {
+        method: "item/agentMessage/delta".into(),
+        params: json!({
+            "threadId": SEED_THREAD_ID, "turnId": turn, "itemId": "reply-1", "delta": "Half",
+        }),
+    });
+    let streaming = json!({ "turn_id": turn, "items": [{ "item_id": "reply-1", "text": "Half" }] });
+    wait_for("the streamed text", || async {
+        live(&boot).await == streaming
+    })
+    .await;
+
+    rename_table(&boot, ITEM_TABLE, "hidden_rows").await;
+    boot.harness.interrupt("test stop".into()).await.unwrap();
+    wait_for("the interrupt to go out", || async {
+        !boot.daemon.interrupted_turns_for_test().is_empty()
+    })
+    .await;
+    boot.daemon
+        .emit_notification_for_test(Notification::TurnCompleted {
+            thread_id: SEED_THREAD_ID.to_string(),
+            turn: json!({ "id": turn, "status": "interrupted" }),
+        });
+    wait_for("the interrupted completion", || async {
+        boot.harness.state_for_test().await
+            == HarnessState::TurnCompleted {
+                last_turn_id: turn.clone(),
+            }
+    })
+    .await;
+    rename_table(&boot, "hidden_rows", ITEM_TABLE).await;
+    assert_eq!(
+        live(&boot).await,
+        streaming,
+        "premise: the unstored partial stays live"
+    );
+
+    let (status, body) = rewind(&boot, &turn).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(live(&boot).await, json!({ "turn_id": null, "items": [] }));
 }

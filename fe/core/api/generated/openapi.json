@@ -2052,7 +2052,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "Same card gate as `/planner/input`, without its lazy recovery: a dormant harness has no turn\nthat could be rewound safely, so it is the same 409 `planner_harness_dormant` as `/interrupt`.",
+        "summary": "The person only, like the queued-input edits; then the same card gate as `/planner/input`,\nwithout its lazy recovery: a dormant harness has no turn\nthat could be rewound safely, so it is the same 409 `planner_harness_dormant` as `/interrupt`.",
         "operationId": "rewind_planner_card",
         "parameters": [
           {
@@ -2087,7 +2087,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Not `X-Calm-Actor: user`, or the card is not a planner codex card",
             "content": {
               "application/json": {
                 "schema": {

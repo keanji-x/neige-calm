@@ -3132,6 +3132,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             *inner.issued_turn_head.lock().await = diff.current_head.clone();
             // Cleared in the same snapshot that empties the queue, so no restart can pair this key with a later batch.
             *inner.projection_client_id.lock().await = None;
+            // Known gap (#1923): a crash between this start and the snapshot write below replays the
+            // cut on restart. Codex answers `turn not found` (applied); the Claude CLI guard fails that
+            // one turn loudly. Either way the cut is then consumed and later turns are unaffected.
             *inner.pending_rewind.lock().await = None;
             *inner.last_turn_base.lock().await = Some(TurnBase {
                 turn_id: turn_id.clone(),

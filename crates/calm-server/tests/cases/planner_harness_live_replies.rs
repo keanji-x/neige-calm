@@ -19,7 +19,7 @@ use crate::support::planner_queue_fixture::{
 
 const TURN: &str = "turn-live-1";
 /// The transcript's table, renamed away to make an item row fail to store.
-const ITEM_TABLE: &str = "harness_items";
+pub(crate) const ITEM_TABLE: &str = "harness_items";
 
 async fn boot() -> Boot {
     boot_issuing(Issuance::Paused).await
