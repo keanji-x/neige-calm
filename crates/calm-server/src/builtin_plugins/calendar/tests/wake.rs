@@ -507,3 +507,39 @@ async fn entry_shorter_than_the_scan_interval_wakes_once() {
         other => panic!("expected exactly one wake, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn end_extended_after_the_scan_read_is_not_recorded_as_expired() {
+    let fx = Fixture::new().await;
+    let planner = fx.identity(CardRole::Planner).await;
+    let read_by_scan = create(
+        &fx,
+        &planner,
+        "extended",
+        timed("2026-10-02T09:00", "2026-10-02T10:00"),
+    )
+    .await;
+    // The owner extends the entry after the scan listed version 1 but before its cursor write.
+    update(
+        &fx,
+        &planner,
+        &read_by_scan,
+        timed("2026-10-02T09:00", "2026-10-02T12:00"),
+        false,
+    )
+    .await;
+    let now = at("2026-10-02T10:30:00+08:00");
+    assert!(
+        !crate::builtin_plugins::calendar::wake::handle(&fx.ctx, read_by_scan.clone(), now)
+            .await
+            .unwrap()
+    );
+    assert_eq!(cursor(&fx, &read_by_scan).await, None);
+    assert_eq!(
+        scan(&fx.ctx, now).await.unwrap(),
+        1,
+        "the extended entry still wakes"
+    );
+    assert_eq!(scan(&fx.ctx, now).await.unwrap(), 0);
+    assert_eq!(wake_events(&fx).await.len(), 1);
+}
