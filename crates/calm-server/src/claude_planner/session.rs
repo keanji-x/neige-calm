@@ -25,7 +25,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
-use super::config::ClaudePlannerHost;
+use super::config::{ClaudePlannerHost, needs_an_operator, unavailable_message};
 use super::driver::{TurnRun, drive};
 use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
 use super::spawn::{self, EnvInputs, InstructionsFile, SessionStart};
@@ -385,26 +385,26 @@ impl ClaudePlannerSession {
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
         client_id: &str,
-    ) -> Result<String> {
+    ) -> Result<String, crate::harness::backend::TurnStartFailure> {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
         if !shared.installed.load(Ordering::SeqCst) {
-            return Err(CalmError::Conflict(
-                "claude planner harness is not installed yet".into(),
-            ));
+            return Err(
+                CalmError::Conflict("claude planner harness is not installed yet".into()).into(),
+            );
         }
         let (start, row_bound, token, prior_total_tokens, settle_after_stop) = {
             let state = shared.state();
             if state.shutting_down {
-                return Err(CalmError::Conflict(
-                    "claude planner session is shutting down".into(),
-                ));
+                return Err(
+                    CalmError::Conflict("claude planner session is shutting down".into()).into(),
+                );
             }
             if state.active.is_some() {
-                return Err(CalmError::Conflict(
-                    "a claude planner turn is still running".into(),
-                ));
+                return Err(
+                    CalmError::Conflict("a claude planner turn is still running".into()).into(),
+                );
             }
             (
                 state.start,
@@ -419,11 +419,13 @@ impl ClaudePlannerSession {
         })?;
         let turn_id = Uuid::new_v4().to_string();
         if params.seals.turn_thread_is_sealed(thread) {
-            return Err(sealed(thread));
+            return Err(sealed(thread).into());
         }
         let host = &params.host;
-        let config = host.configured()?;
-        let kernel_path = crate::kernel_bin_path::kernel_led_path()?;
+        let config = host
+            .configured()
+            .map_err(|_| needs_an_operator(unavailable_message()))?;
+        let kernel_path = crate::kernel_bin_path::kernel_led_path().map_err(CalmError::from)?;
         let env = spawn::base_env(&EnvInputs {
             path: kernel_path.path,
             config_dir: &config.config_dir,
@@ -431,16 +433,16 @@ impl ClaudePlannerSession {
             marker: host.instance.marker(&params.worker_session_id),
             proxy: &params.proxy,
         });
-        config.verify_version(&env).await?;
+        config.refuse_unless_pinned(&env).await?;
         // A shutdown or a deletion seal may have landed while `--version` ran; nothing is minted
         // for a session that can no longer start a turn.
         if shared.state().shutting_down {
-            return Err(CalmError::Conflict(
-                "claude planner session is shutting down".into(),
-            ));
+            return Err(
+                CalmError::Conflict("claude planner session is shutting down".into()).into(),
+            );
         }
         if params.seals.turn_thread_is_sealed(thread) {
-            return Err(sealed(thread));
+            return Err(sealed(thread).into());
         }
         // A revocation under a live harness (e.g. one an aborted deletion's recovery could not
         // replace, §5.1 item 4) nulls the row's hash; the next spawn must not carry a credential that
@@ -455,7 +457,8 @@ impl ClaudePlannerSession {
             thread_uuid,
             client_line_uuid(client_id).map_err(|e| CalmError::BadRequest(e.to_string()))?,
             user_line_content(&items).await?,
-        ))?;
+        ))
+        .map_err(CalmError::from)?;
         let translator = TurnTranslator::new(
             TurnContext {
                 thread_id: thread.to_string(),
@@ -605,7 +608,7 @@ impl ClaudePlannerSession {
         child: Option<Child>,
         instructions: InstructionsFile,
         error: CalmError,
-    ) -> CalmError {
+    ) -> crate::harness::backend::TurnStartFailure {
         let params = &self.shared.params;
         if let Err(stop_error) = stop(&params.host.instance, &params.worker_session_id).await {
             tracing::warn!(
@@ -619,7 +622,7 @@ impl ClaudePlannerSession {
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
         drop(instructions);
-        error
+        error.into()
     }
 
     /// Record `Interrupted`, ask the CLI to interrupt, and arm the stop timer; a turn that is not

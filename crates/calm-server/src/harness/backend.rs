@@ -18,6 +18,18 @@ use crate::planner_model::TurnModelSelection;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
 
+/// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
+/// run loop paces its retry and tells the reader from this, never from the error's shape.
+#[derive(Debug, thiserror::Error)]
+pub enum TurnStartFailure {
+    /// Repeating it unchanged may work, so the reader is not told yet.
+    #[error(transparent)]
+    Transient(#[from] CalmError),
+    /// Repeating it unchanged reproduces it until someone changes something; `reader` says so now.
+    #[error("{error}")]
+    Refused { error: CalmError, reader: String },
+}
+
 #[derive(Clone)]
 pub enum PlannerBackend {
     Codex(Arc<SharedCodexAppServer>),
@@ -48,13 +60,22 @@ impl PlannerBackend {
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
         client_id: &str,
-    ) -> Result<TurnId> {
+    ) -> std::result::Result<TurnId, TurnStartFailure> {
         match self {
-            Self::Codex(daemon) => {
-                daemon
-                    .turn_start(thread_id, items, selection, Some(client_id))
-                    .await
-            }
+            Self::Codex(daemon) => daemon
+                .turn_start(thread_id, items, selection, Some(client_id))
+                .await
+                // Codex answering with a refusal is the one failure known to be its answer.
+                .map_err(|error| match error {
+                    CalmError::CodexRefused(_) => TurnStartFailure::Refused {
+                        error,
+                        reader: "codex refused to start a turn for this conversation, so your \
+                                 message has not been sent. If you changed the model recently, it \
+                                 may not be one this account can run — try another."
+                            .into(),
+                    },
+                    error => TurnStartFailure::Transient(error),
+                }),
             Self::Claude(session) => {
                 session
                     .turn_start(thread_id, items, selection, client_id)

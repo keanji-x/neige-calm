@@ -11,6 +11,7 @@ use super::spawn::instructions_dir;
 use super::stop::MarkerInstance;
 use super::translate::CalmToolNames;
 use crate::error::{CalmError, Result};
+use crate::harness::backend::TurnStartFailure;
 use crate::model::CardRole;
 
 /// How long `<claude_binary> --version` may take; it answers in milliseconds.
@@ -45,6 +46,17 @@ impl ClaudePlannerConfig {
         self.version_problem(env)
             .await
             .map_or(Ok(()), |problem| Err(CalmError::Conflict(problem)))
+    }
+
+    /// [`Self::verify_version`] for a turn start (#1981): a binary that is not the pinned one is
+    /// refused until an operator fixes it.
+    pub async fn refuse_unless_pinned(
+        &self,
+        env: &[(String, std::ffi::OsString)],
+    ) -> Result<(), TurnStartFailure> {
+        self.version_problem(env)
+            .await
+            .map_or(Ok(()), |problem| Err(needs_an_operator(problem)))
     }
 
     /// [`Self::verify_version`]'s check, answering why the binary is refused (`None` = it is not).
@@ -175,6 +187,18 @@ impl ClaudePlannerHost {
 /// What a reader and a refused caller are told while [`CONFIG_FLAG`] is absent.
 pub fn unavailable_message() -> String {
     format!("the Claude Planner is unavailable: calm-server was started without {CONFIG_FLAG}")
+}
+
+/// A turn-start refusal only an operator can clear (#1981): the reader is told `reason` now, and
+/// the paced retry sends the queued message once the fix lands.
+pub(super) fn needs_an_operator(reason: String) -> TurnStartFailure {
+    TurnStartFailure::Refused {
+        reader: format!(
+            "claude will not start a turn for this conversation: {reason}. Your message is still \
+             queued and will be sent once that is fixed."
+        ),
+        error: CalmError::Conflict(reason),
+    }
 }
 
 fn version_error(binary: &Path, detail: &str) -> String {

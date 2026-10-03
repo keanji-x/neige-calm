@@ -194,7 +194,7 @@ pub enum UnresolvedSelection {
 pub enum FailureKind {
     /// The attempt may succeed if repeated unchanged, and no message to the reader is owed yet. Covers every way asking codex can fail short of codex answering.
     Retryable,
-    /// Codex answered with a refusal of this input; repeating unchanged reproduces it. Reachable from the picker, which stores slugs codex has never heard of by design.
+    /// The provider refused this input (#1981); repeating unchanged reproduces it. Reachable from the Codex picker, which stores slugs codex has never heard of by design.
     Rejected,
     /// The selection itself cannot be determined; `config.model = null` and a malformed payload are both reachable and neither clears itself.
     NeedsAChoice,

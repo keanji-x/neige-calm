@@ -21,7 +21,7 @@ use crate::codex_appserver::{InputItem, Notification};
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
-use crate::harness::backend::PlannerBackend;
+use crate::harness::backend::{PlannerBackend, TurnStartFailure};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::queue::{
@@ -271,7 +271,7 @@ impl<'a> IssueTurnHandle<'a> {
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
         client_user_message_id: &str,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, TurnStartFailure> {
         self.backend
             .turn_start(thread_id, input, selection, client_user_message_id)
             .await
@@ -2473,8 +2473,8 @@ struct IssuanceRefusal {
 }
 
 /// Classify a codex call that failed: codex ANSWERING with a refusal becomes `refused(log)`,
-/// every other failure is retryable. Every codex call on the issuance path (`config/read`,
-/// `model/list`, `turn/start`) goes through this.
+/// every other failure is retryable. The Codex-only reads on the issuance path (`config/read`,
+/// `model/list`) go through this; `turn/start` is classified by its backend.
 fn classify_codex_failure(
     e: &CalmError,
     log: String,
@@ -2496,15 +2496,12 @@ impl IssuanceRefusal {
         }
     }
 
-    /// Codex answered and refused. Says so, and promises nothing.
-    fn rejected(log: String) -> Self {
+    /// The provider refused; `reader` is its own account of why.
+    fn rejected(log: String, reader: String) -> Self {
         Self {
             kind: FailureKind::Rejected,
             log,
-            reader: "codex refused to start a turn for this conversation, so your message has \
-                     not been sent. If you changed the model recently, it may not be one this \
-                     account can run — try another."
-                .into(),
+            reader,
         }
     }
 
@@ -2600,7 +2597,7 @@ async fn apply_refusal(inner: &Arc<Inner>, failure: &IssuanceRefusal) {
         // Nobody can act, and repeating may work. Silent while that is
         // plausibly still true; see `transient_notice`.
         FailureKind::Retryable => (TRANSIENT_RETRY_DELAY, transient_notice(inner).await),
-        // Codex saw the input and said no. Retried slowly rather than not at all (the person may
+        // The provider saw the input and said no. Retried slowly rather than not at all (the person may
         // change the model from another tab), but the reader is told now.
         FailureKind::Rejected => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
         FailureKind::NeedsAChoice => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
@@ -3223,7 +3220,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // refused `turn/start` is codex's answer. The log must not call the first "turn/start failed".
     enum IssueFailure {
         ProjectionWrite(CalmError),
-        TurnStart(CalmError),
+        TurnStart(TurnStartFailure),
     }
     let issued = async {
         // Written before `turn/start` goes out, so the row says what codex is told.
@@ -3262,15 +3259,24 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         Err(failure) => {
             // Paced, like the refusal above: `rebuffer_head` arms `hard_fire`, and `PUT /planner/model`
             // can store a slug codex does not know, so an unpaced retry was twenty RPCs a second. The split
-            // is on the TYPED error: `Rejected` because no choice is KNOWN to remove the need for `turn/start`.
-            let (e, stage) = match failure {
+            // is the backend's TYPED verdict (#1981): `Rejected` because no choice is KNOWN to remove the need.
+            let (e, stage, refusal) = match failure {
                 IssueFailure::ProjectionWrite(e) => {
-                    (e, "projection row write failed before turn/start was sent")
+                    let stage = "projection row write failed before turn/start was sent";
+                    let refusal = IssuanceRefusal::retryable(format!("{stage}: {e}"));
+                    (e, stage, refusal)
                 }
-                IssueFailure::TurnStart(e) => (e, "turn/start failed"),
+                IssueFailure::TurnStart(TurnStartFailure::Transient(e)) => {
+                    let stage = "turn/start failed";
+                    let refusal = IssuanceRefusal::retryable(format!("{stage}: {e}"));
+                    (e, stage, refusal)
+                }
+                IssueFailure::TurnStart(TurnStartFailure::Refused { error, reader }) => {
+                    let stage = "turn/start failed";
+                    let refusal = IssuanceRefusal::rejected(format!("{stage}: {error}"), reader);
+                    (error, stage, refusal)
+                }
             };
-            let refusal =
-                classify_codex_failure(&e, format!("{stage}: {e}"), IssuanceRefusal::rejected);
             apply_refusal(inner, &refusal).await;
             // The batch goes back on the queue, so the row that said it was sent goes too. A failed delete
             // is logged: the next drain replaces the row under the same key. The phase change that follows
