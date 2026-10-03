@@ -20,6 +20,7 @@ pub mod codex;
 pub mod codex_cards;
 pub mod conversations_shared;
 pub mod fs;
+pub mod harness_live;
 pub mod models;
 pub mod overlays;
 pub mod planner_input;

@@ -103,6 +103,7 @@ impl Fixture {
                 card_role_cache: roles,
                 track_area_cache: areas,
                 backend: daemon.clone().into(),
+                live_replies: crate::harness::LiveReplies::for_test(),
                 config: HarnessConfig {
                     debounce_min_idle: Duration::ZERO,
                     debounce_max_wait: Duration::ZERO,
@@ -272,6 +273,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
             card_role_cache: inner.card_role_cache.clone(),
             track_area_cache: inner.track_area_cache.clone(),
             backend: inner.backend.clone(),
+            live_replies: crate::harness::LiveReplies::for_test(),
             config: inner.config,
             snapshot,
         },

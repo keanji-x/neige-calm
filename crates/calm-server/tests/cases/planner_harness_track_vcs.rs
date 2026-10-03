@@ -121,6 +121,7 @@ async fn boot() -> Boot {
         card_role_cache: roles.clone(),
         track_area_cache: track_area_cache.clone(),
         backend: daemon.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(200),
@@ -201,6 +202,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
         backend: boot.daemon.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(100),
@@ -336,6 +338,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
         backend: boot.daemon.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(100),
@@ -937,6 +940,7 @@ async fn recovered_issued_turn_head_stamps_last_seen_head_on_completion() {
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
         backend: boot.daemon.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,
     });

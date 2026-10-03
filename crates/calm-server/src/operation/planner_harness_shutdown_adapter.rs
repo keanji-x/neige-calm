@@ -235,6 +235,7 @@ mod tests {
             card_role_cache: crate::card_role_cache::CardRoleCache::new(),
             track_area_cache: crate::track_area_cache::TrackAreaCache::new(),
             backend: daemon.clone().into(),
+            live_replies: crate::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
             snapshot: HarnessSnapshot::initial(0, vec![]),
         });

@@ -10,6 +10,8 @@
 //!
 //!   initialize → thread/start → turn/start → (emit `turn/started`)
 //!
+//! #1923 — a turn can also stream one reply, scripted by its own input (see [`ReplyScript`]).
+//!
 //! It then stays alive (looping on the connection) so the kernel's handle
 //! keeps a live child; the test reaps it via the registry teardown / tempdir
 //! drop. No model work is performed — `turn/started` is the only signal the
@@ -365,6 +367,7 @@ async fn serve_conn(
 
     let thread_id = "fake-thread-0001";
     let turn_id = "fake-turn-0001";
+    let mut replies = 0_u32;
 
     while let Some(msg) = read.next().await {
         let msg = msg.map_err(|e| format!("ws read: {e}"))?;
@@ -490,7 +493,13 @@ async fn serve_conn(
                     )
                     .await?;
                 }
-                if let Some(delay) = control.turn_completion_delay() {
+                if let Some(script) = ReplyScript::from_turn_start(&req) {
+                    replies += 1;
+                    let item_id = format!("fake-reply-{replies:04}");
+                    script
+                        .stream(&mut write, thread_id, turn_id, &item_id)
+                        .await?;
+                } else if let Some(delay) = control.turn_completion_delay() {
                     tokio::time::sleep(delay).await;
                     send_notification(
                         &mut write,
@@ -566,6 +575,90 @@ async fn serve_conn(
         }
     }
     Ok(())
+}
+
+/// #1923 — one streamed reply, scripted by a line of the turn's input text, so it reaches the
+/// fixture through any stack: the `FAKE_CODEX_*` env channel is compiled out of release servers,
+/// and the sidecar files sit in the stack's data directory.
+///
+///   * `fake-reply: Hel|lo |world` — after `turn/started`: `item/started` for an `agentMessage`,
+///     one `item/agentMessage/delta` per `|`-separated piece, [`REPLY_DELTA_INTERVAL`] apart, then
+///     `item/completed` whose text is the pieces joined, then `turn/completed`.
+///   * `fake-reply-hold: Hel|lo` — the same deltas, then nothing: the item and the turn stay open
+///     until `turn/interrupt` completes the turn as `interrupted`.
+struct ReplyScript {
+    deltas: Vec<String>,
+    hold: bool,
+}
+
+const REPLY_DELTA_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+impl ReplyScript {
+    fn from_turn_start(req: &Value) -> Option<Self> {
+        let input = req.pointer("/params/input")?.as_array()?;
+        input
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .flat_map(str::lines)
+            .find_map(|line| {
+                let line = line.trim_start();
+                let (hold, deltas) = match line.strip_prefix("fake-reply-hold:") {
+                    Some(rest) => (true, rest),
+                    None => (false, line.strip_prefix("fake-reply:")?),
+                };
+                let deltas = deltas.trim_start().split('|').map(str::to_owned).collect();
+                Some(Self { deltas, hold })
+            })
+    }
+
+    async fn stream<S>(
+        &self,
+        write: &mut S,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+    ) -> Result<(), String>
+    where
+        S: SinkExt<Message> + Unpin,
+        <S as futures::Sink<Message>>::Error: std::fmt::Display,
+    {
+        let item = |text: &str| json!({ "id": item_id, "type": "agentMessage", "text": text });
+        send_notification(
+            write,
+            "item/started",
+            json!({ "threadId": thread_id, "turnId": turn_id, "item": item(""), "startedAtMs": 0 }),
+        )
+        .await?;
+        for delta in &self.deltas {
+            tokio::time::sleep(REPLY_DELTA_INTERVAL).await;
+            send_notification(
+                write,
+                "item/agentMessage/delta",
+                json!({ "threadId": thread_id, "turnId": turn_id, "itemId": item_id, "delta": delta }),
+            )
+            .await?;
+        }
+        if self.hold {
+            return Ok(());
+        }
+        send_notification(
+            write,
+            "item/completed",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "item": item(&self.deltas.concat()),
+                "completedAtMs": 0,
+            }),
+        )
+        .await?;
+        send_notification(
+            write,
+            "turn/completed",
+            json!({ "threadId": thread_id, "turn": { "id": turn_id, "status": "completed" } }),
+        )
+        .await
+    }
 }
 
 fn env_flag(name: &str) -> bool {

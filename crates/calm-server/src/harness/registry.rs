@@ -5,6 +5,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 
 use crate::harness::PlannerHarness;
+use crate::harness::live_replies::LiveReplies;
 use crate::ids::TrackId;
 
 /// Registry-local monotonic reservation identity, never reused, so a stale
@@ -22,6 +23,9 @@ pub enum Slot {
 struct RegistryInner {
     map: DashMap<String, Slot>,
     next_reservation: AtomicU64,
+    /// The server's one live-reply registry: each harness this registry holds writes its card's
+    /// entry, and `GET harness/live` reads it.
+    live_replies: Arc<LiveReplies>,
 }
 
 #[derive(Clone)]
@@ -32,6 +36,7 @@ impl Default for HarnessRegistry {
         Self(Arc::new(RegistryInner {
             map: DashMap::new(),
             next_reservation: AtomicU64::new(0),
+            live_replies: Arc::new(LiveReplies::new()),
         }))
     }
 }
@@ -100,6 +105,12 @@ impl Drop for HarnessReservation {
 impl HarnessRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The live replies of the harnesses this registry holds; a harness it installs is given this
+    /// instance in [`PlannerHarnessParams`](crate::harness::PlannerHarnessParams).
+    pub fn live_replies(&self) -> &Arc<LiveReplies> {
+        &self.0.live_replies
     }
 
     fn next_reservation_id(&self) -> ReservationId {
@@ -270,6 +281,7 @@ mod tests {
                 card_role_cache: crate::card_role_cache::CardRoleCache::new(),
                 track_area_cache: crate::track_area_cache::TrackAreaCache::new(),
                 backend: daemon.into(),
+                live_replies: crate::harness::LiveReplies::for_test(),
                 config: HarnessConfig::default(),
                 snapshot: HarnessSnapshot::initial(0, vec![]),
             },

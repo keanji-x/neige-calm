@@ -44,6 +44,13 @@ pub enum PlannerEventKind {
         phase: ItemPhase,
         params: Value,
     },
+    /// The next piece of an `agentMessage` item's text (#1923). Handled in memory only: unlike
+    /// every other event but `Approval`, it does not write the snapshot.
+    ReplyDelta {
+        turn_id: String,
+        item_id: String,
+        delta: String,
+    },
     /// The running turn's whole plan, superseding the previous one; stored as is.
     PlanUpdated {
         params: Value,
@@ -53,12 +60,12 @@ pub enum PlannerEventKind {
         params: Value,
     },
     /// An approval request. A Planner runs with `approval_policy=never`: it is logged and dropped,
-    /// the one event that does not write the snapshot.
+    /// without writing the snapshot.
     Approval {
         method: String,
     },
-    /// Nothing the run loop acts on, such as a streaming delta or a frame it does not model. It
-    /// still passes the thread filter and, like every event but `Approval`, writes the snapshot.
+    /// Nothing the run loop acts on, such as a reasoning delta or a frame it does not model. It
+    /// still passes the thread filter and writes the snapshot.
     Ignored,
 }
 

@@ -283,6 +283,7 @@ async fn an_install_race_loser_shuts_down_promptly_and_signals_nothing() {
         card_role_cache: stack.state.card_role_cache.clone(),
         track_area_cache: stack.state.track_area_cache.clone(),
         backend: PlannerBackend::claude_for_test(session),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,
     });

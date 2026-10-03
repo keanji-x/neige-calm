@@ -445,6 +445,7 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
             card_role_cache: inner.card_role_cache.clone(),
             track_area_cache: inner.track_area_cache.clone(),
             backend: inner.backend.clone(),
+            live_replies: crate::harness::LiveReplies::for_test(),
             config: inner.config,
             snapshot,
         },

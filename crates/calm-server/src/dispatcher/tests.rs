@@ -3455,6 +3455,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         card_role_cache: role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
         backend: SharedCodexAppServer::new_stub(repo.clone()).into(),
+        live_replies: crate::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,
     });

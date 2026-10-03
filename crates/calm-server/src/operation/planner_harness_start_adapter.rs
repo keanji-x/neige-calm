@@ -1461,6 +1461,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             card_role_cache: self.card_role_cache.clone(),
             track_area_cache: self.track_area_cache.clone(),
             backend,
+            live_replies: self.harness_registry.live_replies().clone(),
             config: HarnessConfig::default(),
             snapshot,
         });

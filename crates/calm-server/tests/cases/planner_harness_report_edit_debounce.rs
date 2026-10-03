@@ -112,6 +112,7 @@ async fn idle_harness(
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         backend: daemon.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
         snapshot,
     });

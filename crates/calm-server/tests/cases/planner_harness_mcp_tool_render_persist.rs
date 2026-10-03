@@ -93,6 +93,7 @@ async fn seed_harness(
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache,
         backend: daemon.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),

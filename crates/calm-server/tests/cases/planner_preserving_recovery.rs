@@ -131,6 +131,7 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
         backend: boot.state.shared_codex_appserver.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,
     });
@@ -275,6 +276,7 @@ async fn a_live_failed_loop_is_replaced_without_interrupting_or_resetting_its_th
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
         backend: boot.state.shared_codex_appserver.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()),
     });
@@ -668,6 +670,7 @@ async fn recovery_backfills_the_matching_error_when_quiescence_precedes_completi
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
         backend: boot.state.shared_codex_appserver.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::from_value_strict(before.handle_state_json.unwrap()),
     });

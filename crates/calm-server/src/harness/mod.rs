@@ -6,6 +6,9 @@ mod codex_events_tests;
 mod codex_selection;
 pub mod config;
 pub(crate) mod issuance;
+pub mod live_replies;
+#[cfg(test)]
+mod live_replies_tests;
 pub mod lock;
 pub mod observation;
 pub mod planner_event;
@@ -41,6 +44,7 @@ use crate::track_area_cache::TrackAreaCache;
 
 pub use backend::PlannerBackend;
 pub use config::HarnessConfig;
+pub use live_replies::LiveReplies;
 pub use lock::PushLockGuard;
 pub use observation::{HookKind, Observation};
 pub use queue::{QueueEntry, QueueEntryId};
@@ -295,6 +299,7 @@ pub async fn spawn_recovered_harness(
         card_role_cache,
         track_area_cache,
         backend,
+        live_replies: registry.live_replies().clone(),
         config: HarnessConfig::default(),
         snapshot,
     });
@@ -743,6 +748,7 @@ mod tests {
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
             backend: daemon.into(),
+            live_replies: registry.live_replies().clone(),
             config: HarnessConfig::default(),
             snapshot: HarnessSnapshot::initial(0, vec![]),
         });

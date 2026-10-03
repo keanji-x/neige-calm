@@ -40,6 +40,8 @@ mod planner_harness_fsm;
 mod planner_harness_items_persist;
 #[path = "cases/planner_harness_items_rest.rs"]
 mod planner_harness_items_rest;
+#[path = "cases/planner_harness_live_replies.rs"]
+mod planner_harness_live_replies;
 #[path = "cases/planner_harness_mcp_tool_render_persist.rs"]
 mod planner_harness_mcp_tool_render_persist;
 #[path = "cases/planner_harness_report_edit_debounce.rs"]

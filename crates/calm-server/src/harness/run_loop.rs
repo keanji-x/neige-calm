@@ -24,6 +24,7 @@ use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
 use crate::harness::backend::{PlannerBackend, PlannerEvents, TurnStartFailure};
 use crate::harness::config::HarnessConfig;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
+use crate::harness::live_replies::{LiveReplies, LiveReplyWriter};
 use crate::harness::observation::Observation;
 use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use crate::harness::queue::{
@@ -162,6 +163,8 @@ pub struct PlannerHarnessParams {
     pub card_role_cache: CardRoleCache,
     pub track_area_cache: TrackAreaCache,
     pub backend: PlannerBackend,
+    /// The server's one registry: [`crate::harness::HarnessRegistry::live_replies`].
+    pub live_replies: Arc<LiveReplies>,
     pub config: HarnessConfig,
     pub snapshot: HarnessSnapshot,
 }
@@ -406,6 +409,9 @@ impl PlannerHarness {
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let events = params.backend.subscribe_events();
+        let live = params
+            .live_replies
+            .open(&params.card_id, &params.worker_session_id);
         let (inner, announce_dropped_first) =
             inner_from_params(params, ObservationIngress::Running(obs_tx), shutdown_tx);
         let handle = Self {
@@ -416,6 +422,7 @@ impl PlannerHarness {
             obs_rx,
             shutdown_rx,
             events,
+            live,
             announce_dropped_first,
         ));
         let abort = task.abort_handle();
@@ -1083,6 +1090,7 @@ async fn run_loop(
     mut observations: mpsc::Receiver<HarnessObservationCommand>,
     mut shutdown: broadcast::Receiver<()>,
     mut events: PlannerEvents,
+    live: LiveReplyWriter,
     announce_dropped_first: bool,
 ) {
     // Early flush before the first command is served. Correctness does not rest on it:
@@ -1160,12 +1168,13 @@ async fn run_loop(
             event = events.recv() => {
                 match event {
                     Ok(event) => {
-                        if let Err(e) = on_notification(&inner, event).await {
+                        if let Err(e) = on_notification(&inner, &live, event).await {
                             tracing::warn!(error = %e, "planner harness notification handling failed");
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!(skipped, "planner harness notification receiver lagged");
+                        live.input_lost();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -1770,7 +1779,11 @@ async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, entry: &QueueEntry) ->
     false
 }
 
-async fn on_notification(inner: &Arc<Inner>, event: PlannerEvent) -> Result<()> {
+async fn on_notification(
+    inner: &Arc<Inner>,
+    live: &LiveReplyWriter,
+    event: PlannerEvent,
+) -> Result<()> {
     let PlannerEvent { thread_id, kind } = event;
     if thread_id != *inner.thread_id.read().await {
         return Ok(());
@@ -1841,6 +1854,7 @@ async fn on_notification(inner: &Arc<Inner>, event: PlannerEvent) -> Result<()> 
                 HarnessState::TurnRunning { turn_id: active, .. } if active == &turn_id
             );
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
+            live.turn_started(&turn_id);
             if !already_running_same {
                 *inner.state.lock().await = HarnessState::TurnRunning {
                     turn_id,
@@ -1883,6 +1897,7 @@ async fn on_notification(inner: &Arc<Inner>, event: PlannerEvent) -> Result<()> 
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
+                live_reply::settle(inner, live, &turn_id, &turn).await;
                 let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
                 // The Stop path is the one that drops steered input; the sweep runs before the phase persist.
                 let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
@@ -1897,6 +1912,7 @@ async fn on_notification(inner: &Arc<Inner>, event: PlannerEvent) -> Result<()> 
                 && turn.get("id").and_then(Value::as_str) == fallback_turn_id.as_deref()
                 && fallback_turn_id.is_some()
             {
+                live_reply::settle(inner, live, &turn_id, &turn).await;
                 let item = persist_turn_outcome(inner, &turn_id, &turn).await;
                 let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
                 persist_failed_system_error_snapshot(inner).await?;
@@ -1931,6 +1947,7 @@ async fn on_notification(inner: &Arc<Inner>, event: PlannerEvent) -> Result<()> 
                 last_turn_id: turn_id.clone(),
             };
             *inner.interrupt_deadline.lock().await = None;
+            live_reply::settle(inner, live, &turn_id, &turn).await;
             let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
             // A turn can end without a model request after the steer on this branch too; same sweep.
             let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
@@ -2093,6 +2110,7 @@ async fn on_notification(inner: &Arc<Inner>, event: PlannerEvent) -> Result<()> 
                     .await?
                 }
             };
+            live_reply::on_item(live, phase, &params);
             if phase == ItemPhase::Completed && legacy_segments_json.is_some() {
                 *inner.legacy_issued_input_segments.lock().await = None;
             }
@@ -2179,6 +2197,15 @@ async fn on_notification(inner: &Arc<Inner>, event: PlannerEvent) -> Result<()> 
                      (non-negative integer) tokenUsage.last.totalTokens in the frame"
                 ),
             }
+        }
+        PlannerEventKind::ReplyDelta {
+            turn_id,
+            item_id,
+            delta,
+        } => {
+            // Memory only: a delta writes neither a row nor the snapshot.
+            live.delta(&turn_id, &item_id, &delta);
+            return Ok(());
         }
         PlannerEventKind::Ignored => {}
     }
@@ -3960,6 +3987,8 @@ mod tests {
         assert!(!legacy[0].text.contains(REPORT_EDIT_BATCH_CHANNEL_LINE));
     }
 }
+
+mod live_reply;
 
 #[cfg(test)]
 mod completed_commit_tests;

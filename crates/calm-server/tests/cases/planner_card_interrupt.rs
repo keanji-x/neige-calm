@@ -230,6 +230,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, Planne
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
         backend: boot.state.shared_codex_appserver.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,
     });

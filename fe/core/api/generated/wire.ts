@@ -284,6 +284,25 @@ export type HarnessItem = { id: number, worker_session_id: string, card_id: Card
  */
 turn_error_text: string | null, };
 
+/**
+ * `GET /api/cards/{id}/harness/live`: reply text the running turn is streaming and has not stored
+ * yet (#1923). Each item leaves this answer once its `item/completed` row is in the transcript.
+ */
+export type HarnessLiveReplies = { 
+/**
+ * The turn the items belong to, or `null` while no turn is streaming.
+ */
+turn_id: string | null, items: Array<HarnessLiveReply>, };
+
+/**
+ * One reply as far as it has streamed.
+ */
+export type HarnessLiveReply = { 
+/**
+ * The `item.id` its `item/completed` row will carry as `item_uuid`.
+ */
+item_id: string, text: string, };
+
 export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
 
 /**

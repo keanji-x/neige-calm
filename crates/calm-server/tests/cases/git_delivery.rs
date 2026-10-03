@@ -873,6 +873,7 @@ impl Fx {
             card_role_cache: self.boot.card_role_cache.clone(),
             track_area_cache: areas,
             backend: SharedCodexAppServer::new_stub(self.boot.repo.clone()).into(),
+            live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
             snapshot,
         });

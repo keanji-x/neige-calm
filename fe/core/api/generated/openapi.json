@@ -1130,6 +1130,67 @@
         }
       }
     },
+    "/api/cards/{id}/harness/live": {
+      "get": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "get_harness_live",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reply text streamed in the running turn and not stored yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HarnessLiveReplies"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/attachments": {
       "post": {
         "tags": [
@@ -8869,6 +8930,46 @@
             ],
             "format": "int64",
             "description": "Maximum number of rows to return. Defaults to 100 and is capped at 500."
+          }
+        }
+      },
+      "HarnessLiveReplies": {
+        "type": "object",
+        "description": "`GET /api/cards/{id}/harness/live`: reply text the running turn is streaming and has not stored\nyet (#1923). Each item leaves this answer once its `item/completed` row is in the transcript.",
+        "required": [
+          "turn_id",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HarnessLiveReply"
+            }
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The turn the items belong to, or `null` while no turn is streaming."
+          }
+        }
+      },
+      "HarnessLiveReply": {
+        "type": "object",
+        "description": "One reply as far as it has streamed.",
+        "required": [
+          "item_id",
+          "text"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "description": "The `item.id` its `item/completed` row will carry as `item_uuid`."
+          },
+          "text": {
+            "type": "string"
           }
         }
       },

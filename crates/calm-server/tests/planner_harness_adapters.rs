@@ -380,32 +380,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
     let track = seed_track(&repo).await;
     let card_id = new_id();
     seed_planner_card(&repo, &role_cache, &track, &card_id).await;
-    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-        actor: calm_server::ids::ActorId::User,
-        track_id: track.id.to_string(),
-        planner_card_id: CardId::from(card_id.clone()),
-        report_card_id: None,
-        sort: None,
-        cwd: track.workspace.path.clone(),
-        goal: Some("adapter goal".into()),
-        reset_harness_items: false,
-        force_new_thread: false,
-        profile: Default::default(),
-        create_card: None,
-        opening_briefing: None,
-        first_message: None,
-        create_request_sha256: None,
-    })
-    .unwrap();
-    let op_id = state
-        .operation_runtime
-        .submit("planner-harness-start", key(), payload)
-        .await
-        .unwrap();
-    assert!(matches!(
-        wait_op(&state, &op_id).await,
-        OperationOutcome::Succeeded { .. }
-    ));
+    start_planner(&state, &track, &card_id, Some("adapter goal")).await;
 
     let runtime = repo
         .session_projection_active_for_card(&card_id)
@@ -476,6 +451,177 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         .unwrap();
     assert_eq!(stored.status, WorkerSessionState::Superseded);
     assert!(state.harness.get(&runtime.id).is_none());
+}
+
+/// Start the card's Planner through the production `planner-harness-start` operation; returns its id.
+async fn start_planner(
+    state: &AppState,
+    track: &Track,
+    card_id: &str,
+    goal: Option<&str>,
+) -> String {
+    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        track_id: track.id.to_string(),
+        planner_card_id: CardId::from(card_id.to_owned()),
+        report_card_id: None,
+        sort: None,
+        cwd: track.workspace.path.clone(),
+        goal: goal.map(ToOwned::to_owned),
+        reset_harness_items: false,
+        force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        opening_briefing: None,
+        first_message: None,
+        create_request_sha256: None,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("planner-harness-start", key(), payload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        wait_op(state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    op_id
+}
+
+/// `GET uri` through the production router.
+async fn get_json(state: &AppState, uri: String) -> Value {
+    use tower::ServiceExt;
+
+    let response = calm_server::routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state.clone())
+        .oneshot(
+            axum::http::Request::get(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// The start adapter gives the harness the server's one live-reply registry, the one
+/// `GET harness/live` reads: a fresh instance would leave the route answering nothing.
+#[tokio::test]
+async fn a_started_planner_streams_into_the_live_replies_the_route_reads() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let track = seed_track(&repo).await;
+    let card_id = new_id();
+    seed_planner_card(&repo, &role_cache, &track, &card_id).await;
+    start_planner(&state, &track, &card_id, None).await;
+    let runtime = repo
+        .session_projection_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("runtime row");
+    let thread_id = runtime.thread_id.clone().unwrap();
+    let harness = state.harness.get(&runtime.id).unwrap();
+    let turn_id = "turn-live";
+    harness
+        .set_state_for_test(HarnessState::TurnRunning {
+            turn_id: turn_id.into(),
+            started_at: Instant::now(),
+        })
+        .await;
+    let daemon = state.shared_codex_appserver.clone();
+    daemon.emit_turn_started_for_test(&thread_id, turn_id);
+    for (method, params) in [
+        (
+            "item/started",
+            json!({ "threadId": thread_id, "turnId": turn_id,
+                    "item": { "id": "reply-1", "type": "agentMessage", "text": "" } }),
+        ),
+        (
+            "item/agentMessage/delta",
+            json!({ "threadId": thread_id, "turnId": turn_id, "itemId": "reply-1", "delta": "streamed" }),
+        ),
+    ] {
+        daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::Item {
+            method: method.into(),
+            params,
+        });
+    }
+
+    let expected =
+        json!({ "turn_id": turn_id, "items": [{ "item_id": "reply-1", "text": "streamed" }] });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let body = get_json(&state, format!("/api/cards/{card_id}/harness/live")).await;
+        if body == expected {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the route never saw the started harness's reply; last {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    harness.shutdown().await.unwrap();
+}
+
+/// The fake app-server's scripted reply (#1923), driven end to end through a real daemon process: a
+/// `fake-reply-hold:` message streams its pieces live, and the interrupt stores them as a partial.
+#[tokio::test]
+async fn the_fake_app_server_streams_a_scripted_reply_until_interrupted() {
+    let tmp = TempDir::new().unwrap();
+    let (state, repo, role_cache) = state_with_live_daemon(&tmp).await;
+    let track = seed_track(&repo).await;
+    let card_id = new_id();
+    seed_planner_card(&repo, &role_cache, &track, &card_id).await;
+    start_planner(&state, &track, &card_id, None).await;
+    let runtime = repo
+        .session_projection_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("runtime row");
+    let harness = state.harness.get(&runtime.id).unwrap();
+    harness
+        .observe_user_message_durable("fake-reply-hold: Hel|lo".into(), Vec::new())
+        .await
+        .unwrap();
+
+    let card = CardId::from(card_id.clone());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let turn_id = loop {
+        let live = state.harness.live_replies().read(&card);
+        if live.items.first().map(|item| item.text.as_str()) == Some("Hello") {
+            break live.turn_id.expect("a live reply belongs to a turn");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the scripted reply never streamed: {live:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    harness.interrupt("test stop".into()).await.unwrap();
+    let partial = loop {
+        let rows = get_json(&state, format!("/api/cards/{card_id}/harness/items")).await;
+        let partial = rows.as_array().unwrap().iter().find_map(|row| {
+            let params: Value = serde_json::from_str(row["params"].as_str()?).ok()?;
+            (params["_partial"] == true).then(|| (row["turn_id"].clone(), params))
+        });
+        if let Some(partial) = partial {
+            break partial;
+        }
+        assert!(Instant::now() < deadline, "no partial row was stored");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(partial.0, turn_id.as_str());
+    assert_eq!(partial.1["item"]["text"], "Hello");
+    harness.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1189,6 +1335,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
         card_role_cache: role_cache.clone(),
         track_area_cache: state.track_area_cache.clone(),
         backend: state.shared_codex_appserver.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
@@ -1292,6 +1439,7 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
         card_role_cache: role_cache.clone(),
         track_area_cache: state.track_area_cache.clone(),
         backend: state.shared_codex_appserver.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
@@ -1374,32 +1522,7 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
     let track = seed_track(&repo).await;
     let card_id = new_id();
     seed_planner_card(&repo, &role_cache, &track, &card_id).await;
-    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-        actor: calm_server::ids::ActorId::User,
-        track_id: track.id.to_string(),
-        planner_card_id: CardId::from(card_id.clone()),
-        report_card_id: None,
-        sort: None,
-        cwd: track.workspace.path.clone(),
-        goal: Some("adapter goal".into()),
-        reset_harness_items: false,
-        force_new_thread: false,
-        profile: Default::default(),
-        create_card: None,
-        opening_briefing: None,
-        first_message: None,
-        create_request_sha256: None,
-    })
-    .unwrap();
-    let op_id = state
-        .operation_runtime
-        .submit("planner-harness-start", key(), payload)
-        .await
-        .unwrap();
-    assert!(matches!(
-        wait_op(&state, &op_id).await,
-        OperationOutcome::Succeeded { .. }
-    ));
+    let op_id = start_planner(&state, &track, &card_id, Some("adapter goal")).await;
     let first_thread = repo
         .session_projection_active_for_card(&card_id)
         .await

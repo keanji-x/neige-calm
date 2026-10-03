@@ -209,6 +209,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
         card_role_cache: role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
         backend: daemon.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),

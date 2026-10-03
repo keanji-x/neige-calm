@@ -91,7 +91,7 @@ fn turn_aborted_reads_either_turn_id_shape_and_one_without_an_id_is_ignored() {
 }
 
 #[test]
-fn item_started_and_completed_keep_their_params_and_deltas_are_ignored() {
+fn item_started_and_completed_keep_their_params_and_other_item_frames_are_ignored() {
     let params = json!({
         "threadId": "thr-1", "turnId": "turn-1",
         "item": { "id": "it-1", "type": "agentMessage", "text": "hi" },
@@ -112,14 +112,36 @@ fn item_started_and_completed_keep_their_params_and_deltas_are_ignored() {
         assert_eq!((phase, phase.method()), (expected, method));
         assert_eq!(carried, params);
     }
-    for method in [
-        "item/agentMessage/delta",
-        "item/reasoning/delta",
-        "item/other",
-    ] {
+    for method in ["item/reasoning/delta", "item/other"] {
         let event = wire(method, params.clone());
         assert_eq!(event.thread_id.as_deref(), Some("thr-1"), "{method}");
         assert!(matches!(event.kind, PlannerEventKind::Ignored), "{method}");
+    }
+}
+
+#[test]
+fn an_agent_message_delta_is_a_reply_delta_and_one_missing_a_field_is_ignored() {
+    let delta =
+        json!({ "threadId": "thr-1", "turnId": "turn-1", "itemId": "it-1", "delta": "Hel" });
+    let event = wire("item/agentMessage/delta", delta.clone());
+    assert_eq!(event.thread_id.as_deref(), Some("thr-1"));
+    let PlannerEventKind::ReplyDelta {
+        turn_id,
+        item_id,
+        delta: text,
+    } = event.kind
+    else {
+        panic!("{event:?}");
+    };
+    assert_eq!(
+        (turn_id.as_str(), item_id.as_str(), text.as_str()),
+        ("turn-1", "it-1", "Hel")
+    );
+    for missing in ["turnId", "itemId", "delta"] {
+        let mut partial = delta.clone();
+        partial.as_object_mut().unwrap().remove(missing);
+        let event = wire("item/agentMessage/delta", partial);
+        assert!(matches!(event.kind, PlannerEventKind::Ignored), "{missing}");
     }
 }
 

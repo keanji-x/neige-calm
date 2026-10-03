@@ -117,6 +117,7 @@ async fn install_live_harness(b: &Boot, track_id: &str) -> String {
             card_role_cache: b.roles.clone(),
             track_area_cache: b.tracks.clone(),
             backend: b.shared_codex.clone().into(),
+            live_replies: calm_server::harness::LiveReplies::for_test(),
             config: Default::default(),
             snapshot: calm_server::harness::HarnessSnapshot::initial(0, Vec::new()),
         },

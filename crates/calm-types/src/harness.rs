@@ -62,3 +62,23 @@ impl HarnessInterruptionIntent {
         })
     }
 }
+
+/// `GET /api/cards/{id}/harness/live`: reply text the running turn is streaming and has not stored
+/// yet (#1923). Each item leaves this answer once its `item/completed` row is in the transcript.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct HarnessLiveReplies {
+    /// The turn the items belong to, or `null` while no turn is streaming.
+    #[schema(required = true, nullable = true)]
+    pub turn_id: Option<String>,
+    pub items: Vec<HarnessLiveReply>,
+}
+
+/// One reply as far as it has streamed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct HarnessLiveReply {
+    /// The `item.id` its `item/completed` row will carry as `item_uuid`.
+    pub item_id: String,
+    pub text: String,
+}

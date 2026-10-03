@@ -164,6 +164,10 @@ pub fn router() -> Router<AppState> {
             axum::routing::patch(update_card).delete(delete_card),
         )
         .route("/api/cards/{id}/harness/items", get(get_harness_items))
+        .route(
+            "/api/cards/{id}/harness/live",
+            get(crate::routes::harness_live::get_harness_live),
+        )
         .route("/api/cards/{id}/planner/input", post(send_planner_input))
         // Mounted here because this router owns `/api/cards/{id}/**`; a second router on the same prefix is how two mounts start disagreeing about a middleware.
         .route(
@@ -248,21 +252,7 @@ pub(crate) async fn get_harness_items(
     Path(id): Path<String>,
     Query(q): Query<HarnessItemsQuery>,
 ) -> Result<Json<Vec<HarnessItem>>> {
-    let card = s
-        .repo
-        .card_get(&id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    let role = s
-        .write
-        .verify_role(&card.id)
-        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if !card_runs_headless_harness(&card, role) {
-        return Err(CalmError::Forbidden(format!(
-            "card {id} is not a planner codex card",
-        )));
-    }
-
+    let card = harness_card(&s, &id).await?;
     let after_id = q.after_id.unwrap_or(0).max(0);
     let limit = q.limit.unwrap_or(100).clamp(0, 500);
     let descending = q.direction == HarnessItemsDirection::Desc;
@@ -276,6 +266,25 @@ pub(crate) async fn get_harness_items(
         item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
     }
     Ok(Json(items))
+}
+
+/// The card a `harness/*` read names, refused unless it runs a headless Planner harness.
+pub(crate) async fn harness_card(s: &RouteState, id: &str) -> Result<Card> {
+    let card = s
+        .repo
+        .card_get(id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    let role = s
+        .write
+        .verify_role(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    if !card_runs_headless_harness(&card, role) {
+        return Err(CalmError::Forbidden(format!(
+            "card {id} is not a planner codex card",
+        )));
+    }
+    Ok(card)
 }
 
 /// Body payload accepted by `POST /api/tracks/:track_id/cards`: direct create (`kind`, `sort`, `payload`, `title`) or `via_tool_call`, which wins when both are sent.

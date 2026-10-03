@@ -509,6 +509,7 @@ impl Fx {
                 card_role_cache: self.role_cache.clone(),
                 track_area_cache: self.area_cache.clone(),
                 backend: daemon.into(),
+                live_replies: calm_server::harness::LiveReplies::for_test(),
                 config: HarnessConfig::default(),
                 snapshot: HarnessSnapshot::initial(0, vec![]),
             },

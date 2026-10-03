@@ -42,6 +42,7 @@ pub(super) async fn planner(fx: &Fixture) -> Planner {
         card_role_cache: fx.roles.clone(),
         track_area_cache: fx.areas.clone(),
         backend: SharedCodexAppServer::new_stub(repo.clone()).into(),
+        live_replies: crate::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,
     });

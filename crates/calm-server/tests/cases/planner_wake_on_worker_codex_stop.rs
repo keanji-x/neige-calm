@@ -179,6 +179,7 @@ async fn boot() -> Boot {
         card_role_cache: card_role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
         backend: shared.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,
     });

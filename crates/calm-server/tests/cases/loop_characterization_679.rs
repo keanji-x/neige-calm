@@ -171,6 +171,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
             backend: daemon.clone().into(),
+            live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
             snapshot,
         },

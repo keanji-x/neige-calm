@@ -16,6 +16,7 @@ fn document_contains_every_annotated_path() {
         "/api/tracks/{id}/activity/dismissals",
         "/api/tracks/{track_id}/cards",
         "/api/cards/{id}",
+        "/api/cards/{id}/harness/live",
         "/api/cards/{id}/planner/input",
         // `paths(...)` is hand-maintained and omitting a handler is silent: the drift gate compares generated files against themselves.
         "/api/cards/{id}/planner/input/{entry_id}",
@@ -133,6 +134,8 @@ fn document_contains_every_wire_model() {
         "SetPlannerModelBody",
         "SetPlannerModelResponse",
         "ResetPlannerCardResponse",
+        "HarnessLiveReplies",
+        "HarnessLiveReply",
         "Overlay",
         "NewOverlay",
         "Terminal",

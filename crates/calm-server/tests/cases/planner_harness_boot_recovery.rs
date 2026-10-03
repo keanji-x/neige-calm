@@ -448,6 +448,78 @@ async fn boot_recovery_skips_area_chat_planner_and_recovers_later_valid_runtime(
     valid.shutdown().await.unwrap();
 }
 
+/// Recovery gives the harness the registry's own live replies, the instance `GET harness/live` reads.
+#[tokio::test]
+async fn a_recovered_harness_streams_into_its_registrys_live_replies() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let thread_id = "thread-live-recovered";
+    let session = seed_recoverable_runtime(&repo, "live-recovered", thread_id).await;
+    let card_id = repo
+        .session_projection_by_id(&session)
+        .await
+        .unwrap()
+        .unwrap()
+        .card_id;
+    let registry = HarnessRegistry::new();
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let claude_wiring =
+        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
+            repo.clone(),
+        );
+    let recovered = recover_harnesses_on_boot(
+        repo.clone(),
+        EventBus::new(),
+        repo.card_role_cache().clone(),
+        repo.track_area_cache().clone(),
+        daemon.clone(),
+        daemon.thread_seals().clone(),
+        &claude_wiring,
+        &registry,
+        &calm_server::harness::new_track_delete_locks(),
+        calm_server::harness::BootRows::All,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered, 1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while daemon.notification_receiver_count_for_test() == 0 {
+        assert!(std::time::Instant::now() < deadline, "never subscribed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    daemon.emit_turn_started_for_test(thread_id, "turn-1");
+    for (method, params) in [
+        (
+            "item/started",
+            json!({ "threadId": thread_id, "turnId": "turn-1",
+                    "item": { "id": "reply-1", "type": "agentMessage", "text": "" } }),
+        ),
+        (
+            "item/agentMessage/delta",
+            json!({ "threadId": thread_id, "turnId": "turn-1", "itemId": "reply-1", "delta": "recovered" }),
+        ),
+    ] {
+        daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::Item {
+            method: method.into(),
+            params,
+        });
+    }
+    let card_id = CardId::from(card_id);
+    loop {
+        let live = registry.live_replies().read(&card_id);
+        if live.items.first().map(|item| item.text.as_str()) == Some("recovered") {
+            assert_eq!(live.turn_id.as_deref(), Some("turn-1"));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the registry never saw the recovered harness's reply: {live:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    registry.remove(&session).unwrap().shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn boot_recovery_respawns_harness_with_snapshot() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -647,6 +719,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         backend: daemon.clone().into(),
+        live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::initial(0, vec![]),
     });

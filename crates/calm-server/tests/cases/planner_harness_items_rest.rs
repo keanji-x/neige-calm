@@ -356,6 +356,30 @@ async fn transcript_route_rejects_non_planner_card() {
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
 
+/// `harness/live` admits exactly the cards `harness/items` admits.
+#[tokio::test]
+async fn live_route_admits_the_cards_the_transcript_route_admits() {
+    let boot = boot().await;
+    for (card_id, expected) in [
+        (boot.planner_card.id.as_str(), StatusCode::OK),
+        (boot.worker_card.id.as_str(), StatusCode::FORBIDDEN),
+        ("no-such-card", StatusCode::NOT_FOUND),
+    ] {
+        for route in ["items", "live"] {
+            let uri = format!("/api/cards/{card_id}/harness/{route}");
+            let (status, body) = get(boot.app.clone(), uri).await;
+            assert_eq!(status, expected, "{route} for {card_id}: body={body}");
+        }
+    }
+    let uri = format!("/api/cards/{}/harness/live", boot.planner_card.id.as_str());
+    let (_, body) = get(boot.app.clone(), uri).await;
+    assert_eq!(
+        body,
+        json!({ "turn_id": null, "items": [] }),
+        "no harness runs"
+    );
+}
+
 #[tokio::test]
 async fn transcript_route_preserves_mcp_tool_call_camelcase() {
     let boot = boot().await;
