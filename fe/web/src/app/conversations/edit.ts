@@ -74,10 +74,13 @@ export function useConversationEdit({ conversationId, rewind, draft, setDraft, a
       finishEdit(conversationId, taken);
     }
   };
-  /** A delivered send empties the composer, which retires the refill; until a send's outcome is known its cleared field is not the reader's doing. */
-  const send = (deliver: () => Promise<SendOutcome>): Promise<SendOutcome> => {
+  /** Until a send's outcome is known its cleared field is not the reader's doing; a delivered send retires the refill. */
+  const send = (sentFrom: string, deliver: () => Promise<SendOutcome>): Promise<SendOutcome> => {
     sending.current = true;
-    return deliver().finally(() => { sending.current = false; });
+    return deliver().then((outcome) => {
+      if (outcome === 'delivered') holdRefill(sentFrom, null);
+      return outcome;
+    }).finally(() => { sending.current = false; });
   };
   return {
     /** The rewind is out: the composer is read-only until it answers. */

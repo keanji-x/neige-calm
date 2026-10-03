@@ -1427,7 +1427,7 @@ function useConversationPanel(
                                other one leaves the message with the reader. */
               onSend={(text) => {
                 const sent = attachments.items;
-                return edit.send(() => store.send(open.id, text, sent).then((outcome) => {
+                return edit.send(open.id, () => store.send(open.id, text, sent).then((outcome) => {
                   if (outcome === 'delivered') attachments.clear();
                   return outcome;
                 }));

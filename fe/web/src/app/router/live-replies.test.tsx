@@ -29,7 +29,9 @@ function ok(body: unknown): ApiTransportResponse {
 /** One card's server side: what each of the three reads answers right now. */
 type Row = Parameters<typeof buildTranscript>[0][number];
 /** With `earlier` rows, the newest page is full, so Load earlier has a page to read; with `itemsFail`, every transcript read fails. */
-type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[]; itemsFail?: boolean };
+type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[]; itemsFail?: boolean;
+  /** What `POST …/planner/rewind` does to this card and answers (#1923 Edit). */
+  rewind?: () => ApiTransportResponse };
 
 function row(id: number, method: string, itemType: string | null, params: unknown, extra: Partial<Row> = {}): Row {
   return {
@@ -76,6 +78,7 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
         return ok(rows);
       }
       if (server !== undefined && request.path.endsWith('/harness/live')) return ok(server.live);
+      if (server?.rewind !== undefined && request.path.endsWith('/planner/rewind')) return server.rewind();
       if (server !== undefined && request.path.endsWith('/planner/run')) return ok({
         card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, blocked_reason: null,
       });
@@ -205,6 +208,41 @@ describe('a streamed reply in the Planner conversation', () => {
     act(() => { gate.waiting[1]?.(); });
     await waitFor(() => expect(screen.queryByText('Abandoned')).toBeNull());
     expect(threadLines()).toEqual(['question', '[Completed]']);
+  });
+
+  it('offers Edit only once an abandoned live reply has retired, and the rewind brings back no live text', async () => {
+    const gate: Gate = { hold: false, waiting: [] };
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
+    server.rewind = () => {
+      /* The kernel deletes the turn's rows and discards its live text before it answers. */
+      server.rows = [];
+      server.live = streaming(null, {});
+      return ok({ card_id: CARD.id, turn_id: 'T1', input: [{ presentation: 'user', text: 'User says:\nquestion', attachments: [] }] });
+    };
+    const { client, requests } = setup({ [CARD.id]: server }, gate);
+    await open('Planner chat');
+    await screen.findByText('Abandoned');
+    gate.hold = true;
+    server.rows = [...server.rows, ended(3, 'completed')];
+    server.live = streaming(null, {});
+    server.phase = 'turn_completed';
+    await phaseChanged(client, CARD.id, { transcript: false });
+    await waitFor(() => expect(gate.waiting).toHaveLength(1));
+    /* The live copy still closes the transcript: there is no settled outcome to edit yet. */
+    expect(screen.getByText('Abandoned')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+    gate.hold = false;
+    act(() => { gate.waiting.forEach((release) => { release(); }); });
+    await waitFor(() => expect(screen.queryByText('Abandoned')).toBeNull());
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Message' }).textContent).toBe('question'));
+    const polls = requests.filter((request) => request.path.endsWith('/harness/live')).length;
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 700); }); });
+    expect(screen.queryByText('Abandoned')).toBeNull();
+    expect(threadLines()).toEqual([]);
+    expect(requests.filter((request) => request.path.endsWith('/harness/live')).length).toBe(polls);
+    expect(requests.filter((request) => request.path.endsWith('/planner/rewind')).map((request) => request.body))
+      .toEqual([{ turn_id: 'T1' }]);
   });
 
   it('does not let a read that started before the turn ended retire the copy, however late it lands', async () => {
