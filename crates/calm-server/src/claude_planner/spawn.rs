@@ -108,6 +108,7 @@ pub(crate) fn argv(
         "stream-json",
         "--verbose",
         "--replay-user-messages",
+        "--include-partial-messages",
     ]
     .into_iter()
     .map(OsString::from)

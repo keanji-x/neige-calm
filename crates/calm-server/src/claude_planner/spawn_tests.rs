@@ -43,6 +43,7 @@ fn argv_is_exactly_the_spawn_contract() {
         "stream-json",
         "--verbose",
         "--replay-user-messages",
+        "--include-partial-messages",
         "--session-id",
         THREAD,
         "--setting-sources",
@@ -72,12 +73,7 @@ fn argv_is_exactly_the_spawn_contract() {
             _ => assert_eq!(got, want, "argv[{index}]"),
         }
     }
-    for flag in [
-        "--model",
-        "--effort",
-        "--permission-mode",
-        "--include-partial-messages",
-    ] {
+    for flag in ["--model", "--effort", "--permission-mode"] {
         assert!(
             !got.iter().any(|arg| arg == flag),
             "{flag} must not be passed"
@@ -109,7 +105,7 @@ fn a_chosen_model_and_effort_are_passed_as_flags_and_nothing_else_changes() {
             ),
         ] {
             let mut expected = without.clone();
-            expected.splice(9..9, flags.into_iter().map(str::to_string));
+            expected.splice(10..10, flags.into_iter().map(str::to_string));
             assert_eq!(args_with(start, &selection, "/ws/track"), expected);
         }
     }

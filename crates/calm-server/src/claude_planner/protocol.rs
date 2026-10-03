@@ -50,10 +50,14 @@ pub enum Record {
         /// The CLI's structured view of the result; its shape depends on the tool.
         tool_use_result: Value,
     },
+    /// One message's blocks as the CLI completes them; it sends one record per block, each carrying
+    /// the API `message.id`.
     Assistant {
-        uuid: Uuid,
+        message_id: String,
         blocks: Vec<AssistantBlock>,
     },
+    /// A `stream_event` frame of `--include-partial-messages` that a live reply needs.
+    Stream(StreamEvent),
     ResultSuccess(ResultSuccess),
     ResultError(ResultError),
     ControlResponseIn {
@@ -163,6 +167,39 @@ pub enum AssistantBlock {
     Other,
 }
 
+/// The `stream_event` frames a live reply is built from; every other one is [`Record::Ignored`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamEvent {
+    /// A model response starts; its blocks' records carry this `message.id`.
+    MessageStart { message_id: String },
+    /// Block `index` of the current message starts.
+    BlockStart { index: u64, kind: BlockKind },
+    /// The next piece of text block `index` of the current message.
+    TextDelta { index: u64, text: String },
+}
+
+/// A content block's kind, as `content_block_start` and an `assistant` record's block spell it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockKind {
+    Thinking,
+    Text,
+    ToolUse,
+    #[serde(other)]
+    Other,
+}
+
+impl AssistantBlock {
+    pub fn kind(&self) -> BlockKind {
+        match self {
+            AssistantBlock::Thinking { .. } => BlockKind::Thinking,
+            AssistantBlock::Text { .. } => BlockKind::Text,
+            AssistantBlock::ToolUse { .. } => BlockKind::ToolUse,
+            AssistantBlock::Other => BlockKind::Other,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ResultSuccess {
     pub is_error: bool,
@@ -265,10 +302,11 @@ pub fn decode(line: &str) -> Result<Record, ProtocolError> {
         ("assistant", _) => {
             let wire: WireAssistant = shape("assistant", value)?;
             Ok(Record::Assistant {
-                uuid: wire.uuid,
+                message_id: wire.message.id,
                 blocks: wire.message.content,
             })
         }
+        ("stream_event", _) => decode_stream_event(value),
         ("result", Some("success")) => Ok(Record::ResultSuccess(shape("result/success", value)?)),
         ("result", Some(other)) => {
             let wire: WireResultError = shape("result", value)?;
@@ -359,13 +397,86 @@ fn decode_user(value: Value) -> Result<Record, ProtocolError> {
 
 #[derive(Deserialize)]
 struct WireAssistant {
-    uuid: Uuid,
     message: WireAssistantMessage,
 }
 
 #[derive(Deserialize)]
 struct WireAssistantMessage {
+    id: String,
     content: Vec<AssistantBlock>,
+}
+
+#[derive(Deserialize)]
+struct WireMessageStart {
+    message: WireMessageId,
+}
+
+#[derive(Deserialize)]
+struct WireMessageId {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct WireBlockStart {
+    index: u64,
+    content_block: WireBlockKind,
+}
+
+#[derive(Deserialize)]
+struct WireBlockKind {
+    #[serde(rename = "type")]
+    kind: BlockKind,
+}
+
+#[derive(Deserialize)]
+struct WireTextDelta {
+    index: u64,
+    delta: WireText,
+}
+
+#[derive(Deserialize)]
+struct WireText {
+    text: String,
+}
+
+/// `{"type":"stream_event","event":{"type":…}}`: `message_start`, `content_block_start` and a
+/// `text_delta` decode; every other event, and every other delta kind, is ignored.
+fn decode_stream_event(mut value: Value) -> Result<Record, ProtocolError> {
+    let event = value["event"].take();
+    let Some(event_type) = event.get("type").and_then(Value::as_str) else {
+        return Err(ProtocolError::NoSubtype {
+            kind: "stream_event".to_string(),
+        });
+    };
+    let delta_type = event.pointer("/delta/type").and_then(Value::as_str);
+    let stream = match (event_type, delta_type) {
+        ("message_start", _) => {
+            let wire: WireMessageStart = shape("stream_event/message_start", event)?;
+            StreamEvent::MessageStart {
+                message_id: wire.message.id,
+            }
+        }
+        ("content_block_start", _) => {
+            let wire: WireBlockStart = shape("stream_event/content_block_start", event)?;
+            StreamEvent::BlockStart {
+                index: wire.index,
+                kind: wire.content_block.kind,
+            }
+        }
+        ("content_block_delta", Some("text_delta")) => {
+            let wire: WireTextDelta = shape("stream_event/text_delta", event)?;
+            StreamEvent::TextDelta {
+                index: wire.index,
+                text: wire.delta.text,
+            }
+        }
+        _ => {
+            return Ok(Record::Ignored {
+                kind: format!("stream_event/{event_type}"),
+            });
+        }
+    };
+    Ok(Record::Stream(stream))
 }
 
 #[derive(Deserialize)]

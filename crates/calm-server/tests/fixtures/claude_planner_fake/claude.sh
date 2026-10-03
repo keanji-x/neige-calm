@@ -3,9 +3,10 @@
 # copies it into a private directory next to a `scenario` file; the spawn's environment is an
 # allowlist, so everything the fake needs or records lives in that directory:
 #   in:  scenario, version (optional; default 2.1.280), result_line (optional),
+#        stream, stream-rest (the `stream*` scenarios' records; stream-rest optional),
 #        auth (optional; the `auth status --json` answer, default logged-in),
 #        catalog (optional; the `initialize` answer, default ok)
-#   out: spawns, pid, argv, env, pwd, stdin, instructions, orphan, emitted, mcp_reply,
+#   out: spawns, pid, argv, env, pwd, stdin, instructions, orphan, emitted, streamed, mcp_reply,
 #        auth-pid, auth-env, auth-calls, init-calls, init-pid, init-argv, init-env, init-cwd,
 #        init-stdin
 # Needs on PATH: bash, jq, setsid, sleep, seq, touch, yes; `flood` (F_SETPIPE_SZ) and `mcp` (a unix
@@ -155,7 +156,7 @@ USAGE='"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_in
 USAGE+='"output_tokens":5,"iterations":[{"input_tokens":10,"cache_creation_input_tokens":0,'
 USAGE+='"cache_read_input_tokens":0,"output_tokens":5}]},"modelUsage":{"claude-haiku-4-5":{"contextWindow":200000}}'
 TEXT='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b001",'
-TEXT+='"message":{"content":[{"type":"text","text":"done"}]}}'
+TEXT+='"message":{"id":"msg_fake_text","content":[{"type":"text","text":"done"}]}}'
 SUCCESS='{"type":"result","subtype":"success","is_error":false,"result":"done",'
 SUCCESS+="$USAGE"',"terminal_reason":"completed"}'
 ABORTED='{"type":"result","subtype":"error_during_execution","errors":[],"terminal_reason":"aborted_streaming"}'
@@ -180,7 +181,7 @@ f.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params":
 f.flush()
 open(sys.argv[1], "w").write(f.readline())
 PY
-    CALL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b003","message":{"content":'
+    CALL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b003","message":{"id":"msg_fake_call","content":'
     CALL+='[{"type":"tool_use","id":"toolu_mcp","name":"mcp__calm__calm_report_commit","input":{"text":"x"}}]}}'
     RESULT='{"type":"user","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b004","message":{"role":"user","content":'
     RESULT+='[{"tool_use_id":"toolu_mcp","type":"tool_result","content":[{"type":"text","text":"ok"}]}]},'
@@ -192,7 +193,7 @@ PY
     # `hold`, with a detached marked child that outlives this process (a Bash tool's own session).
     setsid sleep 300 < /dev/null > /dev/null 2>&1 &
     echo "$!" > "$D/orphan"
-    TOOL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b002","message":{"content":'
+    TOOL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b002","message":{"id":"msg_fake_tool","content":'
     TOOL+='[{"type":"tool_use","id":"toolu_hold","name":"Bash","input":{"command":"sleep 20"}}]}}'
     echo "$TOOL"
     IFS= read -r CONTROL || exit 4
@@ -212,7 +213,7 @@ PY
   hold)
     # Start a Bash tool call and work until the next stdin line (an interrupt), then end as the
     # CLI does after one.
-    TOOL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b002","message":{"content":'
+    TOOL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b002","message":{"id":"msg_fake_tool","content":'
     TOOL+='[{"type":"tool_use","id":"toolu_hold","name":"Bash","input":{"command":"sleep 20"}}]}}'
     echo "$TOOL"
     IFS= read -r CONTROL || exit 4
@@ -253,6 +254,26 @@ PY
     printf '%s\n' "$CONTROL" >> "$D/stdin"
     trap '' TERM
     exec yes '{"type":"system","subtype":"status","status":"requesting"}' ;;
+  stream|stream-hold)
+    # #1923: the records of `stream` (a captured `--include-partial-messages` stdout, results left
+    # out), then `streamed`. `stream` then waits for `release` before `stream-rest`, if the test
+    # wrote one, and succeeds; `stream-hold` ends at the next stdin line (an interrupt) as the CLI
+    # does after one.
+    jq -c 'select(.type != "result")' "$D/stream"
+    touch "$D/streamed"
+    if [ "$SCENARIO" = stream-hold ]; then
+      IFS= read -r CONTROL || exit 4
+      printf '%s\n' "$CONTROL" >> "$D/stdin"
+      echo "$ABORTED"
+    else
+      if [ -e "$D/stream-rest" ]; then
+        while [ ! -e "$D/release" ]; do sleep 0.05; done
+        jq -c 'select(.type != "result")' "$D/stream-rest"
+      fi
+      echo "$SUCCESS"
+    fi
+    cat > /dev/null
+    exit 0 ;;
   interrupt-result-line)
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"

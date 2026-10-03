@@ -360,7 +360,7 @@ harness snapshot owns it. A session opened for a row that has `agent_session_id`
 
 ```
 <claude_binary> -p --input-format stream-json --output-format stream-json --verbose --replay-user-messages
-  (--session-id <thread> | --resume <thread>)
+  --include-partial-messages (--session-id <thread> | --resume <thread>)
   --setting-sources project --disable-slash-commands
   --tools Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch
   --strict-mcp-config --mcp-config '<json>'  --settings '<json>'
@@ -385,8 +385,9 @@ harness snapshot owns it. A session opened for a row that has `agent_session_id`
   recorded system prompt until compaction, then the current rendering applies. For Claude only, the
   rendering appends one sentence from a new `prompts/` fragment: start long-lived servers with
   `calm.terminal.open`, not Bash (they die with the turn and at restart).
-- No `--permission-mode`, no `--include-partial-messages`; `--model=<value>` and `--effort=<level>` only
-  when the card has chosen them (D11 as amended by #1810 and #1822, §5.8).
+- No `--permission-mode`; `--model=<value>` and `--effort=<level>` only when the card has chosen them
+  (D11 as amended by #1810 and #1822, §5.8). `--include-partial-messages` streams a reply's text
+  (#1923, §6.1).
 - `cwd` = track workspace; a moved workspace cannot resume (KNOWN GAP, #857 class). Project context:
   `CLAUDE.md`, else `AGENTS.md` (P-J).
 - **Env** (`env_clear()` + allowlist): `SPAWN_ENV_PASSTHROUGH` (S24) minus `OPENAI_*`, `CODEX_*`, `RUST_*`,
@@ -468,7 +469,8 @@ enum Record {
   UserReplay { uuid: Uuid, message: UserMessage },                      // isReplay: true
   UserText { uuid: Uuid, text: String },                                // e.g. "[Request interrupted…]" (P-F3)
   UserToolResults { uuid: Uuid, results: Vec<ToolResult>, tool_use_result: Value },
-  Assistant { uuid: Uuid, blocks: Vec<AssistantBlock> },                // thinking | text | tool_use
+  Assistant { message_id: String, blocks: Vec<AssistantBlock> },       // thinking | text | tool_use
+  Stream(StreamEvent),  // #1923: MessageStart{message_id} | BlockStart{index, kind} | TextDelta{index, text}
   ResultSuccess { is_error: bool, result: String, usage: Usage,
                   model_usage: BTreeMap<String, ModelUsage>, terminal_reason: String },
   ResultError { subtype: ErrorSubtype, errors: Vec<String>, terminal_reason: Option<String>,
@@ -614,14 +616,22 @@ snapshot. KNOWN GAP: the 12k baseline is Codex-derived (Claude's fixed prefix ~1
 ### 6.1 Claude record → event → stored item
 
 Envelope `{threadId, turnId, item, startedAtMs | completedAtMs}`. Ids: `tool_use.id` for tools,
-`<record uuid>:<block index>` for text/thinking.
+`<message.id>:<stream block index>` for text/thinking (#1923; earlier rows keep `<record uuid>:<block
+index>`). The CLI writes one `assistant` record per block, carrying the API `message.id`, before that
+block's `content_block_stop`; the translator tracks the current `message_start` and the last
+`content_block_start`, and a record of that message whose block has the started block's kind takes its
+index. A record without one (the CLI's own error message) logs a warning and takes its place among the
+message's records, which on the captured wire is the same index.
 
 | Claude record | `PlannerEvent` | Stored `item` |
 |---|---|---|
 | our line written | `TurnStarted{turn_id}` (handled after `turn_start` returns) | — |
 | `UserReplay` (our uuid) | `item/completed` `userMessage` | `{id, clientId, content:[text, localImage…]}` → upgrades the projection (H8) |
-| `UserReplay` of `<local-command-stdout>`, `UserText`, `system/*`, `stream_event`, `rate_limit_event`, `command_lifecycle`, `tool_use ToolSearch` | none | — |
-| `thinking` / `text` block | started + completed `reasoning` / `agentMessage` | `{content:[],summary:[]}` / `{text}` |
+| `UserReplay` of `<local-command-stdout>`, `UserText`, `system/*`, `stream_event` other than below, `rate_limit_event`, `command_lifecycle`, `tool_use ToolSearch` | none | — |
+| `stream_event` `content_block_start` of a text block | `item/started` `agentMessage` | `{text:""}` |
+| `stream_event` `content_block_delta` `text_delta` of that block | `ReplyDelta` (memory only, #1923) | — |
+| `text` block record of a started block | `item/completed` `agentMessage` | `{text}` |
+| `thinking` block, or a `text` block no stream block started | started + completed `reasoning` / `agentMessage` | `{content:[],summary:[]}` / `{text}` |
 | `tool_use mcp__calm__*` → its result | `mcpToolCall` started → completed | `server:"calm"`, dotted `tool`, `arguments`, `status`, `result` or `error`, `durationMs` |
 | `tool_use Bash` → result | `commandExecution` | `command, cwd, status, aggregatedOutput`; `exitCode` 0 if not `is_error`, N from a leading `Exit code N` (P-E), else null |
 | `tool_use Edit`/`Write` → result | `fileChange` | `changes:[{path, kind:{type: add or update}, diff}]` |
@@ -748,6 +758,10 @@ image message, interrupt, restart, resume, delete; `ps` shows no Planner `claude
 - Planner card `kind: "codex"` is a legacy view name.
 - `ToolSearch` schema reload per resume unmeasured.
 - A tool_result line carrying several results loses the per-result structured payload (never recorded).
+- An `assistant` record that no stream block started (the CLI's own messages, e.g. `Not logged in`,
+  P-D/P-G) shows no live text: it is stored as a started and completed pair, with a warning (#1923).
+- A reply an interrupt cuts off is stored as a `_partial` row after the turn's outcome row, which the
+  driver writes first (D13); the frontend's ordering rule places it (#1923 P4).
 - Plugin calm tools keep the Claude spelling `mcp__calm__<sanitized>` in the transcript: the dotted name is
   restored only from the kernel's Planner tool descriptors (`claude_planner/config.rs:106-111`,
   `claude_planner/translate.rs:305-311` keeps an unknown name and warns).

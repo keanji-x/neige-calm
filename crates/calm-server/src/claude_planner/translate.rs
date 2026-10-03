@@ -3,9 +3,14 @@
 //! `TokenUsage`, nothing else.
 //!
 //! Item envelope `{threadId, turnId, item, startedAtMs | completedAtMs}`. Item ids: `tool_use.id` for
-//! tools, `<record uuid>:<block index>` for text and thinking blocks, the replay's uuid for the user
-//! message. The stored user message is built from the issued input, never from the CLI's replay,
-//! which echoes every image as base64.
+//! tools, `<message.id>:<stream block index>` for text and thinking blocks (#1923), the replay's uuid
+//! for the user message. The stored user message is built from the issued input, never from the
+//! CLI's replay, which echoes every image as base64.
+//!
+//! A text block streams (`--include-partial-messages`): its `content_block_start` emits the
+//! `agentMessage` start, each `text_delta` one [`PlannerEventKind::ReplyDelta`], and the `assistant`
+//! record that carries the block, which the CLI writes before the block's `content_block_stop`,
+//! completes it under the same id.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -13,8 +18,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::protocol::{
-    AssistantBlock, ModelUsage, ProtocolError, Record, ToolResult, ToolResultBlock,
-    ToolResultContent, Usage, client_line_uuid,
+    AssistantBlock, BlockKind, ModelUsage, ProtocolError, Record, StreamEvent, ToolResult,
+    ToolResultBlock, ToolResultContent, Usage, client_line_uuid,
 };
 use crate::codex_appserver::InputItem;
 use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
@@ -105,6 +110,20 @@ enum ShownTool {
     Dynamic,
 }
 
+/// The message the stream is in, and its last started block, which the message's next record
+/// completes.
+#[derive(Debug)]
+struct StreamedMessage {
+    message_id: String,
+    block: Option<StreamedBlock>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StreamedBlock {
+    index: u64,
+    kind: BlockKind,
+}
+
 /// Translates one turn; one per `claude -p` process.
 #[derive(Debug)]
 pub struct TurnTranslator {
@@ -115,6 +134,10 @@ pub struct TurnTranslator {
     init_model: Option<String>,
     open: HashMap<String, OpenTool>,
     total_tokens: i64,
+    streamed: Option<StreamedMessage>,
+    /// The last record's `message.id` and how many of its blocks records have carried: a block
+    /// without a stream block takes that count as its index.
+    record_blocks: Option<(String, u64)>,
 }
 
 impl TurnTranslator {
@@ -128,6 +151,8 @@ impl TurnTranslator {
             init_model: None,
             open: HashMap::new(),
             total_tokens,
+            streamed: None,
+            record_blocks: None,
         })
     }
 
@@ -166,11 +191,11 @@ impl TurnTranslator {
             Record::UserReplay { uuid, .. } if *uuid == self.line_uuid => {
                 vec![self.item(ItemPhase::Completed, self.user_message(uuid), now_ms)]
             }
-            Record::Assistant { uuid, blocks } => blocks
+            Record::Assistant { message_id, blocks } => blocks
                 .iter()
-                .enumerate()
-                .flat_map(|(index, block)| self.assistant_block(uuid, index, block, now_ms))
+                .flat_map(|block| self.assistant_block(message_id, block, now_ms))
                 .collect(),
+            Record::Stream(event) => self.stream_event(event, now_ms).into_iter().collect(),
             Record::UserToolResults {
                 results,
                 tool_use_result,
@@ -257,34 +282,113 @@ impl TurnTranslator {
         })
     }
 
+    /// A text block's start opens its reply and each of its deltas extends it; nothing else in the
+    /// stream is an event.
+    fn stream_event(&mut self, event: &StreamEvent, now_ms: i64) -> Option<PlannerEvent> {
+        match event {
+            StreamEvent::MessageStart { message_id } => {
+                self.streamed = Some(StreamedMessage {
+                    message_id: message_id.clone(),
+                    block: None,
+                });
+                None
+            }
+            StreamEvent::BlockStart { index, kind } => {
+                let Some(message) = self.streamed.as_mut() else {
+                    tracing::warn!(index, "claude planner: a block started outside a message");
+                    return None;
+                };
+                message.block = Some(StreamedBlock {
+                    index: *index,
+                    kind: *kind,
+                });
+                let id = format!("{}:{index}", message.message_id);
+                (*kind == BlockKind::Text).then(|| {
+                    let item = json!({ "id": id, "type": "agentMessage", "text": "" });
+                    self.item(ItemPhase::Started, item, now_ms)
+                })
+            }
+            StreamEvent::TextDelta { index, text } => {
+                let message = self.streamed.as_ref()?;
+                let block = message.block?;
+                if block.index != *index || block.kind != BlockKind::Text {
+                    tracing::debug!(index, "claude planner: a text delta for no open text block");
+                    return None;
+                }
+                Some(self.event(PlannerEventKind::ReplyDelta {
+                    turn_id: self.ctx.turn_id.clone(),
+                    item_id: format!("{}:{index}", message.message_id),
+                    delta: text.clone(),
+                }))
+            }
+        }
+    }
+
+    /// Where the block a record of `message_id` carries sits in its message, and whether the stream
+    /// started it. A streamed block is the open stream block, if it is that message's and of the same
+    /// kind; the record closes it. Any other block takes its place among the message's records,
+    /// which is its stream index while the CLI writes one record per block.
+    fn block_index(&mut self, message_id: &str, kind: BlockKind) -> (u64, bool) {
+        let count = match self.record_blocks.as_mut() {
+            Some((id, count)) if id == message_id => count,
+            _ => &mut self.record_blocks.insert((message_id.to_owned(), 0)).1,
+        };
+        let place = *count;
+        *count += 1;
+        let streamed = self
+            .streamed
+            .as_mut()
+            .filter(|message| message.message_id == message_id)
+            .and_then(|message| message.block.take_if(|block| block.kind == kind));
+        match streamed {
+            Some(block) => (block.index, true),
+            None => (place, false),
+        }
+    }
+
     fn assistant_block(
         &mut self,
-        uuid: &Uuid,
-        index: usize,
+        message_id: &str,
         block: &AssistantBlock,
         now_ms: i64,
     ) -> Vec<PlannerEvent> {
-        let id = format!("{uuid}:{index}");
+        let (index, streamed) = self.block_index(message_id, block.kind());
+        let id = format!("{message_id}:{index}");
+        let unstreamed = |kind: &str| {
+            tracing::warn!(
+                item_id = %id,
+                kind,
+                "claude planner: a record's block has no open stream block; it is stored without \
+                 live text"
+            );
+        };
         match block {
             AssistantBlock::Thinking { .. } => {
+                if !streamed {
+                    unstreamed("thinking");
+                }
                 let item = json!({ "id": id, "type": "reasoning", "content": [], "summary": [] });
                 vec![
                     self.item(ItemPhase::Started, item.clone(), now_ms),
                     self.item(ItemPhase::Completed, item, now_ms),
                 ]
             }
-            AssistantBlock::Text { text } => vec![
-                self.item(
-                    ItemPhase::Started,
-                    json!({ "id": id, "type": "agentMessage", "text": "" }),
-                    now_ms,
-                ),
-                self.item(
-                    ItemPhase::Completed,
-                    json!({ "id": id, "type": "agentMessage", "text": text }),
-                    now_ms,
-                ),
-            ],
+            AssistantBlock::Text { text } => {
+                let completed = json!({ "id": id, "type": "agentMessage", "text": text });
+                if streamed {
+                    // Started at its `content_block_start`.
+                    return vec![self.item(ItemPhase::Completed, completed, now_ms)];
+                }
+                unstreamed("text");
+                vec![
+                    self.item(
+                        ItemPhase::Started,
+                        json!({ "id": id, "type": "agentMessage", "text": "" }),
+                        now_ms,
+                    ),
+                    self.item(ItemPhase::Completed, completed, now_ms),
+                ]
+            }
             AssistantBlock::ToolUse { id, name, input } => {
                 self.tool_use(id, name, input, now_ms).into_iter().collect()
             }
