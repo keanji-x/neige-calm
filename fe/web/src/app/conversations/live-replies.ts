@@ -158,16 +158,19 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
     reread();
   }, [apply, phase, reread, transcriptReads, visible]);
   /* A read started after the re-read can cancel it (Load earlier does) and keep the stored newest page,
-     so while a settled copy still shows, an idle transcript is read again until a later read lands. */
-  const transcriptIdle = useSyncExternalStore(
-    subscribeToQueries, () => client.getQueryState(transcriptKey)?.fetchStatus === 'idle',
-  );
+     so while a settled copy still shows, an idle transcript is read again until a later read lands.
+     Not after a failed read: that failure is the query layer's to retry, and starting another here
+     would retry it for as long as the conversation stays open. The next event or refetch resumes. */
+  const transcriptLanded = useSyncExternalStore(subscribeToQueries, () => {
+    const state = client.getQueryState(transcriptKey);
+    return state?.fetchStatus === 'idle' && state.status === 'success';
+  });
   const awaitsRead = visible.some((copy) => copy.settledAt !== null);
   useEffect(() => {
     const after = rereadAfter.current;
-    if (!transcriptIdle || !awaitsRead || after === null || transcriptReads.latest() <= after) return;
+    if (!transcriptLanded || !awaitsRead || after === null || transcriptReads.latest() <= after) return;
     reread();
-  }, [awaitsRead, reread, transcriptIdle, transcriptReads]);
+  }, [awaitsRead, reread, transcriptLanded, transcriptReads]);
   useEffect(() => {
     if (visible !== copies) apply({ kind: 'transcript', items, readStart: transcriptStart });
   }, [apply, copies, items, transcriptStart, visible]);

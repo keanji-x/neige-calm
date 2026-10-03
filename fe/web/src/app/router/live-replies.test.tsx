@@ -28,8 +28,8 @@ function ok(body: unknown): ApiTransportResponse {
 
 /** One card's server side: what each of the three reads answers right now. */
 type Row = Parameters<typeof buildTranscript>[0][number];
-/** With `earlier` rows, the newest page is full, so Load earlier has a page to read. */
-type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[] };
+/** With `earlier` rows, the newest page is full, so Load earlier has a page to read; with `itemsFail`, every transcript read fails. */
+type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[]; itemsFail?: boolean };
 
 function row(id: number, method: string, itemType: string | null, params: unknown, extra: Partial<Row> = {}): Row {
   return {
@@ -60,6 +60,11 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
       const card = /\/api\/cards\/([^/]+)\//.exec(request.path)?.[1];
       const server = card === undefined ? undefined : servers[decodeURIComponent(card)];
       if (server !== undefined && request.path.includes('/harness/items')) {
+        if (server.itemsFail === true) {
+          /* A failure answers after a round trip, as over a network, not in the same task. */
+          await new Promise((resolve) => { setTimeout(resolve, 50); });
+          return { status: 503, statusText: 'Service Unavailable', body: null };
+        }
         /* What the transcript says when the read is made, answered when the gate opens; a read
            past the newest page (Load earlier) gets the rows before it. */
         const newest = request.path.includes('after_id=0&');
@@ -130,6 +135,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -255,6 +261,27 @@ describe('a streamed reply in the Planner conversation', () => {
     act(() => { gate.waiting.forEach((release) => { release(); }); });
     await waitFor(() => expect(screen.queryByText('Hello, wor')).toBeNull());
     expect(screen.getByText('Hello, world.')).toBeTruthy();
+  });
+
+  it('stops re-reading after a failed transcript read, and keeps the reply so far', async () => {
+    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
+    const { client, requests } = setup({ [CARD.id]: server });
+    await open('Planner chat');
+    await screen.findByText('Hello, wor');
+    const reads = () => requests.filter((request) => request.path.includes('/harness/items')).length;
+    const before = reads();
+    /* From here every read fails after a round trip; the clock is the test's, so the window is exact. */
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    server.itemsFail = true;
+    server.live = streaming(null, {});
+    server.phase = 'turn_completed';
+    await phaseChanged(client, CARD.id, { transcript: false });
+    for (let step = 0; step < 50; step += 1) await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    /* The one re-read the turn's end asked for failed, and is not started again while the conversation
+       stays open; the next event or refetch resumes reading. */
+    expect(client.getQueryState(transcriptKey(CARD.id))?.status).toBe('error');
+    expect(reads()).toBe(before + 1);
+    expect(screen.getByText('Hello, wor')).toBeTruthy();
   });
 
   it('re-reads the transcript when the turn ends before its first read has answered', async () => {
