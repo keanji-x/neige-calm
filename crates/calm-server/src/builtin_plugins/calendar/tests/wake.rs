@@ -479,3 +479,31 @@ async fn edit_landing_after_the_scan_read_wins_over_the_stale_entry() {
     assert!(wake_events(&fx).await.is_empty());
     assert_eq!(cursor(&fx, &read_by_scan).await, None);
 }
+
+#[tokio::test]
+async fn entry_shorter_than_the_scan_interval_wakes_once() {
+    let fx = Fixture::new().await;
+    let planner = fx.identity(CardRole::Planner).await;
+    let brief = create(
+        &fx,
+        &planner,
+        "brief",
+        timed("2026-10-02T09:00:05+08:00", "2026-10-02T09:00:15+08:00"),
+    )
+    .await;
+    for (now, woken) in [
+        ("2026-10-02T09:00:00+08:00", 0),
+        ("2026-10-02T09:00:30+08:00", 1),
+        ("2026-10-02T09:01:00+08:00", 0),
+    ] {
+        assert_eq!(
+            scan(&fx.ctx, at(now)).await.unwrap(),
+            woken,
+            "scan at {now}"
+        );
+    }
+    match wake_events(&fx).await.as_slice() {
+        [Event::TrackWakeRequested { key, .. }] => assert_eq!(key, &brief.id),
+        other => panic!("expected exactly one wake, got {other:?}"),
+    }
+}

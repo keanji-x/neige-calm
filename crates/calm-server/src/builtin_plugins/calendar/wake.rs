@@ -14,6 +14,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const TICK: Duration = Duration::from_secs(30);
+/// A missed wake still fires until its end, but never less than two ticks after its start, so
+/// an entry shorter than the tick cannot fall between two scans.
+const GRACE: Duration = Duration::from_secs(2 * TICK.as_secs());
 const CHANGED: &str = "calendar entry changed during wake";
 
 pub(super) fn spawn(ctx: Arc<AppContext>) {
@@ -91,7 +94,8 @@ pub(super) async fn handle(ctx: &AppContext, entry: Entry, now: DateTime<Utc>) -
         .track_get(&track_id)
         .await?
         .filter(|track| track.closed_at.is_none());
-    let Some(track) = track.filter(|_| now < span.end) else {
+    let deadline = span.end.max(span.start + GRACE);
+    let Some(track) = track.filter(|_| now < deadline) else {
         // Ended, closed or missing: record the occurrence as handled without waking.
         write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
             Box::pin(async move { put(tx, &key, &start_ms).await })
