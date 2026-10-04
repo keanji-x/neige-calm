@@ -348,16 +348,18 @@ describe('the report-to-Planner entry', () => {
     expect(onReply).toHaveBeenCalledOnce();
   });
 
-  it('keeps failed-task explanations readable inside a narrow panel', async () => {
+  it('keeps failed-task details reachable while the list remains compact', async () => {
     await browserPage.viewport(1200, 800);
     const reason = 'Validation failed because the expected report snapshot is missing. '.repeat(4);
     renderPage({ tasks: [{ blockId: 'verify', key: 'verify', state: 'ready', declaration: null,
       status: 'failed', statusDetail: reason, kind: 'codex', workerCardId: null, pendingReason: null }] });
     const group = document.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="failed"]')!;
     expect(group.open).toBe(true);
-    const explanation = [...group.querySelectorAll<HTMLElement>('[aria-hidden="true"]')].find(element => element.textContent?.includes('Validation failed'))!;
-    expect(explanation.textContent).toContain('Validation failed');
-    expect(explanation.scrollWidth).toBeLessThanOrEqual(explanation.clientWidth);
-    expect(getComputedStyle(explanation).whiteSpace).toBe('normal');
+    const reveal = group.querySelector<HTMLElement>('[data-nc-row-action="reveal-block"]')!;
+    expect(reveal.getAttribute('aria-description')).toContain('Validation failed');
+    const metadata = group.querySelector<HTMLElement>('[data-nc-inventory-metadata]')!;
+    expect(metadata.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+    expect(group.querySelector<HTMLElement>('[data-nc-field="kind"]')!.getBoundingClientRect().right)
+      .toBeLessThanOrEqual(group.getBoundingClientRect().right);
   });
 });

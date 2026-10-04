@@ -9,10 +9,9 @@ import { inventorySections, panelRowGroup, type InventoryGroupKey } from '../../
 import { InventoryGroups } from './inventory-groups.tsx';
 import { FIELD, MARKER, paintPanel } from '../../../../../core/view/panel.ts';
 import type {
-  ActionSupport, PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, TrackPageView,
+  ActionSupport, PanelRow, RowAction, RowModuleView, RowPainter, TrackPageView,
 } from '../../../../../core/view/panel.ts';
 import { activityLabelOf } from '../../../../../core/domain/activity.ts';
-import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
 import styles from './page.module.css';
@@ -75,32 +74,21 @@ function wording(action: Control): Readonly<Record<string, string>> {
   };
 }
 
-function cardBadge(badge: RowBadge): ReactNode {
-  return (
-    <ListText tone="secondary" key={badge.id} className={styles.kernelOwned} {...mark(MARKER.badge, badge.id)}>
-      {badge.text}
-    </ListText>
-  );
-}
-
-/** The group carries generic running state; the row keeps the kernel's live indicator and specific phases. */
-function runState(row: PanelRow, moduleKey: RowModuleView['key']): ReactNode {
-  const status = row.status;
-  const attributes = status === null ? {} : {
-    ...mark(MARKER.status, status.token),
-    title: status.phrase,
-    ...(moduleKey === 'tasks' ? { 'aria-hidden': true, 'data-nc-task-status-text': '' } : {}),
-  };
-  return <span className={styles.runState} data-nc-inventory-state=""
-    title={status?.phrase ?? (row.activity === null ? undefined : activityLabelOf(row.activity) ?? undefined)}>
-    {row.activity !== null && <span className={styles.activitySlot}>
-      <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />
+/** Nonvisual metadata preserves the projection and accessible descriptions; groups own visible state. */
+function rowMetadata(row: PanelRow, moduleKey: RowModuleView['key']): ReactNode {
+  return <VisuallyHidden data-nc-inventory-metadata="">
+    {row.activity !== null && <>
+      <span data-nc-activity={row.activity} aria-hidden="true" />
+      <span>{activityLabelOf(row.activity)}</span>
+    </>}
+    {row.status !== null && <span {...mark(MARKER.status, row.status.token)} title={row.status.phrase}
+      {...(moduleKey === 'tasks' ? { 'aria-hidden': true, 'data-nc-task-status-text': '' } : {})}>
+      {row.status.token}
     </span>}
-    {status !== null && (status.token === 'running'
-      ? <VisuallyHidden {...attributes}>{status.token}</VisuallyHidden>
-      : <ListText tone="secondary" className={moduleKey === 'cards' ? styles.cardStatus : styles.taskStatusText}
-        {...attributes}>{status.token}</ListText>)}
-  </span>;
+    {row.badges.map(badge => <ListText tone="secondary" key={badge.id}
+      className={badge.struck ? styles.taskWithdrawn : undefined}
+      {...mark(MARKER.badge, badge.id)}>{badge.text}</ListText>)}
+  </VisuallyHidden>;
 }
 
 /** A Cards row. The delete is a sibling of the row button, never a child: a `<button>` inside a `<button>` is dropped by every HTML parser. */
@@ -115,16 +103,14 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
         {...(open === null ? {} : { ...mark(MARKER.action, 'open-card'), ...wording(open) })}
         onClick={open === null ? undefined : () => deps.onOpenCard?.(open.id)}
       >
-        <span className={styles.cardName}>
+        <span className={`${styles.cardName} ${remove === null ? '' : styles.cardNameRemovable}`}>
           <ListText tone="primary" className={styles.cardKind} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
         </span>
-        <span className={styles.cardMeta}>
-          {runState(row, 'cards')}
-          {row.kind !== null && (
-            <ListText tone="secondary" className={styles.cardKindTag} title={row.kind} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
-          )}
-          {row.badges.length > 0 && <span className={styles.cardBadges}>{row.badges.map(cardBadge)}</span>}
-        </span>
+        {row.kind !== null && (
+          <ListText tone="secondary" className={styles.cardKindTag} title={row.kind}
+            {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
+        )}
+        {rowMetadata(row, 'cards')}
       </button>
       {remove !== null && (
         <button
@@ -146,8 +132,6 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
-  const group = panelRowGroup(row, 'tasks');
-  const explanation = group === 'failed' || group === 'attention' ? row.status?.detail ?? null : null;
   const revealControl = (
     <button
       type="button"
@@ -156,16 +140,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
       onClick={reveal === null ? undefined : () => deps.onOpenTask?.(reveal.id)}
     >
       <ListText tone="primary" className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
-      {row.badges.length > 0 && <span className={styles.taskBadges}>
-        {row.badges.map((badge) => (
-          <ListText tone="secondary"
-            key={badge.id}
-            className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
-            {...mark(MARKER.badge, badge.id)}
-          >{badge.text}</ListText>
-        ))}
-      </span>}
-      {runState(row, 'tasks')}
+      {rowMetadata(row, 'tasks')}
     </button>
   );
   return (
@@ -185,9 +160,6 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
             {row.kind}
           </ListText>
         ))}
-      {explanation !== null && (
-        <ListText tone="secondary" className={styles.taskReason} aria-hidden="true">{explanation}</ListText>
-      )}
     </li>
   );
 }

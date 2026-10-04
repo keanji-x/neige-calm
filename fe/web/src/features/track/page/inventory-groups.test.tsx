@@ -24,7 +24,7 @@ it('shows working tasks and discloses completed tasks with their original action
   expect(onOpenTask).toHaveBeenCalledWith('finished-a');
 });
 
-it('exposes failed and blocked work immediately with the failure explanation', () => {
+it('exposes problem groups and keeps explanations in the task description', () => {
   const onOpenTask = vi.fn();
   const view = render(<TrackPage track={track()} tasks={[
     { ...task('verify-layout', 'failed'), statusDetail: 'Gate exited with code 1' },
@@ -34,7 +34,8 @@ it('exposes failed and blocked work immediately with the failure explanation', (
     onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onOpenTask={onOpenTask} />);
   expect(view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="failed"]')?.open).toBe(true);
   expect(view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="attention"]')?.open).toBe(true);
-  expect(screen.getByText('Gate exited with code 1', { exact: true })).toBeTruthy();
+  expect(screen.queryByText('Gate exited with code 1', { exact: true })).toBeNull();
+  expect(screen.getByRole('button', { name: 'verify-layout' }).getAttribute('aria-description')).toContain('Gate exited with code 1');
   fireEvent.click(screen.getByRole('button', { name: 'verify-layout' }));
   expect(onOpenTask).toHaveBeenCalledWith('verify-layout');
 });

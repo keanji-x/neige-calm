@@ -1,5 +1,5 @@
 import { render } from '@testing-library/react';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
@@ -18,7 +18,7 @@ const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['
 const derive = (input: { cards: readonly CardWire[]; tasks: readonly ReportTaskRow[] }) =>
   deriveTrackPageView({ ...input, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(input.cards, input.tasks) });
 
-it('clips long state labels after the worker-type column while keeping their full explanation', async () => {
+it('keeps full state metadata off the visible inventory row', async () => {
   await page.viewport(1200, 900);
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}),
     derive({ cards: [card({ id: 'pending-card', title: 'Long card title', kind: 'codex',
@@ -28,13 +28,9 @@ it('clips long state labels after the worker-type column while keeping their ful
   const statuses = document.querySelectorAll<HTMLElement>('[data-nc-status]');
   expect(statuses).toHaveLength(2);
   for (const status of statuses) {
-    const style = getComputedStyle(status);
-    expect(status.scrollWidth).toBeGreaterThan(status.clientWidth);
-    expect(style.overflowX).toBe('hidden');
-    expect(style.textOverflow).toBe('ellipsis');
+    const metadata = status.closest<HTMLElement>('[data-nc-inventory-metadata]')!;
+    expect(metadata.getBoundingClientRect().width).toBeLessThanOrEqual(1);
     expect(status.title).not.toBe('');
-    const kind = status.closest('[data-nc-row]')!.querySelector('[data-nc-field="kind"]')!;
-    expect(kind.getBoundingClientRect().right).toBeLessThanOrEqual(status.getBoundingClientRect().left);
   }
 });
 
@@ -60,10 +56,8 @@ it('aligns module titles, status groups and row names, with stable secondary col
   for (const count of document.querySelectorAll<HTMLElement>('summary > span:nth-child(2)')) {
     expect(count.getBoundingClientRect().right).toBeCloseTo(total.getBoundingClientRect().right, 0);
   }
-  const statuses = [...tasks.querySelectorAll<HTMLElement>('details[open] [data-nc-inventory-state]')];
-  expect(statuses).toHaveLength(2);
-  expect(statuses[0].getBoundingClientRect().right).toBeCloseTo(statuses[1].getBoundingClientRect().right, 0);
   const kinds = [...tasks.querySelectorAll<HTMLElement>('details[open] [data-nc-field="kind"]')];
+  expect(kinds).toHaveLength(2);
   expect(kinds[0].getBoundingClientRect().right).toBeCloseTo(kinds[1].getBoundingClientRect().right, 0);
 });
 
@@ -136,44 +130,44 @@ it('keeps the heading stationary and uses 4px content spacing with an 8px group 
 });
 
 
-it.each([false, true])('aligns state columns across Cards and Tasks with deletable=%s', async (deletable) => {
+it.each([false, true])('right-aligns only type beside names with deletable=%s', async (deletable) => {
   await page.viewport(1200, 900);
   const worker = card({ id: 'worker', title: 'A longer worker title', kind: 'codex', deletable,
     runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
   const view = deriveTrackPageView({ cards: [worker],
     tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'worker' }],
     activity: { cards: { worker: 'working' } }, openableCards: new Set(['worker']) });
-  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), view)}</PanelCard></div>);
+  const onDeleteCard = vi.fn();
+  const onOpenCard = vi.fn();
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onDeleteCard, onOpenCard }), view)}</PanelCard></div>);
   const cardRow = document.querySelector<HTMLElement>('[data-nc-row="worker"]')!;
   const taskRow = document.querySelector<HTMLElement>('[data-nc-row="work"]')!;
-  const center = (element: Element) => { const box = element.getBoundingClientRect(); return box.left + box.width / 2; };
-  expect(center(cardRow.querySelector('[data-nc-activity="working"]')!))
-    .toBeCloseTo(center(taskRow.querySelector('[data-nc-activity="working"]')!), 0);
-  const columns = [
-    [cardRow.querySelector('[data-nc-inventory-state]')!, taskRow.querySelector('[data-nc-inventory-state]')!],
-    [cardRow.querySelector('[data-nc-field="kind"]')!, taskRow.querySelector('[data-nc-field="kind"]')!],
-  ];
-  for (const [cardColumn, taskColumn] of columns) {
-    expect(cardColumn.getBoundingClientRect().right).toBeCloseTo(taskColumn.getBoundingClientRect().right, 0);
-  }
-  const kinds = [cardRow.querySelector('[data-nc-field="kind"]')!, taskRow.querySelector('[data-nc-field="kind"]')!];
-  for (const kind of kinds) {
-    const range = document.createRange();
-    range.selectNodeContents(kind);
+  const cardKind = cardRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
+  const taskKind = taskRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
+  expect(cardKind.getBoundingClientRect().right).toBeCloseTo(taskKind.getBoundingClientRect().right, 0);
+  expect(taskRow.getBoundingClientRect().right - taskKind.getBoundingClientRect().right).toBeCloseTo(4, 0);
+  for (const kind of [cardKind, taskKind]) {
+    const range = document.createRange(); range.selectNodeContents(kind);
     const style = getComputedStyle(kind);
-    const contentRight = kind.getBoundingClientRect().right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
-    expect(range.getBoundingClientRect().right).toBeCloseTo(contentRight, 0);
+    expect(range.getBoundingClientRect().right).toBeCloseTo(kind.getBoundingClientRect().right
+      - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth), 0);
   }
-  expect(cardRow.querySelector('[data-nc-field="kind"]')!.getBoundingClientRect().right)
-    .toBeLessThanOrEqual(cardRow.querySelector('[data-nc-inventory-state]')!.getBoundingClientRect().left);
-  const cardIndicator = cardRow.querySelector('[data-nc-activity="working"]')!.getBoundingClientRect();
-  const taskIndicator = taskRow.querySelector('[data-nc-activity="working"]')!.getBoundingClientRect();
-  expect(cardIndicator.top + cardIndicator.height / 2 - cardRow.getBoundingClientRect().top)
-    .toBeCloseTo(taskIndicator.top + taskIndicator.height / 2 - taskRow.getBoundingClientRect().top, 0);
+  for (const row of [cardRow, taskRow]) {
+    expect(row.querySelector<HTMLElement>('[data-nc-inventory-metadata]')!.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+    expect(getComputedStyle(row.querySelector('[data-nc-activity]')!).animationName).toBe('none');
+  }
+  if (deletable) {
+    await userEvent.hover(cardRow);
+    const remove = cardRow.querySelector<HTMLElement>('[data-nc-row-action="delete-card"]')!;
+    expect(remove.getBoundingClientRect().right).toBeLessThanOrEqual(cardKind.getBoundingClientRect().left);
+    await userEvent.click(remove);
+    expect(onDeleteCard).toHaveBeenCalledWith('worker');
+    expect(onOpenCard).not.toHaveBeenCalled();
+  }
 });
 
 
-it.each([true, false])('lets the running group carry the label with live activity=%s', async (live) => {
+it.each([true, false])('keeps activity metadata nonvisual without inventing signals with live activity=%s', async (live) => {
   await page.viewport(1200, 900);
   const worker = card({ id: 'worker', title: 'Worker', kind: 'codex',
     runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
@@ -185,7 +179,7 @@ it.each([true, false])('lets the running group carry the label with live activit
   expect(running).toHaveLength(2);
   for (const label of running) {
     expect(label.textContent).toBe('running');
-    expect(label.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+    expect(label.closest<HTMLElement>('[data-nc-inventory-metadata]')!.getBoundingClientRect().width).toBeLessThanOrEqual(1);
   }
   expect(document.querySelectorAll('[data-nc-activity="working"]')).toHaveLength(live ? 2 : 0);
 });
