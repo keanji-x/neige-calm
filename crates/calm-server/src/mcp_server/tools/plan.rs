@@ -13,7 +13,6 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::TaskKind;
 use crate::model::{CardRole, Task, TaskStatus, Track, now_ms};
-use calm_types::report_blocks::tasks::GATE_TIMEOUT_MAX_SECS;
 pub use calm_types::report_blocks::tasks::{
     GateInput, GateStepInput, key_is_valid, validate_gate_shape,
 };
@@ -29,13 +28,11 @@ use std::sync::Arc;
 mod cancel_running;
 mod list;
 
-pub const TOOL_PLAN_UPSERT: &str = "calm.plan.upsert";
 pub const TOOL_PLAN_CANCEL: &str = "calm.plan.cancel";
 pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
 
 /// Gate timeout defaults/caps; the task-verify adapter re-clamps at run time.
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(plan_upsert_descriptor(), wrap(plan_upsert));
     registry.register(plan_cancel_descriptor(), wrap(plan_cancel));
     registry.register(plan_list_descriptor(), wrap(plan_list));
 }
@@ -322,97 +319,6 @@ fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Tas
         updated_at_ms: now,
         finished_at_ms: None,
     }
-}
-
-fn plan_upsert_descriptor() -> ToolDescriptor {
-    ToolDescriptor {
-        name: TOOL_PLAN_UPSERT.into(),
-        description: include_str!("../../../prompts/tools/calm.plan.upsert.md")
-            .trim_end()
-            .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "required": ["tasks", "message"],
-            "properties": {
-                "tasks": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "oneOf": [
-                            {
-                                "required": ["key", "kind", "goal"],
-                                "properties": { "kind": { "enum": ["codex", "claude"] } },
-                                "not": { "required": ["command"] }
-                            },
-                            {
-                                "required": ["key", "kind", "command"],
-                                "properties": { "kind": { "const": "terminal" } },
-                                "not": { "required": ["goal"] }
-                            }
-                        ],
-                        "properties": {
-                            "key": {
-                                "type": "string",
-                                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
-                                "description": "Stable per-track task key; also the completion correlation id."
-                            },
-                            "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
-                            "goal": { "type": "string", "minLength": 1, "description": "Natural-language objective; required only for codex/claude tasks and forbidden for terminal tasks." },
-                            "command": { "type": "string", "minLength": 1, "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`; required only for terminal tasks and forbidden for codex/claude tasks." },
-                            "context": { "description": "Optional, any JSON; forwarded to the worker verbatim." },
-                            "acceptance_criteria": { "type": ["string", "null"] },
-                            "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + gate default cwd." },
-                            "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Sibling task keys that must be done first." },
-                            "priority": { "type": "integer", "description": "Higher schedules first; default 0." },
-                            "gate": {
-                                "type": "object",
-                                "required": ["steps"],
-                                "description": "Verification the kernel runs after the worker reports done; declare one for every agent task. Steps run in order, first non-zero exit fails the gate, and steps must be re-runnable (kernel restarts re-run the gate).",
-                                "properties": {
-                                    "steps": {
-                                        "type": "array",
-                                        "minItems": 1,
-                                        "items": {
-                                            "type": "object",
-                                            "required": ["name", "cmd"],
-                                            "properties": {
-                                                "name": { "type": "string", "minLength": 1, "description": "Step label; the failing step is attributed in the gate result." },
-                                                "cmd": { "type": "string", "minLength": 1, "description": "Shell command; must be re-runnable. Non-zero exit fails the gate." }
-                                            }
-                                        }
-                                    },
-                                    "cwd": { "type": ["string", "null"], "description": "Absolute path; defaults to task.cwd, else the track cwd." },
-                                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": GATE_TIMEOUT_MAX_SECS, "description": "Whole-gate timeout in seconds; default 1800, max 7200. Timeout fails the gate." }
-                                }
-                            },
-                            "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated agent task on a track with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
-                        }
-                    }
-                },
-                "message": message_schema()
-            }
-        }),
-        annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[],
-    }
-}
-
-async fn plan_upsert(
-    _ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
-    _args: Value,
-) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
-    Ok(json!({
-        "error": "calm.plan.upsert was retired (#985); no task declaration was written",
-        "migration": {
-            "use": "calm.report.commit",
-            "shape": "{ message, ops: [{ op: \"upsert\", kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" } }] }",
-            "notes": "Read the report with calm.report.read first. The kernel projects ready task blocks, schedules tasks, and runs verification gates; use `neige state` for status."
-        }
-    }))
 }
 
 fn plan_cancel_descriptor() -> ToolDescriptor {
@@ -895,54 +801,6 @@ mod tests {
         t.kind = "claude".into();
         let normalized = normalize_task_input(t).expect("claude accepted");
         assert_eq!(normalized.kind, TaskKind::Claude);
-    }
-
-    #[test]
-    fn upsert_schema_kind_enum_includes_claude() {
-        let descriptor = plan_upsert_descriptor();
-        let enum_values = descriptor
-            .input_schema
-            .pointer("/properties/tasks/items/properties/kind/enum")
-            .and_then(Value::as_array)
-            .expect("kind enum");
-
-        assert!(
-            enum_values
-                .iter()
-                .any(|value| value.as_str() == Some("claude")),
-            "calm.plan.upsert kind enum must advertise claude: {enum_values:?}"
-        );
-    }
-
-    #[test]
-    fn upsert_schema_discriminates_agent_goals_from_terminal_commands() {
-        let descriptor = plan_upsert_descriptor();
-        let item = &descriptor.input_schema["properties"]["tasks"]["items"];
-        let goal_description = descriptor
-            .input_schema
-            .pointer("/properties/tasks/items/properties/goal/description")
-            .and_then(Value::as_str)
-            .expect("goal description");
-
-        assert!(
-            goal_description.contains("Natural-language objective")
-                && goal_description.contains("forbidden for terminal"),
-            "calm.plan.upsert goal description must stay agent-only: {goal_description}"
-        );
-        let command_description = item["properties"]["command"]["description"]
-            .as_str()
-            .expect("command description");
-        assert!(
-            command_description.contains("passed verbatim")
-                && command_description.contains("required only for terminal")
-                && command_description.contains("forbidden for codex/claude"),
-            "calm.plan.upsert command description must stay terminal-only: {command_description}"
-        );
-        assert_eq!(
-            item["oneOf"][0]["properties"]["kind"]["enum"],
-            json!(["codex", "claude"])
-        );
-        assert_eq!(item["oneOf"][1]["properties"]["kind"]["const"], "terminal");
     }
 
     #[test]

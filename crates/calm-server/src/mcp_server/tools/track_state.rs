@@ -8,8 +8,7 @@ use crate::event::{Event, EventScope};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, register_deprecated_alias, require_role, require_role_any,
-    role_gated_write_annotations,
+    read_only_annotations, require_role, require_role_any, role_gated_write_annotations,
 };
 use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::{Card, CardRole, Track, TrackPatch};
@@ -26,8 +25,6 @@ pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(track_state_descriptor(), wrap(track_state));
     registry.register(task_verdict_descriptor(), wrap(task_verdict));
     registry.register(track_close_descriptor(), wrap(track_close));
-    register_deprecated_alias(registry, "calm.get_track_state", TOOL_TRACK_STATE);
-    register_deprecated_alias(registry, "calm.update_task_meta", TOOL_TASK_VERDICT);
 }
 
 fn wrap<F, Fut>(f: F) -> ToolHandler

@@ -59,26 +59,16 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.track.cat_at",
     "calm.track.log",
     // Planning, review, admin.
-    "calm.plan.upsert",
     "calm.plan.cancel",
     "calm.plan.list",
     "calm.ratify.request",
     "calm.admin.track_gc",
     "calm.admin.vacuum",
-    // Hidden deprecated aliases delegate to the handler above, so the role refusal must survive them too.
-    "calm.get_track_state",
-    "calm.update_task_meta",
-    "calm.dispatch_request",
 ];
 
 /// Denied tools that only a **Worker** token gets past, so the Planner control does not assert
 /// something false about them.
-const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &[
-    "calm.task.complete",
-    "calm.task.fail",
-    "calm.task_completed",
-    "calm.task_failed",
-];
+const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &["calm.task.complete", "calm.task.fail"];
 
 fn assistant_denied_tools() -> Vec<&'static str> {
     ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE
@@ -88,7 +78,7 @@ fn assistant_denied_tools() -> Vec<&'static str> {
         .collect()
 }
 
-/// The two hand-written lists must be a *partition* of the real registry (aliases included), so
+/// The two hand-written lists must be a *partition* of the real registry, so
 /// a new tool with no assistant verdict fails here.
 #[test]
 fn assistant_verdict_covers_every_registered_tool() {

@@ -504,7 +504,15 @@ async fn dispatch_tools_call(
         return Ok(json!(result));
     }
 
-    dispatch_plugin_tools_call(ctx, thread_id, name, arguments, connection_identity).await
+    dispatch_plugin_tools_call(
+        ctx,
+        registry,
+        thread_id,
+        name,
+        arguments,
+        connection_identity,
+    )
+    .await
 }
 
 async fn resolve_tools_call_identity(
@@ -531,6 +539,7 @@ async fn resolve_tools_call_identity(
 
 async fn dispatch_plugin_tools_call(
     ctx: &Arc<AppContext>,
+    registry: &ToolRegistry,
     thread_id: Option<&str>,
     name: &str,
     arguments: Value,
@@ -539,11 +548,11 @@ async fn dispatch_plugin_tools_call(
     // Identity FIRST, before any route knowledge, so identity failures are uniform whether or not `name` exists.
     let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
 
-    // One construction for EVERY existence-shaped rejection below so the error object is byte-identical and cannot be an existence oracle.
-    let unknown_tool = || RpcError::method_not_found(&format!("tools/call: {name}"));
+    // EVERY existence-shaped rejection below is this one construction, so the error object is byte-identical and cannot be an existence oracle.
+    let unknown_tool = || catalog::unknown_tool_error(ctx, registry, &identity, name);
 
     let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
-        return Err(unknown_tool());
+        return Err(unknown_tool().await);
     };
     let running_ids = plugin_host.running_plugin_ids().await;
     let Some((plugin_id, tool_name, kind)) =
@@ -565,18 +574,17 @@ async fn dispatch_plugin_tools_call(
         {
             return Err(error);
         }
-        return Err(unknown_tool());
+        return Err(unknown_tool().await);
     };
 
-    let manifest = plugin_host
-        .registry()
-        .get(&plugin_id)
-        .ok_or_else(unknown_tool)?;
+    let Some(manifest) = plugin_host.registry().get(&plugin_id) else {
+        return Err(unknown_tool().await);
+    };
     if !plugin_scope_for_track(ctx, identity.track_id.as_deref())
         .await
         .allows_manifest(&manifest)
     {
-        return Err(unknown_tool());
+        return Err(unknown_tool().await);
     }
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
     match kind {

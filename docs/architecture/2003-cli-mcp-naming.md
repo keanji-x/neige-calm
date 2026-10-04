@@ -409,7 +409,7 @@ track 199, task 98, plan 81, the rest ≈ 200, `neige <cmd>` 150, `mcp__calm`/`"
 ### 5.1 Source-invariant gates the implementation will hit
 
 - `tools/mod.rs:118` `default_registry_matches_full_golden`: regenerate and hand-verify.
-- `tools/mod.rs:240` `prompt_files_cover_exactly_the_non_alias_tools`: `git mv` every
+- `tools/mod.rs:240` `prompt_files_cover_exactly_the_registered_tools` (renamed in S1 from `…_the_non_alias_tools`): `git mv` every
   `prompts/tools/*.md`, and drop the alias branch in S1.
 - `tools/mod.rs:170` `planner_tool_surface_fits_its_byte_budget` (≤ 30,000 B; 29,984 at #1967).
   The brand adds 1 B per `calm.` in listed descriptions (15 + 1 in schemas), and each `neige <cmd>`
@@ -503,6 +503,11 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
   `mcp__neige__…`. Plugin names longer than about 64 B under Claude are unverified.
 - **K5:** `external/codex` (`5a440c0`) is not the deployed 0.159.2. Read Codex behavior from the
   deployed binary (§3.2), not from that tree.
+- **K7 (found in PR-1):** a built-in plugin native (`calm.calendar.*`, `calm.review.round`,
+  `calm.track.publish`) called outside its track scope is refused by `require_bound`
+  (builtin_plugins/mod.rs) with the bare `-32601 tools/call: <name>`, without the visible-tool
+  list. These names are public in the registry, so this is no existence oracle. Only the
+  transport's unknown-name path lists the session's tools.
 - **K6:** the ledger is process memory. A restart forces re-reads. This is unchanged and fails
   closed.
 

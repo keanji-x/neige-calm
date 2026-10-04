@@ -1,5 +1,5 @@
 //! `mcp_server::tools::plan` integration coverage: an `AppContext` built directly (no live MCP
-//! listener) driving `calm.plan.upsert` / `calm.plan.cancel` / `calm.plan.list` end-to-end.
+//! listener) driving `calm.plan.cancel` / `calm.plan.list` end-to-end.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use calm_server::event::{Event, EventBus};
 use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::{
-    TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, TOOL_PLAN_UPSERT, plan_cancel_after_pre_read_for_test,
+    TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, plan_cancel_after_pre_read_for_test,
 };
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TaskStatus, TrackPatch, now_ms};
@@ -378,44 +378,6 @@ async fn track_patch_persists_require_task_gates() {
             .await
             .unwrap();
     assert_eq!(require_gates, 0);
-}
-
-#[tokio::test]
-async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
-    let boot = boot().await;
-    let mut rx = boot.ctx.events.subscribe();
-    let before = all_persistent_rows(&boot).await;
-
-    // Deliberately invalid under the legacy schema: the shim must not parse it.
-    let out = call_tool(
-        &boot,
-        TOOL_PLAN_UPSERT,
-        planner_identity(&boot),
-        json!(null),
-    )
-    .await
-    .expect("registered compatibility shim");
-
-    assert!(out["error"].as_str().unwrap().contains("retired (#985)"));
-    assert_eq!(out["migration"]["use"], "calm.report.commit");
-    assert!(
-        out["migration"]["shape"]
-            .as_str()
-            .unwrap()
-            .contains("ready: true")
-    );
-    let shape = out["migration"]["shape"].as_str().unwrap();
-    assert!(shape.contains("goal (codex/claude)"), "{shape}");
-    assert!(shape.contains("command (terminal)"), "{shape}");
-    assert_eq!(
-        all_persistent_rows(&boot).await,
-        before,
-        "planner shim changed a persistent table"
-    );
-    assert!(
-        drain_events(&mut rx).await.is_empty(),
-        "planner shim broadcast an EventBus envelope"
-    );
 }
 
 #[tokio::test]
@@ -917,10 +879,6 @@ async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
     let mut rx = boot.ctx.events.subscribe();
     let before = all_persistent_rows(&boot).await;
     for (tool, args) in [
-        (
-            TOOL_PLAN_UPSERT,
-            json!({"tasks": [{ "key": "a", "kind": "codex", "goal": "g" }], "message": "m"}),
-        ),
         (TOOL_PLAN_CANCEL, json!({ "key": "a", "message": "m" })),
         (TOOL_PLAN_LIST, json!({})),
     ] {

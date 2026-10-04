@@ -10,6 +10,7 @@ mod client_transport;
 #[cfg(test)]
 mod server_request_tests;
 mod server_requests;
+pub(crate) mod tool_names;
 use client_transport::{PendingRequest, TransportAbort};
 
 use std::sync::atomic::{AtomicU64, Ordering};

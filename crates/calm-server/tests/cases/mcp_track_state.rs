@@ -439,47 +439,6 @@ async fn task_verdict_accepted_emits_task_completed() {
 }
 
 #[tokio::test]
-async fn legacy_alias_update_task_meta_still_dispatches_via_warn() {
-    let boot = boot().await;
-    insert_task(&boot, "legacy-job", "legacy-job", "done", None).await;
-    let mut rx = boot.ctx.events.subscribe();
-
-    let out = call_tool(
-        &boot,
-        "calm.update_task_meta",
-        planner_identity(&boot),
-        json!({
-            "attempt_id": "legacy-job",
-            "status": "accepted",
-            "reason": "legacy alias forwards",
-            "message": "legacy alias forwards"
-        }),
-    )
-    .await
-    .expect("legacy alias forwards to task verdict");
-    assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
-
-    let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    match envelope.event {
-        Event::TaskCompleted {
-            idempotency_key,
-            result,
-            ..
-        } => {
-            assert_eq!(idempotency_key, "legacy-job");
-            assert_eq!(
-                result.get("status").and_then(Value::as_str),
-                Some("accepted")
-            );
-        }
-        other => panic!("expected TaskCompleted, got {other:?}"),
-    }
-}
-
-#[tokio::test]
 async fn task_verdict_rejected_emits_task_failed() {
     let boot = boot().await;
     insert_task(&boot, "job-xyz", "job-xyz", "done", None).await;

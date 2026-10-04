@@ -6,7 +6,7 @@ use calm_server::model::CardRole;
 use serde_json::json;
 use support::mcp::{
     boot_shared_daemon_with_planner_thread, boot_with_role, connect, handshake, handshake_daemon,
-    recv_frame, send_frame, tools_list_frame,
+    recv_frame, send_frame, tools_call_frame, tools_list_frame,
 };
 
 fn expected_planner_toolset() -> Vec<&'static str> {
@@ -81,21 +81,69 @@ async fn tools_list_for_planner_role_returns_planner_toolset() {
     assert_eq!(names, expected_planner_toolset());
 }
 
-#[tokio::test]
-async fn tools_list_for_planner_role_does_not_leak_aliases() {
-    let names = tools_list_names_for_role(CardRole::Planner).await;
-    for hidden_name in [
-        "calm.dispatch_request",
+/// #2003: the deprecated aliases and the retired shims are gone, not hidden: no handler is left
+/// under any of their names.
+#[test]
+fn removed_aliases_and_retired_shims_are_not_registered() {
+    let registry = calm_server::mcp_server::build_default_registry();
+    for removed in [
+        "calm.get_track_state",
+        "calm.update_task_meta",
         "calm.task_completed",
         "calm.task_failed",
-        "calm.get_track_state",
+        "calm.dispatch_request",
         "calm.plan.upsert",
-        "calm.update_task_meta",
     ] {
         assert!(
-            !names.iter().any(|name| name == hidden_name),
-            "hidden tool leaked in tools/list: {hidden_name}; names={names:?}",
+            registry.lookup(removed).is_none(),
+            "{removed} must not remain as a hidden tool or alias",
         );
+    }
+}
+
+/// #2003: `tools/call` with a name the session cannot reach is `-32601`, and the message lists
+/// exactly the names that session's `tools/list` shows, so a stale name (here a removed alias)
+/// points at the valid choices. Two roles prove the list is the session's, not a fixed one.
+#[tokio::test]
+async fn unknown_tool_error_lists_the_sessions_tools() {
+    for (role, stale) in [
+        (CardRole::Planner, "calm.update_task_meta"),
+        (CardRole::Worker, "calm.task_completed"),
+    ] {
+        let boot = boot_with_role(role).await;
+        let (mut rd, mut wr) = connect(&boot.socket_path).await;
+        handshake(&mut rd, &mut wr, &boot.raw_token).await;
+
+        send_frame(&mut wr, tools_list_frame(2, &boot.thread_id)).await;
+        let listed = recv_frame(&mut rd).await;
+        assert!(
+            listed.get("error").is_none(),
+            "tools/list errored: {listed:#?}"
+        );
+        let visible = tool_names_from_response(&listed);
+        assert!(!visible.is_empty(), "{role:?} sees no tools");
+
+        send_frame(
+            &mut wr,
+            tools_call_frame(3, stale, &boot.thread_id, json!({})),
+        )
+        .await;
+        let resp = recv_frame(&mut rd).await;
+        assert_eq!(resp["error"]["code"], -32601, "{role:?}: {resp:#?}");
+        let message = resp["error"]["message"].as_str().expect("message");
+        let (head, list) = message
+            .split_once("; tools visible to this session: ")
+            .unwrap_or_else(|| {
+                panic!("{role:?}: the error must list the session's tools: {message}")
+            });
+        assert_eq!(head, format!("method not found: tools/call: {stale}"));
+        let mut listed_in_error: Vec<String> = list.split(", ").map(str::to_string).collect();
+        listed_in_error.sort();
+        assert_eq!(
+            listed_in_error, visible,
+            "{role:?}: the error lists exactly the session's tools/list names"
+        );
+        let _ = (&boot.server, &boot.repo);
     }
 }
 
@@ -211,32 +259,8 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
         "daemon-trust tools/list without threadId must advertise Planner task.verdict, got: {names:?}"
     );
     assert!(
-        !names.contains(&"calm.plan.upsert".to_string()),
-        "daemon-trust role union must hide retired plan.upsert, got: {names:?}"
-    );
-    assert!(
         names.contains(&"calm.report.commit".to_string()),
         "daemon-trust tools/list without threadId must include report.commit, got: {names:?}"
     );
     let _ = (&boot.server, &boot.repo);
-}
-
-#[tokio::test]
-async fn plan_upsert_hidden_shim_retains_original_input_schema() {
-    let registry = calm_server::mcp_server::build_default_registry();
-    let descriptors = registry.descriptors();
-    let upsert = descriptors
-        .iter()
-        .find(|d| d.name == "calm.plan.upsert")
-        .expect("calm.plan.upsert descriptor");
-
-    assert!(upsert.visible_to_roles.is_empty());
-
-    let golden: serde_json::Value =
-        serde_json::from_str(include_str!("../fixtures/plan_upsert_input_schema.json"))
-            .expect("plan.upsert schema golden JSON");
-    assert_eq!(
-        upsert.input_schema, golden,
-        "hidden shim must retain the complete legacy input schema"
-    );
 }

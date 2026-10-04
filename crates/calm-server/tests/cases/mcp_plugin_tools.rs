@@ -482,7 +482,9 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
     // EXPOSED_NAME exists but is out of the bound track's scope.
     let names = [EXPOSED_NAME, unknown_plugin_tool, unknown_bare_tool];
 
-    // Column 1 — valid threadId: only the caller's own requested name differs.
+    // Column 1 — valid threadId: only the caller's own requested name differs; the rest of the
+    // message is the session's visible-tool list, the same whichever name was asked for.
+    let mut valid_thread_tails = Vec::new();
     for (idx, name) in names.iter().enumerate() {
         let err = call_expect_error(
             &mut rd,
@@ -493,12 +495,22 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
         )
         .await;
         assert_eq!(
-            err,
-            json!({
-                "code": -32601,
-                "message": format!("method not found: tools/call: {name}"),
-            }),
-            "valid-thread rejection for `{name}` must be the shared -32601 object"
+            err.as_object().map(|o| o.len()),
+            Some(2),
+            "valid-thread rejection for `{name}` is exactly {{code, message}}: {err:#?}"
+        );
+        assert_eq!(err["code"], -32601, "{err:#?}");
+        let tail = err["message"]
+            .as_str()
+            .and_then(|m| m.strip_prefix(&format!("method not found: tools/call: {name}")))
+            .unwrap_or_else(|| panic!("rejection for `{name}` must name it first: {err:#?}"))
+            .to_string();
+        valid_thread_tails.push(tail);
+    }
+    for tail in &valid_thread_tails[1..] {
+        assert_eq!(
+            tail, &valid_thread_tails[0],
+            "valid-thread rejection must be identical across tool existence"
         );
     }
 

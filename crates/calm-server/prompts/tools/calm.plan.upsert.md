@@ -1,1 +1,0 @@
-Deprecated compatibility shim: `calm.plan.upsert` was retired in #985. Create or replace `task` blocks with an `upsert` op of `calm.report.commit`; the kernel projects ready declarations, schedules tasks, and runs verification gates.

@@ -555,7 +555,7 @@ mod tests {
         }
     }
 
-    /// Every `calm.*` token in `prompt` checked against the tool registry: each must be a registered non-alias name; tokens in neither list must be visible to `role`; `callable_but_hidden` and `named_to_forbid` entries must be registered, NOT visible, and actually named by the prompt.
+    /// Every `calm.*` token in `prompt` checked against the tool registry: each must be a registered name; tokens in neither list must be visible to `role`; `callable_but_hidden` and `named_to_forbid` entries must be registered, NOT visible, and actually named by the prompt.
     /// With `must_name_all_visible` every tool visible to `role` must be named; `min_named` guards against an empty scanner only.
     fn assert_prompt_tool_names(
         label: &str,
@@ -569,12 +569,10 @@ mod tests {
         use std::collections::BTreeSet;
 
         let registry = crate::mcp_server::build_default_registry();
-        let aliases = registry.deprecated_alias_names();
         let registered: BTreeSet<String> = registry
             .descriptors()
             .into_iter()
             .map(|descriptor| descriptor.name)
-            .filter(|name| !aliases.contains(name))
             .collect();
         let visible: BTreeSet<String> = registry
             .descriptors_for_role(role)
@@ -584,10 +582,6 @@ mod tests {
         assert!(
             !visible.is_empty(),
             "the {role:?} role sees no tools at all"
-        );
-        assert!(
-            visible.iter().all(|name| registered.contains(name)),
-            "a visible tool is a deprecated alias; aliases must stay hidden"
         );
 
         let named: BTreeSet<&str> = calm_tool_tokens(prompt).into_iter().collect();
@@ -605,7 +599,7 @@ mod tests {
                 assert!(
                     registered.contains(*name),
                     "{label}: `{name}` is listed as {list} but is not a registered tool \
-                     (typo, retired, or alias); drop it from the list"
+                     (typo or retired); drop it from the list"
                 );
                 assert!(
                     !visible.contains(*name),
@@ -641,7 +635,7 @@ mod tests {
             assert!(
                 registered.contains(*name),
                 "{label} names `{name}`, which is not a registered tool (typo, retired, \
-                 alias, or not a complete tool name). Registered: {registered:?}"
+                 or not a complete tool name). Registered: {registered:?}"
             );
             if callable_but_hidden.contains(name) || named_to_forbid.contains(name) {
                 continue;

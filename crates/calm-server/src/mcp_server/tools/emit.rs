@@ -1,5 +1,5 @@
-//! Worker outcome tools (`calm.task.complete`, `calm.task.fail`) and the retired
-//! `calm.dispatch_request` shim. Every emitted event's scope is anchored on the caller's card.
+//! Worker outcome tools (`calm.task.complete`, `calm.task.fail`). Every emitted event's scope is
+//! anchored on the caller's card.
 
 use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
@@ -7,9 +7,8 @@ use crate::event::{Event, ForgeEventSpec};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    register_deprecated_alias, require_role, role_gated_write_annotations,
+    require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::write_args::message_schema;
 use crate::mcp_server::transport::PluginForgePayload;
 use crate::model::CardRole;
 use crate::operation::forge_action_adapter::ProbeSpec;
@@ -17,16 +16,12 @@ use serde_json::Map;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-const TOOL_DISPATCH_REQUEST: &str = "calm.dispatch_request";
 pub const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
 pub const TOOL_TASK_FAIL: &str = "calm.task.fail";
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(dispatch_request_descriptor(), wrap(dispatch_request));
     registry.register(task_complete_descriptor(), wrap(task_complete));
     registry.register(task_fail_descriptor(), wrap(task_fail));
-    register_deprecated_alias(registry, "calm.task_completed", TOOL_TASK_COMPLETE);
-    register_deprecated_alias(registry, "calm.task_failed", TOOL_TASK_FAIL);
 }
 
 /// Turns a typed async fn into the boxed-future `ToolHandler` the registry expects.
@@ -43,46 +38,6 @@ where
                 .map(crate::mcp_server::result::ToolResult::structured)
         })
     })
-}
-
-fn dispatch_request_descriptor() -> ToolDescriptor {
-    ToolDescriptor {
-        name: TOOL_DISPATCH_REQUEST.into(),
-        description: include_str!("../../../prompts/tools/calm.dispatch_request.md")
-            .trim_end()
-            .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "kind": { "type": "string", "enum": ["codex", "terminal"] },
-                "idempotency_key": { "type": "string", "minLength": 1 },
-                "goal": { "type": "string" },
-                "context": {},
-                "acceptance_criteria": { "type": ["string", "null"] },
-                "cmd": { "type": "string" },
-                "cwd": { "type": ["string", "null"] },
-                "message": message_schema()
-            }
-        }),
-        annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[],
-    }
-}
-
-async fn dispatch_request(
-    _ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
-    _args: Value,
-) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
-    Ok(json!({
-        "error": "calm.dispatch_request was retired (#644); no task was dispatched",
-        "migration": {
-            "use": "calm.report.commit",
-            "shape": "{ message, ops: [{ op: \"upsert\", kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" } }] }",
-            "notes": "Read the report with calm.report.read first. The kernel schedules ready task blocks and runs verification gates; use `neige state` for status."
-        }
-    }))
 }
 
 fn task_complete_descriptor() -> ToolDescriptor {

@@ -1,5 +1,5 @@
-//! Integration tests for the emit tools (legacy `calm.dispatch_request`, `calm.task.complete`,
-//! `calm.task.fail`) over the real MCP server transport.
+//! Integration tests for the emit tools (`calm.task.complete`, `calm.task.fail`) over the real MCP
+//! server transport.
 
 #![cfg(unix)]
 
@@ -7,7 +7,6 @@ use calm_server::event::{Event, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::model::CardRole;
 use serde_json::json;
-use tokio::time::timeout;
 
 use crate::support;
 
@@ -15,17 +14,6 @@ use support::mcp::{
     CardBoot, boot_with_role, cli_output, connect, handshake, neige_cli_via_socket, recv_frame,
     send_frame, tools_call_frame, wait_for_kind,
 };
-
-fn retired_dispatch_payload() -> serde_json::Value {
-    json!({
-        "error": "calm.dispatch_request was retired (#644); no task was dispatched",
-        "migration": {
-            "use": "calm.report.commit",
-            "shape": "{ message, ops: [{ op: \"upsert\", kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" } }] }",
-            "notes": "Read the report with calm.report.read first. The kernel schedules ready task blocks and runs verification gates; use `neige state` for status."
-        }
-    })
-}
 
 fn tools_call_frame_no_thread(id: i64, name: &str, args: serde_json::Value) -> serde_json::Value {
     json!({
@@ -37,42 +25,6 @@ fn tools_call_frame_no_thread(id: i64, name: &str, args: serde_json::Value) -> s
             "arguments": args,
         }
     })
-}
-
-#[tokio::test]
-async fn legacy_dispatch_alias_inherits_retired_refusal() {
-    let b = boot_with_role(CardRole::Planner).await;
-    let mut rx = b.events.subscribe();
-    let (mut rd, mut wr) = connect(&b.socket_path).await;
-    handshake(&mut rd, &mut wr, &b.raw_token).await;
-
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            11,
-            "calm.dispatch_request",
-            &b.thread_id,
-            json!({
-                "kind": "terminal",
-                "idempotency_key": "dr-alias",
-                "cmd": "echo old",
-                "message": "old alias call"
-            }),
-        ),
-    )
-    .await;
-    let resp = recv_frame(&mut rd).await;
-    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
-    assert_eq!(
-        resp["result"]["structuredContent"],
-        retired_dispatch_payload()
-    );
-    let no_event = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
-    assert!(
-        no_event.is_err(),
-        "dispatch alias shim emitted event: {no_event:?}"
-    );
-    let _ = (&b.server, &b.repo);
 }
 
 #[tokio::test]
@@ -194,40 +146,6 @@ async fn task_completed_from_claude_worker_persists_claude_session_actor() {
     match actor {
         ActorId::AiClaudeSession(sid) => assert_eq!(sid.as_str(), b.session_id.as_str()),
         other => panic!("persisted actor must be AiClaudeSession; got {other:?}"),
-    }
-    let _ = (&b.server, &b.repo);
-}
-
-#[tokio::test]
-async fn legacy_alias_task_completed_still_dispatches_via_warn() {
-    let b = boot_with_role(CardRole::Worker).await;
-    let mut rx = b.events.subscribe_filtered();
-    let (mut rd, mut wr) = connect(&b.socket_path).await;
-    handshake(&mut rd, &mut wr, &b.raw_token).await;
-
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            21,
-            "calm.task_completed",
-            &b.thread_id,
-            json!({"attempt_id": "tc-legacy", "result": {"ok": true}}),
-        ),
-    )
-    .await;
-    let resp = recv_frame(&mut rd).await;
-    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
-
-    let env = wait_for_kind(&mut rx, "task.completed").await;
-    match &env.actor {
-        ActorId::AiCodexSession(sid) => assert_eq!(sid.as_str(), b.session_id.as_str()),
-        other => panic!("expected AiCodexSession actor; got {other:?}"),
-    }
-    match &env.event {
-        Event::TaskCompleted {
-            idempotency_key, ..
-        } => assert_eq!(idempotency_key, "tc-legacy"),
-        other => panic!("expected TaskCompleted; got {other:?}"),
     }
     let _ = (&b.server, &b.repo);
 }

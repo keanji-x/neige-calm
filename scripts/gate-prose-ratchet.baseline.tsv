@@ -3,4 +3,4 @@
 # Counts are OCCURRENCES per (term, scope) in tracked *.rs under crates/. Only-down is enforced.
 # term	scope	count
 cjk	crates/**/*.rs	211
-long_literal	crates/**/*.rs	161
+long_literal	crates/**/*.rs	152

@@ -34,7 +34,7 @@ fn text_block(text: &str) -> ContentBlock {
     }
 }
 
-fn ok_result(parts: &[&str]) -> CallToolResult {
+pub(crate) fn ok_result(parts: &[&str]) -> CallToolResult {
     CallToolResult {
         content: parts.iter().map(|p| text_block(p)).collect(),
         is_error: None,
@@ -43,7 +43,13 @@ fn ok_result(parts: &[&str]) -> CallToolResult {
     }
 }
 
-fn record(boot: &Boot, plugin_id: &str, tool: &str, args: &Value, result: &CallToolResult) {
+pub(crate) fn record(
+    boot: &Boot,
+    plugin_id: &str,
+    tool: &str,
+    args: &Value,
+    result: &CallToolResult,
+) {
     boot.ctx
         .plugin_results
         .record(boot.track_id.as_str(), plugin_id, tool, args, result);
@@ -87,7 +93,7 @@ fn install_registry(boot: &Boot) {
     );
 }
 
-async fn capture(boot: &Boot, args: Value) -> Result<Value, RpcError> {
+pub(crate) async fn capture(boot: &Boot, args: Value) -> Result<Value, RpcError> {
     call_tool(boot, TOOL_SOURCE_CAPTURE, planner_identity(boot), args).await
 }
 
@@ -100,7 +106,7 @@ async fn list(boot: &Boot) -> Vec<Value> {
         .clone()
 }
 
-fn assert_invalid_params(err: &RpcError, needle: &str) {
+pub(crate) fn assert_invalid_params(err: &RpcError, needle: &str) {
     assert_eq!(err.code, -32602, "{err}");
     assert!(err.message.contains(needle), "{err}");
 }

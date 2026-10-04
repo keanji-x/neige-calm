@@ -12,7 +12,7 @@ use crate::state::WriteContext;
 use calm_truth::track_vcs_repo::{SqlxTrackVcsRepo, TrackVcsRepo};
 use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -297,23 +297,16 @@ pub fn role_gated_write_annotations() -> Value {
 /// Map of tool name → handler + descriptor.
 pub struct ToolRegistry {
     by_name: HashMap<String, (ToolDescriptor, ToolHandler)>,
-    /// Names registered through [`register_deprecated_alias`] and not since re-registered as real
-    /// tools; the one kind of descriptor without a `prompts/tools/<name>.md` source.
-    deprecated_aliases: BTreeSet<String>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             by_name: HashMap::new(),
-            deprecated_aliases: BTreeSet::new(),
         }
     }
 
-    /// A real tool registered over a former alias name is a real tool: the
-    /// name leaves [`deprecated_alias_names`](Self::deprecated_alias_names).
     pub fn register(&mut self, descriptor: ToolDescriptor, handler: ToolHandler) {
-        self.deprecated_aliases.remove(&descriptor.name);
         self.by_name
             .insert(descriptor.name.clone(), (descriptor, handler));
     }
@@ -342,43 +335,6 @@ impl ToolRegistry {
             .map(|(d, _)| d.clone())
             .collect()
     }
-
-    pub fn deprecated_alias_names(&self) -> &BTreeSet<String> {
-        &self.deprecated_aliases
-    }
-}
-
-/// Register `old_name` as a hidden alias that warns and delegates to `new_name`'s handler.
-/// MUST be called AFTER the real handler is registered.
-pub fn register_deprecated_alias(
-    registry: &mut ToolRegistry,
-    old_name: &'static str,
-    new_name: &'static str,
-) {
-    let real = registry
-        .lookup(new_name)
-        .unwrap_or_else(|| panic!("register_deprecated_alias: {new_name} not registered yet"));
-    let new_for_log = new_name;
-    let old_for_log = old_name;
-    let handler: ToolHandler = Arc::new(move |ctx, identity, args| {
-        tracing::warn!(
-            target: "mcp_alias",
-            card_id = %identity.card_id,
-            old_name = old_for_log,
-            new_name = new_for_log,
-            "deprecated MCP tool name; please migrate"
-        );
-        real(ctx, identity, args)
-    });
-    let alias_descriptor = ToolDescriptor {
-        name: old_name.into(),
-        description: format!("[deprecated] Use `{new_name}` instead. Hidden from tools/list."),
-        input_schema: json!({ "type": "object", "additionalProperties": true }),
-        annotations: None,
-        visible_to_roles: &[],
-    };
-    registry.register(alias_descriptor, handler);
-    registry.deprecated_aliases.insert(old_name.to_string());
 }
 
 impl Default for ToolRegistry {
@@ -390,11 +346,6 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::card_role_cache::CardRoleCache;
-    use crate::db::sqlite::SqlxRepo;
-    use crate::event::EventBus;
-    use crate::state::WriteContext;
-    use crate::track_area_cache::TrackAreaCache;
 
     fn identity_with_role_and_provider(
         role: CardRole,
@@ -520,75 +471,6 @@ mod tests {
         })
     }
 
-    async fn fake_context() -> Arc<AppContext> {
-        let repo = Arc::new(
-            SqlxRepo::open("sqlite::memory:")
-                .await
-                .expect("open in-memory sqlite"),
-        );
-        let sqlite_pool = repo.sqlite_pool();
-        let route_repo: Arc<dyn RouteRepo> = repo;
-        Arc::new(AppContext {
-            terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
-            repo: route_repo,
-            track_vcs: None,
-            events: EventBus::new(),
-            write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
-            daemon_token_hash: None,
-            gate_logs_dir: std::env::temp_dir().join("neige-registry-test-gate-logs"),
-            plugin_host: Arc::new(tokio::sync::OnceCell::new()),
-            operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
-            scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
-            series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
-            plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
-            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
-            preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
-            sqlite_pool,
-        })
-    }
-
-    #[tokio::test]
-    async fn deprecated_alias_forwards_to_real_handler() {
-        let mut registry = ToolRegistry::new();
-        registry.register(
-            fake_descriptor("calm.foo.bar", &[CardRole::Planner]),
-            fake_handler("real"),
-        );
-        register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
-
-        let handler = registry
-            .lookup("calm.foo_bar")
-            .expect("alias handler registered");
-        let out = handler(
-            fake_context().await,
-            identity_with_role(CardRole::Planner),
-            json!({ "anything": true }),
-        )
-        .await
-        .expect("alias forwards to real handler");
-
-        assert_eq!(out.into_structured(), json!({ "who": "real" }));
-    }
-
-    #[test]
-    fn deprecated_alias_is_hidden_from_tools_list() {
-        let mut registry = ToolRegistry::new();
-        registry.register(
-            fake_descriptor("calm.foo.bar", &[CardRole::Planner]),
-            fake_handler("real"),
-        );
-        register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
-
-        let names = registry
-            .descriptors_for_role(CardRole::Planner)
-            .into_iter()
-            .map(|descriptor| descriptor.name)
-            .collect::<Vec<_>>();
-
-        assert!(names.contains(&"calm.foo.bar".to_string()));
-        assert!(!names.contains(&"calm.foo_bar".to_string()));
-    }
-
     #[test]
     fn descriptors_visible_to_any_role_returns_union_without_hidden_tools() {
         let mut registry = ToolRegistry::new();
@@ -621,54 +503,6 @@ mod tests {
             names,
             vec!["calm.shared", "calm.spec.only", "calm.worker.only"]
         );
-    }
-
-    #[tokio::test]
-    async fn deprecated_alias_does_not_overwrite_real_name() {
-        let mut registry = ToolRegistry::new();
-        registry.register(
-            fake_descriptor("calm.foo.bar", &[CardRole::Planner]),
-            fake_handler("real"),
-        );
-        register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
-
-        let handler = registry
-            .lookup("calm.foo.bar")
-            .expect("real handler still registered");
-        let out = handler(
-            fake_context().await,
-            identity_with_role(CardRole::Planner),
-            json!({}),
-        )
-        .await
-        .expect("real handler still callable");
-
-        assert_eq!(out.into_structured(), json!({ "who": "real" }));
-    }
-
-    #[test]
-    fn deprecated_alias_names_track_registration_order() {
-        // real then alias: the alias name is an alias.
-        let mut registry = ToolRegistry::new();
-        registry.register(
-            fake_descriptor("calm.foo.bar", &[CardRole::Planner]),
-            fake_handler("real"),
-        );
-        register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
-        assert!(registry.deprecated_alias_names().contains("calm.foo_bar"));
-        assert!(!registry.deprecated_alias_names().contains("calm.foo.bar"));
-
-        // alias then real over the same name: it is a real tool now.
-        registry.register(
-            fake_descriptor("calm.foo_bar", &[CardRole::Planner]),
-            fake_handler("real-again"),
-        );
-        assert!(
-            !registry.deprecated_alias_names().contains("calm.foo_bar"),
-            "a real tool registered over a former alias name is a real tool: {:?}",
-            registry.deprecated_alias_names()
-        );
-        assert!(registry.lookup("calm.foo_bar").is_some());
     }
 
     #[test]

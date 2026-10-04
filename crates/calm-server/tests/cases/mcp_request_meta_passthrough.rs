@@ -376,7 +376,7 @@ async fn existing_handlers_unchanged_when_meta_present() {
     let without_resp = recv_frame(&mut rd).await;
     assert!(
         without_resp.get("error").is_none(),
-        "get_track_state without meta should use CardBound identity: {without_resp:#?}"
+        "track.state without meta should use CardBound identity: {without_resp:#?}"
     );
     assert_eq!(
         without_resp["result"]["structuredContent"]["track"]["id"],
@@ -392,7 +392,7 @@ async fn existing_handlers_unchanged_when_meta_present() {
     let with_resp = recv_frame(&mut rd).await;
     assert!(
         with_resp.get("error").is_none(),
-        "get_track_state with meta errored: {with_resp:#?}"
+        "track.state with meta errored: {with_resp:#?}"
     );
 
     let with_result = &with_resp["result"]["structuredContent"];

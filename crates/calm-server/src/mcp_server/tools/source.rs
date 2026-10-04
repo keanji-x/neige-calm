@@ -5,15 +5,14 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
+use crate::codex_appserver::tool_names::model_tool_key;
 use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::transport::plugin_tool_names::{
-    model_tool_key, names_track_visible_plugin_tool,
-};
+use crate::mcp_server::transport::plugin_tool_names::names_track_visible_plugin_tool;
 use crate::model::CardRole;
 use crate::plugin_results::{ARGS_CANON_VERSION, Recorded, ResultStatus, args_sha256};
 use crate::report_sources::{

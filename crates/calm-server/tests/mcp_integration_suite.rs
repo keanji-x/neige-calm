@@ -23,6 +23,8 @@ mod mcp_report_series_read;
 mod mcp_report_tag;
 #[path = "cases/mcp_source_capture.rs"]
 mod mcp_source_capture;
+#[path = "cases/mcp_source_capture_codex_names.rs"]
+mod mcp_source_capture_codex_names;
 #[path = "cases/mcp_source_capture_e2e.rs"]
 mod mcp_source_capture_e2e;
 #[path = "cases/mcp_source_warnings.rs"]

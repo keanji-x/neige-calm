@@ -233,17 +233,12 @@ mod tests {
         assert_eq!(absent_row[0], null_without_key);
     }
 
-    /// Every non-alias tool's description renders `prompts/tools/<tool name>.md` with shared
-    /// acceptance guidance, and there is no such file without a tool. Trailing whitespace before the
-    /// final newline would make the embedded description differ from the file's visible content.
+    /// Every tool's description renders `prompts/tools/<tool name>.md` with shared acceptance
+    /// guidance, and there is no such file without a tool. Trailing whitespace before the final
+    /// newline would make the embedded description differ from the file's visible content.
     #[test]
-    fn prompt_files_cover_exactly_the_non_alias_tools() {
+    fn prompt_files_cover_exactly_the_registered_tools() {
         let registry = build_default_registry();
-        let aliases = registry.deprecated_alias_names();
-        assert!(
-            !aliases.is_empty(),
-            "the default registry is expected to carry deprecated aliases"
-        );
 
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts/tools");
         let mut stems = BTreeSet::new();
@@ -284,9 +279,6 @@ mod tests {
 
         let mut expected = BTreeSet::new();
         for descriptor in registry.descriptors() {
-            if aliases.contains(&descriptor.name) {
-                continue;
-            }
             let file_body = contents.get(&descriptor.name).unwrap_or_else(|| {
                 panic!(
                     "{}: no prompts/tools/{}.md",
@@ -304,11 +296,11 @@ mod tests {
         }
         assert_eq!(
             stems, expected,
-            "prompts/tools/*.md stems must be exactly the non-alias tool names"
+            "prompts/tools/*.md stems must be exactly the registered tool names"
         );
         assert!(
             expected.len() >= 30,
-            "anti-vacuity floor: {} non-alias tools",
+            "anti-vacuity floor: {} tools",
             expected.len()
         );
     }

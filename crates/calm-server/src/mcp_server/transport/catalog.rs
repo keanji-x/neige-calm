@@ -15,19 +15,7 @@ pub(crate) async fn tool_descriptors_for_connection(
                 .await
                 .ok()
             {
-                Some(identity) => {
-                    // Plugin tools are scoped to the resolved thread's track.
-                    let scope = plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
-                    let mut descriptors = registry.descriptors_for_role(identity.role);
-                    extend_plugin_tool_descriptors_for_role(
-                        ctx,
-                        &mut descriptors,
-                        identity.role,
-                        &scope,
-                    )
-                    .await;
-                    descriptors
-                }
+                Some(identity) => tool_descriptors_for_identity(ctx, registry, &identity).await,
                 None => bootstrap_tool_descriptors(ctx, registry).await,
             },
             // Initial discovery may precede thread attribution. The catalog covers all
@@ -40,16 +28,7 @@ pub(crate) async fn tool_descriptors_for_connection(
                 .ok()
             {
                 Some(identity) if same_bound_session(&identity, bound) => {
-                    let scope = plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
-                    let mut descriptors = registry.descriptors_for_role(identity.role);
-                    extend_plugin_tool_descriptors_for_role(
-                        ctx,
-                        &mut descriptors,
-                        identity.role,
-                        &scope,
-                    )
-                    .await;
-                    descriptors
+                    tool_descriptors_for_identity(ctx, registry, &identity).await
                 }
                 Some(identity) => {
                     warn_cross_session_reject(tid, &identity, bound);
@@ -68,4 +47,38 @@ pub(crate) async fn tool_descriptors_for_connection(
         },
     };
     Ok(descriptors)
+}
+
+/// What `tools/list` shows a resolved caller: its role's kernel tools plus the plugin tools of
+/// its track's scope.
+async fn tool_descriptors_for_identity(
+    ctx: &Arc<AppContext>,
+    registry: &ToolRegistry,
+    identity: &ToolCallIdentity,
+) -> Vec<ToolDescriptor> {
+    let scope = plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
+    let mut descriptors = registry.descriptors_for_role(identity.role);
+    extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, identity.role, &scope).await;
+    descriptors
+}
+
+/// The one `-32601` for a `tools/call` name this caller cannot reach. It lists the names its
+/// `tools/list` shows, so the error is the same for an unknown name and an out-of-scope one: it
+/// is not an existence oracle. Hidden tools (callable, not in `tools/list`) are not listed.
+pub(super) async fn unknown_tool_error(
+    ctx: &Arc<AppContext>,
+    registry: &ToolRegistry,
+    identity: &ToolCallIdentity,
+    name: &str,
+) -> RpcError {
+    let mut visible: Vec<String> = tool_descriptors_for_identity(ctx, registry, identity)
+        .await
+        .into_iter()
+        .map(|descriptor| descriptor.name)
+        .collect();
+    visible.sort();
+    RpcError::method_not_found(&format!(
+        "tools/call: {name}; tools visible to this session: {}",
+        visible.join(", ")
+    ))
 }
