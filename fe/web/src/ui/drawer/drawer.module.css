@@ -155,7 +155,7 @@
    * puts the seam above the card at the same `z-index`, which is what lets a
    * mounted layer float *over* the card (the rail's prompt preview does);
    * and it puts whatever the seam holds after the card in the tab ring, so
-   * the first Tab off the drawer container still lands on Close. The cost,
+   * the first Tab off the drawer container still lands in its header. The cost,
    * stated: a rail mounted here is the *last* stop in the drawer rather than
    * the second, so a reader tabbing to the composer now passes it. That is
    * one stop, because the rail roves (`features/chat/thread`), and it is the
@@ -214,77 +214,67 @@
   }
 
   /*
-   * ── The floating corner control ───────────────────────────────────────────
+   * ── The header row ─────────────────────────────────────────────────────────
    *
-   * **The close, and on desktop the reading-width toggle beside it.** The
-   * corner once held the close and a reset; the reset is gone (#1139). The
-   * width toggle (#1923) now sits inboard of the close, `--space-6` apart, the
-   * gap §4.3 asks of two adjacent controls. It stays after the close in the
-   * DOM so the first Tab off the container still lands on Close.
+   * **A quiet row, not a band.** Desktop paints the conversation's name on the
+   * left and the reading-width toggle and Close on the right, on one row as
+   * tall as the controls (`--control-h`) with the card inset above it — the
+   * same 36px the floating controls used to clear. The scroller starts below
+   * it, so the first line of the transcript no longer runs under the controls
+   * and nothing scrolls beneath them. The title is the drawer's accessible
+   * name (`aria-labelledby`), so it is said once. Compact viewports paint the
+   * shared `MobileHeader` instead and never this row.
    *
-   * **There is no head band.** The band is deleted, and with it the 21.7px
-   * `--nc-head-band` derivation and the "the card now owes the page two
-   * alignments" argument that used to live here: both were reasoning about a
-   * title line, and the title line is gone. Nothing was salvaged, because
-   * nothing survived the premise.
+   * The title is one line at the interface rank and ellipsizes; the full name
+   * stays reachable through its `title`. It takes the free space, so the
+   * fixed 28px controls never move it.
    *
-   * **Why the band was not worth its 40px.** It carried exactly one string —
-   * the card's *kind* ("Planner"), not the conversation's name. You arrive here
-   * by clicking the row that says "Planner"; the band restated, one click later
-   * and 40px down, the thing you had just pressed. That is zero information
-   * for the tallest fixed cost on an 854px card. The name that string still
-   * had to carry is an *accessibility* obligation, not a painting one, and it
-   * is discharged by `aria-label` on `.drawer` (see the `title` prop in
-   * public.tsx). Losing the band also loses the frosted sticky ground under
-   * it, whose entire premise was "content scrolls beneath a head" — no head,
-   * no ground, so the `backdrop-filter` and its two fallbacks went with it.
+   * **Why the close is a chevron and may never be an X.** The page header's
+   * *delete track* sits in the same column a pointer-flick above; two
+   * identical boxes with opposite consequences would be a mis-click reported
+   * as data loss. `chevron-right` is this app's "collapse it away" word, the
+   * same one the rail's collapse uses, and closing a conversation does not
+   * end it. X stays reserved for destruction. Anything added to this row
+   * inherits that obligation.
    *
-   * **Why the close is a chevron and may never be an X.** Measured at
-   * 1512×950 with the drawer open: the page header's *delete track* button sits
-   * at y 22.3–50.3 (centre 36.3, right edge 1488); this close sat at
-   * y 80.0–108.0 (centre 94.0, right edge 1465). Same column to within 23px,
-   * 57.7px apart, identical 28px box, identical X glyph — and the top one
-   * destroys a track while the bottom one puts a conversation away. Two
-   * controls that look the same, one pointer-flick apart, with opposite
-   * consequences, is a mis-click waiting to be reported as data loss. So the
-   * shape carries the difference: `chevron-right` is this app's "collapse it
-   * away" word, the same one the rail's collapse uses, and it is the honest
-   * verb — closing a conversation does not end it. X stays reserved for
-   * destruction. (The note on `.action` below has claimed the close was a
-   * chevron since the card landed; until now the code rendered an X. The
-   * comment was right and the code was wrong.)
-   *
-   * Floating moves the close *closer* to the delete — measured after this
-   * change it lands at y 76.3, right edge 1480, so 54.0px below and 8px inside
-   * a control it now shares a column with almost exactly. That is fine, and it
-   * is why the glyph had to change first: proximity is what the drawer's
-   * geometry wants (the corner is where a dismiss lives), so the shape, not the
-   * distance, has to be what tells them apart. Anything added to this group
-   * later inherits that obligation.
-   *
-   * **It floats; it does not occupy a row.** Absolute against the card and
-   * above the scroller at `--z-raised`, so the transcript starts at the top of
-   * the card and a long one scrolls under it. `--nc-card-inset` from both
-   * edges puts it on the same 8px column the transcript and the composer start
-   * on. The 16px stroked SVG comes from the shared `<Icon>` line-work, so its
-   * optical weight stays stable instead of depending on a font's arrow metrics
-   * — the same system the rail collapse and the area chevron draw from.
-   *
-   * The full 28px hit area is §5 (2.5.8).
+   * The controls are `--space-6` apart, the gap §4.3 asks of two adjacent
+   * controls, and keep the full 28px hit area (§5, 2.5.8).
    */
+  .header {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-6);
+    padding: var(--nc-card-inset, var(--space-4)) var(--nc-card-inset, var(--space-4)) 0;
+  }
+
+  .title {
+    flex: 1;
+    min-inline-size: 0;
+    margin: 0;
+    overflow: hidden;
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Both controls: Astryx's ghost `IconButton` at `sm` and the close are the
+     same 28px box with the same resting ink. */
+  .control {
+    flex: none;
+    color: var(--text-3);
+  }
+
   .close {
-    position: absolute;
-    z-index: var(--z-raised);
-    inset-block-start: var(--nc-card-inset, var(--space-4));
-    inset-inline-end: var(--nc-card-inset, var(--space-4));
     display: grid;
     place-items: center;
-    flex: none;
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
     line-height: var(--leading-none);
-    color: var(--text-3);
     cursor: pointer;
   }
 
@@ -294,53 +284,22 @@
     color: var(--text);
   }
 
-  /* Astryx's ghost `IconButton` at `sm` is the same 28px box; only its place
-     and resting ink are the close's. */
-  .widthToggle {
-    position: absolute;
-    z-index: var(--z-raised);
-    inset-block-start: var(--nc-card-inset, var(--space-4));
-    inset-inline-end: calc(var(--nc-card-inset, var(--space-4)) + var(--control-h) + var(--space-6));
-    color: var(--text-3);
-  }
-
-  /* The transcript now has the scrolling region to itself: the close floats
-     above it (`.close`) rather than riding inside it. */
   .scroll {
     flex: 1;
     min-block-size: 0;
     overflow: auto;
     padding: 0;
     /* Reserve a classic scrollbar lane so becoming scrollable does not shift
-       the entire column. Overlay scrollbars paint in the same corner the
-       close floats in; at a 28px box inset 8px from the edge there is no
-       collision, and a classic scrollbar gets its own lane. */
+       the entire column. */
     scrollbar-gutter: stable;
   }
 
-  /*
-   * **The first line clears the floating close; it does not run under it.**
-   * The close occupies the top `--nc-card-inset + --control-h` = 36px of the
-   * card, and a reply is a full-width paragraph, so with the old 8px top pad
-   * its first line ran straight through the glyph *at rest* — not only while
-   * scrolling, which would be fine. Built and looked at both ways: the
-   * overlap version is unreadable on the one frame you most need to read (a
-   * fresh conversation's first answer), and the clearance costs nothing when
-   * the transcript is short, which is exactly when it is applied.
-   *
-   * So the top pad is the control's own height. That still nets ~27px back
-   * against the head band it replaces (which spent 32 + a 19.5px line + 4
-   * before `.bodyInner`'s own 8), and it buys back something the band could not
-   * give: once the transcript is long enough to scroll, content *does* pass
-   * under the glyph, because it no longer sits on an opaque strip of its
-   * own.
-   */
   .bodyInner {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
     padding:
-      calc(var(--nc-card-inset, var(--space-4)) + var(--control-h))
+      var(--nc-card-inset, var(--space-4))
       var(--nc-card-inset, var(--space-4))
       var(--space-6);
   }

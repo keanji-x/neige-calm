@@ -399,7 +399,7 @@ describe('expanded reading width', () => {
   ];
 
   /** `Page`, with the reading width owned by the page the way the router owns it, and a long reply. */
-  function WidthPage({ onClose, initiallyOpen = false }: { onClose?: () => void; initiallyOpen?: boolean }) {
+  function WidthPage({ onClose, initiallyOpen = false, title = 'Chat' }: { onClose?: () => void; initiallyOpen?: boolean; title?: string }) {
     const [open, setOpen] = useState(initiallyOpen);
     const [expanded, setExpanded] = useState(false);
     return (
@@ -411,7 +411,7 @@ describe('expanded reading width', () => {
           <aside data-nc-panel="">
             <button type="button" data-testid="opener" onClick={() => { setOpen(true); }}>Conversation Chat</button>
           </aside>
-          <Drawer open={open} title="Chat" onClose={() => { setOpen(false); onClose?.(); }}
+          <Drawer open={open} title={title} onClose={() => { setOpen(false); onClose?.(); }}
             readingWidth={{ expanded, onExpandedChange: setExpanded }}>
             <ChatThread canContinue conversation={conversation} turns={TURNS} cards={{}} stalled={false} />
           </Drawer>
@@ -509,8 +509,8 @@ describe('expanded reading width', () => {
     range.setEnd(node, at + word.length);
     return range.getBoundingClientRect();
   }
-  /** The drawer reads what is under a line just below its floating controls; put `top` (a viewport y) on that line. */
-  const READING_LINE_PX = 48;
+  /** The drawer reads what is under a line just inside the top of its pane, under the header; put `top` (a viewport y) on that line. */
+  const READING_LINE_PX = 12;
   const offsetInPane = (top: number) => top - scroller().getBoundingClientRect().top;
 
   it('keeps the words read in the middle of a long paragraph where they were, both ways', async () => {
@@ -609,6 +609,75 @@ describe('expanded reading width', () => {
       await page.viewport(1400, 900);
       await waitFor(() => expect(toggle()?.getAttribute('aria-pressed')).toBe('true'));
       expect(spanOf(drawer())).toBeCloseTo(0.7, 2);
+    } finally { await page.viewport(1400, 900); }
+  });
+
+  const LONG_TITLE = 'Why the resolver drops a hop when two routes share a cache key, and what the backfill has to repair afterwards';
+  const heading = () => drawer().querySelector<HTMLElement>('h2')!;
+
+  it('paints the conversation name in a one-line header that ellipsizes and keeps the full name reachable', async () => {
+    await page.viewport(1400, 900);
+    render(<WidthPage initiallyOpen title={LONG_TITLE} />);
+    await settled();
+    const title = heading();
+    expect(title.textContent).toBe(LONG_TITLE);
+    expect(title.checkVisibility()).toBe(true);
+    expect(title.getAttribute('title')).toBe(LONG_TITLE);
+    expect(title.scrollWidth).toBeGreaterThan(title.clientWidth);
+    expect(title.getBoundingClientRect().height).toBeLessThanOrEqual(Number.parseFloat(getComputedStyle(title).lineHeight) + 1);
+    const inset = () => title.getBoundingClientRect().left - drawer().getBoundingClientRect().left;
+    const before = inset();
+    expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(toggle()!.getBoundingClientRect().left);
+    await click(toggle()!);
+    /* Wider card, same row: the title keeps its place in the card and never meets the controls. */
+    expect(inset()).toBeCloseTo(before, 0);
+    expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(toggle()!.getBoundingClientRect().left);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(document.documentElement.clientWidth);
+  });
+
+  it('keeps the header controls clear of the first transcript line, at either width', async () => {
+    await page.viewport(1400, 900);
+    render(<WidthPage initiallyOpen />);
+    await settled();
+    for (const step of ['normal', 'expanded']) {
+      if (step === 'expanded') await click(toggle()!);
+      /* The transcript follows its newest turn on open; read its first line from the top. */
+      scroller().scrollTop = 0;
+      const controls = [toggle()!, drawer().querySelector<HTMLElement>('button[aria-label="Close conversation"]')!]
+        .map((control) => control.getBoundingClientRect());
+      const firstLine = paragraphStarting('Show me the plan.').getBoundingClientRect();
+      for (const box of controls) {
+        expect(box.bottom, step).toBeLessThanOrEqual(scroller().getBoundingClientRect().top);
+        expect(box.bottom <= firstLine.top || box.right <= firstLine.left || box.left >= firstLine.right, step).toBe(true);
+      }
+    }
+  });
+
+  it('labels the region once, by the painted title', async () => {
+    await page.viewport(1400, 900);
+    render(<WidthPage initiallyOpen title="Planner chat" />);
+    await settled();
+    expect(drawer().hasAttribute('aria-label')).toBe(false);
+    expect(drawer().getAttribute('aria-labelledby')).toBe(heading().id);
+    await expect.element(page.getByRole('complementary', { name: 'Planner chat' })).toBeInTheDocument();
+    expect(drawer().querySelectorAll('h1, h2, h3, h4, h5, h6')).toHaveLength(1);
+    const named = [...drawer().querySelectorAll('*')].filter((element) => element.childElementCount === 0 && element.textContent === 'Planner chat');
+    expect(named).toEqual([heading()]);
+  });
+
+  it('shows no desktop header on a phone, only the shared mobile header', async () => {
+    await page.viewport(390, 844);
+    try {
+      render(<WidthPage initiallyOpen title="Planner chat" />);
+      await settled();
+      expect(drawer().hasAttribute('aria-labelledby')).toBe(false);
+      const headings = drawer().querySelectorAll('h1, h2, h3, h4, h5, h6');
+      expect(headings).toHaveLength(1);
+      expect(headings[0].closest('[data-nc-mobile-header]')).not.toBeNull();
+      expect(drawer().querySelector('button[aria-label="Close conversation"]')).toBeNull();
+      expect(toggle()).toBeNull();
+      expect(drawer().getAttribute('aria-label')).toBe('Planner chat');
+      await expect.element(page.getByRole('button', { name: 'Back to previous page' })).toBeInTheDocument();
     } finally { await page.viewport(1400, 900); }
   });
 });

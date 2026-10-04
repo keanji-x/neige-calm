@@ -1,6 +1,6 @@
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { IconButton } from '@astryxdesign/core/IconButton';
 
 import { Icon } from '../icon/public.tsx';
@@ -20,8 +20,8 @@ type ReadingMark = Range | Element;
 /** Where the reader is in the pane: at its end, or on `mark`, `top` px below the pane's top. */
 type ReadingPlace = Readonly<{ atEnd: boolean; mark: ReadingMark | null; top: number }>;
 
-/** How far below the pane's top the probe line sits: clear of the floating corner controls, still the top of what is being read. */
-const READING_PROBE_PX = 48;
+/** How far below the pane's top the probe line sits: just under the header, past the body's own top padding. */
+const READING_PROBE_PX = 12;
 
 /** One character of text at the point, so a rewrapped paragraph is followed to the line being read. `?.` because jsdom has neither API. */
 function characterAt(pane: HTMLElement, x: number, y: number): Range | null {
@@ -76,7 +76,7 @@ export type DrawerReadingWidth = Readonly<{ expanded: boolean; onExpandedChange:
 
 export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, readingWidth }: {
   open: boolean;
-  /** The drawer's accessible name; compact/mobile also paints it in the shared Header, desktop keeps it unpainted. */
+  /** The drawer's accessible name, painted once: in the desktop header row, or in the shared compact Header. */
   title: string;
   /** Accessible destination announced by the compact header's back control. */
   mobileBackLabel?: string;
@@ -91,6 +91,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
 }) {
   const compact = useCompactViewport();
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const titleId = useId();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   /* Taken as the reader presses the width toggle, put back once the new width is laid out: the browser's scroll anchoring stands down when an ancestor's width changes, so a reflowed transcript would otherwise move under the reader. */
   const readingPlace = useRef<ReadingPlace | null>(null);
@@ -186,11 +187,12 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       data-nc-drawer=""
       data-nc-escape-layer={open ? '' : undefined}
       data-nc-drawer-expanded={expanded ? '' : undefined}
-      aria-label={frame.title}
+      /* Labelled once: by the painted desktop title, or, compact, by the name the shared Header also paints. */
+      {...(compact ? { 'aria-label': frame.title } : { 'aria-labelledby': titleId })}
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
     >
-      {/* The close is before the scroller in the DOM so the first Tab out of the container lands on it. */}
+      {/* The header is before the scroller in the DOM, so the first Tab out of the container lands on its controls. */}
       {compact ? (
         <div className={styles.mobileHeader}>
           <MobileHeader
@@ -200,32 +202,35 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
           />
         </div>
       ) : (
-        <button
-          type="button"
-          data-nc-role="icon"
-          className={styles.close}
-          aria-label={closeLabel}
-          title="Close"
-          onClick={onClose}
-        >
-          {/* A right chevron, not an X — the shape may not be shared with the page header's delete. */}
-          <Icon name="chevron-right" />
-        </button>
-      )}
-      {/* After the close in the DOM, so the first Tab still lands on Close; painted to its left. The same element in both states, so pressing it keeps focus. */}
-      {width !== undefined && (
-        <IconButton
-          className={styles.widthToggle}
-          label={expanded ? 'Restore width' : 'Expand reading width'}
-          aria-pressed={expanded}
-          variant="ghost"
-          size="sm"
-          icon={<Icon name={expanded ? 'restore-width' : 'expand-width'} />}
-          onClick={() => {
-            if (scrollRef.current !== null) readingPlace.current = readingPlaceIn(scrollRef.current);
-            width.onExpandedChange(!expanded);
-          }}
-        />
+        <header className={styles.header}>
+          <h2 id={titleId} className={styles.title} title={frame.title}>{frame.title}</h2>
+          {/* The same element in both states, so pressing it keeps focus. */}
+          {width !== undefined && (
+            <IconButton
+              className={styles.control}
+              label={expanded ? 'Restore width' : 'Expand reading width'}
+              aria-pressed={expanded}
+              variant="ghost"
+              size="sm"
+              icon={<Icon name={expanded ? 'restore-width' : 'expand-width'} />}
+              onClick={() => {
+                if (scrollRef.current !== null) readingPlace.current = readingPlaceIn(scrollRef.current);
+                width.onExpandedChange(!expanded);
+              }}
+            />
+          )}
+          <button
+            type="button"
+            data-nc-role="icon"
+            className={`${styles.control} ${styles.close}`}
+            aria-label={closeLabel}
+            title="Close"
+            onClick={onClose}
+          >
+            {/* A right chevron, not an X — the shape may not be shared with the page header's delete. */}
+            <Icon name="chevron-right" />
+          </button>
+        </header>
       )}
       <div ref={scrollRef} className={styles.scroll} data-nc-drawer-scroll="">
         <div className={styles.bodyInner}>

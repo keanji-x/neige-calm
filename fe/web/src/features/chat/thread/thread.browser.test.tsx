@@ -1635,7 +1635,8 @@ describe('the exchange rail, as the engine lays it out', () => {
       .getBoundingClientRect().height;
 
     document.body.replaceChildren();
-    render(<RailPane turns={railTurns(6, 0)} paneHeight={content - 60} />);
+    /* An overflow smaller than the second marker's distance below the first, so no scroll the pane can make brings it to the edge. */
+    render(<RailPane turns={railTurns(6, 0)} paneHeight={content - 30} />);
     await frame();
 
     const scroller = pane();
