@@ -435,8 +435,7 @@ impl Observation {
                 conclusion,
                 ..
             } => format!(
-                "Forge checks for PR #{pr_number} read {conclusion}. Repeat the same \
-                 gh.pr.checks call to read its head_sha and mergeable."
+                "Forge checks for PR #{pr_number} read {conclusion}. Re-read the track state."
             ),
             Observation::ForgeIssueClosed { issue_number, .. } => {
                 format!("Forge issue #{issue_number} was closed. Re-read the track state.")
@@ -682,20 +681,6 @@ mod tests {
         );
         assert!(text.contains("producer attempt"), "{text}");
         assert!(text.contains("runs/review-attempt.md"), "{text}");
-    }
-
-    #[test]
-    fn forge_checks_wake_points_at_the_repeated_call() {
-        let observation = Observation::ForgePrChecks {
-            track_id: TrackId::from("track-a"),
-            pr_number: 42,
-            conclusion: "no_checks".into(),
-        };
-        assert_eq!(
-            observation.to_turn_text(),
-            "Forge checks for PR #42 read no_checks. Repeat the same gh.pr.checks call to read \
-             its head_sha and mergeable."
-        );
     }
 
     #[test]

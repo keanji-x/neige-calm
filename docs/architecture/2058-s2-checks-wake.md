@@ -10,8 +10,8 @@ one-shot read. It returns the standard parked-forge receipt at once, and the ker
 Planner with `forge.pr.checks` when the PR's checks for the current head finish (success or
 failure), when the PR is conflicting, when the head moves, or at the parked deadline. The result
 tells `no_checks` apart from `pending` and carries `head_sha` and `mergeable`. No new mechanism:
-the forge-action operation already parks; only the lowering, one wake sentence, the tool
-description and one template line change.
+the forge-action operation already parks; only the lowering (in the dev plugin), the tool
+description and one template line change; the kernel is untouched.
 
 ## 1. Problem (from #2058, track `1022c771…`, PR #2042)
 
@@ -90,8 +90,8 @@ turn (F4).
   conclusion, mergeable, head_sha}` (F13). One dispatch path serves MCP and the CLI
   (`transport.rs:643-654`).
 - **D6 Wording.**
-  - Wake (`observation.rs:438`): `Forge checks for PR #N read <conclusion>. Repeat the same
-    gh.pr.checks call to read its head_sha and mergeable.`
+  - Wake (`observation.rs:438`): unchanged and generic; the kernel names no plugin tool. The
+    plugin's description tells the caller to repeat the same call to read head_sha and mergeable.
   - Manifest description: "Wait for a pull request's checks on its current head. Returns a pending
     receipt; the kernel wakes you with forge.pr.checks when every check has finished or as soon
     as any check fails, when the PR is conflicting, when the head moves, or after about 15-20
@@ -163,7 +163,7 @@ L1: no migration, no event or wire change, no new authority, credential env or o
 it reuses the forge-action contract (decision 1 keeps the event unchanged).
 
 Change list: `dev/git_actions.rs` (jq, wait script, lowering, `parked: true`);
-`plugins/git-forge/manifest.json` (description); `calm-types/src/observation.rs` (D6);
+`plugins/git-forge/manifest.json` (description, D6);
 `templates/builtin/issue-development.md:82` (D6); tests: `git_actions/tests.rs`
 (`lowers_gh_pr_checks`), `tests/cases/forge_pr_checks.rs`, `forge_template_e2e.rs:610-630` (receipt,
 then the event), `support/gh_shim.rs` (the three-field view; `mergeable` seeded per PR, default
@@ -187,7 +187,7 @@ fails). M4 → T4 (no completion within 35 s; deadline recovery cannot run befor
 (past the deadline with no probe the op fails and appends no event), T1 (it reads the
 lowered output probe argv) and the lowering unit test `lowers_gh_pr_checks`. M6 → T1 (`failed-run` reads
 `pending`), T6 (first read is `pending`, so no event within 10 s). T3's reseed has no unfinished
-check, so M6 leaves it green. Ordinary tests: the wake text, the
+check, so M6 leaves it green. Ordinary tests: the
 `gh` failure retry, the lowering's argv.
 
 Receipt race in tests: a read that settles at once (T2, T6 and the existing happy paths in
