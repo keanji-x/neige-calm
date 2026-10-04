@@ -309,6 +309,7 @@ async fn send_summary(
             SendPlannerInputRequest {
                 text,
                 attachments: Vec::new(),
+                replaces_turn: None,
             },
             idempotency_key.clone(),
         )

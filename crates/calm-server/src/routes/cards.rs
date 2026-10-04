@@ -187,10 +187,6 @@ pub fn router() -> Router<AppState> {
             post(interrupt_planner_card),
         )
         .route(
-            "/api/cards/{id}/planner/rewind",
-            post(crate::routes::planner_rewind::rewind_planner_card),
-        )
-        .route(
             "/api/cards/{id}/planner/model",
             axum::routing::put(crate::routes::planner_model::set_planner_model),
         )

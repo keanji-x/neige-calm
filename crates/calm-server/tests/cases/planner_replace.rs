@@ -1,40 +1,75 @@
-//! `POST /api/cards/{id}/planner/rewind` on a Codex Planner (#1923): the latest turn leaves the
-//! transcript, its input comes back, and the provider drops it when the next turn starts.
+//! `POST /api/cards/{id}/planner/input` with `replaces_turn` on a Codex Planner (#1923, #2043): the
+//! latest turn leaves the transcript and the new message is queued in one commit that binds the
+//! send's key, and the provider drops the turn when the next turn starts.
 
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
-use calm_server::harness::{HarnessState, Observation};
+use calm_server::harness::{HarnessState, Observation, SendKey};
 use serde_json::{Value, json};
 
 use super::planner_harness_live_replies::ITEM_TABLE;
 use crate::support::planner_queue_fixture::{
-    Boot, Issuance, SEED_THREAD_ID, boot_with_issuance, get, idle_snapshot, post_input,
-    post_input_with_attachments, send_json, upload_png,
+    Boot, Issuance, SEED_THREAD_ID, boot_with_issuance, get, idle_snapshot, post_input_keyed,
+    post_input_keyed_as, post_input_with_attachments, send_json, upload_png,
 };
 
 const TURN_A: &str = "fake-turn-0001";
 const TURN_B: &str = "fake-turn-0002";
 const TURN_C: &str = "fake-turn-0003";
 
-async fn rewind(boot: &Boot, turn_id: &str) -> (StatusCode, Value) {
-    rewind_as(boot, "user", turn_id).await
-}
-
-async fn rewind_as(boot: &Boot, actor: &str, turn_id: &str) -> (StatusCode, Value) {
-    send_json(
+/// One replace under `key`, as `actor`.
+async fn replace_keyed_as(
+    boot: &Boot,
+    actor: &str,
+    turn_id: &str,
+    text: &str,
+    key: &str,
+) -> (StatusCode, Value) {
+    post_input_keyed_as(
         boot.app.clone(),
-        "POST",
-        format!(
-            "/api/cards/{}/planner/rewind",
-            boot.planner_card.id.as_str()
-        ),
+        boot.planner_card.id.as_str(),
+        json!({ "text": text, "replaces_turn": turn_id }),
+        key,
         actor,
-        json!({ "turn_id": turn_id }),
     )
     .await
+}
+
+/// One replace as a new send: a fresh key.
+async fn replace(boot: &Boot, turn_id: &str, text: &str) -> (StatusCode, Value) {
+    replace_keyed_as(boot, "user", turn_id, text, &calm_server::model::new_id()).await
+}
+
+/// `(payload_hash, entry_id)` of every key bound on the card.
+async fn bindings(boot: &Boot) -> Vec<(String, String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT idempotency_key, payload_hash, entry_id FROM planner_input_idempotency \
+         WHERE card_id = ?1 ORDER BY created_at_ms, idempotency_key",
+    )
+    .bind(boot.planner_card.id.as_str())
+    .fetch_all(boot.repo.pool())
+    .await
+    .unwrap()
+}
+
+/// The entry ids `GET /planner/run` lists as waiting.
+async fn pending_ids(boot: &Boot) -> Vec<String> {
+    let (status, run) = get(
+        boot.app.clone(),
+        format!("/api/cards/{}/planner/run", boot.planner_card.id.as_str()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={run}");
+    run["pending"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| entry["entry_id"].as_str().unwrap().to_string())
+        .collect()
 }
 
 async fn wait_for<F, Fut>(what: &str, mut done: F)
@@ -183,36 +218,25 @@ fn turns_of(rows: &[(i64, Option<String>, Option<String>, String)]) -> Vec<Optio
     rows.iter().map(|(_, turn, _, _)| turn.clone()).collect()
 }
 
+/// Whether `GET /planner/run` and the started turns carry `text` as the next turn's input.
+fn started_with(boot: &Boot, index: usize, text: &str) -> bool {
+    boot.daemon
+        .started_turns_for_test()
+        .get(index)
+        .is_some_and(|(_, input)| format!("{input:?}").contains(text))
+}
+
 #[tokio::test]
-async fn rewinding_the_latest_turn_removes_it_and_reverts_codex_before_the_next_turn() {
+async fn a_replace_removes_the_turn_and_its_message_reverts_codex_before_starting() {
     let boot = two_turns().await;
     let before = rows(&boot).await;
     assert!(turns_of(&before).contains(&Some(TURN_B.into())));
 
-    let (status, body) = rewind(&boot, TURN_B).await;
+    let (status, body) = replace(&boot, TURN_B, "edited").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["turn_id"], json!(TURN_B));
     assert_eq!(body["card_id"], json!(boot.planner_card.id.as_str()));
-    assert_eq!(
-        body["input"],
-        json!([{ "presentation": "user", "text": "User says:\nsecond", "attachments": [] }])
-    );
-    let after = rows(&boot).await;
-    assert!(
-        after
-            .iter()
-            .all(|(_, turn, _, _)| turn.as_deref() == Some(TURN_A)),
-        "only A's rows stay: {after:?}"
-    );
-    assert_eq!(
-        after,
-        before
-            .iter()
-            .filter(|(_, turn, _, _)| turn.as_deref() == Some(TURN_A))
-            .cloned()
-            .collect::<Vec<_>>(),
-        "A's rows are untouched"
-    );
+    assert_eq!(body["worker_session_id"], json!(boot.worker_session_id));
+    assert!(body["entry_id"].is_string(), "{body}");
     let events = boot.event_payloads("harness.transcript.rewound").await;
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["turn_id"], json!(TURN_B));
@@ -220,25 +244,16 @@ async fn rewinding_the_latest_turn_removes_it_and_reverts_codex_before_the_next_
         events[0]["worker_session_id"],
         json!(boot.worker_session_id)
     );
-    assert_eq!(
-        events[0]["removed_item_count"],
-        json!((before.len() - after.len()) as i64)
-    );
-    let stored = stored_snapshot(&boot).await;
-    assert_eq!(
-        stored["pending_rewind"],
-        json!({ "provider": "codex", "before_turn_id": TURN_B })
-    );
-    assert_eq!(stored["last_turn_id"], json!(TURN_A));
-    assert_eq!(stored["phase"], json!("turn_completed"));
+    let removed = before
+        .iter()
+        .filter(|(_, turn, _, _)| turn.as_deref() == Some(TURN_B))
+        .count();
+    assert!(removed > 0);
     assert!(
-        boot.daemon.reverted_threads_for_test().is_empty(),
-        "applied at the next start only"
+        events[0]["removed_item_count"].as_i64().unwrap() >= removed as i64,
+        "{events:?}"
     );
 
-    let (status, body) =
-        post_input(boot.app.clone(), boot.planner_card.id.as_str(), "edited").await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
     wait_for("the next turn", || async {
         boot.daemon.turn_start_count_for_test() == 3
     })
@@ -247,6 +262,28 @@ async fn rewinding_the_latest_turn_removes_it_and_reverts_codex_before_the_next_
         boot.daemon.reverted_threads_for_test(),
         vec![(SEED_THREAD_ID.to_string(), TURN_B.to_string(), 2)],
         "one revert of B, after two turn/starts and before the third"
+    );
+    assert!(
+        started_with(&boot, 2, "edited"),
+        "the edit is the next turn"
+    );
+    let after = rows(&boot).await;
+    assert!(
+        !turns_of(&after).contains(&Some(TURN_B.into())),
+        "B's rows are gone: {after:?}"
+    );
+    assert_eq!(
+        after
+            .iter()
+            .filter(|(_, turn, _, _)| turn.as_deref() == Some(TURN_A))
+            .cloned()
+            .collect::<Vec<_>>(),
+        before
+            .iter()
+            .filter(|(_, turn, _, _)| turn.as_deref() == Some(TURN_A))
+            .cloned()
+            .collect::<Vec<_>>(),
+        "A's rows are untouched"
     );
     wait_for("the cut to be consumed", || async {
         stored_snapshot(&boot).await["pending_rewind"].is_null()
@@ -258,12 +295,8 @@ async fn rewinding_the_latest_turn_removes_it_and_reverts_codex_before_the_next_
 #[tokio::test]
 async fn a_revert_codex_already_applied_still_starts_the_turn_and_clears_the_cut() {
     let boot = two_turns().await;
-    let (status, body) = rewind(&boot, TURN_B).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
     boot.daemon.answer_revert_turn_not_found_for_test(true);
-
-    let (status, body) =
-        post_input(boot.app.clone(), boot.planner_card.id.as_str(), "edited").await;
+    let (status, body) = replace(&boot, TURN_B, "edited").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     wait_for("the next turn", || async {
         boot.daemon.turn_start_count_for_test() == 3
@@ -276,12 +309,127 @@ async fn a_revert_codex_already_applied_still_starts_the_turn_and_clears_the_cut
     .await;
 }
 
-/// Every refusal is a 409 that leaves the rows, the snapshot and the event log as they were.
+/// The removal, the message and the key are one commit: the snapshot that holds the cut holds the
+/// message, and the key is bound to the entry it answered with.
+#[tokio::test]
+async fn the_cut_the_message_and_the_key_commit_together() {
+    let boot = two_turns().await;
+    boot.harness.pause_issuance_for_dev();
+    let key = calm_server::model::new_id();
+    let (status, body) = replace_keyed_as(&boot, "user", TURN_B, "edited", &key).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let entry = body["entry_id"].as_str().unwrap().to_string();
+
+    let stored = stored_snapshot(&boot).await;
+    assert_eq!(
+        stored["pending_rewind"],
+        json!({ "provider": "codex", "before_turn_id": TURN_B })
+    );
+    assert_eq!(stored["last_turn_id"], json!(TURN_A));
+    assert_eq!(stored["phase"], json!("turn_completed"));
+    let queue = stored["pending_queue"].as_array().expect("a queue");
+    assert_eq!(queue.len(), 1, "{stored}");
+    assert!(queue[0].to_string().contains("edited"), "{stored}");
+    assert_eq!(pending_ids(&boot).await, vec![entry.clone()]);
+    let bound = bindings(&boot).await;
+    assert_eq!(bound.len(), 3, "two plain sends and the replace: {bound:?}");
+    assert!(
+        bound.contains(&(key.clone(), bound_hash(&bound, &key), Some(entry))),
+        "{bound:?}"
+    );
+    assert!(!turns_of(&rows(&boot).await).contains(&Some(TURN_B.into())));
+    assert!(
+        boot.daemon.reverted_threads_for_test().is_empty(),
+        "applied at the next start only"
+    );
+}
+
+fn bound_hash(bound: &[(String, String, Option<String>)], key: &str) -> String {
+    bound
+        .iter()
+        .find(|(bound_key, _, _)| bound_key == key)
+        .map(|(_, hash, _)| hash.clone())
+        .unwrap_or_default()
+}
+
+/// A lost answer: the same key again replays the first answer, with no second removal and no
+/// second message, wherever the message has gone since.
+#[tokio::test]
+async fn a_replace_sent_again_under_its_key_replays_without_a_second_rewind_or_message() {
+    let boot = two_turns().await;
+    let key = calm_server::model::new_id();
+    let (status, first) = replace_keyed_as(&boot, "user", TURN_B, "edited", &key).await;
+    assert_eq!(status, StatusCode::OK, "body={first}");
+    wait_for("the next turn", || async {
+        boot.daemon.turn_start_count_for_test() == 3
+    })
+    .await;
+
+    let (status, again) = replace_keyed_as(&boot, "user", TURN_B, "edited", &key).await;
+    assert_eq!(status, StatusCode::OK, "body={again}");
+    assert_eq!(again, first, "the first answer, replayed");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        boot.daemon.turn_start_count_for_test(),
+        3,
+        "no second message"
+    );
+    assert_eq!(boot.daemon.reverted_threads_for_test().len(), 1);
+    assert_eq!(
+        boot.event_payloads("harness.transcript.rewound")
+            .await
+            .len(),
+        1,
+        "no second removal"
+    );
+    assert!(pending_ids(&boot).await.is_empty());
+}
+
+/// The key is bound to what it carried: another turn, or the same words as a plain send, is a
+/// different message.
+#[tokio::test]
+async fn a_key_bound_to_one_message_refuses_another() {
+    let boot = two_turns().await;
+    boot.harness.pause_issuance_for_dev();
+    let key = calm_server::model::new_id();
+    let (status, body) = replace_keyed_as(&boot, "user", TURN_B, "edited", &key).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let (status, body) = replace_keyed_as(&boot, "user", TURN_A, "edited", &key).await;
+    assert_eq!(status, StatusCode::CONFLICT, "another turn: {body}");
+    assert_eq!(body["code"], json!("conflict"));
+    let plain = |key: String| {
+        let app = boot.app.clone();
+        let card = boot.planner_card.id.as_str().to_string();
+        async move { post_input_keyed(app, &card, json!({ "text": "edited" }), &key).await }
+    };
+    let (status, body) = plain(key.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "a plain send: {body}");
+    assert_eq!(body["code"], json!("conflict"));
+
+    // And the other way round: a key a plain send bound is not a replace's.
+    let plain_key = calm_server::model::new_id();
+    let (status, body) = plain(plain_key.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let (status, body) = replace_keyed_as(&boot, "user", TURN_A, "edited", &plain_key).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], json!("conflict"));
+}
+
+/// Every refusal is a 409 `planner_turn_not_replaceable` that leaves the rows, the snapshot, the
+/// queue and the key bindings as they were.
 async fn assert_refused_unchanged(boot: &Boot, turn_id: &str, needle: &str) {
     let rows_before = rows(boot).await;
     let snapshot_before = stored_snapshot(boot).await;
-    let (status, body) = rewind(boot, turn_id).await;
+    let bound_before = bindings(boot).await;
+    let pending_before = pending_ids(boot).await;
+    let (status, body) = replace(boot, turn_id, "edited").await;
     assert_eq!(status, StatusCode::CONFLICT, "{needle}: body={body}");
+    assert_eq!(
+        body["code"],
+        json!("planner_turn_not_replaceable"),
+        "{body}"
+    );
     let message = body["error"].as_str().unwrap_or_default();
     assert!(message.contains(needle), "{needle}: {message}");
     assert!(message.contains("nothing was changed"), "{message}");
@@ -291,10 +439,20 @@ async fn assert_refused_unchanged(boot: &Boot, turn_id: &str, needle: &str) {
         snapshot_before,
         "{needle}: snapshot changed"
     );
+    assert_eq!(
+        bindings(boot).await,
+        bound_before,
+        "{needle}: a key was bound"
+    );
+    assert_eq!(
+        pending_ids(boot).await,
+        pending_before,
+        "{needle}: queue changed"
+    );
 }
 
 #[tokio::test]
-async fn every_refusal_changes_nothing() {
+async fn every_refusal_changes_nothing_and_binds_nothing() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     run_turn(&boot, "first").await;
     let (turn_b, client_b) = start_turn(&boot, "second", &[]).await;
@@ -308,25 +466,39 @@ async fn every_refusal_changes_nothing() {
 
     assert_refused_unchanged(&boot, TURN_A, "only the latest turn").await;
 
-    // The tx is conditional on this runtime still carrying the card.
+    // The tx is conditional on this runtime still carrying the card; its refusal rolls the whole
+    // commit back, the message in the queue included.
     sqlx::query("UPDATE worker_sessions SET state = 'failed' WHERE id = ?1")
         .bind(&boot.worker_session_id)
         .execute(boot.repo.pool())
         .await
         .unwrap();
     let rows_before = rows(&boot).await;
+    let key = SendKey::unique_for_test();
     let error = boot
         .harness
-        .rewind_turn(TURN_B.into())
+        .replace_turn_durable(TURN_B.into(), "edited".into(), Vec::new(), key.clone())
         .await
-        .expect_err("a retired runtime rewinds nothing");
+        .expect_err("a retired runtime replaces nothing");
     assert!(
         error
             .to_string()
             .contains("no longer the card's active session"),
         "{error}"
     );
+    assert_eq!(error.code(), "planner_turn_not_replaceable");
     assert_eq!(rows(&boot).await, rows_before);
+    assert!(
+        bindings(&boot)
+            .await
+            .iter()
+            .all(|(bound, _, _)| *bound != key.idempotency_key)
+    );
+    assert_eq!(
+        boot.harness.snapshot().await.pending_len(),
+        0,
+        "the queue is put back"
+    );
     assert!(
         boot.event_payloads("harness.transcript.rewound")
             .await
@@ -338,15 +510,40 @@ async fn every_refusal_changes_nothing() {
         .await
         .unwrap();
 
-    let (status, body) = rewind(&boot, TURN_B).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_refused_unchanged(&boot, TURN_A, "send the edited message first").await;
-
-    // Last: a paused queue keeps the message waiting.
+    // Last: with issuance paused the replacement waits in the queue.
     boot.harness.pause_issuance_for_dev();
-    let (status, body) = post_input(boot.app.clone(), boot.planner_card.id.as_str(), "wait").await;
+    let (status, body) = replace(&boot, TURN_B, "edited").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    let entry = body["entry_id"].as_str().unwrap().to_string();
     assert_refused_unchanged(&boot, TURN_A, "still waiting to be sent").await;
+    // Its reader deletes it: the cut still waits for the next message.
+    let (status, body) = send_json(
+        boot.app.clone(),
+        "DELETE",
+        format!(
+            "/api/cards/{}/planner/input/{entry}",
+            boot.planner_card.id.as_str()
+        ),
+        "user",
+        json!({ "if_entry_rev": 0 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_refused_unchanged(&boot, TURN_A, "send a message first").await;
+}
+
+/// A refused key is not spent: once the turn can be replaced, the same key does it.
+#[tokio::test]
+async fn a_refused_key_replaces_the_turn_once_it_can() {
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    run_turn(&boot, "first").await;
+    let (turn_b, client_b) = start_turn(&boot, "second", &[]).await;
+    let key = calm_server::model::new_id();
+    let (status, body) = replace_keyed_as(&boot, "user", &turn_b, "edited", &key).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    finish_turn(&boot, &turn_b, &client_b, "second").await;
+    let (status, body) = replace_keyed_as(&boot, "user", &turn_b, "edited", &key).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
 /// A turn the kernel started for a system update carries a non-user segment.
@@ -375,7 +572,8 @@ async fn a_turn_that_carried_a_system_update_is_refused() {
     assert_refused_unchanged(&boot, TURN_B, "system update").await;
 }
 
-/// A user message codex recorded without the kernel's projection has no input to put back.
+/// Kept on purpose (#2043): only a row's recorded input tells a person's message from a system
+/// update, so a user message codex recorded without the kernel's projection is refused.
 #[tokio::test]
 async fn a_user_message_without_its_input_is_refused() {
     let boot = two_turns().await;
@@ -395,7 +593,7 @@ async fn a_user_message_without_its_input_is_refused() {
             .any(|(_, _, uuid, _)| uuid.as_deref() == Some("unprojected"))
     })
     .await;
-    assert_refused_unchanged(&boot, TURN_B, "without its text").await;
+    assert_refused_unchanged(&boot, TURN_B, "without its input").await;
 }
 
 /// A late row of A after B's rows: the suffix above the boundary no longer holds all of B.
@@ -420,7 +618,8 @@ async fn a_row_of_the_turn_below_the_boundary_is_refused() {
 #[tokio::test]
 async fn a_late_frame_of_the_removed_turn_writes_no_row() {
     let boot = two_turns().await;
-    let (status, body) = rewind(&boot, TURN_B).await;
+    boot.harness.pause_issuance_for_dev();
+    let (status, body) = replace(&boot, TURN_B, "edited").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     emit_item(
         &boot,
@@ -451,24 +650,30 @@ async fn a_late_frame_of_the_removed_turn_writes_no_row() {
     );
 }
 
+/// Deleted on purpose (#2043): the eight-image cap guarded only the input the rewind route handed
+/// back as one message. The cut never reads images, and the replacing message is checked as any
+/// send is, so a turn whose prompt and steer carried nine images can be replaced.
 #[tokio::test]
-async fn an_image_sent_again_by_a_steer_comes_back_once() {
+async fn a_turn_that_carried_more_than_eight_images_can_be_replaced() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     run_turn(&boot, "first").await;
-    let (status, uploaded) = upload_png(
-        boot.app.clone(),
-        boot.planner_card.id.as_str(),
-        b"rewind-image",
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={uploaded}");
-    let image = uploaded["attachmentId"].as_str().unwrap().to_string();
-    let (turn_b, client_b) = start_turn(&boot, "look", std::slice::from_ref(&image)).await;
+    let mut images = Vec::new();
+    for index in 0..9u8 {
+        let (status, uploaded) = upload_png(
+            boot.app.clone(),
+            boot.planner_card.id.as_str(),
+            &[b'i', index],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "body={uploaded}");
+        images.push(uploaded["attachmentId"].as_str().unwrap().to_string());
+    }
+    let (turn_b, client_b) = start_turn(&boot, "look", &images[..8]).await;
     let (status, posted) = post_input_with_attachments(
         boot.app.clone(),
         boot.planner_card.id.as_str(),
-        "look again",
-        std::slice::from_ref(&image),
+        "and this one",
+        &images[8..],
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={posted}");
@@ -485,25 +690,12 @@ async fn an_image_sent_again_by_a_steer_comes_back_once() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    echo_user(&boot, &turn_b, &entry, "look again");
+    echo_user(&boot, &turn_b, &entry, "and this one");
     finish_turn(&boot, &turn_b, &client_b, "look").await;
 
-    let (status, body) = rewind(&boot, &turn_b).await;
+    let (status, body) = replace(&boot, &turn_b, "look at fewer").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    let input = body["input"].as_array().unwrap();
-    assert_eq!(input.len(), 2, "prompt then steer: {body}");
-    assert_eq!(input[0]["text"], json!("User says:\nlook"));
-    assert_eq!(input[1]["text"], json!("User says:\nlook again"));
-    let ids = input
-        .iter()
-        .flat_map(|segment| segment["attachments"].as_array().unwrap().iter())
-        .map(|attachment| attachment["id"].clone())
-        .collect::<Vec<_>>();
-    assert_eq!(ids.len(), 1, "named once: {body}");
-    assert!(
-        ids[0].as_str().unwrap().starts_with(&image),
-        "{ids:?} vs {image}"
-    );
+    assert!(!turns_of(&rows(&boot).await).contains(&Some(turn_b)));
 }
 
 #[tokio::test]
@@ -518,20 +710,22 @@ async fn a_conversation_with_no_live_harness_is_dormant() {
         .execute(boot.repo.pool())
         .await
         .unwrap();
-    let (status, body) = rewind(&boot, TURN_A).await;
+    let (status, body) = replace(&boot, TURN_A, "edited").await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert_eq!(body["code"], json!("planner_harness_dormant"));
 }
 
-/// Removing a turn deletes the person's own message: an agent actor is refused before the card is
-/// even read, and nothing changes.
+/// Replacing a turn deletes the person's own message: an agent actor is refused before the card is
+/// even read, and nothing changes or is bound.
 #[tokio::test]
-async fn an_agent_actor_cannot_rewind() {
+async fn an_agent_actor_cannot_replace_a_turn() {
     let boot = two_turns().await;
     let rows_before = rows(&boot).await;
     let snapshot_before = stored_snapshot(&boot).await;
+    let bound_before = bindings(&boot).await;
     for actor in ["ai:codex", "ai:claude", "ai:planner"] {
-        let (status, body) = rewind_as(&boot, actor, TURN_B).await;
+        let key = calm_server::model::new_id();
+        let (status, body) = replace_keyed_as(&boot, actor, TURN_B, "edited", &key).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{actor}: body={body}");
         assert!(
             body["error"]
@@ -543,6 +737,7 @@ async fn an_agent_actor_cannot_rewind() {
     }
     assert_eq!(rows(&boot).await, rows_before);
     assert_eq!(stored_snapshot(&boot).await, snapshot_before);
+    assert_eq!(bindings(&boot).await, bound_before);
     assert!(
         boot.event_payloads("harness.transcript.rewound")
             .await
@@ -568,9 +763,9 @@ async fn live(boot: &Boot) -> Value {
 }
 
 /// A partial reply whose row failed to store stays live until the next turn starts; once its turn
-/// is rewound away, its text goes with it.
+/// is replaced, its text goes with it.
 #[tokio::test]
-async fn a_rewind_clears_the_live_text_of_the_removed_turn() {
+async fn a_replace_clears_the_live_text_of_the_removed_turn() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     let (turn, _client) = start_turn(&boot, "stream something", &[]).await;
     let reply = json!({ "id": "reply-1", "type": "agentMessage", "text": "" });
@@ -615,7 +810,8 @@ async fn a_rewind_clears_the_live_text_of_the_removed_turn() {
         "premise: the unstored partial stays live"
     );
 
-    let (status, body) = rewind(&boot, &turn).await;
+    boot.harness.pause_issuance_for_dev();
+    let (status, body) = replace(&boot, &turn, "edited").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(live(&boot).await, json!({ "turn_id": null, "items": [] }));
 }

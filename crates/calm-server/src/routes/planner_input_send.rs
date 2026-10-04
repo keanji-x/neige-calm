@@ -1,7 +1,8 @@
 //! `POST /api/cards/{id}/planner/input` — one message into a harness card's queue.
 //! Every send carries an `Idempotency-Key` (#2043). Its binding commits in the harness
 //! transaction that stores the message, so a retry after a lost answer replays that answer
-//! instead of queueing the message a second time.
+//! instead of queueing the message a second time. A send that names `replaces_turn` (Edit,
+//! #1923) also removes that turn, in the same transaction.
 
 use crate::actor::Actor;
 use crate::db::sqlite::planner_input_binding_get;
@@ -12,6 +13,7 @@ use crate::ids::{ActorId, CardId};
 use crate::per_card_lock::{PerCardLockGuard, lock_card, lock_key};
 use crate::routes::cards::{card_runs_headless_harness, validate_planner_input};
 use crate::routes::terminal_cards::{parse_idempotency_key_header, stable_payload_hash};
+use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{CodexShellState, RouteState, WorkerState};
 
@@ -33,7 +35,16 @@ pub struct SendPlannerInputRequest {
     /// An id belonging to another card is a 400, as is naming the same one twice or naming more than eight.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
+    /// The `turnId` of the conversation's latest response, when this message replaces that turn
+    /// (Edit). The turn's rows leave the conversation and this message is queued in one commit; a
+    /// refusal is 409 `planner_turn_not_replaceable` and changes nothing. Person only.
+    #[serde(default)]
+    pub replaces_turn: Option<String>,
 }
+
+const REPLACE_SUBJECT: &str = "planner input that replaces a turn";
+const REPLACE_REDIRECT: &str =
+    "Replacing a turn deletes the person's own message and its replies; agents have no path to it.";
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SendPlannerInputResponse {
@@ -61,6 +72,10 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
 /// actor) answers 200 with the first request's body and queues nothing, whatever happened to the
 /// message since. The same key with a different body is 409 `conflict`. A refusal stores and
 /// binds nothing, so its key can be sent again. A binding lasts as long as its card.
+///
+/// With `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing
+/// queued: it is removed and this message queued in the transaction that binds the key, and the
+/// provider drops the turn when the next one starts. There is no lazy recovery on this path.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/input",
@@ -73,11 +88,11 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     responses(
         (status = 200, description = "User text queued for next harness turn, or the answer of the earlier request under this Idempotency-Key", body = SendPlannerInputResponse),
         (status = 400, description = "Empty text, or a missing or blank Idempotency-Key", body = ErrorBody),
-        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
+        (status = 403, description = "Card is not a planner codex card, or `replaces_turn` from an actor other than `X-Calm-Actor: user`", body = ErrorBody),
         (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "This Idempotency-Key was used for a different message (code `conflict`); runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`)", body = ErrorBody),
+        (status = 409, description = "This Idempotency-Key was used for a different message (code `conflict`); runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`); or the turn named by `replaces_turn` cannot be replaced now and nothing changed (code `planner_turn_not_replaceable`, with the reason)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
-        (status = 503, description = "Observation queue saturated, shared codex app-server not running, or a planner-harness start is still in flight — retry shortly", body = ErrorBody),
+        (status = 503, description = "Observation queue saturated, shared codex app-server not running, a planner-harness start is still in flight, or the provider did not check a replace in time — retry shortly", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
@@ -112,7 +127,14 @@ pub(crate) async fn send_planner_input_keyed(
     body: SendPlannerInputRequest,
     idempotency_key: String,
 ) -> Result<SendPlannerInputResponse> {
-    let SendPlannerInputRequest { text, attachments } = body;
+    let SendPlannerInputRequest {
+        text,
+        attachments,
+        replaces_turn,
+    } = body;
+    if replaces_turn.is_some() {
+        require_rest_user_actor_for(&actor, REPLACE_SUBJECT, REPLACE_REDIRECT)?;
+    }
     let char_count = validate_planner_input(&text, !attachments.is_empty())?;
 
     let card = s
@@ -132,15 +154,17 @@ pub(crate) async fn send_planner_input_keyed(
 
     // Decided before anything with an effect: a retry's attachments are already bound, and a lazy
     // restart would recover a runtime this request no longer needs.
+    // A plain send hashes exactly as before `replaces_turn` existed, so its stored keys still match.
+    let mut hashed = json!({
+        "actor": actor.as_str(),
+        "text": &text,
+        "attachments": &attachments,
+    });
+    if let Some(turn_id) = &replaces_turn {
+        hashed["replaces_turn"] = json!(turn_id);
+    }
     let key = SendKey {
-        payload_hash: format!(
-            "v1:{}",
-            stable_payload_hash(&json!({
-                "actor": actor.as_str(),
-                "text": &text,
-                "attachments": &attachments,
-            }))?
-        ),
+        payload_hash: format!("v1:{}", stable_payload_hash(&hashed)?),
         idempotency_key,
     };
     let _key_guard = lock_key(
@@ -155,8 +179,10 @@ pub(crate) async fn send_planner_input_keyed(
     wait_at_replay_miss_hook_for_test(card.id.as_str()).await;
 
     // `_recovery_guard` holds the per-card recovery lock until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
-    let (runtime, harness, _recovery_guard) =
-        ensure_live_planner_harness(s, w, cs, &card.id, actor.as_str() == "user").await?;
+    let (runtime, harness, _recovery_guard) = match replaces_turn {
+        None => ensure_live_planner_harness(s, w, cs, &card.id, actor.as_str() == "user").await?,
+        Some(_) => live_planner_harness(s, &card.id).await?,
+    };
     let track = s
         .repo
         .track_get(card.track_id.as_str())
@@ -193,9 +219,19 @@ pub(crate) async fn send_planner_input_keyed(
     };
 
     let attachment_count = attachments.len();
-    let ack = harness
-        .observe_user_message_durable(text, attachments, key)
-        .await?;
+    let replaced = replaces_turn.clone();
+    let ack = match replaces_turn {
+        None => {
+            harness
+                .observe_user_message_durable(text, attachments, key)
+                .await?
+        }
+        Some(turn_id) => {
+            harness
+                .replace_turn_durable(turn_id, text, attachments, key)
+                .await?
+        }
+    };
 
     tracing::info!(
         actor = %actor.as_str(),
@@ -203,6 +239,7 @@ pub(crate) async fn send_planner_input_keyed(
         runtime_id = %runtime.id,
         char_count,
         attachment_count,
+        replaced_turn = replaced.as_deref(),
         "planner harness user message enqueued"
     );
 
@@ -267,6 +304,34 @@ async fn replay(
         worker_session_id: binding.worker_session_id,
         entry_id: binding.entry_id,
     }))
+}
+
+/// The live harness of a card, for a send that replaces a turn: no lazy recovery, since a harness
+/// that needs recovering holds no turn that could be removed safely, so a miss is 409
+/// `planner_harness_dormant`. The per-card recovery lock is held and returned, so no send, reset
+/// or recovery moves the runtime underneath.
+#[allow(deprecated)]
+async fn live_planner_harness(
+    s: &RouteState,
+    card_id: &CardId,
+) -> Result<(
+    WorkerSessionProjection,
+    crate::harness::PlannerHarness,
+    Option<PerCardLockGuard>,
+)> {
+    let guard = lock_card(&s.planner_recovery_locks, card_id.as_str()).await;
+    let dormant = || {
+        CalmError::PlannerHarnessDormant(format!(
+            "no live planner harness session for card {card_id}; reset to start a session",
+        ))
+    };
+    let runtime = s
+        .repo
+        .session_projection_active_for_card(&card_id.to_string())
+        .await?
+        .ok_or_else(dormant)?;
+    let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
+    Ok((runtime, harness, Some(guard)))
 }
 
 /// Resolve a live [`PlannerHarness`] handle for a planner card. Fast path: active runtime row + registry hit. Registry miss with an active row: lazily re-spawn via `spawn_recovered_harness` (no Codex RPC). A human send can also recover a `failed` carrier through `planner_recovery`.

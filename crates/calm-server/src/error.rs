@@ -104,6 +104,12 @@ pub enum CalmError {
     #[error("planner harness runtime superseded: {0}")]
     PlannerHarnessRuntimeSuperseded(String),
 
+    /// 409 — a send that replaces a turn (#2043) was refused before anything was written: the turn
+    /// is not the latest, the conversation is busy, or the turn cannot be removed. Nothing changed
+    /// and nothing was bound, so the reader is shown the reason.
+    #[error("{0}")]
+    PlannerTurnNotReplaceable(String),
+
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 
@@ -155,6 +161,7 @@ impl CalmError {
             }
             CalmError::PlannerHarnessDormant(_) => "planner_harness_dormant",
             CalmError::PlannerHarnessRuntimeSuperseded(_) => "planner_harness_runtime_superseded",
+            CalmError::PlannerTurnNotReplaceable(_) => "planner_turn_not_replaceable",
             CalmError::Db(_) => "db_error",
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
@@ -178,6 +185,7 @@ impl CalmError {
             | CalmError::PluginConfigCorrupt(_)
             | CalmError::PlannerHarnessDormant(_)
             | CalmError::PlannerHarnessRuntimeSuperseded(_)
+            | CalmError::PlannerTurnNotReplaceable(_)
             | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_)
             | CalmError::PluginInstall(_)
@@ -329,6 +337,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PlannerResetUnsupportedInSharedMode(m)
             | CalmError::PlannerHarnessDormant(m)
             | CalmError::PlannerHarnessRuntimeSuperseded(m)
+            | CalmError::PlannerTurnNotReplaceable(m)
             | CalmError::TodaySummaryNoActivity(m)
             | CalmError::CodexRefused(m)
             | CalmError::CodexAppServer(m)

@@ -1379,7 +1379,7 @@
           "cards"
         ],
         "summary": "Queue one message for the card's harness, under a required `Idempotency-Key`.",
-        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\nactor) answers 200 with the first request's body and queues nothing, whatever happened to the\nmessage since. The same key with a different body is 409 `conflict`. A refusal stores and\nbinds nothing, so its key can be sent again. A binding lasts as long as its card.",
+        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\nactor) answers 200 with the first request's body and queues nothing, whatever happened to the\nmessage since. The same key with a different body is 409 `conflict`. A refusal stores and\nbinds nothing, so its key can be sent again. A binding lasts as long as its card.\n\nWith `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing\nqueued: it is removed and this message queued in the transaction that binds the key, and the\nprovider drops the turn when the next one starts. There is no lazy recovery on this path.",
         "operationId": "send_planner_input",
         "parameters": [
           {
@@ -1433,7 +1433,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Card is not a planner codex card, or `replaces_turn` from an actor other than `X-Calm-Actor: user`",
             "content": {
               "application/json": {
                 "schema": {
@@ -1453,7 +1453,7 @@
             }
           },
           "409": {
-            "description": "This Idempotency-Key was used for a different message (code `conflict`); runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`)",
+            "description": "This Idempotency-Key was used for a different message (code `conflict`); runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`); or the turn named by `replaces_turn` cannot be replaced now and nothing changed (code `planner_turn_not_replaceable`, with the reason)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1473,7 +1473,7 @@
             }
           },
           "503": {
-            "description": "Observation queue saturated, shared codex app-server not running, or a planner-harness start is still in flight — retry shortly",
+            "description": "Observation queue saturated, shared codex app-server not running, a planner-harness start is still in flight, or the provider did not check a replace in time — retry shortly",
             "content": {
               "application/json": {
                 "schema": {
@@ -2047,98 +2047,6 @@
           },
           "500": {
             "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/cards/{id}/planner/rewind": {
-      "post": {
-        "tags": [
-          "cards"
-        ],
-        "summary": "The person only, like the queued-input edits; then the same card gate as `/planner/input`,\nwithout its lazy recovery: a dormant harness has no turn\nthat could be rewound safely, so it is the same 409 `planner_harness_dormant` as `/interrupt`.",
-        "operationId": "rewind_planner_card",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Planner card id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RewindPlannerRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "The turn is removed; `input` is what its user sent",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RewindPlannerResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not `X-Calm-Actor: user`, or the card is not a planner codex card",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Card not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Nothing changed: no live session (`planner_harness_dormant`), or the reason (`conflict`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "The provider did not check the edit in time; nothing changed",
             "content": {
               "application/json": {
                 "schema": {
@@ -11185,42 +11093,6 @@
           }
         }
       },
-      "RewindPlannerRequest": {
-        "type": "object",
-        "required": [
-          "turn_id"
-        ],
-        "properties": {
-          "turn_id": {
-            "type": "string",
-            "description": "The turn to remove: the `turnId` of the conversation's latest response."
-          }
-        },
-        "additionalProperties": false
-      },
-      "RewindPlannerResponse": {
-        "type": "object",
-        "required": [
-          "card_id",
-          "turn_id",
-          "input"
-        ],
-        "properties": {
-          "card_id": {
-            "type": "string"
-          },
-          "input": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/HarnessInputSegment"
-            },
-            "description": "The removed turn's user input, prompt then accepted steers in order, each image once."
-          },
-          "turn_id": {
-            "type": "string"
-          }
-        }
-      },
       "SendPlannerInputRequest": {
         "type": "object",
         "required": [
@@ -11233,6 +11105,13 @@
               "$ref": "#/components/schemas/AttachmentId"
             },
             "description": "Ids returned by `POST /api/cards/{id}/planner/attachments`. Naming an attachment here is what BINDS it: the bytes move out of the sweepable staging area before this request writes anything to the queue.\nAn id belonging to another card is a 400, as is naming the same one twice or naming more than eight."
+          },
+          "replaces_turn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `turnId` of the conversation's latest response, when this message replaces that turn\n(Edit). The turn's rows leave the conversation and this message is queued in one commit; a\nrefusal is 409 `planner_turn_not_replaceable` and changes nothing. Person only."
           },
           "text": {
             "type": "string"

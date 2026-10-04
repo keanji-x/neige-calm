@@ -1,13 +1,10 @@
-//! Which transcript rows a rewind removes and what goes back into the composer (#1923). Pure over
-//! the thread's rows, so every refusal is decided before anything changes.
-
-use std::collections::HashSet;
+//! Which transcript rows a replace removes (#1923, #2043). Pure over the thread's rows, so every
+//! refusal is decided before anything changes.
 
 use serde_json::Value;
 
 use crate::db::TranscriptRow;
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
-use crate::planner_attachments::bind::MAX_ATTACHMENTS_PER_MESSAGE;
 
 /// The rows of one turn, cut from the thread.
 #[derive(Debug, Clone)]
@@ -24,8 +21,6 @@ pub(crate) struct RewindPlan {
     pub previous_turn_rows: Vec<TranscriptRow>,
     /// The client id of the turn's first user message.
     pub prompt_client_id: Option<String>,
-    /// The turn's user input, prompt then accepted steers in row order, each attachment once.
-    pub input: Vec<HarnessInputSegment>,
 }
 
 /// Cut turn `turn_id` from `rows` (one thread's rows, oldest first). The boundary is the highest
@@ -66,15 +61,18 @@ pub(crate) fn plan(rows: &[TranscriptRow], turn_id: &str) -> Result<RewindPlan, 
         .filter(|row| super::run_loop::is_user_message_type(row.item_type.as_deref()))
         .collect::<Vec<_>>();
     let prompt_client_id = user_rows.first().and_then(|row| client_id(&row.params));
-    let mut input = Vec::new();
+    let mut said = 0;
     for row in user_rows {
+        // Only the input tells a person's message from a system update, and a system update the
+        // turn carried would be gone with it: the kernel delivers each one once.
         let Some(segments) = row
             .input_segments
             .as_deref()
             .and_then(|json| serde_json::from_str::<Vec<HarnessInputSegment>>(json).ok())
         else {
             return Err(
-                "a message in this turn was recorded without its text, so it cannot be put back"
+                "a message in this turn was recorded without its input, so it cannot be told \
+                 apart from a system update"
                     .into(),
             );
         };
@@ -88,24 +86,10 @@ pub(crate) fn plan(rows: &[TranscriptRow], turn_id: &str) -> Result<RewindPlan, 
                     .into(),
             );
         }
-        input.extend(segments);
+        said += segments.len();
     }
-    if input.is_empty() {
+    if said == 0 {
         return Err("this turn holds no message of yours to edit".into());
-    }
-    // A steer may re-send an image the prompt already bound; the refill names it once.
-    let mut seen = HashSet::new();
-    for segment in &mut input {
-        segment
-            .attachments
-            .retain(|attachment| seen.insert(attachment.id.clone()));
-    }
-    if seen.len() > MAX_ATTACHMENTS_PER_MESSAGE {
-        return Err(format!(
-            "this turn carried {} images; one message can carry at most \
-             {MAX_ATTACHMENTS_PER_MESSAGE}, so it cannot be put back as one",
-            seen.len()
-        ));
     }
     let suffix = rows.iter().filter(|row| row.id > boundary);
     let last_row = suffix.clone().map(|row| row.id).max().unwrap_or(boundary);
@@ -117,7 +101,6 @@ pub(crate) fn plan(rows: &[TranscriptRow], turn_id: &str) -> Result<RewindPlan, 
         previous_turn_id,
         previous_turn_rows,
         prompt_client_id,
-        input,
     })
 }
 

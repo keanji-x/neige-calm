@@ -342,8 +342,9 @@ pub enum Event {
         #[serde(default)]
         card_age_ms_at_clear: Option<i64>,
     },
-    /// `POST /api/cards/{id}/planner/rewind` removed the conversation's latest turn: its transcript
-    /// rows are hard-deleted, so this event is the surviving evidence of the removal.
+    /// A `POST /api/cards/{id}/planner/input` with `replaces_turn` removed the conversation's latest
+    /// turn: its transcript rows are hard-deleted, so this event is the surviving evidence of the
+    /// removal.
     #[serde(rename = "harness.transcript.rewound")]
     HarnessTranscriptRewound {
         worker_session_id: String,

@@ -14,7 +14,7 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'PlannerInputMutationResponse', 'PlannerInputStaleBody',
   'PlannerSteerResponse', 'PlannerSteerConflictBody',
   'RatifyCardResponse', 'ReadFileResponse', 'ReportBlockWriteResponse',
-  'ResetPlannerCardResponse', 'RewindPlannerResponse', 'SendPlannerInputResponse',
+  'ResetPlannerCardResponse', 'SendPlannerInputResponse',
   'SetPlannerModelResponse',
   'SettingsBag', 'Terminal',
   'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadReportReset', 'TodayLaunchpadResolved',

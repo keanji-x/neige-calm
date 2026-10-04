@@ -1899,8 +1899,8 @@ fn assert_receipt_identity(text: &str, expected: &str) {
     assert_eq!(identity["truncated"], false);
 }
 
-/// #1923: the provider forgets a rewound turn together with the since-last-turn block it carried,
-/// so the watermark goes back and the next turn is told those track changes again.
+/// #1923: the provider forgets a replaced turn together with the since-last-turn block it carried,
+/// so the watermark goes back and the replacing turn is told those track changes again.
 #[tokio::test]
 async fn a_rewound_turn_gives_its_track_changes_back_to_the_next_turn() {
     let boot = boot().await;
@@ -1932,16 +1932,9 @@ async fn a_rewound_turn_gives_its_track_changes_back_to_the_next_turn() {
     );
     boot.daemon.clear_active_turn_for_test(&boot.thread_id);
 
-    let rewound = boot.harness.rewind_turn(rewound_turn).await.unwrap();
-    assert!(rewound.input[0].text.contains("what changed?"));
-    wait_for_last_seen_head_eq(&boot, &before).await;
-    assert_eq!(
-        runtime_snapshot(&boot).await.last_seen_head,
-        Some(before.clone())
-    );
-
     boot.harness
-        .observe_user_message_durable(
+        .replace_turn_durable(
+            rewound_turn,
             "what changed, again?".into(),
             Vec::new(),
             calm_server::harness::SendKey::unique_for_test(),

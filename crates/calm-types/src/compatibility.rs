@@ -11,4 +11,6 @@
 // Revision 19 (#1967): calendar schedules may be weekly, and listed entries carry required occurrences.
 // Revision 20 (#2043): `POST /api/cards/{id}/planner/input` requires an `Idempotency-Key`; an older
 // bundle sends none and every message would be refused.
-pub const REST_API_VERSION: &str = "20";
+// Revision 21 (#2043): Edit is `POST /planner/input` with `replaces_turn`; `POST /planner/rewind` is
+// gone. An older kernel would ignore the field and queue the edit as a new message.
+pub const REST_API_VERSION: &str = "21";

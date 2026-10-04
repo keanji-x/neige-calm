@@ -333,11 +333,14 @@ enum HarnessObservationCommand {
         actor: ActorId,
         applied: oneshot::Sender<Result<SteerResult>>,
     },
-    /// A human removing the latest turn from the conversation (#1923). Served between ticks and
+    /// A human replacing the conversation's latest turn with one message (#1923, #2043): the turn's
+    /// removal, the message and the send's key commit in one transaction. Served between ticks and
     /// notifications, under the issuance lock, so no turn starts and no row lands while it runs.
-    Rewind {
+    Replace {
         turn_id: String,
-        answer: oneshot::Sender<Result<RewoundTurn>>,
+        delivery: HarnessObservationDelivery,
+        key: SendKey,
+        answer: oneshot::Sender<Result<DurableAck>>,
     },
 }
 
@@ -372,13 +375,6 @@ pub enum SteerRefused {
         message: String,
         phase: HarnessPhaseTag,
     },
-}
-
-/// A turn a rewind removed: its id and the user input it carried, for the composer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RewoundTurn {
-    pub turn_id: String,
-    pub input: Vec<HarnessInputSegment>,
 }
 
 /// The domain answer to a steer, in the same two layers as [`MutationResult`]:
@@ -690,29 +686,46 @@ impl PlannerHarness {
         issue_interrupt(&self.inner, reason).await
     }
 
-    /// Remove the latest turn `turn_id` from the conversation and hand back its user input
-    /// (#1923). Every refusal is a `Conflict` whose message is for the reader, and changes nothing.
-    pub async fn rewind_turn(&self, turn_id: String) -> Result<RewoundTurn> {
+    /// Replace the latest turn `turn_id` with one message under the send's key (#2043): the turn
+    /// leaves the conversation and the message enters the queue in one commit that also binds the
+    /// key, or nothing changes. Every refusal is a `PlannerTurnNotReplaceable` for the reader.
+    pub async fn replace_turn_durable(
+        &self,
+        turn_id: String,
+        text: String,
+        attachments: Vec<BoundAttachment>,
+        key: SendKey,
+    ) -> Result<DurableAck> {
+        let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
-            return Err(CalmError::Conflict(
+            return Err(CalmError::PlannerTurnNotReplaceable(
                 "the conversation is shutting down; nothing was changed".into(),
             ));
         }
+        let delivery = HarnessObservationDelivery {
+            entry: QueueEntry::user_message(text, None, attachments),
+        };
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
-                let (answer, rewound) = oneshot::channel();
+                let (answer, replaced) = oneshot::channel();
                 sender
-                    .try_send(HarnessObservationCommand::Rewind { turn_id, answer })
+                    .try_send(HarnessObservationCommand::Replace {
+                        turn_id,
+                        delivery,
+                        key,
+                        answer,
+                    })
                     .map_err(map_observation_send_error)?;
-                rewound.await.map_err(|_| {
+                // Not a refusal: the loop may have committed before it stopped.
+                replaced.await.map_err(|_| {
                     CalmError::Conflict(
-                        "the conversation stopped before the edit was applied".into(),
+                        "the conversation stopped before the edit was answered".into(),
                     )
                 })?
             }
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
-                rewind_command::handle_rewind(&self.inner, &turn_id).await
+                replace_command::handle_replace(&self.inner, &turn_id, delivery.entry, &key).await
             }
         }
     }
@@ -1264,8 +1277,9 @@ async fn run_loop(
                         let outcome = handle_steer(&inner, &entry_id, if_entry_rev, &actor).await;
                         let _ = applied.send(outcome);
                     }
-                    HarnessObservationCommand::Rewind { turn_id, answer } => {
-                        let outcome = rewind_command::handle_rewind(&inner, &turn_id).await;
+                    HarnessObservationCommand::Replace { turn_id, delivery, key, answer } => {
+                        let outcome =
+                            replace_command::handle_replace(&inner, &turn_id, delivery.entry, &key).await;
                         // A reply of the removed turn that failed to store stays live until the
                         // next turn starts; the turn is gone, so its text goes now.
                         if outcome.is_ok() {
@@ -4176,7 +4190,7 @@ mod tests {
 }
 
 mod live_reply;
-mod rewind_command;
+mod replace_command;
 
 #[cfg(test)]
 mod completed_commit_tests;

@@ -1,19 +1,16 @@
-//! `POST /api/cards/{id}/planner/rewind` on a Claude Planner (#1923), through the production boot,
-//! routes and session against the fake `claude`: the cut is dry-run before anything changes and
-//! rides the next spawn as `--resume-session-at` / `--resume-drops-turn`.
+//! `POST /api/cards/{id}/planner/input` with `replaces_turn` on a Claude Planner (#1923, #2043),
+//! through the production boot, routes and session against the fake `claude`: the cut is dry-run
+//! before anything changes and rides the replacing spawn as `--resume-session-at` /
+//! `--resume-drops-turn`.
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::claude_planner_stack_fixture::{Root, Stack};
 
-async fn rewind(stack: &Stack, card_id: &str, turn_id: &str) -> (StatusCode, Value) {
+async fn replace(stack: &Stack, card_id: &str, turn_id: &str, text: &str) -> (StatusCode, Value) {
     stack
-        .send(
-            "POST",
-            &format!("/api/cards/{card_id}/planner/rewind"),
-            Some(json!({ "turn_id": turn_id })),
-        )
+        .send_input(card_id, json!({ "text": text, "replaces_turn": turn_id }))
         .await
 }
 
@@ -90,8 +87,10 @@ fn arg_after<'a>(argv: &'a [&'a str], flag: &str) -> &'a str {
     argv[at + 1]
 }
 
+/// A crash right after the commit is the lost-answer case: the restarted conversation holds the
+/// cut and the message, and its first turn applies the one and sends the other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_cut_is_checked_then_rides_the_next_spawn_and_survives_a_restart() {
+async fn the_cut_is_checked_then_rides_the_replacing_spawn_and_survives_a_restart() {
     let root = Root::new("exit-trailing");
     let stack = Stack::boot(&root).await;
     let (card_id, a, b) = two_turns(&root, &stack).await;
@@ -105,18 +104,14 @@ async fn the_cut_is_checked_then_rides_the_next_spawn_and_survives_a_restart() {
         "premise: one per spawn"
     );
     let drops = prompt_line_uuid(&stack, &card_id, &turn_b).await;
-    let thread = stack.runtime(&card_id).await.thread_id.expect("thread");
+    let runtime = stack.runtime(&card_id).await;
+    let thread = runtime.thread_id.clone().expect("thread");
+    stack.harness(&runtime.id).pause_issuance_for_dev();
+    let spawns_before = root.read_fake("spawns").unwrap_or_default().lines().count();
 
-    let (status, body) = rewind(&stack, &card_id, &turn_b).await;
+    let (status, body) = replace(&stack, &card_id, &turn_b, "edited").await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["input"][0]["presentation"], json!("user"));
-    assert!(
-        body["input"][0]["text"]
-            .as_str()
-            .unwrap()
-            .ends_with("second"),
-        "{body}"
-    );
+    assert!(body["entry_id"].is_string(), "{body}");
     let check: Vec<String> = root
         .read_fake("check-argv")
         .expect("the dry run ran")
@@ -155,22 +150,21 @@ async fn the_cut_is_checked_then_rides_the_next_spawn_and_survives_a_restart() {
         json!({ "provider": "claude", "resume_at": anchor, "drops_turn": drops })
     );
     assert_eq!(stored["last_turn_id"], a["id"]);
+    assert!(
+        stored["pending_queue"].to_string().contains("edited"),
+        "the message is in the same snapshot: {stored}"
+    );
 
-    // A restart before the next send keeps the cut.
     stack.shutdown().await;
     let stack = Stack::boot(&root).await;
-    assert_eq!(
-        stored_snapshot(&stack, &card_id).await["pending_rewind"],
-        stored["pending_rewind"]
-    );
-    let spawns_before = root.read_fake("spawns").unwrap_or_default().lines().count();
-    let (c, _) = stack
-        .run_turn(&root, &card_id, "exit-trailing", "edited")
-        .await;
-    assert_eq!(c["status"], json!("completed"), "{c}");
+    let outcomes = stack.wait_outcomes(&card_id, 2).await;
+    assert_eq!(outcomes[0], a, "B's outcome stays gone: {outcomes:?}");
+    assert_eq!(outcomes[1]["status"], json!("completed"), "{outcomes:?}");
+    assert_ne!(outcomes[1]["id"], b["id"]);
     assert_eq!(
         root.read_fake("spawns").unwrap_or_default().lines().count(),
-        spawns_before + 1
+        spawns_before + 1,
+        "one spawn: the replacing turn"
     );
     let argv = root.read_fake("argv").expect("argv");
     let argv: Vec<&str> = argv.lines().collect();
@@ -182,6 +176,8 @@ async fn the_cut_is_checked_then_rides_the_next_spawn_and_survives_a_restart() {
     assert_eq!(argv[resume + 2], format!("--resume-session-at={anchor}"));
     assert_eq!(argv[resume + 3], format!("--resume-drops-turn={drops}"));
     assert!(arg_after(&argv, "--mcp-config").contains("\"neige\""));
+    let runtime = stack.runtime(&card_id).await;
+    stack.wait_phase(&runtime.id, "turn_completed").await;
     assert!(
         stored_snapshot(&stack, &card_id).await["pending_rewind"].is_null(),
         "consumed by the start"
@@ -200,8 +196,13 @@ async fn the_first_turn_of_a_claude_conversation_is_refused_and_nothing_changes(
     let rows_before = rows(&stack, &card_id).await;
     let snapshot_before = stored_snapshot(&stack, &card_id).await;
 
-    let (status, body) = rewind(&stack, &card_id, a["id"].as_str().unwrap()).await;
+    let (status, body) = replace(&stack, &card_id, a["id"].as_str().unwrap(), "edited").await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["code"],
+        json!("planner_turn_not_replaceable"),
+        "{body}"
+    );
     assert!(
         body["error"].as_str().unwrap().contains("first message"),
         "{body}"
@@ -228,8 +229,13 @@ async fn a_cut_the_cli_refuses_is_a_409_with_its_reason_and_nothing_changes() {
     )
     .unwrap();
 
-    let (status, body) = rewind(&stack, &card_id, b["id"].as_str().unwrap()).await;
+    let (status, body) = replace(&stack, &card_id, b["id"].as_str().unwrap(), "edited").await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["code"],
+        json!("planner_turn_not_replaceable"),
+        "{body}"
+    );
     assert!(
         body["error"]
             .as_str()
@@ -240,27 +246,5 @@ async fn a_cut_the_cli_refuses_is_a_409_with_its_reason_and_nothing_changes() {
     assert_eq!(root.read_fake("checks").unwrap().lines().count(), 1);
     assert_eq!(rows(&stack, &card_id).await, rows_before);
     assert_eq!(stored_snapshot(&stack, &card_id).await, snapshot_before);
-    stack.shutdown().await;
-}
-
-/// Boot recovery after a rewind records nothing for the removed turn: no outcome, no rows.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn boot_recovery_after_a_rewind_records_nothing_for_the_removed_turn() {
-    let root = Root::new("exit-trailing");
-    let stack = Stack::boot(&root).await;
-    let (card_id, a, b) = two_turns(&root, &stack).await;
-    let turn_b = b["id"].as_str().unwrap().to_string();
-    let (status, body) = rewind(&stack, &card_id, &turn_b).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let rows_after_rewind = rows(&stack, &card_id).await;
-    let outcomes = stack.outcomes(&card_id).await;
-
-    stack.shutdown().await;
-    let stack = Stack::boot(&root).await;
-    let harness = stack.harness(&stack.runtime(&card_id).await.id);
-    let _ = harness.snapshot().await;
-    assert_eq!(rows(&stack, &card_id).await, rows_after_rewind);
-    assert_eq!(stack.outcomes(&card_id).await, outcomes);
-    assert_eq!(outcomes, vec![a], "only A's outcome: {outcomes:?}");
     stack.shutdown().await;
 }

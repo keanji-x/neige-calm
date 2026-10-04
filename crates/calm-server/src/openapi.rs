@@ -137,7 +137,6 @@ use utoipa::OpenApi;
         crate::routes::planner_input_send::send_planner_input,
         crate::routes::cards::ratify_card,
         crate::routes::cards::interrupt_planner_card,
-        crate::routes::planner_rewind::rewind_planner_card,
         crate::routes::cards::get_planner_run,
         crate::routes::cards::reset_planner_card,
         // This list is hand-maintained: omitting a handler is not a compile error and not a drift failure — the endpoint simply never reaches either generated client.
@@ -289,8 +288,6 @@ use utoipa::OpenApi;
         crate::routes::track_conversations::NewTrackConversationBody,
         crate::side_conversation::SideConversation,
         InterruptPlannerCardResponse,
-        crate::routes::planner_rewind::RewindPlannerRequest,
-        crate::routes::planner_rewind::RewindPlannerResponse,
         GetPlannerRunResponse,
         PlannerRunTokenUsage,
         EditPlannerInputBody,
