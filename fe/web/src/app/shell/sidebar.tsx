@@ -96,7 +96,7 @@ export function Sidebar({
 
   const sectionOrder = preferences.sidebarOrder('sections', SIDEBAR_SECTION_IDS);
   const sectionVisible = (id: SidebarSectionId) => preferences.sidebarGroupVisible(id)
-    && (id === 'areas' || groups.find((group) => group.id === id)!.tracks.length > 0);
+    && (id === 'areas' || id === 'unread' || id === 'running' || groups.find((group) => group.id === id)!.tracks.length > 0);
   const shownSections = sectionOrder.filter(sectionVisible);
   const areaOrder = preferences.sidebarOrder('areas', userAreas.map((area) => area.id));
   const orderedAreas = areaOrder.map((id) => userAreas.find((area) => area.id === id)!);

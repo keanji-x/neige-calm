@@ -27,7 +27,7 @@ it('places view options before collapse and shares group disclosure, keyboard ac
     closedAt: null, createdAt: 1, updatedAt: 10, ...NEUTRAL_ACTIVITY, activityAt: 10, ...row }));
   const onGo = vi.fn();
   const onSetPinned = vi.fn();
-  render(<UiPreferencesProvider preferences={preferences}>
+  const sidebar = (tracks: Track[]) => <UiPreferencesProvider preferences={preferences}>
     <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
       <div className={`${styles.shell} ${styles.shellExpanded}`} style={{ blockSize: '100dvh' }}>
         <Sidebar areas={[area, reading]} tracksByArea={new Map([[area.id, tracks], [reading.id, []]])} tracks={tracks}
@@ -38,7 +38,8 @@ it('places view options before collapse and shares group disclosure, keyboard ac
         <main />
       </div>
     </ThemeProvider>
-  </UiPreferencesProvider>);
+  </UiPreferencesProvider>;
+  const view = render(sidebar(tracks));
 
   const areasTitle = page.getByRole('button', { name: 'Collapse Areas', exact: true }).element()
     .querySelector<HTMLElement>('[title="Areas"]')!;
@@ -172,7 +173,11 @@ it('places view options before collapse and shares group disclosure, keyboard ac
     await expect.element(page.getByRole('group', { name: title, exact: true })).toBeVisible();
   }
   act(() => { preferences.markRead('track', 'review', 10); preferences.markRead('track', 'running', 10); });
-  await expect.element(page.getByRole('group', { name: 'Unread', exact: true })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('group', { name: 'Unread', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('group', { name: 'Unread', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
   await expect.element(page.getByRole('group', { name: 'Waiting on you', exact: true })).toBeVisible();
   await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
+  view.rerender(sidebar(tracks.map((track) => ({ ...track, working: false }))));
+  await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
 });

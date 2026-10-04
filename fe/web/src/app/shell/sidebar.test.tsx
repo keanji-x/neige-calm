@@ -549,11 +549,14 @@ describe('shared sidebar groups', () => {
     expect(within(unreadGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
     expect(within(runningGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
     act(() => preferences.markRead('track', 'both', 10));
-    expect(headings()).toEqual(['Waiting on you', 'Running', 'Areas']);
+    expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
+    expect(within(unreadGroup).queryAllByRole('button', { name: /^Track / })).toHaveLength(0);
     update({ tracks: tracks.map((row) => ({ ...row, working: false })) });
-    expect(headings()).toEqual(['Waiting on you', 'Areas']);
+    expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
+    expect(within(runningGroup).queryAllByRole('button', { name: /^Track / })).toHaveLength(0);
     update({ tracks: tracks.map((row) => row.id === 'both' ? { ...row, working: false, activityAt: 11 } : row) });
-    expect(headings()).toEqual(['Waiting on you', 'Unread', 'Areas']);
+    expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
+    expect(within(unreadGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
   });
 
   it('shares disclosure and the five-row reveal across shortcut and Area groups', async () => {
@@ -582,7 +585,7 @@ describe('shared sidebar groups', () => {
     preferences.setSidebarGroupVisible('unread', true);
     preferences.setSidebarGroupVisible('running', true);
     renderSidebar({ areas: [area({ kind: 'system' })], tracks: [track({ activityAt: 10, working: true })] }, preferences);
-    expect(headings()).toEqual(['Areas']);
+    expect(headings()).toEqual(['Unread', 'Running', 'Areas']);
     expect(screen.queryByRole('button', { name: /^Track / })).toBeNull();
   });
 });
