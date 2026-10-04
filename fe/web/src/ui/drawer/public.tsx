@@ -15,20 +15,54 @@ export function drawerSeamAround(inside: Element | null): HTMLElement | null {
   return card?.parentElement?.querySelector<HTMLElement>('[data-nc-drawer-seam]') ?? null;
 }
 
-/** Where the reader is in the pane: at its end, or reading the element at its middle, `top` px below the pane's top. */
-type ReadingPlace = Readonly<{ atEnd: boolean; element: Element | null; top: number }>;
+/** What the reader is on: a character of text, or the block at the probe line. */
+type ReadingMark = Range | Element;
+/** Where the reader is in the pane: at its end, or on `mark`, `top` px below the pane's top. */
+type ReadingPlace = Readonly<{ atEnd: boolean; mark: ReadingMark | null; top: number }>;
+
+/** How far below the pane's top the probe line sits: clear of the floating corner controls, still the top of what is being read. */
+const READING_PROBE_PX = 48;
+
+/** One character of text at the point, so a rewrapped paragraph is followed to the line being read. `?.` because jsdom has neither API. */
+function characterAt(pane: HTMLElement, x: number, y: number): Range | null {
+  const position = document.caretPositionFromPoint?.(x, y) ?? null;
+  const caret = position === null ? document.caretRangeFromPoint?.(x, y) ?? null : null;
+  const node = position?.offsetNode ?? caret?.startContainer ?? null;
+  const offset = position?.offset ?? caret?.startOffset ?? 0;
+  const length = node?.nodeType === Node.TEXT_NODE ? node.textContent?.length ?? 0 : 0;
+  if (node === null || length === 0 || !pane.contains(node)) return null;
+  const character = document.createRange();
+  character.setStart(node, Math.min(offset, length - 1));
+  character.setEnd(node, Math.min(offset, length - 1) + 1);
+  return character;
+}
+
+/** With no text on the probe line (the gap between paragraphs, a margin), the deepest block that spans it, or the first block below it. */
+function blockAt(pane: HTMLElement, y: number): Element | null {
+  let box: Element = pane;
+  for (;;) {
+    const children = [...box.children];
+    const spanning = children.find((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.height > 0 && rect.top <= y && rect.bottom > y;
+    });
+    if (spanning !== undefined) { box = spanning; continue; }
+    return children.find((child) => child.getBoundingClientRect().top > y) ?? (box === pane ? null : box);
+  }
+}
 
 function readingPlaceIn(pane: HTMLElement): ReadingPlace {
   const box = pane.getBoundingClientRect();
-  /* `?.` because jsdom has no hit testing; the toggle still toggles there, it only keeps no place. */
-  const hit = document.elementFromPoint?.(box.left + box.width / 2, box.top + box.height / 2) ?? null;
-  const element = hit !== null && hit !== pane && pane.contains(hit) ? hit : null;
+  const y = box.top + Math.min(READING_PROBE_PX, box.height / 2);
+  const mark = characterAt(pane, box.left + box.width / 2, y) ?? blockAt(pane, y);
   return {
     atEnd: pane.scrollHeight - pane.scrollTop - pane.clientHeight <= 1,
-    element,
-    top: element === null ? 0 : element.getBoundingClientRect().top - box.top,
+    mark,
+    top: mark === null ? 0 : mark.getBoundingClientRect().top - box.top,
   };
 }
+
+const markConnected = (mark: ReadingMark) => (mark instanceof Range ? mark.startContainer.isConnected : mark.isConnected);
 
 /** Focus `element` and read the result back — CSS-based prediction disagreed with the engine. `aria-hidden`/`inert` are checked by attribute first because `focus()` succeeds into them. */
 function focusTook(element: HTMLElement): boolean {
@@ -67,8 +101,8 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
     readingPlace.current = null;
     if (place === null || pane === null) return;
     if (place.atEnd) pane.scrollTop = pane.scrollHeight;
-    else if (place.element?.isConnected === true) {
-      pane.scrollTop += place.element.getBoundingClientRect().top - pane.getBoundingClientRect().top - place.top;
+    else if (place.mark !== null && markConnected(place.mark)) {
+      pane.scrollTop += place.mark.getBoundingClientRect().top - pane.getBoundingClientRect().top - place.top;
     }
   }, [expanded]);
   const [closing, setClosing] = useState(false);

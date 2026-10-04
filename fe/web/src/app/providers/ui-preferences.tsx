@@ -41,6 +41,11 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return createStorageKey('ui', 'receipts',
         encodeURIComponent(receiptNamespace[0]), encodeURIComponent(receiptNamespace[1]), encodeURIComponent(key));
     }
+    /* A per-browser display choice outlives a kernel restart the same way: origin and user, not the boot. */
+    if (receiptNamespace !== null && key.startsWith('browser:')) {
+      return createStorageKey('ui', 'browser',
+        encodeURIComponent(receiptNamespace[0]), encodeURIComponent(receiptNamespace[1]), encodeURIComponent(key));
+    }
     return createStorageKey('ui', 'recovery', encodeURIComponent(recoveryScope), encodeURIComponent(key));
   };
   const read = (key: string): Preference => {
@@ -133,9 +138,9 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     setRailCollapsed: (value: boolean) => write('rail-collapsed', value, true),
     /** The desktop drawer's expanded reading width; one choice for every drawer, off by default. */
     drawerExpanded(): boolean {
-      return read('drawer-expanded') === true;
+      return read('browser:drawer-expanded') === true;
     },
-    setDrawerExpanded: (value: boolean) => write('drawer-expanded', value, true),
+    setDrawerExpanded: (value: boolean) => write('browser:drawer-expanded', value, true),
     /** A report preview block's device choice (#1780), as the block serialized it; per Track and block key. */
     previewViewport(trackId: string, key: string): string | null {
       const value = read(`preview-viewport:${trackId}:${key}`);

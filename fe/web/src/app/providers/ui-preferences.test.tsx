@@ -85,6 +85,27 @@ describe('browser display preferences', () => {
       expect(createUiPreferences(storage).drawerExpanded()).toBe(true);
     });
 
+    /* The production scope is `[origin, userId, dbInstanceId]` and `dbInstanceId` changes on every kernel boot. */
+    it('survives a bundled server restart, and stays per user', () => {
+      const storage = memoryStorage();
+      const scope = (user: string, boot: string) => JSON.stringify(['https://server.test', user, boot]);
+      const first = createUiPreferences(storage);
+      first.setRecoveryScope(scope('owner', 'boot-1'));
+      first.setConversation('track', 'chat');
+      render(<UiPreferencesProvider preferences={first}><DrawerWithWidth /></UiPreferencesProvider>);
+      fireEvent.click(toggle());
+      expect(toggle().getAttribute('aria-pressed')).toBe('true');
+      cleanup();
+
+      const restarted = createUiPreferences(storage);
+      restarted.setRecoveryScope(scope('owner', 'boot-2'));
+      expect(restarted.conversation('track')).toBeNull();
+      render(<UiPreferencesProvider preferences={restarted}><DrawerWithWidth /></UiPreferencesProvider>);
+      expect(screen.getByRole('button', { name: 'Restore width' }).getAttribute('aria-pressed')).toBe('true');
+      first.setRecoveryScope(scope('another-user', 'boot-2'));
+      expect(first.drawerExpanded()).toBe(false);
+    });
+
     it('keeps the choice in memory, and keeps rendering, when browser storage throws', () => {
       mount({ getItem() { throw new Error('denied'); }, setItem() { throw new Error('quota'); } });
       expect(toggle().getAttribute('aria-pressed')).toBe('false');

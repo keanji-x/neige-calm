@@ -389,8 +389,10 @@ describe('expanded reading width', () => {
     `| ${Array.from({ length: 12 }, () => '---').join(' | ')} |`,
     `| ${Array.from({ length: 12 }, (_, index) => `cell-${index + 1}-without-any-break-opportunity`).join(' | ')} |`,
   ].join('\n');
-  const REPLY = ['The plan, as code and as a table.', '', '```ts', WIDE_LINE, '```', '', WIDE_TABLE, '',
-    ...Array.from({ length: 30 }, (_, index) => `Paragraph ${index + 1} of the long reply, long enough to wrap across the conversation column at either width.`)].join('\n\n');
+  /** One unformatted paragraph many lines long at either width: every token is distinct, so a word can be followed through the rewrap. */
+  const LONG_PARAGRAPH = Array.from({ length: 700 }, (_, index) => `w${index + 1}`).join(' ');
+  const REPLY = ['The plan, as code and as a table.', '', '```ts', WIDE_LINE, '```', '', WIDE_TABLE, '', LONG_PARAGRAPH, '',
+    ...Array.from({ length: 80 }, (_, index) => `Paragraph ${index + 1} of the long reply, long enough to wrap across the conversation column at either width.`)].join('\n\n');
   const TURNS: readonly TranscriptEntry[] = [
     { id: 'u1', author: 'you', text: 'Show me the plan.', atMs: 1 },
     { id: 'r1', author: 'agent', text: REPLY, atMs: 2 },
@@ -496,14 +498,55 @@ describe('expanded reading width', () => {
     expect(document.activeElement).toBe(toggle());
     expect(pane.scrollHeight - pane.scrollTop - pane.clientHeight).toBeLessThanOrEqual(1);
 
-    /* Mid-transcript, both ways: the paragraph the reader is on keeps its place in the pane across the reflow. */
-    const paragraph = paragraphStarting('Paragraph 12 ');
-    pane.scrollTop += paragraph.getBoundingClientRect().top - pane.getBoundingClientRect().top - pane.clientHeight / 2 + 4;
+  });
+
+  /** The box of one token of the long paragraph, wherever the paragraph has wrapped it. */
+  function wordBox(word: string): DOMRect {
+    const node = paragraphStarting('w1 ').firstChild!;
+    const at = node.textContent!.indexOf(` ${word} `) + 1;
+    const range = document.createRange();
+    range.setStart(node, at);
+    range.setEnd(node, at + word.length);
+    return range.getBoundingClientRect();
+  }
+  /** The drawer reads what is under a line just below its floating controls; put `top` (a viewport y) on that line. */
+  const READING_LINE_PX = 48;
+  const offsetInPane = (top: number) => top - scroller().getBoundingClientRect().top;
+
+  it('keeps the words read in the middle of a long paragraph where they were, both ways', async () => {
+    await page.viewport(1400, 900);
+    render(<WidthPage />);
+    await click(opener());
+    await settled();
+    const pane = scroller();
+    pane.scrollTop += offsetInPane(wordBox('w350').top) - READING_LINE_PX - 2;
+    const lineHeight = Number.parseFloat(getComputedStyle(paragraphStarting('w1 ')).lineHeight) + 1;
     for (const name of ['Expand reading width', 'Restore width']) {
-      const before = paragraph.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+      const before = offsetInPane(wordBox('w350').top);
+      expect(Math.abs(before - READING_LINE_PX)).toBeLessThanOrEqual(lineHeight);
       await page.getByRole('button', { name }).click();
       expect(document.activeElement).toBe(toggle());
-      expect(Math.abs(paragraph.getBoundingClientRect().top - pane.getBoundingClientRect().top - before)).toBeLessThanOrEqual(1);
+      /* The same words stay on the reading line: at most a line of rewrap drift, never the paragraph's own top. */
+      expect(Math.abs(offsetInPane(wordBox('w350').top) - before)).toBeLessThanOrEqual(lineHeight);
+    }
+  });
+
+  it('keeps the next paragraph in place when the reading line falls in the gap between paragraphs, both ways', async () => {
+    await page.viewport(1400, 900);
+    render(<WidthPage />);
+    await click(opener());
+    await settled();
+    const pane = scroller();
+    /* Early in the reply, so the pane can still scroll far enough to hold it in place at the wider width. */
+    const [above, below] = [paragraphStarting('Paragraph 4 '), paragraphStarting('Paragraph 5 ')];
+    const gap = below.getBoundingClientRect().top - above.getBoundingClientRect().bottom;
+    expect(gap).toBeGreaterThan(0);
+    pane.scrollTop += offsetInPane(below.getBoundingClientRect().top) - READING_LINE_PX - gap / 2;
+    for (const name of ['Expand reading width', 'Restore width']) {
+      const before = offsetInPane(below.getBoundingClientRect().top);
+      expect(before).toBeGreaterThan(READING_LINE_PX);
+      await page.getByRole('button', { name }).click();
+      expect(Math.abs(offsetInPane(below.getBoundingClientRect().top) - before)).toBeLessThanOrEqual(2);
     }
   });
 
