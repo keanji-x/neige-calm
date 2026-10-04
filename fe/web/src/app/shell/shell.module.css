@@ -804,7 +804,7 @@
       block-size: var(--header-primary-h);
       margin-inline: calc(var(--space-6) * -1);
       padding-inline: var(--space-6);
-      border-block-end: 1px solid var(--hairline);
+      border-block-end: 1px solid transparent;
     }
 
     .railCollapsed .brandRow {

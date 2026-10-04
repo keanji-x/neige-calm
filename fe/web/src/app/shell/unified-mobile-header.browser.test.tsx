@@ -564,6 +564,11 @@ describe('shared desktop primary header', () => {
     expect(centre(collapse)).toBeCloseTo(centre(title), 0);
     expect(header.getBoundingClientRect().height).toBe(56);
     expect(today.parentElement!.getBoundingClientRect().height).toBe(56);
+    expect(getComputedStyle(header).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(today.parentElement!).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
+    header.parentElement!.setAttribute('data-nc-scrolled', '');
+    await settlePaint();
+    expect(getComputedStyle(header).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
     const scroller = document.querySelector<HTMLElement>('[data-nc-track-page]')!;
     expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
     expect(rail.scrollHeight).toBeGreaterThan(rail.clientHeight);
