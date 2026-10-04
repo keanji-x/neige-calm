@@ -4,7 +4,7 @@ The development plugin supports Git worktrees, validation and pull requests thro
 
 To deliver an attached Git Track, use `calm.track.publish`. It pushes a completed task's candidate and opens or reuses the PR. Report-only work does not need a PR.
 
-Record each development dual-channel review round with `calm.review.round`. The selected template determines when review and user ratification are required; read its working method and acceptance conditions.
+The selected template determines when review and user ratification are required; read its working method and acceptance conditions.
 
 Read issue requirements with `gh.issue.view`, and read the discussion with
 `gh.issue.comments`. Pass a new `attempt` to either tool when refreshing; reuse

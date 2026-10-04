@@ -23,10 +23,8 @@ use calm_server::db::sqlite::{
 };
 use calm_server::db::write_with_actor_events_typed;
 use calm_server::event::{
-    ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision,
+    ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision, ReviewSubject,
 };
-
-use calm_server::builtin_plugins::dev::review::TOOL_REVIEW_ROUND;
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, spawn_recovered_harness,
 };
@@ -64,7 +62,7 @@ use support::git_helpers::{
 use support::mcp::{
     call_tool_via_socket, connect, handshake, recv_frame, send_frame, tools_list_frame,
 };
-use support::oracle::{assert_subject_keyed_cap_enforcement, row_head_sha};
+use support::oracle::row_head_sha;
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use tokio::time::{Instant, sleep, timeout};
@@ -1066,7 +1064,7 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
 }
 
 #[tokio::test]
-async fn dual_review_converges_then_merges() {
+async fn reviewed_pr_merges_at_the_diffed_head_then_closes() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1074,22 +1072,16 @@ async fn dual_review_converges_then_merges() {
     let _env = setup_forge_env();
 
     let fx = boot_fixture().await;
-    let design_round = emit_review_round(&fx, &ReviewRoundInput::design("760")).await;
     // Scripted dispatch: CI lacks the real scheduler/Codex path.
     let impl_dispatch = emit_scripted_impl_dispatch(&fx, "760").await;
     let pr = drive_pr_to_diff(
         &fx,
         40,
         760,
-        "slice-760-review-converges",
-        "review-converges.txt",
-        "review convergence e2e\n",
-        "Review convergence E2E",
-    )
-    .await;
-    let impl_round = emit_review_round(
-        &fx,
-        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 1, 8, true),
+        "slice-760-review-merges",
+        "review-merges.txt",
+        "review merge e2e\n",
+        "Review merge E2E",
     )
     .await;
 
@@ -1098,22 +1090,16 @@ async fn dual_review_converges_then_merges() {
     let done = close_track(&fx, "e2e done").await;
 
     assert!(
-        design_round.id < impl_dispatch.id,
-        "design review must precede scripted impl dispatch"
+        impl_dispatch.id < merged.id,
+        "scripted impl dispatch must precede merge"
     );
-    assert!(
-        design_round.id < merged.id,
-        "design review must precede merge"
-    );
-    assert!(impl_round.id < merged.id, "PR review must precede merge");
     assert_eq!(
         row_head_sha(&merged).as_deref(),
         Some(pr.head_sha.as_str()),
-        "merge must use reviewed head"
+        "merge must use the diffed head"
     );
     assert!(merged.id < issue_closed.id, "merge must precede close");
     assert!(issue_closed.id < done.id, "close must precede done");
-    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.track_id).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -1122,49 +1108,7 @@ async fn dual_review_converges_then_merges() {
 }
 
 #[tokio::test]
-async fn cap_exhausted_give_up_closes_the_track() {
-    let _env_lock = FORGE_ENV_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-    let _env = setup_forge_env();
-
-    let fx = boot_fixture().await;
-    let pr = drive_pr_to_diff(
-        &fx,
-        50,
-        761,
-        "slice-760-review-give-up",
-        "review-give-up.txt",
-        "review give-up e2e\n",
-        "Review give-up E2E",
-    )
-    .await;
-    let cap_round = emit_review_round(
-        &fx,
-        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 1, 1, false),
-    )
-    .await;
-
-    let closed = close_track(&fx, "scripted give-up after cap exhaustion").await;
-    assert!(cap_round.id < closed.id);
-    assert!(
-        event_rows(&fx.repo, "forge.pr.merged")
-            .await
-            .iter()
-            .all(|row| row.payload["subject"]["pr_number"] != json!(pr.pr_number)),
-        "give-up subject must not merge"
-    );
-    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.track_id).await;
-
-    fx.plugin_host
-        .stop(PLUGIN_ID)
-        .await
-        .expect("stop git-forge plugin");
-}
-
-#[tokio::test]
-async fn cap_exhausted_ask_human_pauses_then_resumes() {
+async fn merge_hold_ratify_pauses_then_merges_on_grant() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1176,24 +1120,18 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         &fx,
         60,
         762,
-        "slice-760-review-ask-human",
-        "review-ask-human.txt",
-        "review ask-human e2e\n",
-        "Review ask-human E2E",
+        "slice-760-merge-hold",
+        "merge-hold.txt",
+        "merge hold e2e\n",
+        "Merge hold E2E",
     )
     .await;
-    let cap_round = emit_review_round(
-        &fx,
-        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 1, 1, false),
-    )
-    .await;
-    let request = request_ratification(&fx, "cap_exhausted").await;
-    assert!(cap_round.id < request.id);
+    let reason = format!("merge_hold: pr #{} at {}", pr.pr_number, pr.head_sha);
+    let request = request_ratification(&fx, &reason).await;
     assert!(
         event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
-        "merge must be absent while latest subject round is unconverged before grant"
+        "merge must be absent while the hold awaits a grant"
     );
-    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.track_id).await;
 
     let (status, body) = post_ratify(&fx, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -1203,20 +1141,12 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
     .await;
     assert!(request.id < resolved.id);
 
-    // Post-grant extension round: the kernel accepts exactly previous cap + 2 (cap 1 -> 3).
-    let converged = emit_review_round(
-        &fx,
-        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 2, 3, true),
-    )
-    .await;
     let merged = merge_reviewed_pr(&fx, 64, &pr, "760").await;
     close_issue(&fx, 66, &pr.repo_arg, 762).await;
-    close_track(&fx, "done after ratified convergence").await;
+    close_track(&fx, "done after the merge grant").await;
 
-    assert!(resolved.id < converged.id);
-    assert!(converged.id < merged.id);
+    assert!(resolved.id < merged.id);
     assert_eq!(row_head_sha(&merged).as_deref(), Some(pr.head_sha.as_str()));
-    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.track_id).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -1225,7 +1155,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
 }
 
 #[tokio::test]
-async fn review_round_does_not_recover_into_pending_queue_but_ratify_events_do() {
+async fn historical_review_round_does_not_recover_into_pending_queue_but_ratify_events_do() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1233,9 +1163,8 @@ async fn review_round_does_not_recover_into_pending_queue_but_ratify_events_do()
     let _env = setup_forge_env();
 
     let fx = boot_fixture().await;
-    let input = ReviewRoundInput::impl_round("760", 760, "head-sha-recovery", 1, 1, false);
-    emit_review_round(&fx, &input).await;
-    request_ratification(&fx, "cap_exhausted").await;
+    seed_historical_review_round(&fx).await;
+    request_ratification(&fx, "merge_hold: pr #760 at head-sha-recovery").await;
     let (status, body) = post_ratify(&fx, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     wait_for_event_matching(&fx.repo, "ratify.resolved", |row| {
@@ -1284,7 +1213,8 @@ async fn review_round_does_not_recover_into_pending_queue_but_ratify_events_do()
     assert!(
         pending.iter().any(|obs| matches!(
             obs,
-            Observation::RatifyRequested { reason, .. } if reason == "cap_exhausted"
+            Observation::RatifyRequested { reason, .. }
+                if reason == "merge_hold: pr #760 at head-sha-recovery"
         )),
         "ratify.requested must recover into pending queue: {pending:?}"
     );
@@ -1298,7 +1228,6 @@ async fn review_round_does_not_recover_into_pending_queue_but_ratify_events_do()
         )),
         "ratify.resolved grant must recover into pending queue: {pending:?}"
     );
-    assert_review_round_duplicate_noop(&fx, &input).await;
 
     handle.shutdown().await.expect("shutdown recovered harness");
     fx.plugin_host
@@ -1965,135 +1894,48 @@ async fn call_review_tool(
         .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
-fn approved_channels() -> Vec<ChannelVerdict> {
-    vec![
-        ChannelVerdict {
-            role: "reviewer-a".into(),
-            verdict: ChannelVerdictKind::Approved,
-        },
-        ChannelVerdict {
-            role: "reviewer-b".into(),
-            verdict: ChannelVerdictKind::Approved,
-        },
-    ]
-}
-
-fn changes_requested_channels() -> Vec<ChannelVerdict> {
-    vec![
-        ChannelVerdict {
-            role: "reviewer-a".into(),
-            verdict: ChannelVerdictKind::ChangesRequested,
-        },
-        ChannelVerdict {
-            role: "reviewer-b".into(),
-            verdict: ChannelVerdictKind::Approved,
-        },
-    ]
-}
-
-#[derive(Clone, Debug)]
-struct ReviewRoundInput {
-    phase: String,
-    slice_id: String,
-    pr_number: Option<u64>,
-    head_sha: Option<String>,
-    n: u32,
-    cap: u32,
-    converged: bool,
-    channels: Vec<ChannelVerdict>,
-    root_cause: Option<String>,
-}
-
-impl ReviewRoundInput {
-    fn design(slice_id: &str) -> Self {
-        Self {
-            phase: "design".into(),
-            slice_id: slice_id.into(),
-            pr_number: None,
-            head_sha: None,
-            n: 1,
-            cap: 8,
-            converged: true,
-            channels: approved_channels(),
-            root_cause: None,
-        }
-    }
-
-    fn impl_round(
-        slice_id: &str,
-        pr_number: u64,
-        head_sha: &str,
-        n: u32,
-        cap: u32,
-        converged: bool,
-    ) -> Self {
-        Self {
-            phase: "impl".into(),
-            slice_id: slice_id.into(),
-            pr_number: Some(pr_number),
-            head_sha: Some(head_sha.into()),
-            n,
-            cap,
-            converged,
-            channels: if converged {
-                approved_channels()
-            } else {
-                changes_requested_channels()
+/// Seed one historical `review.round` row as the removed write tool once recorded it; actor MUST be
+/// `AiPlanner(planner card)` with `EventScope::Track` (role_gate makes review.round planner-only).
+async fn seed_historical_review_round(fx: &Fixture) {
+    let track_id = TrackId::from(fx.track_id.clone());
+    fx.repo
+        .log_pure_event(
+            ActorId::AiPlanner(CardId::from(fx.planner_card_id.clone())),
+            EventScope::Track {
+                track: track_id.clone(),
+                area: AreaId::from(fx.area_id.clone()),
             },
-            root_cause: (!converged).then(|| "scripted review did not converge".into()),
-        }
-    }
-
-    fn args(&self) -> Value {
-        let mut subject = json!({
-            "phase": self.phase.as_str(),
-            "slice_id": self.slice_id.as_str(),
-        });
-        if let Some(pr_number) = self.pr_number {
-            subject["pr_number"] = json!(pr_number);
-        }
-        let mut args = json!({
-            "subject": subject,
-            "n": self.n,
-            "cap": self.cap,
-            "converged": self.converged,
-            "channels": self.channels.clone(),
-        });
-        if let Some(head_sha) = &self.head_sha {
-            args["head_sha"] = json!(head_sha);
-        }
-        if let Some(root_cause) = &self.root_cause {
-            args["root_cause"] = json!(root_cause);
-        }
-        args
-    }
-}
-
-async fn emit_review_round(fx: &Fixture, input: &ReviewRoundInput) -> EventRow {
-    let before = event_rows(&fx.repo, "review.round").await.len();
-    let resp = call_review_tool(fx, TOOL_REVIEW_ROUND, input.args())
+            None,
+            &fx.events,
+            &fx.card_role_cache,
+            &fx.track_area_cache,
+            Event::ReviewRound {
+                track_id: track_id.clone(),
+                subject: ReviewSubject {
+                    phase: "impl".into(),
+                    slice_id: "760".into(),
+                    pr_number: Some(760),
+                },
+                head_sha: Some("head-sha-recovery".into()),
+                n: 1,
+                cap: 1,
+                converged: false,
+                channels: vec![
+                    ChannelVerdict {
+                        role: "reviewer-a".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
+                    },
+                    ChannelVerdict {
+                        role: "reviewer-b".into(),
+                        verdict: ChannelVerdictKind::Approved,
+                    },
+                ],
+                root_cause: Some("scripted review did not converge".into()),
+                idempotency_key: format!("review.round:{track_id}:impl:760:760:1"),
+            },
+        )
         .await
-        .expect("calm.review.round succeeds");
-    assert_eq!(resp["ok"], true, "review.round response: {resp}");
-    assert_eq!(
-        resp["emitted"], true,
-        "review.round should append in this helper: {resp}"
-    );
-    let rows = wait_for_event_count(&fx.repo, "review.round", before + 1).await;
-    rows.last().expect("new review.round").clone()
-}
-
-async fn assert_review_round_duplicate_noop(fx: &Fixture, input: &ReviewRoundInput) {
-    let before = event_rows(&fx.repo, "review.round").await.len();
-    let resp = call_review_tool(fx, TOOL_REVIEW_ROUND, input.args())
-        .await
-        .expect("duplicate review.round succeeds as no-op");
-    assert_eq!(resp["ok"], true, "duplicate review.round response: {resp}");
-    assert_eq!(
-        resp["emitted"], false,
-        "duplicate review.round should be an idempotent no-op: {resp}"
-    );
-    assert_event_count_stays(&fx.repo, "review.round", before).await;
+        .expect("seed historical review.round");
 }
 
 async fn request_ratification(fx: &Fixture, reason: &str) -> EventRow {

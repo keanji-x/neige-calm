@@ -10,7 +10,7 @@ use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 
 const ID: &str = "dev.neige.git-forge";
-const NATIVE: [&str; 2] = ["calm.track.publish", "calm.review.round"];
+const NATIVE: [&str; 1] = ["calm.track.publish"];
 struct Fixture {
     repo: Arc<SqlxRepo>,
     host: Arc<PluginHost>,
@@ -249,7 +249,6 @@ async fn builtin_issue_instructions_remain_documentation_when_dev_is_disabled() 
         "test",
     );
     assert!(!base.contains("calm.track.publish"));
-    assert!(!base.contains("calm.review.round"));
     for scope in [None, Some("foreign.plugin"), Some(ID)] {
         let track = fx.track(scope).await;
         let card = fx

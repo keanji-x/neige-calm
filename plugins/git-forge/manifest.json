@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "min_kernel_version": "0.0.1",
   "display_name": "development",
-  "description": "Develop GitHub issues using Git worktrees, validation and pull requests. Use calm.track.publish to publish and calm.review.round to review; kernel permissions and plugin enablement still apply.",
+  "description": "Develop GitHub issues using Git worktrees, validation and pull requests. Use calm.track.publish to publish; kernel permissions and plugin enablement still apply.",
   "exposes_tools": [
     {
       "name": "git.worktree.add",
@@ -413,7 +413,7 @@
           "auto-merge"
         ],
         "default": "hold-for-ratify",
-        "description": "hold-for-ratify (default when absent): ratify.request before gh.pr.merge; auto-merge: merge once fence F4 converges"
+        "description": "hold-for-ratify (default when absent): ratify.request before gh.pr.merge; auto-merge: merge after review and green checks without asking again"
       },
       "notes": {
         "type": "string",

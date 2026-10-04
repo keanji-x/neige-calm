@@ -5,16 +5,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::builtin_plugins::dev::review::TOOL_REVIEW_ROUND;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_track_root_tx};
 use calm_server::error::CalmError;
-use calm_server::event::{
-    ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision, ReviewSubject,
-};
-use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
+use calm_server::event::{Event, EventBus, RatifyDecision};
+use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::review::TOOL_RATIFY_REQUEST;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -40,7 +37,7 @@ struct Boot {
     area_id: AreaId,
     track_id: TrackId,
     planner_card_id: CardId,
-    // Exposed for tests that seed events via `log_pure_event`.
+    // Shared with the activity projector in `activity_items`.
     events: EventBus,
     card_role_cache: CardRoleCache,
     track_area_cache: calm_server::track_area_cache::TrackAreaCache,
@@ -256,20 +253,6 @@ async fn request_ratification(
     call_tool(boot, TOOL_RATIFY_REQUEST, json!({ "reason": reason })).await
 }
 
-fn valid_round_args(n: u32) -> Value {
-    json!({
-        "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
-        "head_sha": "abc123",
-        "n": n,
-        "cap": 3,
-        "converged": true,
-        "channels": [
-            { "role": "reviewer-a", "verdict": "approved" },
-            { "role": "reviewer-b", "verdict": "approved" }
-        ]
-    })
-}
-
 async fn events_for_track(boot: &Boot, kinds: &[&str]) -> Vec<Event> {
     boot.repo
         .events_for_track(boot.track_id.as_str(), kinds, None)
@@ -327,325 +310,21 @@ async fn activity_items(boot: &Boot) -> Vec<calm_server::track_activity::Activit
 }
 
 #[tokio::test]
-async fn review_round_rejects_less_than_two_channels() {
-    let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_REVIEW_ROUND,
-        json!({
-            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
-            "n": 1,
-            "cap": 3,
-            "converged": false,
-            "channels": [{ "role": "reviewer-a", "verdict": "changes_requested" }]
-        }),
-    )
-    .await
-    .expect_err("single channel must be rejected");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(err.message.contains("two channel"), "{err:?}");
-}
-
-#[tokio::test]
-async fn review_round_rejects_duplicate_channel_roles() {
-    let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_REVIEW_ROUND,
-        json!({
-            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
-            "n": 1,
-            "cap": 3,
-            "converged": true,
-            "channels": [
-                { "role": " reviewer-a ", "verdict": "approved" },
-                { "role": "reviewer-a", "verdict": "approved" }
-            ]
-        }),
-    )
-    .await
-    .expect_err("duplicate channel roles must be rejected");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(
-        err.message.contains("channel roles must be distinct"),
-        "{err:?}"
-    );
-}
-
-#[tokio::test]
-async fn review_round_rejects_non_token_verdict_at_deserialization() {
-    let boot = boot().await;
-    for verdict in ["LGTM", "Approved ", "rejected", ""] {
-        let err = call_tool(
-            &boot,
-            TOOL_REVIEW_ROUND,
-            json!({
-                "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
-                "n": 1,
-                "cap": 3,
-                "converged": true,
-                "channels": [
-                    { "role": "reviewer-a", "verdict": verdict },
-                    { "role": "reviewer-b", "verdict": "approved" }
-                ]
-            }),
-        )
-        .await
-        .expect_err("non-token verdict must be rejected");
-        assert_eq!(
-            err.code,
-            calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-        );
-        assert!(err.message.contains("invalid args"), "{err:?}");
-        assert!(
-            err.message.contains("approved") && err.message.contains("changes_requested"),
-            "error must name the valid tokens: {err:?}"
-        );
-    }
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert!(events.is_empty(), "{events:?}");
-}
-
-#[tokio::test]
-async fn review_round_rejects_converged_with_changes_requested_channel() {
-    let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_REVIEW_ROUND,
-        json!({
-            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
-            "n": 1,
-            "cap": 3,
-            "converged": true,
-            "channels": [
-                { "role": "reviewer-a", "verdict": "approved" },
-                { "role": "reviewer-b", "verdict": "changes_requested" }
-            ]
-        }),
-    )
-    .await
-    .expect_err("converged=true with a changes_requested channel must be rejected");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(
-        err.message
-            .contains("requires every channel verdict to be approved"),
-        "{err:?}"
-    );
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert!(events.is_empty(), "{events:?}");
-}
-
-#[tokio::test]
-async fn review_round_rejects_n_above_cap() {
-    let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_REVIEW_ROUND,
-        json!({
-            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
-            "n": 4,
-            "cap": 3,
-            "converged": false,
-            "channels": [
-                { "role": "reviewer-a", "verdict": "changes_requested" },
-                { "role": "reviewer-b", "verdict": "approved" }
-            ]
-        }),
-    )
-    .await
-    .expect_err("n > cap must be rejected");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(err.message.contains("must be <="), "{err:?}");
-}
-
-#[tokio::test]
-async fn review_round_accepts_valid_round_and_emits_one_event() {
-    let boot = boot().await;
-    let out = call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
-        .await
-        .expect("valid review round");
-    assert_eq!(out["emitted"], json!(true));
-
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert_eq!(events.len(), 1, "{events:?}");
-    match &events[0] {
-        Event::ReviewRound {
-            n,
-            cap,
-            converged,
-            idempotency_key,
-            ..
-        } => {
-            assert_eq!(*n, 1);
-            assert_eq!(*cap, 3);
-            assert!(*converged);
-            assert_eq!(
-                idempotency_key,
-                &format!("review.round:{}:impl:5b:760:1", boot.track_id)
-            );
-        }
-        other => panic!("unexpected event: {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn review_round_accepts_monotonic_append() {
-    let boot = boot().await;
-    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
-        .await
-        .unwrap();
-    let out = call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(2))
-        .await
-        .expect("n=2 after n=1 is monotonic");
-    assert_eq!(out["emitted"], json!(true));
-
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert_eq!(events.len(), 2, "{events:?}");
-    assert!(
-        matches!(
-            events.as_slice(),
-            [
-                Event::ReviewRound { n: 1, .. },
-                Event::ReviewRound { n: 2, .. }
-            ]
-        ),
-        "{events:?}",
-    );
-}
-
-#[tokio::test]
-async fn review_round_idempotent_resubmit_is_noop() {
-    let boot = boot().await;
-    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
-        .await
-        .unwrap();
-    let out = call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
-        .await
-        .expect("exact duplicate is idempotent");
-    assert_eq!(out["emitted"], json!(false));
-
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert_eq!(events.len(), 1, "duplicate must not append: {events:?}");
-}
-
-#[tokio::test]
-async fn review_round_stale_same_n_with_different_payload_is_rejected() {
-    let boot = boot().await;
-    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
-        .await
-        .unwrap();
-    let err = call_tool(
-        &boot,
-        TOOL_REVIEW_ROUND,
-        json!({
-            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
-            "head_sha": "different",
-            "n": 1,
-            "cap": 3,
-            "converged": true,
-            "channels": [
-                { "role": "reviewer-a", "verdict": "approved" },
-                { "role": "reviewer-b", "verdict": "approved" }
-            ]
-        }),
-    )
-    .await
-    .expect_err("same n with different payload must be rejected");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(err.message.contains("stale/out-of-order"), "{err:?}");
-
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert_eq!(events.len(), 1, "stale write must not append: {events:?}");
-}
-
-#[tokio::test]
-async fn review_round_stale_n_after_later_round_with_different_payload_is_rejected() {
-    let boot = boot().await;
-    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
-        .await
-        .unwrap();
-    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(2))
-        .await
-        .unwrap();
-
-    let err = call_tool(
-        &boot,
-        TOOL_REVIEW_ROUND,
-        json!({
-            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
-            "head_sha": "stale-different",
-            "n": 1,
-            "cap": 3,
-            "converged": true,
-            "channels": [
-                { "role": "reviewer-a", "verdict": "approved" },
-                { "role": "reviewer-b", "verdict": "approved" }
-            ]
-        }),
-    )
-    .await
-    .expect_err("stale n=1 after n=2 must be rejected");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(err.message.contains("stale/out-of-order"), "{err:?}");
-
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert_eq!(events.len(), 2, "stale write must not append: {events:?}");
-}
-
-#[tokio::test]
-async fn review_round_gap_is_rejected() {
-    let boot = boot().await;
-    call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(1))
-        .await
-        .unwrap();
-
-    let err = call_tool(&boot, TOOL_REVIEW_ROUND, valid_round_args(3))
-        .await
-        .expect_err("n=3 after n=1 leaves a gap");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(err.message.contains("stale/out-of-order"), "{err:?}");
-
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert_eq!(events.len(), 1, "gap write must not append: {events:?}");
-}
-
-#[tokio::test]
 async fn ratify_request_raises_an_ask_and_resolve_clears_it() {
     let boot = boot().await;
-    request_ratification(&boot, "cap_exhausted")
+    request_ratification(&boot, "merge_hold: pr #760 at abc123")
         .await
         .expect("ratify request");
 
     assert!(track_is_open(&boot).await, "a ratify request flips nothing");
     let events = events_for_track(&boot, &["ratify.requested"]).await;
     assert!(
-        matches!(events.as_slice(), [Event::RatifyRequested { reason, .. }] if reason == "cap_exhausted")
+        matches!(events.as_slice(), [Event::RatifyRequested { reason, .. }] if reason == "merge_hold: pr #760 at abc123")
     );
     let items = activity_items(&boot).await;
     assert_eq!(items.len(), 1, "{items:?}");
     assert!(items[0].key.starts_with("ask:ratify:"), "{items:?}");
-    assert_eq!(items[0].text, "cap_exhausted");
+    assert_eq!(items[0].text, "merge_hold: pr #760 at abc123");
 
     let (status, body) = post_ratify(&boot, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -677,11 +356,11 @@ async fn ratify_request_refuses_a_closed_track() {
 #[tokio::test]
 async fn ratify_request_rejects_duplicate_pending_request_without_second_event() {
     let boot = boot().await;
-    request_ratification(&boot, "cap_exhausted")
+    request_ratification(&boot, "merge_hold: pr #760 at abc123")
         .await
         .expect("first request");
 
-    let err = request_ratification(&boot, "cap_exhausted retry")
+    let err = request_ratification(&boot, "merge_hold retry")
         .await
         .expect_err("pending request must reject duplicate");
     assert_eq!(
@@ -801,7 +480,7 @@ async fn ratify_route_rejects_non_pending_track_for_all_decisions_without_event(
 #[tokio::test]
 async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_event() {
     let boot = boot().await;
-    request_ratification(&boot, "cap_exhausted")
+    request_ratification(&boot, "merge_hold: pr #760 at abc123")
         .await
         .expect("ratify request");
 
@@ -843,7 +522,7 @@ async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_ev
 #[tokio::test]
 async fn ratify_route_grant_emits_resolved_and_leaves_the_track_open() {
     let boot = boot().await;
-    request_ratification(&boot, "cap_exhausted")
+    request_ratification(&boot, "merge_hold: pr #760 at abc123")
         .await
         .expect("ratify request");
 
@@ -893,352 +572,10 @@ async fn ratify_grant_and_deny_carry_the_message_on_resolved() {
     }
 }
 
-// A per-subject cap raise is accepted only immediately after genuine exhaustion, only when backed by a
-// `ratify.resolved { grant }` strictly newer than the exhausting round, and only by exactly CAP_EXTENSION_PER_GRANT.
-
-/// Non-converged rounds carry changes_requested verdicts (converged=true requires all-approved).
-fn round_args(n: u32, cap: u32, converged: bool) -> Value {
-    round_args_for_subject(
-        json!({ "phase": "impl", "slice_id": "5b", "pr_number": 760 }),
-        n,
-        cap,
-        converged,
-    )
-}
-
-fn round_args_for_subject(subject: Value, n: u32, cap: u32, converged: bool) -> Value {
-    let verdict = if converged {
-        "approved"
-    } else {
-        "changes_requested"
-    };
-    json!({
-        "subject": subject,
-        "head_sha": "abc123",
-        "n": n,
-        "cap": cap,
-        "converged": converged,
-        "channels": [
-            { "role": "reviewer-a", "verdict": verdict },
-            { "role": "reviewer-b", "verdict": verdict }
-        ]
-    })
-}
-
-async fn emit_round(boot: &Boot, args: Value) {
-    let out = call_tool(boot, TOOL_REVIEW_ROUND, args)
-        .await
-        .expect("review round accepted");
-    assert_eq!(out["emitted"], json!(true), "{out}");
-}
-
-async fn exhaust_subject(boot: &Boot, cap: u32) {
-    for n in 1..=cap {
-        emit_round(boot, round_args(n, cap, false)).await;
-    }
-}
-
-async fn expect_round_reject(boot: &Boot, args: Value, fragment: &str) {
-    let before = events_for_track(boot, &["review.round"]).await.len();
-    let err = call_tool(boot, TOOL_REVIEW_ROUND, args)
-        .await
-        .expect_err("review round must be rejected");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(err.message.contains(fragment), "{err:?}");
-    let after = events_for_track(boot, &["review.round"]).await.len();
-    assert_eq!(after, before, "rejected round must not append");
-}
-
-async fn request_and_grant(boot: &Boot, reason: &str) {
-    request_ratification(boot, reason)
-        .await
-        .expect("ratify request");
-    let (status, body) = post_ratify(boot, "grant").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-}
-
-#[tokio::test]
-async fn review_round_cap_extension_without_grant_rejected() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    expect_round_reject(
-        &boot,
-        round_args(4, 5, false),
-        "requires a ratify.resolved grant",
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn review_round_cap_extension_with_fresh_grant_accepted() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    request_and_grant(&boot, "cap_exhausted").await;
-
-    emit_round(&boot, round_args(4, 5, false)).await;
-    emit_round(&boot, round_args(5, 5, false)).await;
-    expect_round_reject(&boot, round_args(6, 5, false), "must be <=").await;
-
-    let events = events_for_track(&boot, &["review.round"]).await;
-    assert_eq!(events.len(), 5, "{events:?}");
-}
-
-#[tokio::test]
-async fn review_round_second_extension_requires_fresh_grant() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    request_and_grant(&boot, "cap_exhausted").await;
-    emit_round(&boot, round_args(4, 5, false)).await;
-    emit_round(&boot, round_args(5, 5, false)).await;
-
-    // The old grant is now STALE: its row id < id(round n=5), the new exhausting round.
-    expect_round_reject(
-        &boot,
-        round_args(6, 7, false),
-        "requires a ratify.resolved grant",
-    )
-    .await;
-
-    request_and_grant(&boot, "cap_exhausted again").await;
-    emit_round(&boot, round_args(6, 7, false)).await;
-}
-
-#[tokio::test]
-async fn review_round_cap_shrink_rejected() {
-    let boot = boot().await;
-    emit_round(&boot, round_args(1, 3, false)).await;
-    expect_round_reject(&boot, round_args(2, 2, false), "must not shrink").await;
-}
-
-#[tokio::test]
-async fn review_round_deny_does_not_authorize_extension() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    request_ratification(&boot, "cap_exhausted")
-        .await
-        .expect("ratify request");
-    let (status, body) = post_ratify(&boot, "deny").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    // calm.review.round reads no track state: the reject is the CAP arm's doing.
-    expect_round_reject(
-        &boot,
-        round_args(4, 5, false),
-        "requires a ratify.resolved grant",
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn review_round_deny_after_grant_does_not_revoke_extension() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    request_and_grant(&boot, "cap_exhausted").await;
-    request_ratification(&boot, "second thoughts")
-        .await
-        .expect("second ratify request");
-    let (status, body) = post_ratify(&boot, "deny").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-
-    let out = call_tool(&boot, TOOL_REVIEW_ROUND, round_args(4, 5, false))
-        .await
-        .expect("extension backed by the earlier grant");
-    assert_eq!(out["emitted"], json!(true), "{out}");
-}
-
-#[tokio::test]
-async fn review_round_extension_before_exhaustion_rejected() {
-    let boot = boot().await;
-    emit_round(&boot, round_args(1, 3, false)).await;
-    emit_round(&boot, round_args(2, 3, false)).await;
-    request_and_grant(&boot, "early ask").await;
-    expect_round_reject(
-        &boot,
-        round_args(3, 5, false),
-        "requires the previous window to be exhausted",
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn review_round_extension_wrong_delta_rejected() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    request_and_grant(&boot, "cap_exhausted").await;
-    expect_round_reject(&boot, round_args(4, 6, false), "exactly").await;
-    expect_round_reject(&boot, round_args(4, 4, false), "exactly").await;
-    emit_round(&boot, round_args(4, 5, false)).await;
-}
-
-// DuplicateSame precedes the cap arm; grant freshness is not re-litigated.
-#[tokio::test]
-async fn review_round_extension_duplicate_resubmit_noop() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    request_and_grant(&boot, "cap_exhausted").await;
-    emit_round(&boot, round_args(4, 5, false)).await;
-
-    let before = events_for_track(&boot, &["review.round"]).await.len();
-    let out = call_tool(&boot, TOOL_REVIEW_ROUND, round_args(4, 5, false))
-        .await
-        .expect("byte-identical resubmit is idempotent");
-    assert_eq!(out["emitted"], json!(false), "{out}");
-    let after = events_for_track(&boot, &["review.round"]).await.len();
-    assert_eq!(after, before, "duplicate must not append");
-}
-
-// DuplicateSame equality is byte-identical and order-sensitive.
-#[tokio::test]
-async fn review_round_extension_resubmit_reordered_channels_rejected() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    request_and_grant(&boot, "cap_exhausted").await;
-    emit_round(&boot, round_args(4, 5, false)).await;
-
-    let mut reordered = round_args(4, 5, false);
-    let channels = reordered["channels"]
-        .as_array_mut()
-        .expect("channels array");
-    channels.swap(0, 1);
-    expect_round_reject(&boot, reordered, "expected n=5").await;
-}
-
-#[tokio::test]
-async fn review_round_one_grant_extends_each_subject_exhausted_before_it() {
-    let boot = boot().await;
-    let impl_subject = json!({ "phase": "impl", "slice_id": "5b", "pr_number": 760 });
-    let design_subject = json!({ "phase": "design", "slice_id": "5b" });
-    for n in 1..=3 {
-        emit_round(
-            &boot,
-            round_args_for_subject(impl_subject.clone(), n, 3, false),
-        )
-        .await;
-        emit_round(
-            &boot,
-            round_args_for_subject(design_subject.clone(), n, 3, false),
-        )
-        .await;
-    }
-    request_and_grant(&boot, "cap_exhausted").await;
-
-    emit_round(&boot, round_args_for_subject(impl_subject, 4, 5, false)).await;
-    emit_round(&boot, round_args_for_subject(design_subject, 4, 5, false)).await;
-}
-
-/// Seed a `review.round` row directly via `log_pure_event`, for histories the tool cannot produce:
-/// tied-n rows and u32-boundary n/cap values.
-async fn seed_pure_round(boot: &Boot, n: u32, cap: u32, tag: &str) {
-    boot.repo
-        .log_pure_event(
-            ActorId::AiPlanner(boot.planner_card_id.clone()),
-            EventScope::Track {
-                track: boot.track_id.clone(),
-                area: boot.area_id.clone(),
-            },
-            None,
-            &boot.events,
-            &boot.card_role_cache,
-            &boot.track_area_cache,
-            Event::ReviewRound {
-                track_id: boot.track_id.clone(),
-                subject: ReviewSubject {
-                    phase: "impl".into(),
-                    slice_id: "5b".into(),
-                    pr_number: Some(760),
-                },
-                head_sha: Some(format!("seed-{tag}")),
-                n,
-                cap,
-                converged: false,
-                channels: vec![
-                    ChannelVerdict {
-                        role: "reviewer-a".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    },
-                    ChannelVerdict {
-                        role: "reviewer-b".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    },
-                ],
-                root_cause: None,
-                idempotency_key: format!("review.round:{}:impl:5b:760:{n}:{tag}", boot.track_id),
-            },
-        )
-        .await
-        .expect("seed review.round");
-}
-
-// Among tied max-n rows, `prev` is the one with the greatest event row id; ties cannot arise through the tool.
-#[tokio::test]
-async fn review_round_tied_n_prev_pick_is_greatest_row_id() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-
-    seed_pure_round(&boot, 3, 5, "tied").await;
-
-    // Accepted iff `prev` is the seeded greatest-row-id row; the older tied row (exhausted) would demand a grant.
-    emit_round(&boot, round_args(4, 5, false)).await;
-}
-
-// cap=6 would be independently rejected by the cap arm and n=5 is wrong (expected 4), so which
-// message surfaces discriminates the ordering: the n check fires before the cap arm.
-#[tokio::test]
-async fn review_round_wrong_n_and_cap_reports_n_error() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-    request_and_grant(&boot, "cap_exhausted").await;
-
-    let before = events_for_track(&boot, &["review.round"]).await.len();
-    let err = call_tool(&boot, TOOL_REVIEW_ROUND, round_args(5, 6, false))
-        .await
-        .expect_err("wrong-n + wrong-cap round must be rejected");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
-    assert!(err.message.contains("expected n=4"), "{err:?}");
-    assert!(
-        !err.message.contains("exactly"),
-        "n check must fire before the cap arm's E4 reject: {err:?}"
-    );
-    let after = events_for_track(&boot, &["review.round"]).await.len();
-    assert_eq!(after, before, "rejected round must not append");
-}
-
-// At n=u32::MAX no further round is accepted: a saturated expected-n would re-admit distinct rows at the same n.
-#[tokio::test]
-async fn review_round_n_at_u32_max_rejects_further_rounds() {
-    let boot = boot().await;
-    seed_pure_round(&boot, u32::MAX, u32::MAX, "nmax").await;
-    expect_round_reject(
-        &boot,
-        round_args(u32::MAX, u32::MAX, false),
-        "round numbering exhausted",
-    )
-    .await;
-}
-
-// With prev n=cap=u32::MAX-1 the exactly-+2 target does not exist in u32; the raise to u32::MAX is a +1 extension.
-#[tokio::test]
-async fn review_round_cap_extension_at_u32_boundary_rejected() {
-    let boot = boot().await;
-    seed_pure_round(&boot, u32::MAX - 1, u32::MAX - 1, "capmax").await;
-    request_and_grant(&boot, "cap_exhausted at u32 boundary").await;
-    expect_round_reject(
-        &boot,
-        round_args(u32::MAX, u32::MAX, false),
-        "cap extension space exhausted",
-    )
-    .await;
-}
-
 #[tokio::test]
 async fn ratify_route_deny_emits_resolved_and_leaves_the_track_open() {
     let boot = boot().await;
-    request_ratification(&boot, "cap_exhausted")
+    request_ratification(&boot, "merge_hold: pr #760 at abc123")
         .await
         .expect("ratify request");
 

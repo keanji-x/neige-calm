@@ -124,7 +124,7 @@ async fn ratify_request(
     }
 }
 
-pub(crate) async fn resolve_track_for_identity(
+async fn resolve_track_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
 ) -> Result<(crate::model::Card, Track), RpcError> {

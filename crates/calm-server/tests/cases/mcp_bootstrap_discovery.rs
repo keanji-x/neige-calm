@@ -15,7 +15,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 const DEV: &str = "dev.neige.git-forge";
-const REVIEW: &str = "calm.review.round";
 const PUBLISH: &str = "calm.track.publish";
 
 async fn fixture() -> (CardBoot, Arc<PluginHost>) {
@@ -69,15 +68,6 @@ async fn list(boot: &CardBoot, token: &str, thread: Option<&str>) -> BTreeSet<St
     names
 }
 
-fn review_args() -> Value {
-    json!({
-        "subject":{"phase":"design", "slice_id":"bootstrap-discovery"},
-        "n":1, "cap":3, "converged":true,
-        "channels":[{"role":"behavior", "verdict":"approved"},
-                    {"role":"architecture", "verdict":"approved"}]
-    })
-}
-
 #[tokio::test]
 async fn bootstrap_catalog_covers_every_builtin_bound_role_catalog() {
     let (boot, _host) = fixture().await;
@@ -121,30 +111,18 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
     let (boot, host) = fixture().await;
     let daemon = boot.daemon_token.as_deref().unwrap();
     let initial = list(&boot, daemon, None).await;
-    assert!(initial.contains(REVIEW) && initial.contains(PUBLISH));
+    assert!(initial.contains(PUBLISH));
     // A known unbound Track remains restricted even though bootstrap discovery is wide.
     let unbound = list(&boot, daemon, Some(&boot.thread_id)).await;
-    assert!(!unbound.contains(REVIEW) && !unbound.contains(PUBLISH));
-    for name in [REVIEW, PUBLISH] {
-        let denied = rpc(
-            &boot,
-            daemon,
-            tools_call_frame(3, name, &boot.thread_id, json!({})),
-        )
-        .await;
-        assert_eq!(denied["error"]["code"], -32601, "{denied:#}");
-    }
-    bind(&boot, DEV).await;
-    let response = rpc(
+    assert!(!unbound.contains(PUBLISH));
+    let denied = rpc(
         &boot,
         daemon,
-        tools_call_frame(3, REVIEW, &boot.thread_id, review_args()),
+        tools_call_frame(3, PUBLISH, &boot.thread_id, json!({})),
     )
     .await;
-    assert_eq!(
-        response["result"]["structuredContent"]["emitted"], true,
-        "{response:#}"
-    );
+    assert_eq!(denied["error"]["code"], -32601, "{denied:#}");
+    bind(&boot, DEV).await;
     // Publication reaches its owning handler but keeps argument validation.
     let response = rpc(
         &boot,
@@ -159,23 +137,21 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
             .unwrap()
             .contains("idempotency_key")
     );
-    for name in [REVIEW, PUBLISH] {
-        let no_identity = rpc(
-            &boot,
-            daemon,
-            json!({"jsonrpc":"2.0", "id":3, "method":"tools/call",
-            "params":{"name":name, "arguments":{}}}),
-        )
-        .await;
-        assert_eq!(no_identity["error"]["code"], -32602, "{no_identity:#}");
-        let unknown = rpc(
-            &boot,
-            daemon,
-            tools_call_frame(3, name, "not-yet-attributed", json!({})),
-        )
-        .await;
-        assert_eq!(unknown["error"]["code"], -32601, "{unknown:#}");
-    }
+    let no_identity = rpc(
+        &boot,
+        daemon,
+        json!({"jsonrpc":"2.0", "id":3, "method":"tools/call",
+        "params":{"name":PUBLISH, "arguments":{}}}),
+    )
+    .await;
+    assert_eq!(no_identity["error"]["code"], -32602, "{no_identity:#}");
+    let unknown = rpc(
+        &boot,
+        daemon,
+        tools_call_frame(3, PUBLISH, "not-yet-attributed", json!({})),
+    )
+    .await;
+    assert_eq!(unknown["error"]["code"], -32601, "{unknown:#}");
     crate::support::mcp::set_persisted_card_role(
         boot.repo.as_ref(),
         &boot.card_id,
@@ -183,16 +159,14 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
     )
     .await;
     let worker = list(&boot, daemon, Some(&boot.thread_id)).await;
-    for name in [REVIEW, PUBLISH] {
-        assert!(!worker.contains(name));
-        let response = rpc(
-            &boot,
-            daemon,
-            tools_call_frame(3, name, &boot.thread_id, json!({})),
-        )
-        .await;
-        assert_eq!(response["error"]["code"], -32602, "{response:#}");
-    }
+    assert!(!worker.contains(PUBLISH));
+    let response = rpc(
+        &boot,
+        daemon,
+        tools_call_frame(3, PUBLISH, &boot.thread_id, json!({})),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response:#}");
     crate::support::mcp::set_persisted_card_role(
         boot.repo.as_ref(),
         &boot.card_id,
@@ -201,16 +175,14 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
     .await;
     host.disable(DEV).await.unwrap();
     let stopped = list(&boot, daemon, None).await;
-    for name in [REVIEW, PUBLISH] {
-        assert!(!stopped.contains(name));
-        let response = rpc(
-            &boot,
-            daemon,
-            tools_call_frame(3, name, &boot.thread_id, json!({})),
-        )
-        .await;
-        assert_eq!(response["error"]["code"], -32002, "{response:#}");
-    }
+    assert!(!stopped.contains(PUBLISH));
+    let response = rpc(
+        &boot,
+        daemon,
+        tools_call_frame(3, PUBLISH, &boot.thread_id, json!({})),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32002, "{response:#}");
     assert!(
         !stopped
             .iter()
@@ -241,7 +213,7 @@ async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["name"] == REVIEW)
+            .any(|t| t["name"] == PUBLISH)
     );
 
     let mut tx = boot.sqlx.pool().begin().await.unwrap();
@@ -263,41 +235,37 @@ async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    for name in [REVIEW, PUBLISH] {
-        send_frame(
-            &mut wr,
-            tools_call_frame(3, name, "foreign-thread", json!({})),
-        )
-        .await;
-        let rejected = recv_frame(&mut rd).await;
-        assert_eq!(rejected["error"]["code"], -32602, "{rejected:#}");
-        assert!(
-            rejected["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("other than this connection")
-        );
-    }
+    send_frame(
+        &mut wr,
+        tools_call_frame(3, PUBLISH, "foreign-thread", json!({})),
+    )
+    .await;
+    let rejected = recv_frame(&mut rd).await;
+    assert_eq!(rejected["error"]["code"], -32602, "{rejected:#}");
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("other than this connection")
+    );
     let mut tx = boot.sqlx.pool().begin().await.unwrap();
     session_mark_superseded_runtime_tx(&mut tx, &boot.session_id)
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    for name in [REVIEW, PUBLISH] {
-        send_frame(
-            &mut wr,
-            json!({"jsonrpc":"2.0", "id":4, "method":"tools/call",
-            "params":{"name":name, "arguments":{}}}),
-        )
-        .await;
-        let rejected = recv_frame(&mut rd).await;
-        assert_eq!(rejected["error"]["code"], -32401, "{rejected:#}");
-        let expired = rpc(
-            &boot,
-            boot.daemon_token.as_deref().unwrap(),
-            tools_call_frame(5, name, &boot.thread_id, json!({})),
-        )
-        .await;
-        assert_eq!(expired["error"]["code"], -32601, "{expired:#}");
-    }
+    send_frame(
+        &mut wr,
+        json!({"jsonrpc":"2.0", "id":4, "method":"tools/call",
+        "params":{"name":PUBLISH, "arguments":{}}}),
+    )
+    .await;
+    let rejected = recv_frame(&mut rd).await;
+    assert_eq!(rejected["error"]["code"], -32401, "{rejected:#}");
+    let expired = rpc(
+        &boot,
+        boot.daemon_token.as_deref().unwrap(),
+        tools_call_frame(5, PUBLISH, &boot.thread_id, json!({})),
+    )
+    .await;
+    assert_eq!(expired["error"]["code"], -32601, "{expired:#}");
 }

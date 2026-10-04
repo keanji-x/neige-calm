@@ -1,4 +1,4 @@
-//! A fresh real Planner must discover and invoke the compiled development tools itself.
+//! A fresh real Planner must discover and invoke the compiled development tool itself.
 use super::*;
 
 #[tokio::test]
@@ -14,11 +14,7 @@ async fn real_planner_discovers_builtin_tools_on_first_turn() {
         Use your discovered MCP tools directly; do not use shell commands, custom clients or create tasks. \
         First invoke calm.track.publish with idempotency_key=bootstrap-discovery-probe, \
         title=Discovery probe, body=No candidate. Observe its publish-not-a-candidate refusal: \
-        this fresh fixture has no delivered attempt. Then invoke calm.review.round with subject \
-        {phase: design, slice_id: bootstrap-discovery-probe}, n=1, cap=3, converged=true, and \
-        channels [{role: probe-a, verdict: approved}, {role: probe-b, verdict: approved}]. \
-        These channel verdicts are synthetic probe inputs; they do not claim real reviews occurred. \
-        Report the two results and stop.".to_string();
+        this fresh fixture has no delivered attempt. Report the result and stop.".to_string();
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
@@ -37,21 +33,9 @@ async fn real_planner_discovers_builtin_tools_on_first_turn() {
             skip!("{reason}");
         }
     };
-    assert!(
-        actor_payload_rows(&fx.repo, "review.round")
-            .await
-            .is_empty()
-    );
     boot_planner_harness_via_start_op(&fx, goal).await;
     let deadline = Instant::now() + planner_planning_budget();
     loop {
-        let review = actor_payload_rows(&fx.repo, "review.round")
-            .await
-            .into_iter()
-            .find(|(actor, payload)| {
-                matches!(actor, ActorId::AiPlannerSession(_))
-                    && payload["subject"]["slice_id"] == "bootstrap-discovery-probe"
-            });
         let completed = support::agent_diag::planner_transcript_rows(&fx.repo)
             .await
             .unwrap();
@@ -64,9 +48,7 @@ async fn real_planner_discovers_builtin_tools_on_first_turn() {
                     && params["item"]["server"] == "calm"
                     && params["item"]["tool"] == "calm.track.publish"
             });
-        if let (Some((_actor, review)), Some(publish)) = (review, publish) {
-            assert_eq!(review["converged"], true);
-            assert_eq!(review["n"], 1);
+        if let Some(publish) = publish {
             assert_eq!(publish["item"]["status"], "failed", "{publish:#}");
             let error = publish["item"]["error"]["message"]
                 .as_str()
@@ -77,15 +59,13 @@ async fn real_planner_discovers_builtin_tools_on_first_turn() {
         if Instant::now() >= deadline {
             panic_with_agent_diag(
                 &fx,
-                "fresh Planner did not invoke both compiled tools".into(),
+                "fresh Planner did not invoke the compiled publish tool".into(),
             )
             .await;
         }
         sleep(Duration::from_millis(100)).await;
     }
-    eprintln!(
-        "verified: real Planner emitted review.round and publication retained its candidate fence"
-    );
+    eprintln!("verified: real Planner invoked publication and it retained its candidate fence");
     shutdown_planner_harness_if_registered(&fx).await;
     fx.plugin_host.stop(PLUGIN_ID).await.unwrap();
     shutdown_shared_codex(&fx.shared).await;

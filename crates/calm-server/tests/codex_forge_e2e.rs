@@ -13,17 +13,13 @@ mod codex_calendar_preview;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::{ChannelVerdict, ChannelVerdictKind, Event, EventScope, ReviewSubject};
+use calm_server::event::{Event, EventScope};
 use calm_server::harness::{HarnessState, Observation, PlannerHarness};
 use calm_server::ids::{ActorId, TrackId};
 use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
 use calm_server::plugin_host::Manifest;
-use calm_server::state::AppState;
-use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use support::agent_diag::panic_with_agent_diag;
 use support::codex_fixture::*;
@@ -33,18 +29,13 @@ use support::gh_shim::{run_gh, seed_shim_issue_body, write_gh_shim};
 use support::git_helpers::*;
 use support::mcp::call_tool_via_socket;
 use support::oracle::{
-    OrderingEdge, RequiredEvent, SubjectKey, assert_cap_extension_history,
-    assert_converged_subject_has_merge, assert_event_skeleton_superset, assert_ordering,
-    assert_subject_keyed_cap_enforcement,
+    OrderingEdge, RequiredEvent, assert_event_skeleton_superset, assert_ordering,
 };
 use support::planner_turn::*;
 use tokio::time::{Instant, sleep};
-use tower::ServiceExt;
 
 const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
 const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
-/// The review-subject `slice_id` is agent-chosen and drifts within a run, so the goal pins it; must not collide with any plan task key or be a file path.
-const STEERED_REVIEW_SLICE: &str = "marker-slice";
 /// The d2 test's source issue. Purely an environment fact: the gh shim keeps
 /// per-repo issue state keyed by number, and any number works.
 const D2_ISSUE_NUMBER: u64 = 840;
@@ -243,355 +234,6 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
-#[tokio::test]
-async fn real_planner_agent_autonomously_emits_design_review_round_from_descriptor() {
-    let Some(codex_bin) = resolve_codex_bin() else {
-        skip!("no codex bin");
-    };
-
-    let _env_lock = FORGE_ENV_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-
-    let goal = "Plan the smallest issue-development template for adding one marker file, \
-                then drive design-review convergence."
-        .to_string();
-    let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
-            goal: Some(goal.clone()),
-            template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealPlannerTurn,
-            issue_body: None,
-            require_task_gates: false,
-            repo_seed: RepoSeed::ReadmeOnly,
-        },
-        codex_bin,
-    )
-    .await
-    {
-        Ok(fx) => fx,
-        Err(reason) => {
-            skip!("{reason}");
-        }
-    };
-
-    boot_planner_harness_via_start_op(&fx, goal).await;
-
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
-    assert!(
-        matches!(plan_actor, ActorId::AiPlannerSession(_)),
-        "plan.updated actor must be the real planner session, got {plan_actor:?}"
-    );
-
-    let harness = recover_planner_harness(&fx)
-        .await
-        .expect("live planner harness");
-    // Settle the planning turn before seeding so the review.round is causally a response to the injected completions.
-    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
-    seed_design_channel_complete(&fx, "review-design-a", "a").await;
-    seed_design_channel_complete(&fx, "review-design-b", "b").await;
-    let floor = max_event_id(&fx.repo).await;
-    assert_eq!(
-        count_design_review_rounds(&fx).await,
-        0,
-        "planning turn must not have emitted a design review.round before the seeded verdicts (id<=floor): proof-validity guard"
-    );
-
-    inject_task_completed(&harness, &task_id(&fx, "review-design-a")).await;
-    inject_task_completed(&harness, &task_id(&fx, "review-design-b")).await;
-
-    let rounds = wait_for_converged_design_review_round(&fx, floor, review_budget()).await;
-    assert_real_design_review_round(&fx, &rounds).await;
-
-    shutdown_planner_harness_if_registered(&fx).await;
-    fx.plugin_host
-        .stop(PLUGIN_ID)
-        .await
-        .expect("stop git-forge plugin");
-    shutdown_shared_codex(&fx.shared).await;
-}
-
-#[tokio::test]
-async fn real_planner_gives_up_at_review_cap_from_descriptor() {
-    let Some(codex_bin) = resolve_codex_bin() else {
-        skip!("no codex bin");
-    };
-
-    let _env_lock = FORGE_ENV_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-
-    // Steer the cap-exhaust GIVE-UP branch: GIVE-UP and ASK-HUMAN are mutually exclusive terminal branches of one track.
-    let goal = format!(
-        "Plan the smallest issue-development template for adding one marker file, \
-                then drive design review. If design review cannot converge at the review \
-                cap, give up and fail the track; do not request ratification. For every \
-                calm.review.round you record for the design phase of this track, set \
-                subject.slice_id to exactly the literal string `{STEERED_REVIEW_SLICE}` \
-                (that exact value, verbatim — no prefix, suffix, phase qualifier, or \
-                derived variant)."
-    );
-    let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
-            goal: Some(goal.clone()),
-            template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealPlannerTurn,
-            issue_body: None,
-            require_task_gates: false,
-            repo_seed: RepoSeed::ReadmeOnly,
-        },
-        codex_bin,
-    )
-    .await
-    {
-        Ok(fx) => fx,
-        Err(reason) => {
-            skip!("{reason}");
-        }
-    };
-
-    boot_planner_harness_via_start_op(&fx, goal).await;
-
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
-    assert!(
-        matches!(plan_actor, ActorId::AiPlannerSession(_)),
-        "plan.updated actor must be the real planner session, got {plan_actor:?}"
-    );
-    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug — different namespaces.
-    let slice_id = STEERED_REVIEW_SLICE.to_string();
-
-    let harness = recover_planner_harness(&fx)
-        .await
-        .expect("live planner harness");
-    // Settle the planning turn before seeding so the give-up is causally a response to the injected observations.
-    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
-
-    seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
-    seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
-    // Seed ONE prior round ALREADY AT the cap (n=8/cap=8): no further round is kernel-legal, so the agent must escalate directly (seeding n=7 deadlocks this dispatcher-less harness).
-    seed_prior_design_review_round(&fx, &slice_id, 8, 8).await;
-
-    let floor = max_event_id(&fx.repo).await;
-    let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
-    assert_eq!(
-        pre_wake_rounds.len(),
-        1,
-        "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
-    );
-
-    // Wake: inject exactly what the prod dispatcher's `harness_observation_from_event` would push (no dispatcher runs here).
-    inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
-    inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
-    inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
-
-    // Oracle (a): the Planner's close; the *when* (give up at the cap instead of ratifying) comes only from the descriptor.
-    let (_close_id, close_actor, close) = wait_for_track_closed(&fx, floor, review_budget()).await;
-    assert_eq!(close["id"], json!(fx.track_id.as_str()));
-    assert!(
-        matches!(close_actor, ActorId::AiPlannerSession(_)),
-        "the give-up close actor must be AiPlannerSession, got {close_actor:?} for {close}"
-    );
-
-    // Oracle (b): the tracks row is closed.
-    assert!(track_is_closed(&fx).await, "the track row must be closed");
-
-    // Oracle (c): branch purity — the steered run must neither merge nor ask for ratification.
-    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
-    assert_eq!(
-        event_payloads(&fx.repo, "ratify.requested").await.len(),
-        0,
-        "steered GIVE-UP run must not request ratification"
-    );
-
-    assert!(
-        !fx.used_injected_plan(),
-        "RealPlannerTurn must not use injected plan path"
-    );
-
-    shutdown_planner_harness_if_registered(&fx).await;
-    fx.plugin_host
-        .stop(PLUGIN_ID)
-        .await
-        .expect("stop git-forge plugin");
-    shutdown_shared_codex(&fx.shared).await;
-}
-
-#[tokio::test]
-async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
-    let Some(codex_bin) = resolve_codex_bin() else {
-        skip!("no codex bin");
-    };
-
-    let _env_lock = FORGE_ENV_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-
-    // Steer the cap-exhaust ASK-HUMAN branch: GIVE-UP and ASK-HUMAN are mutually exclusive terminal branches of one track.
-    let goal = format!(
-        "Plan the smallest issue-development template for adding one marker file, \
-                then drive design review. If design review cannot converge at the review \
-                cap, ask for human ratification instead of giving up; do not fail the track. \
-                For every calm.review.round you record for the design phase of this track, \
-                set subject.slice_id to exactly the literal string \
-                `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, \
-                phase qualifier, or derived variant)."
-    );
-    let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
-            goal: Some(goal.clone()),
-            template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealPlannerTurn,
-            issue_body: None,
-            require_task_gates: false,
-            repo_seed: RepoSeed::ReadmeOnly,
-        },
-        codex_bin,
-    )
-    .await
-    {
-        Ok(fx) => fx,
-        Err(reason) => {
-            skip!("{reason}");
-        }
-    };
-
-    boot_planner_harness_via_start_op(&fx, goal).await;
-
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
-    assert!(
-        matches!(plan_actor, ActorId::AiPlannerSession(_)),
-        "plan.updated actor must be the real planner session, got {plan_actor:?}"
-    );
-    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug — different namespaces.
-    let slice_id = STEERED_REVIEW_SLICE.to_string();
-
-    let harness = recover_planner_harness(&fx)
-        .await
-        .expect("live planner harness");
-    // Settle the planning turn before seeding so the ASK-HUMAN sequence is causally a response to the injected observations.
-    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
-
-    seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
-    seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
-    // Seed ONE prior round ALREADY AT the cap (n=8/cap=8): no further round is kernel-legal, so the agent must escalate directly (seeding n=7 deadlocks this dispatcher-less harness).
-    seed_prior_design_review_round(&fx, &slice_id, 8, 8).await;
-
-    let floor = max_event_id(&fx.repo).await;
-    let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
-    assert_eq!(
-        pre_wake_rounds.len(),
-        1,
-        "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
-    );
-
-    // Wake: inject exactly what the prod dispatcher's `harness_observation_from_event` would push (no dispatcher runs here).
-    inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
-    inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
-    inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
-
-    // Oracle phase 1 (a): the ASK-HUMAN request. `calm.ratify.request` needs an open track and flips nothing.
-    // The request is structurally unforgeable: role_gate makes ratify.requested planner-session-only and this test never calls `calm.ratify.request`.
-    let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, floor, ratify_budget()).await;
-    assert!(
-        matches!(req_actor, ActorId::AiPlannerSession(_)),
-        "ratify.requested actor must be AiPlannerSession, got {req_actor:?} for {req}"
-    );
-    assert!(
-        req["reason"]
-            .as_str()
-            .is_some_and(|reason| !reason.is_empty()),
-        "ratify.requested must carry a non-empty reason: {req}"
-    );
-    assert_eq!(req["track_id"], json!(fx.track_id.as_str()));
-
-    // Oracle phase 1 (b): waiting, not merged.
-    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
-    assert!(
-        !track_is_closed(&fx).await,
-        "the track stays open while awaiting ratification"
-    );
-
-    // Grant through the PRODUCTION HTTP route (in-process oneshot), as the user sends it.
-    let app = fixture_router(&fx);
-    let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/cards/{}/ratify", fx.planner_card_id))
-                .header("content-type", "application/json")
-                .body(Body::from(body))
-                .expect("grant request"),
-        )
-        .await
-        .expect("grant response");
-    let status = resp.status();
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .expect("grant response body")
-        .to_bytes();
-    let grant_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    assert_eq!(status, StatusCode::OK, "grant must succeed: {grant_body}");
-    assert_eq!(grant_body["decision"], json!("grant"), "{grant_body}");
-
-    // The grant's effect: ratify.resolved{grant} by the human actor.
-    let resolved_rows: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, actor, payload FROM events WHERE kind = 'ratify.resolved' ORDER BY id ASC",
-    )
-    .fetch_all(fx.repo.pool())
-    .await
-    .expect("ratify.resolved rows");
-    assert_eq!(
-        resolved_rows.len(),
-        1,
-        "exactly one ratify.resolved after the grant: {resolved_rows:?}"
-    );
-    let (resolved_id, resolved_actor, resolved) = {
-        let (id, actor, payload) = &resolved_rows[0];
-        let actor: ActorId = serde_json::from_str(actor).expect("event actor json");
-        let payload: Value = serde_json::from_str(payload).expect("event payload json");
-        (*id, actor, payload)
-    };
-    assert_eq!(
-        resolved_actor,
-        ActorId::User,
-        "ratify.resolved actor must be User: {resolved}"
-    );
-    assert_eq!(resolved["decision"], json!("grant"), "{resolved}");
-    assert_eq!(resolved["track_id"], json!(fx.track_id.as_str()));
-    assert!(
-        resolved_id > req_id,
-        "grant must follow the request: resolved={resolved_id}, requested={req_id}"
-    );
-
-    // Recovery wake: the same Observation the prod dispatcher would push for ratify.resolved.
-    inject_ratify_resolved_grant(&harness, &fx).await;
-    assert!(
-        !track_is_closed(&fx).await,
-        "the grant leaves the track open for the resumed work"
-    );
-
-    // Post-grant convergence/merge is deliberately NOT asserted: this subject is design-phase with no PR, and no post-grant verdicts are injected.
-    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
-
-    assert!(
-        !fx.used_injected_plan(),
-        "RealPlannerTurn must not use injected plan path"
-    );
-
-    shutdown_planner_harness_if_registered(&fx).await;
-    fx.plugin_host
-        .stop(PLUGIN_ID)
-        .await
-        .expect("stop git-forge plugin");
-    shutdown_shared_codex(&fx.shared).await;
-}
-
 // The only possible emitter of `forge.pr.merged` / `forge.issue.closed` is the real planner's own `tools/call`: scripted setup stops at `gh.pr.create`/`gh.pr.checks`.
 // The op idem-key checks pin the caller card only; scripted setup uses the same planner thread, so they cannot discriminate scripted-vs-autonomous.
 #[tokio::test]
@@ -634,8 +276,6 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         matches!(plan_actor, ActorId::AiPlannerSession(_)),
         "plan.updated actor must be the real planner session, got {plan_actor:?}"
     );
-    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug — different namespaces.
-    let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_planner_harness(&fx)
         .await
@@ -709,7 +349,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     .await;
 
     // Seed the completed pipeline (dispatched + completed pairs, runs/
-    // pre-check each) so runs/ shows implement/open-pr/review-a/review-b done.
+    // pre-check each) so runs/ shows implement/open-pr/review-pr done.
     seed_completed_task_pair(
         &fx,
         "implement-change",
@@ -724,40 +364,21 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "completed",
     )
     .await;
-    seed_completed_task_pair(
-        &fx,
-        "review-pr-a",
-        json!({ "summary": "approved", "verdict": "approved", "channel": "a" }),
-        "approved",
-    )
-    .await;
-    seed_completed_task_pair(
-        &fx,
-        "review-pr-b",
-        json!({ "summary": "approved", "verdict": "approved", "channel": "b" }),
-        "approved",
-    )
-    .await;
-
-    // Seed ONE converged impl review.round carrying the REAL branch tip; the actor MUST be AiPlanner(planner card) because role_gate makes review.round planner-only.
-    seed_converged_impl_review_round(&fx, &slice_id, pr_number, &head_sha).await;
-    let round_id = latest_event_id_of_kind(&fx, "review.round").await;
+    // The review result reports the REAL branch tip it read; it is the planner's ONLY channel for head_sha.
+    let review_result =
+        json!({ "summary": "approved", "verdict": "approved", "head_sha": head_sha });
+    seed_completed_task_pair(&fx, "review-pr", review_result.clone(), "approved").await;
+    let review_completed_id = latest_event_id_of_kind(&fx, "task.completed").await;
 
     let floor = max_event_id(&fx.repo).await;
-    // Proof-validity guards: nothing merged yet, and exactly the one seeded round exists.
+    // Proof-validity guard: nothing merged yet.
     assert_eq!(
         event_payloads(&fx.repo, "forge.pr.merged").await.len(),
         0,
         "proof-validity guard: no forge.pr.merged may exist pre-wake"
     );
-    let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
-    assert_eq!(
-        pre_wake_rounds.len(),
-        1,
-        "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
-    );
 
-    // Wake: inject what the prod dispatcher would push; the converged ReviewRound observation is the planner's ONLY channel for pr_number/head_sha.
+    // Wake: inject what the prod dispatcher would push.
     for key in ["implement-change", "open-pr"] {
         inject_observation(
             &harness,
@@ -768,16 +389,14 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         )
         .await;
     }
-    for (key, chan) in [("review-pr-a", "a"), ("review-pr-b", "b")] {
-        inject_observation(
-            &harness,
-            Observation::TaskCompleted {
-                idempotency_key: task_id(&fx, key),
-                result: json!({ "summary": "approved", "verdict": "approved", "channel": chan }),
-            },
-        )
-        .await;
-    }
+    inject_observation(
+        &harness,
+        Observation::TaskCompleted {
+            idempotency_key: task_id(&fx, "review-pr"),
+            result: review_result,
+        },
+    )
+    .await;
     inject_observation(
         &harness,
         Observation::ForgePrOpened {
@@ -792,20 +411,6 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
             track_id: fx.track_id.clone(),
             pr_number,
             conclusion: "success".into(),
-        },
-    )
-    .await;
-    inject_observation(
-        &harness,
-        Observation::ReviewRound {
-            track_id: fx.track_id.clone(),
-            phase: "impl".into(),
-            slice_id: slice_id.clone(),
-            pr_number: Some(pr_number),
-            head_sha: Some(head_sha.clone()),
-            n: 1,
-            cap: 8,
-            converged: true,
         },
     )
     .await;
@@ -828,7 +433,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     assert_eq!(
         merged["head_sha"],
         json!(head_sha),
-        "merged head must equal the seeded round head_sha == real branch tip: {merged}"
+        "merged head must equal the reviewed head_sha == real branch tip: {merged}"
     );
     let merge_sha = merged["merge_sha"]
         .as_str()
@@ -838,22 +443,12 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "merge_sha should be a git-shaped oid: {merged}"
     );
     assert_eq!(
-        merged["subject"]["phase"],
-        json!("impl"),
-        "merged subject phase: {merged}"
-    );
-    assert_eq!(
-        merged["subject"]["slice_id"],
-        json!(slice_id),
-        "merged subject slice: {merged}"
-    );
-    assert_eq!(
         merged["subject"]["pr_number"],
         json!(pr_number),
         "merged subject pr: {merged}"
     );
 
-    // Oracle (b) — the F4 proof: the plugin idem is `gh.pr.merge:{repo}:{pr}:{expected_head_sha}` only when expected_head_sha was passed; an omitted-sha merge MUST fail this.
+    // Oracle (b) — the head fence: the plugin idem is `gh.pr.merge:{repo}:{pr}:{expected_head_sha}` only when expected_head_sha was passed; an omitted-sha merge MUST fail this.
     let expected_merge_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
         fx.track_id.as_str(),
@@ -870,14 +465,14 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     for key in &merge_keys {
         assert_eq!(
             key, &expected_merge_key,
-            "every gh.pr.merge forge-action op must carry the with-sha idempotency key (F4): {merge_keys:?}"
+            "every gh.pr.merge forge-action op must carry the with-sha idempotency key: {merge_keys:?}"
         );
     }
 
-    // Oracle (c) — ordering: the converged round and the checks event precede the merge.
+    // Oracle (c) — ordering: the approving review and the checks event precede the merge.
     assert!(
-        round_id < merged_id,
-        "converged review.round (id={round_id}) must precede forge.pr.merged (id={merged_id})"
+        review_completed_id < merged_id,
+        "review task.completed (id={review_completed_id}) must precede forge.pr.merged (id={merged_id})"
     );
     assert!(
         checks_id < merged_id,
@@ -970,569 +565,6 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         .await
         .expect("stop git-forge plugin");
     shutdown_shared_codex(&fx.shared).await;
-}
-
-// Post-grant cap extension to the F4 finish: the planner's SINGLE post-grant round is both the extension (n=9, cap=10) and the convergence; kernel acceptance of that row is the proof.
-// No scripted `gh.pr.merge` exists in this file, so the only possible emitter of `forge.pr.merged` is the real planner's own `tools/call`.
-#[tokio::test]
-async fn real_planner_extends_cap_after_grant_converges_and_merges() {
-    let Some(codex_bin) = resolve_codex_bin() else {
-        skip!("no codex bin");
-    };
-
-    let _env_lock = FORGE_ENV_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
-
-    let fx = match boot_forge_e2e_fixture(
-        FixtureSpec {
-            goal: None,
-            template_id: Some("issue-development".into()),
-            plan_source: PlanSource::RealPlannerTurn,
-            issue_body: None,
-            require_task_gates: false,
-            repo_seed: RepoSeed::ReadmeOnly,
-        },
-        codex_bin,
-    )
-    .await
-    {
-        Ok(fx) => fx,
-        Err(reason) => {
-            skip!("{reason}");
-        }
-    };
-    let repo_arg = fx.origin_repo.display().to_string();
-    let goal = extension_merge_goal(&repo_arg);
-
-    boot_planner_harness_via_start_op(&fx, goal).await;
-
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
-    assert!(
-        matches!(plan_actor, ActorId::AiPlannerSession(_)),
-        "plan.updated actor must be the real planner session, got {plan_actor:?}"
-    );
-    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug — different namespaces.
-    let slice_id = STEERED_REVIEW_SLICE.to_string();
-
-    let harness = recover_planner_harness(&fx)
-        .await
-        .expect("live planner harness");
-    // Settle the planning turn before setup/seeding.
-    wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
-
-    // Scripted REAL PR setup (setup, not the proof).
-    let branch = "neige-r7c-impl-slice";
-    run_git(&fx.track_cwd, ["checkout", "-B", branch, "origin/main"]);
-    stage_git_change(&fx.track_cwd, "FORGE_E2E_R7C.md", "forge-e2e-r7c\n");
-    run_git(&fx.track_cwd, ["commit", "-m", "r7c scripted impl commit"]);
-    let head_sha = run_git_capture(&fx.track_cwd, ["rev-parse", "HEAD"]);
-    assert!(
-        is_hex_sha(&head_sha),
-        "scripted branch tip should be a 40-char hex sha, got {head_sha:?}"
-    );
-    run_git(&fx.track_cwd, ["push", "-u", "origin", branch]);
-    run_git(&fx.track_cwd, ["checkout", "main"]);
-
-    let planner_thread_id = planner_session_thread_id(&fx).await;
-    let create_resp = call_tool_via_socket(
-        &fx.socket_path,
-        &fx.daemon_token,
-        &planner_thread_id,
-        211,
-        PR_CREATE_TOOL,
-        json!({
-            "repo": repo_arg,
-            "head": branch,
-            "base": "main",
-            "title": "r7c scripted impl PR",
-            "body": "Scripted setup PR for the #888 R7c cap-extension E2E"
-        }),
-    )
-    .await;
-    assert_forge_tool_accepted(&create_resp, "gh.pr.create");
-    let (opened_id, _, opened) = wait_for_track_forge_event(
-        &fx,
-        "forge.pr.opened",
-        0,
-        review_budget(),
-        "scripted setup PR",
-        |payload| payload["head_sha"] == json!(head_sha),
-    )
-    .await;
-    let pr_number = opened["pr_number"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {opened}"));
-
-    let checks_resp = call_tool_via_socket(
-        &fx.socket_path,
-        &fx.daemon_token,
-        &planner_thread_id,
-        212,
-        PR_CHECKS_TOOL,
-        json!({ "repo": repo_arg, "pr": pr_number }),
-    )
-    .await;
-    assert_forge_tool_accepted(&checks_resp, "gh.pr.checks");
-    let (_checks_id, _, _checks) = wait_for_track_forge_event(
-        &fx,
-        "forge.pr.checks",
-        opened_id,
-        review_budget(),
-        "scripted setup checks",
-        |payload| {
-            payload["pr_number"] == json!(pr_number) && payload["conclusion"] == json!("success")
-        },
-    )
-    .await;
-
-    // Seed both PR review channels changes_requested (runs/ pre-check each) —
-    // the pre-grant window is genuinely non-approving.
-    for (key, chan) in [("review-pr-a", "a"), ("review-pr-b", "b")] {
-        seed_completed_task_pair(
-            &fx,
-            key,
-            json!({
-                "summary": "changes_requested",
-                "verdict": "changes_requested",
-                "channel": chan,
-            }),
-            "changes_requested",
-        )
-        .await;
-    }
-
-    // Seed ONE prior impl round ALREADY AT the cap (n=8/cap=8) carrying the REAL tip: no further round is legal pre-grant, and the +2 extension makes n=9/cap=10 the single legal round after.
-    seed_prior_impl_review_round(&fx, &slice_id, pr_number, &head_sha, 8, 8).await;
-
-    let floor = max_event_id(&fx.repo).await;
-    let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
-    assert_eq!(
-        pre_wake_rounds.len(),
-        1,
-        "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
-    );
-    assert_eq!(
-        event_payloads(&fx.repo, "forge.pr.merged").await.len(),
-        0,
-        "proof-validity guard: no forge.pr.merged may exist pre-wake"
-    );
-
-    // Wake: dispatcher-shaped observations only (no dispatcher runs here).
-    inject_task_changes_requested(&harness, &task_id(&fx, "review-pr-a")).await;
-    inject_task_changes_requested(&harness, &task_id(&fx, "review-pr-b")).await;
-    inject_observation(
-        &harness,
-        Observation::ForgePrOpened {
-            track_id: fx.track_id.clone(),
-            pr_number,
-        },
-    )
-    .await;
-    inject_observation(
-        &harness,
-        Observation::ForgePrChecks {
-            track_id: fx.track_id.clone(),
-            pr_number,
-            conclusion: "success".into(),
-        },
-    )
-    .await;
-    inject_observation(
-        &harness,
-        Observation::ReviewRound {
-            track_id: fx.track_id.clone(),
-            phase: "impl".into(),
-            slice_id: slice_id.clone(),
-            pr_number: Some(pr_number),
-            head_sha: Some(head_sha.clone()),
-            n: 8,
-            cap: 8,
-            converged: false,
-        },
-    )
-    .await;
-
-    // Phase 1 (a) — the ASK-HUMAN request, waited from the pre-wake `floor`.
-    let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, floor, ratify_budget()).await;
-    assert!(
-        matches!(req_actor, ActorId::AiPlannerSession(_)),
-        "ratify.requested actor must be AiPlannerSession, got {req_actor:?} for {req}"
-    );
-
-    // Phase 1 (c) — waiting, not merged.
-    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
-    assert!(
-        !track_is_closed(&fx).await,
-        "the track stays open while awaiting ratification"
-    );
-
-    // Grant through the PRODUCTION HTTP route: ratify.resolved{grant} by the User.
-    let app = fixture_router(&fx);
-    let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/cards/{}/ratify", fx.planner_card_id))
-                .header("content-type", "application/json")
-                .body(Body::from(body))
-                .expect("grant request"),
-        )
-        .await
-        .expect("grant response");
-    let status = resp.status();
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .expect("grant response body")
-        .to_bytes();
-    let grant_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    assert_eq!(status, StatusCode::OK, "grant must succeed: {grant_body}");
-    let resolved_rows: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, actor, payload FROM events WHERE kind = 'ratify.resolved' ORDER BY id ASC",
-    )
-    .fetch_all(fx.repo.pool())
-    .await
-    .expect("ratify.resolved rows");
-    assert_eq!(
-        resolved_rows.len(),
-        1,
-        "exactly one ratify.resolved after the grant: {resolved_rows:?}"
-    );
-    let (resolved_id, resolved_actor, resolved) = {
-        let (id, actor, payload) = &resolved_rows[0];
-        let actor: ActorId = serde_json::from_str(actor).expect("event actor json");
-        let payload: Value = serde_json::from_str(payload).expect("event payload json");
-        (*id, actor, payload)
-    };
-    assert_eq!(
-        resolved_actor,
-        ActorId::User,
-        "ratify.resolved actor must be User: {resolved}"
-    );
-    assert_eq!(resolved["decision"], json!("grant"), "{resolved}");
-    assert!(resolved_id > req_id, "grant must follow the request");
-
-    // Recovery wake + post-grant APPROVED verdicts, injected BEFORE the planner's next round so that round is both the extension and the convergence.
-    inject_ratify_resolved_grant(&harness, &fx).await;
-    for (key, chan) in [("review-pr-a", "a"), ("review-pr-b", "b")] {
-        inject_observation(
-            &harness,
-            Observation::TaskCompleted {
-                idempotency_key: task_id(&fx, key),
-                result: json!({ "summary": "approved", "verdict": "approved", "channel": chan }),
-            },
-        )
-        .await;
-    }
-
-    // Oracle 1 — THE extension round: n=9 (= old cap + 1), cap=10 (= old cap + 2), converged, planner-authored.
-    let (ext_round_id, ext_round_actor, ext_round) = wait_for_impl_review_round_on_subject(
-        &fx,
-        resolved_id,
-        &slice_id,
-        pr_number,
-        review_budget(),
-    )
-    .await;
-    assert!(
-        matches!(ext_round_actor, ActorId::AiPlannerSession(_)),
-        "extension round actor must be AiPlannerSession, got {ext_round_actor:?} for {ext_round}"
-    );
-    assert_eq!(
-        ext_round["n"],
-        json!(9),
-        "extension round must be n=9 (= cap_old + 1): {ext_round}"
-    );
-    assert_eq!(
-        ext_round["cap"],
-        json!(10),
-        "extension round must carry cap=10 (= cap_old + 2): {ext_round}"
-    );
-    assert_eq!(
-        ext_round["converged"],
-        json!(true),
-        "extension round must be converged: {ext_round}"
-    );
-    assert_eq!(
-        ext_round["head_sha"],
-        json!(head_sha),
-        "extension round must carry the real branch tip: {ext_round}"
-    );
-    assert!(
-        ext_round["channels"]
-            .as_array()
-            .is_some_and(|channels| channels.len() >= 2
-                && channels
-                    .iter()
-                    .all(|channel| channel["verdict"] == json!("approved"))),
-        "extension round channels must all be approved: {ext_round}"
-    );
-
-    // Oracle 2 — the merge follows the extension round (F4 linkage),
-    // kernel-appended, head-matched, on the full impl subject.
-    let (merged_id, merged_actor, merged) = wait_for_track_forge_event(
-        &fx,
-        "forge.pr.merged",
-        ext_round_id,
-        review_budget(),
-        "post-extension merge",
-        |_| true,
-    )
-    .await;
-    assert_eq!(
-        merged_actor,
-        ActorId::KernelDispatcher,
-        "forge.pr.merged is kernel-appended: {merged}"
-    );
-    assert_eq!(
-        merged["head_sha"],
-        json!(head_sha),
-        "merged head must equal the extension round's head_sha (F4): {merged}"
-    );
-    assert_eq!(merged["subject"]["phase"], json!("impl"), "{merged}");
-    assert_eq!(merged["subject"]["slice_id"], json!(slice_id), "{merged}");
-    assert_eq!(merged["subject"]["pr_number"], json!(pr_number), "{merged}");
-    assert_eq!(
-        event_payloads(&fx.repo, "forge.pr.merged").await.len(),
-        1,
-        "exactly one forge.pr.merged event"
-    );
-
-    // Oracle 3 — F4 op idem key: every gh.pr.merge forge-action row carries
-    // the WITH-sha shape from the planner seat (d2 oracle (b)).
-    let expected_merge_key = format!(
-        "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
-        fx.track_id.as_str(),
-        fx.planner_card_id.as_str(),
-        repo_arg,
-        pr_number,
-        head_sha
-    );
-    let merge_keys = forge_action_idem_keys_containing(&fx, ":gh.pr.merge:").await;
-    assert!(
-        !merge_keys.is_empty(),
-        "expected a parked forge-action gh.pr.merge operation row"
-    );
-    for key in &merge_keys {
-        assert_eq!(
-            key, &expected_merge_key,
-            "every gh.pr.merge forge-action op must carry the with-sha idempotency key (F4): {merge_keys:?}"
-        );
-    }
-
-    // Oracle 1 (exactly-once half) — exactly ONE post-grant review.round on
-    // the impl subject: the extension round itself.
-    let post_grant_rounds = event_rows(&fx.repo, "review.round")
-        .await
-        .into_iter()
-        .filter(|row| {
-            row.id > resolved_id && {
-                let subject = &row.payload["subject"];
-                subject["phase"] == json!("impl")
-                    && subject["slice_id"] == json!(slice_id)
-                    && subject["pr_number"] == json!(pr_number)
-            }
-        })
-        .count();
-    assert_eq!(
-        post_grant_rounds, 1,
-        "exactly one post-grant review.round on the impl subject (the extension round)"
-    );
-
-    // Oracle 4 — ordering by row id: ratify.requested < ratify.resolved{grant} < extension round < forge.pr.merged.
-    assert!(
-        req_id < resolved_id && resolved_id < ext_round_id && ext_round_id < merged_id,
-        "ordering violated: requested={req_id}, resolved={resolved_id}, \
-         extension={ext_round_id}, merged={merged_id}"
-    );
-
-    // Oracle 6 — exactly ONE cap extension on the impl subject, zero on every other subject.
-    let extensions = assert_cap_extension_history(&fx.repo, fx.track_id.as_str()).await;
-    let impl_subject = SubjectKey {
-        phase: "impl".into(),
-        slice_id: slice_id.clone(),
-        pr_number: Some(pr_number),
-    };
-    assert_eq!(
-        extensions.get(&impl_subject).copied(),
-        Some(1),
-        "exactly one cap extension on the impl subject: {extensions:?}"
-    );
-    for (key, count) in &extensions {
-        if key != &impl_subject {
-            assert_eq!(
-                *count, 0,
-                "no cap extension may exist on any other subject: {key:?}"
-            );
-        }
-    }
-
-    // Oracle 7 — the plan was the planner's own.
-    assert!(
-        !fx.used_injected_plan(),
-        "RealPlannerTurn must not use injected plan path"
-    );
-
-    shutdown_planner_harness_if_registered(&fx).await;
-    fx.plugin_host
-        .stop(PLUGIN_ID)
-        .await
-        .expect("stop git-forge plugin");
-    shutdown_shared_codex(&fx.shared).await;
-}
-
-/// Environment facts plus descriptor-legal ASK-HUMAN steering; the `+2` cap-extension rule is deliberately NOT restated and must come from the descriptor.
-fn extension_merge_goal(repo_gitdir: &str) -> String {
-    format!(
-        "Drive the tail of the issue-development template. Environment facts: the `repo` \
-         argument for every gh.* MCP forge tool is exactly `{repo_gitdir}`. Implementation, \
-         the pull request, and both PR review channels are already complete for this track; \
-         their results arrive as observations. If the impl review cannot converge at the \
-         review cap, ask for human ratification instead of giving up; do not fail the track. \
-         Once the impl review round for the pull request reports converged, execute the \
-         merge step yourself with the MCP forge tools (gh.pr.merge); do not dispatch \
-         further tasks. For every calm.review.round you record for the impl phase of this \
-         track, set subject.slice_id to exactly the literal string \
-         `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, phase \
-         qualifier, or derived variant)."
-    )
-}
-
-/// Seed ONE prior non-converged impl `review.round` at `n`/`cap` carrying the REAL tip; actor MUST be `AiPlanner(planner card)` with `EventScope::Track` (role_gate makes review.round planner-only).
-async fn seed_prior_impl_review_round(
-    fx: &Fixture,
-    slice_id: &str,
-    pr_number: u64,
-    head_sha: &str,
-    n: u32,
-    cap: u32,
-) {
-    let track_scope = EventScope::Track {
-        track: fx.track_id.clone(),
-        area: fx.area_id.clone(),
-    };
-    fx.repo
-        .log_pure_event(
-            ActorId::AiPlanner(fx.planner_card_id.clone()),
-            track_scope,
-            None,
-            &fx.events,
-            &fx.cache,
-            &fx.track_area_cache,
-            Event::ReviewRound {
-                track_id: fx.track_id.clone(),
-                subject: ReviewSubject {
-                    phase: "impl".into(),
-                    slice_id: slice_id.into(),
-                    pr_number: Some(pr_number),
-                },
-                head_sha: Some(head_sha.to_string()),
-                n,
-                cap,
-                converged: false,
-                channels: vec![
-                    ChannelVerdict {
-                        role: "pr-correctness".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    },
-                    ChannelVerdict {
-                        role: "pr-failure-path".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    },
-                ],
-                root_cause: None,
-                // Canonical shape from `review_round_idempotency_key`: PR subjects carry the pr number in the pr slot.
-                idempotency_key: format!(
-                    "review.round:{}:impl:{}:{}:{}",
-                    fx.track_id.as_str(),
-                    slice_id,
-                    pr_number,
-                    n
-                ),
-            },
-        )
-        .await
-        .expect("log seeded prior impl review.round");
-}
-
-/// Timeout diagnostic for review-round subjects observed after a floor.
-async fn review_round_subjects_after(fx: &Fixture, floor: i64) -> Vec<String> {
-    let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT payload FROM events \
-         WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
-    )
-    .bind(floor)
-    .fetch_all(fx.repo.pool())
-    .await
-    .unwrap_or_else(|e| panic!("review.round diagnostic rows after floor {floor}: {e}"));
-    let mut subjects: Vec<String> = rows
-        .into_iter()
-        .map(|payload| {
-            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-            format!(
-                "{}/{}",
-                payload["subject"]["phase"].as_str().unwrap_or("<missing>"),
-                payload["subject"]["slice_id"]
-                    .as_str()
-                    .unwrap_or("<missing>")
-            )
-        })
-        .collect();
-    subjects.sort();
-    subjects.dedup();
-    subjects
-}
-
-/// First post-floor `review.round` on the FULL impl subject (a pr-less round is a different stream); returns the event id.
-async fn wait_for_impl_review_round_on_subject(
-    fx: &Fixture,
-    floor: i64,
-    slice_id: &str,
-    pr_number: u64,
-    budget: Duration,
-) -> (i64, ActorId, Value) {
-    let deadline = Instant::now() + budget;
-    loop {
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT id, actor, payload FROM events \
-             WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
-        )
-        .bind(floor)
-        .fetch_all(fx.repo.pool())
-        .await
-        .unwrap_or_else(|e| panic!("review.round event rows after floor {floor}: {e}"));
-        let hit = rows.into_iter().find_map(|(id, actor, payload)| {
-            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
-            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-            let on_subject = {
-                let subject = &payload["subject"];
-                subject["phase"] == json!("impl")
-                    && subject["slice_id"] == json!(slice_id)
-                    && subject["pr_number"] == json!(pr_number)
-            };
-            on_subject.then_some((id, actor, payload))
-        });
-        if let Some(hit) = hit {
-            return hit;
-        }
-        if Instant::now() >= deadline {
-            let subjects = review_round_subjects_after(fx, floor).await;
-            panic_with_agent_diag(
-                fx,
-                format!(
-                    "timed out after {budget:?} waiting for post-floor impl review.round \
-                     on slice {slice_id} pr {pr_number} after event id {floor}; \
-                     review.round subjects observed after floor: {subjects:?}"
-                ),
-            )
-            .await;
-        }
-        sleep(Duration::from_millis(250)).await;
-    }
 }
 
 // CAPSTONE: one REAL run of the full issue→PR→merge→close backbone with a LIVE dispatcher — zero injected observations, zero seeded rows; ANY `ratify.requested` fails the test.
@@ -1629,21 +661,6 @@ async fn real_planner_drives_issue_to_close_capstone() {
         "issue read artifact must carry the shim-seeded fixture body (S0)"
     );
 
-    // S2/S9 — the planner records a design review round after the real reviewer workers complete; round count is tolerated.
-    let (_design_round_id, design_round_actor, design_round) = wait_capstone_event(
-        &fx,
-        "review.round",
-        0,
-        st(),
-        "planner records a design review round",
-        |p| p["subject"]["phase"] == json!("design"),
-    )
-    .await;
-    assert!(
-        matches!(design_round_actor, ActorId::AiPlannerSession(_)),
-        "design review.round actor must be AiPlannerSession, got {design_round_actor:?} for {design_round}"
-    );
-
     // S5 — the kernel commits the implement worker's leased worktree.
     let (commit_id, commit_actor, committed) = wait_capstone_event(
         &fx,
@@ -1720,36 +737,13 @@ async fn real_planner_drives_issue_to_close_capstone() {
     .await;
     assert_eq!(diff_actor, ActorId::KernelDispatcher, "{diff_read}");
 
-    // S9/S10 — the converged impl review round. `subject.pr_number` is OPTIONAL per the manifest, so tolerate absent/null and require equality only when present.
-    let (round_id, round_actor, round) = wait_capstone_event(
-        &fx,
-        "review.round",
-        diff_id,
-        st(),
-        "planner records the converged impl review round",
-        |p| {
-            p["subject"]["phase"] == json!("impl")
-                && p["converged"] == json!(true)
-                && subject_pr_absent_or_matches(&p["subject"], pr_number)
-        },
-    )
-    .await;
-    assert!(
-        matches!(round_actor, ActorId::AiPlannerSession(_)),
-        "impl review.round actor must be AiPlannerSession, got {round_actor:?} for {round}"
-    );
-    let round_slice = round["subject"]["slice_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("impl review.round missing subject.slice_id: {round}"))
-        .to_string();
-
-    // S11 — merge, fenced on the converged round (F4).
+    // S11 — merge after the review read the diff.
     let (merged_id, merged_actor, merged) = wait_capstone_event(
         &fx,
         "forge.pr.merged",
-        round_id,
+        diff_id,
         st(),
-        "PR merged after review convergence",
+        "PR merged after review",
         |p| p["subject"]["pr_number"] == json!(pr_number),
     )
     .await;
@@ -1759,21 +753,12 @@ async fn real_planner_drives_issue_to_close_capstone() {
         .unwrap_or_else(|| panic!("forge.pr.merged missing head_sha: {merged}"))
         .to_string();
     assert!(is_hex_sha(&merged_head), "{merged}");
-    // F4 direct assert against the LATEST (max-n) pre-merge round: a converge → late-fix → re-converge run legitimately merges on the newer head.
-    let fence_round = latest_impl_round_before_merge(&fx, merged_id, &round_slice, pr_number).await;
+    // The merge head is the head the last pre-merge review read: a fix → re-review run legitimately merges on the newer head.
+    let reviewed_head = latest_reviewed_head_before_merge(&fx, merged_id, pr_number).await;
     assert_eq!(
-        fence_round["converged"],
-        json!(true),
-        "latest pre-merge impl round must be converged (F4): {fence_round}"
+        merged_head, reviewed_head,
+        "merge head must equal the head the last review read with gh.pr.diff: {merged}"
     );
-    let fence_head = fence_round["head_sha"]
-        .as_str()
-        .unwrap_or_else(|| panic!("fence round missing head_sha (F4): {fence_round}"));
-    assert_eq!(
-        merged_head, fence_head,
-        "merge head must equal the LATEST converged round's head_sha (F4): {merged}"
-    );
-    let subject = SubjectKey::from_subject_payload(&fence_round["subject"]);
     let merge_sha = merged["merge_sha"]
         .as_str()
         .unwrap_or_else(|| panic!("forge.pr.merged missing merge_sha: {merged}"));
@@ -1807,7 +792,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     );
 
     // Post-run oracle.
-    capstone_oracle(&fx, pr_number, &merged_head, &subject, &repo_gitdir).await;
+    capstone_oracle(&fx, pr_number, &merged_head, &repo_gitdir).await;
 
     // Teardown: dispatcher handle first, then harness, plugin, codex. Panic paths skip this and leak the shared appserver pgid; the isolation wrapper reaps the session process group.
     drop(dispatcher);
@@ -1823,36 +808,16 @@ fn remaining(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
 
-/// `subject.pr_number` is optional per the descriptor, so absent/null is legal; when present it must match.
-fn subject_pr_absent_or_matches(subject: &Value, pr_number: u64) -> bool {
-    match subject.get("pr_number") {
-        None => true,
-        Some(Value::Null) => true,
-        Some(v) => *v == json!(pr_number),
-    }
-}
-
-/// The F4 fence round: the max-n impl `review.round` on `slice_id` with event id strictly BEFORE the merge (latest-n, not first-converged).
-async fn latest_impl_round_before_merge(
-    fx: &Fixture,
-    merged_id: i64,
-    slice_id: &str,
-    pr_number: u64,
-) -> Value {
-    let rounds = event_rows(&fx.repo, "review.round").await;
-    rounds
+/// head_sha of the latest `forge.pr.diff.read` for `pr_number` strictly BEFORE the merge.
+async fn latest_reviewed_head_before_merge(fx: &Fixture, merged_id: i64, pr_number: u64) -> String {
+    event_rows(&fx.repo, "forge.pr.diff.read")
+        .await
         .into_iter()
-        .filter(|r| r.id < merged_id)
-        .filter(|r| {
-            let subject = &r.payload["subject"];
-            subject["phase"] == json!("impl")
-                && subject["slice_id"] == json!(slice_id)
-                && subject_pr_absent_or_matches(subject, pr_number)
-        })
-        .max_by_key(|r| r.payload["n"].as_u64().unwrap_or(0))
-        .map(|r| r.payload)
+        .filter(|r| r.id < merged_id && r.payload["pr_number"] == json!(pr_number))
+        .max_by_key(|r| r.id)
+        .and_then(|r| r.payload["head_sha"].as_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| {
-            panic!("no impl review.round on slice {slice_id} precedes the merge (id {merged_id})")
+            panic!("no forge.pr.diff.read for pr {pr_number} precedes the merge (id {merged_id})")
         })
 }
 
@@ -1860,8 +825,8 @@ async fn latest_impl_round_before_merge(
 fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String {
     format!(
         "Drive the bound issue-development template END-TO-END for issue #{issue_number}: read \
-         the issue, converge design review, implement, open a pull request, converge PR review, \
-         merge, close the issue, and close the track.\n\
+         the issue, implement, open a pull request, review it, merge, close the issue, and close \
+         the track.\n\
          \n\
          Environment facts:\n\
          - The `repo` argument for EVERY gh.* forge tool call (gh.issue.view, gh.pr.create, \
@@ -1876,12 +841,11 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          no_gate_reason.\n\
          - A task block whose depends_on names a task that does not exist yet is written but \
          receives an unknown_dependency diagnostic and is not projected, so create report task \
-         blocks in dependency order: (1) inspect-issue, then \
-         review-design-a, review-design-b and implement-change; (2) add open-pr only after \
-         implement-change completes, embedding the implement worker's actual branch name in \
-         its goal; (3) after open-pr completes, add review-pr-a and review-pr-b, then add merge \
-         after both review task blocks exist, embedding the literal repo, pr number, base sha, \
-         head sha and reviewed slice_id values in each of their goals.\n\
+         blocks in dependency order: (1) inspect-issue, then implement-change; (2) add open-pr \
+         only after implement-change completes, embedding the implement worker's actual branch \
+         name in its goal; (3) after open-pr completes, add review-pr, then add merge after \
+         the review task block exists, embedding the literal repo, pr number, base sha and \
+         head sha values in each of their goals.\n\
          - implement-change goal: implement exactly what the issue asks by editing src/lib.rs \
          in the worker's own working directory, then call the MCP tool whose name ends in \
          `git.commit` (arguments: a commit message and a non-empty idem) and note the branch \
@@ -1893,17 +857,17 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          for the created PR; then call calm.task.complete reporting the literal pr_number and \
          head_sha values gh.pr.create returned; the open-pr worker must NOT call gh.pr.diff \
          or gh.pr.list.\n\
-         - review-pr-a / review-pr-b goals: call gh.pr.diff with the embedded repo, pr, \
+         - review-pr goal: call gh.pr.diff with the embedded repo, pr, \
          base_sha and head_sha, review the returned diff against the issue requirements, and \
          report the literal verdict token `approved` or `changes_requested` in \
          calm.task.complete.\n\
-         - merge goal: call gh.pr.merge with the embedded repo and pr, phase `impl`, the \
-         reviewed slice_id, and expected_head_sha equal to the head sha of the converged impl \
-         review round; then call gh.issue.close for issue #{issue_number} with the same repo.\n\
+         - merge goal: call gh.pr.merge with the embedded repo and pr, phase `impl`, \
+         slice_id `implement-change`, and expected_head_sha equal to the head sha the review read with \
+         gh.pr.diff; then call gh.issue.close for issue #{issue_number} with the same repo.\n\
          - After the merge task completes and the issue is closed, close the track with \
          calm.track.close.\n\
-         - If a review subject cannot converge at the review cap, give up and close the track \
-         with the reason; do not request ratification."
+         - If review cannot converge, give up and close the track with the reason; do not \
+         request ratification."
     )
 }
 
@@ -1973,14 +937,8 @@ async fn wait_capstone_event(
 }
 
 /// The P6 post-run oracle: skeleton superset, orderings, actor table, merge
-/// fence, F4 idem-key shape, no-cargo gate audit, content invariant, purity.
-async fn capstone_oracle(
-    fx: &Fixture,
-    pr_number: u64,
-    merged_head: &str,
-    subject: &SubjectKey,
-    repo_gitdir: &str,
-) {
+/// idem-key shape, no-cargo gate audit, content invariant, purity.
+async fn capstone_oracle(fx: &Fixture, pr_number: u64, merged_head: &str, repo_gitdir: &str) {
     // Skeleton (⊇): every required kind appears at least once; extra events,
     // extra tasks, dup idempotent rows are all tolerated.
     assert_event_skeleton_superset(
@@ -2001,13 +959,6 @@ async fn capstone_oracle(
                 r.payload["conclusion"] == json!("success")
             }),
             RequiredEvent::any("forge.pr.diff.read"),
-            RequiredEvent::new("review.round", |r| {
-                r.payload["subject"]["phase"] == json!("design")
-            }),
-            RequiredEvent::new("review.round", |r| {
-                r.payload["subject"]["phase"] == json!("impl")
-                    && r.payload["converged"] == json!(true)
-            }),
             RequiredEvent::new("forge.pr.merged", |r| {
                 r.payload["merge_sha"].as_str().is_some_and(is_hex_sha)
             }),
@@ -2019,7 +970,6 @@ async fn capstone_oracle(
     )
     .await;
 
-    // Ordering 2 (latest converged design round < first impl dispatch) is deliberately NOT asserted: the scheduler never reads review state.
     assert_ordering(
         &fx.repo,
         &[
@@ -2045,23 +995,12 @@ async fn capstone_oracle(
         ],
     )
     .await;
-    // Fence 6: subject-keyed cap enforcement. 6a (merge keyed by FULL subject) is replaced by the in-line latest-fence assert because a round may legally omit pr_number.
-    assert_subject_keyed_cap_enforcement(&fx.repo, fx.track_id.as_str()).await;
-    if subject.pr_number.is_some() {
-        assert_converged_subject_has_merge(&fx.repo, subject).await;
-    }
 
     // Actor table (event-row column, never payload).
     for (actor, payload) in actor_payload_rows(&fx.repo, "plan.updated").await {
         assert!(
             matches!(actor, ActorId::AiPlannerSession(_)),
             "plan.updated actor must be AiPlannerSession, got {actor:?} for {payload}"
-        );
-    }
-    for (actor, payload) in actor_payload_rows(&fx.repo, "review.round").await {
-        assert!(
-            matches!(actor, ActorId::AiPlannerSession(_)),
-            "review.round actor must be AiPlannerSession, got {actor:?} for {payload}"
         );
     }
     for kind in ["task.dispatched", "task.gate_result", "worktree.committed"] {
@@ -2074,7 +1013,7 @@ async fn capstone_oracle(
         }
     }
 
-    // F4 idem-key shape: the plugin idem carries `:{expected_head_sha}` ONLY when it was passed. The caller card is NOT pinned: a merge-worker seat is as legal as the planner seat.
+    // Merge idem-key shape: the plugin idem carries `:{expected_head_sha}` ONLY when it was passed. The caller card is NOT pinned: a merge-worker seat is as legal as the planner seat.
     let merge_keys = forge_action_idem_keys_containing(fx, ":gh.pr.merge:").await;
     assert!(
         !merge_keys.is_empty(),
@@ -2085,7 +1024,7 @@ async fn capstone_oracle(
         assert!(
             key.ends_with(&merge_suffix),
             "every gh.pr.merge forge-action op must carry the WITH-sha idem key \
-             (F4, expected suffix {merge_suffix}): {merge_keys:?}"
+             (expected suffix {merge_suffix}): {merge_keys:?}"
         );
     }
     let close_keys = forge_action_idem_keys_containing(fx, ":gh.issue.close:").await;
@@ -2333,29 +1272,6 @@ fn gh_shim_spawn_retries_transient_etxtbsy() {
     );
 }
 
-async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
-    seed_design_channel_verdict(fx, key, chan, "approved").await;
-}
-
-async fn seed_design_channel_changes_requested(fx: &Fixture, key: &str, chan: &str) {
-    seed_design_channel_verdict(fx, key, chan, "changes_requested").await;
-}
-
-/// Seed a design review-channel task pair carrying `verdict`, then fail fast unless the runs/ projection surfaces it.
-async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdict: &str) {
-    seed_completed_task_pair(
-        fx,
-        key,
-        json!({
-            "summary": verdict,
-            "verdict": verdict,
-            "channel": chan,
-        }),
-        verdict,
-    )
-    .await
-}
-
 /// Seed a pipeline task pair whose completion carries `result`, then fail fast unless the runs/ projection surfaces `expected_summary`.
 async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expected_summary: &str) {
     let verdict = expected_summary;
@@ -2530,240 +1446,12 @@ async fn recover_planner_harness(fx: &Fixture) -> Option<PlannerHarness> {
     fx.harness.get(&runtime.id)
 }
 
-#[cfg(feature = "fixtures")]
-async fn inject_task_completed(h: &PlannerHarness, idem_key: &str) {
-    h.observe_for_test(
-        Observation::TaskCompleted {
-            idempotency_key: idem_key.into(),
-            result: json!({ "summary": "approved" }),
-        },
-        None,
-    )
-    .await;
-}
-
-#[cfg(not(feature = "fixtures"))]
-async fn inject_task_completed(_h: &PlannerHarness, _idem_key: &str) {
-    panic!("inject_task_completed requires the fixtures feature");
-}
-
-#[cfg(feature = "fixtures")]
-async fn inject_task_changes_requested(h: &PlannerHarness, idem_key: &str) {
-    h.observe_for_test(
-        Observation::TaskCompleted {
-            idempotency_key: idem_key.into(),
-            result: json!({ "summary": "changes_requested" }),
-        },
-        None,
-    )
-    .await;
-}
-
-#[cfg(not(feature = "fixtures"))]
-async fn inject_task_changes_requested(_h: &PlannerHarness, _idem_key: &str) {
-    panic!("inject_task_changes_requested requires the fixtures feature");
-}
-
-/// Inject the same `Observation::ReviewRound` the prod dispatcher would push; no review.round projection exists, so this is the planner's ONLY channel for round state.
-#[cfg(feature = "fixtures")]
-async fn inject_design_review_round_observation(
-    h: &PlannerHarness,
-    fx: &Fixture,
-    slice_id: &str,
-    n: u32,
-    cap: u32,
-    converged: bool,
-) {
-    h.observe_for_test(
-        Observation::ReviewRound {
-            track_id: fx.track_id.clone(),
-            phase: "design".into(),
-            slice_id: slice_id.into(),
-            pr_number: None,
-            head_sha: None,
-            n,
-            cap,
-            converged,
-        },
-        None,
-    )
-    .await;
-}
-
-#[cfg(not(feature = "fixtures"))]
-async fn inject_design_review_round_observation(
-    _h: &PlannerHarness,
-    _fx: &Fixture,
-    _slice_id: &str,
-    _n: u32,
-    _cap: u32,
-    _converged: bool,
-) {
-    panic!("inject_design_review_round_observation requires the fixtures feature");
-}
-
-/// Seed one prior non-converged design review.round; actor MUST be `AiPlanner(planner card)` with `EventScope::Track` (role_gate makes review.round planner-only).
-async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, cap: u32) {
-    let track_scope = EventScope::Track {
-        track: fx.track_id.clone(),
-        area: fx.area_id.clone(),
-    };
-    fx.repo
-        .log_pure_event(
-            ActorId::AiPlanner(fx.planner_card_id.clone()),
-            track_scope,
-            None,
-            &fx.events,
-            &fx.cache,
-            &fx.track_area_cache,
-            Event::ReviewRound {
-                track_id: fx.track_id.clone(),
-                subject: ReviewSubject {
-                    phase: "design".into(),
-                    slice_id: slice_id.into(),
-                    pr_number: None,
-                },
-                head_sha: None,
-                n,
-                cap,
-                converged: false,
-                channels: vec![
-                    ChannelVerdict {
-                        role: "design-a".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    },
-                    ChannelVerdict {
-                        role: "design-b".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    },
-                ],
-                root_cause: None,
-                // Canonical shape from `review_round_idempotency_key`: design subjects use the literal "design" in the pr slot.
-                idempotency_key: format!(
-                    "review.round:{}:design:{}:design:{}",
-                    fx.track_id.as_str(),
-                    slice_id,
-                    n
-                ),
-            },
-        )
-        .await
-        .expect("log seeded prior review.round");
-}
-
-/// First post-floor `track.updated` that closes the fixture track.
-async fn wait_for_track_closed(
-    fx: &Fixture,
-    floor: i64,
-    budget: Duration,
-) -> (i64, ActorId, Value) {
-    let deadline = Instant::now() + budget;
-    loop {
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT id, actor, payload FROM events \
-             WHERE kind = 'track.updated' AND id > ?1 ORDER BY id ASC",
-        )
-        .bind(floor)
-        .fetch_all(fx.repo.pool())
-        .await
-        .unwrap_or_else(|e| panic!("track.updated rows after floor {floor}: {e}"));
-        let hit = rows.into_iter().find_map(|(id, actor, payload)| {
-            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
-            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-            (!payload["closed_at"].is_null() && payload["id"] == json!(fx.track_id.as_str()))
-                .then_some((id, actor, payload))
-        });
-        if let Some(hit) = hit {
-            return hit;
-        }
-        if Instant::now() >= deadline {
-            panic_with_agent_diag(
-                fx,
-                format!("timed out after {budget:?} waiting for the close after event id {floor}"),
-            )
-            .await;
-        }
-        sleep(Duration::from_millis(250)).await;
-    }
-}
-
-/// First post-floor `ratify.requested`; role_gate makes it planner-session-only, so an observed row proves the real planner's own tool call.
-async fn wait_for_ratify_requested(
-    fx: &Fixture,
-    floor: i64,
-    budget: Duration,
-) -> (i64, ActorId, Value) {
-    let deadline = Instant::now() + budget;
-    loop {
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT id, actor, payload FROM events \
-             WHERE kind = 'ratify.requested' AND id > ?1 ORDER BY id ASC",
-        )
-        .bind(floor)
-        .fetch_all(fx.repo.pool())
-        .await
-        .unwrap_or_else(|e| panic!("ratify.requested rows after floor {floor}: {e}"));
-        if let Some((id, actor, payload)) = rows.into_iter().next() {
-            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
-            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-            return (id, actor, payload);
-        }
-        if Instant::now() >= deadline {
-            panic_with_agent_diag(
-                fx,
-                format!(
-                    "timed out after {budget:?} waiting for ratify.requested after event id {floor}"
-                ),
-            )
-            .await;
-        }
-        sleep(Duration::from_millis(250)).await;
-    }
-}
-
 async fn track_is_closed(fx: &Fixture) -> bool {
     sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id = ?1")
         .bind(fx.track_id.as_str())
         .fetch_one(fx.repo.pool())
         .await
         .expect("select track closed_at")
-}
-
-/// The production HTTP grant seam: the real `routes::router()` behind `actor_middleware` over the fixture's live parts, driven via `oneshot`.
-fn fixture_router(fx: &Fixture) -> axum::Router {
-    let state = AppState::from_parts(
-        fx.repo_dyn.clone(),
-        fx.events.clone(),
-        fx.daemon.clone(),
-        fx.plugin_host.clone(),
-        fx.codex.clone(),
-        Some(fx.cache.clone()),
-        Some(fx.track_area_cache.clone()),
-    );
-    calm_server::routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state)
-}
-
-/// Inject the same `Observation::RatifyResolved` the prod dispatcher would push for the grant.
-#[cfg(feature = "fixtures")]
-async fn inject_ratify_resolved_grant(h: &PlannerHarness, fx: &Fixture) {
-    h.observe_for_test(
-        Observation::RatifyResolved {
-            track_id: fx.track_id.clone(),
-            decision: calm_server::event::RatifyDecision::Grant,
-            message: None,
-        },
-        None,
-    )
-    .await;
-}
-
-#[cfg(not(feature = "fixtures"))]
-async fn inject_ratify_resolved_grant(_h: &PlannerHarness, _fx: &Fixture) {
-    panic!("inject_ratify_resolved_grant requires the fixtures feature");
 }
 
 async fn wait_for_planner_turn_settled(fx: &Fixture, h: &PlannerHarness, budget: Duration) {
@@ -2801,196 +1489,15 @@ async fn max_event_id(repo: &SqlxRepo) -> i64 {
         .expect("select max event id")
 }
 
-async fn count_design_review_rounds(fx: &Fixture) -> usize {
-    actor_payload_rows(&fx.repo, "review.round")
-        .await
-        .into_iter()
-        .filter(|(_, payload)| is_design_review_round(payload))
-        .count()
-}
-
-fn is_design_review_round(payload: &Value) -> bool {
-    payload.pointer("/subject/phase").and_then(Value::as_str) == Some("design")
-}
-
-async fn wait_for_converged_design_review_round(
-    fx: &Fixture,
-    floor: i64,
-    budget: Duration,
-) -> Vec<(ActorId, Value)> {
-    let deadline = Instant::now() + budget;
-    loop {
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT id, actor, payload FROM events \
-             WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
-        )
-        .bind(floor)
-        .fetch_all(fx.repo.pool())
-        .await
-        .unwrap_or_else(|e| panic!("review.round event rows after floor {floor}: {e}"));
-        let design: Vec<(i64, ActorId, Value)> = rows
-            .into_iter()
-            .map(|(id, actor, payload)| {
-                (
-                    id,
-                    serde_json::from_str(&actor).expect("event actor json"),
-                    serde_json::from_str(&payload).expect("event payload json"),
-                )
-            })
-            .filter(|(_, _, payload)| is_design_review_round(payload))
-            .collect();
-        if design
-            .last()
-            .is_some_and(|(_, _, payload)| payload["converged"] == json!(true))
-        {
-            return design
-                .into_iter()
-                .map(|(_, actor, payload)| (actor, payload))
-                .collect();
-        }
-        if Instant::now() >= deadline {
-            panic_with_agent_diag(
-                fx,
-                format!(
-                    "timed out after {budget:?} waiting for converged design review.round after event id {floor}"
-                ),
-            )
-            .await;
-        }
-        sleep(Duration::from_millis(250)).await;
-    }
-}
-
-async fn assert_real_design_review_round(fx: &Fixture, rounds: &[(ActorId, Value)]) {
-    fn null_or_absent(value: &Value, key: &str) -> bool {
-        value.get(key).is_none() || value[key].is_null()
-    }
-
-    fn required_str<'a>(value: &'a Value, key: &str, context: &str) -> &'a str {
-        value[key]
-            .as_str()
-            .unwrap_or_else(|| panic!("{context} missing string {key}: {value}"))
-    }
-
-    fn required_u64(value: &Value, key: &str, context: &str) -> u64 {
-        value[key]
-            .as_u64()
-            .unwrap_or_else(|| panic!("{context} missing unsigned integer {key}: {value}"))
-    }
-
-    fn assert_channels(payload: &Value) {
-        let channels = payload["channels"]
-            .as_array()
-            .unwrap_or_else(|| panic!("review.round channels must be an array: {payload}"));
-        assert!(
-            channels.len() >= 2,
-            "review.round must carry at least two channels: {payload}"
-        );
-        let roles: std::collections::BTreeSet<&str> = channels
-            .iter()
-            .map(|channel| {
-                channel["role"]
-                    .as_str()
-                    .unwrap_or_else(|| panic!("review.round channel missing role: {channel}"))
-            })
-            .collect();
-        assert!(
-            roles.len() >= 2,
-            "review.round channels must have at least two distinct roles: {payload}"
-        );
-    }
-
-    assert!(
-        !rounds.is_empty(),
-        "expected at least one design review.round"
-    );
-    assert!(
-        !fx.used_injected_plan(),
-        "RealPlannerTurn must not use injected plan path"
-    );
-
-    let mut by_subject: std::collections::BTreeMap<(String, String, Option<u64>), Vec<&Value>> =
-        std::collections::BTreeMap::new();
-    for (actor, payload) in rounds {
-        assert!(
-            matches!(actor, ActorId::AiPlannerSession(_)),
-            "review.round actor must be AiPlannerSession, got {actor:?} for {payload}"
-        );
-        assert_eq!(
-            payload["cap"],
-            json!(8),
-            "design review.round cap must be descriptor-fixed 8: {payload}"
-        );
-        assert!(
-            null_or_absent(payload, "head_sha"),
-            "design review.round must omit/null head_sha: {payload}"
-        );
-
-        let subject = &payload["subject"];
-        assert_eq!(
-            subject["phase"],
-            json!("design"),
-            "oracle received non-design review.round: {payload}"
-        );
-        assert!(
-            null_or_absent(subject, "pr_number"),
-            "design review.round subject must omit/null pr_number: {payload}"
-        );
-        let slice_id = required_str(subject, "slice_id", "review.round subject");
-        assert!(
-            !slice_id.is_empty(),
-            "design review.round subject.slice_id must be non-empty: {payload}"
-        );
-        assert_channels(payload);
-
-        by_subject
-            .entry(("design".to_string(), slice_id.to_string(), None))
-            .or_default()
-            .push(payload);
-    }
-
-    for (subject, subject_rounds) in &by_subject {
-        for (expected_n, payload) in (1_u64..).zip(subject_rounds.iter()) {
-            let n = required_u64(payload, "n", "review.round");
-            assert_eq!(
-                n, expected_n,
-                "design review.round n must be monotonic for {subject:?}: {subject_rounds:?}"
-            );
-        }
-
-        let latest = subject_rounds
-            .last()
-            .expect("subject group has at least one review.round");
-        assert_eq!(
-            latest["converged"],
-            json!(true),
-            "latest design review.round must be converged: {latest}"
-        );
-        let channels = latest["channels"].as_array().unwrap_or_else(|| {
-            panic!("latest design review.round channels must be an array: {latest}")
-        });
-        assert!(
-            channels
-                .iter()
-                .all(|channel| channel["verdict"] == json!("approved")),
-            "latest design review.round channel verdicts must all be literal approved: {latest}"
-        );
-    }
-}
-
 fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
     format!(
         "Drive the tail of the issue-development template for issue #{issue_number}. \
          Environment facts: the `repo` argument for every gh.* MCP forge tool is exactly \
          `{repo_gitdir}`; the track's source issue is #{issue_number}. Implementation, the \
-         pull request, and both PR review channels are already complete for this track; \
-         their results arrive as observations. Once the impl review round for the pull \
-         request reports converged, execute the merge step yourself with the MCP forge \
-         tools (gh.pr.merge, then gh.issue.close for issue #{issue_number}); do not \
-         dispatch further tasks. For every calm.review.round you record for the impl phase \
-         of this track, set subject.slice_id to exactly the literal string \
-         `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, phase \
-         qualifier, or derived variant)."
+         pull request, and its review are already complete for this track; their results \
+         arrive as observations. Once the review approves the pull request, execute the \
+         merge step yourself with the MCP forge tools (gh.pr.merge, then gh.issue.close \
+         for issue #{issue_number}); do not dispatch further tasks."
     )
 }
 
@@ -3066,60 +1573,6 @@ async fn wait_for_track_forge_event(
     }
 }
 
-/// Seed the ONE converged impl review.round; actor MUST be `AiPlanner(planner card)` with `EventScope::Track` (role_gate makes review.round planner-only).
-async fn seed_converged_impl_review_round(
-    fx: &Fixture,
-    slice_id: &str,
-    pr_number: u64,
-    head_sha: &str,
-) {
-    let track_scope = EventScope::Track {
-        track: fx.track_id.clone(),
-        area: fx.area_id.clone(),
-    };
-    fx.repo
-        .log_pure_event(
-            ActorId::AiPlanner(fx.planner_card_id.clone()),
-            track_scope,
-            None,
-            &fx.events,
-            &fx.cache,
-            &fx.track_area_cache,
-            Event::ReviewRound {
-                track_id: fx.track_id.clone(),
-                subject: ReviewSubject {
-                    phase: "impl".into(),
-                    slice_id: slice_id.into(),
-                    pr_number: Some(pr_number),
-                },
-                head_sha: Some(head_sha.to_string()),
-                n: 1,
-                cap: 8,
-                converged: true,
-                channels: vec![
-                    ChannelVerdict {
-                        role: "pr-correctness".into(),
-                        verdict: ChannelVerdictKind::Approved,
-                    },
-                    ChannelVerdict {
-                        role: "pr-failure-path".into(),
-                        verdict: ChannelVerdictKind::Approved,
-                    },
-                ],
-                root_cause: None,
-                // Canonical shape from `review_round_idempotency_key`: PR subjects carry the pr number in the pr slot.
-                idempotency_key: format!(
-                    "review.round:{}:impl:{}:{}:1",
-                    fx.track_id.as_str(),
-                    slice_id,
-                    pr_number
-                ),
-            },
-        )
-        .await
-        .expect("log seeded converged impl review.round");
-}
-
 async fn latest_event_id_of_kind(fx: &Fixture, kind: &str) -> i64 {
     sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events WHERE kind = ?1")
         .bind(kind)
@@ -3164,14 +1617,5 @@ fn review_budget() -> Duration {
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_secs)
         // Doubled vs planner_planning_budget: the review wait includes the planner's autonomous runs/ read round-trip.
-        .unwrap_or_else(|| Duration::from_secs(480))
-}
-
-/// Budget for the ASK-HUMAN request-wait and the post-grant resume-wait; each spans a full real planner turn.
-fn ratify_budget() -> Duration {
-    std::env::var("NEIGE_PLANNER_RATIFY_BUDGET")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(480))
 }

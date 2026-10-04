@@ -62,7 +62,6 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.plan.upsert",
     "calm.plan.cancel",
     "calm.plan.list",
-    "calm.review.round",
     "calm.ratify.request",
     "calm.admin.track_gc",
     "calm.admin.vacuum",
@@ -153,7 +152,7 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
         let error = resp
             .get("error")
             .unwrap_or_else(|| panic!("`{tool}` must refuse an assistant caller, got: {resp:#?}"));
-        if matches!(*tool, "calm.track.publish" | "calm.review.round") {
+        if *tool == "calm.track.publish" {
             assert_eq!(
                 error["code"].as_i64(),
                 Some(-32601),

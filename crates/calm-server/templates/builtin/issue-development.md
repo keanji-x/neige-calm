@@ -5,7 +5,7 @@ description = "Develop a GitHub issue through implementation, review and an auth
 instructions = """
 Read the issue and confirm the repository and requirements.
 Review the design for correctness and failure paths, then implement and verify the change.
-Open a PR and resolve both review channels. Merge only under your selected authorization.
+Open a PR and review it. Merge only under your selected authorization.
 """
 +++
 <!-- neige:contract {"version":1,"sections":[{"h1":"概要"},{"h1":"待你定","omit_if_empty":true},{"h1":"已完成"},{"h1":"决策"}]} -->
@@ -70,7 +70,7 @@ the repository with calm.ratify.request and
 
 Working method
 
-Understand the source issue and propose an appropriate design. Converge the design review through two independent channels before implementation: channel a checks correctness, channel b checks failure paths. Implement and commit in a worktree, open a PR with calm.track.publish and converge both PR reviews through those same two perspectives before any merge. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
+Understand the source issue. When it leaves a real design choice open, write a short design and have it reviewed before implementing; otherwise implement directly. Implement and commit in a worktree, open a PR with calm.track.publish, review it, and merge under your selected authorization. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
 Read the issue discussion with gh.issue.comments; pass a new attempt when refreshing
 comments or the gh.issue.view body. Post relevant questions, progress, and results
@@ -79,44 +79,22 @@ new idem for each new comment. A pending receipt does not confirm publication.
 
 Read pull requests with the git-forge tools, not the gh CLI: gh.pr.diff returns the path of the file holding the patch, and gh.pr.checks returns the conclusion (pass a new attempt on each re-read).
 
-Review convergence
+Review
 
-Give PR reviewers the implementing attempt's gate result and gh.pr.checks as mechanical evidence; any reviewer runs a check only to test its own hypothesis.
-
-Record both verdicts
-
-- After BOTH channels for a phase complete, call calm.review.round with
-  subject:{phase,slice_id,pr_number?}, optional head_sha, n, cap, converged,
-  channels:[both verdicts], and root_cause when known.
-- Record each channel's verdict as the literal lowercase token `approved` or
-  `changes_requested` (exactly those strings).
-- converged is true only when EVERY channel verdict is `approved`.
-- For PR subjects, head_sha is the reviewed forge.pr.diff.read head_sha; omit head_sha
-  for design subjects.
-
-Record root_cause each round; repeated facets should drive a class fix.
-
-Review rounds and fixes
-
-- For each subject, set n to the last observed review.round n for that same subject plus 1.
-  cap is the fixed policy constant 8 for a subject's first review window; after a
-  cap-exhaustion ratify grant it is the previous cap plus exactly 2 (see ASK-HUMAN
-  below).
-- Always re-review. Every fix re-dispatches BOTH channels before the next
-  calm.review.round.
-
-When the review limit is reached
-
-If n == cap and the round is non-approving, do not merge.
-
-- Either GIVE-UP by recording the rationale in the report, then close the track with
-  calm.track.close and that rationale; OR ASK-HUMAN with calm.ratify.request and
-  `reason:"cap_exhausted"`.
-- On ratify.resolved grant, continue reviewing the exhausted subject with cap = previous
-  cap + 2 on its next round.
-- The kernel accepts this raise at most once per subject per grant; a grant may
-  authorize this for each subject that was already cap-exhausted when it was issued.
-- If the extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN again.
+- Choose the review level per change and record it with a one-line reason in 决策: one
+  read-only review task for an ordinary change; two independent review tasks when the
+  change crosses an authority, persistence, isolation or security boundary, adds a
+  database migration, or is large.
+- Give reviewers the implementing attempt's gate result and gh.pr.checks as mechanical
+  evidence; a reviewer runs a check only to test its own hypothesis.
+- A finding blocks only when it is a defect this change introduces or a structural
+  problem in the approach. Fix cheap in-scope findings. Post the other findings worth
+  keeping as one gh.issue.comment on the source issue; drop pure style.
+- After a fix, the reviewer that raised the finding re-checks the fix; with two review
+  tasks, both re-check.
+- When blocking findings still arrive after three review rounds, stop patching them one
+  by one: find the structural problem in the approach and change or narrow it, or ask
+  the user with calm.ratify.request.
 
 Verification gates
 
@@ -146,21 +124,13 @@ shell.
 
 Merge and approval
 
-Merge fence F4
-
-Merge fence F4: call gh.pr.merge for a subject ONLY when that subject's latest
-review.round has converged:true. Pass expected_head_sha equal to that round's head_sha.
-
-Merge policy
-
-- merge_policy: `auto-merge` allows gh.pr.merge as soon as merge fence F4 is satisfied.
-- `hold-for-ratify` — also the semantics whenever merge_policy is absent — additionally
-  requires a granted ratify BEFORE gh.pr.merge.
-- Drive everything up to converged reviews + green checks, then call
-  calm.ratify.request with `reason:"merge_hold: pr #<n> converged at <head_sha>"`.
-- On ratify.resolved grant the grant authorizes merging that already-converged head — no
-  fresh review round is required for the hold itself; call gh.pr.merge per fence F4
-  (expected_head_sha = the converged round's head_sha).
+- Merge only when no blocking finding is open and gh.pr.checks is green. Pass
+  expected_head_sha equal to the head_sha the last review read with gh.pr.diff.
+- merge_policy `auto-merge` allows gh.pr.merge at that point without asking again.
+- `hold-for-ratify` — also the semantics whenever merge_policy is absent — first calls
+  calm.ratify.request with `reason:"merge_hold: pr #<n> at <head_sha>"`; on
+  ratify.resolved grant, merge that head with gh.pr.merge (expected_head_sha = that
+  head_sha). A new head needs review again before a new ratify.
 -->
 
 <!-- neige:input-form {
