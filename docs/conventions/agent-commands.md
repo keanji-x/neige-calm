@@ -269,8 +269,8 @@ Proposed (cheap, registry-driven, Appendix B):
 ## Appendix A — Conformance table (proposal)
 
 Persisted counts are calls stored in the Planner transcript's `$.item.tool` on the production 4140
-database, read-only, 2026-10-04. Production is at migration 133, so they are stored under the
-`calm.` names; migration 0134 renames them to `neige.` on deploy, B0's migration respells every
+database, read-only, 2026-10-04, while it was at migration 133 (`calm.` names). It has since
+reached 137, so the same calls are stored under the `neige.` names of 0134. B0's migration respells every
 `neige.<o>.<a>` as `neige_<o>_<a>`, and B1's migration maps the old words to the new ones. The
 Current column gives today's dotted names; Proposed gives the new names without the `neige_`
 prefix. Consumers: P prompts and templates, G goldens, F `fe`, T tests, R recipes.
