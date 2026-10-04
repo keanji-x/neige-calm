@@ -231,43 +231,62 @@ macro_rules! pr_checks_fields {
 /// `status` is COMPLETED (an unfinished run exports `conclusion: ""`), then green only for
 /// SUCCESS, NEUTRAL or SKIPPED; a StatusContext has only `state`, pending while PENDING or
 /// EXPECTED. Any other finished value is a failure, which outranks pending: one failed check
-/// means this head cannot go green. An empty or null rollup is `no_checks`.
-const PR_CHECKS_JQ: &str = concat!(
-    "{conclusion: ([(.statusCheckRollup // [])[] | ",
-    "if .__typename == \"CheckRun\" then ",
-    "(if .status != \"COMPLETED\" then \"pending\" ",
-    "elif .conclusion == \"SUCCESS\" or .conclusion == \"NEUTRAL\" or .conclusion == \"SKIPPED\" ",
-    "then \"success\" else \"failure\" end) ",
-    "elif .state == \"SUCCESS\" then \"success\" ",
-    "elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" ",
-    "else \"failure\" end] | ",
-    "if any(. == \"failure\") then \"failure\" ",
-    "elif any(. == \"pending\") then \"pending\" ",
-    "elif length == 0 then \"no_checks\" ",
-    "else \"success\" end), ",
-    "mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid}",
+/// means this head cannot go green. An empty or null rollup is `no_checks`. A macro so the wait's
+/// program is built from this one fold at compile time.
+macro_rules! pr_checks_fold {
+    () => {
+        concat!(
+            "{conclusion: ([(.statusCheckRollup // [])[] | ",
+            "if .__typename == \"CheckRun\" then ",
+            "(if .status != \"COMPLETED\" then \"pending\" ",
+            "elif .conclusion == \"SUCCESS\" or .conclusion == \"NEUTRAL\" or .conclusion == \"SKIPPED\" ",
+            "then \"success\" else \"failure\" end) ",
+            "elif .state == \"SUCCESS\" then \"success\" ",
+            "elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" ",
+            "else \"failure\" end] | ",
+            "if any(. == \"failure\") then \"failure\" ",
+            "elif any(. == \"pending\") then \"pending\" ",
+            "elif length == 0 then \"no_checks\" ",
+            "else \"success\" end), ",
+            "mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid}"
+        )
+    };
+}
+
+/// The one-shot read's program: the fold's object, the only output of the deadline snapshot.
+const PR_CHECKS_JQ: &str = pr_checks_fold!();
+
+/// The wait's program prints two lines: `<settle|wait> <head_sha>`, where `settle` means the
+/// checks concluded success or failure or the PR conflicts, then the fold's object as JSON. gh
+/// prints a string result raw, so the script reads the verdict without parsing JSON.
+const PR_CHECKS_WAIT_JQ: &str = concat!(
+    "(",
+    pr_checks_fold!(),
+    ") as $r | \"\\(if $r.conclusion == \"success\" or $r.conclusion == \"failure\" ",
+    "or $r.mergeable == \"conflicting\" then \"settle\" else \"wait\" end) ",
+    "\\($r.head_sha // \"\")\", ($r | tojson)",
 );
 
 /// Seconds between the wait's reads: one GraphQL call per interval per waiting call.
 const PR_CHECKS_POLL_SECS: u64 = 15;
 
-/// `$1` PR, `$2` repo, `$3` poll seconds, `$4` the fold. Prints the first read that settles the
-/// checks, shows a conflict, or shows a head other than the first read's; a failed read is
-/// retried. The parked deadline ends any other wait with the output probe's snapshot.
+/// `$1` PR, `$2` repo, `$3` poll seconds, `$4` [`PR_CHECKS_WAIT_JQ`]. Prints the JSON after the
+/// verdict line of the first read that settles, or whose head is non-empty and differs from the
+/// first non-empty head; a failed read is retried. The parked deadline ends any other wait with
+/// the output probe's snapshot.
 const PR_CHECKS_WAIT_SCRIPT: &str = concat!(
     "first=\n",
     "while :; do\n",
     "  if out=$(gh pr view \"$1\" --repo \"$2\" --json ",
     pr_checks_fields!(),
     " --jq \"$4\"); then\n",
-    "    head=$(printf '%s' \"$out\" | sed -n 's/.*\"head_sha\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+    "    read -r verdict head <<EOF\n",
+    "$out\n",
+    "EOF\n",
     "    [ -n \"$first\" ] || first=$head\n",
-    "    case $out in\n",
-    "      *'\"conclusion\":\"success\"'* | *'\"conclusion\":\"failure\"'*)\n",
-    "        printf '%s\\n' \"$out\"; exit 0 ;;\n",
-    "      *'\"mergeable\":\"conflicting\"'*) printf '%s\\n' \"$out\"; exit 0 ;;\n",
-    "    esac\n",
-    "    if [ \"$head\" != \"$first\" ]; then printf '%s\\n' \"$out\"; exit 0; fi\n",
+    "    if [ \"$verdict\" = settle ] || { [ -n \"$head\" ] && [ \"$head\" != \"$first\" ]; }; then\n",
+    "      printf '%s\\n' \"${out#*\n}\"; exit 0\n",
+    "    fi\n",
     "  fi\n",
     "  sleep \"$3\"\n",
     "done\n",
@@ -290,7 +309,7 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         pr.to_string(),
         repo.clone(),
         PR_CHECKS_POLL_SECS.to_string(),
-        PR_CHECKS_JQ.into(),
+        PR_CHECKS_WAIT_JQ.into(),
     ];
     // The deadline snapshot reads once; it is never the waiting script.
     let read = vec![
@@ -577,6 +596,9 @@ mod tests;
 
 #[cfg(test)]
 mod error_tests;
+
+#[cfg(all(test, unix))]
+mod checks_wait_tests;
 
 #[cfg(test)]
 mod test_helpers;

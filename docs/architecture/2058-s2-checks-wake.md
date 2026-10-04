@@ -68,12 +68,15 @@ turn (F4).
   `conflicting`, `unknown`). `head_sha` is the name `forge.pr.opened` and `gh.pr.diff` already use.
   The event field map extracts all three; `forge.pr.checks` persists only `conclusion` (F14, F15).
 - **D2 The wait.** The action argv becomes `sh -c PR_CHECKS_WAIT_SCRIPT sh <pr> <repo> <secs> <jq>`.
-  The script reads once (the D1 command), records the first `head_sha`, and exits 0 printing
-  that read's JSON as soon as `conclusion` is `success` or `failure` (so as soon as any check
-  fails, even while others still run), or `mergeable` is
-  `conflicting`, or `head_sha` differs from the first one. Otherwise, or when `gh` fails, it
-  sleeps `<secs>` and reads again. `<secs>` is `PR_CHECKS_POLL_SECS = 15` in the lowering (one
-  GraphQL call per 15 s per waiting call). It is written as short `concat!` pieces like
+  The script reads once (the D1 command), records the first non-empty `head_sha`, and exits 0
+  printing that read's JSON as soon as `conclusion` is `success` or `failure` (so as soon as any
+  check fails, even while others still run), or `mergeable` is
+  `conflicting`, or a non-empty `head_sha` differs from the first one. Otherwise, or when `gh`
+  fails, it sleeps `<secs>` and reads again. The decision lives in gh's own `--jq`: the wait's
+  `<jq>` is `PR_CHECKS_WAIT_JQ`, built from the one D1 fold, and prints a raw line
+  `<settle|wait> <head_sha>` before the fold's JSON, so the script reads that line with `read`
+  and prints only the JSON, never matching JSON text. `<secs>` is `PR_CHECKS_POLL_SECS = 15` in
+  the lowering (one GraphQL call per 15 s per waiting call). It is written as short `concat!` pieces like
   `PR_CHECKS_JQ`, under the prose ratchet.
 - **D3 The deadline is the existing one.** `parked: true` gives 900 s (F6), above the observed CI
   time (F18). Past it the sweep kills the script and completes the op from the output probe (F8),

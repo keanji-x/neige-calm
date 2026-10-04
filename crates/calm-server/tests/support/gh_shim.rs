@@ -303,7 +303,8 @@ case "$area:$verb" in
         ;;
       headRefOid,mergeable,statusCheckRollup)
         jq_expr=$(get_arg --jq "$@") || exit 2
-        # gh evaluates --jq over its export; a test may seed the rollup and the mergeability.
+        # gh evaluates --jq over its export and prints a string result raw; a test may seed the
+        # rollup and the mergeability.
         rollup="$state/checks/$number.json"
         mergeable=MERGEABLE
         if [ -f "$state/checks/$number.mergeable" ]; then
@@ -314,7 +315,7 @@ case "$area:$verb" in
         else
           printf '%s\n' "$DEFAULT_CHECKS_ROLLUP"
         fi | jq -c --arg head "$head_sha" --arg mergeable "$mergeable" \
-          '. + {headRefOid: $head, mergeable: $mergeable}' | jq -c "$jq_expr"
+          '. + {headRefOid: $head, mergeable: $mergeable}' | jq -rc "$jq_expr"
         ;;
       *)
         echo "unsupported gh pr view --json $json_fields" >&2
