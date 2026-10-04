@@ -368,8 +368,8 @@ async fn catch_up_tx(
 }
 
 /// One bounded git run in `dir` whose failure refuses the attempt as
-/// [`TRACK_WORKTREE_UNAVAILABLE`]; its trimmed stdout. `silent` is the reason a failure that
-/// printed nothing on stderr gives.
+/// [`TRACK_WORKTREE_UNAVAILABLE`]; its trimmed stdout. `silent` is the reason an exit 1 that
+/// printed nothing on stderr gives; any other silent failure names its exit status.
 async fn git_stdout(
     dir: &Path,
     args: &[&str],
@@ -379,9 +379,11 @@ async fn git_stdout(
     let output = run_git(dir, args, deadline).await.map_err(unavailable)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let what = args.join(" ");
         return Err(unavailable(match silent {
-            Some(silent) if stderr.is_empty() => silent,
-            _ => format!("git {} failed: {stderr}", args.join(" ")),
+            Some(silent) if stderr.is_empty() && output.status.code() == Some(1) => silent,
+            _ if stderr.is_empty() => format!("git {what} failed: {}", output.status),
+            _ => format!("git {what} failed: {stderr}"),
         }));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
