@@ -403,17 +403,17 @@ describe('dragged conversation width', () => {
   ];
 
   /** The route's conversation drawer, taking its resize contract from the shell the way the router does. */
-  function ConversationDrawer({ open, title, onClose }: { open: boolean; title: string; onClose: () => void }) {
+  function ConversationDrawer({ open, title, onClose, stacked = false }: { open: boolean; title: string; onClose: () => void; stacked?: boolean }) {
     return (
-      <Drawer open={open} title={title} onClose={onClose} resize={useConversationDrawerResize()}>
+      <Drawer open={open} stacked={stacked} title={title} onClose={onClose} resize={useConversationDrawerResize()}>
         <ChatThread canContinue conversation={conversation} turns={TURNS} cards={{}} stalled={false} />
       </Drawer>
     );
   }
 
   /** `AppShell`'s `.main`, wired to the width host as the shell wires it, with a conversation and an optional source card. */
-  function WidthPage({ onClose, initiallyOpen = false, title = 'Chat', source = false }: {
-    onClose?: () => void; initiallyOpen?: boolean; title?: string; source?: boolean;
+  function WidthPage({ onClose, initiallyOpen = false, title = 'Chat', source = false, stacked = false }: {
+    onClose?: () => void; initiallyOpen?: boolean; title?: string; source?: boolean; stacked?: boolean;
   }) {
     const host = useDrawerWidthHost(useUiPreferences());
     const [open, setOpen] = useState(initiallyOpen);
@@ -429,7 +429,7 @@ describe('dragged conversation width', () => {
             </aside>
             {/* As on the track route: the source card is painted over the conversation, which stays mounted and inert. */}
             <div inert={source}>
-              <ConversationDrawer open={open} title={title} onClose={() => { setOpen(false); onClose?.(); }} />
+              <ConversationDrawer open={open} title={title} stacked={stacked} onClose={() => { setOpen(false); onClose?.(); }} />
             </div>
             <Drawer open={source} title="Source" closeLabel="Close source" onClose={() => {}}><p>The cited source.</p></Drawer>
           </DrawerResizeProvider>
@@ -445,7 +445,7 @@ describe('dragged conversation width', () => {
 
   const drawer = () => document.querySelector<HTMLElement>('[data-nc-drawer]')!;
   const scroller = () => document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
-  const edge = () => drawer().querySelector<HTMLElement>('[role="separator"]');
+  const edge = () => main().querySelector<HTMLElement>('[role="separator"]');
   const closeButton = () => drawer().querySelector<HTMLElement>('button[aria-label="Close conversation"]')!;
   const main = () => document.querySelector('main')!;
   const widthOf = (element: Element) => element.getBoundingClientRect().width;
@@ -521,6 +521,28 @@ describe('dragged conversation width', () => {
     mount({ initiallyOpen: true }, remembered());
     await settled();
     expect(widthOf(drawer())).toBeCloseTo(dragged, 0);
+  });
+
+  it('lets the pointer reach the resize edge on the production stacked conversation', async () => {
+    await page.viewport(1400, 900);
+    const preferences = mount({ initiallyOpen: true, stacked: true });
+    await settled();
+    const handle = edge()!;
+    const box = handle.getBoundingClientRect();
+    expect(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)).toBe(handle);
+    const before = widthOf(drawer());
+    await dragEdge(-160);
+    expect(widthOf(drawer())).toBeCloseTo(before + 160, -1);
+    expect(preferences.drawerWidth()! * REM).toBeCloseTo(widthOf(drawer()), 0);
+  });
+
+  it('centres the transcript inside the card when a scrollbar lane is reserved', async () => {
+    await page.viewport(1400, 900);
+    mount({ initiallyOpen: true, stacked: true });
+    await settled();
+    const body = scroller().firstElementChild!.getBoundingClientRect();
+    const card = drawer().getBoundingClientRect();
+    expect(body.left - card.left).toBeCloseTo(card.right - body.right, 0);
   });
 
   it('holds the drag between a 22rem floor and three quarters of the region, and remembers what is on screen', async () => {
