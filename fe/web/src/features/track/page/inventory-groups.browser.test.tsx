@@ -167,13 +167,13 @@ it.each([false, true])('right-aligns only type beside names with deletable=%s', 
 });
 
 
-it.each([true, false])('keeps activity metadata nonvisual without inventing signals with live activity=%s', async (live) => {
+it('keeps inventory activity metadata nonvisual and free of animation', async () => {
   await page.viewport(1200, 900);
   const worker = card({ id: 'worker', title: 'Worker', kind: 'codex',
     runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
   const view = deriveTrackPageView({ cards: [worker],
     tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'worker' }],
-    activity: { cards: live ? { worker: 'working' } : {} }, openableCards: new Set(['worker']) });
+    activity: { cards: { worker: 'working' } }, openableCards: new Set(['worker']) });
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), view)}</PanelCard></div>);
   const running = document.querySelectorAll<HTMLElement>('[data-nc-status="running"]');
   expect(running).toHaveLength(2);
@@ -181,5 +181,6 @@ it.each([true, false])('keeps activity metadata nonvisual without inventing sign
     expect(label.textContent).toBe('running');
     expect(label.closest<HTMLElement>('[data-nc-inventory-metadata]')!.getBoundingClientRect().width).toBeLessThanOrEqual(1);
   }
-  expect(document.querySelectorAll('[data-nc-activity="working"]')).toHaveLength(live ? 2 : 0);
+  expect(document.querySelectorAll('[data-nc-activity="working"]')).toHaveLength(2);
+  for (const marker of document.querySelectorAll('[data-nc-activity]')) expect(getComputedStyle(marker).animationName).toBe('none');
 });
