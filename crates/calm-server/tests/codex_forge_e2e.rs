@@ -174,6 +174,21 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
+/// The plan test's source issue; the gh shim serves it from the seeded body.
+const PLAN_ISSUE_NUMBER: u64 = 840;
+const PLAN_ISSUE_BODY: &str = "Add a file `FORGE_E2E.md` at the repository root whose only line is \
+`forge-e2e-ok`.\n";
+
+/// The environment fact every bound-template goal states: the issue-development input names the
+/// fixture's GitHub repository, which the gh shim serves only through its local selector.
+fn gh_selector_fact(selector: &str) -> String {
+    format!(
+        "Environment facts: the track's GitHub repository is served locally in this environment; \
+         the `repo` argument for every gh.* MCP forge tool is exactly `{selector}`, not input.repo. \
+         Embed this exact literal in the goal of every task that must call a gh.* tool."
+    )
+}
+
 #[tokio::test]
 async fn real_planner_agent_autonomously_plans_from_bound_template() {
     let Some(codex_bin) = resolve_codex_bin() else {
@@ -185,14 +200,15 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
         .lock()
         .await;
 
-    let goal =
-        "Plan the smallest issue-development template for adding one marker file.".to_string();
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
-            goal: Some(goal.clone()),
-            template_id: Some("issue-development".into()),
+            goal: None,
+            bound_issue: Some(PLAN_ISSUE_NUMBER),
             plan_source: PlanSource::RealPlannerTurn,
-            issue_body: None,
+            issue_body: Some(FixtureIssue {
+                number: PLAN_ISSUE_NUMBER,
+                body: PLAN_ISSUE_BODY.into(),
+            }),
             require_task_gates: false,
             repo_seed: RepoSeed::ReadmeOnly,
         },
@@ -205,7 +221,14 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
             skip!("{reason}");
         }
     };
+    assert_planner_prompt_binds_issue_development(&fx, PLAN_ISSUE_NUMBER).await;
 
+    let repo_arg = fx.origin_repo.display().to_string();
+    let goal = format!(
+        "Plan the bound issue-development template's work for issue #{PLAN_ISSUE_NUMBER}. \
+         {}",
+        gh_selector_fact(&repo_arg)
+    );
     boot_planner_harness_via_start_op(&fx, goal).await;
 
     let (actor, plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
@@ -219,8 +242,6 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
             .is_some_and(|keys| !keys.is_empty()),
         "plan.updated changed_keys must be non-empty: {plan}",
     );
-    assert_bound_issue_development_template_preconditions(&fx).await;
-
     assert!(
         !fx.used_injected_plan(),
         "RealPlannerTurn must not use injected plan path"
@@ -251,7 +272,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: None,
-            template_id: Some("issue-development".into()),
+            bound_issue: Some(D2_ISSUE_NUMBER),
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
@@ -266,6 +287,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
             skip!("{reason}");
         }
     };
+    assert_planner_prompt_binds_issue_development(&fx, D2_ISSUE_NUMBER).await;
     let repo_arg = fx.origin_repo.display().to_string();
     let goal = merge_close_goal(&repo_arg, D2_ISSUE_NUMBER);
 
@@ -594,7 +616,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: None,
-            template_id: Some("issue-development".into()),
+            bound_issue: Some(CAPSTONE_ISSUE_NUMBER),
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: Some(FixtureIssue {
                 number: CAPSTONE_ISSUE_NUMBER,
@@ -613,6 +635,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
         }
     };
 
+    assert_planner_prompt_binds_issue_development(&fx, CAPSTONE_ISSUE_NUMBER).await;
     let dispatcher = spawn_dispatcher_with_harness(&fx);
 
     let repo_gitdir = fx.track_cwd.join(".git").display().to_string();
@@ -829,8 +852,9 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          the track.\n\
          \n\
          Environment facts:\n\
-         - The `repo` argument for EVERY gh.* forge tool call (gh.issue.view, gh.pr.create, \
-         gh.pr.checks, gh.pr.diff, gh.pr.merge, gh.issue.close) is exactly `{repo_gitdir}`. \
+         - The track's GitHub repository is served locally in this environment: the `repo` \
+         argument for EVERY gh.* forge tool call (gh.issue.view, gh.pr.create, gh.pr.checks, \
+         gh.pr.diff, gh.pr.merge, gh.issue.close) is exactly `{repo_gitdir}`, not input.repo. \
          Embed this exact literal value in the goal of every task that must call a gh.* tool; \
          workers cannot discover it on their own.\n\
          - The track's source issue is #{issue_number}.\n\
@@ -1182,6 +1206,84 @@ fn shipped_git_forge_templates_are_id_only() {
     assert_eq!(manifest.templates[0].id, "issue-development");
 }
 
+/// The fixture origin names GitHub while git reaches the local bare repository: the configured URL
+/// passes the template's repo cross-check, and fetch, push and the kernel's
+/// `ls-remote --get-url` resolve to the local origin.
+#[test]
+fn fixture_origin_names_github_and_reaches_the_local_bare_repo() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let origin = tmp.path().join("origin.git");
+    let clone = tmp.path().join("clone");
+    init_bare_origin(&origin, &tmp.path().join("seed"));
+    clone_for_track(&origin, &clone);
+    point_origin_at_github(&clone, &origin, &fixture_github_url());
+
+    let configured = git_stdout(&clone, ["config", "--get", "remote.origin.url"]);
+    assert_eq!(configured, fixture_github_url());
+    assert_eq!(
+        configured
+            .trim_start_matches("https://github.com/")
+            .trim_end_matches(".git"),
+        issue_development_input(1)["repo"]
+    );
+    let local = origin.display().to_string();
+    assert_eq!(git_stdout(&clone, ["remote", "get-url", "origin"]), local);
+    assert_eq!(
+        git_stdout(&clone, ["ls-remote", "--get-url", "origin"]),
+        local
+    );
+    run_git(&clone, ["fetch", "origin"]);
+    run_git(&clone, ["checkout", "-b", "fixture-origin-probe"]);
+    stage_git_change(&clone, "PROBE.md", "probe\n");
+    run_git(&clone, ["commit", "-m", "probe"]);
+    run_git(&clone, ["push", "origin", "fixture-origin-probe"]);
+    assert_eq!(
+        git_stdout_no_cwd([
+            "--git-dir",
+            local.as_str(),
+            "rev-parse",
+            "fixture-origin-probe"
+        ]),
+        git_stdout(&clone, ["rev-parse", "HEAD"])
+    );
+}
+
+/// The bound input the fixture writes passes the shipped git-forge input schema, through the check
+/// the track binding re-runs at Planner start.
+#[test]
+fn issue_development_input_binds_against_the_shipped_manifest() {
+    let manifest = read_manifest();
+    calm_server::plugin_host::template_input::validate_template_input_binding(
+        calm_server::plugin_host::template_input::TemplateInputOwner::Plugin(&manifest),
+        Some(&issue_development_input(CAPSTONE_ISSUE_NUMBER)),
+    )
+    .expect("fixture template_input binds");
+    assert_eq!(
+        issue_development_input(CAPSTONE_ISSUE_NUMBER)["merge_policy"],
+        "auto-merge"
+    );
+}
+
+/// The fixture's Planner card carries the issue-development working method the create route
+/// stores, whose repo cross-check reads the configured origin URL.
+#[test]
+fn template_planner_card_payload_carries_the_issue_development_method() {
+    let payload = calm_server::routes::tracks::template_planner_card_payload_for_test(
+        Some("goal".into()),
+        calm_server::session_projection_repo::AgentProvider::Codex,
+        ISSUE_DEVELOPMENT_TEMPLATE_ID,
+    )
+    .expect("planner card payload");
+    let method = calm_server::templates::TemplateRoster::builtin()
+        .get(ISSUE_DEVELOPMENT_TEMPLATE_ID)
+        .expect("builtin template")
+        .recipe()
+        .body;
+    assert_eq!(payload["template_context"]["body"], json!(method));
+    assert_eq!(payload["prompt"], "goal");
+    assert!(method.contains("`git config --get remote.origin.url`"));
+}
+
 /// gh shim `issue view --json body`: a seeded per-issue body file wins; absent
 /// a seeded file the historical hardcoded fallback is byte-preserved.
 #[test]
@@ -1490,13 +1592,13 @@ async fn max_event_id(repo: &SqlxRepo) -> i64 {
 
 fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
     format!(
-        "Drive the tail of the issue-development template for issue #{issue_number}. \
-         Environment facts: the `repo` argument for every gh.* MCP forge tool is exactly \
-         `{repo_gitdir}`; the track's source issue is #{issue_number}. Implementation, the \
+        "Drive the tail of the bound issue-development template for issue #{issue_number}. \
+         {} Implementation, the \
          pull request, and its review are already complete for this track; their results \
          arrive as observations. Once the review approves the pull request, execute the \
          merge step yourself with the MCP forge tools (gh.pr.merge, then gh.issue.close \
-         for issue #{issue_number}); do not dispatch further tasks."
+         for issue #{issue_number}); do not dispatch further tasks.",
+        gh_selector_fact(repo_gitdir)
     )
 }
 

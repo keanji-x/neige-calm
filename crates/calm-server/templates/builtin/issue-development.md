@@ -61,8 +61,9 @@ Goal and inputs
 Check the repository
 
 Repo cross-check: before any repository write, compare input.repo
-against `git remote get-url origin` run in the track cwd (owner/name after stripping the
-host and a trailing .git). On mismatch do NOT proceed or declare execution tasks.
+against `git config --get remote.origin.url` run in the track cwd (the configured URL,
+before any url.insteadOf rewrite; owner/name after stripping the host and a trailing .git).
+On mismatch do NOT proceed or declare execution tasks.
 Record both observed repositories in 待你定, ask the user to correct or confirm
 the repository with calm.ratify.request and
 `reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"`

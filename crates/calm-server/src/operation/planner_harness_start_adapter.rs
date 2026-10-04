@@ -465,6 +465,19 @@ pub fn render_planner_developer_instructions_for_test(
     render_planner_developer_instructions(track_id, template_descriptor, template_input)
 }
 
+/// [`planner_instructions`], the Planner's `thread/start` instructions, for a fixture to check
+/// that a bound template reached the prompt (#2016).
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn planner_instructions_for_test(
+    repo: &dyn Repo,
+    plugin: &PluginHost,
+    track_id: &str,
+    card_id: &str,
+) -> Result<String> {
+    planner_instructions(repo, plugin, track_id, card_id).await
+}
+
 #[async_trait]
 impl ProviderAdapter for PlannerHarnessStartAdapter {
     fn kind(&self) -> &'static str {

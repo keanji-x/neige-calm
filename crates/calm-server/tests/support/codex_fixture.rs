@@ -48,7 +48,7 @@ use super::forge_env::{EnvGuard, ForgeTestEnv};
 use super::gh_shim::{seed_shim_issue_body, write_gh_shim};
 use super::git_helpers::{
     clone_for_track, git_stdout, git_stdout_no_cwd, init_bare_origin, is_hex_sha,
-    seed_rust_micro_crate,
+    point_origin_at_github, seed_rust_micro_crate,
 };
 use super::planner_turn::planner_identity;
 
@@ -58,10 +58,31 @@ pub const PLUGIN_ID: &str = "dev.neige.git-forge";
 pub const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
 pub const TASK_KEY: &str = "forge-e2e";
 pub const PLANNER_SESSION_ID: &str = "codex-forge-e2e-planner-session";
+/// The GitHub repository the fixture checkout's origin names; the local bare origin serves it.
+pub const FIXTURE_GITHUB_REPO: &str = "neige-e2e/forge-fixture";
+pub const ISSUE_DEVELOPMENT_TEMPLATE_ID: &str = "issue-development";
+
+/// The fixture origin's configured URL: GitHub's for [`FIXTURE_GITHUB_REPO`].
+pub fn fixture_github_url() -> String {
+    format!("https://github.com/{FIXTURE_GITHUB_REPO}.git")
+}
+
+/// Valid issue-development `template_input` for `issue_number` of [`FIXTURE_GITHUB_REPO`], with
+/// `merge_policy` `auto-merge` so a run merges without a ratification.
+pub fn issue_development_input(issue_number: u64) -> Value {
+    json!({
+        "issue_url": format!("https://github.com/{FIXTURE_GITHUB_REPO}/issues/{issue_number}"),
+        "repo": FIXTURE_GITHUB_REPO,
+        "issue_number": issue_number,
+        "merge_policy": "auto-merge",
+    })
+}
 
 pub struct FixtureSpec {
     pub goal: Option<String>,
-    pub template_id: Option<String>,
+    /// Bind the track to the issue-development template for this issue (see
+    /// [`issue_development_input`]); the Planner card carries the template's working method.
+    pub bound_issue: Option<u64>,
     pub plan_source: PlanSource,
     pub issue_body: Option<FixtureIssue>,
     pub require_task_gates: bool,
@@ -170,7 +191,7 @@ pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixtur
     boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(forge_goal()),
-            template_id: None,
+            bound_issue: None,
             plan_source: PlanSource::Injected,
             issue_body: None,
             require_task_gates: true,
@@ -210,6 +231,7 @@ pub async fn boot_forge_e2e_fixture(
         RepoSeed::RustMicroCrate => seed_rust_micro_crate(&origin_repo, &tmp.path().join("seed")),
     }
     clone_for_track(&origin_repo, &track_cwd);
+    point_origin_at_github(&track_cwd, &origin_repo, &fixture_github_url());
     if let Some(issue) = &fixture.issue_body {
         // The gh shim keys state by the `--repo` selector string; seed both plausible selectors.
         seed_shim_issue_body(&origin_repo, issue.number, &issue.body);
@@ -250,12 +272,14 @@ pub async fn boot_forge_e2e_fixture(
         .expect("create area");
     let track = repo_dyn
         .track_create(NewTrack {
-            template_input: None,
+            template_input: fixture.bound_issue.map(issue_development_input),
             area_id: area.id.clone(),
             title: "codex-forge-e2e".into(),
             sort: None,
             cwd: track_cwd.display().to_string(),
-            template_id: fixture.template_id.clone(),
+            template_id: fixture
+                .bound_issue
+                .map(|_| ISSUE_DEVELOPMENT_TEMPLATE_ID.to_string()),
             plugin_scope: Some(PLUGIN_ID.into()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -286,15 +310,25 @@ pub async fn boot_forge_e2e_fixture(
         .await
         .expect("seed card-role cache");
     // RealPlannerTurn drives the real `planner-harness-start` op, which requires the
-    // production planner card shape: kind:"codex" with the `planner_harness_card_payload` object.
-    let (planner_kind, planner_payload) = match fixture.plan_source {
-        PlanSource::Injected => ("planner".to_string(), Value::Null),
-        PlanSource::RealPlannerTurn => (
+    // production planner card shape: kind:"codex" with the `planner_harness_card_payload` object,
+    // plus the template's working method when the track is bound to one.
+    let (planner_kind, planner_payload) = match (fixture.plan_source, fixture.bound_issue) {
+        (PlanSource::Injected, _) => ("planner".to_string(), Value::Null),
+        (PlanSource::RealPlannerTurn, None) => (
             "codex".to_string(),
             calm_server::routes::tracks::planner_harness_card_payload(
                 fixture.goal.clone(),
-                calm_server::session_projection_repo::AgentProvider::Codex,
+                AgentProvider::Codex,
             ),
+        ),
+        (PlanSource::RealPlannerTurn, Some(_)) => (
+            "codex".to_string(),
+            calm_server::routes::tracks::template_planner_card_payload_for_test(
+                fixture.goal.clone(),
+                AgentProvider::Codex,
+                ISSUE_DEVELOPMENT_TEMPLATE_ID,
+            )
+            .expect("issue-development planner card payload"),
         ),
     };
     let planner_card = repo_dyn

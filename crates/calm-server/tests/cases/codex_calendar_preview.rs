@@ -20,7 +20,7 @@ async fn real_planner_creates_calendar_commitment() {
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
-            template_id: None,
+            bound_issue: None,
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,

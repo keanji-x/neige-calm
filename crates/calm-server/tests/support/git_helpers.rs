@@ -132,6 +132,16 @@ pub fn clone_for_track(origin: &Path, target: &Path) {
     configure_repo_identity(target);
 }
 
+/// Make `repo`'s origin the GitHub URL `github_url`, served by the local bare `local_origin` through
+/// `url.<local_origin>.insteadOf`: `remote.origin.url` names GitHub, while every fetch and push
+/// (and `git remote get-url` / `git ls-remote --get-url`, which apply the rewrite) reaches the
+/// local repository.
+pub fn point_origin_at_github(repo: &Path, local_origin: &Path, github_url: &str) {
+    let rewrite = format!("url.{}.insteadOf", path_str(local_origin));
+    run_git(repo, ["config", rewrite.as_str(), github_url]);
+    run_git(repo, ["remote", "set-url", "origin", github_url]);
+}
+
 pub fn configure_repo_identity(repo: &Path) {
     run_git(
         repo,

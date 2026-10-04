@@ -5,16 +5,20 @@ use calm_server::ids::ActorId;
 use calm_server::mcp_server::ToolCallIdentity;
 use calm_server::model::{CardRole, new_id};
 use calm_server::operation::planner_harness_start_adapter::{
-    HarnessProfile, PlannerHarnessStartOperationPayload,
+    HarnessProfile, PlannerHarnessStartOperationPayload, planner_instructions_for_test,
 };
 use calm_server::operation::{OperationKey, OperationOutcome};
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionProjectionRepo};
+use calm_server::templates::TemplateRoster;
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
 use super::agent_diag::panic_with_agent_diag;
-use super::codex_fixture::{Fixture, PLANNER_SESSION_ID};
+use super::codex_fixture::{
+    Fixture, ISSUE_DEVELOPMENT_TEMPLATE_ID, PLANNER_SESSION_ID, issue_development_input,
+};
+use super::git_helpers::git_stdout;
 
 pub async fn boot_planner_harness_via_start_op(fx: &Fixture, goal: String) {
     let request = PlannerHarnessStartOperationPayload {
@@ -114,17 +118,48 @@ pub async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, 
     }
 }
 
-pub async fn assert_bound_issue_development_template_preconditions(fx: &Fixture) {
-    let bound_template: Option<String> =
-        sqlx::query_scalar("SELECT template_id FROM tracks WHERE id = ?1")
-            .bind(fx.track_id.as_str())
-            .fetch_one(fx.repo.pool())
-            .await
-            .expect("select bound track template_id");
+/// Non-vacuity (#2016): the Planner's `thread/start` instructions carry the bound template input and
+/// the template's working method, and the repo cross-check holds against the fixture origin. A
+/// binding that resolves Broken drops the input section, and a Planner card without the template
+/// snapshot drops the working method, so either regression to the vanilla prompt fails here.
+pub async fn assert_planner_prompt_binds_issue_development(fx: &Fixture, issue_number: u64) {
+    let prompt = planner_instructions_for_test(
+        fx.repo_dyn.as_ref(),
+        &fx.plugin_host,
+        fx.track_id.as_str(),
+        fx.planner_card_id.as_str(),
+    )
+    .await
+    .expect("render the Planner instructions");
+    let input = prompt
+        .split_once("## Bound Template Input\n```json\n")
+        .and_then(|(_, rest)| rest.split_once("\n```"))
+        .map(|(input, _)| input)
+        .unwrap_or_else(|| {
+            panic!("the binding did not resolve: no bound template input in the prompt:\n{prompt}")
+        });
+    let input: Value = serde_json::from_str(input).expect("bound template input json");
+    assert_eq!(input, issue_development_input(issue_number));
+
+    let (_, snapshot) = prompt
+        .split_once("## Selected Template\n")
+        .unwrap_or_else(|| panic!("no template working method in the prompt:\n{prompt}"));
+    let snapshot: Value = serde_json::from_str(snapshot).expect("template snapshot json");
+    let method = TemplateRoster::builtin()
+        .get(ISSUE_DEVELOPMENT_TEMPLATE_ID)
+        .expect("builtin issue-development template")
+        .recipe()
+        .body;
+    assert_eq!(snapshot["body"], json!(method));
+    assert!(method.contains("`git config --get remote.origin.url`"));
+
+    let origin = git_stdout(&fx.track_cwd, ["config", "--get", "remote.origin.url"]);
     assert_eq!(
-        bound_template.as_deref(),
-        Some("issue-development"),
-        "track must be bound to issue-development template",
+        origin
+            .trim_start_matches("https://github.com/")
+            .trim_end_matches(".git"),
+        input["repo"],
+        "the template's repo cross-check must accept the fixture origin"
     );
 }
 

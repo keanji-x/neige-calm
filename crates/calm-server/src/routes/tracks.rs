@@ -1425,10 +1425,8 @@ async fn create_track_structure(
                     }
                 };
 
-                let mut planner_payload = planner_harness_card_payload(None, planner_provider);
-                if let Some(context) = init_snapshot.as_ref().and_then(|snapshot| snapshot.template_context.as_ref()) {
-                    planner_payload[crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY] = serde_json::to_value(context)?;
-                }
+                let mut planner_payload =
+                    planner_card_payload(None, planner_provider, init_snapshot.as_ref())?;
                 if model.is_some() || reasoning_effort.is_some() {
                     crate::planner_model::CardModelSelection::apply_to_payload(
                         planner_payload.as_object_mut().ok_or_else(|| {
@@ -1913,6 +1911,35 @@ pub fn planner_harness_card_payload(
         card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
     }
     serde_json::Value::Object(card_payload)
+}
+
+/// The Planner card payload a create mints: [`planner_harness_card_payload`] plus the compiled
+/// template's creation-time `template_context`, when the create instantiates one.
+fn planner_card_payload(
+    goal: Option<String>,
+    provider: AgentProvider,
+    snapshot: Option<&InitialReportSnapshot>,
+) -> Result<serde_json::Value> {
+    let mut payload = planner_harness_card_payload(goal, provider);
+    if let Some(context) = snapshot.and_then(|snapshot| snapshot.template_context.as_ref()) {
+        payload[crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY] =
+            serde_json::to_value(context)?;
+    }
+    Ok(payload)
+}
+
+/// The Planner card payload `POST /api/tracks` mints for the builtin roster template
+/// `template_id`, for integration fixtures that create the track without the route (#2016).
+#[cfg(feature = "fixtures")]
+pub fn template_planner_card_payload_for_test(
+    goal: Option<String>,
+    provider: AgentProvider,
+    template_id: &str,
+) -> Result<serde_json::Value> {
+    let template = TemplateRoster::builtin()
+        .get(template_id)
+        .ok_or_else(|| CalmError::NotFound(format!("template {template_id}")))?;
+    planner_card_payload(goal, provider, Some(&compile_template(template)?))
 }
 
 pub(crate) fn planner_harness_layout_payload(
