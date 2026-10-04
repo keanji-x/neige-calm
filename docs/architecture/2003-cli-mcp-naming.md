@@ -304,7 +304,7 @@ segment, `_` inside a segment, or no object.
 | calm.report.read | neige.report.read | — |
 | calm.report.tag | neige.report.tag | `neige report tag <report.md> [--add …] [--remove …]` |
 | calm.report.write_markdown | neige.report.write | — |
-| calm.review.round | neige.review.round | — |
+| calm.review.round | removed upstream by #2017 | — |
 | calm.source.capture / list | neige.source.capture / list | — |
 | calm.task.complete | neige.task.complete | `neige task complete --attempt-id … [--result …] [--artifacts …]` |
 | calm.task.fail | neige.task.fail | `neige task fail --attempt-id … --reason …` |
@@ -324,7 +324,7 @@ segment, `_` inside a segment, or no object.
 | MCP server key `calm` | `neige` | Codex sees `mcp__neige`; Claude sees `mcp__neige__neige_…` |
 | `neige tools names|describe` | `neige tool list|describe` | CLI-only meta command, like `help` |
 
-The result is 39 tools, all of the form `neige.[a-z]+.[a-z]+`, plus the plugin manifest tools.
+The result is 38 tools (39 minus `calm.review.round`, which #2017 removed), all of the form `neige.[a-z]+.[a-z]+`, plus the plugin manifest tools.
 
 ### 4.4 What the CLI is for, and what MCP is for
 
@@ -536,7 +536,7 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
   `mcp__neige__…`. Plugin names longer than about 64 B under Claude are unverified.
 - **K5:** `external/codex` (`5a440c0`) is not the deployed 0.159.2. Read Codex behavior from the
   deployed binary (§3.2), not from that tree.
-- **K7 (found in PR-1):** a built-in plugin native (`calm.calendar.*`, `calm.review.round`,
+- **K7 (found in PR-1):** a built-in plugin native (`calm.calendar.*`,
   `calm.track.publish`) called outside its track scope is refused by `require_bound`
   (builtin_plugins/mod.rs) with the bare `-32601 tools/call: <name>`, without the visible-tool
   list. These names are public in the registry, so this is no existence oracle. Only the
