@@ -84,6 +84,10 @@ export function compileTemplateInputs(body: string, schemaValue: unknown, values
         for (const [output, target] of Object.entries(field.format.outputs)) {
           if (!['issue_url', 'repo', 'issue_number'].includes(output) || !declare(target, field.key, output === 'issue_number' ? 'integer' : 'string', output)) return { status: 'unsupported', form: null };
         }
+        if (!field.required && value.trim() === '') {
+          delete input[field.key];
+          continue;
+        }
         const parsed = parseGitHubIssueUrl(value);
         if (parsed === null) errors[field.key] = 'Not a GitHub issue URL — expected https://github.com/owner/repo/issues/123.';
         else {

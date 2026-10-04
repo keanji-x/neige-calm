@@ -25,7 +25,7 @@ use tower::ServiceExt;
 use crate::common;
 use crate::support::git_helpers::attached_repo_fixture;
 
-const ISSUE_DEVELOPMENT: &str = "issue-development";
+const DEV: &str = "dev";
 const SMALL_CHANGE: &str = "small-change";
 const INVESTIGATION: &str = "investigation";
 const INVESTMENT_RESEARCH: &str = "investment-research";
@@ -275,7 +275,7 @@ async fn creating_from_a_template_mints_no_hidden_track() {
         create_body(
             &boot.area_id,
             "template only",
-            json!({ "template_id": ISSUE_DEVELOPMENT, "template_input": issue_input() }),
+            json!({ "template_id": DEV, "template_input": issue_input() }),
         ),
     )
     .await;
@@ -585,7 +585,7 @@ async fn two_tracks_from_one_template_are_independent_and_identical() {
 }
 
 #[tokio::test]
-async fn issue_development_create_captures_method_without_tasks() {
+async fn dev_create_captures_method_without_tasks() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -593,12 +593,12 @@ async fn issue_development_create_captures_method_without_tasks() {
         create_body(
             &boot.area_id,
             "forked-issue-dev",
-            json!({ "template_id": ISSUE_DEVELOPMENT, "template_input": issue_input() }),
+            json!({ "template_id": DEV, "template_input": issue_input() }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    assert_eq!(body["template_id"], ISSUE_DEVELOPMENT);
+    assert_eq!(body["template_id"], DEV);
     assert_eq!(body["plugin_scope"], "dev.neige.git-forge");
     let track_id = body["id"].as_str().expect("track id");
     assert!(
@@ -621,14 +621,14 @@ async fn issue_development_create_captures_method_without_tasks() {
         .find(|card| card["payload"]["planner_harness"] == true)
         .unwrap();
     let context = &planner["payload"]["template_context"];
-    assert_eq!(context["title"], "Issue development");
+    assert_eq!(context["title"], "Development");
     assert_eq!(context["body"], payload.body);
     assert!(context["body"].as_str().unwrap().contains("gh.issue.view"));
     assert!(
         context["body"]
             .as_str()
             .unwrap()
-            .contains("TARGET repo's own toolchain")
+            .contains("target repository's AGENTS.md")
     );
 }
 
@@ -674,10 +674,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
         source_track,
         report_card,
         current,
-        TrackReportPayload::new(
-            "custom source summary",
-            "# Custom\n\nnot-the-issue-development-plan\n",
-        ),
+        TrackReportPayload::new("custom source summary", "# Custom\n\nnot-the-dev-plan\n"),
         if_doc_rev,
         None,
     )
@@ -693,7 +690,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
             &boot.area_id,
             "template-plus-explicit-fork",
             json!({
-                "template_id": ISSUE_DEVELOPMENT,
+                "template_id": DEV,
                 "fork_report_from": source_id,
             }),
         ),
@@ -737,7 +734,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
     assert_eq!(status, StatusCode::OK, "detail={detail}");
     let payload = report_card_payload(&detail);
     assert!(
-        payload.body.contains("not-the-issue-development-plan"),
+        payload.body.contains("not-the-dev-plan"),
         "the fork must carry the source's edited report; body={}",
         payload.body
     );
@@ -778,7 +775,7 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
 async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     let boot = boot().await;
 
-    // The forgery: a track in the user's area, wearing the `issue-development` key.
+    // The forgery: a track in the user's area, wearing the `dev` key.
     let (status, stolen) = post(
         boot.app.clone(),
         "/api/tracks",
@@ -796,7 +793,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
             "entity_kind": "view",
             "entity_id": stolen_id,
             "kind": "template",
-            "payload": { "schemaVersion": 1, "template_key": ISSUE_DEVELOPMENT }
+            "payload": { "schemaVersion": 1, "template_key": DEV }
         }),
     )
     .await;
@@ -811,7 +808,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
             kind: "template".into(),
             payload: json!({
                 "schemaVersion": 1,
-                "template_key": ISSUE_DEVELOPMENT,
+                "template_key": DEV,
             }),
         })
         .await
@@ -843,7 +840,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
         create_body(
             &boot.area_id,
             "after-forged-key",
-            json!({ "template_id": ISSUE_DEVELOPMENT, "template_input": issue_input() }),
+            json!({ "template_id": DEV, "template_input": issue_input() }),
         ),
     )
     .await;
@@ -853,7 +850,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     assert_eq!(status, StatusCode::OK, "detail={detail}");
     let payload = report_card_payload(&detail);
 
-    let (summary, expected_body, _) = instantiated_recipe(ISSUE_DEVELOPMENT);
+    let (summary, expected_body, _) = instantiated_recipe(DEV);
     assert_eq!(payload.summary, summary);
     assert_eq!(
         payload.body, expected_body,
@@ -871,7 +868,7 @@ async fn create_stores_the_roster_key_as_template_id() {
         let (status, body) = post(
             boot.app.clone(),
             "/api/tracks",
-            create_body(&boot.area_id, key, json!({ "template_id": key, "template_input": if key == ISSUE_DEVELOPMENT { issue_input() } else { Value::Null } })),
+            create_body(&boot.area_id, key, json!({ "template_id": key, "template_input": if key == DEV { issue_input() } else { Value::Null } })),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
@@ -1428,7 +1425,7 @@ async fn listed_template_keys_create_their_exact_recipes() {
     // key, roster title, ordered task keys. Hand-written on purpose — this is
     // the one table in this file that must NOT be derived from production.
     let anchors: [(&str, &str, &[&str]); 4] = [
-        (ISSUE_DEVELOPMENT, "Issue development", &[]),
+        (DEV, "Development", &[]),
         (SMALL_CHANGE, "Small change", &[]),
         (INVESTIGATION, "Investigation", &[]),
         (INVESTMENT_RESEARCH, "Investment research", &[]),
@@ -1465,7 +1462,7 @@ async fn listed_template_keys_create_their_exact_recipes() {
         let (status, body) = post(
             boot.app.clone(),
             "/api/tracks",
-            create_body(&boot.area_id, key, json!({ "template_id": key, "template_input": if key == ISSUE_DEVELOPMENT { issue_input() } else { Value::Null } })),
+            create_body(&boot.area_id, key, json!({ "template_id": key, "template_input": if key == DEV { issue_input() } else { Value::Null } })),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
@@ -1509,7 +1506,7 @@ async fn listed_template_keys_create_their_exact_recipes() {
     }
 
     // Reverse direction: ids absent from the picker are also rejected by create.
-    for absent in ["definitely-not-a-template", "issue-development-x"] {
+    for absent in ["definitely-not-a-template", "dev-x"] {
         let (status, body) = post(
             boot.app.clone(),
             "/api/tracks",
@@ -1527,6 +1524,38 @@ async fn listed_template_keys_create_their_exact_recipes() {
                 .unwrap_or("")
                 .contains("known track template"),
             "`{absent}`: body={body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dev_create_without_issue_preserves_binding_and_optional_input() {
+    let boot = boot().await;
+    for input in [None, Some(json!({"merge_policy": "hold-for-ratify"}))] {
+        let mut extra = json!({"template_id": DEV});
+        if let Some(value) = input.clone() {
+            extra["template_input"] = value;
+        }
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/tracks",
+            create_body(&boot.area_id, "development without issue", extra),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["template_id"], "dev");
+        assert_eq!(body["plugin_scope"], "dev.neige.git-forge");
+        assert_eq!(body["template_input"], input.unwrap_or(Value::Null));
+        let id = body["id"].as_str().unwrap();
+        let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{id}")).await;
+        assert_eq!(status, StatusCode::OK, "{detail}");
+        let payload = report_card_payload(&detail);
+        assert!(task_blocks(&payload).is_empty());
+        assert!(payload.body.contains("With no issue, do not read"));
+        assert!(
+            payload
+                .body
+                .contains("semantics whenever merge_policy is absent")
         );
     }
 }

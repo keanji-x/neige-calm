@@ -377,7 +377,7 @@ case "$area:$verb" in
         if [ -f "$state/issues/$issue.body" ]; then
           cat "$state/issues/$issue.body"
         else
-          printf '# Issue %s\n\nFake issue body for issue-development ingestion.\n' "$issue"
+          printf '# Issue %s\n\nFake issue body for dev ingestion.\n' "$issue"
         fi
         ;;
       *)

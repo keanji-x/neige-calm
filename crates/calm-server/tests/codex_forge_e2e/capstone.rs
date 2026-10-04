@@ -51,7 +51,7 @@ pub(super) async fn latest_reviewed_head_before_merge(
 /// Capstone track goal: environment facts plus planning steering; PR coordinates must flow through observations/runs.
 pub(super) fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String {
     format!(
-        "Complete issue #{issue_number} through the bound issue-development template.\n\
+        "Complete issue #{issue_number} through the bound dev template.\n\
          Inspect, implement, publish, review, merge, close the issue, then close the track.\n\
          Environment: every gh.* tool's repo argument is exactly {repo_gitdir}. Embed that literal in worker goals. Base branch main has SHA {base_sha}.\n\
          Copy the bound template gate's exact cmd to every task; no no_gate_reason. Declare tasks in dependency order: inspect-issue, then implement-change.\n\

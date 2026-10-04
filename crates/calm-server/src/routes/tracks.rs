@@ -3841,7 +3841,7 @@ mod tests {
                 "min_kernel_version": "0.0.1",
                 "display_name": "Git Forge",
                 "entrypoint": { "command": "bin/x" },
-                "templates": [{ "id": "issue-development" }]
+                "templates": [{ "id": "dev" }]
             });
             if let Some(schema) = input_schema {
                 v["input_schema"] = schema;

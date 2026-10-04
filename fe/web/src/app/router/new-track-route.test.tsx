@@ -58,8 +58,8 @@ const CONFLICT = {
 const TEMPLATES = [
   { id: 'small-change', title: 'Small change', tasks: [{ key: 'inspect', goal: 'Read the change.' }] },
   {
-    id: 'issue-development',
-    title: 'Issue development',
+    id: 'dev',
+    title: 'Development',
     input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown,
     tasks: [{ key: 'inspect-issue', goal: 'Read the bound issue.' }],
   },
@@ -211,9 +211,9 @@ function harness(options: {
       if (request.method === 'GET' && request.path.endsWith('/plugin-guides')) return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
       if (request.method === 'GET' && request.path.startsWith('/api/track-templates/')) {
         const id = decodeURIComponent(request.path.slice('/api/track-templates/'.length));
-        if (id !== 'issue-development' && id !== 'small-change') return Promise.resolve({ status: 404, statusText: 'Not Found', body: {} });
+        if (id !== 'dev' && id !== 'small-change') return Promise.resolve({ status: 404, statusText: 'Not Found', body: {} });
         const detail = { status: 200, statusText: 'OK', body: { id, title: id, description: null, instructions: null,
-          body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source' } };
+          body: id === 'dev' ? ISSUE_INPUT_BODY : '# Template source' } };
         return options.templateDetailDelayMs
           ? new Promise((resolve) => setTimeout(() => resolve(detail), options.templateDetailDelayMs))
           : Promise.resolve(detail);
@@ -555,7 +555,7 @@ describe('Track creation drafts survive navigation', () => {
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Unsent intent');
     await userEvent.click(screen.getByRole('button', { name: 'Template: No template' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: /Issue development/ }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Development/ }));
     await userEvent.type(await screen.findByLabelText('Issue URL'), 'unfinished-url');
     await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     await findComposer();
@@ -1050,7 +1050,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Fix the thing');
     /* The option only exists once the template read has landed, so the wait is on the option, not the trigger. */
     await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /^Issue development/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Development/ }));
     await userEvent.type(
       await screen.findByLabelText('Issue URL'),
       'https://github.com/keanji-x/neige-calm/issues/1209',
@@ -1059,7 +1059,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
     expect(createdTrackBodies(sent)[0]).toMatchObject({
       area_id: 'c2',
-      template_id: 'issue-development',
+      template_id: 'dev',
       template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
         repo: 'keanji-x/neige-calm',

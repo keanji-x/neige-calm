@@ -230,11 +230,11 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
             skip!("{reason}");
         }
     };
-    assert_planner_prompt_binds_issue_development(&fx, PLAN_ISSUE_NUMBER).await;
+    assert_planner_prompt_binds_dev(&fx, PLAN_ISSUE_NUMBER).await;
 
     let repo_arg = fx.origin_repo.display().to_string();
     let goal = format!(
-        "Plan the bound issue-development template's work for issue #{PLAN_ISSUE_NUMBER}. \
+        "Plan the bound dev template's work for issue #{PLAN_ISSUE_NUMBER}. \
          {}",
         gh_selector_fact(&repo_arg)
     );
@@ -296,7 +296,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
             skip!("{reason}");
         }
     };
-    assert_planner_prompt_binds_issue_development(&fx, D2_ISSUE_NUMBER).await;
+    assert_planner_prompt_binds_dev(&fx, D2_ISSUE_NUMBER).await;
     let repo_arg = fx.origin_repo.display().to_string();
     let goal = merge_close_goal(&repo_arg, D2_ISSUE_NUMBER);
     // The local fake worker's exclusive preparation runtime ends before the real Planner starts.
@@ -627,7 +627,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
         }
     };
 
-    assert_planner_prompt_binds_issue_development(&fx, CAPSTONE_ISSUE_NUMBER).await;
+    assert_planner_prompt_binds_dev(&fx, CAPSTONE_ISSUE_NUMBER).await;
     let dispatcher = spawn_dispatcher_with_harness(&fx);
 
     let repo_gitdir = fx.origin_repo.display().to_string();

@@ -77,6 +77,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0137_neige_dev_publish.sql",
     "0138_task_start.sql",
     "0139_planner_input_idempotency.sql",
+    "0140_dev_template.sql",
 ];
 
 #[test]

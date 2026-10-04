@@ -15,8 +15,7 @@ use tokio::time::{Instant, sleep};
 
 use super::agent_diag::panic_with_agent_diag;
 use super::codex_fixture::{
-    Fixture, PLANNER_SESSION_ID, cross_checked_origin_repo, issue_development_input,
-    issue_development_method,
+    Fixture, PLANNER_SESSION_ID, cross_checked_origin_repo, dev_input, dev_method,
 };
 
 pub async fn boot_planner_harness_via_start_op(fx: &Fixture, goal: String) {
@@ -121,7 +120,7 @@ pub async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, 
 /// the template's working method, and the repo cross-check holds against the fixture origin. A
 /// binding that resolves Broken drops the input section, and a Planner card without the template
 /// snapshot drops the working method, so either regression to the vanilla prompt fails here.
-pub async fn assert_planner_prompt_binds_issue_development(fx: &Fixture, issue_number: u64) {
+pub async fn assert_planner_prompt_binds_dev(fx: &Fixture, issue_number: u64) {
     let prompt = planner_instructions_for_test(
         fx.repo_dyn.as_ref(),
         &fx.plugin_host,
@@ -138,13 +137,13 @@ pub async fn assert_planner_prompt_binds_issue_development(fx: &Fixture, issue_n
             panic!("the binding did not resolve: no bound template input in the prompt:\n{prompt}")
         });
     let input: Value = serde_json::from_str(input).expect("bound template input json");
-    assert_eq!(input, issue_development_input(issue_number));
+    assert_eq!(input, dev_input(issue_number));
 
     let (_, snapshot) = prompt
         .split_once("## Selected Template\n")
         .unwrap_or_else(|| panic!("no template working method in the prompt:\n{prompt}"));
     let snapshot: Value = serde_json::from_str(snapshot).expect("template snapshot json");
-    let method = issue_development_method();
+    let method = dev_method();
     assert_eq!(snapshot["body"], json!(method));
     assert_eq!(
         cross_checked_origin_repo(&method, &fx.track_cwd),

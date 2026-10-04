@@ -343,11 +343,11 @@
     "properties": {
       "issue_url": {
         "type": "string",
-        "description": "Canonical GitHub issue URL"
+        "description": "Optional canonical GitHub issue URL"
       },
       "repo": {
         "type": "string",
-        "description": "owner/name, parsed from issue_url at the entry surface"
+        "description": "Optional owner/name, parsed from issue_url at the entry surface"
       },
       "issue_number": {
         "type": "integer",
@@ -367,16 +367,12 @@
         "description": "Optional free-form context from the requester"
       }
     },
-    "required": [
-      "issue_url",
-      "repo",
-      "issue_number"
-    ],
+    "required": [],
     "additionalProperties": false
   },
   "templates": [
     {
-      "id": "issue-development"
+      "id": "dev"
     }
   ],
   "permissions": {},

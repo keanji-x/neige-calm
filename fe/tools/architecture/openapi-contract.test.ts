@@ -210,10 +210,20 @@ it('pins the server DTO outside the generated wire type roster', () => {
 
 
 it('the shipped template form binds to its plugin and keeps merge approval by default', () => {
-  const body = readFileSync(new URL('../../../crates/calm-server/templates/builtin/issue-development.md', import.meta.url), 'utf8');
+  const body = readFileSync(new URL('../../../crates/calm-server/templates/builtin/dev.md', import.meta.url), 'utf8');
   const plugin = JSON.parse(readFileSync(new URL('../../../plugins/git-forge/manifest.json', import.meta.url), 'utf8')) as { input_schema: unknown };
   const result = compileTemplateInputs(body, plugin.input_schema, { issue_url: 'https://github.com/owner/repo/issues/12' });
   expect(result.status).toBe('ready');
   if (result.status === 'unsupported') throw new Error('Shipped form is unsupported');
   expect(result.input).toEqual({ issue_url: 'https://github.com/owner/repo/issues/12', repo: 'owner/repo', issue_number: 12, merge_policy: 'hold-for-ratify' });
+});
+
+
+it('the shipped development template accepts no issue while preserving merge hold', () => {
+  const body = readFileSync(new URL('../../../crates/calm-server/templates/builtin/dev.md', import.meta.url), 'utf8');
+  const plugin = JSON.parse(readFileSync(new URL('../../../plugins/git-forge/manifest.json', import.meta.url), 'utf8')) as { input_schema: unknown };
+  const result = compileTemplateInputs(body, plugin.input_schema, {});
+  expect(result.status).toBe('ready');
+  if (result.status === 'unsupported') throw new Error('Shipped form is unsupported');
+  expect(result.input).toEqual({ merge_policy: 'hold-for-ratify' });
 });

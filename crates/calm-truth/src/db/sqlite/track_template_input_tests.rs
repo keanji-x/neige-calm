@@ -30,7 +30,7 @@ async fn track_create_round_trips_template_input() {
             title: "with input".into(),
             sort: None,
             cwd: "/tmp".into(),
-            template_id: Some("issue-development".into()),
+            template_id: Some("dev".into()),
             plugin_scope: None,
             template_input: Some(input.clone()),
             attach_folder: false,

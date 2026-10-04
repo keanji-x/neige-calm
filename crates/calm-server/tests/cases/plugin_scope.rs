@@ -158,7 +158,7 @@ async fn patch_plugin_scope_is_ignored_not_present() {
             title: "scoped".into(),
             sort: None,
             cwd: "/tmp/1110-s4-patch".into(),
-            template_id: Some("issue-development".into()),
+            template_id: Some("dev".into()),
             plugin_scope: Some("dev.neige.git-forge".into()),
             template_input: None,
             attach_folder: false,

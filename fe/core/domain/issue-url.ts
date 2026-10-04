@@ -1,4 +1,4 @@
-// GitHub issue URL → the structured fields the `issue-development` template requires.
+// GitHub issue URL → the declared structured fields for an optional issue reference.
 // Fail-closed: `https://github.com/<owner>/<repo>/issues/<n>` only, no enterprise hosts,
 // no `http://`, no leading zeros; query, fragment and trailing slash are stripped.
 

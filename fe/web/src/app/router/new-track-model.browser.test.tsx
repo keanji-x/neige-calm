@@ -38,7 +38,7 @@ function ModelForm({
     source: 'live', fetched_at_ms: 1,
   };
   return <NewTrackForm
-      loadTemplate={(id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Run relevant verification.', body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source\n' })} submitting={submitting} locked={locked} error={null} templates={templates} templatesLoaded
+      loadTemplate={(id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Run relevant verification.', body: id === 'dev' ? ISSUE_INPUT_BODY : '# Template source\n' })} submitting={submitting} locked={locked} error={null} templates={templates} templatesLoaded
     initialTemplateId={initialTemplateId} initialCwd={initialCwd} onManageRecipes={vi.fn()}
     listDirectory={listDirectory} onSubmit={vi.fn()}
     modelControls={<ModelPill provider="codex" groups={[{ provider: 'codex', catalog, availability: null }]} selection={selection} effortControl="in-menu" onChange={(next) => { setSelection(next); onChange(next); }} />}
@@ -348,15 +348,19 @@ it('uses the card radius for the composer while retaining full pill and send con
 
 
 it('keeps the selected template and required inputs readable on a narrow screen', async () => {
-  const template: TrackTemplate = { id: 'issue-development', title: 'Issue development', tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
+  const template: TrackTemplate = { id: 'dev', title: 'Development', tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
   await page.viewport(320, 700);
-  const view = render(<ModelForm templates={[template]} initialTemplateId="issue-development" />);
+  const view = render(<ModelForm templates={[template]} initialTemplateId="dev" />);
   try {
     expect(await screen.findByText('Author supplied description.')).toBeTruthy();
     const preview = screen.getByRole('region', { name: 'Selected template' });
     expect(preview.getBoundingClientRect().width).toBeLessThanOrEqual(320);
     expect(preview.scrollWidth).toBeLessThanOrEqual(preview.clientWidth);
     expect(getComputedStyle(screen.getByText('Working method')).fontSize).toBe('13px');
+    const request = screen.getByLabelText('What this track should do');
+    await userEvent.click(request);
+    await userEvent.type(request, 'Implement the requested change');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Create track' }).disabled).toBe(false);
     await userEvent.click(await screen.findByLabelText('Issue URL'));
     await userEvent.type(screen.getByLabelText('Issue URL'), 'https://github.com/owner/repo/issues/123');
     expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Merge automatically' }).checked).toBe(false);
@@ -376,8 +380,8 @@ it('keeps the selected template and required inputs readable on a narrow screen'
 
 it('aligns template field labels and descriptions on the same desktop axis', async () => {
   await page.viewport(1280, 900);
-  const template: TrackTemplate = { id: 'issue-development', title: 'Issue development', tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
-  const view = render(<ModelForm templates={[template]} initialTemplateId="issue-development" />);
+  const template: TrackTemplate = { id: 'dev', title: 'Development', tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
+  const view = render(<ModelForm templates={[template]} initialTemplateId="dev" />);
   try {
     const issue = await screen.findByLabelText<HTMLInputElement>('Issue URL');
     const merge = screen.getByRole<HTMLInputElement>('checkbox', { name: 'Merge automatically' });

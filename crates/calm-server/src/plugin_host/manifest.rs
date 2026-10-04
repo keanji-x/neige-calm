@@ -1594,8 +1594,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN: &str =
-        include_str!("../../tests/goldens/issue_development_planner_prompt.txt");
+    const DEV_RENDERED_PROMPT_GOLDEN: &str =
+        include_str!("../../tests/goldens/dev_planner_prompt.txt");
 
     fn assert_full_golden_eq(expected: &str, actual: &str) {
         assert!(
@@ -1737,7 +1737,7 @@ mod tests {
             "display_name": "Template Test",
             "entrypoint": { "command": "bin/template-test" },
             "templates": [
-                { "id": "issue-development" }
+                { "id": "dev" }
             ],
             "permissions": {}
         })
@@ -1751,7 +1751,7 @@ mod tests {
     fn parses_template_descriptor() {
         let m = parse_manifest_value(template_manifest_value()).expect("template manifest");
         assert_eq!(m.templates.len(), 1);
-        assert_eq!(m.templates[0].id, "issue-development");
+        assert_eq!(m.templates[0].id, "dev");
     }
 
     #[test]
@@ -1812,7 +1812,7 @@ mod tests {
     fn version_2_with_templates_parses() {
         let m = parse_manifest_value(template_manifest_value()).expect("v2 manifest");
         assert_eq!(m.manifest_version, 2);
-        assert_eq!(m.templates[0].id, "issue-development");
+        assert_eq!(m.templates[0].id, "dev");
     }
 
     #[test]
@@ -1828,7 +1828,7 @@ mod tests {
         let mut v = template_manifest_value();
         v["some_future_field"] = json!({ "anything": true });
         let m = parse_manifest_value(v).expect("unknown top-level keys stay forwards-compatible");
-        assert_eq!(m.templates[0].id, "issue-development");
+        assert_eq!(m.templates[0].id, "dev");
     }
 
     #[test]
@@ -1840,30 +1840,27 @@ mod tests {
         v["templates"][0]["card_kinds"] = json!(["terminal"]);
         v["templates"][0]["input_schema"] = json!({"type": "object"});
         let m = parse_manifest_value(v).expect("S5 ignores retired descriptor fields");
-        assert_eq!(m.templates[0].id, "issue-development");
+        assert_eq!(m.templates[0].id, "dev");
     }
 
     #[test]
-    fn parses_shipped_issue_development_descriptor() {
+    fn parses_shipped_dev_descriptor() {
         let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
         let template = m
             .templates
             .iter()
-            .find(|template| template.id == "issue-development")
-            .expect("issue-development template");
+            .find(|template| template.id == "dev")
+            .expect("dev template");
         assert_eq!(m.templates.len(), 1);
-        assert_eq!(template.id, "issue-development");
+        assert_eq!(template.id, "dev");
 
         let schema = m
             .input_schema
             .as_ref()
             .expect("git-forge declares Manifest.input_schema");
         assert_eq!(schema["type"], "object");
-        assert_eq!(
-            schema["required"],
-            serde_json::json!(["issue_url", "repo", "issue_number"])
-        );
+        assert_eq!(schema["required"], serde_json::json!([]));
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
         assert_eq!(schema["properties"]["issue_url"]["type"], "string");
         assert_eq!(schema["properties"]["repo"]["type"], "string");
@@ -1896,9 +1893,7 @@ mod tests {
             descriptor.visible_to_roles
         );
 
-        let template = TemplateDescriptor {
-            id: "issue-development".into(),
-        };
+        let template = TemplateDescriptor { id: "dev".into() };
         let rendered =
             crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
                 "track-give-up",
@@ -1914,14 +1909,14 @@ mod tests {
     }
 
     #[test]
-    fn shipped_issue_development_rendered_prompt_matches_full_golden() {
+    fn shipped_dev_rendered_prompt_matches_full_golden() {
         let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
         let template = manifest
             .templates
             .iter()
-            .find(|template| template.id == "issue-development")
-            .expect("issue-development template");
+            .find(|template| template.id == "dev")
+            .expect("dev template");
 
         // A legal final state for the shipped schema, with every required and optional field populated.
         let template_input = json!({
@@ -1948,17 +1943,17 @@ mod tests {
 
         if std::env::var_os("REGEN_PLANNER_PROMPT_GOLDEN").is_some() {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/goldens/issue_development_planner_prompt.txt");
+                .join("tests/goldens/dev_planner_prompt.txt");
             // Write back `rendered + "\n"`: the assertion side does
             // `strip_suffix('\n')`, so omitting it panics on the very next run.
             std::fs::write(&path, format!("{rendered}\n")).expect("write regenerated golden");
             panic!(
-                "issue_development_planner_prompt.txt regenerated from the current prompt; \
+                "dev_planner_prompt.txt regenerated from the current prompt; \
                  hand-verify the diff, commit, and re-run without REGEN_PLANNER_PROMPT_GOLDEN"
             );
         }
 
-        let expected = ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN
+        let expected = DEV_RENDERED_PROMPT_GOLDEN
             .strip_suffix('\n')
             .expect("text fixture has its repository newline");
         assert_full_golden_eq(expected, &rendered);

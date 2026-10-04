@@ -450,12 +450,12 @@ mod spawn_error_mapping_tests {
     fn template_conflict_maps_to_structured_409() {
         let mapped = spawn_error_to_calm(HostError::TemplateConflict {
             plugin_id: "dev.second".into(),
-            template_id: "issue-development".into(),
+            template_id: "dev".into(),
             held_by: "dev.first".into(),
         });
         assert!(
             matches!(&mapped, CalmError::PluginConflict(msg)
-                if msg.contains("issue-development") && msg.contains("dev.first")),
+                if msg.contains("dev") && msg.contains("dev.first")),
             "expected PluginConflict naming the template and holder, got {mapped:?}"
         );
         assert_eq!(mapped.status(), StatusCode::CONFLICT);

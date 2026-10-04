@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 pub mod front_matter;
 
 // Protocol, not data: other code names these ids.
-pub const ISSUE_DEVELOPMENT: &str = "issue-development";
+pub const DEV: &str = "dev";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
 /// A report-only template: no pre-set `task` blocks.
@@ -29,7 +29,7 @@ pub const SITE_PREFIX: &str = "site/";
 /// parse is a panic there, deliberately.
 static BUILTIN_SOURCES: [&str; 5] = [
     include_str!("../templates/builtin/daily-planner.md"),
-    include_str!("../templates/builtin/issue-development.md"),
+    include_str!("../templates/builtin/dev.md"),
     include_str!("../templates/builtin/small-change.md"),
     include_str!("../templates/builtin/investigation.md"),
     include_str!("../templates/builtin/investment-research.md"),
@@ -376,7 +376,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// The three plan templates; `investment-research` is the one report-only entry.
-    const PLAN_TEMPLATES: [&str; 3] = [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION];
+    const PLAN_TEMPLATES: [&str; 3] = [DEV, SMALL_CHANGE, INVESTIGATION];
 
     fn roster() -> &'static TemplateRoster {
         TemplateRoster::builtin()
@@ -397,7 +397,7 @@ mod tests {
             ids,
             [
                 DAILY_PLANNER,
-                ISSUE_DEVELOPMENT,
+                DEV,
                 SMALL_CHANGE,
                 INVESTIGATION,
                 INVESTMENT_RESEARCH
@@ -812,7 +812,7 @@ mod site_dir_tests {
             roster.entries().len(),
             TemplateRoster::builtin().entries().len() + 1
         );
-        assert!(roster.get(ISSUE_DEVELOPMENT).is_some());
+        assert!(roster.get(DEV).is_some());
         assert_eq!(roster.get("site/x").expect("site/x").title(), "Site X");
     }
 
@@ -1014,28 +1014,20 @@ mod site_dir_tests {
 
     #[test]
     fn a_site_file_named_like_a_builtin_is_a_distinct_site_entry() {
-        let name = format!("{ISSUE_DEVELOPMENT}.md");
+        let name = format!("{DEV}.md");
         let dir = site_dir(&[(
             name.as_str(),
-            &file(
-                ISSUE_DEVELOPMENT,
-                "Operator's issue development",
-                &valid_body(),
-            ),
+            &file(DEV, "Operator's issue development", &valid_body()),
         )]);
         let roster = load(dir.path()).expect("a builtin-named site file is not a collision");
-        let builtin = TemplateRoster::builtin()
-            .get(ISSUE_DEVELOPMENT)
-            .expect("builtin");
-        let kept = roster
-            .get(ISSUE_DEVELOPMENT)
-            .expect("the builtin key still admits");
+        let builtin = TemplateRoster::builtin().get(DEV).expect("builtin");
+        let kept = roster.get(DEV).expect("the builtin key still admits");
         assert!(
             std::ptr::eq(kept.key.as_ptr(), builtin.key.as_ptr()),
             "the builtin entry must be untouched, not overridden"
         );
         assert_eq!(kept.title(), builtin.title());
-        let site_key = format!("{SITE_PREFIX}{ISSUE_DEVELOPMENT}");
+        let site_key = format!("{SITE_PREFIX}{DEV}");
         let site = roster
             .get(&site_key)
             .expect("the site entry admits under site/");
@@ -1045,7 +1037,7 @@ mod site_dir_tests {
             roster
                 .entries()
                 .iter()
-                .filter(|t| t.key().ends_with(ISSUE_DEVELOPMENT))
+                .filter(|t| t.key().ends_with(DEV))
                 .count(),
             2,
             "one builtin, one site entry"

@@ -11,7 +11,7 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
         .unwrap();
     let (status, created) = request_json(&boot.app, "POST", "/api/tracks".into(), &boot.cookie, Some(json!({
         "planner_provider": "codex",
-        "area_id": boot.area_id, "title": "Check repository", "template_id": "issue-development",
+        "area_id": boot.area_id, "title": "Check repository", "template_id": "dev",
         "template_input": {"issue_url":"https://github.com/owner/expected/issues/1","repo":"owner/expected","issue_number":1},
         "cwd": target_cwd("-mismatch"), "attach_folder": true,
         "theme": routes::theme::RequestTheme::default_dark(),

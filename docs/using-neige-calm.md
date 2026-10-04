@@ -124,10 +124,28 @@ uncommitted changes before starting a worker; a dirty checkout is refused.
 Older attached Tracks without a Track worktree need a new Track to run these
 workers. Managed Tracks use their provisioned workspace.
 
-Enable **development** in **Settings → Plugins** before creating an Issue development Track.
-The Issue template automatically includes its development guide. Use `@` in the
-chat input to attach a plugin's brief description; disabled installed plugins
-can also be referenced. A reference supplies context and does not enable the
+Choose **Development** (`dev`) for a repository change, with or without a GitHub
+issue. Enable **development** in **Settings → Plugins** before creating the Track;
+the template includes the development capability guide.
+
+Describe the requested change in the Track's first message and select its repository
+folder when working on an existing project. **Issue URL** is optional: leave it blank
+for a direct development request, or supply a GitHub issue URL to add its requirements
+and discussion. A supplied URL must be valid, and its repository must match the
+checkout before any writes. Without an issue, the Planner does not post issue comments
+or close an issue.
+
+The target repository's `AGENTS.md`, directory guidance, and `CONTRIBUTING.md` define
+coding rules, design and review requirements, verification, and previews. The template
+coordinates implementation, PR publication, CI, and merge approval. It creates tasks
+as needed for the request rather than starting a fixed checklist.
+
+**Merge automatically** is off by default: the Planner prepares the PR and requests
+your approval for the checked head before merging. Enabling it allows merge after
+required reviews and checks pass. Leaving Issue URL blank does not change this policy.
+
+Use `@` in the chat input to attach a plugin's brief description; disabled installed
+plugins can also be referenced. A reference supplies context and does not enable the
 plugin or change its permissions.
 
 For a development-bound Track with its own worktree and an upstream, the Planner can

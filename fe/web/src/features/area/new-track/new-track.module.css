@@ -39,7 +39,7 @@
    * negative scroll offset, which cannot be scrolled back to, so the greeting
    * and the top of the composer become unreachable. Reachable at a normal
    * desktop height and not at a short one, in landscape on a phone, at high
-   * zoom, or with the issue-development panel expanded, which is the whole
+   * zoom, or with the dev panel expanded, which is the whole
    * problem: it looks fine until it silently is not.
    */
   .page {

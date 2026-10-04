@@ -71,7 +71,7 @@ describe('settingsSectionForPath', () => {
     expect(settingsSectionForPath('/settings/about')).toBe('about');
     // A stale bookmark to a removed route must leave the dialog shut, not open it on a fallback pane.
     expect(settingsSectionForPath('/settings/templates')).toBeNull();
-    expect(settingsSectionForPath('/settings/templates/issue-development')).toBeNull();
+    expect(settingsSectionForPath('/settings/templates/dev')).toBeNull();
     // Shut everywhere else, including a path that merely starts with the same letters.
     expect(settingsSectionForPath('/')).toBeNull();
     expect(settingsSectionForPath('/track/w1')).toBeNull();

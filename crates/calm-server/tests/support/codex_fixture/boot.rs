@@ -22,7 +22,7 @@ use calm_server::session_projection_repo::AgentProvider;
 use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedDaemonState};
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
-use calm_server::templates::ISSUE_DEVELOPMENT;
+use calm_server::templates::DEV;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::TrackReportPayload;
@@ -125,12 +125,12 @@ pub async fn boot_forge_e2e_fixture(
         .expect("create area");
     let track = repo_dyn
         .track_create(NewTrack {
-            template_input: fixture.bound_issue.map(issue_development_input),
+            template_input: fixture.bound_issue.map(dev_input),
             area_id: area.id.clone(),
             title: "codex-forge-e2e".into(),
             sort: None,
             cwd: track_cwd.display().to_string(),
-            template_id: fixture.bound_issue.map(|_| ISSUE_DEVELOPMENT.to_string()),
+            template_id: fixture.bound_issue.map(|_| DEV.to_string()),
             plugin_scope: Some(PLUGIN_ID.into()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -177,9 +177,9 @@ pub async fn boot_forge_e2e_fixture(
             calm_server::routes::tracks::template_planner_card_payload_for_test(
                 fixture.goal.clone(),
                 AgentProvider::Codex,
-                ISSUE_DEVELOPMENT,
+                DEV,
             )
-            .expect("issue-development planner card payload"),
+            .expect("dev planner card payload"),
         ),
     };
     let planner_card = repo_dyn

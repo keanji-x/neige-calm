@@ -173,5 +173,7 @@ scripts/local-rust-gates.sh --quick
   integrated paths. Never run real Codex E2E on the shared production host; use
   a dedicated host for Tier 2 stack E2E. `make e2e-codex-isolated` safely runs the
   separate `codex_forge_e2e` suite but does not replace Tier 2 stack coverage.
+- For frontend previews in Neige development tracks, follow
+  [the repository preview workflow](docs/development-preview.md).
 - Finally inspect `git diff`, `git status`, and actual test output. Report only
   commands and results that were truly run.

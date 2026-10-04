@@ -25,7 +25,7 @@ use tower::ServiceExt;
 use crate::common;
 
 const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
-const ISSUE_DEVELOPMENT: &str = "issue-development";
+const DEV: &str = "dev";
 const SMALL_CHANGE: &str = "small-change";
 const INVESTIGATION: &str = "investigation";
 const INVESTMENT_RESEARCH: &str = "investment-research";
@@ -94,7 +94,7 @@ async fn boot(running: bool) -> Boot {
             "display_name": "Trusted template owner",
             "entrypoint": { "command": "bin/stub" },
             "input_schema": stub_input_schema(),
-            "templates": [ { "id": ISSUE_DEVELOPMENT } ],
+            "templates": [ { "id": DEV } ],
             "permissions": {}
         })
         .to_string(),
@@ -212,15 +212,10 @@ async fn lists_every_template_with_its_kernel_title() {
         .collect();
     assert_eq!(
         ids,
-        vec![
-            ISSUE_DEVELOPMENT,
-            SMALL_CHANGE,
-            INVESTIGATION,
-            INVESTMENT_RESEARCH
-        ],
+        vec![DEV, SMALL_CHANGE, INVESTIGATION, INVESTMENT_RESEARCH],
         "the read must expose exactly the kernel's template keys, in order"
     );
-    assert_eq!(row(&body, ISSUE_DEVELOPMENT)["title"], "Issue development");
+    assert_eq!(row(&body, DEV)["title"], "Development");
     assert_eq!(row(&body, SMALL_CHANGE)["title"], "Small change");
     assert_eq!(row(&body, INVESTIGATION)["title"], "Investigation");
     assert_eq!(
@@ -241,7 +236,7 @@ async fn bound_template_carries_the_plugin_input_schema() {
     let (status, body) = list_templates(boot.app.clone()).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(
-        row(&body, ISSUE_DEVELOPMENT)["input_schema"],
+        row(&body, DEV)["input_schema"],
         stub_input_schema(),
         "a bound template must carry its owning plugin's manifest schema verbatim"
     );
@@ -259,7 +254,7 @@ async fn bound_template_carries_the_plugin_input_schema() {
     let (status, body) = list_templates(boot.app).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert!(
-        row(&body, ISSUE_DEVELOPMENT).get("input_schema").is_none(),
+        row(&body, DEV).get("input_schema").is_none(),
         "a stopped plugin must drop the schema, matching resolve_template_binding: {body}"
     );
 }
@@ -270,12 +265,7 @@ async fn every_template_lists_no_preset_tasks() {
     let boot = boot(false).await;
     let (status, body) = list_templates(boot.app).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    for id in [
-        ISSUE_DEVELOPMENT,
-        SMALL_CHANGE,
-        INVESTIGATION,
-        INVESTMENT_RESEARCH,
-    ] {
+    for id in [DEV, SMALL_CHANGE, INVESTIGATION, INVESTMENT_RESEARCH] {
         assert_eq!(row(&body, id)["tasks"], json!([]), "{id}");
     }
     assert!(
@@ -289,12 +279,7 @@ async fn unbound_templates_carry_no_input_schema() {
     let boot = boot(false).await;
     let (status, body) = list_templates(boot.app).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    for key in [
-        ISSUE_DEVELOPMENT,
-        SMALL_CHANGE,
-        INVESTIGATION,
-        INVESTMENT_RESEARCH,
-    ] {
+    for key in [DEV, SMALL_CHANGE, INVESTIGATION, INVESTMENT_RESEARCH] {
         assert!(
             row(&body, key).get("input_schema").is_none(),
             "with no plugin running, `{key}` must advertise no schema: {body}"
@@ -456,7 +441,7 @@ async fn template_plugin_guides_are_read_only_and_independent_of_enablement() {
             .unwrap();
         for (id, expected) in [
             (
-                ISSUE_DEVELOPMENT,
+                DEV,
                 json!([{"id":"dev.neige.git-forge","name":"development"}]),
             ),
             (SMALL_CHANGE, json!([])),

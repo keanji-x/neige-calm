@@ -64,7 +64,7 @@ impl Fixture {
             .unwrap();
         self.repo.track_create(NewTrack {
             area_id: area.id, title: "builtin acceptance".into(), sort: None, cwd: String::new(),
-            template_id: scope.map(|id| if id == ID { "issue-development".into() } else { "investigation".into() }),
+            template_id: scope.map(|id| if id == ID { "dev".into() } else { "investigation".into() }),
             template_input: scope.map(|_| json!({"issue_url":"https://github.com/example/repo/issues/1","repo":"example/repo","issue_number":1})),
             plugin_scope: scope.map(str::to_owned), attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -333,7 +333,7 @@ async fn builtin_upgrade_preserves_configuration_and_revokes_the_old_token() {
 async fn builtin_legacy_issue_documentation_preserves_snapshot_and_authority() {
     let fx = Fixture::new().await;
     let plain = fx.track(None).await;
-    sqlx::query("UPDATE tracks SET template_id='issue-development' WHERE id=?")
+    sqlx::query("UPDATE tracks SET template_id='dev' WHERE id=?")
         .bind(plain.id.as_str())
         .execute(fx.repo.pool())
         .await

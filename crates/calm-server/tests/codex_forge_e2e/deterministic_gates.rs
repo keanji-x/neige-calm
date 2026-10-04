@@ -5,7 +5,7 @@ use crate::support::codex_fixture::*;
 use crate::support::gh_shim::{run_gh, seed_shim_issue_body, write_gh_shim};
 use crate::support::git_helpers::*;
 use calm_server::plugin_host::Manifest;
-use calm_server::templates::ISSUE_DEVELOPMENT;
+use calm_server::templates::DEV;
 use serde_json::{Value, json};
 
 /// The seeded gate script must pass under the task-verify wrapper's EXACT conditions (`/bin/sh`, cleared env, repo cwd) and be cargo-free.
@@ -53,12 +53,12 @@ fn shipped_git_forge_templates_are_id_only() {
     let value: Value = serde_json::from_str(&raw).expect("manifest json");
     assert_eq!(
         value["templates"],
-        json!([{ "id": "issue-development" }]),
+        json!([{ "id": "dev" }]),
         "S5 git-forge templates[] must be id-only"
     );
     let manifest = Manifest::parse(&raw).expect("production manifest parses");
     assert_eq!(manifest.templates.len(), 1);
-    assert_eq!(manifest.templates[0].id, "issue-development");
+    assert_eq!(manifest.templates[0].id, "dev");
 }
 
 /// The fixture origin names GitHub while git reaches the local bare repository: the configured URL
@@ -74,8 +74,8 @@ fn fixture_origin_names_github_and_reaches_the_local_bare_repo() {
     point_origin_at_github(&clone, &origin, &fixture_github_url());
 
     assert_eq!(
-        cross_checked_origin_repo(&issue_development_method(), &clone),
-        issue_development_input(1)["repo"]
+        cross_checked_origin_repo(&dev_method(), &clone),
+        dev_input(1)["repo"]
     );
     let local = origin.display().to_string();
     assert_eq!(git_stdout(&clone, ["remote", "get-url", "origin"]), local);
@@ -123,41 +123,38 @@ fn repo_cross_check_reads_the_first_of_several_origin_urls() {
         ["config", "--add", "remote.origin.url", fixture_url.as_str()],
     );
 
-    let observed = cross_checked_origin_repo(&issue_development_method(), &clone);
+    let observed = cross_checked_origin_repo(&dev_method(), &clone);
     assert_eq!(observed, "neige-e2e/other-repo");
-    assert_ne!(observed, issue_development_input(1)["repo"]);
+    assert_ne!(observed, dev_input(1)["repo"]);
 }
 
 /// The bound input the fixture writes passes the shipped git-forge input schema, through the check
 /// the track binding re-runs at Planner start.
 #[test]
-fn issue_development_input_binds_against_the_shipped_manifest() {
+fn dev_input_binds_against_the_shipped_manifest() {
     let manifest = read_manifest();
     calm_server::plugin_host::template_input::validate_template_input_binding(
         calm_server::plugin_host::template_input::TemplateInputOwner::Plugin(&manifest),
-        Some(&issue_development_input(CAPSTONE_ISSUE_NUMBER)),
+        Some(&dev_input(CAPSTONE_ISSUE_NUMBER)),
     )
     .expect("fixture template_input binds");
     assert_eq!(
-        issue_development_input(CAPSTONE_ISSUE_NUMBER)["merge_policy"],
+        dev_input(CAPSTONE_ISSUE_NUMBER)["merge_policy"],
         "auto-merge"
     );
 }
 
-/// The fixture's Planner card carries the issue-development working method the create route
+/// The fixture's Planner card carries the dev working method the create route
 /// stores.
 #[test]
-fn template_planner_card_payload_carries_the_issue_development_method() {
+fn template_planner_card_payload_carries_the_dev_method() {
     let payload = calm_server::routes::tracks::template_planner_card_payload_for_test(
         Some("goal".into()),
         calm_server::session_projection_repo::AgentProvider::Codex,
-        ISSUE_DEVELOPMENT,
+        DEV,
     )
     .expect("planner card payload");
-    assert_eq!(
-        payload["template_context"]["body"],
-        json!(issue_development_method())
-    );
+    assert_eq!(payload["template_context"]["body"], json!(dev_method()));
     assert_eq!(payload["prompt"], "goal");
 }
 
@@ -202,7 +199,7 @@ fn gh_shim_issue_view_prefers_seeded_body_file() {
     assert!(fallback.status.success());
     assert_eq!(
         String::from_utf8_lossy(&fallback.stdout),
-        "# Issue 9999\n\nFake issue body for issue-development ingestion.\n",
+        "# Issue 9999\n\nFake issue body for dev ingestion.\n",
         "unseeded issues must keep the historical hardcoded body (behavior-preserving)"
     );
 }
@@ -245,7 +242,7 @@ fn gh_shim_spawn_retries_transient_etxtbsy() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "# Issue 1234\n\nFake issue body for issue-development ingestion.\n",
+        "# Issue 1234\n\nFake issue body for dev ingestion.\n",
         "run_gh must succeed with the expected shim output once the fd is released"
     );
 }

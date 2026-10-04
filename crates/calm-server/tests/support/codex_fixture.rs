@@ -15,7 +15,7 @@ use calm_server::operation::OperationRuntime;
 use calm_server::plugin_host::PluginHost;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
-use calm_server::templates::ISSUE_DEVELOPMENT;
+use calm_server::templates::DEV;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::{Value, json};
@@ -51,15 +51,15 @@ pub fn fixture_github_url() -> String {
     format!("https://github.com/{FIXTURE_GITHUB_REPO}.git")
 }
 
-/// The command the issue-development repo cross-check runs; its first line is the configured origin
+/// The command the dev repo cross-check runs; its first line is the configured origin
 /// URL, before any `url.<base>.insteadOf` rewrite.
 pub const REPO_CROSS_CHECK_CMD: &str = "git config --get-all remote.origin.url";
 
-/// The builtin issue-development working method.
-pub fn issue_development_method() -> String {
+/// The builtin dev working method.
+pub fn dev_method() -> String {
     calm_server::templates::TemplateRoster::builtin()
-        .get(ISSUE_DEVELOPMENT)
-        .expect("builtin issue-development template")
+        .get(DEV)
+        .expect("builtin dev template")
         .recipe()
         .body
 }
@@ -69,7 +69,7 @@ pub fn issue_development_method() -> String {
 pub fn cross_checked_origin_repo(method: &str, repo: &Path) -> String {
     assert!(
         method.contains(&format!("first line of `{REPO_CROSS_CHECK_CMD}`")),
-        "the issue-development method no longer names the first line of `{REPO_CROSS_CHECK_CMD}`"
+        "the dev method no longer names the first line of `{REPO_CROSS_CHECK_CMD}`"
     );
     let mut argv = REPO_CROSS_CHECK_CMD.split(' ');
     let output = StdCommand::new(argv.next().expect("program"))
@@ -90,9 +90,9 @@ pub fn cross_checked_origin_repo(method: &str, repo: &Path) -> String {
         .to_string()
 }
 
-/// Valid issue-development `template_input` for `issue_number` of [`FIXTURE_GITHUB_REPO`], with
+/// Valid dev `template_input` for `issue_number` of [`FIXTURE_GITHUB_REPO`], with
 /// `merge_policy` `auto-merge` so a run merges without a ratification.
-pub fn issue_development_input(issue_number: u64) -> Value {
+pub fn dev_input(issue_number: u64) -> Value {
     json!({
         "issue_url": format!("https://github.com/{FIXTURE_GITHUB_REPO}/issues/{issue_number}"),
         "repo": FIXTURE_GITHUB_REPO,
@@ -103,8 +103,8 @@ pub fn issue_development_input(issue_number: u64) -> Value {
 
 pub struct FixtureSpec {
     pub goal: Option<String>,
-    /// Bind the track to the issue-development template for this issue (see
-    /// [`issue_development_input`]); the Planner card carries the template's working method.
+    /// Bind the track to the dev template for this issue (see
+    /// [`dev_input`]); the Planner card carries the template's working method.
     pub bound_issue: Option<u64>,
     pub plan_source: PlanSource,
     pub issue_body: Option<FixtureIssue>,

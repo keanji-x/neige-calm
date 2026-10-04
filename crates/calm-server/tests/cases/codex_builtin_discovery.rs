@@ -10,7 +10,7 @@ async fn real_planner_discovers_builtin_tool_on_first_turn() {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let goal = "This disposable fixture is a tool availability probe, not an issue-development task. \
+    let goal = "This disposable fixture is a tool availability probe, not an dev task. \
         Use your discovered MCP tools directly; do not use shell commands, custom clients or create tasks. \
         First invoke neige.dev.publish with idempotency_key=bootstrap-discovery-probe, \
         title=Discovery probe, body=No candidate. Observe its publish-not-a-candidate refusal: \

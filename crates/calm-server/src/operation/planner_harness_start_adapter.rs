@@ -2479,9 +2479,7 @@ mod tests {
     const TEMPLATE_ID: &str = "investigation";
 
     fn populated_template_descriptor() -> TemplateDescriptor {
-        TemplateDescriptor {
-            id: "issue-development".into(),
-        }
+        TemplateDescriptor { id: "dev".into() }
     }
 
     #[test]

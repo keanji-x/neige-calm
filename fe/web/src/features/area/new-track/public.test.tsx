@@ -32,8 +32,8 @@ const TEMPLATE_CHIP = /^Template: /;
 
 /** The bound template, shaped as the read endpoint returns it. */
 const ISSUE_DEV: TrackTemplate = {
-  id: 'issue-development',
-  title: 'Issue development',
+  id: 'dev',
+  title: 'Development',
   input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown,
   tasks: [
     { key: 'inspect-issue', goal: 'Read the bound template input and view the source issue.' },
@@ -74,7 +74,7 @@ function renderForm(overrides: Partial<Parameters<typeof NewTrackForm>[0]> = {})
     error: null,
     templates: TEMPLATES,
     templatesLoaded: true,
-    loadTemplate: vi.fn((id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Inspect the requested change.\nRun relevant verification.', body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source\n' })),
+    loadTemplate: vi.fn((id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Inspect the requested change.\nRun relevant verification.', body: id === 'dev' ? ISSUE_INPUT_BODY : '# Template source\n' })),
     initialTemplateId: null,
     initialCwd: null,
     /* Required, so a call site that forgot it cannot render a dead menu row. */
@@ -197,7 +197,7 @@ describe('NewTrackForm asks only what the track starts from', () => {
            reader has recipes. */
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent))
       .toEqual([
-        'No templateSelected', 'Issue development', 'Small change', 'Investigation',
+        'No templateSelected', 'Development', 'Small change', 'Investigation',
         'Investment research', 'Manage recipes…',
       ]);
   });
@@ -249,8 +249,9 @@ describe('NewTrackForm asks only what the track starts from', () => {
     const { onSubmit } = renderForm();
     await fillMessage('Ship the thing');
     await userEvent.click(templateTrigger());
-    await userEvent.click(screen.getByRole('menuitem', { name: /^Issue development/ }));
-    // The blocked state the reader is in: no issue URL yet.
+    await userEvent.click(screen.getByRole('menuitem', { name: /^Development/ }));
+    // A nonblank malformed optional issue still blocks submission.
+    await userEvent.type(await screen.findByLabelText('Issue URL'), 'not a url');
     expect(submitButton().disabled).toBe(true);
 
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
@@ -388,9 +389,9 @@ describe('Start from — no template is the default and stays free', () => {
   });
 
   it('says the templates are missing without claiming the create failed', () => {
-    renderForm({ templates: [], templatesError: 'Could not load templates.' });
-    // A `status`, not an `alert`: nothing the user did failed.
-    expect(screen.queryByRole('alert')).toBeNull();
+    const { container } = renderForm({ templates: [], templatesError: 'Could not load templates.' });
+    // Inspect this form, excluding global announcements retained by previous interactions.
+    expect(within(container).queryByRole('alert')).toBeNull();
     expect(screen.getByText(/Could not load templates\..*still create a track without one/)).toBeTruthy();
   });
 });
@@ -477,7 +478,7 @@ describe('Area creation defaults', () => {
     const { onSubmit } = renderForm({
       templates: [],
       templatesLoaded: true,
-    loadTemplate: vi.fn((id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Inspect the requested change.\nRun relevant verification.', body: id === 'issue-development' ? ISSUE_INPUT_BODY : '# Template source\n' })),
+    loadTemplate: vi.fn((id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Inspect the requested change.\nRun relevant verification.', body: id === 'dev' ? ISSUE_INPUT_BODY : '# Template source\n' })),
       initialTemplateId: 'retired-template',
     });
     await fillMessage();
@@ -538,16 +539,16 @@ describe('Start from — an unbound template is id-only', () => {
 describe('Start from — issue development expands under the group', () => {
   async function chooseIssueDev(expectsFields = true) {
     await fillMessage();
-    await chooseTemplate('Issue development');
+    await chooseTemplate('Development');
     if (expectsFields) await screen.findByLabelText('Issue URL');
     else await screen.findByText('Author supplied description.');
   }
 
-  it('blocks submit until the issue URL parses, and says why', async () => {
+  it('allows an omitted issue but blocks a malformed nonblank URL', async () => {
     renderForm();
     await chooseIssueDev();
-    expect(submitButton().disabled).toBe(true);
-    expect(screen.getByText('The GitHub issue this track should resolve.')).toBeTruthy();
+    expect(submitButton().disabled).toBe(false);
+    expect(screen.getByText('Optional GitHub issue to associate with this change.')).toBeTruthy();
     // An untouched field is not yet wrong, and must not be announced as such.
     expect(screen.getByLabelText('Issue URL').getAttribute('aria-invalid')).toBeNull();
 
@@ -555,6 +556,16 @@ describe('Start from — issue development expands under the group', () => {
     expect(submitButton().disabled).toBe(true);
     expect(within(screen.getByLabelText('Issue URL').closest('fieldset')!).getByText(/Not a GitHub issue URL/)).toBeTruthy();
     expect(screen.getByLabelText('Issue URL').getAttribute('aria-invalid')).toBe('true');
+  });
+
+  it('submits a development request without an issue and holds merge approval', async () => {
+    const { onSubmit } = renderForm();
+    await chooseIssueDev();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({
+      message: 'Ship the thing', template_id: 'dev',
+      template_input: { merge_policy: 'hold-for-ratify' },
+    });
   });
 
   it('derives repo and issue_number client-side and holds for ratify by default', async () => {
@@ -568,7 +579,7 @@ describe('Start from — issue development expands under the group', () => {
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
       message: 'Ship the thing',
-      template_id: 'issue-development',
+      template_id: 'dev',
       template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
         repo: 'keanji-x/neige-calm',
@@ -607,13 +618,13 @@ describe('Start from — issue development expands under the group', () => {
    * reject `template_input`; the picker follows, with no fields. */
   it('offers issue development with no fields when nothing is bound to it', async () => {
     const { props } = renderForm({
-      templates: [{ id: 'issue-development', title: 'Issue development', tasks: ISSUE_DEV.tasks }],
+      templates: [{ id: 'dev', title: 'Development', tasks: ISSUE_DEV.tasks }],
     });
     await chooseIssueDev(false);
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
-      message: 'Ship the thing', template_id: 'issue-development',
+      message: 'Ship the thing', template_id: 'dev',
     });
   });
 

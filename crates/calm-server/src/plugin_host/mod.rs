@@ -2443,7 +2443,7 @@ mod template_conflict_tests {
 mod required_template_owner {
     #[test]
     fn required_dev_template_cannot_be_claimed_when_dev_is_disabled() {
-        let incoming = super::Manifest::parse(r#"{"manifest_version":2,"id":"other.plugin","version":"0.1.0","min_kernel_version":"0.1.0","display_name":"Other","entrypoint":{"command":"bin/tool"},"templates":[{"id":"issue-development"}]}"#).unwrap();
+        let incoming = super::Manifest::parse(r#"{"manifest_version":2,"id":"other.plugin","version":"0.1.0","min_kernel_version":"0.1.0","display_name":"Other","entrypoint":{"command":"bin/tool"},"templates":[{"id":"dev"}]}"#).unwrap();
         let error = super::find_template_conflict(
             &incoming,
             [],

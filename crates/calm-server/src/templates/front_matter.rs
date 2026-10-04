@@ -264,15 +264,7 @@ mod tests {
                 "{bad:?}"
             );
         }
-        for good in [
-            "x",
-            "0",
-            "small-change",
-            "a-b-c",
-            "issue-development",
-            "x--y",
-            "a-",
-        ] {
+        for good in ["x", "0", "small-change", "a-b-c", "dev", "x--y", "a-"] {
             let text = format!("+++\nid = \"{good}\"\ntitle = \"X\"\n+++\n");
             assert_eq!(
                 parse(&text).map(|(f, _)| f.id),

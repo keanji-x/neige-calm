@@ -78,7 +78,7 @@ const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
 const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PLANNER_SESSION_ID: &str = "forge-template-planner-session";
 
-const TEMPLATE_ID: &str = "issue-development";
+const TEMPLATE_ID: &str = "dev";
 
 struct Fixture {
     _server: Arc<McpServer>,
@@ -130,7 +130,7 @@ async fn git_forge_template_registers_and_track_create_binds() {
 
     let app = track_router_for_fixture(&fx);
 
-    // The shipped Manifest declares an `input_schema` with required fields, so the happy-path bind must carry a conforming `template_input`.
+    // Optional issue context still binds and persists through the shipped schema.
     let bound_input = json!({
         "issue_url": "https://github.com/o/r/issues/888",
         "repo": "o/r",
@@ -204,14 +204,14 @@ async fn git_forge_template_registers_and_track_create_binds() {
         "body={body}"
     );
 
-    // Bound create WITHOUT `template_input` is a 400 naming the required fields.
-    let required_dir = track_cwd_tempdir("wf-input-required").expect("required input cwd");
+    // Development can bind without any issue or template input.
+    let required_dir = track_cwd_tempdir("dev-no-issue").expect("optional input cwd");
     let (status, body) = post_track(
         app.clone(),
         json!({
             "planner_provider": "codex",
             "area_id": fx.area_id,
-            "title": "bound without required input",
+            "title": "bound without issue",
             "cwd": required_dir.path().display().to_string(),
             "attach_folder": true,
             "template_id": TEMPLATE_ID,
@@ -219,32 +219,29 @@ async fn git_forge_template_registers_and_track_create_binds() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    let error = body["error"].as_str().unwrap_or("").to_string();
-    assert!(error.contains("requires `template_input`"), "body={body}");
-    for field in ["issue_url", "repo", "issue_number"] {
-        assert!(error.contains(field), "missing {field} in body={body}");
-    }
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(body["template_id"], TEMPLATE_ID);
+    assert_eq!(body["plugin_scope"], PLUGIN_ID);
+    assert_eq!(body["template_input"], Value::Null);
     assert_eq!(
-        track_count_by_title(&fx.repo, "bound without required input").await,
-        0,
-        "missing-input 400 must not create a track row"
+        track_count_by_title(&fx.repo, "bound without issue").await,
+        1,
+        "optional issue omission must create exactly one bound track"
     );
 
-    // Input present but missing a required field → 400 naming it.
-    let partial_dir = track_cwd_tempdir("wf-input-partial").expect("partial input cwd");
+    // Optional fields still enforce their types when supplied.
+    let partial_dir = track_cwd_tempdir("dev-input-type").expect("typed input cwd");
     let (status, body) = post_track(
         app.clone(),
         json!({
             "planner_provider": "codex",
             "area_id": fx.area_id,
-            "title": "bound with partial input",
+            "title": "bound with invalid issue type",
             "cwd": partial_dir.path().display().to_string(),
             "attach_folder": true,
             "template_id": TEMPLATE_ID,
             "template_input": {
-                "issue_url": "https://github.com/o/r/issues/888",
-                "repo": "o/r"
+                "issue_number": "888"
             },
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -259,9 +256,9 @@ async fn git_forge_template_registers_and_track_create_binds() {
         "body={body}"
     );
     assert_eq!(
-        track_count_by_title(&fx.repo, "bound with partial input").await,
+        track_count_by_title(&fx.repo, "bound with invalid issue type").await,
         0,
-        "partial-input 400 must not create a track row"
+        "invalid-type 400 must not create a track row"
     );
 
     // Enum violation against the shipped merge_policy → 400 naming the field.
@@ -500,7 +497,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     assert_tool_succeeded(&issue_view_resp, "gh.issue.view");
     let issue_view_op_id = op_id_from_response(&issue_view_resp);
     wait_for_operation_phase(&fx.repo, &issue_view_op_id, "succeeded").await;
-    let issue_body = "# Issue 810\n\nFake issue body for issue-development ingestion.\n";
+    let issue_body = "# Issue 810\n\nFake issue body for dev ingestion.\n";
     assert_eq!(
         issue_view_resp["result"]["structuredContent"]["result"]["stdout"], issue_body,
         "gh.issue.view must return the issue body inline"

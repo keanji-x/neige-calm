@@ -19,11 +19,11 @@ function mount(issueGuides?: Promise<ApiTransportResponse>) {
     requests.push(request);
     if (request.path === '/api/areas') return Promise.resolve(ok([{ id: 'area', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }]));
     if (request.path === '/api/track-templates') return Promise.resolve(ok([
-      { id: 'issue-development', title: 'Issue development', tasks: [] },
+      { id: 'dev', title: 'Development', tasks: [] },
       { id: 'small-change', title: 'Small change', tasks: [] },
     ]));
-    if (request.path.endsWith('/issue-development/plugin-guides') && issueGuides !== undefined) return issueGuides;
-    if (request.path.endsWith('/plugin-guides')) return Promise.resolve(ok(request.path.includes('/issue-development/')
+    if (request.path.endsWith('/dev/plugin-guides') && issueGuides !== undefined) return issueGuides;
+    if (request.path.endsWith('/plugin-guides')) return Promise.resolve(ok(request.path.includes('/dev/')
       ? [{ id: 'dev.neige.git-forge', name: 'development' }] : []));
     if (request.path.startsWith('/api/track-templates/')) return Promise.resolve(ok({
       id: request.path.split('/').at(-1), title: 'Template', description: null, instructions: null, body: '# Method',
@@ -45,7 +45,7 @@ it('shows the locked template guide in the composer and removes it when the temp
   const field = page.getByRole('combobox', { name: 'What this track should do' });
   await field.fill('Keep this sentence');
   await page.getByRole('button', { name: /^Template:/ }).click();
-  await page.getByRole('menuitem', { name: /^Issue development/ }).click();
+  await page.getByRole('menuitem', { name: /^Development/ }).click();
   await expect.element(page.getByLabelText('development, included by template')).toBeVisible();
   expect(document.querySelector('[aria-label="development, included by template"] svg')).not.toBeNull();
   await expect.poll(() => {
@@ -73,8 +73,8 @@ it('does not revive a default guide when its read finishes after switching templ
   const late = new Promise<ApiTransportResponse>(done => { resolve = done; });
   const requests = mount(late);
   await page.getByRole('button', { name: /^Template:/ }).click();
-  await page.getByRole('menuitem', { name: /^Issue development/ }).click();
-  await expect.poll(() => requests.some(request => request.path.endsWith('/issue-development/plugin-guides'))).toBe(true);
+  await page.getByRole('menuitem', { name: /^Development/ }).click();
+  await expect.poll(() => requests.some(request => request.path.endsWith('/dev/plugin-guides'))).toBe(true);
   await page.getByRole('button', { name: /^Template:/ }).click();
   await page.getByRole('menuitem', { name: /^No template/ }).click();
   resolve({ status: 200, statusText: 'OK', body: [{ id: 'dev.neige.git-forge', name: 'development' }] });

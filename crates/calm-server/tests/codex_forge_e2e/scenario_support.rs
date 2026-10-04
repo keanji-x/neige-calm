@@ -16,7 +16,7 @@ use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
-/// The environment fact every bound-template goal states: the issue-development input names the
+/// The environment fact every bound-template goal states: the dev input names the
 /// fixture's GitHub repository, which the gh shim serves only through its local selector.
 pub(super) fn gh_selector_fact(selector: &str) -> String {
     format!(
@@ -254,7 +254,7 @@ pub(super) async fn max_event_id(repo: &SqlxRepo) -> i64 {
 
 pub(super) fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
     format!(
-        "Drive the tail of the bound issue-development template for issue #{issue_number}. \
+        "Drive the tail of the bound dev template for issue #{issue_number}. \
          {} Implementation, the \
          pull request, and its review are already complete for this track; their results \
          arrive as observations. Once the review approves the pull request, execute the \

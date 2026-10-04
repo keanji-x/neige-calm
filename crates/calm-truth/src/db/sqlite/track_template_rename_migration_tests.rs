@@ -114,3 +114,100 @@ async fn migration_0079_removes_both_legacy_column_names() {
         );
     }
 }
+
+#[tokio::test]
+async fn migration_0140_renames_dev_references_and_preserves_saved_work() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    migrator_through(139).run(&pool).await.unwrap();
+    for (id, template) in [
+        ("old", Some("issue-development")),
+        ("other", Some("small-change")),
+        ("plain", None),
+    ] {
+        sqlx::query(
+            "INSERT INTO areas
+            (id, name, color, sort, created_at, updated_at, default_template_id, default_cwd)
+            VALUES (?, ?, '#000', 0, 1, 2, ?, '/tmp/dev')",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(template)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO tracks
+            (id, area_id, title, sort, created_at, updated_at, template_id, template_input, plugin_scope)
+            VALUES (?, ?, 'saved work', 0, 3, 4, ?, ?, 'dev.neige.git-forge')")
+            .bind(id).bind(id).bind(template)
+            .bind("{ \"issue_number\": 12, \"merge_policy\": \"hold-for-ratify\" }")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO cards
+            (id, track_id, kind, role, sort, payload, created_at, updated_at)
+            VALUES (?, ?, 'codex', 'planner', 0, ?, 5, 6)")
+            .bind(id).bind(id)
+            .bind("{ \"planner_harness\": true, \"template_context\": { \"version\": 1, \"title\": \"Issue development\", \"body\": \"original instructions\" }, \"approval\": \"saved\" }")
+            .execute(&pool).await.unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO cards
+        (id, track_id, kind, role, sort, payload, created_at, updated_at)
+        VALUES ('report', 'old', 'track-report', 'reportcard', 1, ?, 7, 8)",
+    )
+    .bind("{ \"body\": \"saved report\", \"doc_rev\": 3 }")
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before_tracks: Vec<(String, Option<String>, Option<String>, i64)> = sqlx::query_as(
+        "SELECT id, template_input, plugin_scope, updated_at FROM tracks ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let before_cards: Vec<(String, String, i64)> =
+        sqlx::query_as("SELECT id, payload, updated_at FROM cards ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    migrator_through(140).run(&pool).await.unwrap();
+    for (id, expected) in [
+        ("old", Some("dev")),
+        ("other", Some("small-change")),
+        ("plain", None),
+    ] {
+        let actual: Option<String> =
+            sqlx::query_scalar("SELECT template_id FROM tracks WHERE id=?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(actual.as_deref(), expected, "track {id}");
+        let actual: Option<String> =
+            sqlx::query_scalar("SELECT default_template_id FROM areas WHERE id=?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(actual.as_deref(), expected, "area {id}");
+    }
+    let after_tracks = sqlx::query_as(
+        "SELECT id, template_input, plugin_scope, updated_at FROM tracks ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before_tracks, after_tracks);
+    let after_cards = sqlx::query_as("SELECT id, payload, updated_at FROM cards ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(before_cards, after_cards);
+    let cwd: String = sqlx::query_scalar("SELECT default_cwd FROM areas WHERE id='old'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(cwd, "/tmp/dev");
+}

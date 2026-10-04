@@ -525,9 +525,18 @@ curl -s http://127.0.0.1:4040/api/version
 
 From #1209 onward, the ids a trusted plugin declares in its manifest
 **must** be keys in the kernel's track-template roster — today
-`issue-development`, `small-change`, `investigation`, `investment-research`
+`dev`, `small-change`, `investigation`, `investment-research`
 (the last is a report-only template: the investment-research maintenance
 contract and its seven empty sections, no pre-set tasks).
+
+The development template is now `dev`, replacing `issue-development`. Migration
+0140 updates existing Tracks' `template_id` and Areas' `default_template_id`.
+Saved reports, creation-time Planner instructions, issue inputs, and plugin scope
+remain unchanged; existing Tracks continue using their saved working method.
+New Tracks use the `dev` method, and issue input is optional. Update API callers,
+site configuration, and any template descriptors that still select the old ID;
+there is no alias that silently accepts it. Restore the pre-upgrade database backup
+when rolling back to a release that only recognizes `issue-development`.
 
 **#1268 renamed the array itself: `workflows[]` is now `templates[]`.**
 The entries are unchanged (`{ "id": "<kernel template id>" }`); only the
@@ -546,7 +555,7 @@ rename the key (its entries are unchanged: { "id": "<kernel template id>" })
 
 That refusal is deliberate. `Manifest` tolerates unknown top-level keys, so
 the default behaviour would have been *silent*: the plugin would parse, declare
-no binding at all, and the only symptom would be `issue-development` losing its
+no binding at all, and the only symptom would be `dev` losing its
 `input_schema` — every later `template_input` create failing with a 400 that
 points nowhere near the cause.
 
@@ -554,7 +563,7 @@ points nowhere near the cause.
 binding.** The guard above protects you moving *forward*. Moving *backward* it
 cannot help: a `templates[]` manifest handed to a pre-#1268 kernel parses
 clean, because that kernel ignores unknown top-level keys — it binds nothing,
-`issue-development` loses its `input_schema`, and there is no error and no log.
+`dev` loses its `input_schema`, and there is no error and no log.
 The one thing an old kernel refuses on its own is a `manifest_version` it does
 not know, so any manifest declaring a non-empty `templates[]` must now say
 `"manifest_version": 2`:
@@ -654,7 +663,7 @@ for m in <plugins_dir>/*/manifest.json; do
                                # empty; the kernel treats that as an empty
                                # registry, and an unmatched glob would otherwise
                                # hand jq a literal path and error out
-  jq -r --argjson roster '["issue-development","small-change","investigation","investment-research"]' \
+  jq -r --argjson roster '["dev","small-change","investigation","investment-research"]' \
     'if has("workflows") then
        "\(input_filename): retired `workflows` key — rename it to `templates`"
      else empty end,

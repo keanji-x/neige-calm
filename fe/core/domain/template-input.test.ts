@@ -14,7 +14,7 @@ function contract() {
   return { form, schema, body };
 }
 
-it('uses declared aliases, groups and defaults without issue-development field names', () => {
+it('uses declared aliases, groups and defaults without dev field names', () => {
   const { body, schema } = contract();
   const result = compileTemplateInputs(body, schema, { ticket: 'https://github.com/owner/repo/issues/12' });
   expect(result.status).toBe('ready');
@@ -82,4 +82,39 @@ it('accepts an explicit canonical URL identity mapping', () => {
   expect(result.status).toBe('ready');
   if (result.status === 'unsupported') throw new Error('Identity mapping was refused');
   expect(result.input.ticket).toBe('https://github.com/owner/repo/issues/12');
+});
+
+
+it('omits blank optional formatted inputs and their derived outputs', () => {
+  const { form, schema } = contract();
+  const field = form.groups[0].fields[0];
+  if (!('required' in field)) throw new Error('Expected a text field');
+  field.required = false;
+  const optionalSchema = { ...schema, required: ['action'] };
+  const body = `<!-- neige:input-form ${JSON.stringify(form)} -->`;
+  for (const ticket of ['', '   ']) {
+    const result = compileTemplateInputs(body, optionalSchema, { ticket });
+    expect(result.status).toBe('ready');
+    if (result.status === 'unsupported') throw new Error('Optional contract was refused');
+    expect(result.input).toEqual({ action: 'hold' });
+  }
+  const invalid = compileTemplateInputs(body, optionalSchema, { ticket: 'not a url' });
+  expect(invalid.status).toBe('incomplete');
+  if (invalid.status === 'unsupported') throw new Error('Optional contract was refused');
+  expect(invalid.errors.ticket).toContain('Not a GitHub issue URL');
+});
+
+
+it('validates formatted declarations and required derived fields even when optional input is blank', () => {
+  const { form, schema } = contract();
+  const field = form.groups[0].fields[0];
+  if (!('required' in field)) throw new Error('Expected a text field');
+  field.required = false;
+  const body = `<!-- neige:input-form ${JSON.stringify(form)} -->`;
+  const result = compileTemplateInputs(body, schema, {});
+  expect(result.status).toBe('incomplete');
+  if (result.status === 'unsupported') throw new Error('Required contract was refused');
+  expect(result.errors.ticket).toBe('Complete this field.');
+  const wrongType = { ...schema, required: [], properties: { ...schema.properties, number: { type: 'string' } } };
+  expect(compileTemplateInputs(body, wrongType, {}).status).toBe('unsupported');
 });

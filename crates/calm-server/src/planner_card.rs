@@ -1,7 +1,7 @@
 //! Planner-card binding: the role-specific system prompts (data under `prompts/`, embedded at compile time) and their per-spawn placeholder substitution.
 
 /// The planner-agent system prompt template, embedded from `prompts/planner.md`. Placeholders `{track_id}`, `{planner_wake_authors}`, and `{task_acceptance_guidance}` are substituted by [`render_system_prompt`].
-/// Wording is pinned by `tests/goldens/issue_development_planner_prompt.txt` (regenerate with `REGEN_PLANNER_PROMPT_GOLDEN=1`, then hand-verify the diff).
+/// Wording is pinned by `tests/goldens/dev_planner_prompt.txt` (regenerate with `REGEN_PLANNER_PROMPT_GOLDEN=1`, then hand-verify the diff).
 pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
     include_str!("../prompts/planner.md"),
     include_str!("../prompts/tool-discovery.md")
