@@ -391,7 +391,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:22,33-38,81-95,115-137;
-    fe/web/src/app/router/new-track-route.tsx:68; fe/web/src/app/router/public.tsx:1478,2050-2056;
+    fe/web/src/app/router/new-track-route.tsx:73; fe/web/src/app/router/public.tsx:1481,2053-2059;
     fe/web/src/features/chat/thread/public.tsx:475,489,515,520-545
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose
