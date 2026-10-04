@@ -395,7 +395,13 @@ pub(crate) fn parse(argv: &[String]) -> Result<Parsed, Usage> {
         }
     }
 
-    if let Some(extra) = positionals.get(command.positionals.len()) {
+    // A named `--<key>` claims its slot; positionals fill the unclaimed slots in order.
+    let open: Vec<&Positional> = command
+        .positionals
+        .iter()
+        .filter(|slot| !args.contains_key(slot.key))
+        .collect();
+    if let Some(extra) = positionals.get(open.len()) {
         return Err(fail(
             format!(
                 "unexpected argument `{extra}`; usage: {}",
@@ -404,25 +410,12 @@ pub(crate) fn parse(argv: &[String]) -> Result<Parsed, Usage> {
             json,
         ));
     }
-    for (index, slot) in command.positionals.iter().enumerate() {
-        match positionals.get(index) {
-            Some(value) => {
-                if args.contains_key(slot.key) {
-                    return Err(fail(
-                        format!(
-                            "{cmd} accepts either positional <{}> or {}, not both",
-                            slot.key,
-                            option_flag(slot.key)
-                        ),
-                        json,
-                    ));
-                }
-                args.insert(slot.key.into(), Value::String(value.clone()));
-            }
-            None if slot.required && !args.contains_key(slot.key) => {
-                return Err(fail(format!("{cmd} requires <{}>", slot.key), json));
-            }
-            None => {}
+    for (slot, value) in open.iter().zip(&positionals) {
+        args.insert(slot.key.into(), Value::String(value.clone()));
+    }
+    for slot in command.positionals {
+        if slot.required && !args.contains_key(slot.key) {
+            return Err(fail(format!("{cmd} requires <{}>", slot.key), json));
         }
     }
     for opt in command.options {

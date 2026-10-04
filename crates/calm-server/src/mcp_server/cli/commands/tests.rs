@@ -226,12 +226,8 @@ fn diff_maps_path_option_without_to() {
 #[test]
 fn diff_rejects_the_same_key_twice() {
     assert_eq!(
-        refusal(&["track", "diff", "a", "b", "--to", "c"]),
-        "track diff accepts either positional <to> or --to, not both"
-    );
-    assert_eq!(
         refusal(&["track", "diff", "a", "b", "p", "--path", "q"]),
-        "track diff accepts either positional <path> or --path, not both"
+        "unexpected argument `p`; usage: neige track diff <from> [to] [path] [--json]"
     );
     assert_eq!(
         refusal(&["track", "diff", "a", "--to", "b", "--to", "c"]),
@@ -523,7 +519,8 @@ fn an_old_spelling_is_a_usage_error_listing_the_objects() {
     );
 }
 
-/// #2003 §4.4: every positional is also accepted as its `--<key>` option, never both at once.
+/// #2003 §4.4: every positional is also accepted as its `--<key>` option. A named option claims
+/// its slot, and the remaining positionals fill the unclaimed slots in order.
 #[test]
 fn every_positional_is_also_its_option() {
     assert_eq!(
@@ -538,9 +535,33 @@ fn every_positional_is_also_its_option() {
         tool_args(&["track", "diff", "--from", "a", "--to", "b"]),
         json!({ "from": "a", "to": "b" })
     );
+    for argv in [
+        &["track", "show", "--commit", "c", "report.md"][..],
+        &["track", "show", "report.md", "--commit", "c"][..],
+    ] {
+        assert_eq!(
+            tool_args(argv),
+            json!({ "commit": "c", "path": "report.md" }),
+            "{argv:?}"
+        );
+    }
+    for argv in [
+        &["track", "diff", "--from", "a", "b"][..],
+        &["track", "diff", "b", "--from", "a"][..],
+    ] {
+        assert_eq!(
+            tool_args(argv),
+            json!({ "from": "a", "to": "b" }),
+            "{argv:?}"
+        );
+    }
+    assert_eq!(
+        tool_args(&["track", "diff", "a", "p", "--to", "b"]),
+        json!({ "from": "a", "to": "b", "path": "p" })
+    );
     assert_eq!(
         refusal(&["track", "cat", "a", "--path", "b"]),
-        "track cat accepts either positional <path> or --path, not both"
+        "unexpected argument `a`; usage: neige track cat <path> [--blocks <id,...> | --sections <heading,...>] [--json]"
     );
     for command in COMMANDS {
         for slot in command.positionals {

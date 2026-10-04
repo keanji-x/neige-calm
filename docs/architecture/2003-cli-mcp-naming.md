@@ -627,6 +627,9 @@ The S-slices are review units. They land as four PRs, so the brand is never mixe
 - Option renames that the mechanics forced: `task report-success --artifacts` (was `--artifact`),
   `report find --name`/`--tag` (were `-name`/`-tag`). `ls -l` stays the only view flag. `diff`
   lost its hand-written `--to`/`--path` rows; every positional is now its `--<key>` option.
+  A named `--<key>` claims its slot first, and the remaining positionals fill the unclaimed
+  slots in order, so `track show --commit c report.md` and `track show report.md --commit c` are
+  the same call (PR-3 review).
 - `neige tool list` JSON is `{tools: [{name, cli, listed}], next_cursor}`. `describe` is the MCP
   declaration plus `cli` and `listed`. The footer "listing is not a grant; the tool's role gate
   decides" ends the text output only; JSON carries data only.
