@@ -60,8 +60,7 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
 /// transaction that stores it. A retry with the same key and the same body (text, attachments,
 /// actor) answers 200 with the first request's body and queues nothing, whatever happened to the
 /// message since. The same key with a different body is 409 `conflict`. A refusal stores and
-/// binds nothing, so its key can be sent again. A card keeps its newest 64 keys; an older key is
-/// a new send.
+/// binds nothing, so its key can be sent again. A binding lasts as long as its card.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/input",
@@ -152,6 +151,8 @@ pub(crate) async fn send_planner_input_keyed(
     if let Some(answer) = replay(w, &card.id, &key).await? {
         return Ok(answer);
     }
+    #[cfg(feature = "fixtures")]
+    wait_at_replay_miss_hook_for_test(card.id.as_str()).await;
 
     // `_recovery_guard` holds the per-card recovery lock until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
     let (runtime, harness, _recovery_guard) =
@@ -363,4 +364,43 @@ async fn ensure_live_planner_harness(
     );
     // Return the guard so the caller keeps the per-card lock alive through `harness.observe` and the audit event.
     Ok((runtime, harness, Some(guard)))
+}
+
+/// Pause one send of `card_id` right after its replay check found no binding, so a test can
+/// commit a concurrent send under the same key in between (#2043, the UNIQUE backstop).
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct ReplayMissHook {
+    pub entered: std::sync::Arc<tokio::sync::Notify>,
+    pub release: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn replay_miss_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, ReplayMissHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, ReplayMissHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(Default::default)
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_replay_miss_hook_for_test(card_id: &str, hook: ReplayMissHook) {
+    replay_miss_hooks()
+        .lock()
+        .expect("replay miss hook mutex")
+        .insert(card_id.to_owned(), hook);
+}
+
+#[cfg(feature = "fixtures")]
+async fn wait_at_replay_miss_hook_for_test(card_id: &str) {
+    let hook = replay_miss_hooks()
+        .lock()
+        .expect("replay miss hook mutex")
+        .remove(card_id);
+    if let Some(hook) = hook {
+        hook.entered.notify_one();
+        hook.release.notified().await;
+    }
 }

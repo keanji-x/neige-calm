@@ -370,13 +370,24 @@ pub async fn post_input_keyed(
     body: Value,
     key: &str,
 ) -> (StatusCode, Value) {
+    post_input_keyed_as(app, card_id, body, key, "user").await
+}
+
+/// `POST /planner/input` as `actor` under the given `Idempotency-Key`.
+pub async fn post_input_keyed_as(
+    app: axum::Router,
+    card_id: &str,
+    body: Value,
+    key: &str,
+    actor: &str,
+) -> (StatusCode, Value) {
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/cards/{card_id}/planner/input"))
                 .header("content-type", "application/json")
-                .header("x-calm-actor", "user")
+                .header("x-calm-actor", actor)
                 .header("idempotency-key", key)
                 .body(Body::from(body.to_string()))
                 .unwrap(),

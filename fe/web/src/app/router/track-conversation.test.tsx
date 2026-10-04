@@ -799,6 +799,53 @@ describe('track conversations', () => {
     },
   );
 
+  it.each([
+    [401, 'session_expired'], [403, 'forbidden'], [429, 'rate_limited'],
+  ] as const)('[F5] keeps a dropped answer unknown when the retry is answered %s', async (status, code) => {
+    const text = `Lost, then ${status}`;
+    let attempts = 0;
+    const { requests } = setup((request) => {
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      attempts += 1;
+      if (attempts === 1) throw new Error('response dropped');
+      return attempts === 2 ? failure(status, code, 'Answered without handling it') : inputAccepted();
+    });
+    const inputs = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write(text);
+    /* The first attempt may have been stored; an answer to the second does not say otherwise. */
+    expect((await screen.findByRole('alert')).textContent).toContain('Delivery is unconfirmed');
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(inputs()).toHaveLength(2);
+    const key = inputs()[0]?.headers?.['Idempotency-Key'];
+    expect(key).toBeTruthy();
+    expect(inputs()[1]?.headers?.['Idempotency-Key']).toBe(key);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(inputs()).toHaveLength(3));
+    expect(inputs()[2]?.headers?.['Idempotency-Key']).toBe(key);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
+  it('[F5] asks for a reconnect, not the admission words, when the retries ran out offline', async () => {
+    vi.stubGlobal('__NC_BUNDLED__', true);
+    const access = new RecoveryAccess(); access.change('connected');
+    const { requests } = setup((request) => {
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      access.change('offline');
+      throw new Error('response dropped');
+    }, undefined, access);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('Sent just before the connection went');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Delivery is unconfirmed. Try again when you’re back online.');
+    expect(alert.textContent).not.toMatch(/离线|连接|nothing was sent/);
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+  });
+
   it('[F4] sends a dropped answer again under its key, with no question and one message', async () => {
     let attempts = 0;
     const text = 'Keep the dropped request';

@@ -1,15 +1,12 @@
 //! #2043 — the `Idempotency-Key` bindings of `POST /api/cards/{id}/planner/input`.
 //! A binding is written only by the harness transaction that durably accepts the message, so
-//! a binding exists exactly when its message was stored.
+//! a binding exists exactly when its message was stored. Bindings are dedup walls and are kept
+//! until their card is deleted (docs/design-1428-idempotency-retention.md §3.2).
 
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::error::Result;
 use crate::model::now_ms;
-
-/// How many bindings a card keeps; the writer drops the oldest beyond it. A key older than
-/// that is unknown again, and its request is a new send.
-pub const PLANNER_INPUT_BINDINGS_PER_CARD: i64 = 64;
 
 /// What an earlier send under one key was answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,14 +58,6 @@ pub async fn planner_input_bind_tx(
     .bind(&binding.worker_session_id)
     .bind(&binding.entry_id)
     .bind(now_ms())
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query(
-        "DELETE FROM planner_input_idempotency WHERE card_id = ?1 AND id NOT IN \
-         (SELECT id FROM planner_input_idempotency WHERE card_id = ?1 ORDER BY id DESC LIMIT ?2)",
-    )
-    .bind(card_id)
-    .bind(PLANNER_INPUT_BINDINGS_PER_CARD)
     .execute(&mut **tx)
     .await?;
     Ok(())

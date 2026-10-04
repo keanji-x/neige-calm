@@ -103,12 +103,6 @@ function runInteractiveWrite<T>(transport: ApiTransportPort, operation: ApiOpera
   return runOperation(transport, operation, unauthorized);
 }
 
-/** The `ErrorBody.code` a rejected request carried, or `null`; transport and decode failures never carry one. */
-export function apiFailureCodeOf(error: unknown): string | null {
-  if (!(error instanceof ApiError)) return null;
-  return 'code' in error.failure ? error.failure.code : null;
-}
-
 /** The structured folder clash inside a rejected mutation, or `null`; the decode and wording are `core/domain/area.ts`. */
 export function folderConflictOf(error: unknown): FolderConflict | null {
   if (!(error instanceof ApiError)) return null;

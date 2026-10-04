@@ -240,8 +240,8 @@ pub(crate) async fn write_today_summary(
     // The standing instruction has to reach the agent before the day's numbers do, if
     // nothing has spoken to the session live on this card. Under the per-card first-message
     // claim: two concurrent requests would both read "no user message yet" and both send.
-    // Lock order: `conversation_first_message_locks` → `planner_recovery_locks` is the only
-    // permitted nesting, and it is what happens here. At-least-once: the audit row is
+    // Lock order: `conversation_first_message_locks` → `planner_input_key_locks` →
+    // `planner_recovery_locks` (`state.rs`); the send below takes the latter two in that order. At-least-once: the audit row is
     // written after the enqueue.
     {
         // Counts requests that reached this block; the barrier below is what creates the race.

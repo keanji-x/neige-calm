@@ -8,33 +8,59 @@ export function failedConversationDelivery(failure: ApiFailure | null): 'rejecte
     ? 'rejected' : 'unknown';
 }
 
-/**
- * Whether a keyed send's failure leaves it unknown whether the message was stored, so the same key
- * is sent again. `null` is a failure with no answer at all, such as a connection that is not ready.
- */
-export function isUnknownSendFailure(failure: ApiFailure | null): boolean {
-  return failedConversationDelivery(failure) === 'unknown'
-    && !isSendRefusalCode(failure?.kind === 'http' ? failure.code : null);
+/** What one failed attempt of a keyed send says about whether its message was stored. */
+export type SendFailureKind = 'unknown' | 'refused' | 'rejected';
+
+/** `null` is a failure with no answer at all, such as a connection that is not ready. */
+export function sendFailureKind(failure: ApiFailure | null): SendFailureKind {
+  /* The server gives `planner_harness_dormant` and `planner_harness_runtime_superseded` only to a send it is about to
+     store fresh: it replays a bound key first (crates/calm-server/src/routes/planner_input_send.rs:151) and reaches
+     the harness lookup (:159) and the snapshot write (crates/calm-server/src/harness/run_loop.rs:3755) only after.
+     So either answer proves that no attempt under the key was stored. */
+  if (isSendRefusalCode(failure?.kind === 'http' ? failure.code : null)) return 'refused';
+  return failedConversationDelivery(failure) === 'rejected' ? 'rejected' : 'unknown';
 }
 
 /** Automatic retries of one keyed send after its first attempt; an attempt that cannot go out counts too. */
 export const SEND_RETRIES = 5;
 
 /**
+ * A keyed send that gave up. `cause` is the last attempt's error. `delivery` stays `unknown` once
+ * any attempt's outcome was: an answered rejection after it (a 401, 403 or 429) says nothing
+ * about whether that earlier attempt was stored, so only a pre-binding refusal clears it.
+ */
+export class KeyedSendFailure extends Error {
+  readonly delivery: SendFailureKind;
+
+  constructor(cause: unknown, delivery: SendFailureKind) {
+    super(cause instanceof Error ? cause.message : 'Could not send the message.', { cause });
+    this.name = 'KeyedSendFailure';
+    this.delivery = delivery;
+  }
+}
+
+/**
  * Run `attempt` until it answers, fails for a reason other than an unknown outcome, or the retries
- * are spent. Every attempt must reuse one `Idempotency-Key`; `pause` waits before retry `retry`.
+ * are spent; rejects with a {@link KeyedSendFailure}. Every attempt must reuse one
+ * `Idempotency-Key`; `pause` waits before retry `retry`.
  */
 export async function retryUnknownSend<T>(
   attempt: (index: number) => Promise<T>,
-  isUnknown: (error: unknown) => boolean,
+  classify: (error: unknown) => SendFailureKind,
   pause: (retry: number) => Promise<void>,
 ): Promise<T> {
+  let unknownBefore = false;
   for (let index = 0; ; index += 1) {
     try {
       return await attempt(index);
     } catch (error) {
-      if (index >= SEND_RETRIES || !isUnknown(error)) throw error;
-      await pause(index);
+      const kind = classify(error);
+      if (kind === 'unknown' && index < SEND_RETRIES) {
+        unknownBefore = true;
+        await pause(index);
+        continue;
+      }
+      throw new KeyedSendFailure(error, kind === 'refused' || !unknownBefore ? kind : 'unknown');
     }
   }
 }

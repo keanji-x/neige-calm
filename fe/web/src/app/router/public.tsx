@@ -30,7 +30,7 @@ import {
   NO_UPLOAD, type AttachmentStore, type UploadAttachment, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
 import {
-  failedConversationDelivery, isUnknownSendFailure, retryUnknownSend,
+  KeyedSendFailure, retryUnknownSend, sendFailureKind,
 } from '../../../../core/domain/conversation-delivery.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import {
@@ -81,7 +81,7 @@ import type { ReportSourceLinkTarget } from '../../../../core/domain/report-sour
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
-  isConversationMessage, isSendRefusalCode, kernelQueuesInput,
+  isConversationMessage, kernelQueuesInput,
   mergeTranscript, reconcileOptimisticConversationTurns, serverItemHighWater,
   trackConversationCardId,
   FOLLOW_INSTALLATION_DEFAULT,
@@ -100,7 +100,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, OfflineSubmissionError, apiFailureCodeOf, harnessItemsQueryOptions,
+  ApiError, OfflineSubmissionError, harnessItemsQueryOptions,
   modelCatalogQueryOptions, serverVersionOperation, runOperation,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
@@ -580,9 +580,14 @@ export function useConversationStore(
     const attachmentIds = attachments.map((attachment) => attachment.id);
     /* An unknown answer is sent again under the same key, so the server queues the message at most once. Each
        retry is admitted again; one that cannot go out counts as an attempt. */
+    const admitRetry = (): ApiTransportPort | null => { try { return admitTransport(transport); } catch { return null; } };
     return retryUnknownSend(
-      (attempt) => mutations.send(text, attachmentIds, key, attempt === 0 ? pressed : admitTransport(transport)),
-      (error) => isUnknownSendFailure(error instanceof ApiError ? error.failure : null),
+      (attempt) => {
+        const admitted = attempt === 0 ? pressed : admitRetry();
+        return admitted === null ? Promise.reject(new OfflineSubmissionError())
+          : mutations.send(text, attachmentIds, key, admitted);
+      },
+      (error) => sendFailureKind(error instanceof ApiError ? error.failure : null),
       (retry) => new Promise<void>((resolve) => { setTimeout(resolve, recoveryDelay(retry, Math.random())); }),
     ).then((sent) => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
@@ -636,11 +641,13 @@ export function useConversationStore(
         };
       });
     }).catch((error: unknown) => {
-      settled = isSendRefusalCode(apiFailureCodeOf(error)) ? 'refused' : 'unresolved';
+      const failed = error instanceof KeyedSendFailure ? error : new KeyedSendFailure(error, 'unknown');
+      settled = failed.delivery === 'refused' ? 'refused' : 'unresolved';
       sendFailure = {
-        echo, key, message: errorMessage(error, 'Could not send the message.'),
-        delivery: settled === 'refused' ? 'refused' : failedConversationDelivery(error instanceof ApiError ? error.failure : null),
-        fromComposer,
+        echo, key, delivery: failed.delivery, fromComposer,
+        /* The admission's own words ("nothing was sent", "will not send automatically") would contradict Try again. */
+        message: failed.cause instanceof OfflineSubmissionError
+          ? 'Try again when you’re back online.' : errorMessage(failed.cause, 'Could not send the message.'),
       };
       /* A failure belongs to the conversation that failed; the provider still records
                it for a remount of the owning card. */

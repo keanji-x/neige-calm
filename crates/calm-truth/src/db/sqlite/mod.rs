@@ -89,8 +89,7 @@ pub use overlay::{
     overlay_delete_subtree_by_area_tx, overlay_delete_tx, overlay_upsert_tx,
 };
 pub use planner_input_idempotency::{
-    PLANNER_INPUT_BINDINGS_PER_CARD, PlannerInputBinding, planner_input_bind_tx,
-    planner_input_binding_get,
+    PlannerInputBinding, planner_input_bind_tx, planner_input_binding_get,
 };
 pub use session_mirror::{
     session_delete_tx, session_prepare_deferred_planner_tx, session_start_runtime_tx,

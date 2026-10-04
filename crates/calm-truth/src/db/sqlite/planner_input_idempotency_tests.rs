@@ -1,9 +1,9 @@
-//! The `POST /planner/input` key bindings on the real schema: bounded per card, exclusive per
-//! key, and gone with their card.
+//! The `POST /planner/input` key bindings on the real schema: exclusive per key, and gone with
+//! their card.
 
 use super::{
-    PLANNER_INPUT_BINDINGS_PER_CARD, PlannerInputBinding, SqlxRepo, area_create_tx, card_create_tx,
-    card_delete_tx, planner_input_bind_tx, planner_input_binding_get, track_create_tx,
+    PlannerInputBinding, SqlxRepo, area_create_tx, card_create_tx, card_delete_tx,
+    planner_input_bind_tx, planner_input_binding_get, track_create_tx,
 };
 use crate::card_role_cache::CardRoleCache;
 use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
@@ -76,42 +76,6 @@ async fn bind(repo: &SqlxRepo, card: &str, key: &str, value: &PlannerInputBindin
         .await
         .expect("bind");
     tx.commit().await.expect("commit");
-}
-
-#[tokio::test]
-async fn a_card_keeps_only_its_newest_bindings() {
-    let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
-    let role_cache = CardRoleCache::new();
-    let ids = cards(&repo, &role_cache, 2).await;
-    let (card, other) = (&ids[0], &ids[1]);
-    bind(&repo, other, "key-0", &binding(0)).await;
-    let total = PLANNER_INPUT_BINDINGS_PER_CARD as usize + 1;
-    for n in 0..total {
-        bind(&repo, card, &format!("key-{n}"), &binding(n)).await;
-    }
-    let get = |card: String, key: String| {
-        let pool = repo.pool().clone();
-        async move {
-            planner_input_binding_get(&pool, &card, &key)
-                .await
-                .expect("read")
-        }
-    };
-    assert_eq!(
-        get(card.clone(), "key-0".into()).await,
-        None,
-        "the oldest went"
-    );
-    assert_eq!(get(card.clone(), "key-1".into()).await, Some(binding(1)));
-    assert_eq!(
-        get(card.clone(), format!("key-{}", total - 1)).await,
-        Some(binding(total - 1)),
-    );
-    assert_eq!(
-        get(other.clone(), "key-0".into()).await,
-        Some(binding(0)),
-        "another card's bindings are not counted against this one",
-    );
 }
 
 #[tokio::test]
