@@ -1,7 +1,7 @@
 # Report template composition: the template places, the plugin publishes data units
 
 Baseline: `origin/main` 54b79918c. Every `file:line` below was read on that tree.
-Status: design, revision 4 (review rounds 1-2 and owner decisions folded in, §7). No code
+Status: design, revision 5 (review rounds 1-3 and owner decisions folded in, §7). No code
 changes in this PR. Owner decisions (2026-10-04, final): no kernel guard for template
 views; live `table` and `chart.series` stay single-block references; the supervised
 paper profile is deleted (slice S0). No owner question remains open.
@@ -71,7 +71,7 @@ ideas are the slot reference and the per-cell envelope.
 ### 2.2 Types (calm-types, `native_view/model.rs`)
 
 ```rust
-pub struct DataUnit { version: f64 /* =1 */, snapshot: Snapshot, cell: Component }
+pub struct DataUnit { snapshot: Snapshot, cell: Component }
 pub struct LiveSlot { kind: LiveTag /* "live" */, id: String, source: String, expects: ComponentKind }
 pub enum RowCell { Live(LiveSlot), Inline(Component) }   // Row.cells: Vec<RowCell>
 pub enum ComponentKind { Metrics, TimeSeries, Distribution, Table, Bars, Meter, Records } // kebab-case
@@ -106,8 +106,7 @@ Published per overlay kind on the Track through the unchanged `neige.overlay.set
 (`plugin_host/callbacks.rs:192-242`):
 
 ```json
-{"version": 1,
- "snapshot": {"id": "<content hash>", "observedAt": 1790798340000, "producedAt": null},
+{"snapshot": {"id": "<content hash>", "observedAt": 1790798340000, "producedAt": null},
  "cell": {"kind": "metrics", "id": "nav", "title": "", "items": [ ... ]}}
 ```
 
@@ -118,10 +117,9 @@ Published per overlay kind on the Track through the unchanged `neige.overlay.set
   key plots, distributions and records by component id today; for a live slot the key
   becomes the slot id), and it is what uniqueness across a view checks
   (`native_view.rs:274-277`).
-- `version` is the envelope version, checked by readers against the one version they
-  support. The template does not repeat it: one overlay key holds one payload, so a
-  template version pin cannot select anything.
-- A unit kind never reuses a retired overlay kind name, so each overlay key keeps one shape.
+- The envelope has no version field. A unit kind never reuses a retired overlay kind name,
+  so each overlay key keeps one shape; a future shape change publishes under a new kind
+  and the template points at it. That is the one evolution mechanism.
 - A table unit wraps the table in a `table` component (`{kind:"table", id, title,
   table: InlineTable}`, `model.rs:303-311`); a live `table` block's overlay is a bare
   `InlineTable` (`track_report_hydrate.rs:153-179`). The two shapes are distinct on
@@ -135,10 +133,12 @@ Published per overlay kind on the Track through the unchanged `neige.overlay.set
 
 - `source`: the existing two-segment overlay URI, shape-checked by `validate_live_source`
   (`kinds.rs:117-121`); existence is not checked, because an uninstalled plugin is a
-  normal state. The DTO carries the same rule as a schema `pattern`
+  normal state. Rust write validation keeps calling `validate_live_source`
+  (`kinds.rs:121-150`). The DTO also carries the rule as a schema `pattern`
   (`^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`, the pattern `view.live` already
   publishes at `track_report_blocks/contracts.rs:455`), which the frontend generator
-  compiles (`fe/tools/report-view/generate.mjs:70`), so neither side hand-writes it.
+  compiles (`fe/tools/report-view/generate.mjs:70`). The pattern is a copy of the Rust
+  rule; the shared fixture's `slot-bad-source` entry pins that both sides agree.
 - No title: the cell's title is the unit's (publisher label). The template owns row
   titles, the view title and description, and the surrounding Markdown headings.
 - A unit whose `cell.kind` differs from `expects` is `unavailable` in that slot, so a
@@ -160,7 +160,8 @@ opaque (`callbacks.rs:210-213`, `calm-truth/src/validation.rs:489-491`).
 1. Exact overlay lookup by Track, plugin and kind. None: `pending`. Storage error: the
    whole block is `unavailable`, as today (`track_report_hydrate.rs:75-84,108`).
 2. Compact UTF-8 size of the unit at most 4 MiB: today's `MAX_LIVE_VIEW_BYTES`
-   (`kinds.rs:31-32`), renamed `MAX_LIVE_UNIT_BYTES`; the frontend keeps its own
+   (`kinds.rs:31-32`), reused as is through S1-S3 and renamed `MAX_LIVE_UNIT_BYTES` in S4
+   when `view.live` goes; the frontend keeps its own
    decoded-resource budget (`fe/core/domain/report-view.ts:8,11-21`), as today. The largest
    SPY unit is bounded well under the cap: `spy.decision_log` holds at most 50 decisions
    (`allocation_views.py:18,154`), each with a rationale of at most 6,000 characters
@@ -168,7 +169,7 @@ opaque (`callbacks.rs:210-213`, `calm-truth/src/validation.rs:489-491`).
    20 fill disclosures (`:147`), so roughly 2.4 MB at 3 bytes per character; the
    time-series units hold at most 260 samples (`allocation.py:20`). There is no per-view
    aggregate budget: it would be one more rule duplicated in Rust and TypeScript.
-3. Decode as `DataUnit` (envelope shape and version), `cell.kind == expects`,
+3. Decode as `DataUnit` (envelope shape), `cell.kind == expects`,
    `Component::validate`.
 
 A failure affects only its slot. Both sides must reject every invalid entry of the
@@ -277,46 +278,72 @@ SELECT track_id, id FROM cards WHERE kind = 'track-report' AND payload LIKE '%vi
 SELECT id, title FROM track_recipes WHERE body LIKE '%view.live%';
 ```
 
-Run it once to size the rewrite and again immediately before deploying S4; S4 deploys
-only on two empty results.
+Result on the current 4140 copy: three Tracks, each with one `view.live` and three live
+tables (`spy.portfolio`, `spy.decisions`, `spy.fills`): the live SPY Track
+`7c0dd087ed9c4f7895ce4c6bb574c327` and the closed Tracks `2800396680…` and `1144b00f…`.
+Run it again immediately before deploying S4; S4 deploys only on two empty results.
 
-**Rewrite runbook (per affected Track, after S3 is deployed).** Script and transcript go
-in the S4 PR. On the SPY Track the H1 更多明细 (`spy-recipe.md:57`) becomes 执行记录.
+**Disposition.**
+
+- Live SPY Track: the rewrite runbook below.
+- Closed Tracks: S4 deletes their `view.live` block only (block DELETE, `ifBlockRev`), no
+  rewrite. Their live tables stay valid `table` blocks and show "nothing pushed" once the
+  retired overlays are gone. The source path has no closed-Track refusal: the REST block
+  write goes `routes/track_report_blocks.rs:121-147` → `ReportEditTarget::resolve`
+  (`track_report.rs:956-963`) → `rest_user_block_op`, and `closed_at` appears nowhere in
+  `track_report.rs`, `track_report/` or `routes/track_report_blocks.rs`. S4 confirms this
+  first on an isolated instance with a closed fixture Track. If the API refuses, S4 stops
+  and the alternative (reopen, delete, close again through the user `PATCH`) goes to the
+  owner as a question; no bypass is added. The delete wakes that Track's Planner like
+  any user edit; its old block 0 still says "Keep the live views" (`spy-recipe.md:26`),
+  so the operator checks the timeline for a re-added block, and the pre-S4 scan catches
+  one.
+
+**Rewrite runbook (live SPY Track, after S3 is deployed).** Script and transcript go in
+the S4 PR. The H1 更多明细 (`spy-recipe.md:57`) becomes 执行记录.
 
 1. Timing: outside the SPY Calendar windows (New York time Mon-Fri 08:45-11:00 and
    16:30-17:30, Sat 10:00-11:00, `spy-recipe.md:6-9`), with the Planner idle and no
-   `spy-exec-*` task queued or running (check `spy.status` and the Track's task list).
-2. `GET /api/tracks/{id}/report`; save the response JSON as the backup and record
-   `summary`, `docRev` and each block's `rev`.
-3. `DELETE /api/tracks/{id}/report/blocks/{block}` with `ifBlockRev` for each `view.live`
-   and retired live-table block.
-4. Immediately after, `POST /api/tracks/{id}/report` (Replace) with `ifDocRev` = the
-   post-delete revision and the step-2 `summary` (required, `routes/tracks.rs:3235-3246`).
-   Build the body from the step-2 GET: new contract header and Planner comment in block 0,
-   new H1s and template views, research prose unchanged, and **every remaining non-prose
-   block byte-identical** in its fence text: the task blocks under 执行记录 and the
-   research sections' `table` and `chart.series` blocks (关键数据). The stomp guard refuses
-   any change to them (`track_report_guard.rs:61-73`) and accepts the new view fences.
-5. Any non-2xx response after the first step-3 delete aborts the run. Restore from the
-   step-2 backup by re-creating each deleted block with `POST
-   /api/tracks/{id}/report/blocks` at its old position (`view.live` and live tables are
-   still valid before S4), then re-read and restart from step 2. No retry with a stale
-   revision.
+   decision in flight. The operator cannot call `spy.status`: it refuses callers that
+   are not a Planner or Worker (`allocation.py:51-54`, pinned by `test_allocation.py:328`).
+   Instead, a read-only query on the ledger:
+
+   ```sh
+   sqlite3 'file:<plugins-data-dir>/dev-neige-paper-trading/spy-cash/ledger.sqlite3?mode=ro' \
+     "SELECT id, state FROM decisions WHERE state IN ('queued','requested','submitting')"
+   ```
+
+   (ledger path: `allocation.py:35`, `ledger.py:59`). It must return no row.
+2. `GET /api/tracks/{id}/report`; record `summary`, `docRev` and each block's `rev`.
+3. `POST /api/tracks/{id}/report` (Replace) with `ifDocRev` and the step-2 `summary`
+   (required, `routes/tracks.rs:3235-3246`). The body: new contract header and Planner
+   comment in block 0, new H1s and template views, research prose unchanged, and **every
+   existing non-prose block byte-identical, in its original relative order**: the old
+   `view.live` (kept right under 组合表现 for now), the three live tables and the task
+   blocks (under 执行记录), and the research `table` and `chart.series` blocks (关键数据).
+   The stomp guard accepts exactly this (`track_report_guard.rs:52-73`). Replace goes
+   first so that every later wake reads the new block 0, not the old "Keep the live
+   views" (`spy-recipe.md:26`).
+4. `DELETE /api/tracks/{id}/report/blocks/{block}` with `ifBlockRev` for the `view.live`
+   and each retired live table, back to back.
+5. Failure handling: a failed step 3 changed nothing; re-read and start again at step 2.
+   A failed step 4 delete leaves a valid report with the new instructions; re-read the
+   revisions and retry only the remaining deletes.
 6. Recipe rows from the scan: `PUT /api/track-recipes/{id}` with the new body (user actor
    only, `track_recipes.rs:121-127`).
-7. Retired overlay rows (`spy.overview`, `spy.portfolio`, `spy.decisions`, `spy.fills`)
-   deleted with `POST /api/overlays/delete`
+7. Retired overlay rows (`spy.overview`, `spy.portfolio`, `spy.decisions`, `spy.fills`, on
+   every Track the scan names) deleted with `POST /api/overlays/delete`
    (`routes/overlays.rs:151-195`); rows are never collected otherwise
    (`calm-truth/src/db/sqlite/overlay.rs:55-68`).
 
 **The Planner wake this causes.** User edits wake the Planner
 (`PLANNER_WAKE_AUTHORS`, `dispatcher/mod.rs:51-52,128`); steps 3-4 deliver
-`track.report_edited` observations rendered as "information, not an instruction"
-(`calm-types/src/observation.rs:285-288`). The Planner reads the new block-0
+`track.report_edited` observations rendered as "information, not an instruction to
+re-read" (`calm-types/src/observation.rs:285-288`). From step 3 on, block 0 holds the new
 instructions, which run steps only for a Calendar wake or an explicit user request
-(`spy-recipe.md:11`), so the expected turn is a no-op. The new recipe adds one sentence
+(`spy-recipe.md:11`), so the expected turns are no-ops. The new recipe adds one sentence
 to make that explicit: "A user edit of this Report requests no step." The operator
-checks the Track timeline after the turn: no report write, no `spy.*` write tool call.
+checks the Track timeline afterwards: no report write, no `spy.*` write tool call.
 
 Historical `overlay.set` and `track.report_edited` events are not rewritten.
 
@@ -355,8 +382,11 @@ SELECT entity_kind, entity_id, kind FROM overlays
 ```
 
 plus a listing of the plugin data directory for `ledger.sqlite3`/`strategy.sqlite3` (the
-supervised ledgers, `allocation.py:33-34`). Expected result: empty. Any hit is deleted in
-S0 through the user APIs (`DELETE /api/track-recipes/{id}`, the block DELETE of §3.1,
+supervised ledgers, `allocation.py:33-34`). Result on the current 4140 copy: one hit,
+the user recipe `d3c0273e…` "Longbridge paper portfolio" (six `paper.*` live tables),
+used by no Track. S0 deletes it with `DELETE /api/track-recipes/{id}` (user actor,
+`routes/track_recipes.rs:27-29,254-262`). Any further hit at deploy time is deleted the
+same way (recipes; blocks with the block DELETE of §3.1; overlays with
 `POST /api/overlays/delete`), so the S4 gate cannot block on an unplanned recipe; a
 supervised ledger file stops S0 for an owner decision.
 
@@ -393,21 +423,33 @@ supervised ledger file stops S0 for an owner decision.
   that become unused (`asdict`, `dataclass`, `date`, `Path`, `json`). `AllocationConfig`
   inlines the account checks it borrows from `AccountConfig.parse`
   (`allocation_config.py:34-35`).
-- `broker.py`: keeps `BrokerError`, `_object`, the environment allowlist, output cap and
-  `Broker.__init__`/`_run`/`_json`, which `AllocationBroker` subclasses
-  (`allocation_broker.py:4-26`); deletes the CLI order/cancel/read surface (`order_args`,
+- `broker.py` is folded into `allocation_broker.py`: `Broker` has one subclass and one
+  user, `AllocationBroker` (`allocation_broker.py:11-14`). The runner it needs moves
+  there (`BrokerError`, `_object`, the environment allowlist, the output cap
+  `MAX_OUTPUT_BYTES`, `_run`/`_json` and the constructor checks), and `AllocationBroker`
+  gains a `timeout_seconds` constructor argument, production default 30 (today the
+  literal at `allocation_broker.py:13`). The CLI order/cancel/read surface (`order_args`,
   `cancel_args`, `identity` through `execute`, `broker.py:53-69,107-108,179-249`) and
-  `_records` (`:76`), whose only callers are those reads.
-- `test_broker.py`: the base-runner contracts (environment allowlist, timeout and reap,
-  combined output bound, launch failure; `test_broker.py:234-362`) are driven today
-  through `assets`/`preview`/`execute`, which S0 deletes. S0 re-drives them through
-  `AllocationBroker.request` (`allocation_broker.py:16-26`) against the SDK fixture; the
-  CLI-only tests go.
+  `_records` (`:76`) are deleted with the file, and so is its module docstring
+  (`broker.py:1-23`), which describes that CLI surface; the facts still true for the SDK
+  path (Decimal token preservation, explicit environment, no retries) move into the
+  `allocation_broker.py` docstring.
+- `test_broker.py` is re-driven through `AllocationBroker.request`
+  (`allocation_broker.py:16-26`). The executable is the test's own `FIXTURE`
+  (`test_broker.py:19-53`) passed as `sdk_python_path`; `tests/allocation_fixture.py`
+  cannot sleep, flood or fork. The seam for short timeouts is the new `timeout_seconds`
+  argument. Kept and re-driven: environment allowlist (`:234`), timeout and reap
+  (`:321-338`), combined output bound (`:340-351`), the exact-limit case with a JSON
+  object of exactly `MAX_OUTPUT_BYTES` (1 MiB) bytes (`:354-356`), launch failure
+  (`:359-363`), Decimal token preservation (`:96-100`), the duplicate-key, NaN and
+  invalid-UTF-8 non-leak cases (`:303-319`) and invalid configuration (`:366-374`, now
+  on the `AllocationBroker` constructor). The CLI-only tests go.
 - `ledger.py`: deletes `Ledger.reviews` (`:100-112`). The schema stays byte-for-byte: the
   live 4140 SPY ledger created those tables, and dropping unused `CREATE TABLE IF NOT
   EXISTS` lines buys nothing at a persistence boundary.
 - `rpc.py`: only the `Allocation` path (`:116-118`); deletes the supervised branch
-  (`:119-125`), its imports (`:10-13`), the non-`Allocation` call branch and the
+  (`:119-125`), its imports (`:10-11`, `:13`; `Runtime` at `:12` stays), the
+  non-`Allocation` call branch and the
   `paper.status`/`paper.journal` entries of the read-only list (`:76-82`), and the
   per-profile tool filter (`:144`). The profile check has one owner,
   `AllocationConfig.parse` (`allocation_config.py:26-32`): `profile` is in its required
@@ -419,10 +461,12 @@ supervised ledger file stops S0 for an owner decision.
   execution, and the 4140 config already sets it); deletes `cli_path`, unused by SPY, from
   the manifest, `AllocationConfig` and `test_allocation.py:318`.
 - README: rewrites the intro (`README.md:1-15`), deletes `:17-333` (supervised setup,
-  approval, migration, first cycle, recovery and its verification commands), keeps the
-  example paragraph (`:334-345`) and the SPY section (`:346-`), whose comparison with the
-  supervised profile (`:363`) is reworded.
-- CI: `.github/workflows/paper-trading.yml:37` step name drops "process and
+  approval, migration, first cycle, recovery and its verification commands) except a
+  short SPY verification paragraph that keeps the pytest command and the `jsonschema`
+  test-only dependency (today `:291-299`); keeps the example paragraph (`:334-345`) and
+  the SPY section (`:346-`), whose comparison with the supervised profile (`:363`) is
+  reworded.
+- CI: `.github/workflows/paper-trading.yml:38` step name drops "process and
   human-confirmation"; the pytest path (`:39`) is unchanged.
 
 **Deploy S0 only through a kernel restart or `POST /api/plugins/{id}/reload`.** A stored
@@ -432,7 +476,9 @@ keeps the manifest it loaded at boot (`state.rs:1012`) until a reload re-reads i
 (`plugin_host/lifecycle.rs:243-327`, route `routes/plugins.rs:42`). A child-only respawn
 of the new code under the old manifest would receive the old `cli_path` default, which
 the new exact parse (`allocation_config.py:30`) refuses. The restart-timing guard of §5
-applies.
+applies. The installed plugin is a symlink in `~/.config/neige-calm/plugins`, which the
+4040 instance shares, so the S0 symlink swap reaches 4040 on its next restart; that is
+acceptable because compatibility covers the 4140 database only.
 
 Historical design docs (`docs/design-paper-trading-loop.md`,
 `docs/design-paper-strategy-configuration.md`, `docs/design-paper-report-hierarchy.md`,
@@ -557,8 +603,11 @@ may need `--update-baseline` as generated artifacts of those slices.
 **Restart-timing guard (S0, S3 and every kernel deploy).** A plugin restart while a
 decision is `submitting` turns it into `unknown` (`ledger.py:50-53`). Every deploy that
 restarts the plugin, directly or through the kernel, runs under the §3.1 step-1
-conditions: outside the SPY Calendar windows, and `spy.status` shows no decision in
-`queued`, `requested` or `submitting`.
+conditions: outside the SPY Calendar windows, and the read-only ledger query of §3.1
+step 1 returns no `queued`, `requested` or `submitting` decision (the operator cannot
+use `spy.status`, which refuses non-agent callers). If a restart still lands mid-submission,
+the outcome is fail-closed: the decision becomes `unknown`, is reconciled against broker
+records and is never resubmitted (`allocation.py:213-215`, `allocation_reconcile.py:52-60`).
 
 **S0: delete the supervised paper profile** (`plugins/paper-trading`, its CI step;
 independent of S1-S4, can merge and deploy first).
@@ -571,8 +620,9 @@ independent of S1-S4, can merge and deploy first).
   `cargo nextest -p calm-server real_spy_app_admits_planner_plan_and_worker_execution_request`
   (the kernel test that boots the real App) green; new `AllocationConfig.parse` tests that
   a missing `profile` and a `profile` other than `spy_cash` are both refused; the moved
-  base-runner tests of `test_broker.py` green through `AllocationBroker.request`.
-- Acceptance: `git grep -n -E 'Portfolio\b|AccountConfig|StrategyConfig|paper\.(strategy|ingest|decide|status|refresh|pause|journal|review)\b|fixture_cli|cli_path|paper_trading\.(engine|strategy|operator|research|reconcile|portfolio|report)\b|supervised' -- plugins/paper-trading .github`
+  base-runner tests of `test_broker.py` green through `AllocationBroker.request`; the
+  residue-scan recipe deleted on 4140.
+- Acceptance: `git grep -n -E 'Portfolio\b|AccountConfig|StrategyConfig|paper\.(strategy|ingest|decide|status|refresh|pause|journal|review)\b|fixture_cli|cli_path|paper_trading\.(engine|strategy|operator|research|reconcile|portfolio|report|broker)\b|from \.broker|supervised' -- plugins/paper-trading .github`
   matches nothing (this includes `test_allocation.py:318`, `__init__.py:1` and
   `allocation_broker.py:1`); `pyflakes` reports no unused import in `paper_trading/`.
 - Coverage note: the supervised isolated-host smoke (`smoke_host.py`) goes with the
@@ -589,8 +639,8 @@ renderer's exhaustive switch (`native/public.tsx:14-29`) must handle it in the s
 
 - Rust: `DataUnit`, `LiveSlot`, `RowCell` with its dispatching deserializer,
   `ComponentKind` with the exhaustive `Component::kind`, nullable view snapshot with its
-  rule, shared `validate_snapshot`, `validate_unit(expects, payload)`,
-  `MAX_LIVE_UNIT_BYTES`; `generated_schema()` exports `DataUnit`.
+  rule, shared `validate_snapshot`, `validate_unit(expects, payload)` capped by the
+  existing `MAX_LIVE_VIEW_BYTES`; `generated_schema()` exports `DataUnit`.
 - Generated artifacts via the real generator: `native_view.schema.json`,
   `fe/core/domain/report-view.generated.ts` and `report-view.types.generated.ts`.
   `fe/tools/report-view/generate.mjs` exports only the root `NativeView` today
@@ -604,13 +654,16 @@ renderer's exhaustive switch (`native/public.tsx:14-29`) must handle it in the s
   `snapshot-set-without-inline-cell`, `duplicate-slot-id`, `slot-layout-width`,
   `slot-bad-source`, `slot-unknown-expects`), so `native_view_shared_conformance`
   (`native_view_tests.rs:143`) and `conformance.test.ts:65` check both languages from one
-  list; calm-types unit tests for the slot deserializer's error text and for units (wrong
-  kind, bad version, a `live` cell rejected by the `Component` deserializer); frontend
+  list. The fixture covers write-time view validation only; it has no unit entries, so
+  `expects` mismatches are pinned by the unit and resolver tests below, not by the
+  conformance tests. calm-types unit tests cover the slot deserializer's error text and
+  units (wrong kind, a `live` cell rejected by the `Component` deserializer). Frontend
   unit tests: "degrades only the failing slot" (one ok, one pending, one malformed slot)
   and, separately, "shows a wrong-kind unit as unavailable" (one ok and one wrong-kind
-  slot); empty-title accessible names; a browser test of a two-wide-end row with one
-  degraded slot at 1440 and 390 px. No test for live slots inside a `view.live` overlay:
-  that path adds no code (§2.5).
+  slot); empty-title accessible names. One browser test, parametrized over 1440 and 390
+  px with `it.each`, renders a two-wide-end row whose degraded slot is pending and
+  malformed (never wrong-kind, so it does not overlap the `expects` test). No test for
+  live slots inside a `view.live` overlay: that path adds no code (§2.5).
 - Mutation, Rust: drop the `cell.kind == expects` comparison in `validate_unit`. Red:
   `native_view_tests::unit_of_another_kind_is_rejected` only.
 - Mutation, Rust: drop the snapshot-nullability relation. Red:
@@ -621,7 +674,8 @@ renderer's exhaustive switch (`native/public.tsx:14-29`) must handle it in the s
   snapshot-set-without-inline-cell" only.
 - Mutation, TypeScript: make any slot failure fail the whole composition. Red: "degrades
   only the failing slot", "shows a wrong-kind unit as unavailable" (its ok sibling stops
-  rendering) and the browser "degraded slot keeps the row layout" only.
+  rendering) and both parametrized cases (1440, 390) of the browser "degraded slot keeps
+  the row layout" only.
 - Mutation, TypeScript: drop the `expects` comparison in the slot resolver. Red: "shows a
   wrong-kind unit as unavailable" only.
 
@@ -633,7 +687,9 @@ golden).
 - Tests (extend `crates/calm-server/tests/cases/mcp_track_report_live_view.rs`): another
   plugin's overlay with the same kind is not used; each slot resolves its own source;
   pending vs storage-unavailable; per-unit cap; one bad slot leaving the others ok;
-  `none` performing no query; stale-CAS behavior of template views.
+  `none` performing no query; stale-CAS behavior of template views. The pending and cap
+  tests use a single slot. Slots go through the one existing lookup
+  (`track_report_hydrate.rs:142-147`), with no new source parser.
 - `planner_tool_surface_fits_its_byte_budget` (re-measure; update the cap comment to the
   new number) and the regenerated registry golden.
 - Mutation, Rust: drop `overlay.plugin_id == plugin_id` (`track_report_hydrate.rs:145`).
@@ -643,7 +699,8 @@ golden).
   entity predicate at `:143-144` is equivalent: `overlays_for("track", track_id)` already
   filters by entity in SQL, `:78-79`.)
 - Mutation, Rust: resolve every slot of a view with its first slot's source. Red:
-  `live_slots_resolve_their_own_units` and `one_bad_slot_leaves_the_others_ok` only.
+  `live_slots_resolve_their_own_units` and `one_bad_slot_leaves_the_others_ok` only (the
+  single-slot pending and cap tests are unaffected).
 
 **S3: plugin data units, recipes, example** (`plugins/paper-trading`).
 
@@ -662,9 +719,16 @@ golden).
   to the published unit's kind; H1 order equals the contract and the last H1 is 执行记录;
   `build_native_demo.py --check`; `cargo nextest -p calm-server
   real_spy_app_admits_planner_plan_and_worker_execution_request`.
+  `test_spy_production_stdio_entrypoint_and_overlays` (`test_allocation.py:312`) waits
+  today for the old kinds (`:339-340`); it waits for all eight unit kinds.
+  `test_example_is_the_production_overview_of_the_scripted_run`
+  (`tests/test_native_demo.py:20`) is renamed
+  `test_example_is_the_production_output_of_the_scripted_run`.
 - Mutation, Python: drop `spy.account` from the published units. Red:
   `test_spy_recipe_contract_matches_body_and_published_views`,
-  `test_example_is_the_production_output_of_the_scripted_run`, and the two tests whose
+  `test_example_is_the_production_output_of_the_scripted_run`,
+  `test_spy_production_stdio_entrypoint_and_overlays` (its wait for all eight kinds times
+  out in `Host.receive`, `tests/test_process.py:48-49`), and the two tests whose
   description assertions move to `tables(state)['spy.account']`: the reconciliation-error
   check of `test_overview_is_valid_before_reconciliation_and_after_errors`
   (`test_allocation_views.py:218`) and `test_snapshot_identity_covers_the_description`
@@ -672,8 +736,9 @@ golden).
 
 **S4: 4140 rewrite and `view.live` removal.**
 
-- Run §3.1 (scan, runbook, scan again) on 4140 after S3 is deployed; production restarts
-  follow the machine runbook.
+- Run §3.1 (scan, live-Track runbook, closed-Track deletes, scan again) on 4140 after S3
+  is deployed; production restarts follow the machine runbook.
+- Rename `MAX_LIVE_VIEW_BYTES` to `MAX_LIVE_UNIT_BYTES` (`kinds.rs:31-32`) and its users.
 - Remove: `KIND_LIVE_VIEW`, its `DATA_KINDS` entry, dispatch and `validate_live_view`
   (`kinds.rs:13,32,42,83,510-524`) and its re-exports (`report_blocks/mod.rs:23-25`);
   `kinds_tests.rs` cases (`:58-76,345`); `live_view_kind` (`contracts.rs:447-461`) and
@@ -767,3 +832,24 @@ Revision 4 (review round 2, rebased on 54b79918c; nothing blocking):
   and lists `native.browser.test.tsx:52`; unit size stated as a bound; ratchet baselines
   listed as possible generated artifacts; cites re-checked after the rebase
   (`mcp_integration_suite.rs:42-43`, `mod.rs:170-194`, `track_recipes.rs:37-38,58`).
+
+Revision 5 (review round 3; nothing blocking):
+
+- The operator's in-flight check is a read-only query on the SPY ledger (`spy.status`
+  refuses non-agent callers), with the fail-closed `unknown` fallback stated.
+- Scans sized with real 4140 results: three Tracks with `view.live` (live SPY plus two
+  closed Tracks, whose `view.live` blocks S4 deletes without a rewrite, after confirming
+  closed Tracks accept a user block DELETE); one supervised recipe that S0 deletes.
+- S0 folds `Broker` into `AllocationBroker` with a `timeout_seconds` argument; the
+  base-runner tests run against `test_broker.py`'s `FIXTURE` as `sdk_python_path`, keeping
+  Decimal, non-leak and configuration cases; the CLI module docstring goes with
+  `broker.py`.
+- Runbook: Replace first (old blocks byte-identical), then deletes; failure handling is
+  "nothing changed" or "retry the remaining deletes".
+- Subtracted `DataUnit.version` (new kinds are the one evolution mechanism) and the S1
+  rename of the size cap (renamed in S4).
+- S3 adds the stdio overlay test to its sweep and red set and states the example test
+  rename; S1 and S2 test shapes made explicit (fixture has no unit entries, browser test
+  parametrized and never wrong-kind, single-slot pending and cap tests, one lookup).
+- Cites: `rpc.py` imports, CI step `:38`, README verification paragraph kept, the exact
+  observation text, the source-rule copy, the 4040 symlink note.
