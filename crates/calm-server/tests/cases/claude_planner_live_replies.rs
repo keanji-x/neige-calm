@@ -310,7 +310,8 @@ async fn a_claude_delta_writes_no_row_no_event_and_no_snapshot() {
     let events = || count("SELECT COUNT(*) FROM events");
 
     start_turn(&stack, &root, &card_id).await;
-    // The reply's start is stored, so everything before the held deltas has been handled.
+    // The reply-start row commits before its item-added event. Wait for both before
+    // taking the baseline, so that event cannot be mistaken for a delta write.
     let deadline = Instant::now() + Duration::from_secs(20);
     while !model_items(&item_rows(&stack, &card_id).await).contains(&row(
         "item/started",
@@ -319,6 +320,24 @@ async fn a_claude_delta_writes_no_row_no_event_and_no_snapshot() {
         json!(""),
     )) {
         assert!(Instant::now() < deadline, "the reply never started");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    while !sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM events WHERE kind = 'harness.item.added' \
+         AND json_extract(payload, '$.worker_session_id') = ?1 \
+         AND json_extract(payload, '$.item_uuid') = ?2 \
+         AND json_extract(payload, '$.method') = 'item/started')",
+    )
+    .bind(&runtime.id)
+    .bind(REPLY)
+    .fetch_one(&pool)
+    .await
+    .expect("reply-start event")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the reply start was never announced"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let before = (
