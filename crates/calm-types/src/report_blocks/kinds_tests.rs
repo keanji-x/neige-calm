@@ -599,6 +599,67 @@ fn task_head_and_base_apply_only_to_read_only_tasks() {
     );
 }
 
+/// C5 (#2058 D4): `start` is `checkout` | `upstream` (absent and null = `checkout`); an upstream
+/// start is a codex/claude task on the in-track route that changes the checkout. Each refusal
+/// names the valid choices.
+#[test]
+fn task_start_rules_name_the_valid_choices() {
+    let catch_up = || {
+        let mut payload = valid_task();
+        payload["start"] = json!("upstream");
+        payload
+    };
+    assert_eq!(validate_payload(KIND_TASK, &catch_up()), Ok(()));
+    let mut claude = catch_up();
+    claude["kind"] = json!("claude");
+    assert_eq!(validate_payload(KIND_TASK, &claude), Ok(()));
+    for start in [Value::Null, json!("checkout")] {
+        let mut payload = valid_task();
+        payload["start"] = start;
+        assert_eq!(validate_payload(KIND_TASK, &payload), Ok(()));
+    }
+
+    let refused = |edit: &dyn Fn(&mut Value), expected: &str| {
+        let mut payload = catch_up();
+        edit(&mut payload);
+        let error = validate_payload(KIND_TASK, &payload).unwrap_err();
+        assert!(error.contains(expected), "{expected}: {error}");
+    };
+    refused(
+        &|p| p["start"] = json!("main"),
+        "start: must be one of \"checkout\" | \"upstream\"",
+    );
+    refused(
+        &|p| {
+            p.as_object_mut().unwrap().remove("goal");
+            p["kind"] = json!("terminal");
+            p["command"] = json!("cargo test");
+        },
+        "start: \"upstream\" requires kind \"codex\" or \"claude\"; a terminal task takes \
+         \"checkout\"",
+    );
+    refused(
+        &|p| {
+            p.as_object_mut().unwrap().remove("gate");
+            p["access"] = json!("read_only");
+        },
+        "start: \"upstream\" changes the checkout; it requires access \"read_write\", not \
+         \"read_only\"",
+    );
+    refused(
+        &|p| p["spawn"] = json!(crate::task_recovery::TASK_CHILD_TRACK_ROUTE),
+        "start: \"upstream\" runs in the track's checkout; it requires spawn \"in-wave\", not \
+         \"sub-wave\"",
+    );
+    let tombstone = json!({"key":"old","tombstone":{},"declared_by":"user",
+        "tombstoned_by":"user","start":"upstream"});
+    assert!(
+        validate_payload(KIND_TASK, &tombstone)
+            .unwrap_err()
+            .contains("start: must be absent")
+    );
+}
+
 #[test]
 fn task_priority_rejects_integer_outside_i64_range() {
     let mut payload = valid_task();

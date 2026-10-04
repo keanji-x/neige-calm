@@ -83,6 +83,8 @@ mod gate_binding;
 mod git_delivery;
 #[path = "cases/lease_git_env.rs"]
 mod lease_git_env;
+#[path = "cases/track_catch_up.rs"]
+mod track_catch_up;
 #[path = "cases/track_publish.rs"]
 mod track_publish;
 #[path = "cases/track_readers.rs"]

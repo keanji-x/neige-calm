@@ -25,14 +25,14 @@ const TOOL: &str = "neige.dev.publish";
 
 /// The process environment of one test: the `gh` shim first on PATH, and optionally a
 /// `GH_TOKEN` in the kernel's own environment (which the forge child inherits).
-struct PublishEnv {
+pub(super) struct PublishEnv {
     _token: Option<EnvGuard>,
     _path: EnvGuard,
     _shim_dir: tempfile::TempDir,
     _lock: tokio::sync::MutexGuard<'static, ()>,
 }
 
-async fn publish_env(token: Option<&str>) -> PublishEnv {
+pub(super) async fn publish_env(token: Option<&str>) -> PublishEnv {
     let lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -52,21 +52,21 @@ async fn publish_env(token: Option<&str>) -> PublishEnv {
     }
 }
 
-fn origin(fx: &Fx) -> PathBuf {
+pub(super) fn origin(fx: &Fx) -> PathBuf {
     fx.track_root.parent().unwrap().join("origin.git")
 }
 
-fn gh_log(fx: &Fx) -> String {
+pub(super) fn gh_log(fx: &Fx) -> String {
     let mut state = origin(fx).into_os_string();
     state.push(".shimstate/gh.log");
     std::fs::read_to_string(state).unwrap_or_default()
 }
 
-fn remote_branch(fx: &Fx) -> Option<String> {
+pub(super) fn remote_branch(fx: &Fx) -> Option<String> {
     ref_target(&origin(fx), &format!("refs/heads/{}", fx.worker_branch()))
 }
 
-async fn publish(fx: &Fx, key: &str) -> Result<Value, RpcError> {
+pub(super) async fn publish(fx: &Fx, key: &str) -> Result<Value, RpcError> {
     call_tool(
         &fx.boot,
         TOOL,
@@ -77,7 +77,7 @@ async fn publish(fx: &Fx, key: &str) -> Result<Value, RpcError> {
 }
 
 /// A `done` attempt of `key` that writes `<key>.txt`; returns its candidate commit.
-async fn done_candidate(fx: &Fx, key: &str) -> String {
+pub(super) async fn done_candidate(fx: &Fx, key: &str) -> String {
     declare_task(fx, key, json!({})).await;
     let started = wait_running(fx, key).await;
     std::fs::write(started.cwd.join(format!("{key}.txt")), key).unwrap();
@@ -87,7 +87,7 @@ async fn done_candidate(fx: &Fx, key: &str) -> String {
     commit
 }
 
-async fn pr_opened_heads(fx: &Fx) -> Vec<Value> {
+pub(super) async fn pr_opened_heads(fx: &Fx) -> Vec<Value> {
     let rows: Vec<(String,)> =
         sqlx::query_as("SELECT payload FROM events WHERE kind = 'forge.pr.opened' ORDER BY id")
             .fetch_all(&fx.pool())
@@ -108,7 +108,7 @@ async fn publish_op_count(fx: &Fx) -> i64 {
 }
 
 /// The shim's view of the PR of the track branch, read after every log assertion.
-fn shim_pr(fx: &Fx) -> Value {
+pub(super) fn shim_pr(fx: &Fx) -> Value {
     let gh = which_gh();
     let origin = origin(fx);
     let output = run_gh(
@@ -354,35 +354,143 @@ async fn the_same_key_replays_and_refuses_a_moved_tip() {
     assert_eq!(publish_op_count(fx).await, 1);
 }
 
-/// A remote branch that is not an ancestor of the candidate is never overwritten: the push is
-/// rejected, the publish fails, and no gh runs after it (no PR is opened on the foreign head).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_non_fast_forward_publish_fails_and_leaves_the_remote() {
-    let _env = publish_env(None).await;
-    let w = development_world().await;
-    let fx = &w.fx;
-    done_candidate(fx, "a").await;
+/// A clone of the origin beside the user's checkout, on `branch` of the origin (else on main),
+/// with one commit no attempt made: someone else's work. Returns the clone and that commit.
+fn foreign_clone(fx: &Fx, branch: Option<&str>) -> (PathBuf, String) {
     let other = fx.track_root.parent().unwrap().join("other-clone");
     git(
         fx.track_root.parent().unwrap(),
         &["clone", "-q", origin(fx).to_str().unwrap(), "other-clone"],
     );
+    if let Some(branch) = branch {
+        git(
+            &other,
+            &["checkout", "-q", "-b", "work", &format!("origin/{branch}")],
+        );
+    }
     git(&other, &["config", "user.email", "other@example.test"]);
     git(&other, &["config", "user.name", "Other"]);
-    std::fs::write(other.join("other.txt"), "diverged\n").unwrap();
+    std::fs::write(other.join("other.txt"), "someone else's work\n").unwrap();
     git(&other, &["add", "other.txt"]);
-    git(&other, &["commit", "-q", "-m", "diverged"]);
-    let diverged = git(&other, &["rev-parse", "HEAD"]);
+    git(&other, &["commit", "-q", "-m", "someone else's work"]);
+    let commit = git(&other, &["rev-parse", "HEAD"]);
+    (other, commit)
+}
+
+/// R2 (#2058 D1, D2) — a remote branch at a commit no attempt of this track made is never
+/// overwritten: the script exits 22 before any push or gh, the publish fails naming the code, and
+/// the remote keeps the foreign commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_over_a_foreign_commit_fails_and_leaves_the_remote() {
+    let _env = publish_env(None).await;
+    let w = development_world().await;
+    let fx = &w.fx;
+    done_candidate(fx, "a").await;
+    let (other, foreign) = foreign_clone(fx, None);
     let refspec = format!("HEAD:refs/heads/{}", fx.worker_branch());
     git(&other, &["push", "-q", "origin", &refspec]);
 
-    let error = publish(fx, "nff").await.expect_err("a rejected push fails");
+    let error = publish(fx, "nff").await.expect_err("a foreign head fails");
 
     assert_eq!(error.code, -32409, "{error:?}");
     assert!(error.message.starts_with("publish-failed: "), "{error:?}");
-    assert_eq!(remote_branch(fx).as_deref(), Some(diverged.as_str()));
+    assert!(
+        error
+            .message
+            .contains("forge action exited with code 22; probe reports not landed"),
+        "{error:?}"
+    );
+    assert_eq!(remote_branch(fx).as_deref(), Some(foreign.as_str()));
     assert!(pr_opened_heads(fx).await.is_empty());
     assert_eq!(gh_log(fx), "", "no gh invocation");
+}
+
+/// R1 (#2058 D1) — the published head P is this track's own candidate, so a done candidate C'
+/// that does not contain P (the checkout was reset to the upstream, as a catch-up does) replaces
+/// it: the remote branch and the PR head are C', and the PR is the same one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_replaces_its_own_branch_with_a_non_descendant_candidate() {
+    let _env = publish_env(None).await;
+    let w = development_world().await;
+    let fx = &w.fx;
+    let p = done_candidate(fx, "a").await;
+    publish(fx, "first").await.unwrap();
+    git(&fx.worktree, &["reset", "-q", "--hard", "origin/main"]);
+    let c = done_candidate(fx, "b").await;
+    let is_ancestor = git_output(&fx.worktree, &["merge-base", "--is-ancestor", &p, &c]);
+    assert!(!is_ancestor.status.success(), "C' must not contain P");
+
+    let result = publish(fx, "second").await.unwrap();
+
+    assert_eq!(result["pr_number"], json!(1));
+    assert_eq!(result["head_sha"], json!(c));
+    assert_eq!(remote_branch(fx).as_deref(), Some(c.as_str()));
+    assert_eq!(pr_opened_heads(fx).await, vec![json!(p), json!(c)]);
+    let log = gh_log(fx);
+    assert_eq!(log.matches(" pr create ").count(), 1, "{log}");
+    assert_eq!(shim_pr(fx), json!({"number": 1, "headRefOid": c}));
+}
+
+/// A `git` first on PATH that runs the real one. Only the publish script's lease read
+/// (`ls-remote <url> refs/heads/<b>`, not the `ls-remote --get-url` the destination read runs)
+/// while `trigger` exists is different: it lets the real read answer, then pushes `other`'s HEAD
+/// to that branch (a writer landing between the lease read and the push), removes `trigger`, and
+/// prints the answer.
+fn write_racing_git_shim(dir: &Path, trigger: &Path, other: &Path) {
+    let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|dir| dir.join("git"))
+        .find(|git| git.is_file())
+        .unwrap();
+    write_executable(
+        &dir.join("git"),
+        &format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = ls-remote ] && [ \"$#\" -eq 3 ] && [ -e '{trigger}' ]; then\n\
+             case \"$3\" in refs/heads/*)\n\
+             out=$('{real}' \"$@\") || exit $?\n\
+             '{real}' -C '{other}' push -q origin \"HEAD:$3\" >/dev/null 2>&1 || exit 97\n\
+             rm -f '{trigger}'\n\
+             printf '%s\\n' \"$out\"\n\
+             exit 0;;\n\
+             esac\n\
+             fi\n\
+             exec '{real}' \"$@\"\n",
+            trigger = trigger.display(),
+            real = real.display(),
+            other = other.display(),
+        ),
+    );
+}
+
+/// R4 (#2058 D1) — a writer that lands after the script read the remote head (P, this track's
+/// own) and before its push is never overwritten: the lease names P, so the push is rejected,
+/// the publish fails, and the remote keeps the foreign commit X.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_writer_between_the_lease_read_and_the_push_is_never_overwritten() {
+    let _env = publish_env(None).await;
+    let w = development_world().await;
+    let fx = &w.fx;
+    done_candidate(fx, "a").await;
+    publish(fx, "first").await.unwrap();
+    let c = done_candidate(fx, "b").await;
+    let (other, foreign) = foreign_clone(fx, Some(&fx.worker_branch()));
+    let shim_dir = tempfile::Builder::new().prefix("git-").tempdir().unwrap();
+    let trigger = fx.track_root.parent().unwrap().join("race-trigger");
+    write_racing_git_shim(shim_dir.path(), &trigger, &other);
+    let mut path = std::ffi::OsString::from(shim_dir.path());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap());
+    let _git_shim = EnvGuard::set("PATH", path);
+    std::fs::write(&trigger, "").unwrap();
+
+    let error = publish(fx, "raced")
+        .await
+        .expect_err("the lease rejects the push");
+
+    assert!(!trigger.exists(), "the race ran");
+    assert!(error.message.starts_with("publish-failed: "), "{error:?}");
+    assert_eq!(remote_branch(fx).as_deref(), Some(foreign.as_str()));
+    assert_ne!(foreign, c);
 }
 
 /// A failed publish spends its key (the same key answers the same failure); a new key runs again.

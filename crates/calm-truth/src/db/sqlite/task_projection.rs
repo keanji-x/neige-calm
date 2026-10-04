@@ -2386,6 +2386,32 @@ mod tests {
         }
     }
 
+    /// #2058 D4: while a task is pending, its `start` follows its block, as `access` does.
+    #[tokio::test]
+    async fn a_pending_tasks_start_follows_its_block() {
+        let (repo, track) = setup().await;
+        for start in [Some("upstream"), Some("checkout"), Some("upstream"), None] {
+            let mut payload = json!({"key": "catch-up", "kind": "codex", "goal": "catch up",
+                "ready": true, "no_gate_reason": "fixture",
+                "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR});
+            if let Some(start) = start {
+                payload["start"] = json!(start);
+            }
+            project_blocks(&repo, &track, &[task_block(0, payload)]).await;
+            let row: (String, String) = sqlx::query_as(
+                "SELECT status, start FROM tasks WHERE track_id = ?1 AND key = 'catch-up'",
+            )
+            .bind(&track)
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                row,
+                ("pending".into(), start.unwrap_or("checkout").to_string())
+            );
+        }
+    }
+
     /// Negative half of a pair: asserts the *value* (zero events in both orders),
     /// since order-equality alone is satisfied by any constant predicate.
     #[tokio::test]

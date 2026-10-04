@@ -46,10 +46,23 @@ pub(super) async fn world() -> World {
 }
 
 pub(super) async fn development_world() -> World {
-    world_with_boot(crate::mcp_track_report::boot_development().await).await
+    development_world_with(&[]).await
+}
+
+/// [`development_world`] whose upstream's first commit also holds `files` (`(path, content)`).
+pub(super) async fn development_world_with(files: &[(&'static str, &'static str)]) -> World {
+    world_with_boot_and(crate::mcp_track_report::boot_development().await, files).await
 }
 
 async fn world_with_boot(boot: crate::mcp_track_report::Boot) -> World {
+    world_with_boot_and(boot, &[]).await
+}
+
+async fn world_with_boot_and(
+    boot: crate::mcp_track_report::Boot,
+    files: &[(&'static str, &'static str)],
+) -> World {
+    let files = files.to_vec();
     let shared = SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None);
     let socket_dir = tempfile::Builder::new()
         .prefix("s2-mcp-")
@@ -82,7 +95,10 @@ async fn world_with_boot(boot: crate::mcp_track_report::Boot) -> World {
             let checkout = tmp.join("checkout");
             clone_for_track(&origin, &checkout);
             std::fs::write(checkout.join(".gitignore"), "ignored.log\n").unwrap();
-            git(&checkout, &["add", ".gitignore"]);
+            for (name, content) in &files {
+                std::fs::write(checkout.join(name), content).unwrap();
+            }
+            git(&checkout, &["add", "-A"]);
             git(&checkout, &["commit", "-q", "-m", "ignore logs"]);
             git(&checkout, &["push", "-q", "origin", "main"]);
             *seen.lock().unwrap() = (worktree_entries(&checkout), neige_refs(&checkout));
