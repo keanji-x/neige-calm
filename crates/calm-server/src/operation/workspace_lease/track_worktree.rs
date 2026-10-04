@@ -91,13 +91,14 @@ fn ensure_track_worktree_blocking(target: &WorkspaceLeaseTarget) -> Result<()> {
     if git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch))? {
         command.arg(&target.path).arg(&target.branch);
     } else {
+        let base = track_worktree_base(&target.repo_root)?;
         // #2112: the new branch keeps the checkout's upstream as of now; publish and catch-up
-        // read it from the branch, never from whatever the checkout is on later. Written first:
-        // config for a branch `worktree add` then fails to make is rewritten by the retry.
+        // read it from the branch, never from whatever the checkout is on later. Written before
+        // the branch exists: config for a branch `worktree add` then fails to make is rewritten
+        // by the retry.
         if let Some(upstream) = head_upstream(&target.repo_root)? {
             record_branch_upstream(&target.repo_root, &target.branch, &upstream)?;
         }
-        let base = track_worktree_base(&target.repo_root)?;
         command
             .args(["-b", &target.branch])
             .arg(&target.path)
