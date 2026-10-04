@@ -25,13 +25,27 @@ export function rewindPlannerTurnOperation(cardId: string, turnId: string): ApiO
   };
 }
 
-/** What goes back into the composer after an Edit. */
-export type ComposerRefill = Readonly<{ text: string; attachments: readonly PlannerAttachment[] }>;
+/** What one conversation's composer holds: its words and the images already uploaded for it. */
+export type ComposerContent = Readonly<{ text: string; attachments: readonly PlannerAttachment[] }>;
+
+export const EMPTY_COMPOSER: ComposerContent = Object.freeze({ text: '', attachments: Object.freeze([]) });
+
+export function isComposerEmpty(content: ComposerContent): boolean {
+  return content.text.trim() === '' && content.attachments.length === 0;
+}
 
 /** One message from the removed input: segment texts read as the transcript shows them, a blank line apart; the server lists each image once. */
-export function composerRefillFrom(input: readonly HarnessInputSegment[]): ComposerRefill {
+export function composerRefillFrom(input: readonly HarnessInputSegment[]): ComposerContent {
   return {
     text: input.map(inputSegmentText).filter((text) => text !== '').join('\n\n'),
     attachments: input.flatMap((segment) => segment.attachments),
   };
+}
+
+/** `refill` added to what a composer holds, never replacing it: words after a blank line, each image once. */
+export function withRefill(content: ComposerContent, refill: ComposerContent): ComposerContent {
+  const text = content.text.trim() === '' ? refill.text
+    : refill.text === '' ? content.text : `${content.text}\n\n${refill.text}`;
+  const held = new Set(content.attachments.map((image) => image.id));
+  return { text, attachments: [...content.attachments, ...refill.attachments.filter((image) => !held.has(image.id))] };
 }

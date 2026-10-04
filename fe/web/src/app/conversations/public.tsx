@@ -3,7 +3,7 @@ import {
 } from 'react';
 
 import type { ModelSelection, Conversation, OptimisticConversationTurn, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import type { ComposerRefill } from '../../../../core/domain/conversation-rewind.ts';
+import { EMPTY_COMPOSER, withRefill, type ComposerContent } from '../../../../core/domain/conversation-rewind.ts';
 import { useReducer, useState } from '../../ui/state/public.ts';
 
 /**
@@ -98,12 +98,6 @@ export type FailedConversationSend = Readonly<{
   delivery: 'rejected' | 'unknown' | 'refused';
 }>;
 
-/**
- * An Edit's rewind for one conversation (#1923): the request still out, or the removed input as the
- * reader is editing it. Held here until it is sent or emptied, so no close, switch or remount drops it.
- */
-export type ConversationEdit = Readonly<{ kind: 'requesting' } | { kind: 'ready'; refill: ComposerRefill }>;
-
 export type RememberedConversation = Readonly<{
   conversation: Conversation;
   turns: readonly TranscriptEntry[];
@@ -145,13 +139,16 @@ export type ConversationRegistry = Readonly<{
   tryBeginSend: (conversationId: string) => boolean;
   finishSend: (conversationId: string, failure: FailedConversationSend | null) => void;
   clearFailedSend: (conversationId: string, echoId: string) => void;
-  editOf: (conversationId: string) => ConversationEdit | null;
-  /** One rewind per conversation until its refill is taken; false while one is held. */
+  /** Each existing conversation's unsent words and images, kept across closing, switching and remounts. */
+  composerOf: (conversationId: string) => ComposerContent;
+  /** Change one conversation's composer, whichever conversation is shown. */
+  editComposer: (conversationId: string, next: (current: ComposerContent) => ComposerContent) => void;
+  /** An Edit's rewind is out for this conversation (#1923). */
+  isEditing: (conversationId: string) => boolean;
+  /** One rewind per conversation at a time; false while one is out. */
   tryBeginEdit: (conversationId: string) => boolean;
-  /** The request settled: its refill now waits for the composer, or (`null`) nothing changed. */
-  finishEdit: (conversationId: string, refill: ComposerRefill | null) => void;
-  /** What a held refill now is (the composer's words and images), or `null` once it is sent or emptied. */
-  holdRefill: (conversationId: string, refill: ComposerRefill | null) => void;
+  /** The rewind settled; a removed message, if any, is added to that conversation's composer. */
+  finishEdit: (conversationId: string, refill: ComposerContent | null) => void;
   /* Deliberately no "open the planner conversation of track W" slot: the track being left is still
        mounted when a create states it, so that intent travels in the history entry instead. */
 }>;
@@ -205,28 +202,34 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       setFailedSends((current) => ({ ...current, [conversationId]: failure }));
     }
   }, []);
-  const editsRef = useRef<Readonly<Record<string, ConversationEdit>>>({});
-  const [edits, setEdits] = useState<Readonly<Record<string, ConversationEdit>>>({});
-  const writeEdit = useCallback((conversationId: string, edit: ConversationEdit | null) => {
-    const next = { ...editsRef.current };
-    if (edit === null) delete next[conversationId]; else next[conversationId] = edit;
-    editsRef.current = next;
-    setEdits(next);
+  const [composers, setComposers] = useState<Readonly<Record<string, ComposerContent>>>({});
+  const editComposer = useCallback((conversationId: string, next: (current: ComposerContent) => ComposerContent) => {
+    setComposers((current) => {
+      const before = current[conversationId] ?? EMPTY_COMPOSER;
+      const after = next(before);
+      if (after === before) return current;
+      const updated = { ...current };
+      /* An empty composer is no entry, so the map holds only conversations with something unsent. */
+      if (after.text === '' && after.attachments.length === 0) delete updated[conversationId]; else updated[conversationId] = after;
+      return updated;
+    });
   }, []);
+  const composerOf = useCallback((conversationId: string) => composers[conversationId] ?? EMPTY_COMPOSER, [composers]);
+  const editingRef = useRef<ReadonlySet<string>>(new Set());
+  const [editing, setEditing] = useState<ReadonlySet<string>>(() => new Set());
   const tryBeginEdit = useCallback((conversationId: string) => {
-    if (conversationId in editsRef.current) return false;
-    writeEdit(conversationId, { kind: 'requesting' });
+    if (editingRef.current.has(conversationId)) return false;
+    editingRef.current = new Set([...editingRef.current, conversationId]);
+    setEditing(editingRef.current);
     return true;
-  }, [writeEdit]);
-  const finishEdit = useCallback((conversationId: string, refill: ComposerRefill | null) => {
-    if (editsRef.current[conversationId]?.kind !== 'requesting') return;
-    writeEdit(conversationId, refill === null ? null : { kind: 'ready', refill });
-  }, [writeEdit]);
-  const holdRefill = useCallback((conversationId: string, refill: ComposerRefill | null) => {
-    if (editsRef.current[conversationId]?.kind !== 'ready') return;
-    writeEdit(conversationId, refill === null ? null : { kind: 'ready', refill });
-  }, [writeEdit]);
-  const editOf = useCallback((conversationId: string) => edits[conversationId] ?? null, [edits]);
+  }, []);
+  const finishEdit = useCallback((conversationId: string, refill: ComposerContent | null) => {
+    if (!editingRef.current.has(conversationId)) return;
+    if (refill !== null) editComposer(conversationId, (current) => withRefill(current, refill));
+    editingRef.current = new Set([...editingRef.current].filter((id) => id !== conversationId));
+    setEditing(editingRef.current);
+  }, [editComposer]);
+  const isEditing = useCallback((conversationId: string) => editing.has(conversationId), [editing]);
   const clearFailedSend = useCallback((conversationId: string, echoId: string) => {
     setFailedSends((current) => {
       if (current[conversationId]?.echo.id !== echoId) return current;
@@ -297,12 +300,12 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       pendingSendIds, failedSends, tryBeginSend, finishSend, clearFailedSend,
-      editOf, tryBeginEdit, finishEdit, holdRefill,
+      composerOf, editComposer, isEditing, tryBeginEdit, finishEdit,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      discardUnsentDraft, draftOf, editDraft, editOf, finishDraftAdoption, finishEdit, finishSend, pendingSendIds,
+      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, finishDraftAdoption, finishEdit, isEditing, finishSend, pendingSendIds,
       remember, requestOpen, failedSends, clearFailedSend,
-      requestedOpenFocusesComposer, requestedOpenId, holdRefill, startDraft, tryBeginEdit, tryBeginSend, turnsOf,
+      requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginEdit, tryBeginSend, turnsOf,
       updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;

@@ -647,6 +647,10 @@ describe('track conversations', () => {
     expect(messageField().textContent).toBe('A newer unsent draft');
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    /* Closing keeps the newer draft, and the refused message stays out of sight behind it. */
+    await waitFor(() => expect(messageField().textContent).toBe('A newer unsent draft'));
+    expect(within(drawerElement()).queryByText('Original typed refusal')).toBeNull();
+    await clearField();
     expect(within(drawerElement()).getByText('Original typed refusal')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     expect(messageField().textContent).toBe('Original typed refusal');
@@ -999,7 +1003,8 @@ describe('track conversations', () => {
   /** The assistant conversation's one turn until a rewind is accepted, then nothing, as the server would page it. */
   function editSetup(rewind: () => ApiTransportResponse | Promise<ApiTransportResponse>, run: Record<string, unknown> = {},
     historyAfterRewind: () => Promise<void> = () => Promise.resolve(),
-    input: () => ApiTransportResponse | undefined = () => undefined) {
+    input: () => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined> = () => undefined,
+    uploadGate: () => Promise<void> = () => Promise.resolve()) {
     let removed = false;
     const user = { ...harnessMessage(91, 'userMessage', { content: [{ text: 'Original prompt' }] }), turn_id: 'turn',
       input_segments: REWIND_INPUT };
@@ -1017,6 +1022,7 @@ describe('track conversations', () => {
           reasoning_effort: null, blocked_reason: null, attachments_supported: true, ...run });
       }
       if (request.path.endsWith('/planner/attachments')) {
+        await uploadGate();
         const draftImageId = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e70.png';
         return ok({ attachmentId: draftImageId, contentType: 'image/png', size: 4,
           url: `/api/cards/${pathCardId(request.path)}/planner/attachments/${draftImageId}` });
@@ -1173,21 +1179,102 @@ describe('track conversations', () => {
     expect(composerImages()).toEqual([REWIND_IMAGE.url]);
   });
 
-  it('waits for an empty composer rather than merging the edited message into another draft', async () => {
-    const { requests } = editSetup(rewindAccepted);
-    await editIntoComposer(requests);
+  const pickPlanner = async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
     await screen.findByRole('complementary', { name: 'Planner chat' });
+  };
+  const DRAFT_IMAGE_SUFFIX = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e70.png';
+
+  it('gives each conversation its own composer: nothing carries across a switch, both survive it', async () => {
+    const { requests } = editSetup(rewindAccepted);
+    await editIntoComposer(requests);
+    await pickPlanner();
     await waitFor(() => expect(messageField().textContent).toBe(''));
-    await typeInto(messageField(), 'Words for the planner');
-    /* Picked from the list with the drawer open: the panel's draft is shared, as before. */
-    await pickAssistant();
-    await act(async () => { await Promise.resolve(); });
-    expect(messageField().textContent).toBe('Words for the planner');
     expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull();
-    await clearField();
+    await typeInto(messageField(), 'Words for the planner');
+    await pickAssistant();
     await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
     expect(composerImages()).toEqual([REWIND_IMAGE.url]);
+    await pickPlanner();
+    await waitFor(() => expect(messageField().textContent).toBe('Words for the planner'));
+    expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull();
+  });
+
+  it('keeps a typed draft through closing and reopening its conversation', async () => {
+    editSetup(rewindAccepted);
+    await openEditableAssistant();
+    await typeInto(messageField(), 'Half a thought');
+    await reopenAssistant();
+    await waitFor(() => expect(messageField().textContent).toBe('Half a thought'));
+    /* The draft withholds Edit: nothing is ever merged into it. */
+    expect(screen.getByRole('button', { name: 'Edit message (not available now)' })).toBeTruthy();
+  });
+
+  it('does not bring an edited message back after its failed send is tried again', async () => {
+    let attempts = 0;
+    const { requests } = editSetup(rewindAccepted, {}, undefined, () => {
+      attempts += 1;
+      return attempts === 1 ? failure(400, 'bad_request', 'Not this time') : undefined;
+    });
+    await editIntoComposer(requests);
+    await submit();
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(2));
+    expect(inputBodies(requests)[1]).toEqual({ text: 'Original prompt', attachments: [ATTACHMENT_ID] });
+    await reopenAssistant();
+    await act(async () => { await Promise.resolve(); });
+    expect(messageField().textContent).toBe('');
+    expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull();
+  });
+
+  it('does not bring an edited message back when the reader switches away before its send is answered', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((done) => { answer = done; });
+    const { requests } = editSetup(rewindAccepted, {}, undefined, async () => { await answered; return undefined; });
+    await editIntoComposer(requests);
+    await submit();
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
+    await pickPlanner();
+    await act(async () => { answer(); await answered; });
+    await typeInto(messageField(), 'Planner words while A sends');
+    await pickAssistant();
+    await act(async () => { await Promise.resolve(); });
+    expect(messageField().textContent).toBe('');
+    expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull();
+    await pickPlanner();
+    await waitFor(() => expect(messageField().textContent).toBe('Planner words while A sends'));
+  });
+
+  it('lets another conversation be written while one conversation’s send is out', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((done) => { answer = done; });
+    const { requests } = editSetup(rewindAccepted, {}, undefined, async () => { await answered; return undefined; });
+    await openEditableAssistant();
+    await typeInto(messageField(), 'Sent from the assistant');
+    await submit();
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
+    await pickPlanner();
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await typeInto(messageField(), 'First words');
+    await typeInto(messageField(), 'Second words');
+    await pickAssistant();
+    await pickPlanner();
+    await waitFor(() => expect(messageField().textContent).toBe('Second words'));
+    await act(async () => { answer(); await answered; });
+  });
+
+  it('puts an image whose upload finishes after a switch into the conversation it was picked in', async () => {
+    let finish!: () => void;
+    const finished = new Promise<void>((done) => { finish = done; });
+    editSetup(rewindAccepted, {}, undefined, undefined, () => finished);
+    await openEditableAssistant();
+    await attachAnImage();
+    await pickPlanner();
+    await act(async () => { finish(); await finished; });
+    await act(async () => { await Promise.resolve(); });
+    expect(drawerElement().querySelector('[data-nc-attachments] img')).toBeNull();
+    await pickAssistant();
+    await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_SUFFIX))).toBe(true));
   });
 
   it('retires the edited message once it is delivered', async () => {

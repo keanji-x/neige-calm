@@ -6,8 +6,17 @@ import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
-import { usePlannerAttachments } from '../../features/planner/attachments.tsx';
+import { usePlannerAttachments, type AttachmentStore } from '../../features/planner/attachments.tsx';
+import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
+import { useState } from '../../ui/state/public.ts';
 import { useTodayReportResetMutation, usePlannerMutations, usePluginMutations, queryKeys } from './queries.ts';
+
+
+/** The caller's per-card composer images, as the router keeps them in the conversation registry. */
+function useCardImages(cardId: string): AttachmentStore {
+  const [byCard, setByCard] = useState<Readonly<Record<string, readonly PlannerAttachment[]>>>({});
+  return { items: byCard[cardId] ?? [], update: (card, next) => setByCard((current) => ({ ...current, [card]: next(current[card] ?? []) })) };
+}
 
 afterEach(() => { cleanup(); onlineManager.setOnline(true); vi.unstubAllGlobals(); });
 it('offline production reset rejects before mutation admission and never resumes a paused mutation', async () => {
@@ -121,7 +130,8 @@ it('does not upload an old picked file after its asynchronous read crosses a rec
   const channel = createUnauthorizedChannel({ enqueue: task => task() });
   const { result } = renderHook(() => {
     const mutations = usePlannerMutations(transport, 'card-a', channel);
-    return usePlannerAttachments(mutations.uploadAttachment, 'card-a');
+    const images = useCardImages('card-a');
+    return usePlannerAttachments(mutations.uploadAttachment, 'card-a', images);
   }, { wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
   let read!: (bytes: ArrayBuffer) => void;
   const file = new File([], 'picked.png', { type: 'image/png' });

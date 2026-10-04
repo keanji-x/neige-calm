@@ -3,7 +3,7 @@ import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation
 import { useConversationStop } from '../conversations/stop.ts';
 import { useLiveReplies, useTranscriptReads } from '../conversations/live-replies.ts';
 import { useConversationEdit } from '../conversations/edit.ts';
-import type { PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
+import { EMPTY_COMPOSER, isComposerEmpty, withRefill, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 // Code-based TanStack Router setup, built inside a factory so a test can inject the
@@ -12,7 +12,7 @@ import { admitTransport } from '../providers/recovery-mutation.ts';
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from 'react';
 import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
 import { HStack } from '@astryxdesign/core/HStack';
 import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
@@ -22,7 +22,7 @@ import type { AgentProvider, PlannerAttachment } from '../../../../core/api/gene
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
   ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer,
-  type UploadAttachment, usePlannerAttachments,
+  type AttachmentStore, type UploadAttachment, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
 import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
@@ -934,19 +934,38 @@ function useConversationPanel(
   /* `@` only in the Planner's own row; the track the drawer is on ranks its blocks first. */
   const mentionTrigger = useMentionTrigger(useMentionSearch(transport, unauthorized,
     source.planner !== null && openRowId === source.planner.cardId ? source.planner.areaId : null, source.scopeId));
-  /* The composer's pending images, keyed to the open card so moving to another
-       conversation does not carry a picked image into it. */
-  const attachments = usePlannerAttachments(store.uploadAttachment, scope?.cardId ?? '');
+  const registry = useConversationRegistry();
+  /* The open conversation's own composer: words and images live in the registry per conversation,
+       so closing keeps them and switching shows the other conversation's own. */
+  const composerId = scope?.cardId ?? null;
+  const composer = composerId === null ? EMPTY_COMPOSER : registry.composerOf(composerId);
+  const { editComposer } = registry;
+  const setComposerText = useCallback<Dispatch<SetStateAction<string>>>((action) => {
+    if (composerId === null) return;
+    editComposer(composerId, (current) => {
+      const text = typeof action === 'function' ? action(current.text) : action;
+      return text === current.text ? current : { ...current, text };
+    });
+  }, [composerId, editComposer]);
+  const attachmentStore = useMemo<AttachmentStore>(() => ({
+    items: composer.attachments,
+    update: (cardId, next) => editComposer(cardId, (current) => {
+      const attachments = next(current.attachments);
+      return attachments === current.attachments ? current : { ...current, attachments };
+    }),
+  }), [composer.attachments, editComposer]);
+  const attachments = usePlannerAttachments(store.uploadAttachment, composerId ?? '', attachmentStore);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
-  const focusComposer = useCallback(() => setComposerFocusRequest((count) => count + 1), []);
-  /* After the attachments hook: its reset on a card change must run before a refill restores the strip. */
-  const edit = useConversationEdit({ conversationId: scope?.cardId ?? null, rewind: store.rewind,
-    draft: composerDraft, setDraft: setComposerDraft, attachments, focusComposer });
+  const shownComposer = useRef(composerId);
+  shownComposer.current = composerId;
+  const focusComposer = useCallback((conversationId: string) => {
+    if (shownComposer.current === conversationId) setComposerFocusRequest((count) => count + 1);
+  }, []);
+  const edit = useConversationEdit({ conversationId: composerId, rewind: store.rewind, focusComposer });
   /* The one readiness every response action and the continue guidance share. */
   const canContinue = store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
-  const registry = useConversationRegistry();
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   const preferences = useUiPreferences();
@@ -1361,18 +1380,18 @@ function useConversationPanel(
                 ) : <ChatFooterError message={store.failedSend.delivery === 'unknown'
                   ? `Delivery is unconfirmed. ${store.failedSend.message}` : `Not sent. ${store.failedSend.message}`} />}
                 {store.failedSend.delivery !== 'unknown' ? (
-                  (store.failedSend.delivery !== 'refused' || composerDraft === '') && <>
+                  (store.failedSend.delivery !== 'refused' || composer.text === '') && <>
                     <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
                       onClick={() => {
                         if (store.failedSend === null) return;
-                        setComposerDraft('');
+                        setComposerText('');
                         store.retrySend(store.failedSend.echo.id);
                       }}>
                       Try again
                     </ChatFooterRemedy>
                     <ChatFooterRemedy onClick={() => {
                       if (store.failedSend === null) return;
-                      setComposerDraft(store.failedSend.echo.text);
+                      setComposerText(store.failedSend.echo.text);
                       registry.clearFailedSend(open.id, store.failedSend.echo.id);
                     }}>Edit</ChatFooterRemedy>
                   </>
@@ -1421,16 +1440,22 @@ function useConversationPanel(
                                when the drawer closes. */
               focusOnMount={composerFocusFor === open.id}
               focusRequest={composerFocusRequest}
-              draft={{ text: composerDraft, onChange: setComposerDraft }}
+              draft={{ text: composer.text, onChange: setComposerText }}
               disabled={store.sendBlocked || !store.historyReady || edit.requesting}
               /* `delivered` is the one outcome that licenses forgetting the images; every
                                other one leaves the message with the reader. */
               onSend={(text) => {
+                const from = open.id;
                 const sent = attachments.items;
-                return edit.send(open.id, () => store.send(open.id, text, sent).then((outcome) => {
-                  if (outcome === 'delivered') attachments.clear();
+                const sentIds = new Set(sent.map((image) => image.id));
+                /* The images leave with the words and, like them, come back only when nothing was sent. */
+                editComposer(from, (current) => ({ ...current, attachments: current.attachments.filter((image) => !sentIds.has(image.id)) }));
+                return store.send(from, text, sent).then((outcome) => {
+                  if (outcome === 'refused' || outcome === 'not-sent') {
+                    editComposer(from, (current) => withRefill(current, { text: '', attachments: sent }));
+                  }
                   return outcome;
-                }));
+                });
               }}
               allowEmptyText={attachments.items.length > 0}
               /* The queue lives inside the composer, above the field: these messages have
@@ -1513,15 +1538,16 @@ function useConversationPanel(
                 key={open.id}
                 conversation={open}
                 turns={store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
-                  || composerDraft === '' || turn.id !== store.failedSend.echo.id)}
+                  || composer.text === '' || turn.id !== store.failedSend.echo.id)}
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
                 stalled={store.stalled}
                 copyText={writeClipboardText}
-                regenerateMessage={canContinue && edit.idle
+                regenerateMessage={canContinue && !edit.requesting
                   ? async (message) => { await store.send(open.id, message.text, message.attachments ?? []); }
                   : undefined}
-                editMessage={canContinue && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0 ? edit.run : undefined}
+                editMessage={canContinue && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0
+                  && isComposerEmpty(composer) && !attachments.busy ? edit.run : undefined}
                 canContinue={canContinue}
                 stalledReason={store.blockedReason}
                 stopFeedback={store.stopFeedback}

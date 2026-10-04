@@ -2,7 +2,7 @@
 // is a list of the server's answers, and the preview is the server's own copy. Removing one before
 // sending is a local forget, not a delete: the server reclaims orphans after their TTL.
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { ChatComposerDrawer } from '@astryxdesign/core/Chat';
 import { HStack } from '@astryxdesign/core/HStack';
@@ -33,17 +33,25 @@ export type AttachmentSupport = Readonly<{ available: boolean; reason?: string }
 export const ATTACHED_WORKSPACE_REASON =
   'This track works in a folder you own, and neige never writes into one. Images can be attached on tracks with a managed workspace.';
 
+/**
+ * Where each card's picked images live: the caller's per-conversation composer, so the strip
+ * survives closing and switching. `update` names the card, so an upload lands where it started.
+ */
+export type AttachmentStore = Readonly<{
+  /** The images of the open card's composer. */
+  items: readonly PlannerAttachment[];
+  update: (cardId: string, next: (items: readonly PlannerAttachment[]) => readonly PlannerAttachment[]) => void;
+}>;
+
 export type PlannerAttachments = Readonly<{
   items: readonly PlannerAttachment[];
   /** Ids in the order they will be sent. */
   ids: readonly string[];
   attach: (file: File) => Promise<void>;
   remove: (id: string) => void;
-  clear: () => void;
-  /** Put back images this card already holds (an Edit's removed message); replaces the strip. */
-  restore: (items: readonly PlannerAttachment[]) => void;
+  /** An upload of the open card is in flight. */
   busy: boolean;
-  /** Last refusal, shown beside the strip. Cleared by the next successful pick. */
+  /** Last refusal for the open card, shown beside the strip. Cleared by the next pick. */
   error: string | null;
   atCapacity: boolean;
 }>;
@@ -53,73 +61,57 @@ function refusalFor(contentType: string): string | null {
   return 'That file is not one of PNG, JPEG, GIF or WebP.';
 }
 
-/** The composer's attachment state for one card. Uploads run one at a time and in pick order. */
+/** The composer's images for the open card. Uploads run one at a time per card and in pick order. */
 export function usePlannerAttachments(
   upload: UploadAttachment,
   cardId: string,
+  store: AttachmentStore,
 ): PlannerAttachments {
-  const [items, setItems] = useState<readonly PlannerAttachment[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { items, update } = store;
+  const [uploading, setUploading] = useState<ReadonlySet<string>>(() => new Set());
+  const [refusal, setRefusal] = useState<Readonly<{ cardId: string; message: string }> | null>(null);
   /* Read inside `attach`: closing over a render's `items` would let two quick picks both see an empty list and both pass the cap. */
-  const live = useRef<readonly PlannerAttachment[]>([]);
+  const live = useRef<readonly PlannerAttachment[]>(items);
   live.current = items;
 
-  /* Bumped on every card change; an in-flight upload refuses to adopt its own answer if it no longer matches. */
-  const generation = useRef(0);
-
-  /* A picked image's bytes live under its card's directory and the server refuses it anywhere else, so moving to another conversation drops the strip. */
-  useEffect(() => {
-    generation.current += 1;
-    setItems([]);
-    setError(null);
-    /* The in-flight request cannot be cancelled, but its answer is already refused by the generation check in `attach`. */
-    setBusy(false);
-  }, [cardId]);
-
   const attach = useCallback(async (file: File) => {
-    const refusal = refusalFor(file.type);
-    if (refusal !== null) { setError(refusal); return; }
+    /* A picked image's bytes live under its card's directory and the server refuses it anywhere else, so its answer belongs to this card even if the reader has moved on. */
+    const target = cardId;
+    const refused = refusalFor(file.type);
+    if (refused !== null) { setRefusal({ cardId: target, message: refused }); return; }
     if (live.current.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
-      setError(`A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.`);
+      setRefusal({ cardId: target, message: `A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.` });
       return;
     }
-    setBusy(true);
-    setError(null);
-    const startedAt = generation.current;
+    setUploading((current) => new Set([...current, target]));
+    setRefusal(null);
     try {
       const consume = await upload(async () => new Uint8Array(await file.arrayBuffer()), file.type);
-      /* An upload that lands after the reader moved on belongs to the card it was started for. The generation counter is compared rather than the card id because the id can repeat (leave a card and come back). */
-      if (generation.current !== startedAt) return;
       const uploaded = consume();
-      setItems((current) => [...current, {
+      update(target, (current) => [...current, {
         id: uploaded.attachmentId, contentType: uploaded.contentType,
         size: uploaded.size, url: uploaded.url,
       }]);
     } catch (cause) {
-      if (generation.current !== startedAt) return;
-      setError(cause instanceof Error && cause.message !== ''
-        ? cause.message : 'The image could not be uploaded.');
+      setRefusal({ cardId: target, message: cause instanceof Error && cause.message !== ''
+        ? cause.message : 'The image could not be uploaded.' });
     } finally {
-      if (generation.current === startedAt) setBusy(false);
+      setUploading((current) => new Set([...current].filter((id) => id !== target)));
     }
-  }, [upload]);
+  }, [cardId, update, upload]);
 
+  /* Removing one before sending is a local forget; the server reclaims orphans after their TTL. */
   const remove = useCallback((id: string) => {
-    setItems((current) => current.filter((item) => item.id !== id));
-  }, []);
-  const clear = useCallback(() => { setItems([]); setError(null); }, []);
-  const restore = useCallback((restored: readonly PlannerAttachment[]) => { setItems(restored); setError(null); }, []);
+    update(cardId, (current) => current.filter((item) => item.id !== id));
+  }, [cardId, update]);
 
   return {
     items,
     ids: items.map((item) => item.id),
     attach,
     remove,
-    clear,
-    restore,
-    busy,
-    error,
+    busy: uploading.has(cardId),
+    error: refusal?.cardId === cardId ? refusal.message : null,
     atCapacity: items.length >= MAX_ATTACHMENTS_PER_MESSAGE,
   };
 }
