@@ -7,6 +7,7 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { useId } from 'react';
 
 import type { TrackRecipe } from '../../../../../core/domain/track.ts';
+import { ErrorBox } from '../../../ui/error-box/public.tsx';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
@@ -42,6 +43,8 @@ const DELETE_CONFIRM_LABEL = 'Delete recipe';
 const DELETE_BUSY_LABEL = 'Deleting…';
 
 export type RecipesPageProps = Readonly<{
+  refreshing: boolean;
+  onRetry: () => void;
   recipes: readonly TrackRecipe[];
   /** `false` while the first read is in flight or after it failed; the empty state may not be claimed before a read landed. */
   loaded: boolean;
@@ -53,7 +56,7 @@ export type RecipesPageProps = Readonly<{
 }>;
 
 /** The manage screen: a list, and one recipe open at a time. */
-export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }: RecipesPageProps) {
+export function RecipesPage({ recipes, loaded, error, refreshing, onRetry, theme, onWrite, onDelete }: RecipesPageProps) {
   /** `null` = the list. `''` = a recipe being composed that has no row yet. */
   const [open, setOpen] = useState<string | null>(null);
   /* The row a create resolved to: `onCreated` moves `open` to the new id while `recipes` is still the pre-create list (the invalidate only queues a refetch). */
@@ -99,7 +102,7 @@ export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }
         A recipe is a report you keep: its heading becomes the new track&apos;s summary, and its
         task blocks become that track&apos;s tasks.
       </p>
-      {error !== null && <Banner status="warning" title={error} />}
+      {error !== null && <ErrorBox message={error} onRetry={onRetry} pending={refreshing} />}
       {recipes.length > 0
         ? (
           <ul className={styles.list}>

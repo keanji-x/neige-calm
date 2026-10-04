@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
-import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
+import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TaskAttempt, TaskRecoveryView } from '../../../../core/domain/task-recovery.ts';
 import { deriveReportTasks, type TrackReport } from '../../../../core/domain/report.ts';
@@ -114,4 +114,33 @@ it('shows empty history before allocation and refreshes the first attempt in the
   await expect.element(page.getByText('Current attempt 1 · Queued')).toBeVisible();
   await expect.element(page.getByText('No attempts yet', { exact: true })).not.toBeInTheDocument();
   expect(document.querySelector('[role="alert"]')).toBeNull();
+});
+
+
+it('keeps the failed first history read recovery action focused during retry', async () => {
+  let reads = 0;
+  let finishRetry!: (response: ApiTransportResponse) => void;
+  const retry = new Promise<ApiTransportResponse>((resolve) => { finishRetry = resolve; });
+  const transport: ApiTransportPort = { send() {
+    reads += 1;
+    return reads === 1
+      ? Promise.resolve({ status: 500, statusText: 'Internal Server Error', body: { error: 'History is unavailable.' } })
+      : retry;
+  } };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+  render(<QueryClientProvider client={client}><TaskRecovery trackId="w1" taskKey="b" expanded
+    transport={transport} unauthorized={unauthorized} openableWorkerIds={new Set()} openWorker={() => {}} />
+  </QueryClientProvider>);
+  await expect.element(page.getByText('Could not refresh execution history: History is unavailable.')).toBeVisible();
+  const action = screen.getByRole('button', { name: 'Refresh execution history' });
+  await userEvent.click(action);
+  await expect.poll(() => action.getAttribute('aria-busy')).toBe('true');
+  expect(document.activeElement).toBe(action);
+  // Exercise the handler guard even when the driver sees aria-disabled.
+  await userEvent.click(action, { force: true });
+  expect(reads).toBe(2);
+  await act(async () => { finishRetry({ status: 200, statusText: 'OK', body: { key: 'b', current: null, attempts: [] } }); await retry; });
+  await expect.element(page.getByText('No attempts yet', { exact: true })).toBeVisible();
+  client.clear();
 });

@@ -1,6 +1,8 @@
 import type { CurrentTaskExecution } from '../../../../../core/domain/task-execution.ts';
 import type { ReactNode } from 'react';
 import { attemptStatusLabel, type TaskAttempt, type TaskRecoveryView } from '../../../../../core/domain/task-recovery.ts';
+import { Button } from '@astryxdesign/core/Button';
+import { ErrorBox } from '../../../ui/error-box/public.tsx';
 import styles from './task.module.css';
 
 export type TaskRecoveryProps = Readonly<{
@@ -18,16 +20,18 @@ export function TaskRecoveryDetails({ view, current, loading, loadError,
   onRefresh, openWorker, openableWorkerIds }: TaskRecoveryProps) {
   return <section className={styles.recovery} aria-label="Task execution">
     {loading && view === undefined && <p role="status">Loading execution history…</p>}
-    {loadError !== null && <p role="alert">Could not refresh execution history: {loadError}</p>}
+    {loadError !== null && <ErrorBox message={`Could not refresh execution history: ${loadError}`}
+      onRetry={onRefresh} actionLabel="Refresh execution history" pending={loading} />}
     {view?.current === null && current === undefined && <p>No attempts yet</p>}
     {current !== undefined && <>
       <p className={styles.current}>{`Current attempt ${current.generation} · ${current.label}`}</p>
       {current.statusDetail !== null && <p className={styles.detail}>{current.statusDetail}</p>}
       {current.blockingReason !== null && <p className={styles.detail}>{current.blockingReason}</p>}
     </>}
-    <div className={styles.actions}>
-      {!loading && <button type="button" className={styles.action} onClick={onRefresh}>Refresh execution history</button>}
-    </div>
+    {loadError === null && <div className={styles.actions}>
+      <Button type="button" variant="secondary" size="sm" label="Refresh execution history"
+        isLoading={loading} onClick={onRefresh} />
+    </div>}
     {view !== undefined && <details className={styles.history}>
       <summary>Attempt history ({view.attempts.length})</summary>
       <ol className={styles.attempts}>
@@ -38,9 +42,8 @@ export function TaskRecoveryDetails({ view, current, loading, loadError,
             <AttemptEvidence attempt={attempt}>
               {attempt.worker_card_id !== null && openWorker !== undefined
                 && openableWorkerIds.has(attempt.worker_card_id)
-                && <button type="button" className={styles.action} onClick={() => { openWorker(attempt.worker_card_id!); }}>
-                  Open attempt {attempt.generation}
-                </button>}
+                && <Button type="button" variant="secondary" size="sm" label={`Open attempt ${attempt.generation}`}
+                  onClick={() => { openWorker(attempt.worker_card_id!); }} />}
             </AttemptEvidence>
           </details>
         </li>)}

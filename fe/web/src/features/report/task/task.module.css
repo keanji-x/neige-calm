@@ -165,16 +165,6 @@
     margin-block: var(--space-4);
   }
 
-  .action {
-    padding: var(--space-2) var(--space-4);
-    border-radius: var(--radius-sm);
-    background: var(--surface-chip);
-    color: var(--text);
-    cursor: pointer;
-  }
-
-  .action:disabled { cursor: wait; }
-
   .history {
     margin-block-start: var(--space-4);
     overflow-wrap: anywhere;

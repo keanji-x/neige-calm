@@ -39,7 +39,8 @@
    * why it is registered in `global-classes.yaml` alongside the other vendor
    * surfaces this app restyles.
    */
-  .astryx-text-input input {
+  .astryx-text-input input,
+  .astryx-number-input input {
     border-block-end: none;
     box-shadow: none;
   }

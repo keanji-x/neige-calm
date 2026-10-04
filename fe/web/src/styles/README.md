@@ -56,3 +56,14 @@ The task styles owner approves `--text-meta` and `--glyph-meta` for #1923. Both
 are 12px: the approved metadata font and icon step between existing sizes.
 Metadata rows consume `--control-h`, `--leading-snug`, `--space-2` and semantic
 foreground tokens; component styles do not repeat the pixel values.
+
+## Configuration field focus (#2046)
+
+Change request: the NumberInput wrapper owns its field edge, just as TextInput
+already does, but base's focused input shadow still paints a second inner rule.
+The task orchestrator approves extending the existing theme-bridge rule to the
+published `.astryx-number-input` hook and registering that hook in the global
+class manifest. The styles owner retains the shared rule; call sites gain no
+field-edge overrides. No token, vendor implementation, or inline-title recipe
+changes. The plugin configuration browser regression covers both themes and
+desktop/compact widths, requiring no inner edge while preserving wrapper focus.

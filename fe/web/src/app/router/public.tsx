@@ -2001,6 +2001,8 @@ function RecipesRoute({ transport, unauthorized }: { transport: ApiTransportPort
   return (
     <RecipesPage
       recipes={recipes.recipes}
+      refreshing={recipes.refreshing}
+      onRetry={recipes.refetch}
       loaded={recipes.loaded}
       error={recipes.error}
       theme={resolved}

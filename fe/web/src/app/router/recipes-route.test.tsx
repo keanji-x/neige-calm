@@ -326,3 +326,34 @@ describe('creating a track from a recipe', () => {
     expect('template_input' in body).toBe(false);
   });
 });
+
+
+describe('recipe list recovery', () => {
+  it('retries a failed list read from the page and shows the recovered recipes', async () => {
+    const user = userEvent.setup();
+    const { listReads } = atRecipes({ recipeList: (call) => call === 0
+      ? { status: 500, statusText: 'Internal Server Error', body: { error: 'Storage is offline.' } }
+      : OK([RECIPE]) });
+    expect(await screen.findByText('Could not load your recipes.')).toBeTruthy();
+    expect(screen.queryByText(/You have no recipes yet/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('button', { name: 'Ship checklist' })).toBeTruthy();
+    expect(screen.queryByText('Could not load your recipes.')).toBeNull();
+    expect(listReads()).toBe(2);
+  });
+
+  it('retains previously loaded recipes after a failed refresh and recovers in place', async () => {
+    const user = userEvent.setup();
+    const { client, listReads } = atRecipes({ recipeList: (call) => call === 1
+      ? { status: 500, statusText: 'Internal Server Error', body: { error: 'Storage is offline.' } }
+      : OK([RECIPE]) });
+    await screen.findByRole('button', { name: 'Ship checklist' });
+    await act(async () => { await client.refetchQueries({ queryKey: queryKeys.trackRecipes() }); });
+    await screen.findByText('Could not load your recipes.');
+    expect(screen.getByRole('button', { name: 'Ship checklist' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText('Could not load your recipes.')).toBeNull());
+    expect(screen.getByRole('button', { name: 'Ship checklist' })).toBeTruthy();
+    expect(listReads()).toBe(3);
+  });
+});

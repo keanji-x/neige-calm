@@ -11,6 +11,7 @@ import { createAppRouter } from './public.tsx';
 import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
 import { initialEventState, reduceEventFrame } from '../../../../core/events/reducer.ts';
 import { wireEventSchema } from '../../../../core/api/schemas.ts';
+import { TaskRecoveryDetails } from '../../features/report/task/recovery.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 afterEach(cleanup);
@@ -172,4 +173,21 @@ it('opens never-allocated task history without an alert and refreshes its first 
   expect(screen.queryByText('No attempts yet')).toBeNull();
   expect(screen.queryByRole('alert')).toBeNull();
   expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);
+});
+
+
+it('keeps the history refresh action visible and unavailable while refreshing', async () => {
+  const refresh = vi.fn();
+  render(<TaskRecoveryDetails view={undefined} current={undefined} loading
+    loadError={null} onRefresh={refresh} openWorker={undefined} openableWorkerIds={new Set()} />);
+  const action = screen.getByRole('button', { name: 'Refresh execution history' });
+  expect(action.getAttribute('aria-busy')).toBe('true');
+  await userEvent.click(action);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+it('groups a failed history read with its recovery action', () => {
+  render(<TaskRecoveryDetails view={undefined} current={undefined} loading={false}
+    loadError="History is unavailable." onRefresh={vi.fn()} openWorker={undefined} openableWorkerIds={new Set()} />);
+  expect(screen.getByRole('alert').contains(screen.getByRole('button', { name: 'Refresh execution history' }))).toBe(true);
 });

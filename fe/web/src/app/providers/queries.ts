@@ -4,6 +4,7 @@
 import {
   onlineManager, useQueries, useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query';
+import { hasReadFailure } from './query-read-feedback.ts';
 import { useRef } from 'react';
 import { admitTransport, useRecoveryMutation } from './recovery-mutation.ts';
 import { z } from 'zod';
@@ -599,9 +600,11 @@ export function trackRecipesQueryOptions(transport: ApiTransportPort, unauthoriz
 }
 
 export type TrackRecipes = Readonly<{
+  refreshing: boolean;
+  refetch: () => void;
   /** Never `undefined`: for the picker, pending and failed both read as "no recipes of mine". */
   recipes: TrackRecipe[];
-  /** A notice, not a blocker. `null` while pending. */
+  /** A notice, not a blocker. Retained during a retry after the first failure. */
   error: string | null;
   /** `false` while the first read is in flight OR after it failed: "no recipes yet" is a claim about the server. */
   loaded: boolean;
@@ -610,8 +613,10 @@ export type TrackRecipes = Readonly<{
 export function useTrackRecipes(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackRecipes {
   const query = useQuery(trackRecipesQueryOptions(transport, unauthorized));
   return {
+    refreshing: query.isFetching,
+    refetch: () => { void query.refetch(); },
     recipes: query.data ?? [],
-    error: query.isError ? 'Could not load your recipes.' : null,
+    error: hasReadFailure(query) ? 'Could not load your recipes.' : null,
     loaded: !query.isPending && !query.isError,
   };
 }
