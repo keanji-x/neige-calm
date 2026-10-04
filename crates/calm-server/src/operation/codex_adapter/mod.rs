@@ -40,7 +40,9 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionKind, WorkerSessionState,
 };
-use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
+use crate::shared_codex_appserver::{
+    MintedThread, SharedCodexAppServer, SharedThreadStartParams, ThreadConfig,
+};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
@@ -1173,9 +1175,9 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         crate::planner_card::SeededCardRole::WorkerCodex.prompt_template(),
         ctx.track_id.as_str(),
     );
-    let thread_id =
+    let (thread_id, minted) =
         if let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref()) {
-            thread_id
+            (thread_id, None)
         } else {
             // codex does NOT inherit the daemon process env into exec-shells (and the daemon `env_remove`s NEIGE_MCP_TOKEN from itself); the per-thread
             // `shell_environment_policy.set` is the only channel. Both arms are always `Some` for a real worker spawn; `from_parts` test hatches must wire a stub `McpServer`.
@@ -1188,7 +1190,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                     ));
                 }
             };
-            let thread_id = ctx
+            let minted = ctx
                 .shared_codex_appserver
                 .thread_start_mint_mcp_shell(
                     card_id,
@@ -1202,10 +1204,10 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                 target: "shared_codex_daemon::worker",
                 card_id,
                 track_id = %ctx.track_id,
-                thread_id = %thread_id,
+                thread_id = %minted.thread_id,
                 "thread_start_succeeded"
             );
-            thread_id
+            (minted.thread_id.clone(), Some(minted))
         };
 
     persist_shared_worker_runtime_fields(
@@ -1213,6 +1215,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         ctx.card,
         ctx.worker_session_id,
         &thread_id,
+        minted.as_ref(),
         &remote_uri,
         persisted_turn_id.as_deref(),
     )
@@ -1241,6 +1244,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                 ctx.card,
                 ctx.worker_session_id,
                 &thread_id,
+                None,
                 &remote_uri,
                 Some(&turn_id),
             )
@@ -1413,14 +1417,18 @@ async fn await_shared_worker_initial_turn_started(
     }
 }
 
+/// `minted` is `Some` only right after this spawn minted `thread_id`: its resolved model then
+/// replaces `resolved_model` (removed when codex named none). `None` keeps what that mint wrote.
 async fn persist_shared_worker_runtime_fields(
     ctx: &SpawnCtx,
     card: &Card,
     runtime_id: &str,
     thread_id: &str,
+    minted: Option<&MintedThread>,
     remote_uri: &str,
     active_turn_id: Option<&str>,
 ) -> Result<()> {
+    let resolved_model_for_tx = minted.map(|minted| minted.resolved_model.clone());
     let card_id_for_tx = card.id.to_string();
     let runtime_id_for_tx = runtime_id.to_string();
     let thread_id_for_tx = thread_id.to_string();
@@ -1436,6 +1444,15 @@ async fn persist_shared_worker_runtime_fields(
             };
             map.insert("appserver_sock".into(), Value::String(remote_uri_for_tx));
             map.remove("appserver_pgid");
+            match resolved_model_for_tx {
+                Some(Some(model)) => {
+                    map.insert("resolved_model".into(), Value::String(model));
+                }
+                Some(None) => {
+                    map.remove("resolved_model");
+                }
+                None => {}
+            }
             let updated = card_update_tx(
                 tx,
                 &card_id_for_tx,

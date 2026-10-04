@@ -455,12 +455,14 @@ async fn serve_conn(
                         continue;
                     }
                 }
-                send_result(
-                    &mut write,
-                    &id,
-                    json!({ "thread": { "id": thread_id }, "model": "fake-model" }),
-                )
-                .await?;
+                // `FAKE_CODEX_THREAD_START_MODEL` names the resolved model; `FAKE_CODEX_THREAD_START_OMIT_MODEL` answers without one.
+                let mut result = json!({ "thread": { "id": thread_id } });
+                if !env_flag("FAKE_CODEX_THREAD_START_OMIT_MODEL") {
+                    let model = std::env::var("FAKE_CODEX_THREAD_START_MODEL")
+                        .unwrap_or_else(|_| "fake-model".to_string());
+                    result["model"] = Value::String(model);
+                }
+                send_result(&mut write, &id, result).await?;
                 // `thread/started` notification (best-effort; the kernel
                 // tracks thread ids from it but doesn't block on it).
                 send_notification(

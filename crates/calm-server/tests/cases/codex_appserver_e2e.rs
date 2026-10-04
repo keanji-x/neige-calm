@@ -107,7 +107,7 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
         .expect("thread/start result carries thread.id")
         .to_string();
     eprintln!(
-        "[codex-appserver-e2e] thread started: {thread_id} (model {})",
+        "[codex-appserver-e2e] thread started: {thread_id} (model {:?})",
         thread.model
     );
 

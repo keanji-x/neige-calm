@@ -159,14 +159,14 @@ impl InputItem {
     }
 }
 
-/// `thread/start` / `thread/resume` result; only `thread.id` is ever read.
+/// `thread/start` / `thread/resume` result; only `thread.id` and `model` are ever read.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ThreadResult {
     /// Raw `thread` object from the server.
     pub thread: Value,
-    /// Resolved model (e.g. `gpt-5.5`).
-    pub model: String,
+    /// Resolved model (e.g. `gpt-5.5`); `None` when the answer names none.
+    pub model: Option<String>,
 }
 
 impl ThreadResult {
@@ -2062,7 +2062,13 @@ mod tests {
         });
         let r: ThreadResult = serde_json::from_value(raw).unwrap();
         assert_eq!(r.thread_id(), Some("abc-123"));
-        assert_eq!(r.model, "gpt-5.5");
+        assert_eq!(r.model.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn thread_result_without_a_model_reads_none() {
+        let r: ThreadResult = serde_json::from_value(json!({ "thread": { "id": "abc" } })).unwrap();
+        assert_eq!(r.model, None);
     }
 
     /// The assertion is on the frame, because the frame is the entire contract.

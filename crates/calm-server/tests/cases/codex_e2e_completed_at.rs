@@ -205,7 +205,7 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
         .expect("thread/start carries thread.id")
         .to_string();
     eprintln!(
-        "[codex-e2e-completed-at] thread started: {thread_id} (model {})",
+        "[codex-e2e-completed-at] thread started: {thread_id} (model {:?})",
         thread.model
     );
 

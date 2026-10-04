@@ -545,6 +545,13 @@ impl ThreadConfig {
     }
 }
 
+/// A thread `thread/start` minted, with the model codex resolved for it when its answer named one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintedThread {
+    pub thread_id: String,
+    pub resolved_model: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct SharedThreadStartParams {
     pub cwd: String,
@@ -1148,7 +1155,10 @@ impl SharedCodexAppServer {
                     Some(_role),
                 ));
         }
-        let thread_id = self.thread_start_mint_inner(card_id, params).await?;
+        let thread_id = self
+            .thread_start_mint_inner(card_id, params)
+            .await?
+            .thread_id;
         tracing::info!(
             target = "shared_codex_daemon::thread_start",
             %card_id,
@@ -1177,7 +1187,9 @@ impl SharedCodexAppServer {
                     None,
                 ));
         }
-        self.thread_start_mint_inner(card_id, params).await
+        self.thread_start_mint_inner(card_id, params)
+            .await
+            .map(|minted| minted.thread_id)
     }
 
     /// Worker mint: inject per-card MCP shell credentials without Planner tool delegation.
@@ -1188,7 +1200,7 @@ impl SharedCodexAppServer {
         developer_instructions: Option<String>,
         socket_path: PathBuf,
         raw_token: String,
-    ) -> Result<String> {
+    ) -> Result<MintedThread> {
         let params = SharedThreadStartParams {
             cwd,
             approval_policy: "never".into(),
@@ -1209,7 +1221,7 @@ impl SharedCodexAppServer {
         self: &Arc<Self>,
         card_id: &str,
         params: SharedThreadStartParams,
-    ) -> Result<String> {
+    ) -> Result<MintedThread> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.fail_next_thread_start.swap(false, Ordering::SeqCst) {
@@ -1225,7 +1237,10 @@ impl SharedCodexAppServer {
                 .insert(thread_id.clone());
             self.thread_cache
                 .insert(thread_id.clone(), card_id.to_string());
-            return Ok(thread_id);
+            return Ok(MintedThread {
+                thread_id,
+                resolved_model: Some("fake-model".into()),
+            });
         }
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
@@ -1249,7 +1264,10 @@ impl SharedCodexAppServer {
             .insert(thread_id.clone());
         self.thread_cache
             .insert(thread_id.clone(), card_id.to_string());
-        Ok(thread_id)
+        Ok(MintedThread {
+            thread_id,
+            resolved_model: thread.model,
+        })
     }
 
     /// If runtime settings changed, synchronously respawn the daemon so

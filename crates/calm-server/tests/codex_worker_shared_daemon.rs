@@ -1231,6 +1231,105 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     );
 }
 
+/// Spawns one codex worker through the dispatcher while `env` shapes the fake daemon's
+/// `thread/start` answer, then returns the Planner's `neige cat runs/<attempt>.json` of its run.
+async fn worker_run_record_with_thread_start_env(key: &str, env: (&str, &str)) -> Value {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var(env.0, env.1);
+    }
+    let boot = boot(true).await;
+    let _dispatcher = spawn_dispatcher(&boot);
+    let idempotency_key = task_id(&boot, key);
+    write_codex_task_block(&boot, key, "report the resolved model").await;
+    let card = wait_for(Duration::from_secs(5), || async {
+        let mut cards = boot
+            .repo
+            .cards_by_track(boot.track_id.as_str())
+            .await
+            .unwrap();
+        project_runtime_into_cards_payload(boot.repo.as_ref(), &mut cards)
+            .await
+            .unwrap();
+        cards.into_iter().find(|c| {
+            c.payload.get("idempotency_key").and_then(Value::as_str)
+                == Some(idempotency_key.as_str())
+                && c.payload.get("codex_thread_id").and_then(Value::as_str)
+                    == Some("fake-thread-0001")
+                && c.payload
+                    .get("appserver_sock")
+                    .and_then(Value::as_str)
+                    .is_some()
+        })
+    })
+    .await
+    .expect("shared worker card");
+    unsafe {
+        std::env::remove_var(env.0);
+    }
+
+    let cat = |path: String| {
+        let handler = boot
+            .registry
+            .lookup(calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT)
+            .expect("track cat tool registered");
+        let call = handler(
+            boot.ctx.clone(),
+            planner_identity(&boot),
+            json!({ "path": path }),
+        );
+        async move {
+            let out = call
+                .await
+                .map(calm_server::mcp_server::result::ToolResult::into_structured)
+                .unwrap_or_else(|e| panic!("planner cat {path}: {e:?}"));
+            serde_json::from_str::<Value>(out["content"].as_str().expect("content string"))
+                .expect("content is JSON")
+        }
+    };
+    let index = cat("runs/index.json".into()).await;
+    let attempt_id = index
+        .as_array()
+        .expect("runs index is an array")
+        .iter()
+        .find(|run| run["worker_card_id"] == json!(card.id.as_str()))
+        .and_then(|run| run["attempt_id"].as_str())
+        .unwrap_or_else(|| panic!("no run for worker card {}: {index}", card.id))
+        .to_string();
+    cat(format!("runs/{attempt_id}.json")).await
+}
+
+#[tokio::test]
+async fn worker_run_record_echoes_the_model_codex_resolved() {
+    let run = worker_run_record_with_thread_start_env(
+        "resolved-model",
+        ("FAKE_CODEX_THREAD_START_MODEL", "gpt-seeded-resolved"),
+    )
+    .await;
+    assert_eq!(
+        run["worker_card_payload"]["resolved_model"],
+        json!("gpt-seeded-resolved"),
+        "the run record must echo thread/start's resolved model: {run}"
+    );
+}
+
+#[tokio::test]
+async fn worker_run_record_omits_a_model_codex_did_not_name() {
+    let run = worker_run_record_with_thread_start_env(
+        "no-resolved-model",
+        ("FAKE_CODEX_THREAD_START_OMIT_MODEL", "1"),
+    )
+    .await;
+    assert!(
+        run["worker_card_payload"]["appserver_sock"].is_string(),
+        "anti-vacuity: the spawn persisted its runtime fields: {run}"
+    );
+    assert!(
+        run["worker_card_payload"].get("resolved_model").is_none(),
+        "no model in thread/start must leave the key absent: {run}"
+    );
+}
+
 #[tokio::test]
 async fn worker_shared_daemon_stopped_rolls_back_card() {
     // ENV_LOCK protects against env-var pollution from concurrent tests that would affect the fake daemon.
