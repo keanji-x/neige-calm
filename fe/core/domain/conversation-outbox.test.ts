@@ -77,6 +77,13 @@ describe('the outbox view', () => {
     expect(texts(view([op('a', UNKNOWN_SPENT)]).transcript)).toEqual(['same']);
   });
 
+  it('still blocks on a sending op a read already shows', () => {
+    const shown = view([op('a', SENDING)], [row('5')]);
+    expect(texts(shown.transcript)).toEqual(['same']);
+    expect(shown.blocked).toBe(true);
+    expect(shown.sending).toBe(true);
+  });
+
   it('still draws a rejected send beside an equal row, which a stale read can reveal', () => {
     const rejected = op('a', { phase: 'failed', delivery: 'rejected', message: 'no' });
     expect(texts(view([rejected], [row('5')]).transcript)).toEqual(['same', 'same']);

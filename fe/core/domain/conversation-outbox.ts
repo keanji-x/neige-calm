@@ -151,8 +151,9 @@ export function outboxView({ serverEntries, serverTurns, liveReplies, queuedEntr
     confirmed: live.filter((op) => op.phase === 'confirmed').map((op) => op.echo),
     retire: retiredOps(ops, matched, landed),
     sending: ops.some((op) => op.phase === 'sending'),
-    /* A queued confirmed message cannot be waited on: the queue writes no row until the turn ends. */
-    blocked: stalled || (failed !== null && failed.delivery !== 'refused')
+    /* Any send still out blocks, even one a read already shows: the next press would be refused and its words lost.
+       A queued confirmed message cannot be waited on: the queue writes no row until the turn ends. */
+    blocked: stalled || (failed !== null && failed.delivery !== 'refused') || ops.some((op) => op.phase === 'sending')
       || live.some((op) => op.phase !== 'confirmed' || !op.echo.queued),
     failed,
   };

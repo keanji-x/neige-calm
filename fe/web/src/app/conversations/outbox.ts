@@ -114,6 +114,8 @@ export function useConversationOutbox({
     [serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, ops, landed],
   );
   const { retire } = view;
+  /* Filtering by key is safe only because a `confirmed` or `replayed` op, the only ones retired, never changes phase
+     again: an op under that key here is still the one the view retired. */
   useEffect(() => {
     if (retire.length === 0) return;
     editOutbox(cardId, (current) => {

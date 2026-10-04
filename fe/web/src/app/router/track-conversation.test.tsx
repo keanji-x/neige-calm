@@ -1047,6 +1047,62 @@ describe('track conversations', () => {
     expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
   });
 
+  it('[#2043] keeps the composer closed while a send is out, even once a read shows its message', async () => {
+    const text = 'Stored before its answer came';
+    let rows: ReturnType<typeof harnessMessage>[] = [];
+    let answer!: () => void;
+    const answered = new Promise<void>((done) => { answer = done; });
+    const { client, requests } = setup(async (request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok(rows);
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      await answered;
+      return inputAccepted();
+    });
+    const inputs = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write(text);
+    await waitFor(() => expect(inputs()).toHaveLength(1));
+    /* An event-driven read shows the stored message while its answer is still out. */
+    rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
+    await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
+    await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    await typeInto(messageField(), 'A second message');
+    await submit();
+    expect(messageField().textContent).toBe('A second message');
+    expect(inputs()).toHaveLength(1);
+    await act(async () => { answer(); await answered; });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    expect(messageField().textContent).toBe('A second message');
+    expect(inputs()).toHaveLength(1);
+  });
+
+  it('[#2068] retires a replayed send by a run read started after its answer, not by a first read still out before it', async () => {
+    const text = 'Replayed for an entry deleted meanwhile';
+    let attempts = 0;
+    let runReads = 0;
+    const { requests } = setup(async (request) => {
+      if (request.path.endsWith('/planner/run')) {
+        runReads += 1;
+        /* The first run read never lands: the query layer would hand it back in place of the read the answer asks for. */
+        if (runReads === 1) await new Promise<void>(() => undefined);
+        return undefined;
+      }
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      attempts += 1;
+      if (attempts === 1) throw new Error('response dropped');
+      return inputAccepted();
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write(text);
+    await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(2));
+    /* No read shows it (the entry was disposed of), so only reads started after the answer retire it. */
+    await waitFor(() => expect(within(drawerElement()).queryAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(0));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  });
+
   it('[F5] keeps one English line when Try again is pressed offline in the bundled build', async () => {
     vi.stubGlobal('__NC_BUNDLED__', true);
     const access = new RecoveryAccess(); access.change('connected');
@@ -2819,7 +2875,7 @@ describe('registry write-through', () => {
   });
 });
 
-it.each(['429', 'transport'])('[F5] does not retire a %s failure when a stale read reveals an old equal message', async (mode) => {
+it.each(['429', 'transport'])('[F5] keeps a %s failure and its Try again when a stale read reveals an old equal message', async (mode) => {
   const text = 'repeat this instruction';
   const first = harnessMessage(1, 'userMessage', { content: [{ text: 'Earlier different instruction' }] });
   const oldEqual = harnessMessage(2, 'userMessage', { content: [{ text }] });

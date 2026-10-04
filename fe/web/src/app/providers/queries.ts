@@ -239,7 +239,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     };
   }
   const setModelWrite = setModelRef.current.write;
-  const refreshTranscript = () => client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) });
+  const transcriptKey = queryKeys.harnessItems(cardId);
+  const refreshTranscript = () => client.invalidateQueries({ queryKey: transcriptKey });
   const refreshAfter = <T,>(result: T): T => {
     /* A 200 from the write is the acknowledgement; refetch is reconciliation and its failure must not
            turn an accepted send into a failed write. Not awaited: a hung read must not retain the send lease. */
@@ -249,12 +250,20 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     ]).catch(() => undefined);
     return result;
   };
+  /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
+     flight from before the answer, and only a read started after it can stand for a send answered after an unknown attempt. */
+  const refreshAfterSend = <T,>(result: T): T => {
+    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) {
+      void client.cancelQueries({ queryKey }).then(() => client.invalidateQueries({ queryKey })).catch(() => undefined);
+    }
+    return result;
+  };
   return {
     /* `admitted` is the caller's: a keyed send is admitted at the press, and each retry is admitted again.
        `answered` runs when the 200 is in hand, before the refresh starts its reads. */
     send: (text: string, attachments: readonly string[], idempotencyKey: string, admitted: ApiTransportPort, answered: () => void) =>
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey), unauthorized)
-        .then((sent) => { answered(); return refreshAfter(sent); }),
+        .then((sent) => { answered(); return refreshAfterSend(sent); }),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
     /* A refusal changed nothing, so only an accepted rewind refreshes. Not awaited: the Edit already hides the
      * removed turn until a read without it lands, and a send waiting on the rewind goes on its 200. */
