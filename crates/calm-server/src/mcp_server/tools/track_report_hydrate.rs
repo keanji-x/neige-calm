@@ -13,10 +13,12 @@ use crate::report_series::hydrate::hydrate_chart_series;
 use crate::report_series::{Detail, resolved_at_text};
 use calm_types::report_blocks::kinds::LIVE_SOURCE_PREFIX;
 use calm_types::report_blocks::kinds::validate_inline_table_overlay;
+use calm_types::report_blocks::native_view::{LiveSlot, NativeView, RowCell, validate_unit};
 use calm_types::report_blocks::{
-    KIND_CHART_SERIES, KIND_LIVE_VIEW, KIND_TABLE, MAX_LIVE_VIEW_BYTES, validate_payload,
+    KIND_CHART_SERIES, KIND_LIVE_VIEW, KIND_TABLE, KIND_VIEW, MAX_LIVE_VIEW_BYTES, validate_payload,
 };
 use calm_types::track_report::ReportBlock;
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolveMode {
@@ -114,38 +116,67 @@ pub(crate) async fn hydrated_block_index(
 }
 
 fn is_overlay_block(block: &ReportBlock) -> bool {
-    matches!(block.kind.as_str(), KIND_TABLE | KIND_LIVE_VIEW)
-        && block.payload.get("source").is_some_and(Value::is_string)
+    match block.kind.as_str() {
+        KIND_TABLE | KIND_LIVE_VIEW => block.payload.get("source").is_some_and(Value::is_string),
+        KIND_VIEW => !view_slots(block).is_empty(),
+        _ => false,
+    }
+}
+
+/// The live slots of a stored `view` template, in row and cell order.
+fn view_slots(block: &ReportBlock) -> Vec<LiveSlot> {
+    let Ok(view) = NativeView::deserialize(&block.payload) else {
+        return Vec::new();
+    };
+    view.rows
+        .into_iter()
+        .flat_map(|row| row.cells)
+        .filter_map(|cell| match cell {
+            RowCell::Live(slot) => Some(slot),
+            RowCell::Inline(_) => None,
+        })
+        .collect()
 }
 
 /// Exact Track/plugin/kind lookup; never resolve by plugin name alone.
+fn find_overlay<'a>(
+    track_id: &str,
+    source: &str,
+    overlays: &'a [crate::model::Overlay],
+) -> Result<Option<&'a crate::model::Overlay>, &'static str> {
+    let (plugin_id, kind) = source
+        .strip_prefix(LIVE_SOURCE_PREFIX)
+        .and_then(|rest| rest.split_once('/'))
+        .filter(|(plugin_id, kind)| {
+            !plugin_id.is_empty() && !kind.is_empty() && !kind.contains('/')
+        })
+        .ok_or("source is not a plugin overlay")?;
+    Ok(overlays.iter().find(|overlay| {
+        overlay.entity_kind == "track"
+            && overlay.entity_id == track_id
+            && overlay.plugin_id == plugin_id
+            && overlay.kind == kind
+    }))
+}
+
 fn hydrate_overlay(
     track_id: &str,
     block: &ReportBlock,
     mode: ResolveMode,
     overlays: &[crate::model::Overlay],
 ) -> Value {
+    if block.kind == KIND_VIEW {
+        return hydrate_live_slots(track_id, &view_slots(block), mode, overlays);
+    }
     let source = block
         .payload
         .get("source")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let target = source
-        .strip_prefix(LIVE_SOURCE_PREFIX)
-        .and_then(|rest| rest.split_once('/'))
-        .filter(|(plugin_id, kind)| {
-            !plugin_id.is_empty() && !kind.is_empty() && !kind.contains('/')
-        });
-    let Some((plugin_id, kind)) = target else {
-        return json!({ "status": "unavailable", "reason": "source is not a plugin overlay" });
-    };
-    let Some(overlay) = overlays.iter().find(|overlay| {
-        overlay.entity_kind == "track"
-            && overlay.entity_id == track_id
-            && overlay.plugin_id == plugin_id
-            && overlay.kind == kind
-    }) else {
-        return json!({ "status": "pending" });
+    let overlay = match find_overlay(track_id, source, overlays) {
+        Err(reason) => return json!({ "status": "unavailable", "reason": reason }),
+        Ok(None) => return json!({ "status": "pending" }),
+        Ok(Some(overlay)) => overlay,
     };
     if block.kind == KIND_LIVE_VIEW {
         return hydrate_live_view(block, overlay, mode);
@@ -201,6 +232,60 @@ fn hydrate_live_view(
         return out;
     }
     out["status"] = json!("ok");
+    if mode == ResolveMode::Full {
+        out["data"] = overlay.payload.clone();
+    }
+    out
+}
+
+/// Each slot of a template view resolves and validates on its own; a failing slot degrades only itself.
+fn hydrate_live_slots(
+    track_id: &str,
+    slots: &[LiveSlot],
+    mode: ResolveMode,
+    overlays: &[crate::model::Overlay],
+) -> Value {
+    let cells: Vec<Value> = slots
+        .iter()
+        .map(|slot| hydrate_slot(slot, find_overlay(track_id, &slot.source, overlays), mode))
+        .collect();
+    let status = if cells.iter().all(|cell| cell["status"] == "ok") {
+        "ok"
+    } else {
+        "partial"
+    };
+    json!({ "status": status, "validation": "presentation", "cells": cells })
+}
+
+fn hydrate_slot(
+    slot: &LiveSlot,
+    found: Result<Option<&crate::model::Overlay>, &'static str>,
+    mode: ResolveMode,
+) -> Value {
+    let mut out = json!({ "id": slot.id, "source": slot.source });
+    let overlay = match found {
+        Err(reason) => {
+            out["status"] = json!("unavailable");
+            out["reason"] = json!(reason);
+            return out;
+        }
+        Ok(None) => {
+            out["status"] = json!("pending");
+            return out;
+        }
+        Ok(Some(overlay)) => overlay,
+    };
+    out["resolved_at"] = json!(resolved_at_text(overlay.updated_at));
+    if let Err(reason) = validate_unit(slot.expects, &overlay.payload) {
+        out["status"] = json!("unavailable");
+        out["reason"] = json!(reason);
+        return out;
+    }
+    out["status"] = json!("ok");
+    // `validate_unit` bounded `observedAt` to a non-negative integer millisecond time.
+    if let Some(observed_at) = overlay.payload["snapshot"]["observedAt"].as_f64() {
+        out["observed_at"] = json!(resolved_at_text(observed_at as i64));
+    }
     if mode == ResolveMode::Full {
         out["data"] = overlay.payload.clone();
     }

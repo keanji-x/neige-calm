@@ -646,7 +646,7 @@
   },
   {
     "name": "neige.report.read",
-    "description_sha256": "0c5d95c36ff48127e676cb7cad5e33a44df29bc8e8de1e20d97c057b73ccc38b",
+    "description_sha256": "3e9a5c885d482f1b974d1e64e752e849371d7615b9a7effbe5c96fbad73e2afc",
     "input_schema": {
       "properties": {
         "resolve": {
