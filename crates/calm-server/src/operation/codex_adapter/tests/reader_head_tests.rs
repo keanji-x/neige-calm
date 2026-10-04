@@ -112,46 +112,36 @@ async fn codex_reader_spawn_redrive_refuses_a_checkout_that_left_the_head() {
     );
 }
 
-/// T5 and T6: a reader's prompt states its repo (the main repository's remote; the track branch
-/// has no upstream), checkout, head and base; a writer's prompt and output are unchanged.
+/// T5 and T6: a reader's prompt states its repo (the track branch's own upstream remote, #2112:
+/// never that of the branch the main checkout is on), checkout, head and base; a writer's prompt
+/// and output are unchanged.
 #[tokio::test]
 async fn codex_reader_prompt_states_repo_checkout_head_and_base() {
     let harness = worker_lease_harness().await;
     let main = harness.repo_root.path();
     let url = "https://github.com/example/neige.git";
-    let branch = String::from_utf8(
-        Command::new("git")
-            .args(["symbolic-ref", "--short", "HEAD"])
-            .current_dir(main)
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    let branch = branch.trim();
+    let track_branch = format!("neige/track-{}", harness.track_id);
     run_git(main, ["remote", "add", "origin", url]);
     run_git(
         main,
-        ["config", &format!("branch.{branch}.remote"), "origin"],
+        ["config", &format!("branch.{track_branch}.remote"), "origin"],
     );
     run_git(
         main,
         [
             "config",
-            &format!("branch.{branch}.merge"),
-            &format!("refs/heads/{branch}"),
+            &format!("branch.{track_branch}.merge"),
+            "refs/heads/main",
         ],
     );
-    let track_branch = format!("refs/heads/neige/track-{}", harness.track_id);
     let output = Command::new("git")
-        .args(["for-each-ref", "--format=%(upstream)", &track_branch])
+        .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
         .current_dir(main)
         .output()
         .unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "",
-        "the track branch has no upstream"
+    assert!(
+        !output.status.success(),
+        "the main checkout's branch has no upstream"
     );
 
     let head = git_head(&harness.worktree);
