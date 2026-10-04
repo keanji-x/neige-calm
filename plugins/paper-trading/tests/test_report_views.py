@@ -15,3 +15,5 @@ def test_table_cell_unicode_boundary(size):
     displayed = table([('text', 'Text')], [{'text': text}], 'Boundary')['rows'][0]['text']
     assert len(displayed) <= 2048
     assert (displayed == text) is (size <= 2048)
+    if size > 2048:
+        assert len(displayed) == 2048 and displayed.endswith('... [truncated]')

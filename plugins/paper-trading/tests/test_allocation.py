@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from paper_trading.allocation import Allocation
+from paper_trading.allocation import TOOLS, Allocation
 from paper_trading.allocation_broker import AllocationBroker
 from paper_trading.allocation_config import OPTIONAL, REQUIRED, AllocationConfig
 from paper_trading.allocation_report import tables
@@ -343,6 +343,11 @@ def test_spy_production_stdio_entrypoint_and_overlays(allocation_rig):
         assert result['snapshot']['shares'] == 60
         while not {'spy.overview', 'spy.portfolio', 'spy.decisions', 'spy.fills'} <= {p['kind'] for p in host.overlays}:
             host.receive()
+        for overlay in host.overlays:
+            # The kernel callback frame: every overlay belongs to the owning Track and carries its projection.
+            assert set(overlay) == {'entity_kind', 'entity_id', 'kind', 'payload'}, overlay
+            assert overlay['entity_kind'] == 'track' and overlay['entity_id'] == 'owner'
+            assert isinstance(overlay['payload'], dict) and overlay['payload'], overlay['kind']
         # A replayed Worker request may read, but may never write another order.
         assert host.tool('spy.execute', {'decision_id': 'stdio-target'}, track='owner', caller=WORKER)['isError']
         assert len(r.submits()) == 1
@@ -524,6 +529,11 @@ def test_spy_config_refuses_an_unknown_key(allocation_rig):
         AllocationConfig.parse(allocation_rig.values | {'unexpected_setting': 1})
 
 
+def test_manifest_exposes_exactly_the_app_tools():
+    names = [tool['name'] for tool in json.loads((ROOT / 'manifest.json').read_text())['exposes_tools']]
+    assert len(names) == len(TOOLS) and set(names) == TOOLS
+
+
 def test_manifest_config_schema_matches_the_parsed_keys():
     schema = json.loads((ROOT / 'manifest.json').read_text())['config_schema']
     assert set(schema['properties']) == REQUIRED | OPTIONAL
@@ -596,7 +606,65 @@ def test_spy_tables_publish_only_declared_columns(allocation_rig):
     published = {kind: payload for kind, payload in tables(state).items() if 'columns' in payload}
     assert set(published) == {'spy.portfolio', 'spy.decisions', 'spy.fills'}
     for kind, payload in published.items():
+        assert set(payload) == {'columns', 'rows', 'caption'}, kind
+        assert isinstance(payload['caption'], str) and payload['caption'], kind
+        assert all(set(column) == {'key', 'label'} and column['label'] for column in payload['columns']), kind
         declared = {column['key'] for column in payload['columns']}
         assert payload['rows'], kind
         # The kernel refuses a row key that is not a declared column.
         assert all(set(row) == declared for row in payload['rows']), kind
+
+
+def test_spy_status_names_its_profile_and_symbol(allocation_rig):
+    state = allocation_rig.status()
+    assert state['profile'] == 'spy_cash' and state['symbol'] == 'SPY.US'
+
+
+def test_spy_ledger_persists_its_account_and_track_binding(allocation_rig):
+    with allocation_rig.app.ledger.session() as db:
+        stored = db.execute("SELECT body FROM meta WHERE key='binding'").fetchone()[0]
+    # The live ledger's persisted form: renaming either key would orphan an existing binding.
+    assert stored == '{"account_no":"PAPER123","owner_track_id":"owner"}'
+
+
+def test_spy_settlement_journals_one_decision_state_transition(allocation_rig):
+    r = allocation_rig; r.plan(); r.execute(); r.publish()
+    before = {e['seq'] for e in r.status()['journal']}
+    # One reconciliation moves the working order straight to settled.
+    state = r.fill('order-1', 60, '4000', 'buy-fill', 60)
+    added = [e for e in state['journal'] if e['seq'] not in before and e['kind'] == 'decision_state']
+    assert [e['body'] for e in added] == [{'decision_id': 'allocation-1', 'state': 'settled', 'error': None,
+                                          'broker_id': 'order-1', 'broker_status': 'Filled'}]
+
+
+@pytest.mark.parametrize('status,expected,executed', [
+    ('Canceled', 'canceled', 0), ('Rejected', 'rejected', 0), ('Expired', 'expired', 0),
+    ('PartialWithdrawal', 'canceled', 30)])
+def test_spy_terminal_broker_status_resolves_the_decision(allocation_rig, status, expected, executed):
+    r = allocation_rig; r.plan(); r.execute()
+    if executed:
+        r.publish(); state = r.fill('order-1', executed, '7000', 'part-fill', executed, status=status)
+    else:
+        r.publish(status=status); state = r.step()
+    assert state['error'] is None
+    assert state['decisions'][0]['state'] == expected
+    assert state['decisions'][0]['broker_status'] == status
+
+
+def test_spy_exponent_broker_price_is_refused_before_any_order(allocation_rig):
+    r = allocation_rig; r.plan()
+    state = r.read(); state['snapshot']['quote']['price'] = '1E+2'; r.write(state)
+    state = r.execute()
+    # Sizing reads only plain decimal strings; the decision waits instead of trading on it.
+    assert 'without exponent' in state['decisions'][0]['error']
+    assert state['decisions'][0]['state'] == 'requested' and not r.submits()
+
+
+def test_spy_fully_invested_account_with_zero_cash_can_sell(allocation_rig):
+    r = allocation_rig; _opening(r, 100, 100)
+    state = r.read(); state['snapshot']['cash_usd'] = state['snapshot']['available_cash_usd'] = '0'; r.write(state)
+    r.plan(target_spy_bps=0)
+    state = r.execute()
+    assert state['error'] is None and state['snapshot']['cash_usd'] == '0'
+    assert state['decisions'][0]['state'] == 'working'
+    assert r.order()['side'] == 'Sell' and r.order()['quantity'] > 0

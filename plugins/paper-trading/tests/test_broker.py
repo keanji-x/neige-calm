@@ -123,6 +123,11 @@ def test_non_object_response_is_refused(harness, value):
     assert len(harness.calls()) == 1
 
 
+def test_only_stdout_is_parsed(harness):
+    harness.reply({"order_id": "fixture-order"}, stderr="SDK warning: not JSON\n" * 3)
+    assert harness.snapshot() == {"order_id": "fixture-order"}
+
+
 def test_environment_allowlist_home_cwd_and_closed_stdin(harness, monkeypatch):
     allowed = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
                **{key: "http://fixture.invalid:8080" for key in (
@@ -210,6 +215,7 @@ def test_launch_failure_is_safe(harness):
 
 
 @pytest.mark.parametrize("field,value", [("sdk_python_path", "relative"), ("broker_home", "relative"),
+    ("sdk_python_path", "/bin/py\0thon"), ("broker_home", ""),
     ("workdir", "relative"), ("timeout_seconds", 0), ("timeout_seconds", -1),
     ("timeout_seconds", True), ("timeout_seconds", 1.5)])
 def test_invalid_configuration(tmp_path, field, value):

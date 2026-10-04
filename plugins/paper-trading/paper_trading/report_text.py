@@ -2,9 +2,9 @@
 from decimal import Decimal
 
 
-def money_text(value, signed=False):
+def money_text(value):
     amount = Decimal(value)
-    prefix = '-' if amount < 0 else '+' if signed and amount > 0 else ''
+    prefix = '-' if amount < 0 else ''
     return f'{prefix}${abs(amount):,.2f}'
 
 

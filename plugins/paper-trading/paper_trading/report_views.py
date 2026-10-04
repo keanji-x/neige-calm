@@ -21,9 +21,8 @@ def native_view(state, title, rows, description=''):
             'snapshot': {'id': identity, 'observedAt': observed, 'producedAt': None}, 'rows': rows}
 
 
-def row(identity, cells, title='', layout=None):
-    return {'id': identity, 'title': title, 'layout': layout or {1: 'one', 2: 'two', 3: 'three'}[len(cells)],
-            'cells': cells}
+def row(identity, cells, title, layout):
+    return {'id': identity, 'title': title, 'layout': layout, 'cells': cells}
 
 
 def scalar(amount, unit='$', decimals=0, signed=False, placement='prefix'):
