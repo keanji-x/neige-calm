@@ -1286,20 +1286,18 @@ async fn create_track_structure(
         move |tx| {
             Box::pin(async move {
                 if let Some(identity) = &managed_identity {
-                    let existing: Option<(String,String,String,String,String,bool,Option<String>)> = sqlx::query_as(concat!(
+                    let existing: Option<crate::managed_track::ManagedTrackBinding> = sqlx::query_as(concat!(
 "SELECT ",
 "m.track_id,t.area_id,m.report_read_scope,m.report_time_zone,m.tool_policy,m.kernel_controls_lifecycle,t.template_id",
 " FROM managed_track_identities m JOIN tracks t ON t.id=m.track_id WHERE m.owner=?1 AND ",
 "m.identity=?2",
 ))
                         .bind(&identity.owner).bind(&identity.identity).fetch_optional(&mut **tx).await?;
-                    if let Some((id,area,scope,zone,policy,lifecycle,template)) = existing {
-                        let requested_scope = match identity.report_read_scope { crate::managed_track::ReportReadScope::Area => "area", crate::managed_track::ReportReadScope::Workspace => "workspace" };
-                        if area != p.area_id.as_str() || scope != requested_scope || zone != identity.report_time_zone.name()
-                            || policy != identity.tool_policy.as_str() || lifecycle != identity.kernel_controls_lifecycle || template != p.template_id {
+                    if let Some(binding) = existing {
+                        if !binding.matches(identity, p.area_id.as_str(), &p.template_id) {
                             return Err(CalmError::Conflict("managed Track identity belongs to different creation metadata".into()));
                         }
-                        let _ = replay_tx.set(id);
+                        let _ = replay_tx.set(binding.track_id);
                         return Err(CalmError::Conflict("managed Track already exists".into()));
                     }
                 }

@@ -40,6 +40,37 @@ impl ToolPolicy {
     }
 }
 
+#[derive(sqlx::FromRow)]
+pub(crate) struct ManagedTrackBinding {
+    pub track_id: String,
+    pub area_id: String,
+    pub report_read_scope: String,
+    pub report_time_zone: String,
+    pub tool_policy: String,
+    pub kernel_controls_lifecycle: bool,
+    pub template_id: Option<String>,
+}
+
+impl ManagedTrackBinding {
+    pub fn matches(
+        &self,
+        requested: &ManagedTrackIdentity,
+        area_id: &str,
+        template_id: &Option<String>,
+    ) -> bool {
+        let scope = match requested.report_read_scope {
+            ReportReadScope::Area => "area",
+            ReportReadScope::Workspace => "workspace",
+        };
+        self.area_id == area_id
+            && self.report_read_scope == scope
+            && self.report_time_zone == requested.report_time_zone.name()
+            && self.tool_policy == requested.tool_policy.as_str()
+            && self.kernel_controls_lifecycle == requested.kernel_controls_lifecycle
+            && self.template_id == *template_id
+    }
+}
+
 pub(crate) async fn bind_tx(
     tx: &mut Transaction<'_, Sqlite>,
     identity: &ManagedTrackIdentity,
