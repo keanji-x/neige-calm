@@ -4,40 +4,31 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
-import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, isDailyDate, type ReportChange } from '../../../../core/domain/daily-planner.ts';
-import { plannerCardIn } from '../../systems/cards/public.ts';
-import { useConversationRegistry } from '../conversations/public.tsx';
-import { DailyPage } from '../../features/today/daily.tsx';
+import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, type ReportChange } from '../../../../core/domain/daily-planner.ts';
+import { DailyReportEvidence } from '../../features/today/daily.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
 
-export function DailyTodayRoute({ transport, unauthorized, selectedDate, onSelectDate, onOpenTrack, legacy, renderTrack }: Readonly<{
+export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; selectedDate?: string;
-  onSelectDate: (date?: string) => void; onOpenTrack: (trackId: string) => void;
-  legacy: ReactNode; renderTrack: (detail: TrackDetailWire) => ReactNode;
+  onOpenTrack: (trackId: string) => void;
+  renderTrack: (detail: TrackDetailWire, evidence: ReactNode) => ReactNode;
 }>) {
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
   const trackId = daily.data?.track_id;
   const detail = useQuery({ ...trackDetailQueryOptions(transport, trackId ?? '', unauthorized), enabled: trackId !== undefined });
-  const registry = useConversationRegistry();
-  const planner = plannerCardIn(detail.data?.cards ?? []);
-  const date = daily.data?.date ?? (selectedDate !== undefined && isDailyDate(selectedDate) ? selectedDate : null);
-  return <DailyPage date={date} timeZone={daily.data?.time_zone ?? null} onSelectDate={(next) => {
-      if (next === undefined && selectedDate === undefined) void daily.refetch();
-      onSelectDate(next);
-    }}
-    onOpenPlanner={planner === undefined ? undefined : () => registry.requestOpen(planner.id, { focusComposer: true })} legacy={legacy}
-    changes={date === null ? null : <DailyReportChanges key={date} date={shiftDailyDate(date, -1)} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />}>
-    {daily.isError ? <ErrorBox message={daily.error.message} onRetry={() => { void daily.refetch(); }} />
-      : daily.isPending ? <p role="status">Loading daily Planner…</p>
-      : daily.data === null ? <p role="status">{selectedDate === undefined ? 'Preparing today’s Track…' : 'No daily Track was created for this date.'}</p>
-      : detail.isError ? <ErrorBox message={detail.error.message} onRetry={() => { void detail.refetch(); }} />
-      : detail.data === undefined || detail.data.track.id !== trackId ? <p role="status">Loading daily Track…</p>
-      : renderTrack(detail.data)}
-  </DailyPage>;
+  if (daily.isError) return <ErrorBox message={daily.error.message} onRetry={() => { void daily.refetch(); }} />;
+  if (daily.isPending) return <p role="status">Loading daily Planner…</p>;
+  if (daily.data === null) return <p role="status">{selectedDate === undefined ? 'Preparing today’s Track…' : 'No daily Track was created for this date.'}</p>;
+  if (detail.isError) return <ErrorBox message={detail.error.message} onRetry={() => { void detail.refetch(); }} />;
+  if (detail.data === undefined || detail.data.track.id !== trackId) return <p role="status">Loading daily Track…</p>;
+  const date = daily.data.date;
+  return renderTrack({ ...detail.data, track: { ...detail.data.track, title: date } },
+    <DailyReportChanges key={date} date={shiftDailyDate(date, -1)}
+      transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />);
 }
 
 function DailyReportChanges({ date, transport, unauthorized, onOpenTrack }: Readonly<{
@@ -49,15 +40,14 @@ function DailyReportChanges({ date, transport, unauthorized, onOpenTrack }: Read
     queryFn: ({ pageParam }) => runOperation(transport, reportChangesOperation(date, pageParam), unauthorized),
     getNextPageParam: (last) => last.next_cursor === null ? undefined : { after: last.next_cursor, through: last.through_event_id },
   });
-  return <details onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Report changes · {date}</summary>
+  return <DailyReportEvidence date={date} onToggle={setOpen}>
     {changes.isPending && open && <p role="status">Loading report changes…</p>}
     {changes.isError && <ErrorBox message={changes.error.message} onRetry={() => { void changes.refetch(); }} />}
     {!changes.isError && changes.data?.pages[0]?.changes.length === 0 && <p>No report changes recorded for visible Tracks on this day.</p>}
     {changes.data?.pages.flatMap((page) => page.changes.map((change) => <ReportChangeItem key={change.track_id} change={change}
       date={date} timeZone={page.time_zone} through={page.through_event_id} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />))}
     {changes.hasNextPage && <button type="button" disabled={changes.isFetchingNextPage} onClick={() => { void changes.fetchNextPage(); }}>Load more reports</button>}
-  </details>;
+  </DailyReportEvidence>;
 }
 
 function ReportChangeItem({ change, date, timeZone, through, transport, unauthorized, onOpenTrack }: Readonly<{

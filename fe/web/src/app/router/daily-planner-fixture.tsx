@@ -13,7 +13,7 @@ export function renderDailyFixture({ initial = '/', failChanges = false }: Reado
   const requests: ApiRequest[] = [];
   const area = { id: 'daily-area', name: 'system', color: '#6574cd', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
   const projectArea = { ...area, id: 'project-area', name: 'Project', kind: 'user' };
-  const track = { id: 'daily', area_id: area.id, title: '2026-10-04', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
+  const track = { id: 'daily', area_id: area.id, title: 'Renamed daily Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const project = { ...track, id: 'project', area_id: projectArea.id, title: 'Project evidence' };
   const card = { id: 'daily-planner', track_id: track.id, kind: 'codex', title: 'Daily Planner conversation', sort: 1, payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };
   const report = { id: 'daily-report', track_id: track.id, kind: 'track-report', title: null, sort: -1,

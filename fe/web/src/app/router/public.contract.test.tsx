@@ -79,8 +79,7 @@ describe('route registration', () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByRole('navigation', { name: 'Daily Planner dates' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Today' })).toBeTruthy();
+    expect(screen.queryByRole('navigation', { name: 'Daily Planner dates' })).toBeNull();
     expect(await screen.findByText('Preparing today’s Track…')).toBeTruthy();
   });
 

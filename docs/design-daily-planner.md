@@ -18,7 +18,7 @@ Granted Planners enumerate and read the current reports of user-visible Areas, i
 
 The shared history projection reads existing `track.report_edited` events in a half-open Asia/Shanghai day window. It groups edits per visible Track in event-id order and returns first-before / last-after patches plus paged individual edits. Snapshot cursors keep later edits out of continuation pages. Net reverts retain their edit count and full intermediate evidence. A truncated patch is declared, with full edits available separately. Deleted or hidden resources are not exposed, and failures are not presented as an empty day. Code/Git diffs are outside this feature.
 
-Desktop date navigation resolves today's or a selected historical Track. The direct Planner launcher uses the registered card classifier shared with the Track page. Mobile work is deferred by the owner; existing phone navigation is preserved.
+The desktop homepage renders the ordinary Track report layout with a single date title and its existing Planner control. There is no additional daily toolbar, time-zone label or duplicate Planner launcher. Report changes follow the document as collapsed evidence, using the same document column. Historical dates remain addressable by the `day` query. Mobile work is deferred by the owner; existing phone navigation is preserved.
 
 ## Acceptance
 

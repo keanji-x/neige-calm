@@ -16,8 +16,8 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
   const track = await createTrack(request, area.id);
 
   const routes = [
-    /* The daily homepage has locale-independent date navigation. */
-    { path: '/next/', anchor: page.getByRole('navigation', { name: 'Daily Planner dates' }) },
+    /* The daily homepage uses the same report title as a Track page. */
+    { path: '/next/', anchor: page.locator('[data-nc-page-title]').filter({ hasText: /\d{4}-\d{2}-\d{2}/ }) },
     /* Anchored on the composer: the new-track page has no `data-nc-page-title`; the greeting is its one title. */
     { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },
     { path: `/next/track/${track.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: track.title }) },

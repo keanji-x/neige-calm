@@ -15,9 +15,9 @@ import { admitTransport } from '../providers/recovery-mutation.ts';
 // transport and QueryClient; also the composition point for route-owned surfaces.
 
 import {
-  createRootRoute, createRoute, createRouter, useNavigate, useLocation, type AnyRoute,
+  createRootRoute, createRoute, createRouter, useLocation, type AnyRoute,
 } from '@tanstack/react-router';
-import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
 import { HStack } from '@astryxdesign/core/HStack';
 import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
@@ -831,13 +831,10 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     validateSearch: (search: Record<string, unknown>) => ({ day: typeof search.day === 'string' ? search.day : undefined }),
     component: function DailyRoute() {
       const day = new URLSearchParams(useLocation({ select: (location) => location.searchStr })).get('day') ?? undefined;
-      const navigate = useNavigate();
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
-        onSelectDate={(date) => { void navigate({ to: '/', search: { day: date } }); }}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        legacy={<button type="button" onClick={() => { go({ name: 'today-legacy' }); }}>Earlier Today report</button>}
-        renderTrack={(detail) => <TrackRouteBody key={detail.track.id} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence) => <TrackRouteBody reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           cards={detail.cards} overlays={detail.overlays} cardRuntime={cards} recentFiles={recentFiles} />} />;
@@ -2084,7 +2081,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -2095,6 +2092,7 @@ function TrackRouteBody({
   overlays: TrackDetailWire['overlays'];
   cardRuntime: CardRuntime;
   recentFiles: RecentFileHistory;
+  reportEvidence?: ReactNode;
 }) {
   useTrackViewState(track.id);
   // The same key and comparison point the rail uses: the overlay's completion
@@ -2524,7 +2522,7 @@ function TrackRouteBody({
         if (routeFrom === 'area') openMobileSection({ kind: 'tracks', areaId: track.areaId });
         else openMobileSection({ kind: 'pages' });
       }}
-      report={<ReportDocument
+      report={<><ReportDocument
         report={report}
         /* `overlay.set` already invalidates this track's detail, so a plugin push
                    re-renders the block without the report being rewritten. */
@@ -2554,7 +2552,7 @@ function TrackRouteBody({
             'It stays with the track, so it is here the next time you open it.',
           ]}
         />}
-      />}
+      />{reportEvidence}</>}
       backlinks={backlinks !== undefined && backlinks.backlinks.length > 0
         ? (
           <ReportBacklinks

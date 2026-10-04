@@ -9,7 +9,7 @@ afterEach(async () => { cleanup(); await page.viewport(1280, 800); });
 it('reads a daily plan and yesterday’s report evidence in a real browser', async () => {
   await page.viewport(1440, 900);
   const { requests } = renderDailyFixture();
-  await expect.element(page.getByRole('navigation', { name: 'Daily Planner dates' })).toBeVisible();
+  await expect.element(page.getByRole('button', { name: 'Rename track' })).toHaveTextContent('2026-10-04');
   await expect.element(page.getByRole('button', { name: /Conversation Daily Planner conversation/ })).toBeVisible();
   await page.getByText('Report changes · 2026-10-03').click();
   await expect.element(page.getByText('2 report edits')).toBeVisible();
