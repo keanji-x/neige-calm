@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { useEffect, useRef, type ReactNode } from 'react';
+import { startTransition, useEffect, useRef, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Drawer, type DrawerResize } from './public.tsx';
@@ -388,6 +390,28 @@ describe('a held drag that is interrupted', () => {
     expect(resize.onCommit).toHaveBeenCalledExactlyOnceWith(30);
     vi.advanceTimersToNextFrame();
     expect(resize.onPreview).toHaveBeenCalledOnce();
+  });
+
+  /* A transition commits in one scheduler task and runs passive effects in a later one, unlike Testing Library's `act`, which flushes both before returning. The frame queued mid-drag must already be cancelled once the commit that removes the edge is done. */
+  it('drops the queued frame in the commit that removes the edge, before passive effects run', async () => {
+    const actEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    const host = document.body.appendChild(document.createElement('div'));
+    const root = createRoot(host);
+    try {
+      const resize = { onPreview: vi.fn(), onCommit: vi.fn() };
+      flushSync(() => { root.render(drawer(resize)); });
+      holdDrag();
+      startTransition(() => { root.render(drawer(undefined)); });
+      while (host.querySelector('[role="separator"]') !== null) await new Promise((resolve) => { setTimeout(resolve, 0); });
+      vi.advanceTimersToNextFrame();
+      expect(resize.onPreview).toHaveBeenCalledOnce();
+      expect(resize.onCommit).toHaveBeenCalledExactlyOnceWith(30);
+    } finally {
+      flushSync(() => { root.unmount(); });
+      host.remove();
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+    }
   });
 
   it('commits nothing when a press ends without a move', () => {

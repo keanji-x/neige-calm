@@ -42,10 +42,10 @@ export function ResizeEdge({ resize, panelRef, scrollRef }: {
     return () => { observer.disconnect(); };
   }, [panelRef]);
 
-  /* The unmount commits through the contract of the last render, not the first. */
+  /* The unmount commits through the contract of the last render, not the first. A layout cleanup, so the drag ends in the commit that removes the edge: a passive one may run after the next frame, which would lay out a queued desktop width on a card that is now compact, or gone. */
   const latestResize = useRef(resize);
   useLayoutEffect(() => { latestResize.current = resize; });
-  useEffect(() => () => {
+  useLayoutEffect(() => () => {
     const current = drag.current;
     if (current === null) return;
     drag.current = null;
