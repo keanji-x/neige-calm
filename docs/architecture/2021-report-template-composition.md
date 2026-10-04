@@ -503,8 +503,9 @@ applies. The installed plugin is a symlink in `~/.config/neige-calm/plugins`, wh
 acceptable because compatibility covers the 4140 database only.
 
 Historical design docs (`docs/design-paper-trading-loop.md`,
-`docs/design-paper-strategy-configuration.md`, `docs/design-paper-report-hierarchy.md`,
-`docs/design-spy-cash-rebalance.md:11`) stay as history.
+`docs/design-paper-report-hierarchy.md`, `docs/design-spy-cash-rebalance.md:11`) stay as
+history. S0 deleted the supervised strategy-configuration design doc, which described only
+the deleted profile.
 
 ### 3.4 Example and frontend fixtures
 

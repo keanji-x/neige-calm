@@ -10,6 +10,7 @@ import pytest
 from paper_trading.allocation import Allocation
 from paper_trading.allocation_broker import AllocationBroker
 from paper_trading.allocation_config import OPTIONAL, REQUIRED, AllocationConfig
+from paper_trading.allocation_report import tables
 from .host import Host
 
 NOW = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)
@@ -576,3 +577,26 @@ def test_spy_restart_marks_a_crashed_submission_unknown_and_never_resubmits(allo
     for _ in range(2):
         assert r.step()['decisions'][0]['state'] == 'unknown'
     assert r.submits() == []
+
+
+def test_spy_unchanged_reconciliation_appends_no_false_transition(allocation_rig):
+    r = allocation_rig; r.plan(); r.execute(); r.publish()
+    first = r.step()
+    assert first['error'] is None and first['decisions'][0]['state'] == 'working'
+    # Every poll re-applies each owned order's state; unchanged broker records record nothing.
+    second = r.step()
+    assert second['decisions'][0]['state'] == 'working'
+    assert second['journal'] == first['journal']
+
+
+def test_spy_tables_publish_only_declared_columns(allocation_rig):
+    r = allocation_rig; r.plan(); r.execute(); r.publish()
+    state = r.fill('order-1', 60, '4000', 'buy-fill', 60)
+    assert state['error'] is None and state['fills']
+    published = {kind: payload for kind, payload in tables(state).items() if 'columns' in payload}
+    assert set(published) == {'spy.portfolio', 'spy.decisions', 'spy.fills'}
+    for kind, payload in published.items():
+        declared = {column['key'] for column in payload['columns']}
+        assert payload['rows'], kind
+        # The kernel refuses a row key that is not a declared column.
+        assert all(set(row) == declared for row in payload['rows']), kind
