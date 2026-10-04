@@ -23,6 +23,7 @@ import styles from './attachments.module.css';
 /** One upload, already bound to a card. A function rather than a transport: `performApiRequest` has two sanctioned call sites and a feature module is neither. */
 // Capture before file reading, then consume synchronously after the final await.
 // The returned reader checks the same admission before exposing server facts.
+// Either step fails with an `Error` whose message is the sentence to show: the caller has read the failure.
 export type UploadAttachment = (readBytes: () => Promise<Uint8Array>, contentType: string)
 => Promise<() => UploadAttachmentResponse>;
 
@@ -99,7 +100,7 @@ export function usePlannerAttachments(
         size: uploaded.size, url: uploaded.url,
       }]);
     } catch (cause) {
-      refuse(cause instanceof Error && cause.message !== '' ? cause.message : 'The image could not be uploaded.');
+      refuse(cause instanceof Error ? cause.message : 'The image could not be uploaded.');
     } finally {
       editUpload(target, (current) => ({ ...current, inFlight: Math.max(0, current.inFlight - 1) }));
     }

@@ -7,7 +7,7 @@ import { useState } from '../../../ui/state/public.ts';
 import styles from './meta.module.css';
 
 export type CopyResponseAction = Readonly<{ id: string; text: string; run: () => Promise<void> }>;
-/** `id` names the response it acts on; a rejection's message is the reader's feedback. */
+/** `id` names the response it acts on; `run` settles once the action is handed on, and any failure is the caller's to show. */
 export type ResponseAction = Readonly<{ id: string; run: () => Promise<void> }>;
 /** Edit answers at once (the message moves to the composer); its replace and any failure are the caller's. */
 export type EditAction = Readonly<{ id: string; run: () => void }>;
@@ -19,7 +19,7 @@ type ActionResult = Readonly<{ view: ActionView; kind: 'pending' | 'done' | 'fai
 function useFencedAction(key: string | null) {
   const view = useMemo<ActionView | null>(() => key === null ? null : { key, active: false }, [key]);
   const [result, setResult] = useState<ActionResult | null>(null);
-  const perform = async (run: () => Promise<void>, fallback: string) => {
+  const perform = async (run: () => Promise<void>, fallback: string | null = null) => {
     if (view === null || view.active) return;
     view.active = true;
     const started: ActionResult = { view, kind: 'pending', error: null };
@@ -114,7 +114,7 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
         <IconButton label={regenerateAction === null ? 'Regenerate response (not available now)' : 'Regenerate response'}
           tooltip="Send the original prompt again in this conversation; keep existing history." icon={<ActionIcon kind="regenerate" />}
           className={styles.action} variant="ghost" size="sm" isDisabled={regenerateAction === null || regenerate.feedback?.kind === 'pending'}
-          onClick={() => { if (regenerateAction !== null) void regenerate.perform(regenerateAction.run, 'Could not regenerate the response.'); }} />
+          onClick={() => { if (regenerateAction !== null) void regenerate.perform(regenerateAction.run); }} />
       </div>
     </div>
   </div>;

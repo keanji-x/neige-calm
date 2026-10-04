@@ -78,7 +78,7 @@ import type { ReportSourceLinkTarget } from '../../../../core/domain/report-sour
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
-  isConversationMessage, kernelQueuesInput,
+  isConversationMessage, kernelQueuesInput, plannerWriteFailureText, PLANNER_MODEL_FAILURES,
   serverItemHighWater,
   trackConversationCardId,
   FOLLOW_INSTALLATION_DEFAULT,
@@ -192,7 +192,7 @@ type ConversationStore = Readonly<{
   model: ModelSelection;
   /** What may be chosen, or `null` until the catalog has answered once. */
   modelCatalog: ModelCatalog | null;
-  /** Store a whole new selection. Failures land in `actionError`, like a send's. */
+  /** Store a whole new selection. Its failure lands in `actionError`, and only while its conversation is shown. */
   setModel: (selection: ModelSelection) => void;
 }>;
 
@@ -375,6 +375,9 @@ export function useConversationStore(
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
   /** What went wrong with an action of the card it names; another card's is never this one's. */
   const [actionError, setActionError] = useState<Readonly<{ cardId: string; message: string }> | null>(null);
+  /** The card shown now; a model write's answer is that of the card it was made in. */
+  const shownCardId = useRef(cardId);
+  shownCardId.current = cardId;
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
   /* A remembered transcript is the reopen fallback while the first page is unknown;
        once any query data exists the server wins, even when empty. */
@@ -406,7 +409,6 @@ export function useConversationStore(
     completedRowId: items.reduce<number | null>((latest, row) => transcriptRowToTurnOutcome(row) === null
       ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
-    failureText: (error) => errorMessage(error, 'Could not confirm the stop request.'),
   });
   const landedTranscript = transcriptReads.startOf(history.data);
   const landedRun = runReads.startOf(run.data);
@@ -415,9 +417,6 @@ export function useConversationStore(
     cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntryIds: pendingQueueIds,
     stalled, landed, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
     pressed: () => { setActionError(null); stop.clearFeedback(); },
-    refusedAtPress: (error) => {
-      setActionError({ cardId, message: errorMessage(error, 'Connection is not ready. Try again after reconnecting.') });
-    },
   });
   const { view } = outbox;
   /* What the reader is looking at, and what the tab may remember: a message is the conversation's only once the
@@ -550,7 +549,8 @@ export function useConversationStore(
     setModel: (selection) => {
       const setFor = cardId;
       setActionError(null);
-      const fail = (message: string) => { setActionError({ cardId: setFor, message }); };
+      /* Dropped when it settles while another conversation is shown: kept, it would show for one commit on the way back (#2068). */
+      const fail = (message: string) => { if (shownCardId.current === setFor) setActionError({ cardId: setFor, message }); };
       void mutations.setModel(selection)
         .then((result) => {
           /* Both flags are reported: the write succeeded, but the value stored is not
@@ -562,7 +562,8 @@ export function useConversationStore(
           }
         })
         .catch((error: unknown) => {
-          fail(errorMessage(error, 'Could not change the model.'));
+          fail(plannerWriteFailureText(error instanceof ApiError ? error.failure : null, PLANNER_MODEL_FAILURES,
+            { refused: 'The model was not changed.', unknown: 'The model change is unconfirmed.' }));
         });
     },
   };
@@ -1310,8 +1311,9 @@ function useConversationPane(
             )}
             {store.failedSend !== null && (
               <ChatFooterNotice>
+                {/* An unknown send says only that: why the answer was lost is the global connection indicator's to say. */}
                 <ChatFooterError message={store.failedSend.delivery === 'unknown'
-                  ? `Delivery is unconfirmed. ${store.failedSend.message}` : `Not sent. ${store.failedSend.message}`} />
+                  ? 'Delivery is unconfirmed.' : `Not sent. ${store.failedSend.message}`} />
                 {store.failedSend.delivery === 'unknown' ? <>
                   {/* Safe without asking: the retry reuses the send's key, so a message that did arrive is not queued twice.
                      No Edit here — an edited message is a new send under a new key, and the first may have arrived. */}
@@ -1327,7 +1329,6 @@ function useConversationPane(
                   <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
                     onClick={() => {
                       if (store.failedSend === null) return;
-                      setComposerText('');
                       store.retrySend(store.failedSend.key);
                     }}>
                     Try again

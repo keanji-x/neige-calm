@@ -644,7 +644,7 @@ describe('planner conversation regressions', () => {
     await sendWithEnter(field);
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
     reject(new Error('send exploded'));
-    expect((await screen.findByRole('alert')).textContent).toContain('Transport request failed');
+    expect(within(await screen.findByRole('alert')).getByText('Delivery is unconfirmed.')).toBeTruthy();
   });
 
   /* `send_planner_input` accepts at any phase and queues the text behind the running

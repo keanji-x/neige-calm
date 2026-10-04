@@ -19,9 +19,6 @@ import { mintIdempotencyKey } from '../router/idempotency-key.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useConversationRegistry, type RememberedConversation } from './public.tsx';
 
-/** Beside Try again for a keyed send that could not leave the browser. */
-const OFFLINE_RETRY = 'Try again when you’re back online.';
-
 type RunQueryOptions<T> = Readonly<{ queryFn: (context: { signal: AbortSignal }) => Promise<T> }>;
 
 /**
@@ -83,7 +80,7 @@ function rememberSent(entry: RememberedConversation, ops: readonly SendOp[], tex
  */
 export function useConversationOutbox({
   cardId, transport, send, serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, landed,
-  queuesInput, highWater, pressed, refusedAtPress,
+  queuesInput, highWater, pressed,
 }: {
   cardId: string;
   transport: ApiTransportPort;
@@ -102,8 +99,6 @@ export function useConversationOutbox({
   highWater: number;
   /** A send of the conversation shown went out. */
   pressed: () => void;
-  /** The press could not be admitted; nothing was sent. */
-  refusedAtPress: (error: unknown) => void;
 }) {
   const registry = useConversationRegistry();
   const { editOutbox, beginSend, nextRead, updateExisting } = registry;
@@ -179,11 +174,8 @@ export function useConversationOutbox({
         registry.noteRefusedEdit(sentTo, message);
         return 'refused';
       }
-      settle({
-        key, echo, fromComposer, replaces, phase: 'failed', delivery: failed.delivery,
-        /* The admission's own words ("nothing was sent", "will not send automatically") would contradict Try again. */
-        message: failed.cause instanceof OfflineSubmissionError ? OFFLINE_RETRY : message,
-      });
+      /* `message` is shown only for an op that was not sent: an unknown op's footer says no more than that it is unconfirmed. */
+      settle({ key, echo, fromComposer, replaces, phase: 'failed', delivery: failed.delivery, message });
       return failed.delivery === 'refused' ? 'refused' : 'unresolved';
     }).then((outcome) => shownCardId.current === sentTo ? outcome : 'abandoned');
   };
@@ -211,10 +203,11 @@ export function useConversationOutbox({
         return Promise.resolve('not-sent');
       }
       /* Admitted at the press. Where the transport carries a recovery admission (the bundled build), a press that
-         cannot leave the browser is refused here and sends nothing; the web build admits every press, and a send
-         that cannot leave fails as a transport error — unknown, retried. */
+         cannot leave the browser is refused here and sends nothing: the composer keeps its words, and the global
+         recovery status already says why. The web build admits every press, and a send that cannot leave fails as a
+         transport error — unknown, retried. */
       let admitted: ApiTransportPort;
-      try { admitted = admitTransport(transport); } catch (error) { refusedAtPress(error); return Promise.resolve('refused'); }
+      try { admitted = admitTransport(transport); } catch { return Promise.resolve('refused'); }
       const op = {
         key: mintIdempotencyKey(), fromComposer, replaces, phase: 'sending', unknown: false,
         echo: {
@@ -244,14 +237,8 @@ export function useConversationOutbox({
       const failed = view.failed;
       if (failed?.key !== key || stalled) return;
       let admitted: ApiTransportPort;
-      try { admitted = admitTransport(transport); } catch {
-        /* The op keeps its standing; only the line beside Try again changes, never to the admission's own words, and
-           only while it is still the failed op this render offered Try again for. */
-        editOutbox(cardId, (current) => current.some((held) => held.key === key && held.phase === 'failed')
-          ? current.map((held) => held.key === key && held.phase === 'failed' ? { ...held, message: OFFLINE_RETRY } : held)
-          : current);
-        return;
-      }
+      /* Not admitted: the op keeps its standing and its footer unchanged; the global recovery status says why. */
+      try { admitted = admitTransport(transport); } catch { return; }
       const op = {
         key, echo: failed.echo, fromComposer: failed.fromComposer, replaces: failed.replaces, phase: 'sending',
         unknown: failed.delivery === 'unknown',

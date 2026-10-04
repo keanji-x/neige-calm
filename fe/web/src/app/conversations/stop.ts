@@ -1,13 +1,14 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
-import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
+import { stopFailureFeedback, type ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
+import { ApiError } from '../providers/queries.ts';
 
 type StopLease = { historyKnown: boolean; newestRowId: number };
 type StopView = { cardId: string; request: StopLease | null; canStop: boolean };
 type StopNotice = Readonly<{ view: StopView; lease: StopLease; feedback: ConversationStopFeedback }>;
 
 /** One request lease per committed view; a receipt never manufactures completion. */
-export function useConversationStop({ cardId, canStop, responseEnded, historyKnown, newestRowId, completedRowId, requestStop, failureText }: {
+export function useConversationStop({ cardId, canStop, responseEnded, historyKnown, newestRowId, completedRowId, requestStop }: {
   cardId: string;
   canStop: boolean;
   responseEnded: boolean;
@@ -15,7 +16,6 @@ export function useConversationStop({ cardId, canStop, responseEnded, historyKno
   newestRowId: number;
   completedRowId: number | null;
   requestStop: () => Promise<Readonly<{ stopped: boolean }>>;
-  failureText: (error: unknown) => string;
 }) {
   const view = useMemo<StopView>(() => ({ cardId, request: null, canStop: false }), [cardId]);
   const viewRef = useRef<StopView | null>(null);
@@ -57,7 +57,7 @@ export function useConversationStop({ cardId, canStop, responseEnded, historyKno
     }).catch((error: unknown) => {
       if (!current()) return;
       view.request = null;
-      setNotice({ view, lease, feedback: { kind: 'failed', message: failureText(error) } });
+      setNotice({ view, lease, feedback: stopFailureFeedback(error instanceof ApiError ? error.failure : null) });
     });
   };
   const feedback = ended ? null : owned?.feedback ?? null;

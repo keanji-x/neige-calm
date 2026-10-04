@@ -518,11 +518,12 @@ describe('track conversations', () => {
     fireEvent.click(screen.getByRole('button', { name: /Conversation Assistant/ }));
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     await act(async () => { release(); await held; });
-    expect((await screen.findByRole('alert')).textContent).toContain('send failed after remount');
+    /* A 503 may follow a stored message: unconfirmed, and in no words of the answer's. */
+    expect(within(await screen.findByRole('alert')).getByText('Delivery is unconfirmed.')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
-    expect(screen.queryByText('send failed after remount')).toBeNull();
+    expect(screen.queryByText('Delivery is unconfirmed.')).toBeNull();
   });
 
   /* `planner_harness_runtime_superseded` means nothing was stored and the same text
@@ -1125,7 +1126,25 @@ describe('track conversations', () => {
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
   });
 
-  it('[F5] keeps one English line when Try again is pressed offline in the bundled build', async () => {
+  it('[#2068] keeps a composer draft when Try again resends a rejected message', async () => {
+    let attempts = 0;
+    const { requests } = setup((request) => {
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      attempts += 1;
+      return attempts === 1 ? failure(429, 'rate_limited', 'Too many requests.') : undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('Rejected the first time');
+    expect(within(await screen.findByRole('alert')).getByText('Not sent. Too many requests.')).toBeTruthy();
+    await typeInto(messageField(), 'A draft in progress');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(messageField().textContent).toBe('A draft in progress');
+  });
+
+  it('[F5] leaves the footer as it was when Try again is pressed offline in the bundled build', async () => {
     vi.stubGlobal('__NC_BUNDLED__', true);
     const access = new RecoveryAccess(); access.change('connected');
     const { requests } = setup((request) => {
@@ -1137,14 +1156,13 @@ describe('track conversations', () => {
     expect(inputs()).toHaveLength(SEND_RETRIES + 1);
     act(() => { access.change('offline'); });
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(screen.getByRole('alert').textContent)
-      .toContain('Delivery is unconfirmed. Try again when you’re back online.'));
-    expect(screen.getAllByRole('alert').map((alert) => alert.textContent).join(' ')).not.toMatch(/离线|连接/);
+    /* The connection is the global recovery status's to speak of, not this op's. */
+    expect(within(screen.getByRole('alert')).getByText('Delivery is unconfirmed.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
     expect(inputs()).toHaveLength(SEND_RETRIES + 1);
   });
 
-  it('[F5] asks for a reconnect, not the admission words, when the retries ran out offline (bundled build)', async () => {
+  it('[F5] says only that delivery is unconfirmed when the retries ran out offline (bundled build)', async () => {
     vi.stubGlobal('__NC_BUNDLED__', true);
     const access = new RecoveryAccess(); access.change('connected');
     const { requests } = setup((request) => {
@@ -1155,9 +1173,7 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     await write('Sent just before the connection went');
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Delivery is unconfirmed. Try again when you’re back online.');
-    expect(alert.textContent).not.toMatch(/离线|连接|nothing was sent/);
+    expect(within(await screen.findByRole('alert')).getByText('Delivery is unconfirmed.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
   });
@@ -1198,7 +1214,8 @@ describe('track conversations', () => {
     act(() => { access.change('offline'); });
     await write('Not while offline');
     await waitFor(() => expect(messageField().textContent).toBe('Not while offline'));
-    expect((await screen.findByRole('alert')).textContent).toContain('离线操作不会自动发送');
+    /* No notice of its own: the global recovery status already says the workspace is offline. */
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(0);
   });
 
@@ -1244,6 +1261,67 @@ describe('track conversations', () => {
     return requests.filter((request) => request.path.endsWith('/planner/input'))
       .map((request) => request.body);
   }
+
+  /* #2043 step 5: every chat write reads its failure through its route's table. A lost answer gets a fixed state at
+     the object and is never narrated there; the connection is the global recovery indicator's to speak of. */
+  describe('[#2043] a chat write whose answer is lost', () => {
+    const CONNECTIVITY = /Transport request failed|timed out|back online|连接恢复/;
+    const timedOut = (): never => { throw new DOMException('Request timed out.', 'TimeoutError'); };
+    const dropped = (): never => { throw new Error('response dropped'); };
+    const chatText = () => drawerElement().textContent;
+    const running = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null,
+      reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null });
+    async function openAssistant() {
+      fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    }
+
+    it('send: says only that delivery is unconfirmed', async () => {
+      setup((request) => request.path.endsWith('/planner/input') ? timedOut() : undefined);
+      await sendUntilSpent('Lost on the way');
+      expect(within(screen.getByRole('alert')).getByText('Delivery is unconfirmed.')).toBeTruthy();
+      expect(chatText()).not.toMatch(CONNECTIVITY);
+    });
+
+    it('Try again offline (bundled build): keeps the unconfirmed footer as it was', async () => {
+      vi.stubGlobal('__NC_BUNDLED__', true);
+      const access = new RecoveryAccess(); access.change('connected');
+      setup((request) => request.path.endsWith('/planner/input') ? dropped() : undefined, undefined, access);
+      await sendUntilSpent('Retried offline');
+      act(() => { access.change('offline'); });
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(within(screen.getByRole('alert')).getByText('Delivery is unconfirmed.')).toBeTruthy();
+      expect(chatText()).not.toMatch(CONNECTIVITY);
+    });
+
+    it('model select: says the change is unconfirmed', async () => {
+      setup((request) => request.path.endsWith('/planner/model') ? timedOut() : undefined);
+      await openAssistant();
+      fireEvent.click(within(drawerElement()).getByRole('button', { name: /^Model:/ }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: /^Default/ }));
+      expect((await screen.findByRole('alert')).textContent).toBe('The model change is unconfirmed.');
+      expect(chatText()).not.toMatch(CONNECTIVITY);
+    });
+
+    it('Stop: shows Stop unconfirmed, never Stop failed', async () => {
+      setup((request) => request.path.endsWith('/planner/run') ? running()
+        : request.path.endsWith('/planner/interrupt') ? dropped() : undefined);
+      fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop unconfirmed', expanded: false }));
+      expect(screen.queryByText('Stop failed')).toBeNull();
+      expect(chatText()).not.toMatch(CONNECTIVITY);
+    });
+
+    it('image upload: says the image could not be uploaded', async () => {
+      setup((request) => request.path.endsWith('/planner/run') ? ok({ ...running().body as object, phase: 'idle' })
+        : request.path.endsWith('/planner/attachments') ? timedOut() : undefined);
+      await openAssistant();
+      await attachAnImage();
+      expect(await within(drawerElement()).findByText('The image could not be uploaded.')).toBeTruthy();
+      expect(chatText()).not.toMatch(CONNECTIVITY);
+    });
+  });
 
   it('[#1505] re-sends the image the failed message was shown with, not just its words', async () => {
     const text = 'look at this';
@@ -2173,14 +2251,14 @@ describe('track conversations', () => {
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(0);
   });
 
-  it('shows a failed stop request through the native status row and permits a manual retry', async () => {
+  it('shows a refused stop request through the native status row and permits a manual retry', async () => {
     let stops = 0;
     setup((request) => {
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
         worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
       if (request.path.endsWith('/planner/interrupt')) {
         stops += 1;
-        return stops === 1 ? failure(503, 'service_unavailable', 'The connection is unavailable.')
+        return stops === 1 ? failure(409, 'planner_harness_dormant', 'No live planner harness session.')
           : ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: false });
       }
       return undefined;
@@ -2188,7 +2266,7 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Stop failed', expanded: false }));
-    expect(screen.getByText('The connection is unavailable.', { exact: true })).toBeTruthy();
+    expect(screen.getByText('No live planner harness session.', { exact: true })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
@@ -2704,7 +2782,7 @@ describe('registry write-through', () => {
     const { rerender } = render(view(SCOPE));
     await act(async () => { void latest?.send(ASSISTANT_CARD.id, 'still out', [], true, null); await Promise.resolve(); });
     await act(async () => { latest?.setModel({ model: 'gpt-x', reasoning_effort: null }); await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(commits.at(-1)).toMatchObject({ cardId: ASSISTANT_CARD.id, sending: true, error: 'model store unavailable' });
+    expect(commits.at(-1)).toMatchObject({ cardId: ASSISTANT_CARD.id, sending: true, error: 'The model change is unconfirmed.' });
     const before = commits.length;
     await act(async () => { rerender(view(PLANNER_SCOPE)); await Promise.resolve(); });
     const shown = commits.slice(before);
@@ -2712,6 +2790,36 @@ describe('registry write-through', () => {
     expect(shown.every((commit) => commit.cardId === PLANNER_CARD.id)).toBe(true);
     expect(shown.filter((commit) => commit.sending || commit.blocked || commit.pending > 0 || commit.error !== null)).toEqual([]);
     await act(async () => { answer(); await answered; });
+  });
+
+  it('[#2068] drops a model refusal that settles while another conversation is shown, not showing it for one commit', async () => {
+    let refuse!: () => void;
+    const refused = new Promise<void>((done) => { refuse = done; });
+    const transport: ApiTransportPort = {
+      async send(request) {
+        if (request.path.endsWith('/planner/model')) { await refused; return failure(400, 'bad_request', 'Claude is not ready'); }
+        if (request.path.endsWith('/planner/run')) return ok({ ...runIdle().body as object, card_id: pathCardId(request.path) });
+        return ok([]);
+      },
+    };
+    const errors: (string | null)[] = [];
+    let latest: ReturnType<typeof useConversationStore> | null = null;
+    function StoreProbe({ scope }: { scope: typeof SCOPE }) {
+      const store = useConversationStore(transport, unauthorized, scope, { rows: ROWS, rememberOn: 'w1' });
+      latest = store;
+      useLayoutEffect(() => { errors.push(store.actionError); });
+      return null;
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
+    const view = (scope: typeof SCOPE) => (
+      <QueryClientProvider client={client}><ConversationProvider><StoreProbe scope={scope} /></ConversationProvider></QueryClientProvider>
+    );
+    const { rerender } = render(view(SCOPE));
+    await act(async () => { latest?.setModel({ model: 'gpt-x', reasoning_effort: null }); await Promise.resolve(); });
+    await act(async () => { rerender(view({ ...SCOPE, cardId: PLANNER_CARD.id })); await Promise.resolve(); });
+    await act(async () => { refuse(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { rerender(view(SCOPE)); await Promise.resolve(); });
+    expect(errors.filter((error) => error !== null)).toEqual([]);
   });
 
   /* The server's row is `title: null` for the life of an assistant conversation;

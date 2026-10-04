@@ -443,6 +443,31 @@ export function setPlannerModelOperation(
   };
 }
 
+/** What a failed model, interrupt or upload write says: `refused`, answered before anything was stored; `unknown`, it may have been. */
+export type PlannerWriteFailure = 'refused' | 'unknown';
+
+/**
+ * What a failed `PUT /planner/model` says. Each listed status is answered before anything is stored: 400 (a Claude
+ * card while Claude is not ready), 403, 404 and 422. A 5xx, a lost or an unreadable answer may follow a stored one.
+ */
+export const PLANNER_MODEL_FAILURES: FailureTable<PlannerWriteFailure> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+/**
+ * The sentence for a failed write on the route `table` describes: a refusal is the server's own reason, or
+ * `fixed.refused` when it gave none; anything else is `fixed.unknown`, which never speaks of the connection,
+ * since that is the global recovery indicator's to say.
+ */
+export function plannerWriteFailureText(
+  failure: ApiFailure | null, table: FailureTable<PlannerWriteFailure>, fixed: Readonly<Record<PlannerWriteFailure, string>>,
+): string {
+  const kind = classifyFailure(failure, table);
+  return kind === 'refused' && failure !== null && failure.message !== '' ? failure.message : fixed[kind];
+}
+
 /**
  * What became of one send. `unresolved`: its answer stayed unknown through every automatic retry;
  * the failed send keeps its words and its `Idempotency-Key`, so Try again cannot deliver twice.
@@ -491,6 +516,16 @@ export const ATTACHABLE_IMAGE_TYPES = Object.freeze(
 
 /** Mirrors `MAX_ATTACHMENTS_PER_MESSAGE` in `planner_attachments::bind`. */
 export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
+
+/**
+ * What a failed `POST /planner/attachments` says: 400 (not an accepted image, an attached workspace, the card's
+ * budget spent, a body that stopped arriving), 403, 404 and 413 store nothing; anything else may have stored it.
+ */
+export const PLANNER_ATTACHMENT_FAILURES: FailureTable<PlannerWriteFailure> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 413]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
 
 /**
  * Upload one image as raw bytes; `content-type` here is merged *over* the `application/json` the

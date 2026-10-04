@@ -12,7 +12,7 @@ import {
   createSerialWriter, createTrackConversationOperation, sendPlannerInputOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
-  mergeTranscript, plannerQueueWriteFailure, readableCommand,
+  mergeTranscript, PLANNER_MODEL_FAILURES, plannerQueueWriteFailure, plannerWriteFailureText, readableCommand,
   reconcileUserEchoes, serverItemHighWater,
   toTrackConversation, trackConversationCardId,
   trackConversationsOperation, transcriptRowToTurnOutcome,
@@ -1009,6 +1009,24 @@ describe('mergeTranscript', () => {
 });
 
 /* A stale entry can be rewritten against the revision that beat you; a gone one cannot. */
+describe('plannerWriteFailureText', () => {
+  const fixed = { refused: 'Not changed.', unknown: 'Unconfirmed.' };
+  const text = (failure: Parameters<typeof plannerWriteFailureText>[0]) =>
+    plannerWriteFailureText(failure, PLANNER_MODEL_FAILURES, fixed);
+
+  it('shows a refusal in the server’s own words, or the fixed refusal when it gave none', () => {
+    expect(text({ kind: 'http', status: 400, code: 'bad_request', message: 'Claude is not ready' })).toBe('Claude is not ready');
+    expect(text({ kind: 'http', status: 404, code: 'not_found', message: '' })).toBe('Not changed.');
+  });
+
+  it('never shows the words of a failure that may have been stored', () => {
+    expect(text({ kind: 'transport', message: 'Transport request failed' })).toBe('Unconfirmed.');
+    expect(text({ kind: 'transport', message: 'Request timed out.' })).toBe('Unconfirmed.');
+    expect(text({ kind: 'http', status: 500, code: 'internal', message: 'model store unavailable' })).toBe('Unconfirmed.');
+    expect(text(null)).toBe('Unconfirmed.');
+  });
+});
+
 describe('plannerQueueWriteFailure', () => {
   const stale = (body: unknown) => plannerQueueWriteFailure(
     { kind: 'http' as const, status: 409, code: 'planner_input_stale', message: 'stale', body },

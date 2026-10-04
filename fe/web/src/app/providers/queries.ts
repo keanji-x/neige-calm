@@ -57,14 +57,14 @@ import {
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
   createSerialWriter, deletePlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
-  uploadPlannerAttachmentOperation,
+  uploadPlannerAttachmentOperation, plannerWriteFailureText, PLANNER_ATTACHMENT_FAILURES,
   type Conversation, type ModelCatalogScope, type ModelSelection, type ModelSelectionResult,
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
-import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
+import type { HarnessItem, UploadAttachmentResponse } from '../../../../core/api/generated/wire.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 
 export class ApiError extends Error {
@@ -292,13 +292,25 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
             .catch(() => undefined);
           return refreshAfter(result);
         }),
-    /* No `refreshAfter`: an upload changes nothing any query holds until a send names it. */
+    /* No `refreshAfter`: an upload changes nothing any query holds until a send names it. Every failure, the
+     * admission's included, rejects with the sentence the strip shows, read against the route's table. */
     uploadAttachment: async (readBytes: () => Promise<Uint8Array>, contentType: string) => {
-      const admitted = admitTransport(transport);
-      const bytes = await readBytes();
-      const uploaded = await runOperation(admitted, uploadPlannerAttachmentOperation(cardId, bytes, contentType), unauthorized);
+      const failed = (error: unknown) => new Error(plannerWriteFailureText(
+        error instanceof ApiError ? error.failure : null, PLANNER_ATTACHMENT_FAILURES,
+        { refused: 'The image was not accepted.', unknown: 'The image could not be uploaded.' },
+      ));
+      let admitted: ApiTransportPort;
+      let uploaded: UploadAttachmentResponse;
+      try {
+        admitted = admitTransport(transport);
+        const bytes = await readBytes();
+        uploaded = await runOperation(admitted, uploadPlannerAttachmentOperation(cardId, bytes, contentType), unauthorized);
+      } catch (error) { throw failed(error); }
       // Keep admission attached to the value until the feature actually consumes it.
-      return () => { admitted.recovery?.checkpoint()(); return uploaded; };
+      return () => {
+        try { admitted.recovery?.checkpoint()(); } catch (error) { throw failed(error); }
+        return uploaded;
+      };
     },
   };
 }

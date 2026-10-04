@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ApiFailure } from '../api/types.js';
-import { CONVERSATION_CREATE_FAILURES, PLANNER_QUEUE_WRITE_FAILURES } from './conversation.js';
+import {
+  CONVERSATION_CREATE_FAILURES, PLANNER_ATTACHMENT_FAILURES, PLANNER_MODEL_FAILURES, PLANNER_QUEUE_WRITE_FAILURES,
+} from './conversation.js';
 import { SEND_FAILURES } from './conversation-delivery.js';
+import { PLANNER_INTERRUPT_FAILURES } from './conversation-stop.js';
 import { classifyFailure, type FailureTable } from './failure-class.js';
 
 const http = (status: number, code = 'http_error', message = 'answered'): ApiFailure =>
@@ -40,6 +43,26 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(409, 'conflict', 'card already exists'), 'exists'],
     [http(500), 'retry'], [http(403), 'retry'], [unauthorized, 'retry'],
     [transport, 'retry'], [decode, 'retry'], [null, 'retry'],
+  ]],
+  ['PUT /planner/model', PLANNER_MODEL_FAILURES, [
+    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [http(422), 'refused'], [unauthorized, 'refused'],
+    [http(409, 'conflict'), 'unknown'], [http(500, 'internal'), 'unknown'], [http(503, 'service_unavailable'), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /planner/interrupt', PLANNER_INTERRUPT_FAILURES, [
+    [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [http(409, 'planner_harness_dormant'), 'refused'], [unauthorized, 'refused'],
+    /* Only the dormant 409 is answered before a dispatch; any other may follow one. */
+    [http(409, 'conflict'), 'unconfirmed'], [http(400), 'unconfirmed'], [http(500, 'internal'), 'unconfirmed'],
+    [http(503, 'service_unavailable'), 'unconfirmed'],
+    [transport, 'unconfirmed'], [decode, 'unconfirmed'], [null, 'unconfirmed'],
+  ]],
+  ['POST /planner/attachments', PLANNER_ATTACHMENT_FAILURES, [
+    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [http(413, 'payload_too_large'), 'refused'], [unauthorized, 'refused'],
+    [http(500, 'internal'), 'unknown'], [http(503, 'service_unavailable'), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
 ];
 
