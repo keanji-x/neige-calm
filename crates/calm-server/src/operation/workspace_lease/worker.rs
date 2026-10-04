@@ -305,7 +305,9 @@ async fn catch_up_tx(
                     known.sha
                 ),
                 None => format!(
-                    "{branch} has no upstream to fetch; set one with git branch --set-upstream-to"
+                    "{branch} has no known upstream; set one with git -C {} branch \
+                     --set-upstream-to",
+                    path.display()
                 ),
             };
             return Err(CalmError::Conflict(format!(
@@ -404,10 +406,7 @@ fn reader_repo(track_id: &str, worktree: Option<&str>) -> std::result::Result<St
     };
     match super::upstream::track_remote(track_id, worktree) {
         Ok((_, Some(upstream))) => Ok(upstream.url),
-        Ok((target, None)) => Err(format!(
-            "no upstream remote for {}",
-            target.repo_root.display()
-        )),
+        Ok((target, None)) => Err(format!("no upstream remote for {}", target.branch)),
         Err(error) => Err(error.to_string()),
     }
 }

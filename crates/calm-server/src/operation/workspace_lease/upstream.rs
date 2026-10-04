@@ -81,18 +81,25 @@ impl Upstream {
     }
 }
 
-/// The upstream of the branch `repo_root`'s HEAD is on, read from its
-/// config (`branch.<b>.remote` / `branch.<b>.merge`) — every configuration
-/// counts, including a merge ref no fetch refspec maps, which git's own
-/// `%(upstream)` leaves empty. `Ok(None)`: HEAD is detached, or the branch
-/// has no complete upstream config.
+/// The upstream of the branch `repo_root`'s HEAD is on ([`branch_upstream`]).
+/// `Ok(None)`: HEAD is detached, or the branch has no complete upstream config.
 pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
     let Some(head_ref) = super::base::worktree_head_ref(repo_root)? else {
         return Ok(None);
     };
-    let Some(branch) = head_ref.strip_prefix("refs/heads/") else {
-        return Ok(None);
-    };
+    match head_ref.strip_prefix("refs/heads/") {
+        Some(branch) => branch_upstream(repo_root, branch),
+        None => Ok(None),
+    }
+}
+
+/// The upstream of `branch`, read from its config (`branch.<b>.remote` /
+/// `branch.<b>.merge`) in the checkout `repo_root` — every configuration
+/// counts, including a merge ref no fetch refspec maps, which git's own
+/// `%(upstream)` leaves empty. `Ok(None)`: the branch has no complete upstream
+/// config.
+pub(crate) fn branch_upstream(repo_root: &Path, branch: &str) -> Result<Option<Upstream>> {
+    let branch_ref = format!("refs/heads/{branch}");
     let (Some(remote), Some(merge)) = (
         // As git resolves `@{upstream}`: the remote is the last value (plain
         // config), the merge ref the FIRST of `branch.<b>.merge`'s values.
@@ -112,11 +119,11 @@ pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
     let args = [
         "for-each-ref",
         "--format=%(refname)%00%(upstream)",
-        head_ref.as_str(),
+        branch_ref.as_str(),
     ];
     let stdout = git_success(repo_root, &args)?;
     // `for-each-ref <pattern>` also lists refs under `<pattern>/`; only the
-    // exact branch is HEAD's. An unborn branch lists nothing: no tracking ref.
+    // exact branch counts. An unborn branch lists nothing: no tracking ref.
     let mut tracking_ref = None;
     for line in stdout.lines() {
         let fields: Vec<&str> = line.split('\0').collect();
@@ -126,7 +133,7 @@ pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
                 repo_root.display()
             )));
         };
-        if refname == head_ref && !tracking.is_empty() {
+        if refname == branch_ref && !tracking.is_empty() {
             tracking_ref = Some(tracking.to_string());
         }
     }
@@ -140,29 +147,47 @@ pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
 }
 
 /// #1933: the remote a track's work goes to. It is the upstream of `neige/track-<id>` itself,
-/// read in the track worktree (#2112: [`record_branch_upstream`] copies the checkout's upstream
-/// onto the branch when the worktree is made, so the main checkout changing branches moves
-/// nothing). Dev publish pushes there, and a read-only worker's prompt names it. `None` when the
-/// branch has no remote upstream (no complete config, or a local `.`).
+/// whatever branch either checkout is on (#2112: [`set_branch_upstream`] copies the checkout's
+/// upstream onto the branch when the worktree is made). Read in the track worktree, whose
+/// per-worktree config and URL rewrites apply. Dev publish pushes there, and a read-only worker's
+/// prompt names it. `None` when the branch has no remote upstream (no complete config, or a local
+/// `.`).
 pub(crate) fn track_remote(
     track_id: &str,
     worktree: &str,
 ) -> Result<(super::WorkspaceLeaseTarget, Option<Upstream>)> {
     let target = super::track_worktree::track_worktree_target(track_id, worktree)?;
-    let upstream = head_upstream(&target.path)?.filter(|upstream| upstream.remote != ".");
+    let upstream =
+        branch_upstream(&target.path, &target.branch)?.filter(|upstream| upstream.remote != ".");
     Ok((target, upstream))
 }
 
-/// #2112: give `branch` the upstream `upstream` names (`branch.<b>.remote` /
-/// `branch.<b>.merge`), as `git branch --set-upstream-to` would without needing a tracking ref.
-pub(crate) fn record_branch_upstream(
+/// #2112: make `upstream` the upstream of `branch` (`branch.<b>.remote` / `branch.<b>.merge`), as
+/// `git branch --set-upstream-to` would without needing a tracking ref; `None` removes any. Both
+/// keys are cleared first, so nothing an earlier write left survives.
+pub(crate) fn set_branch_upstream(
     repo_root: &Path,
     branch: &str,
-    upstream: &Upstream,
+    upstream: Option<&Upstream>,
 ) -> Result<()> {
-    for (key, value) in [("remote", &upstream.remote), ("merge", &upstream.merge)] {
+    for key in ["remote", "merge"] {
         let key = format!("branch.{branch}.{key}");
-        git_success(repo_root, &["config", "--", &key, value])?;
+        let args = ["config", "--unset-all", "--", key.as_str()];
+        let output = git_output(repo_root, &args)?;
+        // Exit 5: the key was not set.
+        if !matches!(output.status.code(), Some(0 | 5)) {
+            return Err(super::git_failed(
+                &format!("git {}", args.join(" ")),
+                repo_root,
+                &output,
+            ));
+        }
+    }
+    if let Some(upstream) = upstream {
+        for (key, value) in [("remote", &upstream.remote), ("merge", &upstream.merge)] {
+            let key = format!("branch.{branch}.{key}");
+            git_success(repo_root, &["config", "--", &key, value])?;
+        }
     }
     Ok(())
 }

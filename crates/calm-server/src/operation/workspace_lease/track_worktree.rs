@@ -13,7 +13,7 @@ use crate::model::Track;
 use crate::workspace_materialize::isolated_git_command;
 
 use super::upstream::{
-    LeaseStart, choose_lease_start, diverged_refusal, head_upstream, record_branch_upstream,
+    LeaseStart, choose_lease_start, diverged_refusal, head_upstream, set_branch_upstream,
 };
 use super::{
     GitWorktreeRegistration, WorkspaceLeaseTarget, ensure_workspace_worktree_root_excluded,
@@ -94,11 +94,11 @@ fn ensure_track_worktree_blocking(target: &WorkspaceLeaseTarget) -> Result<()> {
         let base = track_worktree_base(&target.repo_root)?;
         // #2112: the new branch keeps the checkout's upstream as of now; publish and catch-up
         // read it from the branch, never from whatever the checkout is on later. Written before
-        // the branch exists: config for a branch `worktree add` then fails to make is rewritten
-        // by the retry.
-        if let Some(upstream) = head_upstream(&target.repo_root)? {
-            record_branch_upstream(&target.repo_root, &target.branch, &upstream)?;
-        }
+        // `worktree add`, which can make the branch and still fail (the retry then re-adds that
+        // branch with it); set or cleared every time, so an attempt that failed before making the
+        // branch leaves nothing for the retry.
+        let upstream = head_upstream(&target.repo_root)?;
+        set_branch_upstream(&target.repo_root, &target.branch, upstream.as_ref())?;
         command
             .args(["-b", &target.branch])
             .arg(&target.path)

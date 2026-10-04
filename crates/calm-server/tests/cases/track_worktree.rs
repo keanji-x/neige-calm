@@ -485,6 +485,76 @@ async fn a_diverged_checkout_fails_the_create_and_makes_no_worktree() {
     b.shutdown_harnesses().await;
 }
 
+/// `@{upstream}` of the branch `checkout` is on, or `None`.
+fn upstream_of(checkout: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .output()
+        .unwrap();
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// #2112: a create whose `git worktree add` fails before the branch exists (its ref directory is
+/// not writable) leaves no upstream behind for the retry: the human detached the checkout
+/// meanwhile, so the retried branch has none rather than the failed attempt's `origin/main`.
+#[tokio::test]
+async fn a_retry_after_a_failed_add_records_the_checkout_upstream_as_of_the_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    let b = boot().await;
+    let up = upstream(b.tmp.path());
+    let refs = up.clone.join(".git/refs/heads/neige");
+    std::fs::create_dir_all(&refs).unwrap();
+    std::fs::set_permissions(&refs, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let (status, body) = b.create_at(&up.clone, Some("idem-ref"), None).await;
+    std::fs::set_permissions(&refs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!status.is_success(), "premise: {status} {body}");
+    let track_id = b.only_track_id().await;
+    let branch = format!("refs/heads/neige/track-{track_id}");
+    assert!(!git_ref_exists(&up.clone, &branch), "premise: no branch");
+
+    run_git(&up.clone, ["checkout", "-q", "--detach"]);
+    let (status, body) = b.create_at(&up.clone, Some("idem-ref"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let worktree = expected_worktree(&up.clone, &track_id);
+    assert_eq!(upstream_of(&worktree), None);
+    b.shutdown_harnesses().await;
+}
+
+/// #2112: a create whose `git worktree add` made the branch and then failed (the worktree path
+/// cannot be created) keeps the upstream recorded with that branch: the retry re-adds the existing
+/// branch with it, though the human detached the checkout meanwhile.
+#[tokio::test]
+async fn a_retry_after_an_add_that_made_the_branch_keeps_its_upstream() {
+    let b = boot().await;
+    let up = upstream(b.tmp.path());
+    let blocker = up.clone.join(".claude/worktrees");
+    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+    std::fs::write(&blocker, "not a directory\n").unwrap();
+
+    let (status, body) = b.create_at(&up.clone, Some("idem-path"), None).await;
+    assert!(!status.is_success(), "premise: {status} {body}");
+    let track_id = b.only_track_id().await;
+    let branch = format!("refs/heads/neige/track-{track_id}");
+    assert!(
+        git_ref_exists(&up.clone, &branch),
+        "premise: the branch exists"
+    );
+
+    std::fs::remove_file(&blocker).unwrap();
+    run_git(&up.clone, ["checkout", "-q", "--detach"]);
+    let (status, body) = b.create_at(&up.clone, Some("idem-path"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let worktree = expected_worktree(&up.clone, &track_id);
+    assert_eq!(upstream_of(&worktree).as_deref(), Some("origin/main"));
+    b.shutdown_harnesses().await;
+}
+
 /// A repository without a commit has nothing to check out: the create fails and leaves the row.
 #[tokio::test]
 async fn a_commit_less_repository_fails_the_create_and_makes_no_worktree() {
