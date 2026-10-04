@@ -666,7 +666,8 @@ describe('the exchange rail, as the engine lays it out', () => {
     await frame();
     expect(dots()).toHaveLength(2);
     const bare = replies()[0].getBoundingClientRect().left;
-    expect(Math.round(bare)).toBe(Math.round(pane().getBoundingClientRect().left + 8));
+    // clientLeft includes the scroll pane's leading gutter on classic-scrollbar platforms.
+    expect(Math.round(bare)).toBe(Math.round(pane().getBoundingClientRect().left + pane().clientLeft + 8));
 
     document.body.replaceChildren();
     render(<RailPane turns={railTurns(8)} />);
