@@ -353,6 +353,10 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
     .await
     .expect("allocate recovery execution");
     insert_task(&boot, "fix-login-2", "fix-login", "running", Some(worker)).await;
+    sqlx::query("UPDATE tasks SET start = 'upstream' WHERE id = 'fix-login-2'")
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
     insert_task(&boot, "docs-1", "docs", "pending", None).await;
 
     let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
@@ -364,8 +368,8 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
     assert_eq!(
         tasks,
         vec![
-            json!({"key": "docs", "status": "pending", "worker_card_id": null, "access": "read_write"}),
-            json!({"key": "fix-login", "status": "running", "worker_card_id": worker, "access": "read_write"}),
+            json!({"key": "docs", "status": "pending", "worker_card_id": null, "access": "read_write", "start": "checkout"}),
+            json!({"key": "fix-login", "status": "running", "worker_card_id": worker, "access": "read_write", "start": "upstream"}),
         ],
         "one entry per key, its current execution only: {out}"
     );

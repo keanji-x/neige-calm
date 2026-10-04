@@ -120,9 +120,9 @@ fn working_track_state() -> Value {
         ],
         "report_startup_read_required": true,
         "tasks": [
-            { "key": "fix-login", "status": "running", "worker_card_id": "crd_worker", "access": "read_write" },
-            { "key": "add-test", "status": "pending", "worker_card_id": null, "access": "read_write" },
-            { "key": "old", "status": "failed", "worker_card_id": "crd_old", "access": "read_write" }
+            { "key": "fix-login", "status": "running", "worker_card_id": "crd_worker", "access": "read_write", "start": "checkout" },
+            { "key": "add-test", "status": "pending", "worker_card_id": null, "access": "read_write", "start": "checkout" },
+            { "key": "old", "status": "failed", "worker_card_id": "crd_old", "access": "read_write", "start": "checkout" }
         ]
     })
 }
@@ -188,9 +188,9 @@ fn state_text_lists_every_task_and_only_live_cards() {
          closed_at  -\n\
          you        crd_planner planner\n\
          report     has content\n\
-         tasks      fix-login running\n\
-         \x20          add-test pending\n\
-         \x20          old failed\n\
+         tasks      fix-login running start=checkout\n\
+         \x20          add-test pending start=checkout\n\
+         \x20          old failed start=checkout\n\
          live       crd_planner  planner  codex   (you)\n\
          \x20          crd_worker   worker   claude  session running\n"
     );
@@ -254,9 +254,9 @@ fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
          closed_at  -\n\
          you        crd_planner planner\n\
          report     has content\n\
-         tasks      fix-login running\n\
-         \x20          add\\ntest pending\n\
-         \x20          old failed\n\
+         tasks      fix-login running start=checkout\n\
+         \x20          add\\ntest pending start=checkout\n\
+         \x20          old failed start=checkout\n\
          live       crd_planner  planner  codex     (you)\n\
          \x20          crd_worker   worker   cl\\naude  session running\n"
     );
@@ -284,6 +284,66 @@ fn state_json_is_the_compact_tool_result() {
 }
 
 #[test]
+fn state_text_start_is_explicit_for_checkout_and_upstream() {
+    for start in ["checkout", "upstream"] {
+        for access in ["read_only", "read_write"] {
+            let mut value = working_track_state();
+            for task in value["tasks"].as_array_mut().unwrap() {
+                task["start"] = json!(start);
+            }
+            value["tasks"][0]["access"] = json!(access);
+            let text = render(Render::State, "neige.track.state", false, &value).unwrap();
+            let suffix = if access == "read_only" {
+                " read_only"
+            } else {
+                ""
+            };
+            assert_eq!(
+                lines_starting(&text, "tasks"),
+                vec![format!(
+                    "tasks      fix-login running{suffix} start={start}"
+                )]
+            );
+        }
+    }
+}
+
+#[test]
+fn state_start_is_required_only_for_text_and_json_objects_pass_through() {
+    for start in [
+        None,
+        Some(Value::Null),
+        Some(json!(42)),
+        Some(json!(true)),
+        Some(json!("main")),
+    ] {
+        let mut value = working_track_state();
+        if let Some(start) = start {
+            value["tasks"][0]["start"] = start;
+        } else {
+            value["tasks"][0].as_object_mut().unwrap().remove("start");
+        }
+        let err = render(Render::State, "neige.track.state", false, &value).unwrap_err();
+        assert_eq!(
+            err.message,
+            if value["tasks"][0]["start"] == "main" {
+                "neige.track.state task has unknown start \"main\""
+            } else {
+                "neige.track.state task missing string start"
+            }
+        );
+        assert_eq!(
+            err.detail,
+            json!({"kind":"shape","tool":"neige.track.state","task":value["tasks"][0]})
+        );
+        assert_eq!(
+            render(Render::State, "neige.track.state", true, &value).unwrap(),
+            format!("{value}\n")
+        );
+    }
+}
+
+#[test]
 fn state_text_access_matrix_preserves_the_full_read_write_output() {
     for status in [
         "pending",
@@ -302,7 +362,7 @@ fn state_text_access_matrix_preserves_the_full_read_write_output() {
             assert_eq!(
                 render(Render::State, "neige.track.state", false, &value).unwrap(),
                 format!(
-                    "track      trk_2\ntitle      Fix login redirect\nclosed_at  -\nyou        crd_planner planner\nreport     has content\ntasks      fix\\nlogin {status}{suffix}\n           add-test pending\n           old failed\nlive       crd_planner  planner  codex   (you)\n           crd_worker   worker   claude  session running\n"
+                    "track      trk_2\ntitle      Fix login redirect\nclosed_at  -\nyou        crd_planner planner\nreport     has content\ntasks      fix\\nlogin {status}{suffix} start=checkout\n           add-test pending start=checkout\n           old failed start=checkout\nlive       crd_planner  planner  codex   (you)\n           crd_worker   worker   claude  session running\n"
                 )
             );
         }
@@ -316,7 +376,7 @@ fn state_text_marks_readers_without_a_live_worker() {
     value["tasks"][2]["access"] = json!("read_only");
     let text = render(Render::State, "neige.track.state", false, &value).unwrap();
     assert!(
-        text.contains("\n           add-test pending read_only\n           old failed read_only\n"),
+        text.contains("\n           add-test pending read_only start=checkout\n           old failed read_only start=checkout\n"),
         "{text}"
     );
     assert!(!text.contains("crd_old"), "{text}");
@@ -432,7 +492,7 @@ fn state_text_names_the_session_status_and_the_task_status_apart() {
         let text = render(Render::State, "neige.track.state", false, &value).unwrap();
         assert_eq!(
             lines_starting(&text, "tasks"),
-            vec![format!("tasks      fix-login {status}")]
+            vec![format!("tasks      fix-login {status} start=checkout")]
         );
         assert_eq!(
             text.lines()
@@ -452,16 +512,16 @@ fn state_text_names_the_session_status_and_the_task_status_apart() {
 fn state_text_shows_each_key_once_at_its_current_execution() {
     let mut value = working_track_state();
     value["cards"][3]["runtime"]["status"] = json!("idle");
-    value["tasks"][2] = json!({ "key": "old", "status": "done", "worker_card_id": "crd_worker", "access": "read_write" });
+    value["tasks"][2] = json!({ "key": "old", "status": "done", "worker_card_id": "crd_worker", "access": "read_write", "start": "checkout" });
     let text = render(Render::State, "neige.track.state", false, &value).unwrap();
     assert_eq!(
         text.lines()
             .skip_while(|l| !l.starts_with("tasks"))
             .collect::<Vec<_>>(),
         vec![
-            "tasks      fix-login running",
-            "           add-test pending",
-            "           old done",
+            "tasks      fix-login running start=checkout",
+            "           add-test pending start=checkout",
+            "           old done start=checkout",
             "live       crd_planner  planner  codex   (you)",
             "           crd_worker   worker   claude  session running",
             "           crd_old      worker   codex   session idle",

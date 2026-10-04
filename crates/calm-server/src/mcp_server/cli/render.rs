@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 
-use calm_types::task_execution::TaskAccess;
+use calm_types::task_execution::{TaskAccess, TaskStart};
 use chrono::TimeZone as _;
 use serde_json::{Value, json};
 
@@ -208,7 +208,12 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
             TaskAccess::ReadOnly => " read_only",
             TaskAccess::ReadWrite => "",
         };
-        let line = format!("{} {}{suffix}", task.key, task.status.wire_label());
+        let line = format!(
+            "{} {}{suffix} start={}",
+            task.key,
+            task.status.wire_label(),
+            task.start.as_str()
+        );
         fact(if index == 0 { "tasks" } else { "" }, &line);
     }
     let live: Vec<&StateCard<'_>> = cards.iter().filter(|card| card.live).collect();
@@ -218,11 +223,12 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     Ok(out)
 }
 
-/// One current task execution, a `tasks` line `<key> <status>[ read_only]`.
+/// One current task execution, a `tasks` line `<key> <status>[ read_only] start=<start>`.
 struct StateTask<'a> {
     key: &'a str,
     status: TaskStatus,
     access: TaskAccess,
+    start: TaskStart,
 }
 
 fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>, RenderError> {
@@ -231,6 +237,7 @@ fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>,
         .map(|task| {
             let status = required_str(task, "status", tool, "task")?;
             let access = required_str(task, "access", tool, "task")?;
+            let start = required_str(task, "start", tool, "task")?;
             Ok(StateTask {
                 key: required_str(task, "key", tool, "task")?,
                 status: serde_json::from_value(Value::from(status)).map_err(|_| {
@@ -244,6 +251,14 @@ fn state_tasks<'a>(tool: &str, tasks: &'a [Value]) -> Result<Vec<StateTask<'a>>,
                 access: serde_json::from_value(Value::from(access)).map_err(|_| {
                     shape(
                         format!("{tool} task has unknown access {access:?}"),
+                        tool,
+                        "task",
+                        task,
+                    )
+                })?,
+                start: serde_json::from_value(Value::from(start)).map_err(|_| {
+                    shape(
+                        format!("{tool} task has unknown start {start:?}"),
                         tool,
                         "task",
                         task,

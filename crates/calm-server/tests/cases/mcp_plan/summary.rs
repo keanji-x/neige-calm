@@ -1,6 +1,48 @@
 use super::*;
 
 #[tokio::test]
+async fn plan_list_projects_stored_start_in_summary_and_full() {
+    let boot = boot().await;
+    for start in ["checkout", "upstream"] {
+        write_task_block(
+            &boot,
+            json!({"key":start,"kind":"codex","goal":"show start","start":start}),
+        )
+        .await;
+    }
+    // A live attempt must retain the same stored start as a pending one.
+    sqlx::query("UPDATE tasks SET status = 'running' WHERE key = 'upstream' AND track_id = ?1")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    for args in [
+        json!({}),
+        json!({"detail":"full"}),
+        json!({"detail":"summary"}),
+    ] {
+        let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), args)
+            .await
+            .unwrap();
+        let tasks = out["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        for start in ["checkout", "upstream"] {
+            let task = tasks.iter().find(|task| task["key"] == start).unwrap();
+            assert_eq!(task["access"], "read_write", "{out}");
+            assert_eq!(task["start"], start, "{out}");
+            assert_eq!(
+                task["status"],
+                if start == "upstream" {
+                    "running"
+                } else {
+                    "pending"
+                }
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn plan_list_summary_exact_current_key() {
     let boot = boot().await;
     write_task_block(&boot, json!({"key":"a", "kind":"codex", "goal":"neighbor"})).await;

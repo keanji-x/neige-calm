@@ -564,7 +564,7 @@ async fn plan_list(
                     let mut entry = if args.summary {
                         match &task {
                             Some(task) => json!({"key":allocation.key,"kind":task.kind,
-                                "access":task.access,"status_detail":task.status_detail,
+                                "access":task.access,"start":task.start,"status_detail":task.status_detail,
                                 "gate_result":task.gate_result_json.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok())}),
                             None => json!({"key":allocation.key,"task_projection":"unavailable"}),
                         }
@@ -677,6 +677,7 @@ fn task_list_entry(t: &Task) -> Value {
         "key": t.key,
         "kind": t.kind,
         "access": t.access,
+        "start": t.start,
         "status": t.status,
         "status_detail": t.status_detail,
         "depends_on": t.depends_on(),

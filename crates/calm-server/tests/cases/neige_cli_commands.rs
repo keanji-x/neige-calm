@@ -186,7 +186,10 @@ async fn cli_state_text_is_one_fact_per_line() {
         vec![format!("you        {} planner", boot.card_id)]
     );
     assert_eq!(fact("report"), vec!["report     none"]);
-    assert_eq!(fact("tasks"), vec!["tasks      fix-login running"]);
+    assert_eq!(
+        fact("tasks"),
+        vec!["tasks      fix-login running start=checkout"]
+    );
     assert_eq!(fact("live").len(), 1, "{text}");
     let own: Vec<&str> = text
         .lines()
@@ -248,6 +251,10 @@ async fn cli_state_marks_stored_readers_without_live_workers() {
     stamp_task(&boot, "reader-1", "reader", "pending", &boot.other_card_id).await;
     stamp_task(&boot, "exited-1", "exited", "failed", &boot.other_card_id).await;
     stamp_task(&boot, "writer-1", "writer", "pending", &boot.other_card_id).await;
+    sqlx::query("UPDATE tasks SET start = 'upstream' WHERE id = 'writer-1'")
+        .execute(boot.sqlx.pool())
+        .await
+        .unwrap();
     sqlx::query("UPDATE tasks SET access = 'read_only' WHERE id IN ('reader-1','exited-1')")
         .execute(boot.sqlx.pool())
         .await
@@ -271,9 +278,9 @@ async fn cli_state_marks_stored_readers_without_live_workers() {
     assert_eq!(
         rows,
         [
-            "tasks      exited failed read_only",
-            "           reader pending read_only",
-            "           writer pending"
+            "tasks      exited failed read_only start=checkout",
+            "           reader pending read_only start=checkout",
+            "           writer pending start=upstream"
         ]
     );
     assert!(!text.contains(&boot.other_card_id), "{text}");
@@ -283,9 +290,9 @@ async fn cli_state_marks_stored_readers_without_live_workers() {
     assert_eq!(
         state["tasks"],
         json!([
-            {"key":"exited","status":"failed","worker_card_id":boot.other_card_id,"access":"read_only"},
-            {"key":"reader","status":"pending","worker_card_id":null,"access":"read_only"},
-            {"key":"writer","status":"pending","worker_card_id":null,"access":"read_write"}
+            {"key":"exited","status":"failed","worker_card_id":boot.other_card_id,"access":"read_only","start":"checkout"},
+            {"key":"reader","status":"pending","worker_card_id":null,"access":"read_only","start":"checkout"},
+            {"key":"writer","status":"pending","worker_card_id":null,"access":"read_write","start":"upstream"}
         ])
     );
     assert_eq!(json_text, format!("{state}\n"));
@@ -349,7 +356,7 @@ async fn cli_state_shows_a_reported_task_done_beside_its_live_worker_session() {
     let (text, stderr, exit) = cli(&boot, &["track", "state"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
     assert!(
-        text.contains("\ntasks      fix-login done\nlive "),
+        text.contains("\ntasks      fix-login done start=checkout\nlive "),
         "{text}"
     );
     assert!(
@@ -431,7 +438,7 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     let (text, _, exit) = cli(&boot, &["track", "state"]).await;
     assert_eq!(exit, 0, "{text}");
     assert!(
-        text.contains("\ntasks      fix-login done read_only\nlive "),
+        text.contains("\ntasks      fix-login done read_only start=checkout\nlive "),
         "{text}"
     );
     assert!(
@@ -454,7 +461,7 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     assert_eq!(
         state["tasks"],
         json!([
-            {"key":"fix-login","status":"done","worker_card_id":retry,"access":"read_only"}
+            {"key":"fix-login","status":"done","worker_card_id":retry,"access":"read_only","start":"checkout"}
         ])
     );
 }
@@ -521,9 +528,9 @@ async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
     assert_eq!(
         tasks,
         vec![
-            "tasks      add-test done",
-            "           docs pending",
-            "           fix-login done",
+            "tasks      add-test done start=checkout",
+            "           docs pending start=checkout",
+            "           fix-login done start=checkout",
         ],
         "{text}"
     );

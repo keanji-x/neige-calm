@@ -105,6 +105,7 @@ async fn track_state(
                 "key": task.key,
                 "status": task.status,
                 "access": task.access,
+                "start": task.start,
                 "worker_card_id": task.worker_card_id,
             })
         })

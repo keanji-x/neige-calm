@@ -19,15 +19,15 @@ async fn track_state_projects_stored_access_into_tool_and_text() {
     assert_eq!(
         out["tasks"],
         json!([
-            {"key":"reader","status":"pending","worker_card_id":null,"access":"read_only"},
-            {"key":"writer","status":"pending","worker_card_id":null,"access":"read_write"}
+            {"key":"reader","status":"pending","worker_card_id":null,"access":"read_only","start":"checkout"},
+            {"key":"writer","status":"pending","worker_card_id":null,"access":"read_write","start":"checkout"}
         ])
     );
     let text = render(Render::State, TOOL_TRACK_STATE, false, &out).unwrap();
     assert_eq!(
         text,
         format!(
-            "track      {}\ntitle      initial\nclosed_at  -\nyou        {} planner\nreport     none\ntasks      reader pending read_only\n           writer pending\n",
+            "track      {}\ntitle      initial\nclosed_at  -\nyou        {} planner\nreport     none\ntasks      reader pending read_only start=checkout\n           writer pending start=checkout\n",
             boot.track_id, boot.planner_card_id
         )
     );
