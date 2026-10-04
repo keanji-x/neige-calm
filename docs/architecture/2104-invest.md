@@ -8,7 +8,7 @@ prompt files and the registry golden behind F16.
 Facts marked **4140** come from one read-only query of the production database (2026-10-04,
 migration 138).
 
-**Status:** design, revision 5. Review rounds 1–4 are folded in (§7). The research lifecycle is
+**Status:** design, revision 6. Review rounds 1–5 are folded in (§7). The research lifecycle is
 rebuilt on provenance, one issued key and a lease. Issue: #2104. Review tier: **L2**. Docs only.
 
 **Owner direction (not reopened):** a Python plugin `invest` merges `plugins/paper-trading` and
@@ -94,7 +94,7 @@ A **thesis** has:
 - `thesis_id`: a caller-chosen slug;
 - `symbol`;
 - `stance` (`bullish|bearish|neutral`);
-- `title` (≤ 120 chars), `summary` (≤ 500) and `body` (≤ 6,000), all bounded at input;
+- `title` (≤ 110 chars), `summary` (≤ 500) and `body` (≤ 6,000), all bounded at input;
 - `source_refs`;
 - `assessment` (`open|holding|at_risk|broken`);
 - `version`.
@@ -107,8 +107,10 @@ Lifecycle:
 3. **Retire.** `thesis_rm` retires one thesis. `instrument_rm` retires every open thesis of its
    symbol in the same transaction. Retiring is a verb, never an assessment value.
 4. **Flow back.** `thesis.board` on the portfolio Track is republished every tick
-   (`runtime.py:15-27`, F1, F2), so a status change appears there within one tick. It projects
-   only `title` and `summary`.
+   (`runtime.py:15-27`, F1, F2), so a status change appears there within one tick. Each
+   displayed thesis is a section labeled `<assessment> · <title>`, with `summary` as its body.
+   The assessment therefore shows explicitly: a label is at most 120 chars, and title ≤ 110 leaves
+   room for the prefix.
 
 The two reports link each other in prose (F3, F7), and `neige_link_ls` shows inbound links.
 Recipes never copy an assessment into prose (the rule at `spy-recipe.md:17`).
@@ -125,7 +127,7 @@ names a plugin.
   that never decreases and the current key `invest-<VENUE>-<CODE>-<n>`, which keeps case. The
   key parses unambiguously: the venue `[A-Z]{2,8}` has no `-`, and `n` follows the last `-`.
 - The ledger also stores the exact
-  `track_add = {recipe_id, title: "<symbol> 研究 · <n>", idempotency_key, text, message}`.
+  `track_add = {recipe_id, title: "<symbol> 研究", idempotency_key, text, message}`.
 - **Retries.** A retry of `neige_track_add` within `n` is byte-identical and replays the same
   Track (F10). A first creation under the key with *other* arguments is a portfolio Planner
   mistake. The binding fingerprint then refuses every other request under that key forever
@@ -164,10 +166,11 @@ the Planner passes verbatim to `neige_track_add`.
   as a dead Planner, stays open until a human closes it: `neige_track_close` closes only the
   caller's own Track (`track_state.rs:237-245`).
 - **Cap refusals.** Silent Tracks count against the kernel cap. The cap's -32409 therefore lists
-  the creator's open created Tracks as `{track_id, title}`, in the message and in `data` (§3.4).
-- **Owner notice.** On that refusal, the portfolio Planner compares each title's `n` with the
-  current keys. It then calls `neige_user_notify` (today `neige.user.notify`) with the superseded
-  Tracks the owner should close.
+  the creator's open created Tracks as `{track_id, creator_key}` (immutable, already on the row),
+  in the message and in `data` (§3.4).
+- **Owner notice.** On that refusal, the portfolio Planner calls `neige_user_notify` (today
+  `neige.user.notify`) with that list and the current keys from `portfolio_status`. Each Track
+  whose key is not current is one to close.
 
 **States.**
 - `pending`: added, symbol not yet verified. No key exists.
@@ -189,16 +192,16 @@ Planner (owner 3).
 
 | Aspect | Decision |
 |---|---|
-| Who | A Planner on an open creator Track whose plugin scope is `All` (`tool_visibility.rs:57-73`). A bound or fail-closed creator would otherwise escape its fence. A reports-only managed Planner is refused (`managed_track.rs:215-226`). The role has **one** gate: the in-transaction role gate, which makes the creation `TrackUpdated` Planner-only (`calm-truth/src/role_gate.rs:155-183`). Its `Forbidden` maps to -32403, as in `tools/plan.rs:703`. The handler adds no role check of its own. |
+| Who | A Planner on an open creator Track whose plugin scope is `All` (`tool_visibility.rs:57-73`). A bound or fail-closed creator would otherwise escape its fence. A reports-only managed Planner is refused (`managed_track.rs:215-226`). **Authorize before planning.** The handler refuses a non-Planner with -32403 before both the mint and the replay arms. A keyed replay resumes before any create transaction (`routes/tracks.rs:816-822`), and dispatch does not enforce `visible_to_roles` (`registry.rs:310-318,330-335`). The in-transaction gate is the generic backstop for the mint: it makes the creation `TrackUpdated` Planner-only (`calm-truth/src/decision_gate.rs:46-107` → `role_gate.rs:155-183`, `Forbidden` → -32403 as in `tools/plan.rs:703`). |
 | Depth | 1. Refused when the creator has a `creator_track_id`, and separately when it has a `parent_track_id`. |
-| Errors | Scope and depth refusals are -32403, raised with `RpcError::custom` as `managed_track.rs:221` does, not via `require_role*` (F13). The cap is state, so it is -32409 (§5). Its message names `--track-add-max-open`, the cap, the open count and the open created Tracks, and `data.open` lists them as `{track_id, title}` (the rows the count already reads). |
+| Errors | Scope and depth refusals are -32403, raised with `RpcError::custom` as `managed_track.rs:221` does, not via `require_role*` (F13). The cap is state, so it is -32409 (§5). Its message names `--track-add-max-open`, the cap, the open count and the open created Tracks, and `data.open` lists them as `{track_id, creator_key}` (the rows the count already reads). |
 | Recipes | Any stored recipe (owner 5; recipes are human-only, F14). |
 | Where | The creator's area (`registry.rs:66-74`); a managed workspace (`routes/tracks.rs:937-938`); the creator's Planner provider (`child_track_adapter.rs:240`); the default theme; actor `AiPlannerSession` (F13). |
 | Entry point | The keyed create (F10), extracted behind one function that takes an `ActorId`, a key and a fingerprint. REST and the tool both call it, keeping the area-delete lock and the Claude gate (F13). The tool reaches it through `AppContext.track_creator: OnceCell<Arc<dyn TrackCreator>>`, set at boot like `operation_runtime` (`registry.rs:174`); its implementation holds `RouteState`. |
 | Idempotency | The existing binding row, keyed `track-add/<creator_track_id>/<idempotency_key>`. REST refuses that prefix. The fingerprint covers the tool's own five inputs only, not derived fields such as the provider (contrast `create.rs:334-345`). A different request under the same key is -32409. |
 | Provenance | Migration, numbered last: `tracks.creator_track_id` and `tracks.creator_key` (the raw key), both or neither (a named `CHECK`), no `REFERENCES` (0085's reason), and an index on `creator_track_id`. `parent_track_id` stays NULL and the tree budget is untouched (F12). The provenance reaches plugins via `_meta`, built in **one** typed place that both `tools_call` and `forge_tools_call` use (`mcp.rs:424-430,448-454`). |
 | Cap | `--track-add-max-open <u32>`, a clap arg on `Config` (`config.rs:8`, with a range like `:159-166`): 1..=256, default 16, no env var. It counts the creator's open created Tracks inside the create transaction's closure (`routes/tracks.rs:1281`). |
-| Cap and plugin limits | The plugin cannot read the cap (F15). It checks statically that `max_held + max_watched ≤ 254` (the cap range minus a margin of 2). The runbook sets the cap to at least `max_held + max_watched + 2`. A mismatch, or silent superseded Tracks (§3.3), show up as the -32409 above. S stays stale, and the Planner notifies the owner. |
+| Cap and plugin limits | The plugin cannot read the cap (F15). It checks statically that `max_held + max_watched ≤ 255` (the cap range minus one spare renewal slot). The runbook sets the cap to at least `max_held + max_watched + 1`. A mismatch, or silent superseded Tracks (§3.3), show up as the -32409 above. S stays stale, and the Planner notifies the owner. |
 | Events and UI | The ordinary create events (`routes/tracks.rs:1567-1590`). No visible UI change; the generated `Track` type gains two fields. |
 | Creator closes | Nothing cascades. |
 | Budget | 29,929 B: summed over the 30 Planner rows of `mcp_tool_registry.json`. Each row counts the description bytes (prompt `trim_end`; `task.verdict` rendered with its guidance; every SHA-256 matched the golden) plus the compact schema bytes. That leaves 71 B. K1 adds about 1.1 KB and trims at least that much from the largest descriptions (`report.commit` 1,535 B, `terminal.input` 1,479 B, `source.capture` 1,397 B, `plan.list` 1,362 B). It re-measures on its own base. |
@@ -253,7 +256,7 @@ The plugin id is `invest`, and every tool is served as `plugin_invest_<tool>`. S
 | `instrument_add` | `add` W | portfolio Planner | *`symbol`*, `message` | — |
 | `instrument_set` | `set` W | portfolio Planner | *`symbol`*, `expected_version`, `message` → the new `track_add` (key n+1) | — |
 | `instrument_rm` | `rm` W | portfolio Planner | *`symbol`*, `expected_version`, `message`; refused while held | — |
-| `instrument_status` | `status` V | research Planner/Worker | `{}` → its symbol, position, theses; a superseded caller gets -32409 | — |
+| `instrument_status` | `status` V | research Planner | `{}` → its symbol, position, theses; a superseded caller gets -32409 | — |
 | `thesis_add` | `add` W | portfolio Planner | `thesis_id`, *`symbol`*, *`stance`*, `title`, `summary`, `body`, *`source_refs`* | — |
 | `thesis_set` | `set` W | attested research Planner | `thesis_id`, *`assessment`*, `summary`, *`source_refs`*, `expected_version` | — |
 | `thesis_rm` | `rm` W | portfolio Planner | `thesis_id`, `expected_version`, `message` | — |
@@ -327,20 +330,20 @@ what it replaces.
 |---|---|---|
 | `portfolio.weights` | 12 slices | top 10 + 其他 + 现金; slices sum to equity |
 | `portfolio.weight_history` | 6 series | top 4 now + 其他 + 现金; each point sums to 100% |
-| `portfolio.holdings` | 500 rows | every held symbol + 现金 (≤ 255 rows: no aggregation needed) |
+| `portfolio.holdings` | 500 rows | every held symbol + 现金 (≤ 256 rows: no aggregation needed) |
 | `portfolio.decision_log` | 50 records; per record ≤ 12 facts, ≤ 12 badges, ≤ 20 disclosures | facts: top 11 weights + 其他. Badges: state, `created_at`, `valid_until`. Disclosures: one per order, top 19 + 其他 |
-| `thesis.board` | 100 records × 8 sections | one record per counted symbol (held by weight, then watched): top 99 + one 其他 record with counts by assessment; sections are the ≤ 3 open theses (`title` → label, `summary` → body) |
+| `thesis.board` | 100 records × 8 sections | one record per counted symbol (held by weight, then watched): top 99 + one 其他 record with counts by assessment; sections are the ≤ 3 open theses (label `<assessment> · <title>`, body `summary`) |
 | `thesis.records` (research) | 100 records | ≤ 3 open + the 20 latest retired |
 | `nav_history`, `fill_log` | 500 points, 500 rows | 260 points, latest 500 fills |
 
-**Byte budget.** At the maximum config (254 symbols) with maximum-length CJK text, the board is
+**Byte budget.** At the maximum config (255 symbols) with maximum-length CJK text, the board is
 about 100 × (200 + 3 × (120 + 500)) chars × 3 B ≈ 0.6 MB, well under the 4 MiB cap (F2). A test
 asserts this.
 
 **Config** (closed schema, `manifest_version` 5):
 - broker: `account_no`, `broker_home`, `oauth_client_id`, `sdk_python_path`, `access_region`;
 - Tracks: `portfolio_track_id`, `instrument_recipe_id`;
-- limits: `max_held`, `max_watched` (each ≥ 1, sum ≤ 254), `max_weight_bps`;
+- limits: `max_held`, `max_watched` (each ≥ 1, sum ≤ 255), `max_weight_bps`;
 - trading: `cash_buffer_bps`, `drift_bps`, `max_order_bps`, `quote_max_age_seconds`,
   `poll_seconds`;
 - lease: `lease_days` (the bind window is a constant);
@@ -354,7 +357,7 @@ The market is US by code. `profile: spy_cash` is deleted; the paper fence is the
 
 NAV history restarts; the SPY Track stays readable. The kernel cap is set during the K1 deploy
 (a start-script argument, applied by the restart that deploy needs anyway) to at least
-`max_held + max_watched + 2`. The rest is run by the owner after the Sat 2026-10-10 verdict,
+`max_held + max_watched + 1`. The rest is run by the owner after the Sat 2026-10-10 verdict,
 once K2 and P1–P3 are deployed:
 1. Cancel the SPY Track's 4 calendar entries (F24), then close the Track.
 2. Wait until every paper decision is final (none in `queued`, `requested`, `submitting`,
@@ -372,7 +375,7 @@ once K2 and P1–P3 are deployed:
 6. Reset the portfolio Planner (`POST /api/cards/<planner>/planner/reset`, F23); its first
    thread predates `invest`. Neither creation nor reset seeds a turn, and saving a recipe creates
    no calendar. So **send the first message** in the Track's chat
-   (`POST /api/cards/<planner>/planner/input`, `routes/cards.rs:171`), asking it to set up its
+   (`POST /api/cards/<planner>/planner/input`, `routes/cards.rs:173`; `:171` at 9e06ce5ab), asking it to set up its
    calendar and cover `US:SPY`.
 7. Edit Track 7d686d59…'s `chart.series` source to `neige://plugin/invest/series_show`, deleting
    its CRYPTO series (owner 4), then uninstall `market`. K2 will then inject invest's
@@ -403,10 +406,10 @@ Each mutation is single-factor, and `→ {…}` lists the complete set of tests 
 
 | # | Slice (≈ lines) | Tier | Must go red first |
 |---|---|---|---|
-| K1 | `neige_track_add`, provenance in `_meta`, description trims (~1k) | L2 | Tests: `track_add_records_provenance_not_parent`; `…_refuses_past_open_cap` (cap 2: two adds, the third refused, nothing closed); `…_counts_only_open_tracks` (cap 2: two adds, close one, the third admitted); `…_refuses_worker` (a regression test: the in-transaction gate is the only role gate, so there is no mutation row for it); `…_cap_refusal_lists_open_tracks`; `…_refuses_bound_creator`; `…_refuses_created_creator`; `…_refuses_child_creator`; `…_replays_and_refuses_changed_request`; `…_fingerprint_ignores_provider`; `…_delivers_text_once`; `plugin_track_meta_carries_provenance` (through `tools_call` and `forge_tools_call`). Mutations: drop the count → {`refuses_past_open_cap`}; also count closed Tracks → {`counts_only_open_tracks`}; drop `data.open` from the cap refusal → {`cap_refusal_lists_open_tracks`}; drop the scope check → {`refuses_bound_creator`}; drop the `creator_track_id` half → {`refuses_created_creator`}; drop the `parent_track_id` half → {`refuses_child_creator`}; omit `creator_key` → {`plugin_track_meta_carries_provenance`} |
-| K2 | standing instructions (~500) | L2 | Tests: `plugin_instructions_follow_report_references`, `…_skip_unreferenced_tracks`, `…_skip_disabled_plugin`, `…_read_from_row_before_host_boot`, `…_aggregate_never_exceeds_cap` (the §3.5 boundary fixture: three 32-byte ids, 1,990 B texts), `manifest_v4_refuses_planner_instructions`. Mutations: predicate always `true` → {`skip_unreferenced_tracks`}; skip the 65 B reservation → {`aggregate_never_exceeds_cap`} |
+| K1 | `neige_track_add`, provenance in `_meta`, description trims (~1k) | L2 | Tests: `track_add_records_provenance_not_parent`; `…_refuses_past_open_cap` (cap 2: two adds, the third refused, nothing closed); `…_counts_only_open_tracks` (cap 2: two adds, close one, the third admitted); `…_refuses_worker` (fresh key: the mint arm); `…_refuses_worker_replay` (a Worker repeats a Planner's already-bound request: -32403, nothing redelivered); `…_cap_refusal_lists_open_tracks`; `…_refuses_bound_creator`; `…_refuses_created_creator`; `…_refuses_child_creator`; `…_replays_and_refuses_changed_request`; `…_fingerprint_ignores_provider`; `…_delivers_text_once`; `plugin_track_meta_carries_provenance` (through `tools_call` and `forge_tools_call`). Mutations: drop the handler role check → {`refuses_worker_replay`} (the mint case stays refused by the backstop); drop the count → {`refuses_past_open_cap`, `cap_refusal_lists_open_tracks`}; also count closed Tracks → {`counts_only_open_tracks`}; drop `data.open` from the cap refusal → {`cap_refusal_lists_open_tracks`}; drop the scope check → {`refuses_bound_creator`}; drop the `creator_track_id` half → {`refuses_created_creator`}; drop the `parent_track_id` half → {`refuses_child_creator`}; omit `creator_key` → {`plugin_track_meta_carries_provenance`} |
+| K2 | standing instructions (~500) | L2 | Tests: `plugin_instructions_follow_report_references`, `…_skip_unreferenced_tracks`, `…_skip_disabled_plugin`, `…_read_from_row_before_host_boot`, `…_aggregate_never_exceeds_cap` (the §3.5 boundary fixture: three 32-byte ids, 1,990 B texts), `manifest_v4_refuses_planner_instructions`. Mutations: the report-reference predicate always `true` → {`skip_unreferenced_tracks`}; skip the 65 B reservation → {`aggregate_never_exceeds_cap`} |
 | P1 | invest core (~1k, Python): ledger, decisions, executions, multi-symbol bridge, portfolio units, recipe | L2 | Tests: `test_weights_respect_bounds`, `test_held_after_counts_positions`, `test_sells_before_buys_settled_cash_only`, `test_research_track_cannot_trade`, `test_leg_remarks_are_unique`, `test_unowned_active_order_blocks`, `test_opening_positions_pin_first_reconciliation`, `test_cutover_refuses_unquiesced_account`, `test_projections_conserve_value` (40 held: slices and series sum to the total, 其他 equals the omitted sum), and a port of `caller_identity.rs:45`. Mutations: drop the Track fence → {`research_track_cannot_trade`}; drop 其他 from weights → {`projections_conserve_value`} |
-| P2 | instruments, keys, lease, theses, research units and recipe, `planner_instructions` (~800) | L2 | Tests: `test_attestation_requires_portfolio_creator_and_current_key` (cases: a foreign creator; S's thesis written with the current key of another symbol; a `pending` S), `test_superseded_key_refused` (S's older key), `test_never_seen_key_goes_stale`, `test_lease_expiry_goes_stale`, `test_set_issues_next_key_with_byte_identical_args`, `test_views_change_no_domain_state`, `test_last_seen_never_changes_authority` (and never bumps `version`), `test_fourth_open_thesis_refused_state_unchanged`, `test_rm_retires_open_theses`, `test_dropped_counts_toward_no_limit`, `test_units_fit_caps_at_max_config` (254 symbols, max-length CJK, every unit validated and ≤ 4 MiB), `test_unit_ids_injective`, kernel `invest_recipe_slots_resolve`. Mutations: accept any key of S → {`superseded_key_refused`}; accept any current key regardless of symbol → {`attestation_requires_portfolio_creator_and_current_key`}; drop the 120-minute bind window → {`never_seen_key_goes_stale`}; ignore `lease_days` → {`lease_expiry_goes_stale`}; drop the thesis cap → {`fourth_open_thesis_refused_state_unchanged`}; skip retiring on rm → {`rm_retires_open_theses`} |
+| P2 | instruments, keys, lease, theses, research units and recipe, `planner_instructions` (~800) | L2 | Tests: `test_attestation_requires_portfolio_creator_and_current_key` (cases: a foreign creator; S's thesis written with the current key of another symbol; a `pending` S), `test_superseded_key_refused` (S's older key), `test_never_seen_key_goes_stale`, `test_lease_expiry_goes_stale` (`lease_days = 3`: not stale at day 2, stale at day 4), `test_board_shows_assessment_change` (only the assessment changes; the board unit differs), `test_set_issues_next_key_with_byte_identical_args`, `test_views_change_no_domain_state`, `test_last_seen_never_changes_authority` (and never bumps `version`), `test_fourth_open_thesis_refused_state_unchanged`, `test_rm_retires_open_theses`, `test_dropped_counts_toward_no_limit`, `test_units_fit_caps_at_max_config` (255 symbols, max-length CJK, every unit validated and ≤ 4 MiB), `test_unit_ids_injective`, kernel `invest_recipe_slots_resolve`. Mutations: accept any key of S → {`superseded_key_refused`}; accept any current key regardless of symbol → {`attestation_requires_portfolio_creator_and_current_key`}; drop the 120-minute bind window → {`never_seen_key_goes_stale`}; use the default 8 instead of the configured `lease_days` → {`lease_expiry_goes_stale`}; drop the assessment prefix → {`board_shows_assessment_change`}; drop the thesis cap → {`fourth_open_thesis_refused_state_unchanged`}; skip retiring on rm → {`rm_retires_open_theses`} |
 | P3 | `series_show` on the Longbridge SDK (~600); remove `plugins/market` | L1 | Tests: `test_series_contract_matches_market_series`, `test_series_refuses_agent_caller`, kernel `chart_series_resolves_through_invest` (the real resolver, `resolver.rs:573-575`). Mutation: accept an agent caller → {`series_refuses_agent_caller`} |
 | C | cut-over (§3.8) | ops | check C |
 
@@ -414,23 +417,18 @@ L2 means two independent review channels, re-run fresh after every fix (AGENTS.m
 
 ## 5. Risks
 
-- **Wake cost.** Up to `max_held + max_watched` research Planners wake weekly, bounded by the
-  limits and the kernel cap.
-- **Overlay churn.** Portfolio units are republished every tick; #1995 owns that. Research units
-  change only on research calls, so between wakes they show their snapshot time.
-- **Rule drift.** The rules live only in the plugin, and review checks the recipes.
-- **Portfolio Planner mistakes.** A first creation under the current key with other arguments
-  *is* attested: provenance cannot see the arguments. The recovery is renewal (§3.3). A Track
-  under any other key is never attested.
+- **Wake cost:** up to `max_held + max_watched` weekly research wakes, bounded by the limits and cap.
+- **Overlay churn:** portfolio units republish every tick (#1995); research units refresh only on
+  research calls and show their snapshot time. **Rule drift:** rules live only in the plugin.
+- **Planner mistakes:** a first creation under the current key with other arguments *is* attested
+  (provenance cannot see arguments); renewal recovers it (§3.3).
 - **Silent superseded Tracks** hold cap slots until the owner closes them (§3.3, runbook step 8).
 
 ## 6. Rejected alternatives
 
-- The child-track route (F12) and `managed_track_identities`.
-- A CLI-only `neige track add`.
-- Any stored binding, any handshake, and any listing-based check that a Track still exists (§7).
-- Widening the unit contracts, or capping config at contract numbers.
-- A kernel thesis object, and links inside units.
+The child-track route (F12) and `managed_track_identities`; a CLI-only `neige track add`; any
+stored binding, handshake or listing-based existence check (§7); widening the unit contracts or
+capping config at contract numbers; a kernel thesis object; links inside units.
 
 ## 7. Review findings
 
@@ -446,3 +444,7 @@ L2 means two independent review channels, re-run fresh after every fix (AGENTS.m
 | 4 | B-4 bootstrap | Step 6 sends a first message; check C requires `US:SPY` live and seen, plus calendar rows on both Tracks |
 | 4 | B-1 wrong-argument Track under the right key | False promise deleted. Attestation is exactly "portfolio-created, current key, `live`". A mismatched creation is a Planner mistake, recovered by renewal (the fingerprint refuses that key forever) |
 | 4 | Nits | Decision-log badges and disclosures; upper-case symbols and case-kept keys; `live` required; re-add issues n+1; `last_seen_at` does not bump `version`; one typed `_meta` builder; the view exception added to `agent-commands.md` §3; superseded folded into -32409; constant bind window; holdings branch deleted; fixed K2 notice; F23 cites both trees |
+| 5 | B-1 assessment missing from the board | Sections are labeled `<assessment> · <title>` (title ≤ 110); test `board_shows_assessment_change` |
+| 5 | B-2 replays bypass the role gate | The handler authorizes before both arms; the in-transaction gate is the mint backstop; test `refuses_worker_replay`; drop-check mutation → {`refuses_worker_replay`} |
+| 5 | A-B1/B-3 drop-count red set | {`refuses_past_open_cap`, `cap_refusal_lists_open_tracks`} |
+| 5 | Nits | Refusal lists `{track_id, creator_key}`, title `· <n>` deleted; non-default `lease_days` fixture; K2 mutation names the report-reference predicate; `decision_gate.rs:46-107` cited; V-class pointer in `agent-commands.md`; `cards.rs:173`; one spare slot (sum ≤ 255); research Worker drops `instrument_status` |

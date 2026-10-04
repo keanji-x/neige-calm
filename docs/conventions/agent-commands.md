@@ -52,7 +52,7 @@ model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_tr
 
 ## 3. Verb vocabulary (closed)
 
-Effect classes: **V** view (no state change, no anchor), **AR** anchored read, **W** write,
+Effect classes: **V** view (no state change, no anchor; access metadata excepted, see the last decision below), **AR** anchored read, **W** write,
 **LC** lifecycle, **M** maintenance.
 
 | Verb | Class | Meaning | Precedent |
