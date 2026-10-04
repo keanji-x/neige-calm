@@ -828,6 +828,72 @@ describe('track conversations', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
 
+  it.each([
+    [401, 'session_expired'], [403, 'forbidden'], [429, 'rate_limited'], [409, 'planner_harness_dormant'],
+  ] as const)('[F5] keeps a spent unknown send unknown when its Try again is answered %s %s', async (status, code) => {
+    const text = `Spent, then ${code}`;
+    let answer: 'drop' | 'refuse' | 'accept' = 'drop';
+    const { requests } = setup((request) => {
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      if (answer === 'drop') throw new Error('response dropped');
+      return answer === 'refuse' ? failure(status, code, 'Answered without storing it') : inputAccepted();
+    });
+    const inputs = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write(text);
+    expect((await screen.findByRole('alert')).textContent).toContain('Delivery is unconfirmed');
+    expect(inputs()).toHaveLength(SEND_RETRIES + 1);
+    const key = inputs()[0]?.headers?.['Idempotency-Key'];
+
+    /* Try again resumes the op: whatever this answer says, an earlier attempt may have been stored. */
+    answer = 'refuse';
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(inputs()).toHaveLength(SEND_RETRIES + 2));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Delivery is unconfirmed'));
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(inputs().every((request) => request.headers?.['Idempotency-Key'] === key)).toBe(true);
+
+    answer = 'accept';
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(inputs().at(-1)?.headers?.['Idempotency-Key']).toBe(key);
+  });
+
+  it('[F5] reconciles a resumed send whose first attempt was stored and drained, also after reopening', async () => {
+    const text = 'Stored before the answer was lost';
+    const earlier = harnessMessage(1, 'agentMessage', { text: 'Earlier answer' });
+    let rows = [earlier];
+    let accept = false;
+    const { client } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok(rows);
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      if (!accept) throw new Error('response dropped');
+      return inputAccepted();
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByText('Earlier answer');
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write(text);
+    await screen.findByRole('alert');
+    /* The kernel had stored it after all; the queue drained into the transcript. */
+    rows = [earlier, harnessMessage(2, 'userMessage', { content: [{ text }] }), harnessMessage(3, 'agentMessage', { text: 'Reply to it' })];
+    await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
+    await screen.findByText('Reply to it');
+
+    accept = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Stored before/ }));
+    await screen.findByText('Reply to it');
+    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  });
+
   it('[F5] asks for a reconnect, not the admission words, when the retries ran out offline', async () => {
     vi.stubGlobal('__NC_BUNDLED__', true);
     const access = new RecoveryAccess(); access.change('connected');

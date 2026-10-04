@@ -40,13 +40,14 @@ describe('what a failed attempt says about delivery', () => {
 });
 
 describe('retrying an unknown send', () => {
-  const failures = (kinds: readonly SendFailureKind[]) => {
+  const failures = (kinds: readonly SendFailureKind[], unknown = false) => {
     const errors = kinds.map((kind) => new Error(kind));
     let attempts = 0;
     const run = retryUnknownSend(
       (index) => { attempts += 1; return Promise.reject(errors[Math.min(index, errors.length - 1)]); },
       (error) => (error as Error).message as SendFailureKind,
       () => Promise.resolve(),
+      unknown,
     );
     return { run, attempts: () => attempts, errors };
   };
@@ -57,7 +58,7 @@ describe('retrying an unknown send', () => {
     const result = await retryUnknownSend((index) => {
       attempts.push(index);
       return index < 2 ? Promise.reject(new Error('unknown')) : Promise.resolve('sent');
-    }, () => 'unknown', (retry) => { pauses.push(retry); return Promise.resolve(); });
+    }, () => 'unknown', (retry) => { pauses.push(retry); return Promise.resolve(); }, false);
     expect(result).toBe('sent');
     expect(attempts).toEqual([0, 1, 2]);
     expect(pauses).toEqual([0, 1]);
@@ -72,15 +73,21 @@ describe('retrying an unknown send', () => {
     expect(attempts()).toBe(1);
   });
 
-  it.each(['rejected', 'unknown'] as const)('keeps an unknown outcome unknown when a later attempt ends %s', async (last) => {
-    const { run, attempts } = failures(last === 'rejected' ? ['unknown', 'rejected'] : ['unknown']);
+  it.each(['rejected', 'refused', 'unknown'] as const)('keeps an unknown outcome unknown when a later attempt ends %s', async (last) => {
+    const { run, attempts } = failures(last === 'unknown' ? ['unknown'] : ['unknown', last]);
     const failure = await run.catch((error: unknown) => error) as KeyedSendFailure;
     expect(failure.delivery).toBe('unknown');
-    expect(attempts()).toBe(last === 'rejected' ? 2 : SEND_RETRIES + 1);
+    expect(attempts()).toBe(last === 'unknown' ? SEND_RETRIES + 1 : 2);
   });
 
-  it('lets a pre-binding refusal after an unknown attempt settle it as refused', async () => {
-    const { run } = failures(['unknown', 'refused']);
+  it.each(['rejected', 'refused'] as const)('keeps a resumed unknown op unknown when its first attempt ends %s', async (kind) => {
+    const { run, attempts } = failures([kind], true);
+    expect((await run.catch((error: unknown) => error) as KeyedSendFailure).delivery).toBe('unknown');
+    expect(attempts()).toBe(1);
+  });
+
+  it('settles a refusal as refused while nothing was unknown', async () => {
+    const { run } = failures(['refused']);
     expect((await run.catch((error: unknown) => error) as KeyedSendFailure).delivery).toBe('refused');
   });
 });

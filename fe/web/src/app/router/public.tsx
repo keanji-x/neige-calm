@@ -87,7 +87,7 @@ import {
   FOLLOW_INSTALLATION_DEFAULT,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
   type ModelCatalog, type ModelSelection,
-  type OptimisticConversationTurn, type PendingQueueEntry, type PlannerRunTokenUsage,
+  type PendingQueueEntry, type PlannerRunTokenUsage,
   type PlannerQueueWriteOutcome, type SendOutcome, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
@@ -121,7 +121,7 @@ import { TrackSelector } from '../shell/track-selector.tsx';
 import { AppShell, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost, useMobileTrackChoices } from '../shell/public.tsx';
 import {
   ConversationProvider, useConversationRegistry,
-  type ConversationDraft, type ConversationDraftId, type FailedConversationSend,
+  type ConversationDraft, type ConversationDraftId, type FailedConversationSend, type KeyedSendOp,
 } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
@@ -533,10 +533,12 @@ export function useConversationStore(
     ? listedConversations
     : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
-  /** One send under `key`: a press mints it, Try again reuses the failed send's. */
-  const send = async (
-    _conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean, key: string,
-  ): Promise<SendOutcome> => {
+  /**
+   * One run of a keyed send. A press starts a new op (`opAt` mints its key and echo); Try again
+   * resumes the failed op as it was — same key, same echo and high water, and an outcome that once
+   * was unknown stays unknown — so the run is a continuation, not a second message.
+   */
+  const send = async (_conversationId: string, opAt: () => KeyedSendOp): Promise<SendOutcome> => {
     /* Not shown any more (it waited out an Edit's rewind): it still goes to its own conversation, and nothing on screen here speaks for it. */
     const shown = shownCardId.current === cardId;
     if (_conversationId !== cardId || stalled || (shown && sendingRef.current)) return 'not-sent';
@@ -549,21 +551,9 @@ export function useConversationStore(
     }
     if (!registry.tryBeginSend(cardId)) return 'not-sent';
     if (shown) { sendingRef.current = true; setSending(true); setActionError(null); stop.clearFeedback(); }
-    const echo: OptimisticConversationTurn = {
-      id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
-      /* The echo carries the images: an image-only message has no text to reconcile
-               on, so the ids are the second criterion. */
-      attachments,
-      serverHighWaterBefore: serverItemHighWater(items),
-      /* Read at the press from the last `GET /planner/run` snapshot, against the
-               kernel's whitelist (`can_issue_turn()`), not `working`: a front-end notion of
-               "busy" is not the kernel's notion of "can start a turn". Never recomputed
-               from the live phase later. */
-      queued: kernelQueuesInput(phase),
-      /* Not knowable yet — the POST below is what answers it. Claimed in the
-         `then`, and left `null` forever if the server has none to give. */
-      entryId: null,
-    };
+    const { key, echo, fromComposer, unknown } = opAt();
+    const { text } = echo;
+    const attachments = echo.attachments ?? [];
     const sentTo = cardId;
     if (shown) activeSend.current = { cardId: sentTo, echoId: echo.id };
     /* Still ours to answer for. False from the moment the reader moved to
@@ -589,6 +579,7 @@ export function useConversationStore(
       },
       (error) => sendFailureKind(error instanceof ApiError ? error.failure : null),
       (retry) => new Promise<void>((resolve) => { setTimeout(resolve, recoveryDelay(retry, Math.random())); }),
+      unknown,
     ).then((sent) => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
       /* The claim decides only who draws this message; written wherever the echo
@@ -734,15 +725,36 @@ export function useConversationStore(
     actionError,
     failedSend,
     retrySend: (echoId) => {
-      /* The retry carries the echo's images: an image-only message re-sent as
-             `{ text: "" }` is refused, and the ids on a failed echo are still bound. Its key too: if the
-             first attempt was stored after all, the server answers it again and queues nothing. */
+      /* Resumes the failed op, it does not press again: the echo (images included — an image-only
+             message re-sent as `{ text: "" }` is refused, and its ids are still bound), the key, the high water
+             and the unknown-ness all carry over, so a first attempt that was stored after all is answered
+             again, reconciles this echo, and is never queued twice. */
       if (failedSend?.echo.id === echoId) {
-        void send(cardId, failedSend.echo.text, failedSend.echo.attachments ?? [], failedSend.fromComposer, failedSend.key);
+        const { key, echo, fromComposer, delivery } = failedSend;
+        void send(cardId, () => ({ key, echo, fromComposer, unknown: delivery === 'unknown' }));
       }
     },
     send: (conversationId, text, attachments, fromComposer) => failedSend === null || failedSend.delivery === 'refused'
-      ? send(conversationId, text, attachments, fromComposer, mintIdempotencyKey()) : Promise.resolve('not-sent'),
+      ? send(conversationId, () => ({
+        key: mintIdempotencyKey(), fromComposer, unknown: false,
+        echo: {
+          id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
+          /* The echo carries the images: an image-only message has no text to reconcile
+                   on, so the ids are the second criterion. */
+          attachments,
+          /* The op's, not the run's: a resumed op's first attempt may already be in the transcript, above any
+             high water read later, and only this one lets that row reconcile the echo. */
+          serverHighWaterBefore: serverItemHighWater(items),
+          /* Read at the press from the last `GET /planner/run` snapshot, against the
+                   kernel's whitelist (`can_issue_turn()`), not `working`: a front-end notion of
+                   "busy" is not the kernel's notion of "can start a turn". Never recomputed
+                   from the live phase later. */
+          queued: kernelQueuesInput(phase),
+          /* Not knowable yet — the POST below is what answers it. Claimed in the
+             `then`, and left `null` forever if the server has none to give. */
+          entryId: null,
+        },
+      })) : Promise.resolve('not-sent'),
     attachmentsSupported: run.data?.attachments_supported ?? false,
     contextUsage: run.data?.token_usage ?? null,
     runningAnchor: nextRunningAnchor,
