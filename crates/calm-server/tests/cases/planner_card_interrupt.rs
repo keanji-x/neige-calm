@@ -2,17 +2,18 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
+use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::{
-    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, PlannerHarness,
-    PlannerHarnessParams,
+    HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, Observation,
+    PlannerHarness, PlannerHarnessParams,
 };
 use calm_server::ids::TrackId;
 use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
@@ -450,6 +451,93 @@ async fn get_planner_run_running_turn_reports_phase() {
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
+/// Poll the real route until it answers `phase`; the run loop handles notifications asynchronously.
+async fn wait_for_run_phase(app: &axum::Router, uri: &str, phase: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, body) = get_json(app.clone(), uri).await;
+        assert_eq!(status, StatusCode::OK, "body={body}");
+        if body["phase"] == phase {
+            return body;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for phase {phase}; last={body}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// `running_turn` comes from the same state read as `phase`: null while idle, the turn the fake
+/// app-server started once the harness accepts it, not reset by a duplicate `TurnStarted` for that
+/// turn, and null again once the turn completes.
+#[tokio::test]
+async fn get_planner_run_reports_the_running_turn_from_the_accepted_start() {
+    let boot = boot().await;
+    let (card, session_id, thread_id, harness) = seed_live_planner_harness(&boot).await;
+    let uri = format!("/api/cards/{}/planner/run", card.id);
+
+    let idle = wait_for_run_phase(&boot.app, &uri, "idle").await;
+    assert_eq!(idle["running_turn"], json!(null), "body={idle}");
+
+    harness
+        .observe(Observation::TrackGoal {
+            text: "Read the track goal.".into(),
+        })
+        .unwrap();
+    let running = wait_for_run_phase(&boot.app, &uri, "turn_running").await;
+    let turn_id = match harness.state_for_test().await {
+        HarnessState::TurnRunning { turn_id, .. } => turn_id,
+        other => panic!("expected a running turn, got {other:?}"),
+    };
+    assert_eq!(
+        running["running_turn"]["turn_id"],
+        json!(turn_id),
+        "body={running}"
+    );
+    assert!(
+        running["running_turn"]["elapsed_ms"].as_u64().is_some(),
+        "body={running}"
+    );
+
+    // Let the turn age, read it, then repeat its start: a reset would answer less than the earlier read.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (_, before) = get_json(boot.app.clone(), &uri).await;
+    let before_ms = before["running_turn"]["elapsed_ms"]
+        .as_u64()
+        .expect("running");
+    assert!(before_ms >= 200, "body={before}");
+    boot.state
+        .shared_codex_appserver
+        .emit_turn_started_for_test(&thread_id, &turn_id);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (_, after) = get_json(boot.app.clone(), &uri).await;
+    assert_eq!(after["phase"], "turn_running", "body={after}");
+    assert_eq!(
+        after["running_turn"]["turn_id"],
+        json!(turn_id),
+        "body={after}"
+    );
+    let after_ms = after["running_turn"]["elapsed_ms"]
+        .as_u64()
+        .expect("running");
+    assert!(
+        after_ms >= before_ms,
+        "a duplicate start must not reset the clock: {before_ms} -> {after_ms}"
+    );
+
+    boot.state
+        .shared_codex_appserver
+        .emit_notification_for_test(Notification::TurnCompleted {
+            thread_id,
+            turn: json!({ "id": turn_id, "status": "completed" }),
+        });
+    let completed = wait_for_run_phase(&boot.app, &uri, "turn_completed").await;
+    assert_eq!(completed["running_turn"], json!(null), "body={completed}");
+
+    shutdown_seeded_harness(&boot, &session_id, harness).await;
+}
+
 /// Dormancy is not an error for a read.
 #[tokio::test]
 async fn get_planner_run_without_runtime_returns_nulls() {
@@ -462,6 +550,7 @@ async fn get_planner_run_without_runtime_returns_nulls() {
     assert_eq!(body["card_id"], json!(card.id.as_str()));
     assert_eq!(body["worker_session_id"], json!(null), "body={body}");
     assert_eq!(body["phase"], json!(null), "body={body}");
+    assert_eq!(body["running_turn"], json!(null), "body={body}");
 }
 
 #[tokio::test]
@@ -475,6 +564,7 @@ async fn get_planner_run_registry_miss_returns_nulls() {
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["worker_session_id"], json!(null), "body={body}");
     assert_eq!(body["phase"], json!(null), "body={body}");
+    assert_eq!(body["running_turn"], json!(null), "body={body}");
 }
 
 #[tokio::test]
@@ -549,6 +639,7 @@ async fn get_planner_run_preserves_unconfirmed_stop_timeout_after_registry_loss(
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["phase"], "wedged", "stop remains unconfirmed: {body}");
+        assert_eq!(body["running_turn"], json!(null), "{body}");
         assert_eq!(body["worker_session_id"], session_id);
         assert_eq!(body["pending"].as_array().unwrap().len(), 1);
         assert_eq!(body["pending"][0]["text"], "retain this queued message");

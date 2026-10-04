@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::session_projection_repo::WorkerSessionState;
 
@@ -26,6 +26,15 @@ pub enum HarnessState {
     },
 }
 
+/// The turn a `TurnRunning` state is running, and how long ago the harness accepted its
+/// `TurnStarted`, on the monotonic clock: no wall-clock skew enters it, and a duplicate start for
+/// the same turn never resets it (the run loop keeps the state it already has).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningTurn {
+    pub turn_id: String,
+    pub elapsed: Duration,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IssuingKind {
     TurnStart,
@@ -51,6 +60,20 @@ pub fn run_status_for(state: &HarnessState) -> WorkerSessionState {
 impl HarnessState {
     pub fn can_issue_turn(&self) -> bool {
         matches!(self, Self::Idle | Self::TurnCompleted { .. })
+    }
+
+    /// `Some` exactly in `TurnRunning`, measured at `now`.
+    pub fn running_turn(&self, now: Instant) -> Option<RunningTurn> {
+        match self {
+            Self::TurnRunning {
+                turn_id,
+                started_at,
+            } => Some(RunningTurn {
+                turn_id: turn_id.clone(),
+                elapsed: now.saturating_duration_since(*started_at),
+            }),
+            _ => None,
+        }
     }
 
     pub fn active_turn_id(&self) -> Option<String> {

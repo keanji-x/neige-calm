@@ -22,7 +22,7 @@ fn uuid(n: u8) -> Uuid {
 }
 
 fn completed_turn(translator: &TurnTranslator) -> Value {
-    match translator.turn_completed(&TurnOutcome::Completed).kind {
+    match translator.turn_completed(&TurnOutcome::Completed, 0).kind {
         PlannerEventKind::TurnCompleted { turn } => turn,
         other => panic!("not a completion: {other:?}"),
     }

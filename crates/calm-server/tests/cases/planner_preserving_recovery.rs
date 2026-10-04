@@ -506,6 +506,7 @@ async fn planner_run_exposes_retained_queue_and_send_to_resume_notice() {
         "failed carrier must remain sendable in the existing composer"
     );
     assert!(body["worker_session_id"].is_null());
+    assert!(body["running_turn"].is_null(), "{body}");
     assert!(
         body["blocked_reason"]
             .as_str()

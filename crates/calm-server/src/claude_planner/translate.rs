@@ -141,6 +141,9 @@ pub struct TurnTranslator {
     /// The uuid of the last chain record this turn produced, whether or not it made an item: the
     /// point a later rewind keeps the conversation up to (`--resume-session-at`).
     last_record_uuid: Option<Uuid>,
+    /// The clock at [`Self::turn_started`]; `None` until it runs, and then the outcome has no
+    /// `durationMs`.
+    started_at_ms: Option<i64>,
 }
 
 impl TurnTranslator {
@@ -157,16 +160,20 @@ impl TurnTranslator {
             streamed: None,
             record_blocks: None,
             last_record_uuid: None,
+            started_at_ms: None,
         })
     }
 
-    pub fn turn_started(&self) -> PlannerEvent {
+    pub fn turn_started(&mut self, now_ms: i64) -> PlannerEvent {
+        self.started_at_ms = Some(now_ms);
         self.event(PlannerEventKind::TurnStarted {
             turn_id: self.ctx.turn_id.clone(),
         })
     }
 
-    pub fn turn_completed(&self, outcome: &TurnOutcome) -> PlannerEvent {
+    /// The outcome row's turn JSON. `durationMs` is the clock from [`Self::turn_started`] to `now_ms`,
+    /// on the same injected clock the item durations use.
+    pub fn turn_completed(&self, outcome: &TurnOutcome, now_ms: i64) -> PlannerEvent {
         let (status, error) = match outcome {
             TurnOutcome::Completed => ("completed", Value::Null),
             TurnOutcome::Interrupted => ("interrupted", Value::Null),
@@ -175,6 +182,9 @@ impl TurnTranslator {
         let mut turn = json!({ "id": self.ctx.turn_id, "status": status, "error": error });
         if let Some(uuid) = self.last_record_uuid {
             turn["lastRecordUuid"] = json!(uuid.to_string());
+        }
+        if let Some(started_at_ms) = self.started_at_ms {
+            turn["durationMs"] = json!(now_ms.saturating_sub(started_at_ms));
         }
         self.event(PlannerEventKind::TurnCompleted { turn })
     }

@@ -80,6 +80,10 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     );
     assert_eq!(outcomes[0]["id"], turn.as_str());
     assert_eq!(outcomes[0]["status"], "completed");
+    assert!(
+        outcomes[0]["durationMs"].as_u64().is_some(),
+        "the stored row carries the turn's measured duration: {outcomes:?}"
+    );
     let mut before = Vec::new();
     while let Ok(n) = rx.try_recv() {
         before.push(n);

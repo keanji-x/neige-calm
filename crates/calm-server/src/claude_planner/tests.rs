@@ -589,12 +589,12 @@ fn stdin_lines_serialize_to_the_probed_shapes() {
 
 #[test]
 fn turn_frames_carry_the_issued_turn_id() {
-    let translator =
+    let mut translator =
         TurnTranslator::new(context("0".repeat(32), Vec::new()), visible_tools()).unwrap();
     let PlannerEvent {
         thread_id,
         kind: PlannerEventKind::TurnStarted { turn_id },
-    } = translator.turn_started()
+    } = translator.turn_started(10_000)
     else {
         panic!("turn_started");
     };
@@ -608,24 +608,43 @@ fn turn_frames_carry_the_issued_turn_id() {
     let cases = [
         (
             TurnOutcome::Completed,
-            json!({ "id": "turn-1", "status": "completed", "error": null }),
+            json!({ "id": "turn-1", "status": "completed", "error": null, "durationMs": 27_000 }),
         ),
         (
             TurnOutcome::Interrupted,
-            json!({ "id": "turn-1", "status": "interrupted", "error": null }),
+            json!({ "id": "turn-1", "status": "interrupted", "error": null, "durationMs": 27_000 }),
         ),
         (
             failed,
-            json!({ "id": "turn-1", "status": "failed", "error": { "message": "Not logged in" } }),
+            json!({
+                "id": "turn-1", "status": "failed", "error": { "message": "Not logged in" },
+                "durationMs": 27_000,
+            }),
         ),
     ];
     for (outcome, expected) in cases {
-        let PlannerEventKind::TurnCompleted { turn } = translator.turn_completed(&outcome).kind
+        let PlannerEventKind::TurnCompleted { turn } =
+            translator.turn_completed(&outcome, 37_000).kind
         else {
             panic!("turn_completed");
         };
         assert_eq!(turn, expected);
     }
+}
+
+/// A translator whose `turn_started` never ran has no start to measure from, so the outcome
+/// carries no `durationMs` rather than an invented one.
+#[test]
+fn an_unstarted_turn_reports_no_duration() {
+    let translator =
+        TurnTranslator::new(context("0".repeat(32), Vec::new()), visible_tools()).unwrap();
+    let PlannerEventKind::TurnCompleted { turn } = translator
+        .turn_completed(&TurnOutcome::Completed, 37_000)
+        .kind
+    else {
+        panic!("turn_completed");
+    };
+    assert!(turn.get("durationMs").is_none(), "{turn}");
 }
 
 #[test]

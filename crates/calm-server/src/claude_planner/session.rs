@@ -474,7 +474,7 @@ impl ClaudePlannerSession {
             user_line_content(&items).await?,
         ))
         .map_err(CalmError::from)?;
-        let translator = TurnTranslator::new(
+        let mut translator = TurnTranslator::new(
             TurnContext {
                 thread_id: thread.to_string(),
                 turn_id: turn_id.clone(),
@@ -561,7 +561,9 @@ impl ClaudePlannerSession {
                 turn_id: turn_id.clone(),
                 slot: Arc::clone(&slot),
             });
-            let _ = shared.events.send(translator.turn_started());
+            let _ = shared
+                .events
+                .send(translator.turn_started(crate::model::now_ms()));
         }
         tokio::spawn(drive(
             Arc::clone(shared),

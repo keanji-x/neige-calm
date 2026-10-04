@@ -534,7 +534,7 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
         Ending::Stopped => (TerminalEvent::Stopped, false),
     };
     let outcome = decide(slot.cause().as_ref(), &event);
-    let completed = translator.turn_completed(&outcome);
+    let completed = translator.turn_completed(&outcome, crate::model::now_ms());
     let PlannerEventKind::TurnCompleted { turn } = &completed.kind else {
         unreachable!("turn_completed builds TurnCompleted");
     };

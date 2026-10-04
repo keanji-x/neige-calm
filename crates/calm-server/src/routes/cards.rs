@@ -9,7 +9,9 @@ use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope, RatifyDecision};
 use crate::git_candidate::delivery::AttemptOutcome;
-use crate::harness::{HarnessPhaseTag, QueueEntry, TokenUsage, is_harness_snapshot_value};
+use crate::harness::{
+    HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage, is_harness_snapshot_value,
+};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Track, new_id};
 use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
@@ -704,6 +706,24 @@ pub struct GetPlannerRunResponse {
     pub pending_overflow: u32,
     /// Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`).
     pub attachments_supported: bool,
+    /// The turn the harness is running. Non-null exactly when this response's `phase` is `turn_running`: both come from one read of the harness state.
+    pub running_turn: Option<PlannerRunningTurn>,
+}
+
+/// A running turn and how long it has run, by the harness's monotonic clock since it accepted that turn's `TurnStarted`. A duplicate or stale start never resets it. Not a wall-clock time and not persisted: a client anchors it to when the response arrived.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PlannerRunningTurn {
+    pub turn_id: String,
+    pub elapsed_ms: u64,
+}
+
+impl From<RunningTurn> for PlannerRunningTurn {
+    fn from(running: RunningTurn) -> Self {
+        Self {
+            turn_id: running.turn_id,
+            elapsed_ms: u64::try_from(running.elapsed.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
 }
 
 /// One addressable user entry from the harness pending queue.
@@ -1184,6 +1204,7 @@ pub(crate) async fn get_planner_run(
         pending: Vec::new(),
         pending_overflow: 0,
         attachments_supported,
+        running_turn: None,
     };
     let Some(runtime) = s
         .repo
@@ -1219,8 +1240,8 @@ pub(crate) async fn get_planner_run(
     let Some(harness) = s.harness.get(&runtime.id) else {
         return Ok(Json(dormant));
     };
-    // One snapshot read for both fields, so phase and usage come from the same instant.
-    let snapshot = harness.snapshot().await;
+    // One state read for phase, usage and the running turn, so they come from the same instant.
+    let (snapshot, running_turn) = harness.snapshot_with_running_turn().await;
     let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
         attachments_supported,
@@ -1236,6 +1257,7 @@ pub(crate) async fn get_planner_run(
             .map(PlannerRunTokenUsage::from),
         pending,
         pending_overflow,
+        running_turn: running_turn.map(PlannerRunningTurn::from),
     }))
 }
 

@@ -8787,6 +8787,17 @@
             ],
             "description": "The chosen reasoning effort, or `null` for the default. Same source as `model`."
           },
+          "running_turn": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlannerRunningTurn",
+                "description": "The turn the harness is running. Non-null exactly when this response's `phase` is `turn_running`: both come from one read of the harness state."
+              }
+            ]
+          },
           "token_usage": {
             "oneOf": [
               {
@@ -10098,6 +10109,24 @@
             "type": "integer",
             "format": "int64",
             "description": "Tokens in the model's context as of the most recent response. Always present, even when `percent` is not."
+          }
+        }
+      },
+      "PlannerRunningTurn": {
+        "type": "object",
+        "description": "A running turn and how long it has run, by the harness's monotonic clock since it accepted that turn's `TurnStarted`. A duplicate or stale start never resets it. Not a wall-clock time and not persisted: a client anchors it to when the response arrived.",
+        "required": [
+          "turn_id",
+          "elapsed_ms"
+        ],
+        "properties": {
+          "elapsed_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "turn_id": {
+            "type": "string"
           }
         }
       },

@@ -33,7 +33,7 @@ use crate::harness::queue::{
     try_fold_report_edit_tail, try_fold_tail,
 };
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments, TurnBase};
-use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
+use crate::harness::state::{HarnessState, IssuingKind, RunningTurn, run_status_for};
 use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::HarnessInputSegment;
@@ -774,6 +774,14 @@ impl PlannerHarness {
 
     pub async fn snapshot(&self) -> HarnessSnapshot {
         snapshot_for(&self.inner).await
+    }
+
+    /// The snapshot and the running turn, both derived from ONE read of the state, so a running
+    /// turn is never paired with a different phase.
+    pub async fn snapshot_with_running_turn(&self) -> (HarnessSnapshot, Option<RunningTurn>) {
+        let state = self.inner.state.lock().await.clone();
+        let running_turn = state.running_turn(Instant::now());
+        (snapshot_from_state(&self.inner, &state).await, running_turn)
     }
 
     /// Called by the registry when this handle becomes its `Live` slot (#1791 §5.1 item 2).
@@ -3544,6 +3552,10 @@ async fn issue_interrupt_for_turn(
 
 async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let state = inner.state.lock().await.clone();
+    snapshot_from_state(inner, &state).await
+}
+
+async fn snapshot_from_state(inner: &Arc<Inner>, state: &HarnessState) -> HarnessSnapshot {
     let entries = inner.pending_queue.lock().await.iter().cloned().collect();
     let push_watermark = *inner.push_watermark.lock().await;
     let last_thread_id = inner.thread_id.read().await.clone();
@@ -3554,7 +3566,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let last_seen_head = inner.last_seen_head.lock().await.clone();
     let token_usage = inner.token_usage.lock().await.clone();
     let mut snapshot = HarnessSnapshot::from_state(
-        &state,
+        state,
         push_watermark,
         entries,
         last_thread_id,

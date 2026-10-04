@@ -57,7 +57,7 @@ pub use run_loop::{
 pub use snapshot::{
     HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, QueueEntryMeta, is_harness_snapshot_value,
 };
-pub use state::{HarnessState, IssuingKind, run_status_for};
+pub use state::{HarnessState, IssuingKind, RunningTurn, run_status_for};
 pub use token_usage::{BASELINE_TOKENS, TokenUsage};
 
 /// Recovery callers must explicitly provide the single-track deletion fence they coordinate with.
