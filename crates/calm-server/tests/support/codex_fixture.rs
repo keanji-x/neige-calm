@@ -29,6 +29,8 @@ mod boot;
 mod host;
 mod waits;
 
+// Some test binaries that include `support` use nothing from `boot` or `waits`, and CI clippy runs
+// with -D warnings; `host::*` needs no allow because this root module uses it.
 #[allow(unused_imports)]
 pub use boot::*;
 pub use host::*;
@@ -62,12 +64,12 @@ pub fn issue_development_method() -> String {
         .body
 }
 
-/// The template's repo cross-check run in `repo`: `method` must still name
+/// The template's repo cross-check run in `repo`: `method` must still name the first line of
 /// [`REPO_CROSS_CHECK_CMD`]; returns owner/name of the command's first line.
 pub fn cross_checked_origin_repo(method: &str, repo: &Path) -> String {
     assert!(
-        method.contains(&format!("`{REPO_CROSS_CHECK_CMD}`")),
-        "the issue-development method no longer names `{REPO_CROSS_CHECK_CMD}`"
+        method.contains(&format!("first line of `{REPO_CROSS_CHECK_CMD}`")),
+        "the issue-development method no longer names the first line of `{REPO_CROSS_CHECK_CMD}`"
     );
     let mut argv = REPO_CROSS_CHECK_CMD.split(' ');
     let output = StdCommand::new(argv.next().expect("program"))
