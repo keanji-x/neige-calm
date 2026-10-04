@@ -184,7 +184,8 @@ receipt has the same shape; `scripts/local-ratchet-gates.sh` green.
 Predicted red: M1 → T1, T2 (T2 reads `pending`). M2 → T2 (no event within 10 s). M3 → T3, T4,
 T5 (each op completes right after its first read, so the pre-trigger "parked, no event" assertion
 fails). M4 → T4 (no completion within 35 s; deadline recovery cannot run before 900 s). M5 → T5
-(past the deadline with no probe the op fails and appends no event). M6 → T1 (`failed-run` reads
+(past the deadline with no probe the op fails and appends no event), T1 (it reads the
+lowered output probe argv) and the lowering unit test `lowers_gh_pr_checks`. M6 → T1 (`failed-run` reads
 `pending`), T6 (first read is `pending`, so no event within 10 s). T3's reseed has no unfinished
 check, so M6 leaves it green. Ordinary tests: the wake text, the
 `gh` failure retry, the lowering's argv.
