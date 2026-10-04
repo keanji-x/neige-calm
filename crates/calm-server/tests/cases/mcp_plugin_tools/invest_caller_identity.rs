@@ -5,9 +5,6 @@ use std::collections::BTreeMap;
 
 use super::*;
 
-#[path = "../recipe_slots.rs"]
-mod recipe_slots;
-
 const PLUGIN_DIR: &str = "invest";
 const RECIPE: &str = "portfolio-recipe.md";
 

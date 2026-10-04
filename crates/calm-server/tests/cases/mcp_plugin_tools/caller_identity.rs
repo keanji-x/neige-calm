@@ -4,9 +4,6 @@ use std::collections::BTreeMap;
 
 use super::*;
 
-#[path = "../recipe_slots.rs"]
-mod recipe_slots;
-
 #[tokio::test]
 async fn a_local_plugin_receives_resolved_planner_identity() {
     let fx = boot_fixture().await;
