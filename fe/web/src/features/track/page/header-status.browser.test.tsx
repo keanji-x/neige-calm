@@ -149,7 +149,6 @@ describe('the track closed status in the page header', () => {
 
     await userEvent.click(open);
     expect(onReply).toHaveBeenCalledOnce();
-    expect(start).not.toHaveBeenCalled();
     await userEvent.click(dismiss);
     expect(onDismiss).toHaveBeenCalledWith('ask:ratify:1');
     expect(onReply).toHaveBeenCalledOnce();
@@ -349,6 +348,7 @@ describe('the report-to-Planner entry', () => {
     expect(box.right).toBeLessThanOrEqual(window.innerWidth);
     await userEvent.click(button);
     expect(onReply).toHaveBeenCalledOnce();
+    expect(start).not.toHaveBeenCalled();
   });
 
   it('keeps failed-task details reachable while the list remains compact', async () => {
