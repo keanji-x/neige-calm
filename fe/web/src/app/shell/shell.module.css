@@ -820,9 +820,15 @@
     }
 
     .brand {
+      gap: var(--space-3);
       font-size: var(--text-lg);
       letter-spacing: var(--tracking-tight);
       color: var(--text);
+    }
+
+    .brand .brandMark {
+      inline-size: 1em;
+      block-size: 1em;
     }
   }
 }
