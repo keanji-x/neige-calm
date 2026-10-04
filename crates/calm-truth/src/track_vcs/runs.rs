@@ -1,9 +1,9 @@
 use crate::db::TrackEvent;
+use crate::db::sqlite::{CanceledTaskAttempt, canceled_task_attempts_by_track};
 use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, TrackId};
 use crate::model::Card;
-use crate::track_fs_dto::TrackFsRunStatus;
 use crate::track_fs_view::{self, RunEventProjection, RunProjection, RunVerdictProjection};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, Transaction};
@@ -75,6 +75,12 @@ pub(super) async fn project_runs_tx(
     cards: &[CardProjection],
 ) -> Result<Vec<RunProjection>> {
     let events = run_events_for_track_tx(tx, track_id).await?;
+    let mut canceled: BTreeMap<String, CanceledTaskAttempt> =
+        canceled_task_attempts_by_track(tx, track_id.as_str())
+            .await?
+            .into_iter()
+            .map(|attempt| (attempt.attempt_id.clone(), attempt))
+            .collect();
 
     let mut keys = BTreeSet::new();
     let mut worker_cards = BTreeMap::new();
@@ -187,17 +193,13 @@ pub(super) async fn project_runs_tx(
             let failed_event = failed.remove(&key);
             let verdict_event = verdict.remove(&key);
             let verdict = verdict_event.as_ref().and_then(verdict_from_event);
-            let final_event = latest_final_event(completed_event.as_ref(), failed_event.as_ref());
-            let (status, finished_at) = match (requested_event.as_ref(), final_event) {
-                (Some(_), Some(("completed", event))) => {
-                    (TrackFsRunStatus::Completed, Some(event.at))
-                }
-                (Some(_), Some(("failed", event))) => (TrackFsRunStatus::Failed, Some(event.at)),
-                (Some(_), Some((_, event))) => (TrackFsRunStatus::Unknown, Some(event.at)),
-                (Some(_), None) if worker_card.is_some() => (TrackFsRunStatus::Running, None),
-                (Some(_), None) => (TrackFsRunStatus::Requested, None),
-                (None, _) => (TrackFsRunStatus::Unknown, None),
-            };
+            let (status, finished_at) = track_fs_view::run_status(
+                requested_event.as_ref(),
+                completed_event.as_ref(),
+                failed_event.as_ref(),
+                canceled.remove(&key).as_ref(),
+                worker_card.is_some(),
+            );
             let kind = worker_card
                 .as_ref()
                 .and_then(run_kind_from_card)
@@ -335,15 +337,17 @@ pub(super) async fn project_run_by_key_tx(
     }
 
     let verdict = verdict_event.as_ref().and_then(verdict_from_event);
-    let final_event = latest_final_event(completed_event.as_ref(), failed_event.as_ref());
-    let (status, finished_at) = match (requested_event.as_ref(), final_event) {
-        (Some(_), Some(("completed", event))) => (TrackFsRunStatus::Completed, Some(event.at)),
-        (Some(_), Some(("failed", event))) => (TrackFsRunStatus::Failed, Some(event.at)),
-        (Some(_), Some((_, event))) => (TrackFsRunStatus::Unknown, Some(event.at)),
-        (Some(_), None) if worker_card.is_some() => (TrackFsRunStatus::Running, None),
-        (Some(_), None) => (TrackFsRunStatus::Requested, None),
-        (None, _) => (TrackFsRunStatus::Unknown, None),
-    };
+    let canceled = canceled_task_attempts_by_track(tx, track_id.as_str())
+        .await?
+        .into_iter()
+        .find(|attempt| attempt.attempt_id == key);
+    let (status, finished_at) = track_fs_view::run_status(
+        requested_event.as_ref(),
+        completed_event.as_ref(),
+        failed_event.as_ref(),
+        canceled.as_ref(),
+        worker_card.is_some(),
+    );
     let kind = worker_card
         .as_ref()
         .and_then(run_kind_from_card)
@@ -492,19 +496,6 @@ fn record_latest(
         _ => {
             map.insert(key.to_string(), event);
         }
-    }
-}
-
-fn latest_final_event<'a>(
-    completed: Option<&'a RunEventProjection>,
-    failed: Option<&'a RunEventProjection>,
-) -> Option<(&'static str, &'a RunEventProjection)> {
-    match (completed, failed) {
-        (Some(done), Some(fail)) if done.event_id > fail.event_id => Some(("completed", done)),
-        (Some(_), Some(fail)) => Some(("failed", fail)),
-        (Some(done), None) => Some(("completed", done)),
-        (None, Some(fail)) => Some(("failed", fail)),
-        (None, None) => None,
     }
 }
 

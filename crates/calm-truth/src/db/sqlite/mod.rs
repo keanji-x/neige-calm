@@ -112,11 +112,12 @@ pub use session_row::{
 };
 pub(crate) use session_row::{derive_session_identity, worker_session_from_row};
 pub use task::{
-    SuccessReportFlip, TASK_STATUS_DETAIL_DELIVERY_FAILED, TaskReporter, require_track_exists_tx,
-    status_detail_class, status_detail_with_reason, task_apply_gate_result_tx,
-    task_cancel_running_tx, task_cancel_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_delivery_tx, task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx,
-    task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
+    CanceledTaskAttempt, SuccessReportFlip, TASK_STATUS_DETAIL_DELIVERY_FAILED, TaskReporter,
+    canceled_task_attempts_by_track, require_track_exists_tx, status_detail_class,
+    status_detail_with_reason, task_apply_gate_result_tx, task_cancel_running_tx, task_cancel_tx,
+    task_claim_pending_tx, task_complete_from_worker_tx, task_fail_delivery_tx,
+    task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx, task_mark_running_tx,
+    task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
     task_stamp_missing_running_deadline_tx, task_start_verifying_from_worker_tx,
     task_update_pending_tx, tasks_by_track_tx, track_require_task_gates_tx,
     worker_card_declared_head_tx, worker_op_targets_card_tx,

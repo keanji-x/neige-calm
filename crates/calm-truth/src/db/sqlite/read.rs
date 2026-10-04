@@ -315,6 +315,14 @@ impl RepoRead for SqlxRepo {
         super::task_attempt::task_history_by_key_pool(&self.pool, track_id, key).await
     }
 
+    async fn canceled_task_attempts_by_track(
+        &self,
+        track_id: &str,
+    ) -> Result<Vec<super::CanceledTaskAttempt>> {
+        let mut conn = self.pool.acquire().await?;
+        super::canceled_task_attempts_by_track(&mut conn, track_id).await
+    }
+
     async fn task_get(&self, id: &str) -> Result<Option<Task>> {
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1");
         let row = sqlx::query_as::<_, Task>(&sql)

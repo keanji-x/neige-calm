@@ -170,6 +170,12 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>>;
     /// All surviving execution rows, oldest generation first.
     async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>>;
+    /// Every canceled execution of the track's tasks, current or superseded; the runs views' record
+    /// that a canceled run ended.
+    async fn canceled_task_attempts_by_track(
+        &self,
+        track_id: &str,
+    ) -> Result<Vec<crate::db::sqlite::CanceledTaskAttempt>>;
     /// Every non-terminal task across every track, in stable `(track_id, priority DESC, created_at_ms ASC, key ASC)` order; the scheduler's sweep source.
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
     /// In-flight frozen contexts affected by an edit to `dst_track_id`; the JOIN guarantees stale index rows never revive a terminal or deleted task.

@@ -27,6 +27,8 @@ pub struct TrackFsCardMeta {
 pub enum TrackFsRunStatus {
     Completed,
     Failed,
+    /// The attempt's task row was canceled (`neige.plan.cancel`) before the worker reported.
+    Canceled,
     Running,
     Requested,
     Unknown,
@@ -37,6 +39,7 @@ impl TrackFsRunStatus {
         match self {
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Canceled => "canceled",
             Self::Running => "running",
             Self::Requested => "requested",
             Self::Unknown => "unknown",

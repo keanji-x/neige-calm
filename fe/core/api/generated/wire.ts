@@ -572,7 +572,7 @@ export type TrackFsRunEvents = { completed: TrackFsRunEventRef | null, failed: T
 
 export type TrackFsRunIndexEntry = { attempt_id: string, finished_at: number | null, kind: string, requested_at: number | null, status: TrackFsRunStatus, verdict: TrackFsRunVerdictSummary | null, worker_card_id: CardId | null, };
 
-export type TrackFsRunStatus = "completed" | "failed" | "running" | "requested" | "unknown";
+export type TrackFsRunStatus = "completed" | "failed" | "canceled" | "running" | "requested" | "unknown";
 
 export type TrackFsRunVerdict = { at: number, reason: string | null, status: string, };
 

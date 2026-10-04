@@ -12224,6 +12224,7 @@
         "enum": [
           "completed",
           "failed",
+          "canceled",
           "running",
           "requested",
           "unknown"

@@ -150,6 +150,29 @@ pub async fn task_cancel_running_tx(
     Ok(res.rows_affected())
 }
 
+/// A canceled task execution as the runs views read it (#2058): a cancel moves only the row and
+/// emits no `task.*` event for the attempt, so the row is the record that the run ended.
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+pub struct CanceledTaskAttempt {
+    pub attempt_id: String,
+    pub key: String,
+    pub finished_at_ms: Option<i64>,
+}
+
+/// Every canceled execution of the track's tasks, current or superseded.
+pub async fn canceled_task_attempts_by_track(
+    conn: &mut sqlx::SqliteConnection,
+    track_id: &str,
+) -> Result<Vec<CanceledTaskAttempt>> {
+    Ok(sqlx::query_as(
+        "SELECT id AS attempt_id, key, finished_at_ms FROM tasks \
+         WHERE track_id = ?1 AND status = 'canceled' ORDER BY id",
+    )
+    .bind(track_id)
+    .fetch_all(conn)
+    .await?)
+}
+
 /// A gone track row reads as `false`; `require_track_exists_tx` already errored that case.
 pub async fn track_require_task_gates_tx(
     tx: &mut Transaction<'_, Sqlite>,

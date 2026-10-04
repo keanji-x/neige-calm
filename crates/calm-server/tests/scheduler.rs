@@ -7292,6 +7292,9 @@ mod long_task_reliability;
 #[path = "cases/scheduler_running_worker.rs"]
 mod scheduler_running_worker;
 
+#[path = "cases/scheduler_runs_canceled.rs"]
+mod scheduler_runs_canceled;
+
 fn unique_gate_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "neige-gate-test-{tag}-{}-{}",

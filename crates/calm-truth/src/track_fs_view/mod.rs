@@ -2,6 +2,7 @@
 //! `neige.track.{ls,cat}` tools and the HTTP track file endpoints; callers own
 //! their entry gates.
 
+use crate::db::sqlite::CanceledTaskAttempt;
 use crate::db::{RouteRepo, TrackEvent};
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
@@ -20,7 +21,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
 mod gate_logs;
+mod run_status;
 pub use gate_logs::task_gate_log_path;
+pub(crate) use run_status::run_status;
+use run_status::{FinalRunEvent, latest_final_event};
 
 pub(crate) const RESERVED_RUN_KEYS: &[&str] = &["index"];
 pub(crate) const HOOK_EVENT_TRANSCRIPT_CAP: usize = 500;
@@ -304,8 +308,15 @@ impl<'a> TrackFsView<'a> {
             )
             .await
             .map_err(|e| TrackFsError::Internal(format!("track_file: events_for_track: {e}")))?;
+        let canceled = self
+            .repo
+            .canceled_task_attempts_by_track(track.id.as_str())
+            .await
+            .map_err(|e| {
+                TrackFsError::Internal(format!("track_file: canceled_task_attempts: {e}"))
+            })?;
 
-        let runs = project_runs(self.write, cards, events);
+        let runs = project_runs(self.write, cards, events, canceled);
         for run in &runs {
             if is_reserved_run_key(&run.attempt_id) {
                 tracing::error!(
@@ -492,7 +503,12 @@ fn project_runs(
     write: &WriteContext,
     cards: Vec<Card>,
     events: Vec<TrackEvent>,
+    canceled: Vec<CanceledTaskAttempt>,
 ) -> Vec<RunProjection> {
+    let canceled: BTreeMap<String, CanceledTaskAttempt> = canceled
+        .into_iter()
+        .map(|attempt| (attempt.attempt_id.clone(), attempt))
+        .collect();
     let mut keys = BTreeSet::new();
     let mut worker_cards = BTreeMap::new();
     for card in cards {
@@ -605,26 +621,13 @@ fn project_runs(
             let failed_event = failed.remove(&key);
             let verdict_event = verdict.remove(&key);
             let verdict = verdict_event.as_ref().and_then(verdict_from_event);
-
-            let final_event = match (failed_event.as_ref(), completed_event.as_ref()) {
-                (Some(failed), Some(completed)) if completed.event_id > failed.event_id => {
-                    Some(("completed", completed))
-                }
-                (Some(failed), _) => Some(("failed", failed)),
-                (None, Some(completed)) => Some(("completed", completed)),
-                (None, None) => None,
-            };
-
-            let (status, finished_at) = match (requested_event.as_ref(), final_event) {
-                (Some(_), Some(("completed", event))) => {
-                    (TrackFsRunStatus::Completed, Some(event.at))
-                }
-                (Some(_), Some(("failed", event))) => (TrackFsRunStatus::Failed, Some(event.at)),
-                (Some(_), Some((_, event))) => (TrackFsRunStatus::Unknown, Some(event.at)),
-                (Some(_), None) if worker_card.is_some() => (TrackFsRunStatus::Running, None),
-                (Some(_), None) => (TrackFsRunStatus::Requested, None),
-                (None, _) => (TrackFsRunStatus::Unknown, None),
-            };
+            let (status, finished_at) = run_status(
+                requested_event.as_ref(),
+                completed_event.as_ref(),
+                failed_event.as_ref(),
+                canceled.get(&key),
+                worker_card.is_some(),
+            );
 
             let kind = worker_card
                 .as_ref()
@@ -692,19 +695,6 @@ fn record_latest(
         _ => {
             map.insert(key.to_string(), event);
         }
-    }
-}
-
-fn latest_final_event<'a>(
-    completed: Option<&'a RunEventProjection>,
-    failed: Option<&'a RunEventProjection>,
-) -> Option<&'a RunEventProjection> {
-    match (completed, failed) {
-        (Some(done), Some(fail)) if done.event_id > fail.event_id => Some(done),
-        (Some(_), Some(fail)) => Some(fail),
-        (Some(done), None) => Some(done),
-        (None, Some(fail)) => Some(fail),
-        (None, None) => None,
     }
 }
 
@@ -1324,7 +1314,7 @@ pub(crate) fn run_markdown(run: &RunProjection) -> String {
 
     out.push_str("\n## Final Event\n\n");
     match latest_final_event(run.completed_event.as_ref(), run.failed_event.as_ref()) {
-        Some(event) if event.kind == "task.failed" => {
+        Some(FinalRunEvent::Failed(event)) => {
             let reason = event
                 .payload
                 .get("reason")
@@ -1337,7 +1327,7 @@ pub(crate) fn run_markdown(run: &RunProjection) -> String {
                 out.push_str("\n```\n");
             }
         }
-        Some(event) => {
+        Some(FinalRunEvent::Completed(event)) => {
             out.push_str("- TaskCompleted:\n\n");
             out.push_str("```json\n");
             out.push_str(&final_result_summary(event));

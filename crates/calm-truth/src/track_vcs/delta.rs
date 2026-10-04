@@ -17,6 +17,7 @@ use super::snapshot::{
 use super::store::{load_blob_bytes_tx, normalize_path, put_rendered_entry};
 use super::types::{BlobContent, CardVisibility};
 use super::{ManifestEntry, TreeManifest};
+use crate::db::sqlite::canceled_task_attempts_by_track;
 
 #[derive(Default)]
 pub(super) struct PathDelta {
@@ -24,6 +25,8 @@ pub(super) struct PathDelta {
     remove_prefixes: BTreeSet<String>,
     run_keys: BTreeSet<String>,
     run_card_ids: BTreeSet<String>,
+    /// Task keys whose canceled attempts' runs re-project: a cancel emits only `plan.updated`.
+    run_task_keys: BTreeSet<String>,
     /// Safety valve for future schema-wide projection changes. The current
     /// event set is intentionally handled as path-level deltas.
     pub(super) full_snapshot: bool,
@@ -46,11 +49,16 @@ impl PathDelta {
         self.run_card_ids.insert(card_id.into());
     }
 
+    fn add_run_task_key(&mut self, key: impl Into<String>) {
+        self.run_task_keys.insert(key.into());
+    }
+
     pub(super) fn merge(&mut self, other: PathDelta) {
         self.exact.extend(other.exact);
         self.remove_prefixes.extend(other.remove_prefixes);
         self.run_keys.extend(other.run_keys);
         self.run_card_ids.extend(other.run_card_ids);
+        self.run_task_keys.extend(other.run_task_keys);
         self.full_snapshot |= other.full_snapshot;
     }
 }
@@ -70,6 +78,15 @@ pub(super) async fn apply_delta_tx(
     }
     let mut run_keys = delta.run_keys;
     let mut run_card_ids = delta.run_card_ids;
+    if !delta.run_task_keys.is_empty() {
+        run_keys.extend(
+            canceled_task_attempts_by_track(tx, track_id.as_str())
+                .await?
+                .into_iter()
+                .filter(|attempt| delta.run_task_keys.contains(&attempt.key))
+                .map(|attempt| attempt.attempt_id),
+        );
+    }
     if (!run_keys.is_empty() || !run_card_ids.is_empty())
         && runs_index_predates_attempt_id_tx(tx, &manifest.entries).await?
     {
@@ -456,8 +473,13 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::PluginState { .. }
         | Event::PluginDataChanged { .. }
         | Event::PluginToolRegistered { .. } => {}
-        // The task plan has no track-fs view; plan revisions change no tracked path.
-        Event::PlanUpdated { .. } => {}
+        // A cancel moves only the task row and emits this event; the canceled attempts of the
+        // changed keys re-project their runs (#2058).
+        Event::PlanUpdated { changed_keys, .. } => {
+            for key in changed_keys {
+                delta.add_run_task_key(key);
+            }
+        }
         // `runs/<key>` does not consume gate verdicts today; add a run-key dirty arm
         // here when it starts consuming `task.gate_result`.
         Event::TaskGateResult { .. }

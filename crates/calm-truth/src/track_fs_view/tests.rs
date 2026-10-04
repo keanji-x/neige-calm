@@ -298,6 +298,7 @@ fn project_runs_uses_task_dispatched_as_requested_record_fallback() {
         &write,
         vec![],
         vec![dispatched_event(5, 500, "w:k", "codex")],
+        vec![],
     );
     assert_eq!(runs.len(), 1);
     let run = &runs[0];
@@ -320,6 +321,51 @@ fn project_runs_uses_task_dispatched_as_requested_record_fallback() {
     );
 }
 
+fn canceled_attempt(key: &str, finished_at_ms: i64) -> CanceledTaskAttempt {
+    CanceledTaskAttempt {
+        attempt_id: key.into(),
+        key: "k".into(),
+        finished_at_ms: Some(finished_at_ms),
+    }
+}
+
+#[test]
+fn project_runs_canceled_row_ends_a_run_without_a_self_report() {
+    let write = fallback_write();
+    let runs = project_runs(
+        &write,
+        vec![],
+        vec![dispatched_event(5, 500, "w:k", "codex")],
+        vec![canceled_attempt("w:k", 700)],
+    );
+    assert_eq!(runs[0].status, TrackFsRunStatus::Canceled);
+    assert_eq!(runs[0].finished_at, Some(700));
+}
+
+#[test]
+fn project_runs_self_report_outranks_a_canceled_row() {
+    let write = fallback_write();
+    let failed = track_scoped(
+        6,
+        600,
+        ActorId::KernelDispatcher,
+        Event::TaskFailed {
+            idempotency_key: "w:k".into(),
+            reason: "boom".into(),
+            details: None,
+            agent_message: None,
+        },
+    );
+    let runs = project_runs(
+        &write,
+        vec![],
+        vec![dispatched_event(5, 500, "w:k", "codex"), failed],
+        vec![canceled_attempt("w:k", 700)],
+    );
+    assert_eq!(runs[0].status, TrackFsRunStatus::Failed);
+    assert_eq!(runs[0].finished_at, Some(600));
+}
+
 #[test]
 fn project_runs_dispatched_then_completed_resolves_terminal_status() {
     let write = fallback_write();
@@ -339,6 +385,7 @@ fn project_runs_dispatched_then_completed_resolves_terminal_status() {
         &write,
         vec![],
         vec![dispatched_event(5, 500, "w:k", "terminal"), completed],
+        vec![],
     );
     assert_eq!(runs.len(), 1);
     let run = &runs[0];
@@ -375,6 +422,7 @@ fn failed_run_markdown_retains_structured_terminal_output_evidence() {
         &write,
         vec![],
         vec![dispatched_event(5, 500, "w:k", "terminal"), failed],
+        vec![],
     );
     let markdown = run_markdown(&runs[0]);
 
@@ -415,6 +463,7 @@ fn project_runs_real_requested_event_wins_over_dispatch_record() {
         &write,
         vec![],
         vec![requested, dispatched_event(5, 500, "w:k", "codex")],
+        vec![],
     );
     assert_eq!(runs.len(), 1);
     let run = &runs[0];

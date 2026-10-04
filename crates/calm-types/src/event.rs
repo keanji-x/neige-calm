@@ -579,7 +579,7 @@ pub enum Event {
     },
 
     /// The kernel scheduler claimed a plan task (`pending → dispatched`); appended inside the claim tx
-    /// so the runs projection stays purely event-sourced.
+    /// so the runs projection sees the dispatch as an event (a cancel is read from the task row).
     #[serde(rename = "task.dispatched")]
     TaskDispatched {
         idempotency_key: String,
