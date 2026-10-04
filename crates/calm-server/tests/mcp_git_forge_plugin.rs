@@ -103,7 +103,6 @@ fn real_manifest_parses() {
         vec![
             "git.worktree.add",
             "git.commit",
-            "gh.pr.create",
             "gh.pr.list",
             "gh.pr.diff",
             "gh.pr.checks",
@@ -114,6 +113,84 @@ fn real_manifest_parses() {
             "gh.issue.comments",
         ]
     );
+}
+
+#[tokio::test]
+async fn removed_pr_create_is_unknown_and_has_no_side_effects() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let results_dir = short_tempdir("gfr").expect("results tempdir");
+    let shim_dir = short_tempdir("gh").expect("shim tempdir");
+    support::gh_shim::write_gh_shim(shim_dir.path());
+    let mut paths = vec![shim_dir.path().to_path_buf()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let _path = EnvGuard::set("PATH", std::env::join_paths(paths).unwrap());
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+    let fx = boot_fixture().await;
+
+    // Finish a retained production tool before taking the rejection baseline.
+    stage_git_change(&fx.lease_abs, "positive.txt", "positive\n");
+    let positive = call_tool(
+        &fx,
+        10,
+        COMMIT_TOOL,
+        json!({"message":"positive", "idem":"positive"}),
+    )
+    .await;
+    assert!(positive.get("error").is_none(), "{positive:#?}");
+    assert_eq!(positive["result"]["isError"], false);
+    assert_eq!(positive["result"]["structuredContent"]["parked"], false);
+    let baseline: (i64, i64) =
+        sqlx::query_as("SELECT (SELECT COUNT(*) FROM operations), (SELECT COUNT(*) FROM events)")
+            .fetch_one(fx.repo.pool())
+            .await
+            .unwrap();
+    let selector = fx.lease_abs.join(".git");
+    let gh_log = PathBuf::from(format!("{}.shimstate/gh.log", selector.display()));
+    let gh_before = std::fs::read(&gh_log).unwrap_or_default();
+
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.raw_token).await;
+    send_frame(&mut wr, tools_list_frame(11, &fx.thread_id)).await;
+    let list = recv_frame(&mut rd).await;
+    assert!(list.get("error").is_none(), "{list:#?}");
+    assert!(
+        !list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == PR_CREATE_TOOL)
+    );
+    let rejected = call_tool(
+        &fx,
+        12,
+        PR_CREATE_TOOL,
+        json!({
+            "repo":selector, "head":"main", "base":"main", "title":"Title", "body":"Body"
+        }),
+    )
+    .await;
+    assert_eq!(rejected["error"]["code"], -32601, "{rejected:#?}");
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("method not found: tools/call:"),
+        "{rejected:#?}"
+    );
+    let after: (i64, i64) =
+        sqlx::query_as("SELECT (SELECT COUNT(*) FROM operations), (SELECT COUNT(*) FROM events)")
+            .fetch_one(fx.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(after, baseline);
+    assert_eq!(std::fs::read(&gh_log).unwrap_or_default(), gh_before);
+    fx.plugin_host.stop(PLUGIN_ID).await.unwrap();
 }
 
 #[tokio::test]
@@ -533,7 +610,7 @@ async fn assert_tools_are_discoverable(fx: &Fixture) {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
-    for expected in [WORKTREE_TOOL, COMMIT_TOOL, PR_CREATE_TOOL] {
+    for expected in [WORKTREE_TOOL, COMMIT_TOOL] {
         assert!(
             names.contains(&expected),
             "git-forge plugin tool missing from discovery: {expected}; got {names:?}"

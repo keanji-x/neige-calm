@@ -5,6 +5,8 @@ pub mod agent_diag;
 #[allow(dead_code)]
 pub mod codex_fixture;
 #[allow(dead_code)]
+pub mod done_delivery;
+#[allow(dead_code)]
 pub mod event_queries;
 #[allow(dead_code)]
 pub mod forge_env;

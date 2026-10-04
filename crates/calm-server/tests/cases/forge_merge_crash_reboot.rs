@@ -27,16 +27,14 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use support::gh_shim::write_gh_shim;
 use support::git_helpers::{
-    clone_for_track, configure_repo_identity, init_bare_origin, run_git, run_git_capture,
-    stage_git_change,
+    clone_for_track, configure_repo_identity, init_bare_origin, stage_git_change,
 };
 use support::kernel_proc::{launch_kernel, wait_exit_with_timeout};
-use support::mcp::{call_tool_via_socket, send_tool_call_without_reply};
+use support::mcp::send_tool_call_without_reply;
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep};
 
 const PLUGIN_ID: &str = "dev.neige.git-forge";
-const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
 const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
 const CRASH_POINT: &str = "forge-pre-fence-commit:forge.pr.merged";
 const PRE_GO_CRASH_POINT: &str = "forge-pre-go-token:forge.pr.merged";
@@ -50,6 +48,10 @@ const WRAPPER_REAP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
+    let _env_lock = support::forge_env::FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     // prod-safety hard guards (never touch the real DB / port)
     let tmp: TempDir = socket_safe_tempdir().expect("tempdir");
     let tmp_path: PathBuf = tmp.path().to_path_buf();
@@ -85,12 +87,6 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
     let seeded = seed_world(&repo, &track_cwd).await;
     seed_plugin_row(&repo, &tmp_path).await;
-    provision_worker_worktree(
-        &track_cwd,
-        &seeded.track_id,
-        &seeded.card_id,
-        &seeded.lease_abs,
-    );
 
     let path_value = prepend_to_path(&shim_dir);
     let base_env: Vec<(&str, OsString)> = vec![
@@ -102,6 +98,10 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     let mut crash_env = base_env.clone();
     crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(CRASH_POINT)));
 
+    let (pr_number, head_sha) =
+        prepare_pr(repo.clone(), &seeded.track_id, &tmp_path, &shim_dir).await;
+    seed_caller_lease(&repo, &seeded).await;
+
     // boot#1: crash seam armed
     let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "boot-1", &crash_env) else {
         return; // sandbox denied loopback bind — CI-safe skip
@@ -110,33 +110,6 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
 
     let socket_path = tmp_path.join("data").join("mcp").join("kernel.sock");
     let repo_arg = origin_repo.display().to_string();
-    let head = "slice-840-e2-merge-crash";
-
-    run_git(&seeded.lease_abs, ["checkout", "-b", head]);
-    stage_git_change(&seeded.lease_abs, "merge-crash.txt", "merge crash e2\n");
-    run_git(&seeded.lease_abs, ["commit", "-m", "merge crash e2"]);
-    let head_sha = run_git_capture(&seeded.lease_abs, ["rev-parse", "HEAD"]);
-    run_git(&seeded.lease_abs, ["push", "-u", "origin", head]);
-
-    let create_resp = call_tool_via_socket(
-        &socket_path,
-        &seeded.raw_token,
-        &seeded.thread_id,
-        21,
-        PR_CREATE_TOOL,
-        json!({
-            "repo": repo_arg,
-            "head": head,
-            "base": "main",
-            "title": "Merge crash reboot E2E",
-            "body": "Created by #840 e2 merge-crash reboot test"
-        }),
-    )
-    .await;
-    assert_tool_succeeded(&create_resp, "gh.pr.create");
-    let opened = wait_for_event_rows(repo.pool(), "forge.pr.opened", 1, ORACLE_TIMEOUT).await;
-    let pr_number = opened[0]["pr_number"].as_u64().expect("pr number");
-
     // Send the merge WITHOUT awaiting the reply: the abort races the response write, so a
     // reply-reading client could see EOF and panic for the wrong reason.
     let _merge_conn = send_tool_call_without_reply(
@@ -254,6 +227,10 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
 /// head-match probe shape (`--json state,headRefOid`) with exit 2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
+    let _env_lock = support::forge_env::FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     // Subreaper FIRST, before any kernel (and thus any wrapper) exists.
     become_subreaper();
 
@@ -290,12 +267,6 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
     let seeded = seed_world(&repo, &track_cwd).await;
     seed_plugin_row(&repo, &tmp_path).await;
-    provision_worker_worktree(
-        &track_cwd,
-        &seeded.track_id,
-        &seeded.card_id,
-        &seeded.lease_abs,
-    );
 
     let path_value = prepend_to_path(&shim_dir);
     // Same base_env on BOTH boots: the recovery probe's `gh` must resolve to the shim on boot#2 too.
@@ -307,7 +278,10 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(PRE_GO_CRASH_POINT)));
 
     // boot#1: pre-go crash seam armed. The seam is event-kind-qualified, so the setup
-    // `gh.pr.create` op sails through it.
+    // PR preparation finished in a separate runtime before either crash boot.
+    let (pr_number, _head_sha) =
+        prepare_pr(repo.clone(), &seeded.track_id, &tmp_path, &shim_dir).await;
+    seed_caller_lease(&repo, &seeded).await;
     let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "e3-boot-1", &crash_env) else {
         return; // sandbox denied loopback bind — CI-safe skip
     };
@@ -315,33 +289,6 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
 
     let socket_path = tmp_path.join("data").join("mcp").join("kernel.sock");
     let repo_arg = origin_repo.display().to_string();
-    let head = "slice-840-e3-pre-go";
-
-    run_git(&seeded.lease_abs, ["checkout", "-b", head]);
-    stage_git_change(&seeded.lease_abs, "pre-go-crash.txt", "pre-go crash e3\n");
-    run_git(&seeded.lease_abs, ["commit", "-m", "pre-go crash e3"]);
-    run_git(&seeded.lease_abs, ["push", "-u", "origin", head]);
-
-    let create_resp = call_tool_via_socket(
-        &socket_path,
-        &seeded.raw_token,
-        &seeded.thread_id,
-        31,
-        PR_CREATE_TOOL,
-        json!({
-            "repo": repo_arg,
-            "head": head,
-            "base": "main",
-            "title": "Pre-go-token crash reboot E2E",
-            "body": "Created by #840 e3 pre-go-token crash reboot test"
-        }),
-    )
-    .await;
-    assert_tool_succeeded(&create_resp, "gh.pr.create");
-    // The opened event proves the shim state dir is live and counting.
-    let opened = wait_for_event_rows(repo.pool(), "forge.pr.opened", 1, ORACLE_TIMEOUT).await;
-    let pr_number = opened[0]["pr_number"].as_u64().expect("pr number");
-
     // Send the merge WITHOUT awaiting the reply and WITHOUT `expected_head_sha`.
     let _merge_conn = send_tool_call_without_reply(
         &socket_path,
@@ -502,6 +449,62 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     );
 }
 
+async fn prepare_pr(repo: Arc<SqlxRepo>, track: &str, tmp: &Path, shim: &Path) -> (u64, String) {
+    let (track, tmp, shim) = (track.to_string(), tmp.to_path_buf(), shim.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let prepared = runtime.block_on(async {
+            let _path = support::forge_env::EnvGuard::set("PATH", prepend_to_path(&shim));
+            let _trusted = support::forge_env::EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+            let _results = support::forge_env::EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", tmp.join("prepare-results"));
+            let cache = CardRoleCache::new();
+            let track_areas = calm_server::track_area_cache::TrackAreaCache::new();
+            repo.seed_track_area_cache(&track_areas).await.unwrap();
+            let events = calm_server::event::EventBus::new();
+            let write = calm_server::state::WriteContext::new(cache.clone(), track_areas.clone());
+            let (planner, token) = support::done_delivery::planner(&repo, &cache, &track).await;
+            repo.card_create(calm_server::model::NewCard {
+                track_id:track.clone().into(), title:None, kind:"track-report".into(), sort:None,
+                payload:serde_json::to_value(calm_server::track_report::TrackReportPayload::initial()).unwrap(),
+            }).await.unwrap();
+            let host = Arc::new(calm_server::plugin_host::PluginHost::new_full(
+                Arc::new(calm_server::plugin_host::PluginRegistry::empty().with_builtins()),
+                repo.clone(), tmp.join("prepare-plugins"), tmp.join("prepare-plugin-data"), vec![],
+                events.clone(), write.clone()));
+            host.reconcile_builtins().await.unwrap();
+            repo.plugin_update_enabled(PLUGIN_ID, true).await.unwrap();
+            host.spawn(PLUGIN_ID).await.unwrap();
+            let host_cell = Arc::new(tokio::sync::OnceCell::new());
+            host_cell.set(host.clone()).ok().unwrap();
+            let op_cell = Arc::new(tokio::sync::OnceCell::new());
+            let registry = calm_server::mcp_server::build_default_registry();
+            let socket = tmp.join("prepare.sock");
+            let logs = tmp.join("prepare-gates");
+            let server = calm_server::mcp_server::McpServer::spawn(
+                repo.clone(), events.clone(), write.clone(), socket.clone(), PathBuf::from("/nonexistent-shim-bin"),
+                registry.clone(), None, host_cell.clone(), op_cell.clone(), logs.clone()).await.unwrap();
+            let ctx = support::done_delivery::context(repo.clone(), events.clone(), write.clone(), host_cell, op_cell.clone(), logs.clone());
+            let wiring = support::done_delivery::wire(repo.clone(), events, write, cache, track_areas,
+                server, &tmp.join("prepare-workspaces"), &logs).await;
+            op_cell.set(wiring.runtime.clone()).ok().unwrap();
+            let started = support::done_delivery::start(&repo, &ctx, &registry, planner.clone(), "implement").await;
+            configure_repo_identity(&started.cwd);
+            stage_git_change(&started.cwd, "merge-crash.txt", "merge crash fixture\n");
+            let head = support::done_delivery::complete(&repo, &socket, &started).await;
+            let result = support::mcp::call_tool_via_socket(&socket, &token, &planner.thread_id, 21,
+                "neige.track.publish", json!({"title":"Merge crash fixture", "body":"Completed candidate", "idempotency_key":"prepare"})).await;
+            assert_tool_succeeded(&result, "neige.track.publish");
+            assert_eq!(result["result"]["structuredContent"]["head_sha"], head);
+            let number = result["result"]["structuredContent"]["pr_number"].as_u64().unwrap();
+            host.stop(PLUGIN_ID).await.unwrap();
+            (number, head)
+        });
+        // Runtime shutdown cancels scheduler, reconciliation, and reaper tasks before boot #1.
+        runtime.shutdown_timeout(Duration::from_secs(5));
+        prepared
+    }).await.unwrap()
+}
+
 struct Seeded {
     track_id: String,
     card_id: String,
@@ -510,9 +513,8 @@ struct Seeded {
     lease_abs: PathBuf,
 }
 
-/// Seed area + track + Worker card + runtime/thread binding + a `held` workspace lease with
-/// `boot_id` NULL (the boot reclaim predicate only reclaims when BOTH boot_ids are non-NULL and
-/// unequal) and `lease_until_ms = now + 1h`.
+/// Seed the attached Track and taskless caller identity. Its held lease is inserted only
+/// after the preparation runtime exits; NULL boot_id preserves it on boot #1.
 async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
     let as_repo: Arc<dyn Repo> = repo.clone();
     let area = as_repo
@@ -541,11 +543,14 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
-    let lease_abs = track_cwd
-        .join(".claude")
-        .join("worktrees")
-        .join(track.id.as_str())
-        .join(&card_id);
+    let lease_abs = calm_server::db::sqlite::track_worktree_path_for(track_cwd, track.id.as_str());
+    calm_server::test_seams::attach_track_worktree_for_test(
+        repo.pool(),
+        track.id.as_str(),
+        track_cwd,
+    )
+    .await
+    .unwrap();
 
     let mut tx = repo.pool().begin().await.expect("begin card tx");
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
@@ -582,23 +587,6 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
             token.into_inner()
         }
     };
-    let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
-               lease_id, card_id, track_id, path, state, lease_owner,
-               lease_until_ms, boot_id, created_at_ms, updated_at_ms
-           )
-           VALUES (?1, ?2, ?3, ?4, 'held', 'e2-test-lease-owner', ?5, NULL, ?6, ?6)"#,
-    )
-    .bind(calm_server::model::new_id())
-    .bind(&card_id)
-    .bind(track.id.as_str())
-    .bind(lease_abs.display().to_string())
-    .bind(now + 3_600_000)
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .expect("insert workspace lease");
     tx.commit().await.expect("commit card tx");
 
     let thread_id = format!("thread-{card_id}");
@@ -611,6 +599,28 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
         thread_id,
         lease_abs,
     }
+}
+
+async fn seed_caller_lease(repo: &SqlxRepo, seeded: &Seeded) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO workspace_leases (
+               lease_id, card_id, track_id, path, state, lease_owner,
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, 'held', 'e2-test-lease-owner', ?5, NULL, ?6, ?6)"#,
+    )
+    .bind(calm_server::model::new_id())
+    .bind(&seeded.card_id)
+    .bind(&seeded.track_id)
+    .bind(seeded.lease_abs.display().to_string())
+    .bind(now + 3_600_000)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .expect("insert workspace lease");
+    tx.commit().await.unwrap();
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
@@ -680,48 +690,6 @@ async fn seed_plugin_row(repo: &Arc<SqlxRepo>, _tmp: &Path) {
 
 fn manifest_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/git-forge/manifest.json")
-}
-
-fn provision_worker_worktree(repo: &Path, track_id: &str, card_id: &str, target: &Path) {
-    ensure_worktree_root_excluded(repo);
-    let parent = target.parent().expect("worker worktree target parent");
-    std::fs::create_dir_all(parent).expect("create worker worktree parent");
-    let branch = format!("neige/{track_id}/{card_id}");
-    run_git(
-        repo,
-        [
-            "worktree",
-            "add",
-            "-b",
-            branch.as_str(),
-            target.to_str().expect("utf-8 worktree path"),
-        ],
-    );
-    configure_repo_identity(target);
-}
-
-fn ensure_worktree_root_excluded(repo: &Path) {
-    use std::io::Write as _;
-
-    const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
-    let exclude = run_git_capture(repo, ["rev-parse", "--git-path", "info/exclude"]);
-    let exclude = repo.join(exclude);
-    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
-    if existing.lines().any(|line| line.trim() == WORKTREE_EXCLUDE) {
-        return;
-    }
-    if let Some(parent) = exclude.parent() {
-        std::fs::create_dir_all(parent).expect("create git exclude parent");
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&exclude)
-        .expect("open git exclude");
-    if !existing.is_empty() && !existing.ends_with('\n') {
-        writeln!(file).expect("separate git exclude entries");
-    }
-    writeln!(file, "{WORKTREE_EXCLUDE}").expect("write worktree exclude");
 }
 
 // BUSY-tolerant polling oracles: boot#1/boot#2 are live WAL writers on the same file DB, so

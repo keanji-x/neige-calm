@@ -312,6 +312,9 @@ The lease term of D5 has no must-red test (holding a kill needs a missing hook);
 
 ## 8. Deploy note and S3 boundary
 
+Historical S3 scope below is superseded by S3's publish-only decision and #1868:
+MCP publication uses `neige.track.publish`; the direct `gh.pr.create` tool is removed.
+
 - **At deploy (4140, once):** after the new kernel is running, run the following in each
   repository from G18.
   - `git worktree list --porcelain | awk '/^worktree .*\/\.claude\/worktrees\/[0-9a-f]{32}\/[0-9a-f]{32}$/{print $2}' | xargs -r -n1 git worktree remove --force`

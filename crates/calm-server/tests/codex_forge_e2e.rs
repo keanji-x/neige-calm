@@ -37,7 +37,7 @@ use support::mcp::call_tool_via_socket;
 use support::planner_turn::*;
 use tokio::time::{Instant, sleep};
 
-const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
+const PUBLISH_TOOL: &str = "neige.track.publish";
 const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
 /// The d2 test's source issue. Purely an environment fact: the gh shim keeps
 /// per-repo issue state keyed by number, and any number works.
@@ -87,7 +87,7 @@ async fn real_codex_worker_writes_code_on_leased_worktree() {
 }
 
 #[tokio::test]
-async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
+async fn real_codex_worker_delivers_candidate_then_scripted_planner_publishes() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -105,9 +105,9 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     };
 
     let _dispatcher = spawn_dispatcher(&fx);
-    let repo_gitdir = fx.track_cwd.join(".git").display().to_string();
-    // The worker must DISCOVER and CALL the annotation-less forge tools itself; a failure here is a genuine finding, not to be scripted around.
-    let goal = forge_pr_goal(&repo_gitdir);
+    let repo_gitdir = fx.origin_repo.display().to_string();
+    // This proves real worker delivery; autonomous Planner publishing is covered by the capstone.
+    let goal = forge_delivery_goal();
     plan_codex_task(&fx, TASK_KEY, &goal).await;
 
     let budget = e2e_budget();
@@ -120,7 +120,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     let worker_cwd = PathBuf::from(output_string(output, "cwd"));
     let worker_card_id = output_string(output, "card_id");
 
-    // Nothing in this fixture scripts `gh.*` or `git.commit`, so only the real worker's own `tools/call` can emit `forge.pr.opened` / `forge.pr.checks`.
+    // The real worker discovers and calls git.commit before reporting its delivery.
     let (s5_id, s5) = wait_for_first_worktree_committed_event(&fx, &task_id, budget).await;
     assert_eq!(s5.actor, ActorId::KernelDispatcher);
     assert_eq!(s5.scope_kind, "card");
@@ -137,6 +137,14 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     );
     assert_eq!(s5.payload["commit_sha"], head);
 
+    let candidate =
+        support::done_delivery::wait_done_candidate_with_budget(&fx.repo, &task_id, budget).await;
+    assert_eq!(candidate, head);
+    let task_completed_id = wait_for_task_completed_id(&fx, budget).await;
+    let planner_thread = planner_session_thread_id(&fx).await;
+    let published = call_tool_via_socket(&fx.socket_path, &fx.daemon_token, &planner_thread, 190,
+        PUBLISH_TOOL, json!({"title":"Worker delivery", "body":"Completed candidate", "idempotency_key":"worker-delivery"})).await;
+    assert_forge_tool_accepted(&published, PUBLISH_TOOL);
     let (s6_id, s6_track, s6) = wait_for_first_forge_event(&fx, "forge.pr.opened", budget).await;
     assert_eq!(s6_track.as_deref(), Some(fx.track_id.as_str()));
     assert_eq!(s6["head_sha"], head);
@@ -145,17 +153,25 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
         .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {s6}"));
     assert!(pr_number >= 1, "PR number must be >= 1, got {pr_number}");
 
+    let checks = call_tool_via_socket(
+        &fx.socket_path,
+        &fx.daemon_token,
+        &planner_thread,
+        191,
+        PR_CHECKS_TOOL,
+        json!({"repo":repo_gitdir, "pr":pr_number}),
+    )
+    .await;
+    assert_forge_tool_accepted(&checks, PR_CHECKS_TOOL);
     let (s7_id, s7_track, s7) = wait_for_first_forge_event(&fx, "forge.pr.checks", budget).await;
     assert_eq!(s7_track.as_deref(), Some(fx.track_id.as_str()));
     assert_eq!(s7["pr_number"].as_u64(), Some(pr_number));
     assert_eq!(s7["conclusion"], "success");
 
-    let task_completed_id = wait_for_task_completed_id(&fx, budget).await;
-
-    // The worker must commit/open/check in-turn BEFORE `neige.task.complete`.
+    // Publication follows the same attempt's completed, settled delivery.
     assert!(
-        s5_id < s6_id && s6_id < s7_id && s7_id < task_completed_id,
-        "expected S5 < S6 < S7 < task.completed, got S5={s5_id}, S6={s6_id}, S7={s7_id}, task.completed={task_completed_id}"
+        s5_id < task_completed_id && task_completed_id < s6_id && s6_id < s7_id,
+        "commit={s5_id} < complete={task_completed_id} < opened={s6_id} < checks={s7_id} required"
     );
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
     assert_eq!(
@@ -248,7 +264,7 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
-// The only possible emitter of `forge.pr.merged` / `forge.issue.closed` is the real planner's own `tools/call`: scripted setup stops at `gh.pr.create`/`gh.pr.checks`.
+// The only possible emitter of `forge.pr.merged` / `forge.issue.closed` is the real planner's own `tools/call`: scripted setup stops at `neige.track.publish`/`gh.pr.checks`.
 // The op idem-key checks pin the caller card only; scripted setup uses the same planner thread, so they cannot discriminate scripted-vs-autonomous.
 #[tokio::test]
 async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descriptor() {
@@ -283,10 +299,21 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     assert_planner_prompt_binds_issue_development(&fx, D2_ISSUE_NUMBER).await;
     let repo_arg = fx.origin_repo.display().to_string();
     let goal = merge_close_goal(&repo_arg, D2_ISSUE_NUMBER);
+    // The local fake worker's exclusive preparation runtime ends before the real Planner starts.
+    let head_sha = support::done_delivery::local_candidate(&fx).await;
+    let planning_floor = max_event_id(&fx.repo).await;
 
     boot_planner_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, _plan) = wait_for_plan_updated(&fx, planner_planning_budget()).await;
+    let (_, plan_actor, _plan) = wait_capstone_event(
+        &fx,
+        "plan.updated",
+        planning_floor,
+        planner_planning_budget(),
+        "real Planner tail plan",
+        |_| true,
+    )
+    .await;
     assert!(
         matches!(plan_actor, ActorId::AiPlannerSession(_)),
         "plan.updated actor must be the real planner session, got {plan_actor:?}"
@@ -298,36 +325,18 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     // Settle the planning turn before setup/seeding so the merge+close is causally a response to the injected observations.
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
 
-    // Scripted REAL PR setup (setup, not the proof): raw git branch + push, then scripted `gh.pr.create` + `gh.pr.checks` through the daemon socket so genuine events back the injected observations.
-    let branch = "neige-d2-impl-slice";
-    run_git(&fx.track_cwd, ["checkout", "-B", branch, "origin/main"]);
-    stage_git_change(&fx.track_cwd, "FORGE_E2E_D2.md", "forge-e2e-d2\n");
-    run_git(&fx.track_cwd, ["commit", "-m", "d2 scripted impl commit"]);
-    let head_sha = run_git_capture(&fx.track_cwd, ["rev-parse", "HEAD"]);
-    assert!(
-        is_hex_sha(&head_sha),
-        "scripted branch tip should be a 40-char hex sha, got {head_sha:?}"
-    );
-    run_git(&fx.track_cwd, ["push", "-u", "origin", branch]);
-    run_git(&fx.track_cwd, ["checkout", "main"]);
-
     let planner_thread_id = planner_session_thread_id(&fx).await;
     let create_resp = call_tool_via_socket(
         &fx.socket_path,
         &fx.daemon_token,
         &planner_thread_id,
         201,
-        PR_CREATE_TOOL,
-        json!({
-            "repo": repo_arg,
-            "head": branch,
-            "base": "main",
-            "title": "d2 scripted impl PR",
-            "body": "Scripted setup PR for the #840 d2 merge E2E"
-        }),
+        PUBLISH_TOOL,
+        json!({"title":"d2 scripted impl PR", "body":"Completed setup candidate",
+        "idempotency_key":"d2-publish"}),
     )
     .await;
-    assert_forge_tool_accepted(&create_resp, "gh.pr.create");
+    assert_forge_tool_accepted(&create_resp, PUBLISH_TOOL);
     let (opened_id, _, opened) = wait_for_track_forge_event(
         &fx,
         "forge.pr.opened",
@@ -621,7 +630,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     assert_planner_prompt_binds_issue_development(&fx, CAPSTONE_ISSUE_NUMBER).await;
     let dispatcher = spawn_dispatcher_with_harness(&fx);
 
-    let repo_gitdir = fx.track_cwd.join(".git").display().to_string();
+    let repo_gitdir = fx.origin_repo.display().to_string();
     let goal = capstone_goal(&repo_gitdir, CAPSTONE_ISSUE_NUMBER, &fx.origin_main_initial);
     boot_planner_harness_via_start_op(&fx, goal).await;
 
@@ -667,6 +676,24 @@ async fn real_planner_drives_issue_to_close_capstone() {
         "issue read artifact must carry the shim-seeded fixture body (S0)"
     );
 
+    let implement = tokio::time::timeout(st(), async {
+        loop {
+            if let Some(task) = fx
+                .repo
+                .task_current_get(fx.track_id.as_str(), "implement-change")
+                .await
+                .unwrap()
+                && task.worker_card_id.is_some()
+            {
+                break task;
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("implement attempt started");
+    let implement_card = implement.worker_card_id.as_deref().unwrap();
+
     // S5 — the kernel commits the implement worker's leased worktree.
     let (commit_id, commit_actor, committed) = wait_capstone_event(
         &fx,
@@ -674,7 +701,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
         0,
         st(),
         "kernel commits the implement worker's worktree",
-        |_| true,
+        |p| p["card_id"] == implement_card,
     )
     .await;
     assert_eq!(
@@ -685,13 +712,13 @@ async fn real_planner_drives_issue_to_close_capstone() {
 
     // S5.5 — the env-cleared rustc gate runs and passes, strictly after the
     // commit (verifying → task.gate_result on the implement task).
-    let (_gate_id, gate_actor, gate) = wait_capstone_event(
+    let (gate_id, gate_actor, gate) = wait_capstone_event(
         &fx,
         "task.gate_result",
         commit_id,
         st(),
         "post-commit task-verify gate passes",
-        |p| p["passed"] == json!(true),
+        |p| p["task_id"] == implement.id && p["passed"] == json!(true),
     )
     .await;
     assert_eq!(
@@ -700,14 +727,18 @@ async fn real_planner_drives_issue_to_close_capstone() {
         "task.gate_result is kernel-emitted: {gate}"
     );
 
-    // S6 — a real open-pr worker opens the PR against the local shim.
+    let candidate =
+        support::done_delivery::wait_done_candidate_with_budget(&fx.repo, &implement.id, st())
+            .await;
+
+    // S6 — the real Planner publishes the completed candidate.
     let (opened_id, opened_actor, opened) = wait_capstone_event(
         &fx,
         "forge.pr.opened",
         commit_id,
         st(),
-        "open-pr worker opens the pull request",
-        |_| true,
+        "Planner publishes the completed candidate",
+        |p| p["head_sha"] == candidate,
     )
     .await;
     assert_eq!(opened_actor, ActorId::KernelDispatcher, "{opened}");
@@ -719,6 +750,8 @@ async fn real_planner_drives_issue_to_close_capstone() {
         .unwrap_or_else(|| panic!("forge.pr.opened missing head_sha: {opened}"))
         .to_string();
     assert!(is_hex_sha(&opened_head), "{opened}");
+    assert_eq!(candidate, opened_head);
+    assert!(gate_id < opened_id);
 
     // S7 — CI conclusion read (shim-hardwired success).
     let (_checks_id, _, _checks) = wait_capstone_event(

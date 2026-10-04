@@ -66,49 +66,6 @@
       }
     },
     {
-      "name": "gh.pr.create",
-      "description": "Lower GitHub pull request creation into a forge action",
-      "kind": "forge-action",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "repo": {
-            "type": "string",
-            "description": "Repository git-dir path or selector passed to gh/git"
-          },
-          "head": {
-            "type": "string",
-            "description": "Head branch for the pull request"
-          },
-          "base": {
-            "type": "string",
-            "description": "Base branch for the pull request"
-          },
-          "title": {
-            "type": "string",
-            "description": "Pull request title"
-          },
-          "body": {
-            "type": "string",
-            "description": "Pull request body"
-          }
-        },
-        "required": [
-          "repo",
-          "head",
-          "base",
-          "title",
-          "body"
-        ]
-      },
-      "annotations": {
-        "title": "Create Pull Request",
-        "readOnlyHint": false,
-        "destructiveHint": false,
-        "openWorldHint": false
-      }
-    },
-    {
       "name": "gh.pr.list",
       "description": "Lower GitHub pull request overlap scans into a forge action",
       "kind": "forge-action",

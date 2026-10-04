@@ -184,26 +184,12 @@ Acceptance: `FORGE_E2E.md` exists at the repository root with exactly that conte
         .to_string()
 }
 
-pub fn forge_pr_goal(repo_gitdir: &str) -> String {
-    format!(
-        r#"Goal: In your current leased git worktree, perform EXACTLY these steps in order, using the MCP tools provided to you. Do not use the shell for git/gh; use the MCP tools.
-
-1. Create a single new file named `FORGE_E2E.md` at the worktree root whose entire contents are exactly the single line `forge-e2e-ok`. Do not modify any other file.
-
-2. Call the MCP tool whose name ends in `git.commit` (full name `plugin.dev.neige.git-forge_git.commit`) with arguments {{"message":"forge-e2e worker commit","idem":"forge-e2e-worker-commit"}} to commit that file on your current slice branch. Note the `branch` it reports.
-
-3. Call the MCP tool whose name ends in `gh.pr.create` (full name `plugin.dev.neige.git-forge_gh.pr.create`) with arguments:
-   {{"repo":"{repo}","head":"<the branch git.commit reported in step 2>","base":"main","title":"forge-e2e","body":"forge-e2e worker PR"}}
-   The `repo` value MUST be exactly `{repo}`. ALL of repo, head, base, title, body are mandatory. Note the PR `number` it returns.
-
-4. Call the MCP tool whose name ends in `gh.pr.checks` (full name `plugin.dev.neige.git-forge_gh.pr.checks`) with arguments {{"repo":"{repo}","pr":<the PR number from step 3>}}.
-
-5. Call `neige.task.complete` with a non-empty `idempotency_key`.
-
-Hard constraints: Do NOT run `git push`. Do NOT call gh.pr.merge. Do NOT close any issue. Do NOT call gh.pr.diff or gh.pr.list. Perform steps 2, 3, 4 in that exact order BEFORE calling neige.task.complete in step 5.
-Acceptance: `FORGE_E2E.md` exists with exactly that content; a PR was created; its checks were read."#,
-        repo = repo_gitdir
-    )
+pub fn forge_delivery_goal() -> String {
+    r#"Goal: In your leased git worktree, create FORGE_E2E.md with exactly the single line forge-e2e-ok.
+Call plugin.dev.neige.git-forge_git.commit with {"message":"forge-e2e worker commit","idem":"forge-e2e-worker-commit"}.
+Then call neige.task.complete with your attempt_id, reporting the commit and branch.
+Use MCP for git. Do not push, open or merge a PR, or close an issue.
+Acceptance: the file is committed and the task reports its delivery."#.to_string()
 }
 
 pub async fn worker_operation_for_task(repo: &SqlxRepo, task_id: &str) -> Option<OperationRow> {

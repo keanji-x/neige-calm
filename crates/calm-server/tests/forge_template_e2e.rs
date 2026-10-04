@@ -46,7 +46,7 @@ use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
-use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
+use calm_server::state::{DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_types::worker::WorkerSessionId;
@@ -71,7 +71,7 @@ use tower::ServiceExt;
 const PLUGIN_ID: &str = "dev.neige.git-forge";
 const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
 const PR_LIST_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.list";
-const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
+const PUBLISH_TOOL: &str = "neige.track.publish";
 const PR_DIFF_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.diff";
 const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
 const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
@@ -104,6 +104,9 @@ struct Fixture {
     track_cwd: PathBuf,
     origin_repo: PathBuf,
     _runtime: Arc<OperationRuntime>,
+    _delivery_wiring: support::done_delivery::Wiring,
+    delivery: Option<support::done_delivery::Started>,
+    planner_token: String,
     _socket_tmp: TempDir,
     _tmp: TempDir,
 }
@@ -481,12 +484,13 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
     let _path = EnvGuard::set("PATH", path_value);
 
-    let fx = boot_fixture().await;
+    let mut fx = boot_delivery_fixture().await;
     assert_tools_are_discoverable(&fx).await;
 
     let repo_arg = fx.origin_repo.display().to_string();
     let base = "main";
-    let head = "slice-810-e2e";
+    let branch = format!("neige/track-{}", fx.track_id);
+    let head = branch.as_str();
 
     let issue_view_resp = call_tool(
         &fx,
@@ -534,7 +538,6 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     assert_track_event(&scan[0], &fx.track_id);
     assert_eq!(scan[0].payload["overlapping_prs"], json!([]));
 
-    run_git(&fx.lease_abs, ["checkout", "-b", head]);
     stage_git_change(&fx.lease_abs, "feature.txt", "hello from e2e\n");
     let commit_resp = call_tool(
         &fx,
@@ -546,22 +549,10 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     assert_tool_succeeded(&commit_resp, "git.commit");
     let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
     let base_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "origin/main"]);
-    run_git(&fx.lease_abs, ["push", "-u", "origin", head]);
 
-    let create_resp = call_tool(
-        &fx,
-        12,
-        PR_CREATE_TOOL,
-        json!({
-            "repo": repo_arg,
-            "head": head,
-            "base": base,
-            "title": "E2E feature",
-            "body": "Created by forge template E2E"
-        }),
-    )
-    .await;
-    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    let create_resp =
+        publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
+    assert_tool_succeeded(&create_resp, "neige.track.publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let opened = opened_rows[0].clone();
     assert_track_event(&opened, &fx.track_id);
@@ -711,12 +702,11 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
     let _path = EnvGuard::set("PATH", path_value);
 
-    let fx = boot_fixture().await;
+    let mut fx = boot_delivery_fixture().await;
     let repo_arg = fx.origin_repo.display().to_string();
-    let base = "main";
-    let head = "slice-810-e2e-merge-crash";
+    let branch = format!("neige/track-{}", fx.track_id);
+    let head = branch.as_str();
 
-    run_git(&fx.lease_abs, ["checkout", "-b", head]);
     stage_git_change(&fx.lease_abs, "merge-crash.txt", "merge crash e2e\n");
     let commit_resp = call_tool(
         &fx,
@@ -731,22 +721,10 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
     .await;
     assert_tool_succeeded(&commit_resp, "git.commit");
     let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
-    run_git(&fx.lease_abs, ["push", "-u", "origin", head]);
 
-    let create_resp = call_tool(
-        &fx,
-        21,
-        PR_CREATE_TOOL,
-        json!({
-            "repo": repo_arg,
-            "head": head,
-            "base": base,
-            "title": "Merge crash E2E",
-            "body": "Created by forge merge crash E2E"
-        }),
-    )
-    .await;
-    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    let create_resp =
+        publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
+    assert_tool_succeeded(&create_resp, "neige.track.publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let pr_number = opened_rows[0].payload["pr_number"]
         .as_u64()
@@ -833,12 +811,11 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
     let _results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
     let _path = EnvGuard::set("PATH", path_value);
 
-    let fx = boot_fixture().await;
+    let mut fx = boot_delivery_fixture().await;
     let repo_arg = fx.origin_repo.display().to_string();
-    let base = "main";
-    let head = "slice-810-e2e-merge-never-ran";
+    let branch = format!("neige/track-{}", fx.track_id);
+    let head = branch.as_str();
 
-    run_git(&fx.lease_abs, ["checkout", "-b", head]);
     stage_git_change(
         &fx.lease_abs,
         "merge-never-ran.txt",
@@ -856,22 +833,10 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
     )
     .await;
     assert_tool_succeeded(&commit_resp, "git.commit");
-    run_git(&fx.lease_abs, ["push", "-u", "origin", head]);
 
-    let create_resp = call_tool(
-        &fx,
-        25,
-        PR_CREATE_TOOL,
-        json!({
-            "repo": repo_arg,
-            "head": head,
-            "base": base,
-            "title": "Merge never ran E2E",
-            "body": "Created by forge merge never-ran E2E"
-        }),
-    )
-    .await;
-    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    let create_resp =
+        publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
+    assert_tool_succeeded(&create_resp, "neige.track.publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let pr_number = opened_rows[0].payload["pr_number"]
         .as_u64()
@@ -1065,11 +1030,19 @@ async fn reviewed_pr_merges_at_the_diffed_head_then_closes() {
         .await;
     let _env = setup_forge_env();
 
-    let fx = boot_fixture().await;
-    // Scripted dispatch: CI lacks the real scheduler/Codex path.
-    let impl_dispatch = emit_scripted_impl_dispatch(&fx, "760").await;
+    let mut fx = boot_delivery_fixture().await;
+    let attempt = fx
+        .delivery
+        .as_ref()
+        .expect("implement worker")
+        .attempt
+        .clone();
+    let impl_dispatch = wait_for_event_matching(&fx.repo, "task.dispatched", |row| {
+        row.payload["idempotency_key"] == attempt
+    })
+    .await;
     let pr = drive_pr_to_diff(
-        &fx,
+        &mut fx,
         40,
         760,
         "slice-760-review-merges",
@@ -1085,7 +1058,7 @@ async fn reviewed_pr_merges_at_the_diffed_head_then_closes() {
 
     assert!(
         impl_dispatch.id < merged.id,
-        "scripted impl dispatch must precede merge"
+        "real implement dispatch must precede merge"
     );
     assert_eq!(
         row_head_sha(&merged).as_deref(),
@@ -1109,9 +1082,9 @@ async fn merge_hold_ratify_pauses_then_merges_on_grant() {
         .await;
     let _env = setup_forge_env();
 
-    let fx = boot_fixture().await;
+    let mut fx = boot_delivery_fixture().await;
     let pr = drive_pr_to_diff(
-        &fx,
+        &mut fx,
         60,
         762,
         "slice-760-merge-hold",
@@ -1238,9 +1211,9 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
         .await;
     let _env = setup_forge_env();
 
-    let fx = boot_fixture().await;
+    let mut fx = boot_delivery_fixture().await;
     let pr = drive_pr_to_diff(
-        &fx,
+        &mut fx,
         70,
         763,
         "slice-760-fu4",
@@ -1343,6 +1316,14 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
 }
 
 async fn boot_fixture() -> Fixture {
+    boot_fixture_with_delivery(false).await
+}
+
+async fn boot_delivery_fixture() -> Fixture {
+    boot_fixture_with_delivery(true).await
+}
+
+async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
     let tmp = short_tempdir("w").expect("tempdir");
     let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
     let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
@@ -1410,9 +1391,17 @@ async fn boot_fixture() -> Fixture {
     )
     .await;
     seed_planner_runtime(&sqlx_repo, &track.id, &planner_card.id).await;
+    repo.card_create(NewCard {
+        track_id: track.id.clone(),
+        title: None,
+        kind: "track-report".into(),
+        sort: None,
+        payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+            .unwrap(),
+    })
+    .await
+    .expect("create delivery report");
 
-    let caller =
-        create_worker_caller(&sqlx_repo, &card_role_cache, track.id.clone(), &track_cwd).await;
     // The worker's checkout is the track worktree (#1830 S2), made as the create route makes it.
     calm_server::test_seams::attach_track_worktree_for_test(
         sqlx_repo.pool(),
@@ -1421,7 +1410,6 @@ async fn boot_fixture() -> Fixture {
     )
     .await
     .expect("make the track worktree");
-    configure_repo_identity(&caller.lease_abs);
 
     let plugin_host = boot_plugin_host(
         repo.clone(),
@@ -1434,55 +1422,17 @@ async fn boot_fixture() -> Fixture {
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
     wait_for_running(&plugin_host).await;
 
-    let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
-    let completion = OperationCompletionBus::new();
-    let route_repo: Arc<dyn RouteRepo> = repo.clone();
-    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
-    let runtime = Arc::new(
-        OperationRuntime::new(
-            operation_repo.clone(),
-            vec![Arc::new(ForgeActionAdapter::new()) as Arc<dyn ProviderAdapter>],
-            events.clone(),
-            completion.clone(),
-            SpawnCtx::new(
-                route_repo,
-                operation_repo,
-                Arc::new(DaemonClient::new_stub()),
-                terminal_renderer,
-                events.clone(),
-                completion,
-            ),
-        )
-        .await
-        .expect("operation runtime"),
-    );
-
     let plugin_host_cell = Arc::new(OnceCell::new());
     assert!(plugin_host_cell.set(plugin_host.clone()).is_ok());
     let operation_runtime_cell = Arc::new(OnceCell::new());
-    assert!(operation_runtime_cell.set(runtime.clone()).is_ok());
-    let route_repo: Arc<dyn RouteRepo> = repo.clone();
-    let review_ctx = Arc::new(AppContext {
-        terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
-        repo: route_repo,
-        track_vcs: sqlx_repo
-            .sqlite_pool()
-            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
-        events: events.clone(),
-        write: write.clone(),
-        daemon_token_hash: None,
-        gate_logs_dir: tmp.path().join("gate-logs"),
-        plugin_host: plugin_host_cell.clone(),
-        operation_runtime: operation_runtime_cell.clone(),
-        scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
-        series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
-            None,
-        )),
-        plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
-        read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
-        preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: sqlx_repo.sqlite_pool(),
-    });
+    let review_ctx = support::done_delivery::context(
+        sqlx_repo.clone(),
+        events.clone(),
+        write.clone(),
+        plugin_host_cell.clone(),
+        operation_runtime_cell.clone(),
+        tmp.path().join("gate-logs"),
+    );
     let mut review_registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut review_registry);
     let review_registry = Arc::new(review_registry);
@@ -1495,11 +1445,72 @@ async fn boot_fixture() -> Fixture {
         build_default_registry(),
         None,
         plugin_host_cell,
-        operation_runtime_cell,
+        operation_runtime_cell.clone(),
         tmp.path().join("gate-logs"),
     )
     .await
     .expect("spawn McpServer");
+
+    let wiring = support::done_delivery::wire(
+        sqlx_repo.clone(),
+        events.clone(),
+        write.clone(),
+        card_role_cache.clone(),
+        track_area_cache.clone(),
+        server.clone(),
+        &tmp.path().join("workspaces"),
+        &tmp.path().join("gate-logs"),
+    )
+    .await;
+    assert!(operation_runtime_cell.set(wiring.runtime.clone()).is_ok());
+    let runtime = wiring.runtime.clone();
+    let planner = ToolCallIdentity {
+        card_id: planner_card.id.to_string(),
+        role: CardRole::Planner,
+        provider: AgentProvider::Codex,
+        session_id: PLANNER_SESSION_ID.into(),
+        track_id: Some(track.id.to_string()),
+        area_id: area.id.to_string(),
+        thread_id: "planner-thread".into(),
+    };
+    let planner_token = calm_server::mcp_server::auth::CardMcpToken::generate();
+    let hash = calm_server::mcp_server::auth::hash_token(planner_token.as_str());
+    let mut tx = sqlx_repo.pool().begin().await.unwrap();
+    card_mcp_token_set_tx(&mut tx, planner_card.id.as_str(), &hash)
+        .await
+        .unwrap();
+    session_mcp_token_set_tx(&mut tx, PLANNER_SESSION_ID, &hash)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let started = if delivery {
+        Some(
+            support::done_delivery::start(
+                &sqlx_repo,
+                &review_ctx,
+                &review_registry,
+                planner,
+                "implement",
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    let caller = match &started {
+        Some(worker) => Caller {
+            card_id: worker.card.clone(),
+            raw_token: worker.token.clone(),
+            thread_id: worker.thread.clone(),
+            track_id: track.id.to_string(),
+            lease_id: worker.lease.clone(),
+            lease_abs: worker.cwd.clone(),
+        },
+        None => {
+            create_worker_caller(&sqlx_repo, &card_role_cache, track.id.clone(), &track_cwd).await
+        }
+    };
+    configure_repo_identity(&caller.lease_abs);
 
     Fixture {
         _server: server,
@@ -1523,6 +1534,9 @@ async fn boot_fixture() -> Fixture {
         track_cwd,
         origin_repo,
         _runtime: runtime,
+        _delivery_wiring: wiring,
+        delivery: started,
+        planner_token: planner_token.into_inner(),
         _socket_tmp: socket_tmp,
         _tmp: tmp,
     }
@@ -1625,15 +1639,13 @@ async fn seed_planner_runtime(sqlx_repo: &SqlxRepo, track_id: &TrackId, planner_
 }
 
 fn track_router_for_fixture(fx: &Fixture) -> axum::Router {
-    let repo: Arc<dyn Repo> = fx.repo.clone();
-    let state = AppState::from_parts(
-        repo,
-        fx.events.clone(),
-        Arc::new(DaemonClient::new_stub()),
+    let state = fx._delivery_wiring.app_state(
+        fx.repo.clone(),
+        fx.review_ctx.clone(),
         fx.plugin_host.clone(),
-        Arc::new(CodexClient::new_stub()),
-        Some(fx.card_role_cache.clone()),
-        Some(fx.track_area_cache.clone()),
+        fx.card_role_cache.clone(),
+        fx.track_area_cache.clone(),
+        fx._tmp.path().join("workspaces"),
     );
     calm_server::routes::tracks::router()
         .layer(axum::middleware::from_fn(
@@ -1643,15 +1655,13 @@ fn track_router_for_fixture(fx: &Fixture) -> axum::Router {
 }
 
 fn app_router_for_fixture(fx: &Fixture) -> axum::Router {
-    let repo: Arc<dyn Repo> = fx.repo.clone();
-    let state = AppState::from_parts(
-        repo,
-        fx.events.clone(),
-        Arc::new(DaemonClient::new_stub()),
+    let state = fx._delivery_wiring.app_state(
+        fx.repo.clone(),
+        fx.review_ctx.clone(),
         fx.plugin_host.clone(),
-        Arc::new(CodexClient::new_stub()),
-        Some(fx.card_role_cache.clone()),
-        Some(fx.track_area_cache.clone()),
+        fx.card_role_cache.clone(),
+        fx.track_area_cache.clone(),
+        fx._tmp.path().join("workspaces"),
     );
     calm_server::routes::router()
         .layer(axum::middleware::from_fn(
@@ -1834,7 +1844,6 @@ async fn assert_tools_are_discoverable(fx: &Fixture) {
     for expected in [
         COMMIT_TOOL,
         PR_LIST_TOOL,
-        PR_CREATE_TOOL,
         PR_DIFF_TOOL,
         PR_CHECKS_TOOL,
         PR_MERGE_TOOL,
@@ -1846,6 +1855,36 @@ async fn assert_tools_are_discoverable(fx: &Fixture) {
             "git-forge plugin tool missing from discovery: {expected}; got {names:?}"
         );
     }
+}
+
+async fn publish_delivery(fx: &mut Fixture, title: &str, body: &str, key: &str) -> Value {
+    let started = fx.delivery.take().expect("implement worker");
+    let candidate = support::done_delivery::complete(&fx.repo, &fx.socket_path, &started).await;
+    let result = call_tool_via_socket(
+        &fx.socket_path,
+        &fx.planner_token,
+        "planner-thread",
+        92,
+        PUBLISH_TOOL,
+        json!({"title":title, "body":body, "idempotency_key":key}),
+    )
+    .await;
+    assert_tool_succeeded(&result, PUBLISH_TOOL);
+    assert_eq!(result["result"]["structuredContent"]["head_sha"], candidate);
+    // A taskless caller is acquired only after Done and settled delivery.
+    let caller = create_worker_caller(
+        &fx.repo,
+        &fx.card_role_cache,
+        TrackId::from(fx.track_id.clone()),
+        &fx.track_cwd,
+    )
+    .await;
+    fx.raw_token = caller.raw_token;
+    fx.thread_id = caller.thread_id;
+    fx.worker_card_id = caller.card_id;
+    fx.lease_id = caller.lease_id;
+    fx.lease_abs = caller.lease_abs;
+    result
 }
 
 async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
@@ -2022,71 +2061,6 @@ async fn close_track(fx: &Fixture, message: &str) -> EventRow {
     .await
 }
 
-async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
-    let track_id = TrackId::from(fx.track_id.clone());
-    let scope = EventScope::Track {
-        track: track_id,
-        area: AreaId::from(fx.area_id.clone()),
-    };
-    let task_key = format!("impl-review-{slice_id}");
-    let idempotency_key = format!("{}:{task_key}", fx.track_id);
-    let agent_message = format!("[scheduler] dispatching task {task_key}");
-    let (_, event_ids) = write_with_actor_events_typed::<(), _>(
-        fx.repo.as_ref(),
-        None,
-        &fx.events,
-        &fx.write,
-        move |_tx| {
-            let scope = scope.clone();
-            let idempotency_key = idempotency_key.clone();
-            let agent_message = agent_message.clone();
-            Box::pin(async move {
-                Ok((
-                    (),
-                    vec![
-                        (
-                            ActorId::KernelDispatcher,
-                            scope.clone(),
-                            Event::TaskDispatched {
-                                idempotency_key: idempotency_key.clone(),
-                                kind: "codex".to_string(),
-                                agent_message: Some(agent_message),
-                            },
-                        ),
-                        (
-                            ActorId::KernelDispatcher,
-                            scope,
-                            Event::TaskContextFrozen {
-                                track_id: TrackId::default(),
-                                task_key: String::new(),
-                                idempotency_key: String::new(),
-                                task_id: idempotency_key,
-                                refs: vec![],
-                                doc_revs: Default::default(),
-                                truncated: false,
-                            },
-                        ),
-                    ],
-                ))
-            })
-        },
-    )
-    .await
-    .expect("scripted impl dispatch");
-    let event_id = event_ids
-        .first()
-        .copied()
-        .expect("scripted impl dispatch persisted event id");
-    let dispatch = event_rows(&fx.repo, "task.dispatched")
-        .await
-        .into_iter()
-        .find(|row| row.id == event_id)
-        .expect("scripted impl dispatch row");
-    assert_eq!(dispatch.scope_kind, "track");
-    assert_eq!(dispatch.scope_track.as_deref(), Some(fx.track_id.as_str()));
-    dispatch
-}
-
 #[derive(Clone, Debug)]
 struct ForgePrRun {
     repo_arg: String,
@@ -2095,16 +2069,17 @@ struct ForgePrRun {
 }
 
 async fn drive_pr_to_diff(
-    fx: &Fixture,
+    fx: &mut Fixture,
     id_base: i64,
     issue_number: u64,
-    head: &str,
+    _task_label: &str,
     filename: &str,
     contents: &str,
     title: &str,
 ) -> ForgePrRun {
     let repo_arg = fx.origin_repo.display().to_string();
-    let base = "main";
+    let branch = format!("neige/track-{}", fx.track_id);
+    let head = branch.as_str();
     let issue_view_resp = call_tool(
         fx,
         id_base,
@@ -2114,7 +2089,6 @@ async fn drive_pr_to_diff(
     .await;
     assert_tool_succeeded(&issue_view_resp, "gh.issue.view");
 
-    run_git(&fx.lease_abs, ["checkout", "-B", head, "origin/main"]);
     stage_git_change(&fx.lease_abs, filename, contents);
     let commit_resp = call_tool(
         fx,
@@ -2126,22 +2100,9 @@ async fn drive_pr_to_diff(
     assert_tool_succeeded(&commit_resp, "git.commit");
     let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
     let base_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "origin/main"]);
-    run_git(&fx.lease_abs, ["push", "-u", "origin", head, "--force"]);
 
-    let create_resp = call_tool(
-        fx,
-        id_base + 2,
-        PR_CREATE_TOOL,
-        json!({
-            "repo": repo_arg,
-            "head": head,
-            "base": base,
-            "title": title,
-            "body": "Created by forge template review E2E"
-        }),
-    )
-    .await;
-    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    let create_resp = publish_delivery(fx, title, "Completed review candidate", "publish").await;
+    assert_tool_succeeded(&create_resp, "neige.track.publish");
     let opened = wait_for_event_matching(&fx.repo, "forge.pr.opened", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["head_sha"] == json!(head_sha)

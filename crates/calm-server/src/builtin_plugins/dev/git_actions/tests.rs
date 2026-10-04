@@ -2,6 +2,25 @@ use super::test_helpers::*;
 use super::*;
 
 #[test]
+fn rejects_removed_gh_pr_create() {
+    let args = json!({
+        "repo": "owner/repo", "head": "feature", "base": "main",
+        "title": "Title", "body": "Body"
+    });
+    let caller = ForgeCallerScope {
+        plugin_id: super::super::PLUGIN_ID.into(),
+        track_id: "track-1".into(),
+        card_id: "card-1".into(),
+    };
+    for result in [
+        lower("gh.pr.create", &args),
+        lower_for_caller("gh.pr.create", &args, &caller),
+    ] {
+        assert_eq!(result.unwrap_err(), "unknown git-forge tool `gh.pr.create`");
+    }
+}
+
+#[test]
 fn lowers_git_worktree_add() {
     let payload = lower(
         "git.worktree.add",
@@ -182,84 +201,6 @@ fn git_commit_output_probe_json_escapes_branch_argument() {
     let parsed: Value = serde_json::from_slice(&output.stdout).expect("probe JSON");
     assert!(parsed["commit"].as_str().is_some_and(is_hex_sha));
     assert_eq!(parsed["branch"], branch);
-}
-
-#[test]
-fn lowers_gh_pr_create() {
-    let expected_probe_script = "n=$(gh pr list --repo \"$2\" --head \"$1\" --base \"$3\" --state open --json number --jq 'length' 2>/dev/null) || exit 3; case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
-    let payload = lower(
-        "gh.pr.create",
-        &json!({
-            "repo": "owner/repo",
-            "head": "feature",
-            "base": "main",
-            "title": "Title",
-            "body": "Body"
-        }),
-    )
-    .expect("lower gh pr create");
-    assert_eq!(
-        payload,
-        json!({
-            "argv": [
-                "gh",
-                "pr",
-                "create",
-                "--repo",
-                "owner/repo",
-                "--head",
-                "feature",
-                "--base",
-                "main",
-                "--title",
-                "Title",
-                "--body",
-                "Body"
-            ],
-            "idem_key": "gh.pr.create:owner/repo:main:feature",
-            "event_spec": {
-                "event_kind": "forge.pr.opened",
-                "fields": {
-                    "head_sha": { "json_field": { "path": "/headRefOid" } },
-                    "pr_number": { "json_field": { "path": "/number" } }
-                }
-            },
-            "subject": null,
-            "context": {},
-            "probe": {
-                "probe_argv": [
-                    "sh",
-                    "-c",
-                    expected_probe_script,
-                    "sh",
-                    "feature",
-                    "owner/repo",
-                    "main"
-                ],
-                "output_probe_argv": [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--repo",
-                    "owner/repo",
-                    "--head",
-                    "feature",
-                    "--base",
-                    "main",
-                    "--state",
-                    "open",
-                    "--json",
-                    "number,headRefOid",
-                    "--jq",
-                    ".[0]"
-                ]
-            },
-            "parked": true
-        })
-    );
-    assert_no_reserved_context(&payload, &["track_id"]);
-    assert_supported_event_kind(&payload);
-    assert!(payload["probe"]["output_probe_argv"].is_array());
 }
 
 #[test]

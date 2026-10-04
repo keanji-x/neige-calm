@@ -13,6 +13,7 @@ use crate::support::oracle::{
 };
 use crate::support::planner_turn::*;
 use calm_server::ids::ActorId;
+use calm_server::session_projection_repo::WorkerSessionProjectionRepo;
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
@@ -50,50 +51,15 @@ pub(super) async fn latest_reviewed_head_before_merge(
 /// Capstone track goal: environment facts plus planning steering; PR coordinates must flow through observations/runs.
 pub(super) fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String {
     format!(
-        "Drive the bound issue-development template END-TO-END for issue #{issue_number}: read \
-         the issue, implement, open a pull request, review it, merge, close the issue, and close \
-         the track.\n\
-         \n\
-         Environment facts:\n\
-         - The track's GitHub repository is served locally in this environment: the `repo` \
-         argument for EVERY gh.* forge tool call (gh.issue.view, gh.pr.create, gh.pr.checks, \
-         gh.pr.diff, gh.pr.merge, gh.issue.close) is exactly `{repo_gitdir}`, not input.repo. \
-         Embed this exact literal value in the goal of every task that must call a gh.* tool; \
-         workers cannot discover it on their own.\n\
-         - The track's source issue is #{issue_number}.\n\
-         - Pull requests use base branch `main`; the base commit sha is `{base_sha}`.\n\
-         \n\
-         Planning constraints (all within the bound template):\n\
-         - Attach the bound template gate (exactly its cmd) to every task you plan; do not use \
-         no_gate_reason.\n\
-         - A task block whose depends_on names a task that does not exist yet is written but \
-         receives an unknown_dependency diagnostic and is not projected, so create report task \
-         blocks in dependency order: (1) inspect-issue, then implement-change; (2) add open-pr \
-         only after implement-change completes, embedding the implement worker's actual branch \
-         name in its goal; (3) after open-pr completes, add review-pr, then add merge after \
-         the review task block exists, embedding the literal repo, pr number, base sha and \
-         head sha values in each of their goals.\n\
-         - implement-change goal: implement exactly what the issue asks by editing src/lib.rs \
-         in the worker's own working directory, then call the MCP tool whose name ends in \
-         `git.commit` (arguments: a commit message and a non-empty idem) and note the branch \
-         it reports; the worker must NOT run `git push`, must NOT open a pull request, and \
-         must NOT use the shell for git; it must report the branch name in its \
-         neige.task.complete result.\n\
-         - open-pr goal: call gh.pr.create with repo `{repo_gitdir}`, head = the implement \
-         worker's branch, base `main`, and a non-empty title and body; then call gh.pr.checks \
-         for the created PR; then call neige.task.complete reporting the literal pr_number and \
-         head_sha values gh.pr.create returned; the open-pr worker must NOT call gh.pr.diff \
-         or gh.pr.list.\n\
-         - review-pr goal: call gh.pr.diff with the embedded repo, pr, \
-         base_sha and head_sha, review the returned diff against the issue requirements, and \
-         report the literal verdict token `approved` or `changes_requested` in \
-         neige.task.complete.\n\
-         - merge goal: call gh.pr.merge with the embedded repo and pr, and expected_head_sha \
-         equal to the head sha the review read with gh.pr.diff; then call gh.issue.close for issue #{issue_number} with the same repo.\n\
-         - After the merge task completes and the issue is closed, close the track with \
-         neige.track.close.\n\
-         - If review cannot converge, give up and close the track with the reason; do not \
-         request ratification."
+        "Complete issue #{issue_number} through the bound issue-development template.\n\
+         Inspect, implement, publish, review, merge, close the issue, then close the track.\n\
+         Environment: every gh.* tool's repo argument is exactly {repo_gitdir}. Embed that literal in worker goals. Base branch main has SHA {base_sha}.\n\
+         Copy the bound template gate's exact cmd to every task; no no_gate_reason. Declare tasks in dependency order: inspect-issue, then implement-change.\n\
+         implement-change edits src/lib.rs as the issue requires, calls the git.commit MCP tool with a message and nonempty idem, and reports its branch with neige.task.complete. Workers must not push or open a PR and must use MCP for git.\n\
+         After implement-change is Done and its delivery settled, YOU the Planner must call neige.track.publish with title, body and a stable idempotency_key. Use the returned pr_number, head_sha and branch. Call gh.pr.checks for that PR. Do not create an open-pr worker task.\n\
+         Then declare review-pr with literal repo, pr_number, base_sha and head_sha: it must call gh.pr.diff, review against the issue, and report approved or changes_requested.\n\
+         Declare merge only after the review task exists and merge only after approval and successful checks. Its gh.pr.merge must pass expected_head_sha equal to the reviewed head. It then calls gh.issue.close for #{issue_number} at the same repo.\n\
+         After merge completes and the issue closes, call neige.track.close. If review cannot converge, close the track with a reason; do not request ratification."
     )
 }
 
@@ -244,6 +210,71 @@ pub(super) async fn capstone_oracle(
         }
     }
 
+    // The real Planner publish operation identifies its caller, the same PR/head, and its session.
+    let publications: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT payload_json, tx_output_json, created_at_ms FROM operations \
+         WHERE kind = 'forge-action' AND idempotency_key LIKE '%:track.publish:%' AND phase = 'succeeded'")
+        .fetch_all(fx.repo.pool()).await.unwrap();
+    let opened = event_rows(&fx.repo, "forge.pr.opened")
+        .await
+        .into_iter()
+        .find(|row| row.payload["pr_number"] == json!(pr_number))
+        .expect("published PR");
+    let head = opened.payload["head_sha"].as_str().unwrap();
+    let matched = publications
+        .iter()
+        .find(|(raw, _, _)| {
+            let payload: Value = serde_json::from_str(raw).unwrap();
+            payload["card_id"] == json!(fx.planner_card_id.as_str())
+                && payload["track_id"] == json!(fx.track_id.as_str())
+                && payload["argv"]
+                    .as_array()
+                    .is_some_and(|argv| argv.iter().any(|arg| arg == head))
+        })
+        .expect("Planner-owned publish operation for the opened head");
+    let output: Value = serde_json::from_str(&matched.1).unwrap();
+    assert_eq!(output["result"]["event"]["pr_number"], pr_number);
+    assert_eq!(output["result"]["event"]["head_sha"], head);
+    let session_id = actor_payload_rows(&fx.repo, "track.updated")
+        .await
+        .into_iter()
+        .find_map(|(actor, payload)| match actor {
+            ActorId::AiPlannerSession(id) if !payload["closed_at"].is_null() => Some(id),
+            _ => None,
+        })
+        .expect("real Planner close session");
+    let session = fx
+        .repo
+        .session_projection_by_id(session_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        session.thread_id.is_some(),
+        "real Planner session must have a thread"
+    );
+    assert_eq!(session.card_id, fx.planner_card_id.as_str());
+    let attempt: (String, i64) = sqlx::query_as(
+        "SELECT t.id, t.updated_at_ms FROM task_candidates c \
+         JOIN tasks t ON t.id = c.producer_attempt_id \
+         WHERE c.track_id = ?1 AND c.commit_sha = ?2 AND t.key = 'implement-change' AND t.status = 'done'")
+        .bind(fx.track_id.as_str()).bind(head).fetch_one(fx.repo.pool()).await.unwrap();
+    assert!(
+        attempt.1 <= matched.2,
+        "implement Done must precede publish submission"
+    );
+    for kind in ["task.gate_result", "task.git_delivery_settled"] {
+        assert!(
+            event_rows(&fx.repo, kind)
+                .await
+                .iter()
+                .any(|row| row.id < opened.id
+                    && row.payload["task_id"] == attempt.0
+                    && (kind != "task.gate_result" || row.payload["passed"] == true)),
+            "{kind} for implement attempt must precede opened"
+        );
+    }
+
     // Merge idem-key shape: the plugin idem carries `:{expected_head_sha}` ONLY when it was passed. The caller card is NOT pinned: a merge-worker seat is as legal as the planner seat.
     let merge_keys = forge_action_idem_keys_containing(fx, ":gh.pr.merge:").await;
     assert!(
@@ -316,7 +347,7 @@ pub(super) async fn capstone_oracle(
         git_stdout_no_cwd(["--git-dir", path_str(&fx.origin_repo), "rev-parse", "main"]);
     assert_eq!(
         bare_main, fx.origin_main_initial,
-        "local bare origin main changed; nothing in the capstone may push"
+        "publish must leave the bare origin main unchanged"
     );
 
     // Exactly-once remote side effects (shim counters count REAL merges/

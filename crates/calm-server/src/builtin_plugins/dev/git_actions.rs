@@ -14,7 +14,6 @@ pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
     match tool {
         "git.worktree.add" => lower_git_worktree_add(args),
         "git.commit" => lower_git_commit(args),
-        "gh.pr.create" => lower_gh_pr_create(args),
         "gh.pr.list" => lower_gh_pr_list(args),
         "gh.pr.diff" => lower_gh_pr_diff(args),
         "gh.pr.checks" => lower_gh_pr_checks(args),
@@ -140,80 +139,6 @@ fn git_commit_probe_script() -> String {
 /// Its output probe's: `git log` can run the repository's `gpg.program`, so it gets the split too.
 fn git_commit_output_probe_script() -> String {
     format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_OUTPUT_PROBE_SCRIPT}")
-}
-
-fn lower_gh_pr_create(args: &Value) -> Result<Value, String> {
-    let repo = required_string(args, "repo")?;
-    let head = required_string(args, "head")?;
-    let base = required_string(args, "base")?;
-    let title = required_string(args, "title")?;
-    let body = required_string(args, "body")?;
-    let idem_key = format!("gh.pr.create:{repo}:{base}:{head}");
-    forge_payload(
-        vec![
-            "gh".into(),
-            "pr".into(),
-            "create".into(),
-            "--repo".into(),
-            repo.clone(),
-            "--head".into(),
-            head.clone(),
-            "--base".into(),
-            base.clone(),
-            "--title".into(),
-            title,
-            "--body".into(),
-            body,
-        ],
-        idem_key,
-        Some(event_spec(
-            "forge.pr.opened",
-            [
-                (
-                    "pr_number",
-                    FieldSource::JsonField {
-                        path: "/number".into(),
-                    },
-                ),
-                (
-                    "head_sha",
-                    FieldSource::JsonField {
-                        path: "/headRefOid".into(),
-                    },
-                ),
-            ],
-        )),
-        json!({}),
-        Some(json!({
-            "probe_argv": [
-                "sh",
-                "-c",
-                PR_CREATE_PROBE_SCRIPT,
-                "sh",
-                head,
-                repo,
-                base
-            ],
-            "output_probe_argv": [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                repo,
-                "--head",
-                head,
-                "--base",
-                base,
-                "--state",
-                "open",
-                "--json",
-                "number,headRefOid",
-                "--jq",
-                ".[0]"
-            ]
-        })),
-        true,
-    )
 }
 
 fn lower_gh_pr_list(args: &Value) -> Result<Value, String> {
@@ -481,9 +406,6 @@ const PR_MERGE_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \"$2\" --jso
      case \"$out\" in *'\"state\":\"MERGED\"'*) exit 0 ;; *) exit 1 ;; esac";
 const PR_MERGE_HEAD_MATCH_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \"$2\" --json state,headRefOid 2>/dev/null) || exit 3; \
      case \"$out\" in *'\"state\":\"MERGED\"'*) case \"$out\" in *'\"headRefOid\":\"'\"$3\"'\"'*) exit 0 ;; *) exit 1 ;; esac ;; *) exit 1 ;; esac";
-const PR_CREATE_PROBE_SCRIPT: &str = "n=$(gh pr list --repo \"$2\" --head \"$1\" --base \"$3\" --state open --json number --jq 'length' 2>/dev/null) || exit 3; \
-     case \"$n\" in '') exit 3 ;; 0) exit 1 ;; *) exit 0 ;; esac";
-
 fn lower_gh_issue_close(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
     let issue = required_u64(args, "issue")?;
