@@ -658,11 +658,19 @@
     margin-inline: 0;
   }
 
+  /* Shared metadata measures keep both inventories on the same column lines. */
+  .cardRow,
+  .taskRow {
+    --nc-inventory-status-w: 7ch;
+    --nc-inventory-kind-w: 7ch;
+    font-size: var(--text-xs);
+  }
+
   .cardRow {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto var(--control-h-sm);
+    align-items: start;
+    gap: var(--space-4);
     inline-size: 100%;
     min-block-size: var(--row-h);
     padding-inline: var(--space-2);
@@ -677,31 +685,14 @@
     background: var(--overlay-hover);
   }
 
-  /*
-   * ── The row's trailing column ────────────────────────────────────────────
-   *
-   * The delete is positioned over the row rather than laid out beside it, for
-   * the same reason `features/track/row` positions its own: the row is a
-   * `<button>` and the control may not nest inside it, but the two still have
-   * to read as one row. The `<li>` is the positioning context that lets them.
-   *
-   * The space is reserved at rest (`.cardRowRemovable`), so revealing the ×
-   * never reflows the title — a row whose text re-wraps on hover is a row that
-   * moves out from under the pointer. Flush at inset 0, which is where the
-   * module head's `+` and the track rows' × already sit: one trailing column for
-   * the whole panel.
-   */
+  /* Both inventories reserve the same action slot, keeping metadata still on hover. */
   .cardItem {
     position: relative;
   }
 
-  .cardRowRemovable {
-    padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
-  }
-
   .cardRemove {
     position: absolute;
-    inset-block-start: 50%;
+    inset-block-start: calc(var(--row-h) / 2);
     inset-inline-end: 0;
     display: grid;
     place-items: center;
@@ -740,7 +731,24 @@
     pointer-events: auto;
   }
 
+  .cardName {
+    display: flex;
+    align-items: center;
+    min-inline-size: 0;
+    min-block-size: var(--row-h);
+  }
+
+  .activitySlot {
+    display: grid;
+    place-items: center;
+    grid-column: 2;
+    grid-row: 1;
+    inline-size: var(--glyph-meta);
+    min-block-size: var(--row-h);
+  }
+
   .cardKind {
+    flex: 1 1 auto;
     min-inline-size: 0;
     overflow: hidden;
     white-space: nowrap;
@@ -802,8 +810,9 @@
    */
   .taskRow {
     position: relative;
-    display: flex;
-    align-items: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--nc-inventory-kind-w) var(--control-h-sm);
+    align-items: start;
     /*
      * `--space-4`, not `--space-2`, on the *trailing* cluster only.
      *
@@ -813,7 +822,8 @@
      * is what "挤" was. The leading pad stays `--space-2` so CARDS and TASKS
      * still start on the same pixel (see `.cardRow`).
      */
-    gap: var(--space-4);
+    column-gap: var(--space-4);
+    row-gap: var(--space-0);
     inline-size: 100%;
     min-block-size: var(--row-h);
     padding-inline: var(--space-2);
@@ -833,13 +843,8 @@
    * browser decided deserves a visible ring — so the two row types in this one
    * card behave the same way again.
    */
-  .taskRowDetailed {
-    flex-wrap: wrap;
-    row-gap: var(--space-0);
-  }
-
   .taskReason {
-    flex: 1 0 100%;
+    grid-column: 1 / -1;
     min-inline-size: 0;
     padding-block-end: var(--space-2);
     font-size: var(--text-meta);
@@ -859,24 +864,27 @@
    * control.
    */
   .taskReveal {
-    display: flex;
-    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--glyph-meta) var(--nc-inventory-status-w);
+    grid-template-rows: var(--row-h);
     align-items: center;
-    justify-content: space-between;
-    /* Same step as the row's, so the key → declaration → kind run reads as one
-       evenly-spaced sequence instead of two different gaps. */
-    gap: var(--space-4);
+    column-gap: var(--space-4);
+    row-gap: var(--space-0);
     min-inline-size: 0;
-    align-self: stretch;
     color: inherit;
     cursor: pointer;
     text-align: start;
   }
 
-
-  .taskRowDetailed > .taskReveal {
-    min-block-size: var(--row-h);
+  .taskBadges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-block-end: var(--space-2);
   }
+
   /* The invisible sheet makes every part of the row except the separately
      positioned worker-kind button reveal the declaration. The status word is
      inside this button and paints above the sheet so its native title remains
@@ -889,6 +897,8 @@
 
   /* Names share the primary text size and left edge of card rows. */
   .taskKey {
+    grid-column: 1;
+    grid-row: 1;
     min-inline-size: 0;
     overflow: hidden;
     white-space: nowrap;
@@ -911,6 +921,8 @@
   }
 
   .taskStatusText {
+    grid-column: 3;
+    grid-row: 1;
     /* Paint above the reveal button's full-row hit sheet so the status word
        owns its detailed native tooltip; it remains inside that button, so a
        click still reveals the task. */
@@ -952,9 +964,17 @@
    */
   .taskKind,
   .taskKindButton {
-    inline-size: 7ch;
+    grid-column: 2;
+    grid-row: 1;
+    inline-size: var(--nc-inventory-kind-w);
+    min-block-size: var(--row-h);
+    align-self: start;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
     text-align: end;
-    flex: none;
+    overflow: hidden;
+    white-space: nowrap;
   }
 
   /* Full row height, so the target is a 28px band and not an 11px line of type
@@ -967,7 +987,7 @@
     position: relative;
     display: flex;
     align-items: center;
-    align-self: stretch;
+    align-self: start;
     border-radius: var(--radius-sm);
     color: var(--text-2);
     cursor: pointer;
@@ -980,14 +1000,26 @@
   }
 
 
-  /* The trailing badges of a card row, kept in one box so the row's
-     `space-between` still puts the name at the start and everything else at the
-     end — three loose children would float the middle one. */
   .cardMeta {
-    display: flex;
-    flex: none;
+    display: grid;
+    grid-template-columns: var(--glyph-meta) var(--nc-inventory-status-w) var(--nc-inventory-kind-w);
+    grid-template-rows: var(--row-h);
     align-items: center;
+    column-gap: var(--space-4);
+    row-gap: var(--space-0);
+  }
+
+  .cardMeta > .activitySlot { grid-column: 1; }
+  .cardStatus { grid-column: 2; grid-row: 1; }
+  .cardKindTag { grid-column: 3; grid-row: 1; text-align: end; overflow: hidden; white-space: nowrap; }
+
+  .cardBadges {
+    display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2);
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-block-end: var(--space-2);
   }
 
   /* `.cardKindTag` is the card's kind once a title has taken the name slot
@@ -996,7 +1028,7 @@
      `kernel-owned`: it is a fact about the row, not the row's subject. */
   .cardStatus,
   .taskStatusText {
-    inline-size: 7ch;
+    inline-size: var(--nc-inventory-status-w);
     flex: none;
     text-align: end;
     overflow: hidden;

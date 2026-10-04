@@ -90,19 +90,23 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
     <li key={row.id} className={styles.cardItem} {...mark(MARKER.row, row.id)}>
       <button
         type="button"
-        className={`${styles.cardRow} ${remove !== null ? styles.cardRowRemovable : ''}`}
+        className={styles.cardRow}
         {...(open === null ? {} : { ...mark(MARKER.action, 'open-card'), ...wording(open) })}
         onClick={open === null ? undefined : () => deps.onOpenCard?.(open.id)}
       >
-        <ListText tone="primary" className={styles.cardKind} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
+        <span className={styles.cardName}>
+          <ListText tone="primary" className={styles.cardKind} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
+        </span>
         <span className={styles.cardMeta}>
-          {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
+          <span className={styles.activitySlot}>
+            {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
+          </span>
           {row.status !== null && <ListText tone="secondary" className={styles.cardStatus}
             {...mark(MARKER.status, row.status.token)} title={row.status.phrase}>{row.status.token}</ListText>}
           {row.kind !== null && (
-            <ListText tone="secondary" className={styles.cardKindTag} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
+            <ListText tone="secondary" className={styles.cardKindTag} title={row.kind} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
           )}
-          {row.badges.map(cardBadge)}
+          {row.badges.length > 0 && <span className={styles.cardBadges}>{row.badges.map(cardBadge)}</span>}
         </span>
       </button>
       {remove !== null && (
@@ -135,15 +139,19 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
       onClick={reveal === null ? undefined : () => deps.onOpenTask?.(reveal.id)}
     >
       <ListText tone="primary" className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
-      {row.badges.map((badge) => (
-        <ListText tone="secondary"
-          key={badge.id}
-          className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
-          {...mark(MARKER.badge, badge.id)}
-        >{badge.text}</ListText>
-      ))}
+      {row.badges.length > 0 && <span className={styles.taskBadges}>
+        {row.badges.map((badge) => (
+          <ListText tone="secondary"
+            key={badge.id}
+            className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
+            {...mark(MARKER.badge, badge.id)}
+          >{badge.text}</ListText>
+        ))}
+      </span>}
       {/* Spoken: the status word below is `aria-hidden` and names the run, not the verdict. */}
-      {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
+      <span className={styles.activitySlot}>
+        {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
+      </span>
       {row.status !== null && (
         <ListText tone="secondary"
           className={styles.taskStatusText}
@@ -156,7 +164,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
     </button>
   );
   return (
-    <li key={row.id} className={`${styles.taskRow} ${explanation === null ? '' : styles.taskRowDetailed}`} {...mark(MARKER.row, row.id)}>
+    <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
       {revealControl}
       {/* `title` describes the destination without touching the accessible name, which stays the visible word (WCAG 2.5.3). */}
       {row.kind !== null && (open === null

@@ -70,7 +70,7 @@ function tooltipAt(x: number, y: number): string | null {
 }
 
 describe('a compact desktop TASKS row', () => {
-  it('puts the bare status before the worker kind and paints no trailing status icon', async () => {
+  it('keeps status before the worker kind and reserves the shared action gutter', async () => {
     await browserPage.viewport(1200, 800);
     const row = renderTasks([assigned]);
     const status = row.querySelector<HTMLElement>('[data-nc-task-status-text]')!;
@@ -85,7 +85,7 @@ describe('a compact desktop TASKS row', () => {
     expect(statusBox.width).toBeGreaterThan(0);
     expect(statusBox.right).toBeLessThanOrEqual(kindBox.left);
     expect(row.querySelector('[role="img"][data-nc-status]')).toBeNull();
-    expect(rowBox.right - kindBox.right).toBeLessThan(12);
+    expect(rowBox.right - kindBox.right).toBeCloseTo(32, 0);
   });
 
   it('keeps a pending reason out of the row copy and exposes it on hover', async () => {

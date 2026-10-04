@@ -134,3 +134,30 @@ it('keeps the heading stationary and uses 4px content spacing with an 8px group 
   await page.getByText('Waiting', { exact: true }).click();
   expect(completed.getBoundingClientRect().top - waiting.getBoundingClientRect().top).toBeCloseTo(28, 0);
 });
+
+
+it.each([false, true])('aligns state columns across Cards and Tasks with deletable=%s', async (deletable) => {
+  await page.viewport(1200, 900);
+  const worker = card({ id: 'worker', title: 'A longer worker title', kind: 'codex', deletable,
+    runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
+  const view = deriveTrackPageView({ cards: [worker],
+    tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'worker' }],
+    activity: { cards: { worker: 'working' } }, openableCards: new Set(['worker']) });
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), view)}</PanelCard></div>);
+  const cardRow = document.querySelector<HTMLElement>('[data-nc-row="worker"]')!;
+  const taskRow = document.querySelector<HTMLElement>('[data-nc-row="work"]')!;
+  const center = (element: Element) => { const box = element.getBoundingClientRect(); return box.left + box.width / 2; };
+  expect(center(cardRow.querySelector('[data-nc-activity="working"]')!))
+    .toBeCloseTo(center(taskRow.querySelector('[data-nc-activity="working"]')!), 0);
+  const columns = [
+    [cardRow.querySelector('[data-nc-status]')!, taskRow.querySelector('[data-nc-status]')!],
+    [cardRow.querySelector('[data-nc-field="kind"]')!, taskRow.querySelector('[data-nc-field="kind"]')!],
+  ];
+  for (const [cardColumn, taskColumn] of columns) {
+    expect(cardColumn.getBoundingClientRect().right).toBeCloseTo(taskColumn.getBoundingClientRect().right, 0);
+  }
+  const cardIndicator = cardRow.querySelector('[data-nc-activity="working"]')!.getBoundingClientRect();
+  const taskIndicator = taskRow.querySelector('[data-nc-activity="working"]')!.getBoundingClientRect();
+  expect(cardIndicator.top + cardIndicator.height / 2 - cardRow.getBoundingClientRect().top)
+    .toBeCloseTo(taskIndicator.top + taskIndicator.height / 2 - taskRow.getBoundingClientRect().top, 0);
+});
