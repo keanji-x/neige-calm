@@ -264,15 +264,10 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   return {
     send: (text: string, attachments: readonly string[] = []) => runOperation(transport, sendPlannerInputOperation(cardId, text, attachments), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
-    /* A refusal changed nothing, so only an accepted rewind refreshes. The transcript read is awaited: the
-     * refill must not land beside the removed turn, where Regenerate could send it again. A failed read
-     * does not fail the rewind. */
+    /* A refusal changed nothing, so only an accepted rewind refreshes. Not awaited: the Edit already hides the
+     * removed turn until a read without it lands, and a send waiting on the rewind goes on its 200. */
     rewind: (turnId: string) => runOperation(transport, rewindPlannerTurnOperation(cardId, turnId), unauthorized)
-      .then(async (rewound) => {
-        await refreshTranscript().catch(() => undefined);
-        void client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }).catch(() => undefined);
-        return rewound;
-      }),
+      .then(refreshAfter),
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>

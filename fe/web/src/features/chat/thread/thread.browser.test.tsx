@@ -54,7 +54,7 @@ function Card() {
 
 /** A card with an image picked and nothing typed, which is the one state that
  *  renders the composer's own send door beside Astryx's. */
-function ImageOnlyCard() {
+function ImageOnlyCard({ sendWaiting = false, disabled = sendWaiting }: { sendWaiting?: boolean; disabled?: boolean }) {
   return (
     <div style={{ position: 'absolute', insetBlock: 20, insetInlineEnd: 24, inlineSize: 396 }}>
       <div
@@ -63,7 +63,7 @@ function ImageOnlyCard() {
           ['--nc-card-radius' as string]: '16px',
         }}
       >
-        <ChatComposer onSend={vi.fn()} allowEmptyText onNewConversation={vi.fn()} />
+        <ChatComposer onSend={vi.fn()} allowEmptyText onNewConversation={vi.fn()} disabled={disabled} sendWaiting={sendWaiting} />
       </div>
     </div>
   );
@@ -154,6 +154,53 @@ describe('the / command menu, as the engine lays it out', () => {
     document.body.append(probe);
     expect(getComputedStyle(send).backgroundColor).toBe(getComputedStyle(probe).backgroundColor);
     probe.remove();
+  });
+
+  it('turns Send into a spinner on the same round chip while a pressed message waits to go', async () => {
+    await page.viewport(1400, 900);
+    /* The same composer, disabled as it is while the message waits, showing Send. */
+    const { unmount } = render(<ImageOnlyCard disabled />);
+    const send = document.querySelector<HTMLElement>('button[aria-label="Send"]')!.getBoundingClientRect();
+    unmount();
+    render(<ImageOnlyCard sendWaiting />);
+    const waiting = screen.getByRole('button', { name: 'Sending…' });
+    expect(waiting.hasAttribute('disabled')).toBe(true);
+    expect(waiting.getAttribute('aria-busy')).toBe('true');
+    expect(document.querySelector('button[aria-label="Send"], [data-nc-send-attachment]')).toBeNull();
+    const box = waiting.getBoundingClientRect();
+    expect([box.width, box.height, box.right, box.bottom]).toEqual([send.width, send.height, send.right, send.bottom]);
+    expect(parseFloat(getComputedStyle(waiting).borderTopLeftRadius)).toBeGreaterThanOrEqual(box.height / 2);
+    const probe = document.createElement('div');
+    probe.style.backgroundColor = 'var(--surface-chip)';
+    document.body.append(probe);
+    expect(getComputedStyle(waiting).backgroundColor).toBe(getComputedStyle(probe).backgroundColor);
+    probe.remove();
+  });
+
+  it('shows edit mode as one bar above the field and Replace on Send\'s round chip, at phone width too', async () => {
+    await page.viewport(390, 844);
+    const { unmount } = render(<ImageOnlyCard disabled />);
+    const send = document.querySelector<HTMLElement>('button[aria-label="Send"]')!.getBoundingClientRect();
+    unmount();
+    render(<div style={{ position: 'absolute', insetBlock: 20, insetInlineEnd: 24, inlineSize: 396 }}>
+      <div style={{ ['--nc-card-inset' as string]: '8px', ['--nc-card-radius' as string]: '16px' }}>
+        <ChatComposer onSend={vi.fn()} allowEmptyText onNewConversation={vi.fn()} disabled
+          editing={{ preview: 'Draft the changelog entry from this screenshot of the diff, and keep it short.', onCancel: vi.fn() }} />
+      </div>
+    </div>);
+    const bar = document.querySelector<HTMLElement>('[data-nc-edit-bar]')!;
+    const preview = bar.children[1] as HTMLElement;
+    expect(preview.scrollWidth).toBeGreaterThan(preview.clientWidth);
+    expect(bar.getBoundingClientRect().height).toBeLessThanOrEqual(28);
+    expect(bar.getBoundingClientRect().bottom).toBeLessThanOrEqual(document.querySelector('[contenteditable]')!.getBoundingClientRect().top);
+    expect(screen.getByRole('button', { name: 'Cancel edit' }).getBoundingClientRect().right)
+      .toBeLessThanOrEqual(composer().getBoundingClientRect().right);
+    /* The bar's row sits above the field, so the footer moves down; size and edge are Send's. */
+    const replace = screen.getByRole('button', { name: 'Replace message' });
+    const box = replace.getBoundingClientRect();
+    expect([box.width, box.height, box.right]).toEqual([send.width, send.height, send.right]);
+    expect(document.querySelector('[data-nc-send-attachment]')).toBeNull();
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
   });
 
   it('paints the composer\'s own send door in Send\'s material and on its baseline', async () => {

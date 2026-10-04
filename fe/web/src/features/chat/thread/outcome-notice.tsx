@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import type { ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import type { ConversationMetaClock, RunningTurnAnchor } from '../../../../../core/domain/conversation-meta.ts';
-import { ThreadStatusNotice, type CopyResponseAction, type ResponseAction } from './status-notice.tsx';
+import { ThreadStatusNotice, type CopyResponseAction, type EditAction, type ResponseAction } from './status-notice.tsx';
 import { useRunningElapsedMs } from './running-clock.ts';
 import styles from './thread.module.css';
 
@@ -23,7 +23,7 @@ export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stall
   stalledReason: string | null;
   feedback: ConversationStopFeedback | null;
   copyAction: CopyResponseAction | null;
-  editAction: ResponseAction | null;
+  editAction: EditAction | null;
   regenerateAction: ResponseAction | null;
   /** Where the running turn's clock starts; `null` shows `Running` with no number. */
   runningAnchor: RunningTurnAnchor | null;

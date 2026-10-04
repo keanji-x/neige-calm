@@ -30,7 +30,7 @@ function ok(body: unknown): ApiTransportResponse {
 type Row = Parameters<typeof buildTranscript>[0][number];
 /** With `earlier` rows, the newest page is full, so Load earlier has a page to read; with `itemsFail`, every transcript read fails. */
 type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[]; itemsFail?: boolean;
-  /** What `POST …/planner/rewind` does to this card and answers (#1923 Edit). */
+  /** What `POST …/planner/rewind` does to this card and answers (#1923 Edit); with one, a send is accepted. */
   rewind?: () => ApiTransportResponse };
 
 function row(id: number, method: string, itemType: string | null, params: unknown, extra: Partial<Row> = {}): Row {
@@ -79,6 +79,7 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
       }
       if (server !== undefined && request.path.endsWith('/harness/live')) return ok(server.live);
       if (server?.rewind !== undefined && request.path.endsWith('/planner/rewind')) return server.rewind();
+      if (server?.rewind !== undefined && request.path.endsWith('/planner/input')) return ok({ card_id: card, worker_session_id: 'runtime' });
       if (server !== undefined && request.path.endsWith('/planner/run')) return ok({
         card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
       });
@@ -210,7 +211,7 @@ describe('a streamed reply in the Planner conversation', () => {
     expect(threadLines()).toEqual(['question', '[Completed]']);
   });
 
-  it('offers Edit only once an abandoned live reply has retired, and the rewind brings back no live text', async () => {
+  it('offers Edit only once an abandoned live reply has retired, and replacing the turn brings back no live text', async () => {
     const gate: Gate = { hold: false, waiting: [] };
     const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
     server.rewind = () => {
@@ -236,10 +237,13 @@ describe('a streamed reply in the Planner conversation', () => {
     await waitFor(() => expect(screen.queryByText('Abandoned')).toBeNull());
     fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }));
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Message' }).textContent).toBe('question'));
+    expect(requests.filter((request) => request.path.endsWith('/planner/rewind'))).toEqual([]);
     const polls = requests.filter((request) => request.path.endsWith('/harness/live')).length;
+    /* Send in edit mode replaces the turn: the rewind, then the message again. */
+    act(() => { fireEvent.keyDown(screen.getByRole('combobox', { name: 'Message' }), { key: 'Enter' }); });
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 700); }); });
     expect(screen.queryByText('Abandoned')).toBeNull();
-    expect(threadLines()).toEqual([]);
+    expect(threadLines()).toEqual(['question']);
     expect(requests.filter((request) => request.path.endsWith('/harness/live')).length).toBe(polls);
     expect(requests.filter((request) => request.path.endsWith('/planner/rewind')).map((request) => request.body))
       .toEqual([{ turn_id: 'T1' }]);

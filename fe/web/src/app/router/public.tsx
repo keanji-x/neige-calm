@@ -3,7 +3,8 @@ import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation
 import { useConversationStop } from '../conversations/stop.ts';
 import { useLiveReplies, useTranscriptReads } from '../conversations/live-replies.ts';
 import { useConversationEdit } from '../conversations/edit.ts';
-import { EMPTY_COMPOSER, isComposerEmpty, withRefill, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
+import { useCardEchoes } from '../conversations/echoes.ts';
+import { EMPTY_COMPOSER, isComposerEmpty, withRefill, withoutEditedTurn, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -352,12 +353,15 @@ export function useConversationStore(
     () => new Set(pendingQueue.map((entry) => entry.entry_id)), [pendingQueue],
   );
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
-  const [echoes, setEchoes] = useState<readonly OptimisticConversationTurn[]>([]);
+  const [echoes, setEchoes, forgetEchoes] = useCardEchoes(cardId);
   /** The echo whose `POST /planner/input` is unanswered. One id, not a set: a second unanswered echo would make `confirmedEchoes` report the first as confirmed. */
   const [unconfirmedEchoId, setUnconfirmedEchoId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const sendingRef = useRef(false);
+  /** The card shown now; a send's own `cardId` is the one it was pressed in. */
+  const shownCardId = useRef(cardId);
+  shownCardId.current = cardId;
   /** The send whose settling may still speak for this store; a request that is no longer this one says nothing about `sending` or `actionError`. */
   const activeSend = useRef<{ cardId: string; echoId: string } | null>(null);
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
@@ -383,14 +387,14 @@ export function useConversationStore(
   const matchingSendMessage = failedSend?.delivery === 'unknown'
     && hasUnseenMatchingConversationMessage(serverTurns, failedSend.echo);
   useEffect(() => {
-    setEchoes([]);
+    forgetEchoes();
     setUnconfirmedEchoId(null);
     setActionError(null);
     /* The send in flight belongs to the conversation being left; its own answer is still delivered. */
     activeSend.current = null;
     sendingRef.current = false;
     setSending(false);
-  }, [cardId]);
+  }, [cardId, forgetEchoes]);
   /* A send can settle through an older store after this card is already open in
      a new one. Merge its confirmed optimistic turn from the provider, then give
      every newer server row to the oldest eligible echo exactly once. */
@@ -407,7 +411,7 @@ export function useConversationStore(
         ? current
         : next;
     });
-  }, [cardId, registry, serverTurns]);
+  }, [cardId, registry, serverTurns, setEchoes]);
 
   const turns = useMemo(
     () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
@@ -524,11 +528,10 @@ export function useConversationStore(
   const send = async (
     _conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean,
   ): Promise<SendOutcome> => {
-    if (_conversationId !== cardId || stalled || sendingRef.current || !registry.tryBeginSend(cardId)) return 'not-sent';
-    sendingRef.current = true;
-    setSending(true);
-    setActionError(null);
-    stop.clearFeedback();
+    /* Not shown any more (it waited out an Edit's rewind): it still goes to its own conversation, and nothing on screen here speaks for it. */
+    const shown = shownCardId.current === cardId;
+    if (_conversationId !== cardId || stalled || (shown && sendingRef.current) || !registry.tryBeginSend(cardId)) return 'not-sent';
+    if (shown) { sendingRef.current = true; setSending(true); setActionError(null); stop.clearFeedback(); }
     const echo: OptimisticConversationTurn = {
       id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
       /* The echo carries the images: an image-only message has no text to reconcile
@@ -545,7 +548,7 @@ export function useConversationStore(
       entryId: null,
     };
     const sentTo = cardId;
-    activeSend.current = { cardId: sentTo, echoId: echo.id };
+    if (shown) activeSend.current = { cardId: sentTo, echoId: echo.id };
     /* Still ours to answer for. False from the moment the reader moved to
        another conversation (the `cardId` effect) or started a later send. */
     const stillActive = () => activeSend.current?.echoId === echo.id;
@@ -556,8 +559,7 @@ export function useConversationStore(
     /* Set inside `finally`, where `stillActive()` is asked before it is
        cleared. */
     let answeredHere = false;
-    setEchoes((current) => [...current, echo]);
-    setUnconfirmedEchoId(echo.id);
+    if (shown) { setEchoes((current) => [...current, echo]); setUnconfirmedEchoId(echo.id); }
     return mutations.send(text, attachments.map((attachment) => attachment.id)).then((sent) => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
       /* The claim decides only who draws this message; written wherever the echo
@@ -983,23 +985,16 @@ function useConversationPanel(
   const focusComposer = useCallback((conversationId: string) => {
     if (shownComposer.current === conversationId) setComposerFocusRequest((count) => count + 1);
   }, []);
-  const edit = useConversationEdit({ conversationId: composerId, rewind: store.rewind, focusComposer });
+  const edit = useConversationEdit({ conversationId: composerId, transcript: composerId === null ? [] : store.turnsOf(composerId),
+    historyReady: store.historyReady, rewind: store.rewind, focusComposer });
   /* The one readiness every response action and the continue guidance share. */
   const canContinue = store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
-  /* A turn an Edit removed still shows until a transcript read without it lands; nothing acts on it meanwhile. */
-  const removedTurn = open === null ? null : registry.removedTurnOf(open.id);
-  const showsRemovedTurn = open !== null && removedTurn !== null
-    && store.turnsOf(open.id).some((entry) => entry.author === 'turn' && entry.turnId === removedTurn);
-  const respondable = canContinue && !showsRemovedTurn;
-  const { forgetRemovedTurn } = registry;
-  const openId = open?.id ?? null;
-  useEffect(() => {
-    if (openId !== null && removedTurn !== null && store.historyReady && !showsRemovedTurn) forgetRemovedTurn(openId, removedTurn);
-  }, [forgetRemovedTurn, openId, removedTurn, showsRemovedTurn, store.historyReady]);
+  /* While an Edit is held (editing, replacing, or its replaced turn not yet read away) nothing else acts on the conversation. */
+  const respondable = canContinue && edit.held === null;
   const preferences = useUiPreferences();
   const readingWidth = useDrawerReadingWidth();
   // Receipts compare the row's completion time, not `updatedAt`, which also moves
@@ -1468,6 +1463,8 @@ function useConversationPanel(
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
+            {edit.notice !== null && <ChatFooterNotice tone={edit.notice.tone}>{edit.notice.lines.map((line) =>
+              edit.notice?.tone === 'error' ? <ChatFooterError key={line} message={line} /> : <span key={line}>{line}</span>)}</ChatFooterNotice>}
             {/* Not an `alert`: nothing just happened, the condition was already true when
                             this page opened. */}
             {!store.stalled && store.blockedReason !== null && (
@@ -1481,11 +1478,12 @@ function useConversationPanel(
               focusOnMount={composerFocusFor === open.id}
               focusRequest={composerFocusRequest}
               draft={{ text: composer.text, onChange: setComposerText }}
-              disabled={store.sendBlocked || !store.historyReady || edit.requesting}
+              disabled={store.sendBlocked || !store.historyReady || edit.replacing}
+              sendWaiting={edit.replacing} {...(edit.bar === undefined ? {} : { editing: edit.bar })}
               /* `delivered` is the one outcome that licenses forgetting the images; every
                                other one leaves the message with the reader. */
-              /* The images stay with the composer until the store reports them delivered. */
-              onSend={(text) => store.send(open.id, text, attachments.items, true)}
+              /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
+              onSend={(text) => edit.send(open.id, () => store.send(open.id, text, attachments.items, true))}
               allowEmptyText={attachments.items.length > 0}
               /* The queue lives inside the composer, above the field: these messages have
                                not reached the model, so they are not part of the conversation behind it. */
@@ -1520,7 +1518,7 @@ function useConversationPanel(
                       available: store.attachmentsSupported,
                       reason: ATTACHED_WORKSPACE_REASON,
                     }}
-                    disabled={store.sendBlocked || !store.historyReady || edit.requesting}
+                    disabled={store.sendBlocked || !store.historyReady || edit.replacing}
                   />
                   <ModelPill
                     /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
@@ -1566,17 +1564,17 @@ function useConversationPanel(
               <ChatThread
                 key={open.id}
                 conversation={open}
-                turns={store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
-                  || composer.text === '' || turn.id !== store.failedSend.echo.id)}
+                turns={withoutEditedTurn(store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
+                  || composer.text === '' || turn.id !== store.failedSend.echo.id), edit.hidden)} editing={edit.marked}
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
                 stalled={store.stalled}
-                copyText={showsRemovedTurn ? undefined : writeClipboardText}
-                regenerateMessage={respondable && !edit.requesting
+                copyText={edit.held === null ? writeClipboardText : undefined}
+                regenerateMessage={respondable
                   ? async (message) => { await store.send(open.id, message.text, message.attachments ?? [], false); }
                   : undefined}
                 editMessage={respondable && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0
-                  && isComposerEmpty(composer) && !attachments.busy ? edit.run : undefined}
+                  && isComposerEmpty(composer) && !attachments.busy ? edit.start : undefined}
                 canContinue={canContinue}
                 stalledReason={store.blockedReason}
                 stopFeedback={store.stopFeedback}

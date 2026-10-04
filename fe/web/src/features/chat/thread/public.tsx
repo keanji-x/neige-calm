@@ -14,6 +14,8 @@ import { Badge } from '@astryxdesign/core/Badge';
 import { Code } from '@astryxdesign/core/Code';
 import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
+import { Button } from '@astryxdesign/core/Button';
+import { useIcon } from '@astryxdesign/core/Icon';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
@@ -29,12 +31,15 @@ import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
 import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
   isQueuedConversationTurn, opensAfterGap, opensExchange,
-  type Conversation, type ConversationTurn, type ConversationActivity, type SendOutcome, type TranscriptEntry,
+  type Conversation, type ConversationTurn, type ConversationActivity, type ConversationTurnOutcome, type SendOutcome,
+  type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
 import styles from './thread.module.css';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
 import { CurrentStatusNotice } from './outcome-notice.tsx';
+import { moveIntoComposer } from './edit-motion.ts';
+import { editedTurnMessageIds } from '../../../../../core/domain/conversation-rewind.ts';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../../core/domain/conversation-meta.ts';
 import {
@@ -62,13 +67,15 @@ export type ChatThreadProps = Readonly<{
   canContinue: boolean;
   copyText?: (text: string) => Promise<void>;
   regenerateMessage?: (message: ConversationTurn) => Promise<void>;
-  /** Rewind the turn `turnId` and give its message back to the composer; rejects with the reason nothing changed. */
-  editMessage?: (turnId: string) => Promise<void>;
+  /** Put the message of the turn that ends at `outcome` in the composer, in edit mode; the caller owns what Send then does. */
+  editMessage?: (outcome: ConversationTurnOutcome) => void;
+  /** The outcome of the turn being edited: its messages stay on screen, marked. */
+  editing?: string | null;
   /** Where the running turn's clock starts, from the run response; `null` draws `Running` with no number. */
   runningAnchor?: RunningTurnAnchor | null;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, runningAnchor = null }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, runningAnchor = null }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -82,13 +89,18 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   /* Only the latest turn, and only one the reader started: its outcome names the turn the server removes. */
   const editAction = editMessage === undefined || regenerateTarget === null || live || stalled || currentOutcome === null
     || currentOutcome.turnId === '' ? null
-    : { id: `${conversation.id}:${currentOutcome.turnId}`, run: () => editMessage(currentOutcome.turnId) };
+    : { id: `${conversation.id}:${currentOutcome.turnId}`, run: () => {
+      /* The turn is the latest, so the last message of yours on screen is its own; it stays, a copy moves. */
+      const said = [...frameRef.current?.querySelectorAll<HTMLElement>('[data-nc-turn="you"]') ?? []].at(-1) ?? null;
+      moveIntoComposer(said, () => editMessage(currentOutcome));
+    } };
   const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue} live={live}
     stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);
   const exchanges = useMemo(() => exchangesOf(turns), [turns]);
+  const edited = useMemo(() => editing === null ? new Set<string>() : editedTurnMessageIds(turns, editing), [editing, turns]);
   /* Drawn by block, not by entry: a quiet-sync fold is one line. The index map keeps `opensExchange`, `opensAfterGap` and the live-mark rule reading positions in `turns`. */
   const blocks = useMemo(() => foldQuietSyncs(turns), [turns]);
   const indexOf = useMemo(
@@ -281,6 +293,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
               className={styles.said}
               data-nc-turn="you"
               {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
+              {...(edited.has(turn.id) ? { 'data-nc-editing': '' } : {})}
             >{sentMentionParts(turn.text).map((part, index) => part.label === null ? part.text : (
               <span key={index} data-nc-sent-mention="" title={part.text}>
                 <Badge className={styles.mentionPill}
@@ -289,7 +302,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
             ))}</p>
             {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}
             {(turn.attachments ?? []).length > 0 && (
-              <ul className={styles.attachments} data-nc-turn-attachments="">
+              <ul className={styles.attachments} data-nc-turn-attachments="" {...(edited.has(turn.id) ? { 'data-nc-editing': '' } : {})}>
                 {(turn.attachments ?? []).map((attachment) => (
                   <li key={attachment.id} className={styles.attachment}>
                     <img src={attachment.url} alt="" />
@@ -472,8 +485,8 @@ function isThenable(value: unknown): value is Promise<SendOutcome> {
 
 /** Astryx's ChatComposer; we own the value and the send callback so the kernel path stays a string. */
 export function ChatComposer({
-  onSend, onStop, onNewConversation, disabled = false, focusOnMount = false, focusRequest = 0, draft: controlledDraft,
-  footerActions, sendAdornment,
+  onSend, onStop, onNewConversation, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
+  draft: controlledDraft, footerActions, sendAdornment,
   drawer, headerActions, allowEmptyText = false, mentionTrigger,
 }: {
   /** A caller with its own draft persistence returns `void`. */
@@ -485,6 +498,10 @@ export function ChatComposer({
   /** The same callback the module head's `+` fires; absent where the `+` is absent, which is what keeps the `/` menu from existing. */
   onNewConversation?: () => void;
   disabled?: boolean;
+  /** A send was taken and waits to go (an Edit's rewind is still out): Send turns into a spinner that takes no press. */
+  sendWaiting?: boolean;
+  /** Edit mode: a bar names the message being replaced, ✕ or Esc leaves the mode, and Send is "Replace message". */
+  editing?: Readonly<{ preview: string; onCancel: () => void }>;
   /** Put the caret in the field as this composer mounts. Read once, at mount; the composer has no `key` on the router's path, so raising the flag again on a mounted composer does nothing — one mount per intent is the caller's job. */
   focusOnMount?: boolean;
   /** Each new value asks once for the caret, on a mounted composer (an Edit's refill); the same wait as after a send. */
@@ -503,6 +520,7 @@ export function ChatComposer({
 }) {
   const [localDraft, setLocalDraft] = useState('');
   const draft = controlledDraft?.text ?? localDraft;
+  const sendIcon = useIcon('arrowUp');
   const setDraft = controlledDraft?.onChange ?? setLocalDraft;
   const stopShown = onStop != null;
 
@@ -593,7 +611,7 @@ export function ChatComposer({
   };
 
   /* `Send image`: `ChatSendButton` takes its availability from `canSend`, false on an empty draft, and an image-only message is an empty draft. Shown only while the vendor's own button is unavailable. */
-  const sendDoor = allowEmptyText && draft.trim() === '' && !stopShown ? (
+  const sendDoor = allowEmptyText && draft.trim() === '' && !stopShown && !sendWaiting && editing === undefined ? (
     <button
       type="button"
       className={styles.queueSend}
@@ -617,10 +635,18 @@ export function ChatComposer({
         /* Astryx clears its input after Enter even when its parent refuses
            submission. Keep unsent words while disabled, and
            let IME Enter accept its candidate without submitting. */
-        if (event.key !== 'Enter' && event.key !== 'Tab') return;
+        if (event.key !== 'Enter' && event.key !== 'Tab' && event.key !== 'Escape') return;
         /* Only Enter pressed in the field is a send: this handler captures on the root, and the `drawer` slot puts buttons under it. */
         const field = event.target instanceof Element ? event.target.closest('[contenteditable], textarea, input') : null;
         if (field === null) return;
+        if (event.key === 'Escape') {
+          /* Esc leaves edit mode, unless it is closing an open `/` or `@` menu; handled, so the drawer stays open. */
+          if (editing === undefined || field.getAttribute('aria-expanded') === 'true' || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          event.stopPropagation();
+          editing.onCancel();
+          return;
+        }
         const route = triggerMenuKeyRoute(event.nativeEvent, field);
         if (route === 'composing' || route === 'swallow') {
           if (route === 'swallow') event.preventDefault();
@@ -661,7 +687,14 @@ export function ChatComposer({
         /* Astryx's own `handleSubmit` refuses only an empty draft and `isDisabled`, never `isStopShown`. */
         onSubmit={submit}
         {...(drawer === undefined ? {} : { drawer })}
-        {...(headerActions === undefined ? {} : { headerActions })}
+        {...(editing === undefined && headerActions === undefined ? {} : { headerActions: editing === undefined ? headerActions : (
+          <div className={styles.editBar} data-nc-edit-bar="">
+            <span className={styles.editBarLabel}>Editing message</span>
+            <span className={styles.editBarPreview}>{editing.preview}</span>
+            <button type="button" className={styles.editBarCancel} aria-label="Cancel edit" title="Cancel edit"
+              disabled={sendWaiting} onClick={editing.onCancel}><Icon name="close" size="sm" /></button>
+          </div>
+        ) })}
         sendActions={sendDoor === undefined && sendAdornment === undefined ? undefined : (
           <>{sendAdornment}{sendDoor}</>
         )}
@@ -676,7 +709,11 @@ export function ChatComposer({
           />
         )}
         /* Send's availability is Astryx's own (`canSend`). Astryx renders `aria-disabled` only with a `tooltip`, which `ChatSendButton` does not take, so this is a native `disabled` that drops focus to `<body>` — the focus effect above moves it back into the field first. */
-        sendButton={<ChatSendButton />}
+        /* `ChatSendButton` has no busy state and a fixed label; in those two states this is its button under the name it then has. */
+        sendButton={sendWaiting ? <Button label="Sending…" variant="primary" isIconOnly isLoading icon={sendIcon} className={styles.sendOwn} />
+          : editing === undefined ? <ChatSendButton />
+            : <Button label="Replace message" variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
+              isDisabled={disabled || (draft.trim() === '' && !allowEmptyText)} onClick={() => { submit(draft); }} />}
       />
     </div>
   );

@@ -1,6 +1,6 @@
 import '../../../styles/entry.css';
 import { cleanup, render, screen, within } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import { ThreadStatusNotice } from './status-notice.tsx';
 
@@ -119,12 +119,12 @@ it('does not take focus from another control when stopping becomes completed', (
 });
 
 for (const width of [390, 1280]) {
-  it(`offers a live Edit in the same row and names a refusal there (${width}px)`, async () => {
+  it(`offers a live Edit in the same row that answers at the click (${width}px)`, async () => {
     await page.viewport(width, 844);
-    let reject!: (reason: Error) => void;
+    const run = vi.fn();
     render(<div style={{ width: Math.min(width - 32, 600) }}>
       <ThreadStatusNotice heading="Completed" clock={{ elapsedMs: null, timestamp: { kind: 'finished', atMs: 1000 } }}
-        editAction={{ id: 'c:turn', run: () => new Promise<void>((_, fail) => { reject = fail; }) }} />
+        editAction={{ id: 'c:turn', run }} />
     </div>);
     const meta = screen.getByRole('status', { name: 'Current response status' });
     const edit = within(meta).getByRole('button', { name: 'Edit message' });
@@ -135,10 +135,8 @@ for (const width of [390, 1280]) {
     expect(Math.abs(center(edit.querySelector('svg')!) - center(label))).toBeLessThanOrEqual(1);
     expect(within(meta).getAllByRole('button', { name: /not available/ })).toHaveLength(2);
     await userEvent.click(edit);
-    expect(edit.getAttribute('aria-disabled')).toBe('true');
-    reject(new Error('Send the edited message first.'));
-    await expect.poll(() => edit.getAttribute('aria-label')).toBe('Edit failed: Send the edited message first.');
-    expect(edit.getAttribute('aria-disabled')).toBeNull();
+    expect(run).toHaveBeenCalledOnce();
+    expect(edit.getAttribute('aria-label')).toBe('Edit message');
     expect(document.documentElement.scrollWidth).toBe(width);
   });
 }

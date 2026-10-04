@@ -77,18 +77,21 @@ const editTurns = (first: 'you' | 'system' = 'you') => [
   { id: 'end', author: 'turn' as const, turnId: 'turn-7', status: 'completed' as const, atMs: 3, elapsedMs: null },
 ];
 
-it('edits the current turn once under repeated clicks and shows a refusal in the action itself', async () => {
-  let reject!: (reason: Error) => void;
-  const edit = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+it('hands the current turn’s outcome to Edit at the click; the caller owns the rewind', () => {
+  const edit = vi.fn();
   render(<ChatThread conversation={EDIT_CONVERSATION} cards={{}} stalled={false} canContinue={false}
     editMessage={edit} turns={editTurns()} />);
   expect(edit).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
-  expect(edit).toHaveBeenCalledExactlyOnceWith('turn-7');
-  reject(new Error('Send the edited message first.'));
-  await screen.findByRole('button', { name: 'Edit failed: Send the edited message first.' });
-  expect(edit).toHaveBeenCalledTimes(1);
+  expect(edit).toHaveBeenCalledExactlyOnceWith(editTurns()[2]);
+  expect(screen.getByText('Answer', { exact: true })).toBeTruthy();
+});
+
+it('marks the messages of the turn being edited and leaves the rest alone', () => {
+  render(<ChatThread conversation={EDIT_CONVERSATION} cards={{}} stalled={false} canContinue={false}
+    editing="end" turns={[{ id: 'u0', author: 'you', text: 'Earlier', atMs: 0 }, { id: 'o0', author: 'turn', turnId: 'turn-6', status: 'completed', elapsedMs: null, atMs: 0 },
+      ...editTurns()]} />);
+  expect(Array.from(document.querySelectorAll('[data-nc-editing]')).map((said) => said.textContent)).toEqual(['Prompt']);
   expect(screen.getByText('Answer', { exact: true })).toBeTruthy();
 });
 

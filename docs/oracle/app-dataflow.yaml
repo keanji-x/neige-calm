@@ -601,7 +601,7 @@
   why: >
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
-  source: fe/core/domain/area.ts:51-56; fe/web/src/app/providers/queries.ts:605-630
+  source: fe/core/domain/area.ts:51-56; fe/web/src/app/providers/queries.ts:600-625
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:158-189;
     fe/web/src/app/providers/queries.contract.test.ts:246-292,315-352
   owner_slice: app/providers
@@ -622,7 +622,7 @@
     响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
-  source: fe/web/src/app/providers/queries.ts:720-767
+  source: fe/web/src/app/providers/queries.ts:715-762
   authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:259-305
   owner_slice: app/providers
   runtime_layer: app
@@ -652,8 +652,8 @@
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
   source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,522-542;
-    fe/web/src/app/router/public.tsx:1962-1969,2460-2466; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
-    fe/web/src/app/providers/queries.ts:918-923,957-964;
+    fe/web/src/app/router/public.tsx:1960-1967,2458-2464; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
+    fe/web/src/app/providers/queries.ts:913-918,952-959;
     fe/web/src/features/today/public.tsx:137-138,256-257;
     fe/web/src/app/providers/ui-preferences.tsx:74-110; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
     fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;
@@ -665,7 +665,7 @@
     fe/web/src/features/track/row/public.test.tsx:124-175; fe/web/src/app/providers/ui-preferences.test.tsx:173-218;
     fe/web/src/app/shell/mobile-tracks.test.tsx:95-146; fe/web/src/app/shell/responsive.contract.test.tsx:104-123;
     fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:56-77;
-    fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:2434-2519;
+    fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:2596-2681;
     fe/web/src/app/router/today-conversation.test.tsx:188-211; fe/web/src/features/chat/thread/public.test.tsx:537-608;
     fe/web/src/features/track/page/public.test.tsx:180-270,349-419;
     fe/web/src/features/track/page/header-status.browser.test.tsx:82-193; fe/web/src/features/track/page/mobile-projection.test.tsx:255-283;

@@ -1025,6 +1025,22 @@ describe('ChatComposer', () => {
     expect(fieldText(messageField())).toBe('Keep these words');
   });
 
+  it('leaves edit mode on Esc or ✕, but not on the Esc that closes an open / menu', async () => {
+    const onCancel = vi.fn();
+    render(<ChatComposer onSend={vi.fn()} onNewConversation={vi.fn()} editing={{ preview: 'Original prompt', onCancel }} />);
+    expect(screen.getByText('Editing message')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Replace message' })).toBeTruthy();
+    await userEvent.type(messageField(), '/');
+    expect(screen.getByRole('option', { name: /^new/ })).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('option', { name: /^new/ })).toBeNull();
+    expect(onCancel).not.toHaveBeenCalled();
+    await userEvent.keyboard('{Escape}');
+    expect(onCancel).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel edit' }));
+    expect(onCancel).toHaveBeenCalledTimes(2);
+  });
+
   it('still selects the new-conversation command with Enter while Stop is shown', async () => {
     const onNewConversation = vi.fn();
     render(<ChatComposer onSend={vi.fn()} onStop={vi.fn()} onNewConversation={onNewConversation} />);

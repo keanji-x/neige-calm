@@ -9,6 +9,8 @@ import styles from './meta.module.css';
 export type CopyResponseAction = Readonly<{ id: string; text: string; run: () => Promise<void> }>;
 /** `id` names the response it acts on; a rejection's message is the reader's feedback. */
 export type ResponseAction = Readonly<{ id: string; run: () => Promise<void> }>;
+/** Edit answers at once (the message moves to the composer); its rewind and any failure are the caller's. */
+export type EditAction = Readonly<{ id: string; run: () => void }>;
 
 type ActionView = { readonly key: string; active: boolean };
 type ActionResult = Readonly<{ view: ActionView; kind: 'pending' | 'done' | 'failed'; error: string | null }>;
@@ -56,7 +58,7 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
   tone?: 'neutral' | 'warning' | 'error';
   outcome?: 'completed' | 'interrupted' | 'failed';
   copyAction?: CopyResponseAction | null;
-  editAction?: ResponseAction | null;
+  editAction?: EditAction | null;
   regenerateAction?: ResponseAction | null;
 }) {
   const stateRef = useRef<HTMLDivElement | null>(null);
@@ -72,8 +74,6 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
   const [focused, setFocused] = useState(false);
   const copy = useFencedAction(copyAction === null ? null : JSON.stringify([copyAction.id, copyAction.text]));
   const feedback = copy.feedback;
-  const edit = useFencedAction(editAction?.id ?? null);
-  const editFailure = edit.feedback?.kind === 'failed' ? `Edit failed: ${edit.feedback.error}` : null;
   const regenerate = useFencedAction(regenerateAction?.id ?? null);
   const timestamp = clock.timestamp;
   const showTime = timestamp !== null && (hovered || focused);
@@ -106,11 +106,11 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
           icon={<ActionIcon kind={feedback?.kind === 'done' ? 'copied' : 'copy'} />} className={styles.action}
           variant="ghost" size="sm" isDisabled={copyAction === null || feedback?.kind === 'pending'}
           onClick={() => { if (copyAction !== null) void copy.perform(copyAction.run, 'Could not copy response.'); }} />
-        <IconButton label={editAction === null ? 'Edit message (not available now)' : editFailure ?? 'Edit message'}
-          tooltip={editFailure ?? 'Edit this message. Files are not reverted.'}
+        <IconButton label={editAction === null ? 'Edit message (not available now)' : 'Edit message'}
+          tooltip="Edit this message. Files are not reverted."
           icon={<ActionIcon kind="edit" />}
-          className={styles.action} variant="ghost" size="sm" isDisabled={editAction === null || edit.feedback?.kind === 'pending'}
-          onClick={() => { if (editAction !== null) void edit.perform(editAction.run, 'Could not edit the message.'); }} />
+          className={styles.action} variant="ghost" size="sm" isDisabled={editAction === null}
+          onClick={() => { editAction?.run(); }} />
         <IconButton label={regenerateAction === null ? 'Regenerate response (not available now)' : 'Regenerate response'}
           tooltip="Send the original prompt again in this conversation; keep existing history." icon={<ActionIcon kind="regenerate" />}
           className={styles.action} variant="ghost" size="sm" isDisabled={regenerateAction === null || regenerate.feedback?.kind === 'pending'}

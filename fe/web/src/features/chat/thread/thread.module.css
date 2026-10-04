@@ -205,6 +205,19 @@
     color: var(--text);
   }
 
+  /*
+   * The message an open Edit would replace: still here, quieter, and edged.
+   * `--text-3` on the bubble's `--bg` is a pair already measured for
+   * `.queuedNote` below with `check-contrast.mjs`'s arithmetic: 6.34 light /
+   * 8.10 dark, over the 4.5:1 floor. The dashed edge is decoration; the edit
+   * bar above the composer is what says it in words.
+   */
+  .said[data-nc-editing] {
+    color: var(--text-3);
+    outline: 1px dashed var(--hairline-strong);
+    outline-offset: 2px;
+  }
+
   .mentionPill {
     max-inline-size: 100%;
     vertical-align: middle;
@@ -630,10 +643,81 @@
     cursor: default;
   }
 
-  .composer :is(button[aria-label='Send']):not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
+  .composer :is(button[aria-label='Send'], .sendOwn):not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
     background: var(--surface-chip);
     color: var(--text);
     box-shadow: none;
+  }
+
+  /*
+   * Send under another name: "Sending…" while a replacing message waits for
+   * its rewind, "Replace message" in edit mode. Astryx's own `Button`
+   * standing in for `ChatSendButton`, which has neither a busy state nor a
+   * label of ours; round like the button it replaces, whose radius is
+   * StyleX-only.
+   */
+  .composer .sendOwn:not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
+    border-radius: var(--radius-pill);
+  }
+
+  /*
+   * Edit mode's bar, in Astryx's header row above the field: what is being
+   * replaced, one line, and the way out. The header row sizes its left cell
+   * to content, so the cell holding the bar is let grow and shrink, or the
+   * preview could never ellipsize.
+   */
+  .composer div:has(> .editBar):not(#\#):not(#\#) {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  .editBar {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: var(--space-2);
+    min-inline-size: 0;
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+  }
+
+  .editBarLabel {
+    flex: none;
+    font-weight: var(--weight-medium);
+    color: var(--text-2);
+  }
+
+  .editBarPreview {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+  }
+
+  .editBarCancel {
+    display: grid;
+    flex: none;
+    place-items: center;
+    inline-size: 24px;
+    block-size: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .editBarCancel:disabled {
+    color: var(--text-4);
+    cursor: default;
+  }
+
+  .editBarCancel:hover:not(:disabled) {
+    background: var(--surface-chip);
+    color: var(--text);
   }
 
   /*
@@ -915,6 +999,17 @@
     margin: var(--space-2) 0 0;
     padding: 0;
     list-style: none;
+  }
+
+  /* The same turn's images, marked as its words are. */
+  .attachments[data-nc-editing] {
+    /* Edged around the images only, not the empty row they are pushed to the end of. */
+    inline-size: fit-content;
+    margin-inline-start: auto;
+    opacity: 0.6;
+    outline: 1px dashed var(--hairline-strong);
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 
   .attachment {
