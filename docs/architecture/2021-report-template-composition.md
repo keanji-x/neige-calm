@@ -961,8 +961,8 @@ pre-merge scan):
   a user block DELETE removes it. This corrects revision 6, which expected reading or
   deleting it could fail; neither does. The revision-5 plan (delete before S4) stands,
   because that Track's Replace, whole-document write and fork would still be refused.
-- Planner tool surface: 29,884 of 30,000 bytes across 30 tools (the real test, on
-  origin/main 110945dd2), down 70 bytes from that base's 29,954 (same method over its golden
+- Planner tool surface: 29,909 of 30,000 bytes across 30 tools (the real test, on
+  origin/main 5263e7159), down 70 bytes from that base's 29,979 (same method over its golden
   and prompt files); the cap comment records the new number.
 - #2069: `spy_recipe_slots.rs` decodes each fence as `NativeView` and keeps
   `RowCell::Live`; the Python `UNIT_KINDS` list is derived from the recipe
