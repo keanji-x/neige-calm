@@ -558,6 +558,10 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
   transport's unknown-name path lists the session's tools.
 - **K6:** the ledger is process memory. A restart forces re-reads. This is unchanged and fails
   closed.
+- **K8 (PR-3):** recipe text that #2056's migration 0135 rewrote to `neige task-report-success` (and any
+  stored `neige cat`-style spelling) is refused by the two-word CLI. Production holds 0 such recipes
+  (`select count(*) from track_recipes where body like '%neige task-%' or body like '%neige cat%'`
+  → 0 of 3, 2026-10-04), so no recipe migration is added.
 
 ## 8. Decisions (2026-10-04)
 
