@@ -1,7 +1,7 @@
 # Report template composition: the template places, the plugin publishes data units
 
-Baseline: `origin/main` 5971cf5e6. Every `file:line` below was read on that tree.
-Status: design, revision 3 (review round 1 and owner decisions folded in, §7). No code
+Baseline: `origin/main` 54b79918c. Every `file:line` below was read on that tree.
+Status: design, revision 4 (review rounds 1-2 and owner decisions folded in, §7). No code
 changes in this PR. Owner decisions (2026-10-04, final): no kernel guard for template
 views; live `table` and `chart.series` stay single-block references; the supervised
 paper profile is deleted (slice S0). No owner question remains open.
@@ -63,7 +63,7 @@ reducing that churn is #1995, a separate follow-up).
 | (b) Single-cell overlays placed by per-cell `view.live`/`cell.live` blocks | headings only | no: blocks flow vertically; the owner-approved two/three-column layouts (`docs/design-native-dashboard-reading.md:10-14`) are lost | two (`view` plus cell blocks) | rejected |
 | (c1) Keep `view.live`, add template row/cell selection (`{source, pick}`) | partially: can drop, not regroup or interleave | only the publisher's own rows | two | rejected |
 | (c2) Template components with field bindings (template writes labels, binds numbers) | yes | yes | one | rejected: labels, units and tones are plugin meaning; needs a binding language |
-| (c3) Layout block that arranges other blocks by id | yes | yes | two | rejected: block ids are minted per Track at instantiation, so a template cannot name them (`routes/track_recipes.rs:36-37,57`) |
+| (c3) Layout block that arranges other blocks by id | yes | yes | two | rejected: block ids are minted per Track at instantiation, so a template cannot name them (`routes/track_recipes.rs:37-38,58`) |
 
 (a) reuses the existing grammar, renderer, inspection state and layouts. The only new
 ideas are the slot reference and the per-cell envelope.
@@ -87,7 +87,8 @@ pub enum ComponentKind { Metrics, TimeSeries, Distribution, Table, Bars, Meter, 
   type. No unit→unit indirection exists.
 - `expects` is the slot's only kind field, one value with one meaning: the cell kind
   the template laid out for. (Revision 1 called it `cell`, which collided with
-  `DataUnit.cell`.)
+  `DataUnit.cell`.) `Component::kind() -> ComponentKind` is one exhaustive `match`, so a
+  new component variant cannot compile without a kind.
 - `Snapshot` (`model.rs:21-32`) is reused unchanged: required id, required nullable
   `observedAt`/`producedAt`. Provenance moves from the view to each unit.
 - `NativeView.snapshot` becomes required nullable (`Option<Snapshot>` with
@@ -95,6 +96,9 @@ pub enum ComponentKind { Metrics, TimeSeries, Distribution, Table, Bars, Meter, 
   cells and must be non-null exactly when the view has at least one inline cell. Every
   stored v1 payload has only inline cells and a non-null snapshot, so it stays valid;
   `version` stays `1`. Old clients are the same build and are not supported separately.
+- Snapshot field checks (`native_view.rs:265-271`) move into one `validate_snapshot` that
+  views and units share. `generated_schema()` (`native_view.rs:301-311`) pushes the
+  `DataUnit` definitions next to `NativeView`'s, so both reach `$defs`.
 
 ### 2.3 Data unit (overlay payload)
 
@@ -131,7 +135,10 @@ Published per overlay kind on the Track through the unchanged `neige.overlay.set
 
 - `source`: the existing two-segment overlay URI, shape-checked by `validate_live_source`
   (`kinds.rs:117-121`); existence is not checked, because an uninstalled plugin is a
-  normal state.
+  normal state. The DTO carries the same rule as a schema `pattern`
+  (`^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`, the pattern `view.live` already
+  publishes at `track_report_blocks/contracts.rs:455`), which the frontend generator
+  compiles (`fe/tools/report-view/generate.mjs:70`), so neither side hand-writes it.
 - No title: the cell's title is the unit's (publisher label). The template owns row
   titles, the view title and description, and the surrounding Markdown headings.
 - A unit whose `cell.kind` differs from `expects` is `unavailable` in that slot, so a
@@ -154,29 +161,41 @@ opaque (`callbacks.rs:210-213`, `calm-truth/src/validation.rs:489-491`).
    whole block is `unavailable`, as today (`track_report_hydrate.rs:75-84,108`).
 2. Compact UTF-8 size of the unit at most 4 MiB: today's `MAX_LIVE_VIEW_BYTES`
    (`kinds.rs:31-32`), renamed `MAX_LIVE_UNIT_BYTES`; the frontend keeps its own
-   decoded-resource budget (`fe/core/domain/report-view.ts:8,11-21`), as today. There is
-   no per-view aggregate budget: real units are 0.2-9 KB (measured on the committed
-   example), and an aggregate would be one more rule duplicated in Rust and TypeScript.
+   decoded-resource budget (`fe/core/domain/report-view.ts:8,11-21`), as today. The largest
+   SPY unit is bounded well under the cap: `spy.decision_log` holds at most 50 decisions
+   (`allocation_views.py:18,154`), each with a rationale of at most 6,000 characters
+   (`allocation.py:82-83`), sources bounded to 8,000 (`allocation_views.py:143`) and at most
+   20 fill disclosures (`:147`), so roughly 2.4 MB at 3 bytes per character; the
+   time-series units hold at most 260 samples (`allocation.py:20`). There is no per-view
+   aggregate budget: it would be one more rule duplicated in Rust and TypeScript.
 3. Decode as `DataUnit` (envelope shape and version), `cell.kind == expects`,
    `Component::validate`.
 
-A failure affects only its slot. To keep the TypeScript side to decoding plus the
-relation checks it already owns, the generated decoder covers shape, and the current
-whole-view `relations` (`report-view.ts:25-70`) is split into a per-component function
-shared by inline cells and units; no new rule is introduced on the frontend beyond the
-`expects` comparison.
+A failure affects only its slot. Both sides must reject every invalid entry of the
+shared fixture (`native_view_tests.rs:143-168`, `fe/tools/report-view/conformance.test.ts:65`),
+so the relations the schema cannot express are written in both languages, as today: the
+current whole-view `relations` (`report-view.ts:25-70`) gains the snapshot-nullability
+rule, slot-id uniqueness and layout width over `RowCell`, and its per-component part is
+split out and shared by inline cells and units. The slot `source` rule is generated
+(§2.4), and `expects` is one comparison. New relation rules get invalid fixture entries,
+so the conformance tests pin them on both sides.
 
-**Transition fence (S1 to S4).** While `view.live` still exists, its overlay must not
-contain live slots (no overlay→overlay nesting): `hydrate_live_view`
-(`track_report_hydrate.rs:183-208`) and `live.tsx:15` reject a `view.live` overlay with
-any `RowCell::Live` as `unavailable`.
+**No overlay→overlay nesting during the transition (S1 to S4), by construction.**
+`hydrate_live_view` (`track_report_hydrate.rs:183-208`) returns the overlay without
+resolving any slot, and `live.tsx` renders `NativeReportView` without a `resolveOverlay`,
+so a live slot inside a `view.live` overlay renders "this view carries no live data". No
+fence code or test is added.
 
 ### 2.6 Presentation of degraded and stale cells (all new S1 behavior)
 
 - Placeholder in the slot, keeping the row's layout: "waiting for `<source>`" (pending),
   "cannot be displayed: `<reason>`" (`role="status"`, unavailable), or "this view
-  carries no live data" when no resolver is injected (same three states as
-  `features/report/table/public.tsx:14-26`).
+  carries no live data" when no resolver is injected. These are the three states the live
+  table already renders (`features/report/table/public.tsx:14-26`); S1 extracts one
+  placeholder component inside `features/report` that both use.
+- The slot resolver (lookup, size cap, unit decode, `expects`) is a pure function in
+  `fe/core/domain` next to `trackOverlayPayload` (`fe/core/domain/track.ts:107-128`);
+  `features/report/native` only renders its result.
 - Empty titles. Today the header always renders `<h2>{payload.title}</h2>` and the expand
   button's accessible name is `展开 ${payload.title}` (`native/public.tsx:51-52`), and every
   row renders `<h3>{row.title}</h3>` with `aria-label={row.title}` (`:34-35`). New: an empty
@@ -192,8 +211,9 @@ any `RowCell::Live` as `unavailable`.
   at `allocation_views.py:157-159`).
 - No new transport: overlays already arrive with the Track detail and are invalidated per
   `overlay.set` (`fe/core/events/invalidation-plan.ts:196-204`); the injected
-  `resolveOverlay` (`fe/web/src/app/router/public.tsx:2154-2157`) is passed to
-  `NativeReportView` for `view` blocks (`features/report/document/public.tsx:242`).
+  `resolveOverlay` (`fe/web/src/app/router/public.tsx:2154-2157`) reaches only `table`
+  and `view.live` today (`features/report/document/public.tsx:239,241`); S1 also passes it
+  to `NativeReportView` for `view` blocks (`:242`).
 
 ### 2.7 Planner
 
@@ -214,9 +234,9 @@ any `RowCell::Live` as `unavailable`.
   `prompts/tools/calm.report.read.md` names view live slots. The Planner tool surface is
   **28,859 of 30,000 bytes** across 26 Planner-visible tools (computed with the test's
   method, description bytes plus compact input-schema bytes per descriptor,
-  `mcp_server/tools/mod.rs:176-195`, from the registry golden's schemas and the prompt
-  files, each description verified against the golden's `description_sha256`; the
-  29,984 in the comment at `mod.rs:171-172` predates #2017). The ~1.1 KB headroom
+  `mcp_server/tools/mod.rs:176-194`, from the registry golden's schemas and the prompt
+  files, each description verified against the golden's `description_sha256`; re-measured
+  at 54b79918c; the 29,984 in the comment at `mod.rs:170-171` predates #2017). The ~1.1 KB headroom
   absorbs the guidance edits; S4 lowers the measured number by removing `view.live` from
   the kind enum (`track_report_blocks/contracts.rs:426-436`) and the descriptions.
   S2 and S4 regenerate the registry golden (`crates/calm-server/tests/goldens/mcp_tool_registry.json`).
@@ -241,7 +261,7 @@ units' details and captions, as they already do (`allocation_views.py:63-66,91`)
   a layout decision (new H1s, new slots), not a kind rename.
 - **Why in place:** the SPY Track cannot be recreated: the ledger stores an immutable
   account/Track binding (`paper_trading/ledger.py:43-46`) and every SPY call and execution
-  is refused for any other Track (`allocation.py:47`, `engine.py:34`).
+  is refused for any other Track (`allocation.py:47`).
 - **Why before S4:** a leftover `view.live` block makes that Track's Replace fail
   (`validate_body_fences` at `track_report.rs:648`, after which the stomp guard at `:649`
   could not drop it either), its full `write_markdown` fail (`:684`), and a fork fail
@@ -261,21 +281,27 @@ Run it once to size the rewrite and again immediately before deploying S4; S4 de
 only on two empty results.
 
 **Rewrite runbook (per affected Track, after S3 is deployed).** Script and transcript go
-in the S4 PR.
+in the S4 PR. On the SPY Track the H1 更多明细 (`spy-recipe.md:57`) becomes 执行记录.
 
 1. Timing: outside the SPY Calendar windows (New York time Mon-Fri 08:45-11:00 and
    16:30-17:30, Sat 10:00-11:00, `spy-recipe.md:6-9`), with the Planner idle and no
    `spy-exec-*` task queued or running (check `spy.status` and the Track's task list).
-2. `GET /api/tracks/{id}/report`; record `docRev` and each block's `rev`.
+2. `GET /api/tracks/{id}/report`; save the response JSON as the backup and record
+   `summary`, `docRev` and each block's `rev`.
 3. `DELETE /api/tracks/{id}/report/blocks/{block}` with `ifBlockRev` for each `view.live`
    and retired live-table block.
 4. Immediately after, `POST /api/tracks/{id}/report` (Replace) with `ifDocRev` = the
-   post-delete revision. Build the body from the step-2 GET: new contract header and
-   Planner comment in block 0, new H1s and template views, research prose unchanged, and
-   **every remaining non-prose block byte-identical** in its fence text (task blocks
-   under 执行记录). The stomp guard refuses any change to them
-   (`track_report_guard.rs:61-73`) and accepts the new view fences.
-5. Any 409 aborts the run; re-read and restart from step 2. No retries with stale revisions.
+   post-delete revision and the step-2 `summary` (required, `routes/tracks.rs:3235-3246`).
+   Build the body from the step-2 GET: new contract header and Planner comment in block 0,
+   new H1s and template views, research prose unchanged, and **every remaining non-prose
+   block byte-identical** in its fence text: the task blocks under 执行记录 and the
+   research sections' `table` and `chart.series` blocks (关键数据). The stomp guard refuses
+   any change to them (`track_report_guard.rs:61-73`) and accepts the new view fences.
+5. Any non-2xx response after the first step-3 delete aborts the run. Restore from the
+   step-2 backup by re-creating each deleted block with `POST
+   /api/tracks/{id}/report/blocks` at its old position (`view.live` and live tables are
+   still valid before S4), then re-read and restart from step 2. No retry with a stale
+   revision.
 6. Recipe rows from the scan: `PUT /api/track-recipes/{id}` with the new body (user actor
    only, `track_recipes.rs:121-127`).
 7. Retired overlay rows (`spy.overview`, `spy.portfolio`, `spy.decisions`, `spy.fills`)
@@ -319,6 +345,21 @@ The supervised profile is not used on 4140 (the plugin instance runs `spy_cash`;
 Track embeds `paper.*` views), so S0 deletes it outright instead of converting it. S0 is
 independent of the contract work and touches only `plugins/paper-trading` and its CI step.
 
+**Residue scan (on the 4140 DB copy, before S0).**
+
+```sql
+SELECT id, title FROM track_recipes WHERE body LIKE '%dev-neige-paper-trading/paper.%';
+SELECT track_id, id FROM cards WHERE payload LIKE '%dev-neige-paper-trading/paper.%';
+SELECT entity_kind, entity_id, kind FROM overlays
+ WHERE plugin_id = 'dev-neige-paper-trading' AND kind LIKE 'paper.%';
+```
+
+plus a listing of the plugin data directory for `ledger.sqlite3`/`strategy.sqlite3` (the
+supervised ledgers, `allocation.py:33-34`). Expected result: empty. Any hit is deleted in
+S0 through the user APIs (`DELETE /api/track-recipes/{id}`, the block DELETE of §3.1,
+`POST /api/overlays/delete`), so the S4 gate cannot block on an unplanned recipe; a
+supervised ledger file stops S0 for an owner decision.
+
 **Delete** (supervised-only modules and files):
 
 - `paper_trading/strategy.py` (`Portfolio`, the eight `paper.*` tools), `engine.py`,
@@ -327,54 +368,75 @@ independent of the contract work and touches only `plugins/paper-trading` and it
   (`portfolio.py:9-11`) into `allocation_reconcile.py`, their only SPY user (`:7`).
 - `paper_trading/report.py`, after moving `display_cell`/`table` (`report.py:8-19`), used
   by `allocation_report.py:3`, into `report_views.py`.
+- `allocation.py:33-34`, the guard against reusing supervised data, which no longer
+  exists (the residue scan above checks the 4140 data directory instead).
 - Tests: `test_strategy.py`, `test_strategy_process.py`, `test_engine.py`,
   `test_report.py`, `test_report_views.py`, `test_report_view_regressions.py`,
   `test_process.py` (after moving its `Host` class, which `test_allocation.py:318` uses,
-  into `tests/host.py` together with the `ROOT` constant it takes from `conftest.py`),
-  `conftest.py` (otherwise only the supervised `rig` fixture on `Engine`/`Config`,
-  `conftest.py:18-98`), `fixture_cli.py`, `smoke_host.py`, `browser_smoke.cjs`.
+  into `tests/host.py`), `fixture_cli.py`, `smoke_host.py`, `browser_smoke.cjs`.
+  `conftest.py` shrinks to `ROOT` and the `sys.path` insert (`conftest.py:8-9`) every test
+  module's `paper_trading` import depends on; its supervised `rig` fixture
+  (`:18-98`) goes.
 
 **Keep and trim** (what `spy_cash` still uses):
 
 - `report_views.py`: keeps the generic helpers `native_view`, `row`, `scalar`, `unknown`,
   `metric`, `record`, `records` (`:12-54`, used by `allocation_views.py:8`) plus the moved
   `display_cell`/`table`, so it is the one presentation-helper module; deletes `overview`,
-  `activity`, `reviews`, `details`, `table_view`, `view_payloads` (`:57-219`) and their
-  imports (`:8-9`).
+  `activity`, `reviews`, `details`, `table_view`, `view_payloads` (`:57-219`) and the
+  imports only they used (`:3,5,8-9`: `Decimal`, `Fraction`, portfolio and report_text).
 - `report_text.py`: keeps `money_text`, `bounded` (`allocation_views.py:7`); deletes
   `state_text`, `event_text` (`:16-78`).
 - `config.py`: keeps `money`, `integer`, `broker_money`, `timestamp`, `identifier`, `exact`
   (used by `allocation*.py` and `sdk_bridge.py:14`); deletes `calendar_date`, `symbol`,
-  `AccountConfig`, `StrategyConfig`, `Config` (`:46-54,73-78,85-190`). `AllocationConfig`
+  `AccountConfig`, `StrategyConfig`, `Config` (`:46-54,73-78,85-190`) and the imports
+  that become unused (`asdict`, `dataclass`, `date`, `Path`, `json`). `AllocationConfig`
   inlines the account checks it borrows from `AccountConfig.parse`
   (`allocation_config.py:34-35`).
 - `broker.py`: keeps `BrokerError`, `_object`, the environment allowlist, output cap and
   `Broker.__init__`/`_run`/`_json`, which `AllocationBroker` subclasses
   (`allocation_broker.py:4-26`); deletes the CLI order/cancel/read surface (`order_args`,
-  `cancel_args`, `identity` through `execute`, `broker.py:53-69,107-108,179-249`).
-  `test_broker.py` keeps only the base-runner contracts.
+  `cancel_args`, `identity` through `execute`, `broker.py:53-69,107-108,179-249`) and
+  `_records` (`:76`), whose only callers are those reads.
+- `test_broker.py`: the base-runner contracts (environment allowlist, timeout and reap,
+  combined output bound, launch failure; `test_broker.py:234-362`) are driven today
+  through `assets`/`preview`/`execute`, which S0 deletes. S0 re-drives them through
+  `AllocationBroker.request` (`allocation_broker.py:16-26`) against the SDK fixture; the
+  CLI-only tests go.
 - `ledger.py`: deletes `Ledger.reviews` (`:100-112`). The schema stays byte-for-byte: the
   live 4140 SPY ledger created those tables, and dropping unused `CREATE TABLE IF NOT
   EXISTS` lines buys nothing at a persistence boundary.
 - `rpc.py`: only the `Allocation` path (`:116-118`); deletes the supervised branch
-  (`:119-125`), its imports (`:10-13`) and the per-profile tool filter (`:144`).
+  (`:119-125`), its imports (`:10-13`), the non-`Allocation` call branch and the
+  `paper.status`/`paper.journal` entries of the read-only list (`:76-82`), and the
+  per-profile tool filter (`:144`). The profile check has one owner,
+  `AllocationConfig.parse` (`allocation_config.py:26-32`): `profile` is in its required
+  set and must equal `spy_cash`; `rpc.py` does not repeat it.
 - `runtime.py`: publishes only `allocation_report.tables` (`:4-5,21`).
+- `paper_trading/__init__.py:1` docstring and `allocation_broker.py:1` drop "supervised".
 - `manifest.json`: deletes the eight `paper.*` tools; `profile` becomes required with the
   single value `spy_cash` and no default (it stays the explicit opt-in to automatic
-  execution, and the 4140 config already sets it); deletes `cli_path`, unused by SPY.
-- README: rewrites the intro (`README.md:1-15`) and deletes the supervised sections
-  (`:17-345`), keeping the account/login prerequisites and the example paragraph
-  (`:334-345`) the SPY section relies on.
+  execution, and the 4140 config already sets it); deletes `cli_path`, unused by SPY, from
+  the manifest, `AllocationConfig` and `test_allocation.py:318`.
+- README: rewrites the intro (`README.md:1-15`), deletes `:17-333` (supervised setup,
+  approval, migration, first cycle, recovery and its verification commands), keeps the
+  example paragraph (`:334-345`) and the SPY section (`:346-`), whose comparison with the
+  supervised profile (`:363`) is reworded.
 - CI: `.github/workflows/paper-trading.yml:37` step name drops "process and
   human-confirmation"; the pytest path (`:39`) is unchanged.
 
-**Deploy order on 4140.** `AllocationConfig.parse` uses `exact` (`allocation_config.py:26-30`),
-so a stored `cli_path` would make the new code refuse to start. Before deploying S0, read
-the plugin config in the DB copy; if it sets `cli_path`, remove it through Settings first
-(the current code accepts its absence). Historical design docs
-(`docs/design-paper-trading-loop.md`, `docs/design-paper-strategy-configuration.md`,
-`docs/design-paper-report-hierarchy.md`, `docs/design-spy-cash-rebalance.md:11`) stay as
-history.
+**Deploy S0 only through a kernel restart or `POST /api/plugins/{id}/reload`.** A stored
+`cli_path` is harmless: the effective configuration drops keys the manifest does not
+declare (`plugin_host/config.rs:7,27-38`). The hazard is a stale manifest: the kernel
+keeps the manifest it loaded at boot (`state.rs:1012`) until a reload re-reads it
+(`plugin_host/lifecycle.rs:243-327`, route `routes/plugins.rs:42`). A child-only respawn
+of the new code under the old manifest would receive the old `cli_path` default, which
+the new exact parse (`allocation_config.py:30`) refuses. The restart-timing guard of §5
+applies.
+
+Historical design docs (`docs/design-paper-trading-loop.md`,
+`docs/design-paper-strategy-configuration.md`, `docs/design-paper-report-hierarchy.md`,
+`docs/design-spy-cash-rebalance.md:11`) stay as history.
 
 ### 3.4 Example and frontend fixtures
 
@@ -488,60 +550,80 @@ normalization re-renders fences canonically, `track_recipes.rs:33-77`):
 Each slice is independently reviewable and green and is deployed in order. Every slice
 runs `scripts/local-ratchet-gates.sh`; Rust runs use the targeted `cargo nextest -p <pkg>`
 form from AGENTS.md. Mutation plans name one single-factor production mutation and the
-complete predicted red set, per language.
+complete predicted red set, per language. S1, S2 and S4 change Rust and frontend text, so
+`scripts/gate-prose-ratchet.baseline.tsv` and `scripts/gate-1316-terminology-ratchet.baseline.tsv`
+may need `--update-baseline` as generated artifacts of those slices.
+
+**Restart-timing guard (S0, S3 and every kernel deploy).** A plugin restart while a
+decision is `submitting` turns it into `unknown` (`ledger.py:50-53`). Every deploy that
+restarts the plugin, directly or through the kernel, runs under the §3.1 step-1
+conditions: outside the SPY Calendar windows, and `spy.status` shows no decision in
+`queued`, `requested` or `submitting`.
 
 **S0: delete the supervised paper profile** (`plugins/paper-trading`, its CI step;
 independent of S1-S4, can merge and deploy first).
 
-- Everything listed in §3.3, including the 4140 `cli_path` check before deploy.
+- Everything listed in §3.3, including the residue scan; deploy through a kernel restart
+  or plugin reload under the restart-timing guard.
 - Tests: the remaining suite (`python -m pytest plugins/paper-trading/tests -q`, now
   `test_allocation*.py`, `test_native_demo.py`, `test_sdk_bridge.py`, trimmed
   `test_broker.py`) green; `build_native_demo.py --check` unchanged;
   `cargo nextest -p calm-server real_spy_app_admits_planner_plan_and_worker_execution_request`
-  (the kernel test that boots the real App) green; a new process test that `initialize`
-  refuses a missing or unknown `profile`.
-- Acceptance: `git grep -n -E 'Portfolio\b|AccountConfig|StrategyConfig|paper\.(strategy|ingest|decide|status|refresh|pause|journal|review)\b|fixture_cli|paper_trading\.(engine|strategy|operator|research|reconcile|portfolio|report)\b|supervised' -- plugins/paper-trading .github`
-  matches nothing (this includes the "supervised CLI" wording in
-  `allocation_broker.py:1`).
+  (the kernel test that boots the real App) green; new `AllocationConfig.parse` tests that
+  a missing `profile` and a `profile` other than `spy_cash` are both refused; the moved
+  base-runner tests of `test_broker.py` green through `AllocationBroker.request`.
+- Acceptance: `git grep -n -E 'Portfolio\b|AccountConfig|StrategyConfig|paper\.(strategy|ingest|decide|status|refresh|pause|journal|review)\b|fixture_cli|cli_path|paper_trading\.(engine|strategy|operator|research|reconcile|portfolio|report)\b|supervised' -- plugins/paper-trading .github`
+  matches nothing (this includes `test_allocation.py:318`, `__init__.py:1` and
+  `allocation_broker.py:1`); `pyflakes` reports no unused import in `paper_trading/`.
 - Coverage note: the supervised isolated-host smoke (`smoke_host.py`) goes with the
   profile; SPY process-level coverage stays in `test_allocation.py` (real `run`
   subprocess through `Host`) and the kernel test above.
-- Mutation, Python: make `rpc.py` treat a missing `profile` as `spy_cash`. Red: the new
-  missing-profile refusal test only.
+- Mutation, Python: delete the `profile != 'spy_cash'` check in `AllocationConfig.parse`
+  (`allocation_config.py:31-32`), the single owner of the profile rule. Red: the
+  other-profile refusal test only (a missing `profile` is still refused by `exact`'s
+  required set, `:26-30`).
 
-**S1: contract, write validation, transition fence, frontend rendering** (calm-types,
-generated artifacts, `fe/core/domain`, `features/report/native`, the two `view.live` fence
-points). One slice because the generated TypeScript union changes with the DTO and the
+**S1: contract, write validation, frontend rendering** (calm-types, generated artifacts,
+`fe/core/domain`, `features/report`). One slice because the generated TypeScript union changes with the DTO and the
 renderer's exhaustive switch (`native/public.tsx:14-29`) must handle it in the same change.
 
 - Rust: `DataUnit`, `LiveSlot`, `RowCell` with its dispatching deserializer,
-  `ComponentKind`, nullable view snapshot with its rule, `validate_unit(expects, payload)`,
-  `MAX_LIVE_UNIT_BYTES`; transition fence in `hydrate_live_view`.
+  `ComponentKind` with the exhaustive `Component::kind`, nullable view snapshot with its
+  rule, shared `validate_snapshot`, `validate_unit(expects, payload)`,
+  `MAX_LIVE_UNIT_BYTES`; `generated_schema()` exports `DataUnit`.
 - Generated artifacts via the real generator: `native_view.schema.json`,
   `fe/core/domain/report-view.generated.ts` and `report-view.types.generated.ts`.
   `fe/tools/report-view/generate.mjs` exports only the root `NativeView` today
   (`:106`); it also exports `DataUnit` from `$defs` with its own decoder
   (`dataUnitShapeSchema`).
-- Frontend: unit decoder, slot resolution (§2.5 steps), placeholders, snapshot
-  disclosure, empty-title behavior (§2.6), transition fence in `live.tsx`.
-- Tests: calm-types valid/invalid slots (unknown `expects`, bad source, duplicate slot id,
-  unknown field on a slot with its error text, snapshot null with an inline cell,
-  non-null with none) and units (wrong kind, bad version, a `live` cell rejected by the
-  `Component` deserializer); shared fixture conformance in Rust and TypeScript; a
-  frontend unit test with one ok, one pending, one malformed and one wrong-kind slot in
-  one view; empty-title accessible names; a browser test of a two-wide-end row with one
-  degraded slot at 1440 and 390 px; kernel and frontend tests that a `view.live` overlay
-  containing a live slot is unavailable.
+- Frontend: unit decoder and slot resolver in `fe/core/domain` (§2.5 steps), the new
+  relation rules in `report-view.ts`, the shared placeholder, snapshot disclosure,
+  empty-title behavior and `resolveOverlay` for `view` blocks (§2.6).
+- Tests: the view relations are pinned only through new invalid entries of the shared
+  fixture `test-data/native-view-v1.json` (`snapshot-null-with-inline-cell`,
+  `snapshot-set-without-inline-cell`, `duplicate-slot-id`, `slot-layout-width`,
+  `slot-bad-source`, `slot-unknown-expects`), so `native_view_shared_conformance`
+  (`native_view_tests.rs:143`) and `conformance.test.ts:65` check both languages from one
+  list; calm-types unit tests for the slot deserializer's error text and for units (wrong
+  kind, bad version, a `live` cell rejected by the `Component` deserializer); frontend
+  unit tests: "degrades only the failing slot" (one ok, one pending, one malformed slot)
+  and, separately, "shows a wrong-kind unit as unavailable" (one ok and one wrong-kind
+  slot); empty-title accessible names; a browser test of a two-wide-end row with one
+  degraded slot at 1440 and 390 px. No test for live slots inside a `view.live` overlay:
+  that path adds no code (§2.5).
 - Mutation, Rust: drop the `cell.kind == expects` comparison in `validate_unit`. Red:
   `native_view_tests::unit_of_another_kind_is_rejected` only.
 - Mutation, Rust: drop the snapshot-nullability relation. Red:
-  `native_view_tests::snapshot_required_with_inline_cells` and
-  `native_view_tests::snapshot_null_without_inline_cells` only.
-- Mutation, TypeScript: make any slot failure fail the whole composition. Red:
-  `native/public.test.tsx` "degrades only the failing slot" and
-  `native/native.browser.test.tsx` "degraded slot keeps the row layout" only.
-- Mutation, TypeScript: drop the `expects` comparison in the slot resolver. Red:
-  `native/public.test.tsx` "shows a wrong-kind unit as unavailable" only.
+  `native_view_tests::native_view_shared_conformance` only (the snapshot cases live in the
+  fixture; the TypeScript side has its own copy of the rule and stays green).
+- Mutation, TypeScript: drop the snapshot-nullability relation in `report-view.ts`. Red:
+  `conformance.test.ts` "rejects snapshot-null-with-inline-cell" and "rejects
+  snapshot-set-without-inline-cell" only.
+- Mutation, TypeScript: make any slot failure fail the whole composition. Red: "degrades
+  only the failing slot", "shows a wrong-kind unit as unavailable" (its ok sibling stops
+  rendering) and the browser "degraded slot keeps the row layout" only.
+- Mutation, TypeScript: drop the `expects` comparison in the slot resolver. Red: "shows a
+  wrong-kind unit as unavailable" only.
 
 **S2: kernel read hydration and Planner guidance** (`track_report_hydrate.rs`, prompts,
 golden).
@@ -555,7 +637,9 @@ golden).
 - `planner_tool_surface_fits_its_byte_budget` (re-measure; update the cap comment to the
   new number) and the regenerated registry golden.
 - Mutation, Rust: drop `overlay.plugin_id == plugin_id` (`track_report_hydrate.rs:145`).
-  Red: `live_slot_ignores_another_plugins_overlay_of_the_same_kind` only. (Mutating the
+  Red: `live_slot_ignores_another_plugins_overlay_of_the_same_kind` and the existing
+  `live_view_hydration_is_scoped_bounded_and_read_only` (its `other` plugin publishes the
+  same kind, `mcp_track_report_live_view.rs:211-221`) only. (Mutating the
   entity predicate at `:143-144` is equivalent: `overlays_for("track", track_id)` already
   filters by entity in SQL, `:78-79`.)
 - Mutation, Rust: resolve every slot of a view with its first slot's source. Red:
@@ -563,7 +647,9 @@ golden).
 
 **S3: plugin data units, recipes, example** (`plugins/paper-trading`).
 
-- `allocation_views.py` emits the §3.2 units and deletes the SPY detail tables;
+- `allocation_views.py` emits the §3.2 units and deletes the SPY detail tables; units no
+  longer compose rows, so `report_views.row` is deleted and `native_view` becomes a
+  `unit(state, cell)` builder that keeps the content-hash snapshot identity;
   `spy-recipe.md` per §4; regenerate the example; update README; frontend example tests
   (§3.4); the kernel test that boots the real App
   (`crates/calm-server/tests/cases/mcp_plugin_tools/caller_identity.rs:160-177`, today
@@ -577,8 +663,12 @@ golden).
   `build_native_demo.py --check`; `cargo nextest -p calm-server
   real_spy_app_admits_planner_plan_and_worker_execution_request`.
 - Mutation, Python: drop `spy.account` from the published units. Red:
-  `test_spy_recipe_contract_matches_body_and_published_views` and
-  `test_example_is_the_production_output_of_the_scripted_run` only.
+  `test_spy_recipe_contract_matches_body_and_published_views`,
+  `test_example_is_the_production_output_of_the_scripted_run`, and the two tests whose
+  description assertions move to `tables(state)['spy.account']`: the reconciliation-error
+  check of `test_overview_is_valid_before_reconciliation_and_after_errors`
+  (`test_allocation_views.py:218`) and `test_snapshot_identity_covers_the_description`
+  (`:276-278`), each renamed for the unit, only.
 
 **S4: 4140 rewrite and `view.live` removal.**
 
@@ -589,15 +679,17 @@ golden).
   `kinds_tests.rs` cases (`:58-76,345`); `live_view_kind` (`contracts.rs:447-461`) and
   `prompts/report-kinds/view.live.md`; the `view.live` wording in
   `prompts/tools/calm.report.blocks.kinds.md` and `calm.report.read.md`;
-  `hydrate_live_view` and the transition fence (`track_report_hydrate.rs:150-151,183-208`);
+  `hydrate_live_view` (`track_report_hydrate.rs:150-151,183-208`);
   `view.live` cases in `tests/cases/mcp_track_report_live_view.rs` (renamed to
-  `mcp_track_report_live_slots.rs`, `tests/mcp_integration_suite.rs:40-41` updated) and
+  `mcp_track_report_live_slots.rs`, `tests/mcp_integration_suite.rs:42-43` updated) and
   `tests/cases/mcp_track_report_blocks.rs:200`; the registry golden; frontend
   `native/live.tsx`, `live.test.tsx`, `live.browser.test.tsx`,
-  `fe/core/domain/report-live-view.test.ts`, `LiveViewBlockPayload` and its kind branches
+  `fe/core/domain/report-live-view.test.ts`, the `view.live` case of
+  `native/native.browser.test.tsx:52`, `LiveViewBlockPayload` and its kind branches
   (`fe/core/domain/report.ts:55-59,228,250`, `document/public.tsx:200-201,217,240-241`,
   `document/public.test.tsx`); `docs/report-live-views.md` rewritten for live slots.
-- Acceptance (authoritative list): `git grep -n -E 'view\.live|KIND_LIVE_VIEW|MAX_LIVE_VIEW_BYTES|LiveViewBlock|liveViewBlock|hydrate_live_view'`
+- Acceptance (authoritative list): `git grep -n -P '(?<![A-Za-z])view\.live|KIND_LIVE_VIEW|MAX_LIVE_VIEW_BYTES|LiveViewBlock|liveViewBlock|hydrate_live_view'`
+  (the lookbehind keeps `resolution.preview.live`, `preview/public.tsx:78`, out)
   matches only the historical design docs `docs/design-native-report-composition.md`,
   `docs/design-paper-report-hierarchy.md`, `docs/design-report-presentation-boundaries.md`
   and this document; an old `view.live` fence is rejected at each write-end family (block
@@ -612,8 +704,8 @@ golden).
   runbook right after the plugin restarts, inside the allowed windows.
 - A full `write_markdown` by the Planner can still delete template views
   (`track_report.rs:681-684`); recoverable from the recipe, not automatically.
-- `resolve: full` on one view returns at most 18 units (6 rows × 3) of ≤4 MiB each; real
-  units are a few KB. No aggregate cap by design (§2.5).
+- `resolve: full` on one view returns at most 18 units (6 rows × 3) of ≤4 MiB each; the
+  largest SPY unit is bounded near 2.4 MB (§2.5). No aggregate cap by design.
 - SPY grows from four to eight overlay kinds per poll tick; the churn is #1995's.
 
 **Owner decisions (2026-10-04, final; no open questions).**
@@ -649,3 +741,29 @@ Revision 3 (owner decisions):
   list for helpers `spy_cash` still uses, manifest/config and deploy-order note, test and
   CI sweep, acceptance grep, mutation plan. S3 now covers only `spy_cash` units and adds
   the kernel real-App test (`caller_identity.rs`) to its sweep.
+
+Revision 4 (review round 2, rebased on 54b79918c; nothing blocking):
+
+- S0: deploy only through a kernel restart or plugin reload (stale-manifest hazard; a
+  stored `cli_path` is dropped by the effective configuration); one owner of the profile
+  rule (`AllocationConfig.parse`) and a mutation that is not masked; residue scan of the
+  4140 copy for `paper.*` recipes, blocks, overlays and supervised ledger files; sweep
+  gaps closed (`allocation.py:33-34`, `__init__.py`, `rpc.py:76-82`, `cli_path` in
+  `test_allocation.py`, base-runner tests re-driven through `AllocationBroker.request`,
+  dead `_records`, unused imports, `conftest.py` kept for the `sys.path` insert); README
+  range fixed.
+- Restart-timing guard for S0, S3 and every kernel deploy (`submitting` → `unknown` on
+  restart).
+- §3.1 runbook: Replace carries the step-2 `summary`; any non-2xx after a delete restores
+  from the saved GET; 更多明细 becomes 执行记录; research `table`/`chart.series` blocks stay
+  byte-identical; `engine.py` cite dropped.
+- Validation: the relation rules are written in both languages and pinned by new shared
+  fixture entries; slot `source` is a generated schema pattern; the transition fence and
+  its tests are dropped (no nesting by construction); `Component::kind` is exhaustive;
+  shared `validate_snapshot`; `generated_schema()` exports `DataUnit`; the slot resolver
+  sits in `fe/core/domain`; one shared placeholder.
+- Mutation red sets corrected (S1 split tests and per-language snapshot rule, S2 adds the
+  existing scoping test, S3 adds the moved description tests); S4 grep uses a lookbehind
+  and lists `native.browser.test.tsx:52`; unit size stated as a bound; ratchet baselines
+  listed as possible generated artifacts; cites re-checked after the rebase
+  (`mcp_integration_suite.rs:42-43`, `mod.rs:170-194`, `track_recipes.rs:37-38,58`).
