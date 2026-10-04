@@ -388,14 +388,28 @@ Every slice has these common gates:
 | # | Slice | Files (main) | Acceptance | Must go red first (prove by single-factor mutation) |
 |---|---|---|---|---|
 | S1 | Remove the 4 aliases, the 2 retired shims and `register_deprecated_alias`. An unknown tool name lists the session's tools. | tools/emit.rs, tools/plan.rs, tools/track_state.rs, registry.rs (alias fn, `deprecated_aliases`, its tests), tools/mod.rs:240-246 (drop the "expected to carry aliases" assertion), prompts/tools/calm.{dispatch_request,plan.upsert}.md deleted, transport.rs:543 `unknown_tool` message, golden regen, tests that call aliases or shims | Golden has 39 rows. `tools/call calm.task_completed` → -32601 whose message lists the visible names. | New `unknown_tool_error_lists_the_sessions_tools` (tests/cases/mcp_tools_list_role_filter.rs). Mutation: drop the list from the message → only this test is red. |
-| S2a | Brand and grammar: `terminal.*` | tools/terminal.rs (+schema_tests), wiring.rs:53 approvals, prompts/tools/calm.terminal.*.md → `git mv` neige.terminal.*.md, prompts/guides/terminal.md, planner_card.rs:489 token scanner accepts `(calm\|neige)\.` during S2, terminal test cases (≈180 lines), goldens | `tools/list` (Planner) shows `neige.terminal.*`. Approvals still skip prompts for open, control and input. | `planner_card` prompt-token test (each prompt name must be a visible tool) goes red if one prompt keeps `calm.terminal.open`. Verify by reverting one prompt line. |
+| S2a | Brand and grammar: `terminal.*` | tools/terminal.rs (+schema_tests), wiring.rs:53 approvals, prompts/tools/calm.terminal.*.md → `git mv` neige.terminal.*.md, prompts/guides/terminal.md, planner_card.rs:489 token scanner accepts `(calm\|neige)\.` during S2, terminal test cases (≈180 lines), goldens | `tools/list` (Planner) shows `neige.terminal.*`. Approvals still skip prompts for open, control and input. | The stale-name sweep invariant (S2d) goes red if one prompt, observation or refusal keeps `calm.terminal.open`. Verify by reverting one line in `prompts/guides/terminal.md`. |
 | S2b | `report.*` and `area.*` (write_markdown→write, blocks.kinds→kinds, links.backlinks→backlinks) | track_report*.rs, report_links.rs, area_reports.rs, report_tag.rs, refusal texts (track_report_blocks.rs:113, anchors.rs:61, sections.rs:46), cli/help.rs:83-90, prompts/tools + guides/report.md, report.rs, report_read_ledger.rs docs, fe/core/keys/mcp-tools.ts (report constants), tests | The anchor contract (§4.1) is unchanged. The refusals name `neige.report.read`. | `a_cat_read_anchors_no_commit` stays green. The refusal-text assertions in mcp_track_report.rs go red if the message keeps `calm.report.read`. |
 | S2c | `track.*` (cat_at→show) | track_file.rs, track_history.rs, track_state.rs, track_rename.rs, dev/publish.rs, calm-truth track_fs_view/mod.rs:1442, cli/render/listing.rs, prompts, fe TRACK_* constants, the §6.3 migration + its test, tests | Planner and Worker view tools are renamed. CLI rows point at the new tools (the old CLI spelling stays until S4). | `track_history_drill_ins_are_hidden_but_registered` (registry.rs:675) uses the constants and stays green. A migration test seeds `"tool":"calm.track.cat_at"` and `calm.user.notify` transcript rows and asserts they read back as `neige.track.show` / `neige.user.notify`; it goes red if the migration's rename table drops a row. |
-| S2d | task, plan, source, admin (track_gc→gc), calendar, preview, ratify, review, user. Narrow the token scanner to `neige\.`. Add the grammar invariant. | emit.rs, plan.rs, source.rs, admin.rs, calendar/tools.rs:55, preview.rs, review.rs, dev/review.rs, user_notify.rs, worker/head-{cli,mcp}.md, observation/task-acceptance.md, builtin instructions and templates, plugins/git-forge/manifest.json:7, plugins/paper-trading/spy-recipe.md, fe constants, tests, goldens | No `calm\.` token is left in prompts, registry or fe constants. | New `kernel_tool_names_follow_the_grammar` (tools/mod.rs): every non-`plugin.` registry name matches `^neige\.[a-z]+\.[a-z]+$`. Mutation: rename one constant back to `calm.track.cat_at` → only this test (plus the golden) is red. |
+| S2d | task, plan, source, admin (track_gc→gc), calendar, preview, ratify, review, user. Add the grammar invariant and the stale-name sweep invariant (below). | emit.rs, plan.rs, source.rs, admin.rs, calendar/tools.rs:55, preview.rs, review.rs, dev/review.rs, user_notify.rs, worker/head-{cli,mcp}.md, observation/task-acceptance.md, builtin instructions and templates, plugins/git-forge/manifest.json:7, plugins/paper-trading/spy-recipe.md, fe constants, tests, goldens | No `calm\.` token is left in prompts, registry or fe constants. | New `kernel_tool_names_follow_the_grammar` (tools/mod.rs): every non-`plugin.` registry name matches `^neige\.[a-z]+\.[a-z]+$`. Mutation: rename one constant back to `calm.track.cat_at` → only this test (plus the golden) is red. |
 | S3 | MCP server key `calm` → `neige` | shared_codex_home.rs:17,321 (+tests/cases/shared_codex_home.rs), wiring.rs:53, claude_planner/{spawn.rs:37-76, translate.rs:28,442, driver.rs:139, catalog_fetch.rs}, neige-mcp-stdio-shim (2 refs), claude_planner tests + 14 ndjson fixtures, fe tests `server:'calm'` | On boot, an existing `[mcp_servers.calm]` is removed (`sanitize_unexpected_mcp_servers`, state.rs:1071) and `[mcp_servers.neige]` is written (state.rs:1134). The Claude Planner connects to `neige`. | New `boot_replaces_a_stale_calm_server_key` (tests/cases/shared_codex_home.rs): seed a home with `[mcp_servers.calm]`, boot, assert only `neige` remains. Mutation: leave `calm` in `EXPECTED_MCP_SERVERS` → red. |
 | S4 | Mechanical CLI: two-word commands, `--key` options, positional keys also accepted as options, error choices, `tool list|describe` with `{name, cli, listed}` | cli/commands.rs (drop `name`, derive it, two-token parse), cli/help.rs (root, object and command help), cli/catalog.rs (rows + CLI-covered tools), cli/render.rs (keyed by tool, unchanged), prompts `neige <cmd>` (≈150 lines), worker/head-cli.md, goldens worker_prompt_cli.txt and the planner and assistant goldens, cli/commands/tests.rs, tests/cases/neige_cli_*.rs | `neige track cat report.md` works. `neige cat` → usage error listing the objects. `neige tool list --all` as a Planner shows `neige.track.cat` with `cli: "neige track cat"` and `listed: false`. | New `every_option_is_its_schema_key` (commands/tests.rs): every non-View `Opt.flag == "--" + key.replace('_','-')` and every key exists in the tool's `input_schema`. Mutation: restore `--artifact` → red. New `tool_list_includes_cli_covered_hidden_tools`. |
 | S5 | Living docs and e2e scripts | docs/using-neige-calm.md, docs/architecture/1801-kernel-served-cli.md (pointer note only), e2e/{test_,}planner_claude_ux*.py, docker/Dockerfile.server:9 | `git grep -nE 'calm\.(track\|report\|task)\|neige (ls\|cat\|state)\b' -- docs/using-neige-calm.md e2e` is empty. | — (text only; ratchet gates) |
 | S6 | Codex adapter ownership + measured regression | move `codex_sanitized`/`model_tool_key` → `crate::codex_appserver::tool_names` (callers: source.rs:15, plugin_tool_names.rs:172), fix the comment to the 0.159.2 rule, add unit tests with the literal names captured in §3.2 | Bare and `mcp__neige__`-qualified names resolve. Hashed and colliding names → `source.capture` error `UNKNOWN_TOOL_NAME` listing raw names. Every kernel tool sanitizes injectively to ≤ 116 B. | New `hashed_codex_callables_fail_explicitly` + `kernel_tool_callables_are_injective_and_unhashed`. Mutation: make the key strip a trailing `_[0-9a-f]{12}` → the first test is red. |
+
+**Stale-name sweep invariant (PR-2, replaces hand-made file lists).** A test
+`no_retired_tool_names_remain` scans every tracked file under `crates/`, `fe/`, `plugins/` and
+`templates/` and `docs/using-neige-calm.md` for
+`\bcalm\.(admin|area|calendar|dispatch_request|get_track_state|plan|preview|ratify|report|review|source|task|terminal|track|update_task_meta|user)\b`
+and for `mcp__calm\b`. The allowlist is closed: released migrations, the §6.3 migration and its
+test, and this document. The test catches the runtime guidance that the §2.3 sweep missed, for
+example `harness/run_loop.rs:2682`, `calm-types/src/observation.rs:295`, `track_report_guard.rs:15`,
+`tools/write_args.rs:9` and `track_activity/sql.rs:29`. The `planner_card` prompt-token scanner then
+accepts only `neige.`.
+
+**Must-red sets** are predicted over the full `-p calm-server` run, not one test. A production
+constant that is reverted to an old name also turns red the direct-call tests that use the literal
+name (for example `tests/cases/neige_cli_commands.rs:98`). The prediction lists them.
 
 Order: S1 → S2a → S2b → S2c → S2d → S3 → S4 → S5. S6 is independent and can land any time after S1.
 
@@ -432,7 +446,7 @@ track 199, task 98, plan 81, the rest ≈ 200, `neige <cmd>` 150, `mcp__calm`/`"
   120. Re-run it per slice and re-baseline only with a note.
 - `scripts/ci/frozen-vector-gate.sh`: the vectors hold no tool names (0 hits). There is no
   expected change.
-- Released migrations are byte-frozen. Nothing here needs a migration.
+- Released migrations are byte-frozen. PR-2 adds one new data migration (§6.3), numbered last.
 
 ## 6. Migration and exit plan (rule 2: the production 4140 DB only)
 
@@ -443,9 +457,9 @@ text column of every table in `calm.db` (opened `mode=ro`). The results that mat
 
 | Where | Old names | Read back by code? | Action |
 |---|---|---|---|
-| Planner transcript items table (`<harness>_items`).params: `"tool":"calm.*"` in `mcpToolCall` rows | 1168 rows (2026-09-16 … 10-02). Aliases: get_track_state 3, task_completed 1, task_failed 1. `mcp__calm__` 35 | **yes**: fe classifies history by name (mcp-tools.ts, conversation.ts:784,993) | fe display map (§6.3) |
+| Planner transcript items table (`<harness>_items`).params: `"tool":"calm.*"` in `mcpToolCall` rows | 1168 rows (2026-09-16 … 10-02). Aliases: get_track_state 3, task_completed 1, task_failed 1. `mcp__calm__` 35 | **yes**: fe classifies history by name (mcp-tools.ts, conversation.ts:784,993), and activity SQL (`track_activity/sql.rs:29`) | §6.3 migration |
 | worker_flow_items.payload | calm.* 438, `mcp__calm__` 159, aliases 28 | displayed only (raw tool name) | none |
-| track_recipes.body | 1 row "SPY 与现金 · 每日例程": calm.calendar.list, calm.source.capture, calm.report.commit | **yes**: agents read it as instructions | owner edits the row after deploy (or re-applies `plugins/paper-trading/spy-recipe.md` from S2d) |
+| track_recipes.body | 1 row "SPY 与现金 · 每日例程": calm.calendar.list, calm.source.capture, calm.report.commit | **yes**: agents read it as instructions | §6.3 migration (with revision bump) |
 | plugins.manifest (`dev.neige.git-forge`) | description: calm.track.publish, calm.review.round | read by the Planner as a description | verify on deploy that boot or reinstall refreshes it from `plugins/git-forge/manifest.json`; else reinstall the plugin |
 | cards.payload, tasks.goal/acceptance, operations.*, events.payload (card.*, track.report_edited, task.*), track_vcs_objects | prompt and report text, history | no: all matching tasks are terminal (`done`/`failed`) | none |
 | report_sources (77 rows) | stores `plugin_id` + `tool` separately (`Origin::Plugin`) | no change | none |
@@ -479,14 +493,32 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
 - The fe carries **no** legacy-name table. A front-end map would never exit, because the 1168 rows
   are deleted only with their card (`calm-truth …/out_of_domain.rs:46`).
 - One new migration (numbered last, at merge time) rewrites the persisted names that code reads
-  back, using the §4.3 table: `"tool":"calm.<old>"` → `"tool":"neige.<new>"` in the Planner
-  transcript items, and `calm.<old>` → `neige.<new>` in `track_recipes.body`.
-- Before writing it, the implementer verifies that neither column is covered by a hash, replay or
-  frozen-vector invariant. A covered column is left alone and recorded here instead.
-- `plugins.manifest` is not rewritten by SQL, because the manifest may be trust-hashed. The
-  implementer checks whether boot or reinstall refreshes it from `plugins/git-forge/manifest.json`.
-  If neither does, the deploy step is a plugin reinstall.
-- `worker_flow_items`, events and task text are display-only history. They stay as they are.
+  back:
+  - **Planner transcript items, the `tool` field only** (`$.item.tool` in `<harness>_items.params`).
+    Its readers are the fe history, activity SQL (`track_activity/sql.rs:29`) and rewind. Rewind
+    uses user input and provider anchors (`harness/rewind.rs:63`, `claude_planner/rewind.rs:62`) and
+    never resends stored tool rows. Codex resumes from provider-owned history
+    (`codex_appserver.rs:769`). User input, other params fields and provider session files are not
+    touched.
+  - The rename map is §4.3, plus the historical alias targets (`calm.get_track_state` →
+    `neige.track.state`, `calm.update_task_meta` → `neige.task.verdict`, `calm.task_completed` →
+    `neige.task.complete`, `calm.task_failed` → `neige.task.fail`; see track_state.rs:29 and
+    emit.rs:28) and the shims under their own names (`neige.dispatch.request`, `neige.plan.upsert`)
+    so that history stays legible. The implementer counts which of the 35 `mcp__calm__`
+    occurrences sit in the `tool` field. Only those are normalized to the raw `neige.` name.
+  - **`track_recipes.body`**, with `revision = revision + 1` and `updated_at` set for every changed
+    row. Both are required by the optimistic lock at `calm-truth …/track_recipe.rs:51` and the
+    track-creation stamp at `routes/tracks.rs:1289`.
+- The migration test seeds every observed shape (each §4.3 row, each alias, a qualified
+  `mcp__calm__` tool field, a recipe row) and asserts the read-back through the real readers: the
+  activity projector for `neige.user.notify`, and the recipe revision bump.
+- **Not rewritten:**
+  - `plugins.manifest`, because the manifest may be trust-hashed. The implementer checks whether
+    boot or reinstall refreshes it from `plugins/git-forge/manifest.json`. If neither does, the
+    deploy step is a plugin reinstall.
+  - `worker_flow_items`, task text and events. Events are replayed (`replay.rs:145`), but
+    the item-added event carries a row reference, not params (`calm-types/src/event.rs:335`). Event
+    goldens and frozen vectors hold no tool names, and no hash covers the two rewritten columns.
 
 ## 7. KNOWN GAPS
 
@@ -525,7 +557,7 @@ The S-slices are review units. They land as four PRs, so the brand is never mixe
 
 | PR | Slices | Note |
 |---|---|---|
-| PR-1 | S1 + S6 | Remove aliases and shims; Codex adapter owns spelling; measured regression tests |
+| PR-1 | S1 + S6 (S1 includes the `deprecated_alias_names` caller at `planner_card.rs:572`) | Remove aliases and shims; Codex adapter owns spelling; measured regression tests |
 | PR-2 | S2a–S2d + S3 + the §6.3 migration | The atomic brand and grammar switch; no `(calm\|neige)` scanner window |
 | PR-3 | S4 | Mechanical CLI and discovery |
 | PR-4 | S5 | Living docs and e2e scripts |
