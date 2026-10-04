@@ -1816,6 +1816,10 @@ impl SharedCodexAppServer {
         // Schema-version salt: the first boot of an upgraded binary mismatches every pre-upgrade
         // signature, so the takeover path replaces a daemon spawned with the old inherited env.
         h.update(b"env-schema-v3:1784|");
+        // The daemon loads `[mcp_servers.<key>]` at spawn, so an adopted daemon from before a key
+        // rename would keep serving the old key (#2003).
+        h.update(crate::mcp_server::wiring::MCP_SERVER_KEY.as_bytes());
+        h.update(b"|");
         // The PATH the daemon's exec-shells resolve `neige` through leads with this dir.
         h.update(kernel_bin_dir.as_os_str().as_encoded_bytes());
         h.update(b"|");
@@ -4952,6 +4956,26 @@ mod tests {
         assert_ne!(
             salted, pre_salt,
             "compute_env_signature must be salted (env-schema-v3:1784)"
+        );
+    }
+
+    /// A daemon adopted from before the `calm` → `neige` server-key rename still serves
+    /// `[mcp_servers.calm]`; its signature must not match, so the first boot replaces it.
+    #[test]
+    fn env_signature_replaces_a_daemon_from_before_the_server_key_rename() {
+        let (ingest, bin) = ("http://127.0.0.1:8765", Path::new("/k/bin"));
+        let mut h = Sha256::new();
+        h.update(b"env-schema-v3:1784|");
+        h.update(bin.as_os_str().as_encoded_bytes());
+        h.update(b"|");
+        h.update(ingest.as_bytes());
+        h.update(b"|");
+        h.update(b"|");
+        let pre_rename = hex::encode(h.finalize())[..16].to_string();
+
+        assert_ne!(
+            SharedCodexAppServer::compute_env_signature(ingest, None, None, bin),
+            pre_rename
         );
     }
 }

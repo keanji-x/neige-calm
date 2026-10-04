@@ -482,9 +482,11 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
 - **No aliases.** The 4 aliases and 2 shims are deleted in S1. In-flight model contexts that still
   say `calm.*` get -32601 with the valid names (S1). An old CLI spelling gets a usage error that
   lists the objects (S4).
-- **Deploy window:** run the last command in §6.1; it must print 0. Restart the shared Codex
-  app-server and the Claude Planner processes so they pick up `mcp_servers.neige`. Use the
-  standard production restart runbook; real Codex E2E is never run on this host.
+- **Deploy window:** run the last command in §6.1; it must print 0. The shared Codex
+  app-server is replaced on the first boot without a manual step: its adoption signature hashes
+  `MCP_SERVER_KEY` (`compute_env_signature`), so a pre-rename daemon no longer matches. A Claude
+  Planner process is spawned per turn with the new `--mcp-config`. Use the standard production
+  restart runbook; real Codex E2E is never run on this host.
 - **After deploy:**
   - Check that the SPY recipe row and the git-forge manifest row no longer contain `calm.`.
   - Re-run the §6.1 counts.
@@ -569,7 +571,7 @@ The S-slices are review units. They land as four PRs, so the brand is never mixe
 ## 10. PR-2 implementation record
 
 - The migration is `crates/calm-truth/migrations/0134_neige_tool_names.sql` (renumber last at
-  merge). It rewrites only `$.item.tool` (`json_set`, byte-identical elsewhere) through one map:
+  merge). It rewrites only `$.item.tool` (`json_set`; other values unchanged, and measured byte-identical on a 4140 copy) through one map:
   §4.3, the four aliases, the two shims, the three retired writers stored on 4140
   (`calm.report.blocks.upsert` → `neige.report.upsert`, `calm.report.blocks.delete` →
   `neige.report.delete`, `calm.task.replace` → `neige.task.replace`) and the five
@@ -586,3 +588,21 @@ The S-slices are review units. They land as four PRs, so the brand is never mixe
   `REPORT_MOVE_TOOL`) are dropped.
 - The server key has one owner, `mcp_server::wiring::MCP_SERVER_KEY`; the Codex home,
   the Planner approvals, the Claude MCP config, allowed tools, translate and driver all read it.
+
+### 10.1 PR-2 review (L2, two channels)
+
+- Codex (read-only) and an executing subagent both returned APPROVE with no blocking findings. The
+  subagent applied 0134 to a `VACUUM INTO` copy of 4140, both with `sqlite3` and through the real
+  `MIGRATOR.run`: 1198 rows changed, 0 bytes changed outside `$.item.tool`, 0 old tool fields left,
+  and the SPY recipe revision went 3 → 4.
+- Fixed in PR-2: the shared Codex daemon's adoption signature now hashes `MCP_SERVER_KEY`, so a
+  daemon adopted from before the rename is replaced on boot
+  (`env_signature_replaces_a_daemon_from_before_the_server_key_rename`, mutation-verified).
+- Recorded, not applied:
+  - The migration test re-applies the embedded SQL after fixture boot rather than upgrading a
+    pre-0134 fixture through `MIGRATOR.run`. The real migrator was exercised on the 4140 copy.
+  - The sweep does not match escaped (`calm\.report`), sanitized (`calm_report_read`) or built
+    (`format!("calm.{}")`) spellings, nor a bare server key. None exist today.
+  - Recipe bodies are renamed by prefix without the retired-writer map. That is correct for 4140,
+    whose only matching recipe holds 3 live names.
+  - `e2e/planner_claude_ux*.py` still matches `calm.terminal.*` until PR-4.
