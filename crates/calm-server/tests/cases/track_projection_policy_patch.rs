@@ -154,6 +154,7 @@ const TASK_PERSISTENT_COLUMNS: &[&str] = &[
     "access",
     "head",
     "base",
+    "start",
 ];
 
 const TRACK_PERSISTENT_COLUMNS: &[&str] = &[

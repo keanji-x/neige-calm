@@ -33,7 +33,7 @@ use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, TrackId};
-use crate::model::{Task, TaskKind, TaskStatus, Track, new_id, now_ms};
+use crate::model::{Task, TaskKind, TaskStart, TaskStatus, Track, new_id, now_ms};
 use crate::operation::child_track_adapter::{CHILD_TRACK_KIND, ChildTrackOperationPayload};
 use crate::operation::claude_adapter::ClaudeWorkerOperationPayload;
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
@@ -137,6 +137,27 @@ pub fn compute_ready(tasks: &[Task], occupancy: crate::db::sqlite::CheckoutOccup
         .filter(|(_, wait)| wait.is_none())
         .map(|(task, _)| task.clone())
         .collect()
+}
+
+/// #2058 D5: fetch the upstream a catch-up of `track` starts from (the repository its prepare
+/// reads, [`crate::operation::workspace_lease::worker::catch_up_repo_root`]). Bounded and
+/// fail-soft: a failed fetch leaves no fetch receipt, which prepare refuses.
+async fn refresh_catch_up_upstream(track: &Track) {
+    let workspace = &track.workspace;
+    match crate::operation::workspace_lease::worker::catch_up_repo_root(
+        track.id.as_str(),
+        workspace.kind,
+        &workspace.path,
+        workspace.worktree.as_deref(),
+    ) {
+        Ok(Some(repo_root)) => {
+            crate::operation::workspace_lease::upstream_fetch::refresh_upstream(&repo_root).await;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(track_id = %track.id, error = %error, "catch-up: no repository to fetch");
+        }
+    }
 }
 
 /// Build the worker-operation payload as a pure function of the frozen task row, so a
@@ -1111,6 +1132,11 @@ impl Scheduler {
             );
             return Ok(());
         };
+        if task.start == TaskStart::Upstream {
+            // #2058 D5: a catch-up starts at the upstream the kernel fetches now; its prepare
+            // refuses anything else. Outside every transaction (#1777); a re-drive fetches again.
+            refresh_catch_up_upstream(track).await;
+        }
         let (op_kind, payload) = build_worker_payload(task)?;
         let payload_hash = stable_payload_hash(&payload)?;
         let op_id = match runtime
@@ -1141,8 +1167,34 @@ impl Scheduler {
             Err(e) => return Err(e),
         };
         let result = runtime.wait(&op_id).await?;
-        self.reconcile_spawn_result(task, track, result.outcome)
-            .await
+        let outcome = match result.outcome {
+            OperationOutcome::Failed {
+                last_error,
+                from_phase,
+                last_error_class,
+            } => {
+                // #2058 D6 2a: a catch-up whose prepare committed has moved the checkout.
+                let note = runtime
+                    .find_by_kind_and_idempotency(op_kind, &task.id)
+                    .await?
+                    .and_then(|op| op.tx_output)
+                    .and_then(|output| {
+                        crate::operation::workspace_lease::worker::catch_up_spawn_failure_note(
+                            &output,
+                        )
+                    });
+                OperationOutcome::Failed {
+                    last_error: match note {
+                        Some(note) => format!("{last_error}. {note}"),
+                        None => last_error,
+                    },
+                    from_phase,
+                    last_error_class,
+                }
+            }
+            other => other,
+        };
+        self.reconcile_spawn_result(task, track, outcome).await
     }
 
     async fn drive_child_track(&self, task: &Task, track: &Track) -> Result<()> {

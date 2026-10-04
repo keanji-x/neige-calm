@@ -1032,6 +1032,8 @@ async fn run_probe(
     ))
 }
 
+/// `not_landed` is the failure reason when the probe reports the action did not land.
+#[allow(clippy::too_many_arguments)]
 async fn complete_from_probe(
     pool: &sqlx::SqlitePool,
     completion: &OperationCompletionBus,
@@ -1040,6 +1042,7 @@ async fn complete_from_probe(
     op_id: &str,
     frozen: &FrozenForge,
     probe: &ProbeSpec,
+    not_landed: String,
 ) -> Result<ParkedRecovery> {
     let (exit_code, _) = match run_probe(&probe.probe_argv, &frozen.cwd_lease, repo).await {
         Ok(result) => result,
@@ -1081,9 +1084,7 @@ async fn complete_from_probe(
                 .await?;
             Ok(ParkedRecovery::LeaveParked)
         }
-        ProbeVerdict::NotLanded => Ok(ParkedRecovery::Fail {
-            reason: "forge action process dead and probe reports not landed".into(),
-        }),
+        ProbeVerdict::NotLanded => Ok(ParkedRecovery::Fail { reason: not_landed }),
         ProbeVerdict::Unknown => Ok(ParkedRecovery::Fail {
             reason: "forge action probe verdict unknown; gate-infra".into(),
         }),
@@ -1124,7 +1125,17 @@ async fn resolve_post_release_via_probe(
         return Ok(());
     };
 
-    match complete_from_probe(pool, completion, events, repo, op_id, frozen, probe).await {
+    // #2058 D2: an action that exited keeps its status in the reason, so the caller can tell its
+    // own refusals (a script's exit code) from a dead process.
+    let not_landed = match ambiguous_reason.strip_prefix("action-failed: ") {
+        Some(status) => format!("{status}; probe reports not landed"),
+        None => "forge action process dead and probe reports not landed".to_string(),
+    };
+    match complete_from_probe(
+        pool, completion, events, repo, op_id, frozen, probe, not_landed,
+    )
+    .await
+    {
         Ok(ParkedRecovery::Fail { reason }) => {
             let last_error_class = if reason.contains("gate-infra") {
                 "gate-infra"

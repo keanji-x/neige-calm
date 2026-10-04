@@ -2417,6 +2417,7 @@ async fn seed_gated_task_in(
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
         access: calm_server::model::TaskAccess::ReadWrite,
+        start: calm_server::model::TaskStart::Checkout,
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),
         finished_at_ms: None,

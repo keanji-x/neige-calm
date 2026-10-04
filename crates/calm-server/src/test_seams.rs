@@ -112,6 +112,7 @@ pub async fn acquire_based_workspace_lease_for_test(
         },
         superseded: Vec::new(),
         reader: None,
+        catch_up: None,
     };
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
     acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, &plan).await?;

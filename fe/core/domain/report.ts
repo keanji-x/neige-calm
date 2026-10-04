@@ -154,6 +154,7 @@ const agentTaskBlockPayloadSchema = z.strictObject({
   access: z.enum(['read_only', 'read_write']).nullish(),
   head: z.string().nullish(),
   base: z.string().nullish(),
+  start: z.enum(['checkout', 'upstream']).nullish(),
   ...liveTaskSharedShape(),
 });
 
@@ -162,6 +163,7 @@ const terminalTaskBlockPayloadSchema = z.strictObject({
   kind: z.literal('terminal'),
   command: z.string(),
   access: z.literal('read_write').nullish(),
+  start: z.literal('checkout').nullish(),
   ...liveTaskSharedShape(),
 });
 
@@ -171,6 +173,7 @@ const legacyTerminalTaskBlockPayloadSchema = z.strictObject({
   kind: z.literal('terminal'),
   goal: z.string(),
   access: z.literal('read_write').nullish(),
+  start: z.literal('checkout').nullish(),
   ...liveTaskSharedShape(),
 }).transform(({ goal, ...payload }) => ({ ...payload, command: goal }));
 

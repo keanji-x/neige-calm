@@ -8,7 +8,7 @@ use crate::model::*;
 pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
-     running_deadline_ms, context_stale_at_ms, declared_by, spawn, access, created_at_ms, \
+     running_deadline_ms, context_stale_at_ms, declared_by, spawn, access, start, created_at_ms, \
      updated_at_ms, finished_at_ms";
 
 pub async fn tasks_by_track_tx(

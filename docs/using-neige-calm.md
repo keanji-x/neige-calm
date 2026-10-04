@@ -95,6 +95,13 @@ repository, checkout, head and base. A task waiting for the checkout shows
 *Waiting for the track's checkout*.
 Terminal and child-track tasks are not held.
 
+A Track that has fallen behind its upstream catches up with a Codex or Claude
+task declared `start: "upstream"`. The kernel fetches the upstream, starts the
+Track's checkout there, and the worker replays the Track's last done commit;
+the kernel commits the result as one commit on the upstream. Publishing it
+replaces the Track's own branch on the remote, but never a commit that no
+attempt of the Track made.
+
 Worker cards and verification terminals display their directories separately.
 A gate uses its explicit directory override when supplied, otherwise the bound
 worker execution's persisted directory before task/Track defaults. A missing

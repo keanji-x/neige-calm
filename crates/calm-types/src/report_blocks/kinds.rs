@@ -171,6 +171,7 @@ pub const TASK_FIELDS: &[&str] = &[
     "access",
     "head",
     "base",
+    "start",
     "tombstone",
     "tombstoned_by",
 ];
@@ -319,6 +320,7 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
     }
     crate::task_execution::validate_task_access(map, errors);
     crate::task_execution::validate_reader_commits(map, errors);
+    crate::task_execution::validate_task_start(map, errors);
 }
 
 fn validate_declared_by(map: &Map<String, Value>, errors: &mut Vec<String>) {

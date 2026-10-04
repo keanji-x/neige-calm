@@ -92,6 +92,89 @@ pub(crate) fn validate_task_access(map: &Map<String, Value>, errors: &mut Vec<St
     }
 }
 
+/// #2058: where a task's checkout starts (`tasks.start`, the task block's `start`; absent =
+/// `checkout`). `upstream`: the kernel fetches the track's upstream, starts the checkout there and
+/// tells the worker to replay the track's last done commit (a catch-up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStart {
+    Checkout,
+    Upstream,
+}
+
+impl TaskStart {
+    /// The column and block spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskStart::Checkout => "checkout",
+            TaskStart::Upstream => "upstream",
+        }
+    }
+
+    /// Every spelling, for error messages that name the valid choices.
+    pub const CHOICES: &'static str = "\"checkout\" | \"upstream\"";
+}
+
+impl TryFrom<String> for TaskStart {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "checkout" => Ok(TaskStart::Checkout),
+            "upstream" => Ok(TaskStart::Upstream),
+            other => Err(format!(
+                "start {other:?} is not one of {}",
+                TaskStart::CHOICES
+            )),
+        }
+    }
+}
+
+/// #2058 D4: `start` is `"checkout"` or `"upstream"` (absent or null = `"checkout"`). An upstream
+/// start replays the track's work into the track's checkout: a codex or claude task on the
+/// in-track route that changes the checkout.
+pub(crate) fn validate_task_start(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    let start = match map.get("start") {
+        None | Some(Value::Null) => return,
+        Some(value) => value
+            .as_str()
+            .map(|start| TaskStart::try_from(start.to_string())),
+    };
+    match start {
+        Some(Ok(TaskStart::Checkout)) => {}
+        Some(Ok(TaskStart::Upstream)) => {
+            if !matches!(
+                map.get("kind").and_then(Value::as_str),
+                Some("codex" | "claude")
+            ) {
+                errors.push(
+                    "start: \"upstream\" requires kind \"codex\" or \"claude\"; a terminal task \
+                     takes \"checkout\""
+                        .into(),
+                );
+            }
+            if map.get("access").and_then(Value::as_str) == Some(TaskAccess::ReadOnly.as_str()) {
+                errors.push(
+                    "start: \"upstream\" changes the checkout; it requires access \
+                     \"read_write\", not \"read_only\""
+                        .into(),
+                );
+            }
+            if map.get("spawn").and_then(Value::as_str)
+                == Some(crate::task_recovery::TASK_CHILD_TRACK_ROUTE)
+            {
+                errors.push(format!(
+                    "start: \"upstream\" runs in the track's checkout; it requires spawn {:?}, \
+                     not {:?}",
+                    crate::task_recovery::TASK_IN_TRACK_ROUTE,
+                    crate::task_recovery::TASK_CHILD_TRACK_ROUTE
+                ));
+            }
+        }
+        _ => errors.push(format!("start: must be one of {}", TaskStart::CHOICES)),
+    }
+}
+
 /// #1933: a full commit id as git prints it, 40 lowercase hex digits.
 fn is_full_commit_id(value: &str) -> bool {
     value.len() == 40
@@ -139,5 +222,18 @@ mod tests {
             );
         }
         assert!(TaskAccess::try_from("readonly".to_string()).is_err());
+    }
+
+    #[test]
+    fn start_spelling_is_the_serde_spelling_and_round_trips() {
+        use super::TaskStart;
+        for start in [TaskStart::Checkout, TaskStart::Upstream] {
+            assert_eq!(
+                serde_json::to_value(start).unwrap(),
+                serde_json::Value::from(start.as_str())
+            );
+            assert_eq!(TaskStart::try_from(start.as_str().to_string()), Ok(start));
+        }
+        assert!(TaskStart::try_from("main".to_string()).is_err());
     }
 }

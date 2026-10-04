@@ -139,17 +139,34 @@ describe('readTrackReport', () => {
     expect(report?.blocks?.[0]?.kind).toBe('task');
   });
 
-  it('keeps a terminal task that declares read_write access', () => {
+  it('keeps an agent task that starts from the upstream', () => {
+    const report = readTrackReport([card({
+      payload: {
+        body: 'x',
+        blocks: [{
+          id: 'b-1', kind: 'task', rev: 1,
+          payload: {
+            key: 'catch-up', kind: 'codex', goal: 'Catch up', ready: true, declared_by: 'spec',
+            start: 'upstream',
+          },
+        }],
+      },
+    })]);
+    expect(report?.blocks?.[0]?.kind).toBe('task');
+  });
+
+  it('keeps a terminal task that declares read_write access or the checkout start', () => {
     const report = readTrackReport([card({
       payload: {
         body: 'x',
         blocks: [
           { id: 'b-1', kind: 'task', rev: 1, payload: { key: 't', kind: 'terminal', command: 'make', ready: true, declared_by: 'user', access: 'read_write' } },
           { id: 'b-2', kind: 'task', rev: 1, payload: { key: 'l', kind: 'terminal', goal: 'make', ready: true, declared_by: 'user', access: 'read_write' } },
+          { id: 'b-3', kind: 'task', rev: 1, payload: { key: 's', kind: 'terminal', command: 'make', ready: true, declared_by: 'user', start: 'checkout' } },
         ],
       },
     })]);
-    expect(report?.blocks?.map((block) => block.kind)).toEqual(['task', 'task']);
+    expect(report?.blocks?.map((block) => block.kind)).toEqual(['task', 'task', 'task']);
   });
 
   it('accepts a 2048-code-point string even when emoji use two UTF-16 code units', () => {

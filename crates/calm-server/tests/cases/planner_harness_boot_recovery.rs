@@ -1537,6 +1537,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
         access: calm_server::model::TaskAccess::ReadWrite,
+        start: calm_server::model::TaskStart::Checkout,
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),
         finished_at_ms: None,

@@ -786,6 +786,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &payload.context,
             payload.acceptance_criteria.as_deref(),
             plan.reader.as_ref(),
+            plan.catch_up.as_ref(),
         );
         let command_line = build_claude_worker_command_line(
             &self.codex.claude_bin,
@@ -881,6 +882,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "prompt": rendered_prompt,
             "scope": scope,
         });
+        crate::operation::workspace_lease::worker::record_catch_up(
+            &mut output.data,
+            plan.catch_up.as_ref(),
+        )?;
         output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)

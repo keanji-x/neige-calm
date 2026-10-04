@@ -893,6 +893,7 @@ mod tests {
                 declared_by: calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR.into(),
                 spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
                 access: crate::model::TaskAccess::ReadWrite,
+                start: crate::model::TaskStart::Checkout,
                 created_at_ms: 1,
                 updated_at_ms: 1,
                 finished_at_ms: None,

@@ -82,7 +82,7 @@ Verified at fd26e2267 by reading the code, or by the command shown.
 - **D4 The task field `start`: `"checkout"` (default) | `"upstream"`.**
   - Validation: `"upstream"` requires `kind` codex or claude, `access: "read_write"` and
     the in-track `spawn` (`TASK_IN_TRACK_ROUTE`). Each error lists the valid choices.
-  - Migration `0136_task_start.sql`:
+  - Migration `0138_task_start.sql`:
     `ALTER TABLE tasks ADD COLUMN start TEXT NOT NULL DEFAULT 'checkout' CHECK (start IN ('checkout','upstream'))`.
   - The field is handled like `access`: it is frozen while the task is pending, kept out of the
     root hash and the drift fields (`task_context.rs:43-55`), and kept out of the worker payload
@@ -256,7 +256,7 @@ fetch; the create-time receipt still says `O0`) → {C1, C2, C3, C7}; MB3 (`T` =
 (any upstream source is accepted) → {C3}; MB5 (D6 step 0 dropped) → {C6}; MB6 (the scheduler's
 failed-op arm omits the D6 2a sentence) → {C7}.
 
-**Gates.** `head_schema_fixture.rs` (list 0136); the `tasks` snapshot in
+**Gates.** `head_schema_fixture.rs` (list 0138); the `tasks` snapshot in
 `track_projection_policy_patch.rs`; `task_context_migration_tests.rs`;
 `tests/goldens/mcp_tool_registry.json` (the `contracts.rs` schema, the publish description);
 `issue_development_planner_prompt.txt` (`REGEN_PLANNER_PROMPT_GOLDEN=1`); FE `report.test.ts`

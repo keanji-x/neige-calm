@@ -1620,10 +1620,11 @@ async fn project_tasks_from_verdicts_tx(
             r#"INSERT INTO tasks(
                    id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
                    depends_on_json,priority,gate_json,status,declared_by,spawn,
-                   decl_ready,decl_released_by_user,created_at_ms,updated_at_ms,access,head,base
+                   decl_ready,decl_released_by_user,created_at_ms,updated_at_ms,access,head,base,
+                   start
                ) VALUES(
                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
-                   ?14,?15,?16,?16,?17,?18,?19
+                   ?14,?15,?16,?16,?17,?18,?19,?20
                )
                ON CONFLICT(id) DO UPDATE SET
                    kind=excluded.kind,
@@ -1639,6 +1640,7 @@ async fn project_tasks_from_verdicts_tx(
                    access=excluded.access,
                    head=excluded.head,
                    base=excluded.base,
+                   start=excluded.start,
                    decl_ready=excluded.decl_ready,
                    decl_released_by_user=excluded.decl_released_by_user,
                    updated_at_ms=excluded.updated_at_ms
@@ -1657,6 +1659,7 @@ async fn project_tasks_from_verdicts_tx(
                      OR tasks.access IS NOT excluded.access
                      OR tasks.head IS NOT excluded.head
                      OR tasks.base IS NOT excluded.base
+                     OR tasks.start IS NOT excluded.start
                      OR tasks.decl_ready IS NOT excluded.decl_ready
                      OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user
                  )"#,
@@ -1680,6 +1683,7 @@ async fn project_tasks_from_verdicts_tx(
         .bind(declaration.access.as_str())
         .bind(&declaration.head)
         .bind(&declaration.base)
+        .bind(declaration.start.as_str())
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() != 0 {

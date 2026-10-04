@@ -1232,6 +1232,7 @@ async fn kernel_lease(
         branch: track_branch_for(track_id).unwrap(),
         superseded: Vec::new(),
         reader: None,
+        catch_up: None,
     };
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let (lease, _event) = acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)
@@ -2395,6 +2396,7 @@ fn task(kind: TaskKind, spawn: &str, context: Value) -> Task {
         declared_by: "planner".into(),
         spawn: spawn.into(),
         access: crate::model::TaskAccess::ReadWrite,
+        start: crate::model::TaskStart::Checkout,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

@@ -446,6 +446,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
         access: calm_server::model::TaskAccess::ReadWrite,
+        start: calm_server::model::TaskStart::Checkout,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

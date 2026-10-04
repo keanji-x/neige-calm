@@ -12,6 +12,9 @@
 //!   records no base (so no delivery).
 //! - #1933: a read-only attempt that declares `head` starts only while the checkout is at it, at
 //!   prepare and again at spawn; its prompt states its repo, checkout, head and base.
+//! - #2058 D6: a `start: "upstream"` attempt (a catch-up) moves the checkout to the upstream the
+//!   kernel just fetched, bases its lease there, and is told to replay the track's last done
+//!   commit (`docs/architecture/2058-s1-track-catch-up.md`).
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -20,13 +23,15 @@ use std::time::Duration;
 use super::base::{
     BaseSource, LeaseBase, lease_git_common_dir, resolve_head_base, utf8_path, verify_worktree_base,
 };
+use super::upstream::UpstreamSource;
 use super::{
     WORKSPACE_LEASE_COLUMNS, append_workspace_events_tx, release_workspace_lease_tx,
     row_to_workspace_lease, track_worktree::track_branch_for, validate_path_segment,
 };
 use crate::error::{CalmError, Result};
 use crate::event::BroadcastEnvelope;
-use crate::model::{TaskAccess, TrackWorkspaceKind};
+use crate::git_candidate::candidate::{newest_done, track_candidates};
+use crate::model::{TaskAccess, TaskStart, TrackWorkspaceKind};
 use crate::operation::{PhaseTag, Tx, TxOutput};
 use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
 use crate::workspace_materialize::isolated_git_command;
@@ -39,6 +44,10 @@ pub(crate) const TRACK_WORKTREE_UNAVAILABLE: &str = "track-worktree-unavailable"
 /// that the repository does not have.
 pub(crate) const TRACK_HEAD_MISMATCH: &str = "track-head-mismatch";
 pub(crate) const TRACK_HEAD_UNKNOWN: &str = "track-head-unknown";
+/// #2058 D6: the refusals of a catch-up with no done attempt to replay, or no upstream the
+/// kernel fetched.
+pub(crate) const TRACK_NOTHING_TO_REPLAY: &str = "track-nothing-to-replay";
+pub(crate) const TRACK_UPSTREAM_UNAVAILABLE: &str = "track-upstream-unavailable";
 
 /// The branch a managed track's directory is on: materialization runs `git init` with
 /// `init.defaultBranch=main`.
@@ -63,6 +72,8 @@ pub(crate) struct WorkerLeasePlan {
     /// `tasks` row in this transaction (never from the op payload, which feeds
     /// `stable_payload_hash`).
     pub reader: Option<ReaderFacts>,
+    /// A catch-up's facts (#2058 D6); `None` for an attempt that starts at the checkout.
+    pub catch_up: Option<CatchUpFacts>,
 }
 
 impl WorkerLeasePlan {
@@ -93,6 +104,22 @@ pub(crate) struct ReaderFacts {
     pub head: Option<String>,
     /// `tasks.base`: the commit a review compares against.
     pub base: Option<String>,
+}
+
+/// #2058 D6: what a catch-up's prompt states and its spawn failure names.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CatchUpFacts {
+    /// The upstream as a human names it (`<remote> <merge ref>`).
+    pub upstream_name: String,
+    /// `U`: the upstream commit the kernel fetched; the checkout is reset to it and the lease is
+    /// based on it.
+    pub upstream: String,
+    /// `M`: the merge base of `T` and `U`.
+    pub merge_base: String,
+    /// `T`: the commit of the track's newest candidate whose attempt is done.
+    pub work: String,
+    /// `H`: the checkout's HEAD before the reset.
+    pub head: String,
 }
 
 /// The branch rule (D4): `neige/track-<id>` when the track has a worktree, else `main`.
@@ -138,14 +165,15 @@ pub(crate) async fn prepare_worker_lease_tx(
     attempt_id: &str,
     workspace_root: &Path,
 ) -> Result<WorkerLeasePlan> {
-    let (access, head, base): (String, Option<String>, Option<String>) =
-        sqlx::query_as("SELECT access, head, base FROM tasks WHERE id = ?1")
+    let (access, head, base, start): (String, Option<String>, Option<String>, String) =
+        sqlx::query_as("SELECT access, head, base, start FROM tasks WHERE id = ?1")
             .bind(attempt_id)
             .fetch_optional(&mut **tx)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("task {attempt_id}")))?;
     let access = TaskAccess::try_from(access).map_err(CalmError::Internal)?;
-    prepare_worker_lease_with_tx(tx, track_id, access, (head, base), workspace_root).await
+    let start = TaskStart::try_from(start).map_err(CalmError::Internal)?;
+    prepare_worker_lease_with_tx(tx, track_id, access, (head, base), start, workspace_root).await
 }
 
 /// [`prepare_worker_lease_tx`] for an attempt whose access is already known (a fixture lease
@@ -157,17 +185,26 @@ pub(crate) async fn prepare_worker_lease_as_tx(
     access: TaskAccess,
     workspace_root: &Path,
 ) -> Result<WorkerLeasePlan> {
-    prepare_worker_lease_with_tx(tx, track_id, access, (None, None), workspace_root).await
+    prepare_worker_lease_with_tx(
+        tx,
+        track_id,
+        access,
+        (None, None),
+        TaskStart::Checkout,
+        workspace_root,
+    )
+    .await
 }
 
 /// `(head, base)` are the attempt's declared commits; only a read-only attempt has any (#1933,
 /// enforced where the task block is validated). A declared head the checkout is not at refuses
-/// the attempt here, before any row is written.
+/// the attempt here, before any row is written. An upstream `start` (#2058) is a catch-up.
 async fn prepare_worker_lease_with_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
     access: TaskAccess,
     (head, base): (Option<String>, Option<String>),
+    start: TaskStart,
     workspace_root: &Path,
 ) -> Result<WorkerLeasePlan> {
     validate_path_segment("track_id", track_id)?;
@@ -190,9 +227,21 @@ async fn prepare_worker_lease_with_tx(
     };
     let branch = worker_branch(track_id, worktree.is_some())?;
     ensure_clean_tree(&path).await?;
+    let catch_up = match start {
+        TaskStart::Checkout => None,
+        TaskStart::Upstream => {
+            let repo_root = catch_up_repo_root(track_id, kind, &workspace_path, worktree.as_deref())?;
+            Some(catch_up_tx(tx, track_id, &path, &branch, repo_root.as_deref()).await?)
+        }
+    };
     // One HEAD sample: the declared head is compared with the base the lease records, so the
     // spawn's base check also holds the declared head.
-    let base_commit = directory_base(&path)?;
+    let mut base_commit = directory_base(&path)?;
+    if let Some(catch_up) = &catch_up {
+        // D6 step 5: the lease is based on the upstream the checkout was just reset to.
+        base_commit.base_sha = catch_up.upstream.clone();
+        base_commit.base_source = BaseSource::Upstream;
+    }
     let reader = match access {
         TaskAccess::ReadWrite => None,
         TaskAccess::ReadOnly => {
@@ -214,7 +263,135 @@ async fn prepare_worker_lease_with_tx(
         base: base_commit,
         superseded,
         reader,
+        catch_up,
     })
+}
+
+/// #2058: the repository whose upstream a catch-up starts from — an attached track's main
+/// repository (its worktree's `repo_root`), a managed track's directory. `None` for an attached
+/// track without a worktree, which runs no worker. The scheduler fetches it (D5) and prepare
+/// reads it (D6), so both name the same repository.
+pub(crate) fn catch_up_repo_root(
+    track_id: &str,
+    kind: TrackWorkspaceKind,
+    workspace_path: &str,
+    worktree: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    match (kind, worktree) {
+        (_, Some(worktree)) => Ok(Some(
+            super::track_worktree::track_worktree_target(track_id, worktree)?.repo_root,
+        )),
+        (TrackWorkspaceKind::Managed, None) => Ok(Some(PathBuf::from(workspace_path))),
+        (TrackWorkspaceKind::Attached, None) => Ok(None),
+    }
+}
+
+/// #2058 D6 steps 0–4, after the clean-tree check: the checkout `path` is on `branch` at `H`;
+/// `T` is the track's newest done candidate; `U` is the upstream of `repo_root` as the kernel's
+/// fetch left it; `M` is their merge base; then `reset --keep U`. Every refusal comes before the
+/// reset, so a refused catch-up leaves HEAD where it was.
+async fn catch_up_tx(
+    tx: &mut Tx<'_>,
+    track_id: &str,
+    path: &Path,
+    branch: &str,
+    repo_root: Option<&Path>,
+) -> Result<CatchUpFacts> {
+    // Step 0: nothing is reset off the worker branch (the spawn check stays, K19).
+    let expected = format!("refs/heads/{branch}");
+    let on = super::base::worktree_head_ref(path)?;
+    if on.as_deref() != Some(expected.as_str()) {
+        return Err(unavailable(format!(
+            "the checkout is on {}, not {expected}",
+            on.as_deref().unwrap_or("a detached HEAD")
+        )));
+    }
+    let head = resolve_head_base(path)?;
+    // Step 1: `T` comes from the database, not HEAD, so every retry replays the same commit.
+    let candidates = track_candidates(&mut **tx, track_id).await?;
+    let Some(work) = newest_done(&candidates).map(|candidate| candidate.commit_sha.clone()) else {
+        return Err(CalmError::Conflict(format!(
+            "refused: {TRACK_NOTHING_TO_REPLAY}: no attempt of this track is done; declare the \
+             task without start"
+        )));
+    };
+    // Step 2: only an upstream the kernel fetched for this catch-up (D5) is fresh enough.
+    let known = match repo_root {
+        Some(repo_root) => super::upstream::last_known_upstream(repo_root)?,
+        None => None,
+    };
+    let upstream = match known {
+        Some(known) if known.source == UpstreamSource::KernelFetch => known,
+        other => {
+            let why = match other {
+                Some(known) => format!(
+                    "{} is known only from {} at {}, not from a kernel fetch",
+                    known.name,
+                    known.source.as_str(),
+                    known.sha
+                ),
+                None => "the checkout has no upstream to fetch".to_string(),
+            };
+            return Err(CalmError::Conflict(format!(
+                "refused: {TRACK_UPSTREAM_UNAVAILABLE}: {why}. {}",
+                replay_hint(&head, &work)
+            )));
+        }
+    };
+    let deadline = tokio::time::Instant::now() + CLEAN_CHECK_TIMEOUT;
+    // Step 3.
+    let merge_base = git_stdout(path, &["merge-base", &work, &upstream.sha], deadline).await?;
+    // Step 4: bounded like the clean check (K13); the repository's filters run without
+    // credentials (`isolated_git_command`).
+    git_stdout(path, &["reset", "-q", "--keep", &upstream.sha], deadline).await?;
+    Ok(CatchUpFacts {
+        upstream_name: upstream.name,
+        upstream: upstream.sha,
+        merge_base,
+        work,
+        head,
+    })
+}
+
+/// One bounded git run in `dir` whose failure refuses the attempt as
+/// [`TRACK_WORKTREE_UNAVAILABLE`]; its trimmed stdout.
+async fn git_stdout(dir: &Path, args: &[&str], deadline: tokio::time::Instant) -> Result<String> {
+    let output = run_git(dir, args, deadline).await.map_err(unavailable)?;
+    if !output.status.success() {
+        return Err(unavailable(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// #2058 D6 2a: where the checkout is, where the track's work is, and what to do next.
+fn replay_hint(at: &str, work: &str) -> String {
+    format!(
+        "HEAD is at {at}; the track's work is in {work}; declare another start:\"upstream\" task"
+    )
+}
+
+/// The output key of a catch-up's facts, written only for a catch-up.
+const CATCH_UP: &str = "catch_up";
+
+/// #2058 D6 2a: record a catch-up's facts in its prepare's output, for the scheduler to name
+/// them when the spawn fails after the reset.
+pub(crate) fn record_catch_up(data: &mut serde_json::Value, catch_up: Option<&CatchUpFacts>) -> Result<()> {
+    if let (Some(catch_up), Some(data)) = (catch_up, data.as_object_mut()) {
+        data.insert(CATCH_UP.into(), serde_json::to_value(catch_up)?);
+    }
+    Ok(())
+}
+
+/// #2058 D6 2a, the scheduler's side: the sentence a failed spawn of a catch-up whose prepare
+/// committed ends with — the checkout is at the upstream now. `None` for any other output.
+pub(crate) fn catch_up_spawn_failure_note(output: &TxOutput) -> Option<String> {
+    let facts: CatchUpFacts =
+        serde_json::from_value(output.data.get(CATCH_UP)?.clone()).ok()?;
+    Some(replay_hint(&format!("upstream {}", facts.upstream), &facts.work))
 }
 
 /// #1933: the track's remote URL for a reader's prompt, or why there is none. Never fails the

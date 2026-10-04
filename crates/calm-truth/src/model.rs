@@ -13,7 +13,7 @@ pub use calm_types::model::{
     Overlay, Track, TrackConversationSummary, TrackRecipe, TrackWorkspace, TrackWorkspaceKind,
     default_deletable,
 };
-pub use calm_types::task_execution::TaskAccess;
+pub use calm_types::task_execution::{TaskAccess, TaskStart};
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`; duplicates
 /// `calm_session::TerminalTheme` so the route keeps its own `ToSchema`.
@@ -360,6 +360,9 @@ pub struct Task {
     /// #1917: the declared access, frozen with the row like `spawn`.
     #[sqlx(try_from = "String")]
     pub access: TaskAccess,
+    /// #2058: the declared start, frozen with the row like `access`.
+    #[sqlx(try_from = "String")]
+    pub start: TaskStart,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub finished_at_ms: Option<i64>,

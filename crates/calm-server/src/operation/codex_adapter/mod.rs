@@ -26,7 +26,9 @@ use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_r
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
     release::release_workspace_lease_by_id,
-    worker::{record_declared_head, verify_recorded_head, verify_worker_checkout},
+    worker::{
+        record_catch_up, record_declared_head, verify_recorded_head, verify_worker_checkout,
+    },
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::planner_model::TurnModelSelection;
@@ -793,6 +795,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &payload.context,
             payload.acceptance_criteria.as_deref(),
             plan.reader.as_ref(),
+            plan.catch_up.as_ref(),
         );
         let scope = card_scope(
             self.repo.as_ref(),
@@ -873,6 +876,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "scope": scope,
         });
         record_declared_head(&mut output.data, plan.declared_head());
+        record_catch_up(&mut output.data, plan.catch_up.as_ref())?;
         output.post_commit_events.extend(plan.superseded);
         output.post_commit_events.push(lease_event);
         Ok(output)

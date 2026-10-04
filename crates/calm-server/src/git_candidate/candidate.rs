@@ -124,6 +124,48 @@ pub(crate) async fn candidate_for_attempt_tx(
     row.map(row_to_candidate).transpose()
 }
 
+/// One candidate of a track with its attempt's status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TrackCandidate {
+    pub attempt_id: String,
+    pub commit_sha: String,
+    /// The attempt's `tasks.status` wire label.
+    pub status: String,
+}
+
+/// Every candidate of `track_id` with its attempt's status, newest first. The one read of "the
+/// commits the kernel made for this track": publish checks the tip against it and leases against
+/// it (#1830 S3 D3, #2058 D1), and a catch-up replays its newest done commit (#2058 D6).
+pub(crate) async fn track_candidates<'c, E>(executor: E, track_id: &str) -> Result<Vec<TrackCandidate>>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+{
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT c.producer_attempt_id, c.commit_sha, t.status FROM task_candidates c \
+         JOIN tasks t ON t.id = c.producer_attempt_id WHERE c.track_id = ?1 \
+         ORDER BY c.created_at_ms DESC, c.rowid DESC",
+    )
+    .bind(track_id)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(attempt_id, commit_sha, status)| TrackCandidate {
+            attempt_id,
+            commit_sha,
+            status,
+        })
+        .collect())
+}
+
+/// The newest of `candidates` (newest first, as [`track_candidates`] reads them) whose attempt is
+/// done.
+pub(crate) fn newest_done(candidates: &[TrackCandidate]) -> Option<&TrackCandidate> {
+    candidates
+        .iter()
+        .find(|candidate| candidate.status == crate::model::TaskStatus::Done.wire_label())
+}
+
 /// Insert the candidate row; only `delivery::settle_candidate_tx` calls this, after its UPDATE
 /// took, so the row and the settlement land in the same transaction or not at all.
 pub(super) async fn insert_candidate_tx(tx: &mut Tx<'_>, candidate: &CandidateRow) -> Result<()> {

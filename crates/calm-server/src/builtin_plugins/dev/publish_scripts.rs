@@ -1,10 +1,17 @@
-/// The track publish (#1830 S3 D5): `$1 sha, $2 branch, $3 url, $4 base, $5 title, $6 body`; runs
-/// after [`calm_types::forge_git::FORGE_SHELL_PRELUDE`] in the track worktree. Pushes exactly `$1` (and its ancestors) to
-/// `refs/heads/$2` at `$3`, never forced; opens the PR unless an open one already has head `$2`;
-/// then prints the open PR's `{number, headRefOid, url}` — the only stdout — and exits 21 unless its
-/// `headRefOid` is `$1`, re-reading it up to five times two seconds apart (GitHub moves an open
-/// PR's head asynchronously after a push). `$3` is both the push destination and gh's `--repo`.
-pub(super) const PR_PUBLISH_SCRIPT: &str = r#"neige_git push --porcelain "$3" "$1:refs/heads/$2" >&2 || exit $?
+/// The track publish (#1830 S3 D5): `$1 sha, $2 branch, $3 url, $4 base, $5 title, $6 body, $7 the
+/// commits of this track's candidates (space-separated)`; runs after
+/// [`calm_types::forge_git::FORGE_SHELL_PRELUDE`] in the track worktree. Reads the remote head of
+/// `refs/heads/$2` first and exits 22, before any push or gh, unless it is absent, `$1`, or one of
+/// `$7` (#2058 D1: a commit an attempt of this track made); then pushes exactly `$1` (and its
+/// ancestors) there, leasing against that head (`--force-with-lease`), so it may replace the
+/// track's own head but never a writer that landed since the read. Opens the PR unless an open
+/// one already has head `$2`; then prints the open PR's `{number, headRefOid, url}` — the only
+/// stdout — and exits 21 unless its `headRefOid` is `$1`, re-reading it up to five times two
+/// seconds apart (GitHub moves an open PR's head asynchronously after a push). `$3` is both the
+/// push destination and gh's `--repo`.
+pub(super) const PR_PUBLISH_SCRIPT: &str = r#"cur=$(neige_git ls-remote "$3" "refs/heads/$2") || exit $?; cur=${cur%%[[:space:]]*}
+[ -z "$cur" ] || [ "$cur" = "$1" ] || case " $7 " in *" $cur "*) ;; *) exit 22;; esac
+neige_git push --porcelain --force-with-lease="refs/heads/$2:$cur" "$3" "$1:refs/heads/$2" >&2 || exit $?
 st=$(neige_gh pr view "$2" --repo "$3" --json state) || st=
 case "$st" in *'"OPEN"'*) ;; *) neige_gh pr create --repo "$3" --head "$2" --base "$4" --title "$5" --body "$6" >&2 || exit $?;; esac
 i=0

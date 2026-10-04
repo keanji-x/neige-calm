@@ -207,6 +207,17 @@ pub(crate) enum UpstreamSource {
     KernelRef,
 }
 
+impl UpstreamSource {
+    /// How a refusal names it.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            UpstreamSource::KernelFetch => "the kernel's fetch",
+            UpstreamSource::TrackingRef => "the remote-tracking ref",
+            UpstreamSource::KernelRef => "the kernel ref without a fetch receipt",
+        }
+    }
+}
+
 /// HEAD's upstream as last known: which upstream (`<remote> <merge>`, as a
 /// human names it), the ref it was read from, where it was observed, and its
 /// commit.

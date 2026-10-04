@@ -253,117 +253,6 @@ pub(super) fn kinds_table() -> Value {
                      \"选股器\", \"height\": 600 } }. `src` must be a \
                      same-origin absolute path (`/…`); full URLs and \
                      backslashes are rejected."
-            },
-            // Keep this schema in sync with `report_blocks::validate_payload`'s task validation.
-            {
-                "kind": "task",
-                "schema": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "$defs": {
-                        "contextValue": {
-                            "oneOf": [
-                                { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
-                                { "type": "array", "items": { "$ref": "#/$defs/contextValue" } },
-                                { "type": "object", "additionalProperties": { "$ref": "#/$defs/contextValue" } },
-                                { "type": ["number", "boolean", "null"] }
-                            ]
-                        }
-                    },
-                    "oneOf": [
-                        {
-                            "description": "Agent task",
-                            "required": ["key", "kind", "goal", "ready", "declared_by"],
-                            "properties": { "kind": { "enum": ["codex", "claude"] } },
-                            "not": { "anyOf": [
-                                { "required": ["command"] }, { "required": ["tombstoned_by"] }
-                            ] }
-                        },
-                        {
-                            "description": "Terminal command task",
-                            "required": ["key", "kind", "command", "ready", "declared_by"],
-                            "properties": { "kind": { "const": "terminal" } },
-                            "not": { "anyOf": [
-                                { "required": ["goal"] }, { "required": ["tombstoned_by"] }
-                            ] }
-                        },
-                        {
-                            "required": ["key", "tombstone", "declared_by", "tombstoned_by"],
-                            "properties": { "tombstone": { "not": { "type": "null" } } },
-                            "not": { "anyOf": [
-                                { "required": ["kind"] }, { "required": ["goal"] },
-                                { "required": ["command"] },
-                                { "required": ["acceptance"] }, { "required": ["gate"] },
-                                { "required": ["no_gate_reason"] }, { "required": ["depends_on"] },
-                                { "required": ["priority"] }, { "required": ["cwd"] },
-                                { "required": ["context"] }, { "required": ["refs"] },
-                                { "required": ["ready"] }, { "required": ["released_by_user"] },
-                                { "required": ["spawn"] }, { "required": ["access"] },
-                                { "required": ["head"] }, { "required": ["base"] }
-                            ] }
-                        }
-                    ],
-                    "properties": {
-                        "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
-                        "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
-                        "goal": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": report_blocks::MAX_STRING_CHARS,
-                            "pattern": "\\S",
-                            "description": "Natural-language objective. Required only for codex/claude tasks; forbidden for terminal tasks."
-                        },
-                        "command": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": report_blocks::MAX_STRING_CHARS,
-                            "pattern": "\\S",
-                            "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`. Required only for terminal tasks; forbidden for codex/claude tasks."
-                        },
-                        "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
-                        "gate": {
-                            "type": "object", "additionalProperties": false, "required": ["steps"],
-                            "properties": {
-                                "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
-                                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 7200 },
-                                "steps": { "type": "array", "minItems": 1, "items": {
-                                    "type": "object", "additionalProperties": false, "required": ["name", "cmd"],
-                                    "properties": {
-                                        "name": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" },
-                                        "cmd": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" }
-                                    }
-                                }}
-                            }
-                        },
-                        "no_gate_reason": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
-                        "depends_on": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS } },
-                        "priority": {
-                            "type": "integer",
-                            "minimum": i64::MIN,
-                            "maximum": i64::MAX,
-                            "default": 0
-                        },
-                        "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
-                        "context": { "$ref": "#/$defs/contextValue", "description": "Arbitrary JSON; every nested string is limited to 2048 characters." },
-                        "refs": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^neige://wave/[^/#]+#b_[0-9a-f]{4}$" } },
-                        "ready": { "type": "boolean" },
-                        "declared_by": { "type": "string", "enum": ["spec", "user"] },
-                        "released_by_user": { "type": "boolean", "default": false },
-                        "spawn": { "type": "string", "enum": ["in-wave", "sub-wave"], "default": "in-wave" },
-                        "access": {
-                            "type": "string",
-                            "enum": ["read_only", "read_write"],
-                            "default": "read_write",
-                            "description": "`read_only`: a codex/claude task that leaves the checkout unchanged; no gate, runs beside other readers."
-                        },
-                        "head": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "`read_only` only: the commit the checkout must be at; the launch is refused otherwise." },
-                        "base": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "`read_only` only: the commit a review compares against." },
-                        "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
-                        "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
-                    },
-                    "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
-                },
-                "usage": "Task declaration block. `ready: true` lets the kernel project and schedule it. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
             }
         ]
     });
@@ -371,8 +260,129 @@ pub(super) fn kinds_table() -> Value {
     kinds["kinds"]
         .as_array_mut()
         .expect("kinds array literal")
-        .extend([preview_kind(), native_view_kind()]);
+        .extend([task_kind(), preview_kind(), native_view_kind()]);
     kinds
+}
+
+/// Keep this schema in sync with `report_blocks::validate_payload`'s task validation.
+fn task_kind() -> Value {
+    json!({
+        "kind": "task",
+        "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "$defs": {
+                "contextValue": {
+                    "oneOf": [
+                        { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                        { "type": "array", "items": { "$ref": "#/$defs/contextValue" } },
+                        { "type": "object", "additionalProperties": { "$ref": "#/$defs/contextValue" } },
+                        { "type": ["number", "boolean", "null"] }
+                    ]
+                }
+            },
+            "oneOf": [
+                {
+                    "description": "Agent task",
+                    "required": ["key", "kind", "goal", "ready", "declared_by"],
+                    "properties": { "kind": { "enum": ["codex", "claude"] } },
+                    "not": { "anyOf": [
+                        { "required": ["command"] }, { "required": ["tombstoned_by"] }
+                    ] }
+                },
+                {
+                    "description": "Terminal command task",
+                    "required": ["key", "kind", "command", "ready", "declared_by"],
+                    "properties": { "kind": { "const": "terminal" } },
+                    "not": { "anyOf": [
+                        { "required": ["goal"] }, { "required": ["tombstoned_by"] }
+                    ] }
+                },
+                {
+                    "required": ["key", "tombstone", "declared_by", "tombstoned_by"],
+                    "properties": { "tombstone": { "not": { "type": "null" } } },
+                    "not": { "anyOf": [
+                        { "required": ["kind"] }, { "required": ["goal"] },
+                        { "required": ["command"] },
+                        { "required": ["acceptance"] }, { "required": ["gate"] },
+                        { "required": ["no_gate_reason"] }, { "required": ["depends_on"] },
+                        { "required": ["priority"] }, { "required": ["cwd"] },
+                        { "required": ["context"] }, { "required": ["refs"] },
+                        { "required": ["ready"] }, { "required": ["released_by_user"] },
+                        { "required": ["spawn"] }, { "required": ["access"] },
+                        { "required": ["head"] }, { "required": ["base"] },
+                        { "required": ["start"] }
+                    ] }
+                }
+            ],
+            "properties": {
+                "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+                "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
+                "goal": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": report_blocks::MAX_STRING_CHARS,
+                    "pattern": "\\S",
+                    "description": "Natural-language objective. Required only for codex/claude tasks; forbidden for terminal tasks."
+                },
+                "command": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": report_blocks::MAX_STRING_CHARS,
+                    "pattern": "\\S",
+                    "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`. Required only for terminal tasks; forbidden for codex/claude tasks."
+                },
+                "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
+                "gate": {
+                    "type": "object", "additionalProperties": false, "required": ["steps"],
+                    "properties": {
+                        "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
+                        "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 7200 },
+                        "steps": { "type": "array", "minItems": 1, "items": {
+                            "type": "object", "additionalProperties": false, "required": ["name", "cmd"],
+                            "properties": {
+                                "name": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" },
+                                "cmd": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" }
+                            }
+                        }}
+                    }
+                },
+                "no_gate_reason": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
+                "depends_on": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS } },
+                "priority": {
+                    "type": "integer",
+                    "minimum": i64::MIN,
+                    "maximum": i64::MAX,
+                    "default": 0
+                },
+                "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
+                "context": { "$ref": "#/$defs/contextValue", "description": "Arbitrary JSON; every nested string is limited to 2048 characters." },
+                "refs": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^neige://wave/[^/#]+#b_[0-9a-f]{4}$" } },
+                "ready": { "type": "boolean" },
+                "declared_by": { "type": "string", "enum": ["spec", "user"] },
+                "released_by_user": { "type": "boolean", "default": false },
+                "spawn": { "type": "string", "enum": ["in-wave", "sub-wave"], "default": "in-wave" },
+                "access": {
+                    "type": "string",
+                    "enum": ["read_only", "read_write"],
+                    "default": "read_write",
+                    "description": "`read_only`: a codex/claude task that leaves the checkout unchanged; no gate, runs beside other readers."
+                },
+                "head": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "`read_only` only: the commit the checkout must be at; the launch is refused otherwise." },
+                "base": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "`read_only` only: the commit a review compares against." },
+                "start": {
+                    "type": "string",
+                    "enum": ["checkout", "upstream"],
+                    "default": "checkout",
+                    "description": "`upstream`: a codex/claude `read_write` task that catches the track up: the kernel fetches the upstream, starts the checkout there, and the worker replays the track's last done commit."
+                },
+                "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
+                "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
+            },
+            "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
+        },
+        "usage": "Task declaration block. `ready: true` lets the kernel project and schedule it. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
+    })
 }
 
 /// Keep this schema in sync with `report_blocks::validate_payload`'s preview validation.

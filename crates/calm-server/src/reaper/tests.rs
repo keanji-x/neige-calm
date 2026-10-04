@@ -198,6 +198,7 @@ async fn insert_task(repo: &SqlxRepo, track_id: &TrackId, key: &str, status: Tas
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
         access: crate::model::TaskAccess::ReadWrite,
+        start: crate::model::TaskStart::Checkout,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

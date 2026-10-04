@@ -598,6 +598,7 @@ mod tests {
             declared_by: "spec".into(),
             spawn: "sub-wave".into(),
             access: crate::model::TaskAccess::ReadWrite,
+            start: crate::model::TaskStart::Checkout,
             created_at_ms: now,
             updated_at_ms: now,
             finished_at_ms: None,

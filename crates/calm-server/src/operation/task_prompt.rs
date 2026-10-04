@@ -2,22 +2,50 @@
 
 use serde_json::Value;
 
-use super::workspace_lease::worker::ReaderFacts;
+use super::workspace_lease::worker::{CatchUpFacts, ReaderFacts};
 
 /// The task prompt both worker adapters render. A read-only task (#1917) is told it shares the
-/// checkout, which nothing enforces, and is given its repo, checkout, head and base (#1933).
+/// checkout, which nothing enforces, and is given its repo, checkout, head and base (#1933). A
+/// catch-up (#2058 D7) is told where it starts and what to replay.
 pub(crate) fn render_task_worker_prompt(
     attempt_id: &str,
     goal: &str,
     context: &Value,
     acceptance: Option<&str>,
     reader: Option<&ReaderFacts>,
+    catch_up: Option<&CatchUpFacts>,
 ) -> String {
     let prompt = render_worker_prompt(goal, context, acceptance);
     let reader = reader.map(render_reader_facts).unwrap_or_default();
+    let catch_up = catch_up.map(render_catch_up).unwrap_or_default();
     format!(
-        "{prompt}{reader}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
+        "{prompt}{reader}{catch_up}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
     )
+}
+
+/// #2058 D7: the worker cannot write git metadata (a codex worker's gitdir is read-only), so the
+/// replay is a patch applied to the worktree, and the kernel's delivery commits it on `U`.
+fn render_catch_up(facts: &CatchUpFacts) -> String {
+    let CatchUpFacts {
+        upstream_name,
+        upstream,
+        merge_base,
+        work,
+        head,
+    } = facts;
+    let mut out = format!(
+        "\n\nThis task starts from the upstream `{upstream_name}` at `{upstream}`, fetched by the \
+         kernel. Carry the track's work over: replay `git diff {merge_base} {work}` here and \
+         resolve every conflict: `git apply --reject`, then `git merge-file` (versions from `git \
+         show`) for each rejected file. `git apply -3`, cherry-pick and merge need a writable \
+         gitdir. Leave no `.rej` files. Do not commit."
+    );
+    if head != work {
+        out.push_str(&format!(
+            " The checkout was at `{head}`; commits after `{work}` are not replayed."
+        ));
+    }
+    out
 }
 
 fn render_reader_facts(reader: &ReaderFacts) -> String {
@@ -71,7 +99,7 @@ mod tests {
 
     #[test]
     fn task_worker_turn_input_names_the_execution_id_attempt_id() {
-        let out = render_task_worker_prompt("t:build", "g", &Value::Null, None, None);
+        let out = render_task_worker_prompt("t:build", "g", &Value::Null, None, None, None);
         assert!(out.ends_with("\n\nTask attempt_id: t:build\nEcho this exact attempt_id when reporting completion or failure."), "{out}");
         assert!(
             !out.contains("idempotency") && !out.contains("task_id"),

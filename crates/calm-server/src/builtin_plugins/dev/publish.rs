@@ -18,6 +18,7 @@ use super::publish_scripts::{
 use serde_json::{Value, json};
 
 use crate::builtin_plugins::dev::PLUGIN_ID as GIT_FORGE_PLUGIN_ID;
+use crate::git_candidate::candidate::{TrackCandidate, track_candidates};
 use crate::event::{FieldSource, ForgeEventSpec};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -89,17 +90,10 @@ fn internal(error: impl std::fmt::Display) -> RpcError {
     RpcError::internal(format!("dev_publish: {error}"))
 }
 
-/// One `task_candidates` row of the track with its attempt's status.
-struct CandidateFact {
-    attempt_id: String,
-    commit_sha: String,
-    status: String,
-}
-
 /// D3: the tip may be published only when a `done` attempt of this track produced it. `facts`
 /// are the track's candidates, newest first.
-fn check_tip(track_id: &str, tip: &str, facts: &[CandidateFact]) -> Result<(), RpcError> {
-    let at_tip: Vec<&CandidateFact> = facts.iter().filter(|c| c.commit_sha == tip).collect();
+fn check_tip(track_id: &str, tip: &str, facts: &[TrackCandidate]) -> Result<(), RpcError> {
+    let at_tip: Vec<&TrackCandidate> = facts.iter().filter(|c| c.commit_sha == tip).collect();
     if at_tip
         .iter()
         .any(|c| c.status == TaskStatus::Done.wire_label())
@@ -129,28 +123,15 @@ fn check_tip(track_id: &str, tip: &str, facts: &[CandidateFact]) -> Result<(), R
     )))
 }
 
-async fn candidate_facts(ctx: &AppContext, track_id: &str) -> Result<Vec<CandidateFact>, RpcError> {
+async fn candidate_facts(
+    ctx: &AppContext,
+    track_id: &str,
+) -> Result<Vec<TrackCandidate>, RpcError> {
     let pool = ctx
         .sqlite_pool
         .as_ref()
         .ok_or_else(|| internal("requires a sqlite-backed repo"))?;
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT c.producer_attempt_id, c.commit_sha, t.status FROM task_candidates c \
-         JOIN tasks t ON t.id = c.producer_attempt_id WHERE c.track_id = ?1 \
-         ORDER BY c.created_at_ms DESC, c.rowid DESC",
-    )
-    .bind(track_id)
-    .fetch_all(pool)
-    .await
-    .map_err(internal)?;
-    Ok(rows
-        .into_iter()
-        .map(|(attempt_id, commit_sha, status)| CandidateFact {
-            attempt_id,
-            commit_sha,
-            status,
-        })
-        .collect())
+    track_candidates(pool, track_id).await.map_err(internal)
 }
 
 /// What the publish pushes and where: the tip of the track branch, the upstream URL (both the
@@ -229,14 +210,21 @@ fn shell_argv(script: &str, args: &[&str]) -> Vec<String> {
     argv
 }
 
-/// D5 and D6: the forge payload of one publish.
+/// D5 and D6: the forge payload of one publish. `facts` are the track's candidates, whose
+/// commits the script may replace on the remote (#2058 D1); argv is not part of the payload hash.
 fn publish_payload(
     dest: &Destination,
     title: &str,
     body: &str,
     idempotency_key: &str,
+    facts: &[TrackCandidate],
 ) -> PluginForgePayload {
     let (sha, branch, url) = (dest.tip.as_str(), dest.branch.as_str(), dest.url.as_str());
+    let own_commits = facts
+        .iter()
+        .map(|candidate| candidate.commit_sha.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
     forge_action_payload(
         // The sha is in the payload (argv and probe), not the key: the same key replays its first
@@ -244,7 +232,7 @@ fn publish_payload(
         format!("track.publish:{idempotency_key}"),
         shell_argv(
             PR_PUBLISH_SCRIPT,
-            &[sha, branch, url, &dest.base, title, body],
+            &[sha, branch, url, &dest.base, title, body, &own_commits],
         ),
         ForgeEventSpec {
             event_kind: "forge.pr.opened".into(),
@@ -303,7 +291,7 @@ async fn dev_publish(
         track.id.as_str().to_string(),
         identity.card_id.clone(),
         dest.worktree.clone(),
-        publish_payload(&dest, &title, &body, &idempotency_key),
+        publish_payload(&dest, &title, &body, &idempotency_key, &facts),
         new_id(),
     )
     .await?

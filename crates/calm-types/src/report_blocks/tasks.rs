@@ -1,6 +1,6 @@
 //! Pure task-block vocabulary and diagnostics shared by report projection and plan upsert.
 
-use crate::task_execution::TaskAccess;
+use crate::task_execution::{TaskAccess, TaskStart};
 use crate::track_report::ReportBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -147,6 +147,8 @@ pub struct TaskDeclaration {
     /// #1933: the commits a read-only task declares; missing and explicit null = undeclared.
     pub head: Option<String>,
     pub base: Option<String>,
+    /// #2058: missing and explicit null normalize to `checkout` before projection.
+    pub start: TaskStart,
     pub tombstoned_by: Option<String>,
     pub ready: bool,
     pub tombstone: bool,
@@ -868,6 +870,12 @@ pub fn project_task_declarations(
                 .get("base")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            // An invalid value already carries the blocking `payload` diagnostic.
+            start: payload
+                .get("start")
+                .and_then(Value::as_str)
+                .and_then(|start| TaskStart::try_from(start.to_string()).ok())
+                .unwrap_or(TaskStart::Checkout),
             tombstoned_by: payload
                 .get("tombstoned_by")
                 .and_then(Value::as_str)
@@ -1082,6 +1090,7 @@ mod tests {
             access: TaskAccess::ReadWrite,
             head: None,
             base: None,
+            start: TaskStart::Checkout,
             tombstoned_by: None,
             ready: true,
             tombstone: false,
