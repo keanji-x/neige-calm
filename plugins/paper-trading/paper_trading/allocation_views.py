@@ -14,7 +14,7 @@ STATES = {'queued': '等待执行', 'requested': '已请求执行', 'submitting'
 TONES = {'settled': 'positive', 'unknown': 'negative', 'rejected': 'negative',
          'canceled': 'warning', 'expired': 'warning'}
 SIDES = {'Buy': '买入', 'Sell': '卖出'}
-SPY, BENCHMARK, CASH = 5, 6, 7  # palettes shared with the fictional demo's visual language
+SPY, BENCHMARK, CASH = 5, 6, 7  # renderer palettes for SPY, its price benchmark and cash
 DECISIONS = 50
 PENDING = '尚未完成账户对账'
 

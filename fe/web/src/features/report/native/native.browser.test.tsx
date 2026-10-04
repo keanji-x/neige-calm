@@ -63,20 +63,20 @@ it.each(['view', 'view.live'] as const)('keeps a %s backlink beside its composit
   expect(note.left).toBeGreaterThanOrEqual(block.right);
 });
 
-it('uses the authored narrow-summary ratio and keeps research visible in a wide first viewport', async () => {
+it('uses the authored narrow-summary ratio and keeps decisions visible in a wide first viewport', async () => {
   await page.viewport(1440, 1000);
   const demo = nativeViewPayloadSchema.parse(JSON.parse(demoSource));
   const { container } = render(<main style={{ inlineSize: 1120, padding: 16 }}><NativeReportView payload={demo} /></main>);
   const summary = page.getByRole('region', { name: '01 · 组合表现' }).element();
   const children = summary.querySelector('h3 + div')!.children;
   expect(children[1].getBoundingClientRect().width / children[0].getBoundingClientRect().width).toBeGreaterThan(1.8);
-  expect(page.getByRole('region', { name: '03 · 投资观点' }).element().getBoundingClientRect().top).toBeLessThan(850);
+  expect(page.getByRole('region', { name: '03 · 调仓决策' }).element().getBoundingClientRect().top).toBeLessThan(850);
   const slider = page.getByRole('slider', { name: '总资产变化 观察日期' }).element() as HTMLInputElement;
   expect(getComputedStyle(slider).opacity).toBe('0');
   slider.focus();
   await userEvent.keyboard('{Home}');
   expect(slider.value).toBe('0');
-  expect(slider.getAttribute('aria-valuetext')).toContain('2026-06-30');
+  expect(slider.getAttribute('aria-valuetext')).toContain('2026-07-01');
   expect(container.querySelector('iframe')).toBeNull();
 });
 

@@ -1,97 +1,177 @@
-"""Author the fictional App data as one native Neige view block. No broker access."""
+"""Build the example SPY overview through the production allocation path. No broker access.
+
+A scripted, simulated paper account supplies quotes, cash, SPY shares, orders and
+executions. Everything else runs in production code: Planner targets and Worker
+requests enter through ``Allocation.call``, the background pass is
+``Allocation.process_once`` (reconciliation, sizing, submission, valuation), and
+the view is ``allocation_report.tables(...)['spy.overview']``. Only the view's
+top-level description is replaced, so the example never claims a real account.
+"""
 import argparse
-from datetime import datetime, timezone
+from copy import deepcopy
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
 import json
 from pathlib import Path
 import sys
+import tempfile
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent))
-from paper_trading.report_views import metric, scalar  # noqa: E402 - shared with the live SPY overview
+from paper_trading.allocation import NEW_YORK, Allocation  # noqa: E402
+from paper_trading.allocation_config import AllocationConfig  # noqa: E402
+from paper_trading.allocation_report import tables  # noqa: E402
+from paper_trading.report_views import native_view  # noqa: E402
 
-def create_view(facts):
-    ui = facts['portfolio']
-    assets, total = ui['assets'], ui['total']
-    cash = next(asset for asset in assets if asset['id'] == 'cash')
-    palettes = [5, 6, 2, 7]
-    metrics = {'kind': 'metrics', 'id': 'assets', 'title': '', 'items': [
-        metric('nav', '总资产', scalar(total), f"证券 ${total - cash['value']:,.0f} · 现金 ${cash['value']:,.0f}", primary=True),
-        metric('previous', '上一交易日收盘 · 09.18', scalar(ui['previous']), 'USD · 演示交易日'),
-        metric('pnl', '本日盈亏 · 09.21', scalar(ui['daily'], signed=True), f"净入金 $0 · 现金盈亏 ${cash['day']:,.2f}", 'positive'),
-        metric('change', '本日涨跌', scalar(ui['daily'] / ui['previous'] * 100, '%', 2, True, 'suffix'), '相对上一交易日', 'positive'),
-    ]}
-    def date(row):
-        return datetime.fromisoformat(row['at'].replace('Z', '+00:00')).date().isoformat()
-    nav_sets = []
-    for period, samples in [('3M', ui['snapshots']), ('1M', ui['snapshots'][8:])]:
-        nav_sets.append({'id': 'assets-' + period, 'label': '资产 · ' + period, 'unit': 'USD', 'style': 'line',
-            'series': [{'id': 'portfolio', 'label': '组合', 'palette': 5}],
-            'points': [{'date': date(row), 'values': [row['nav']]} for row in samples]})
-        nav_sets.append({'id': 'returns-' + period, 'label': '收益 · ' + period, 'unit': '%', 'style': 'line',
-            'series': [{'id': 'portfolio', 'label': '组合', 'palette': 5}, {'id': 'benchmark', 'label': '模拟基准', 'palette': 6}],
-            'points': [{'date': date(row), 'values': [round((row['nav'] / samples[0]['nav'] - 1) * 100, 4),
-                       round((row['benchmark'] / samples[0]['benchmark'] - 1) * 100, 4)]} for row in samples]})
-    nav = {'kind': 'time-series', 'id': 'nav-history', 'title': '总资产变化', 'caption': '虚构历史估值；收益视图区间起点归零。',
-           'emptyText': '暂无估值记录', 'datasets': nav_sets}
-    distribution = {'kind': 'distribution', 'id': 'weights', 'title': '当前占比', 'unit': 'USD', 'emptyText': '暂无持仓数据',
-        'slices': [{'id': a['id'], 'label': a['name'], 'value': a['value'], 'palette': palettes[i]} for i, a in enumerate(assets)]}
-    weight_sets = [{'id': style, 'label': label, 'unit': '%', 'style': style,
-        'series': [{'id': a['id'], 'label': a['name'], 'palette': palettes[i]} for i, a in enumerate(assets)],
-        'points': [{'date': date(row), 'values': row['weights']} for row in ui['snapshots']]}
-        for style, label in [('stacked', '堆叠'), ('line', '折线')]]
-    weight_chart = {'kind': 'time-series', 'id': 'weight-history', 'title': '历史仓位', 'caption': '按市值 / 总资产，包含现金。',
-                    'emptyText': '暂无历史仓位', 'datasets': weight_sets}
-    table = {'kind': 'table', 'id': 'holdings', 'title': '持仓明细', 'table': {
-        'columns': [{'key': key, 'label': label, 'align': align} for key, label, align in [
-            ('name', '标的', 'left'), ('price', '现价 / USD', 'right'), ('change', '本日涨跌', 'right')]],
-        'rows': [{'name': a['name'], 'price': f"{a['price']:.2f}" if a['id'] != 'cash' else '—',
-                  'change': f"{(a['price'] / a['previous'] - 1) * 100:+.2f}%" if a['id'] != 'cash' else '—'} for a in assets],
-        'caption': '虚构价格截至 2026.09.21 收盘，无日内换仓。'}}
-    def record(item, scenario):
-        constraint = item.get('type') == 'constraint'
-        exposure = ui['commonWeight'] if constraint else ui['weights'][item['asset']]
-        tone = 'warning' if item['initial'] in ('超复核阈值', '支持减弱') else 'neutral'
-        next_check = '2026.09.24' if scenario == 'r2' and item['id'] != 'river' else item['next']
-        facts = [{'label': '关联敞口', 'value': f'{exposure:.1f}%'}, {'label': '下次核验（模拟）', 'value': next_check}]
-        if not constraint:
-            asset = assets[item['asset']]
-            facts.extend([{'label': '标的代码', 'value': asset['symbol']},
-                          {'label': '本日盈亏贡献 / USD', 'value': f"{asset['day']:+,.2f}"},
-                          {'label': '持仓数量 / 股', 'value': f"{asset['quantity']:,}"},
-                          {'label': '持仓市值 / USD', 'value': f"{asset['value']:,.2f}"}])
-        facts.extend([{'label': '资料状态', 'value': item['data']}, {'label': '核验期限', 'value': item['deadline']},
-                      {'label': '登记时间', 'value': item['registered']}, {'label': '依据', 'value': ('演示约束' if constraint else '预注册') + ' v1'},
-                      {'label': '排期说明', 'value': '预设场景中的拟检查日期；没有实际调度、已执行检查或正式延期记录。'}])
-        return {'id': item['code'], 'subtitle': '组合约束（演示）' if constraint else assets[item['asset']]['name'],
-            'title': item['title'], 'summary': item['copy'],
-            'badges': [{'label': '状态', 'value': item['initial'], 'tone': tone},
-                       {'label': '处理', 'value': item['processing'], 'tone': 'warning' if item['requires_human_decision'] else 'neutral'}],
-            'facts': facts,
-            'sections': [{'label': label, 'body': body} for label, body in [
-                ('原始规则', item['rule']), ('裁定 / 处理边界', item['fail']), ('持有或风险依据', item['why']),
-                ('价格与口径', item['pricing']), ('建议', item['recommend']),
-                ('关联持仓' if constraint else '关联订单', '\n'.join(item['orders']))]],
-            'disclosures': [{'id': e['id'], 'label': e['label'] + ' · ' + datetime.strptime(e['at'], '%Y.%m.%d').date().isoformat(),
-                          'body': e['quote'], 'note': e['note'], 'tone': 'warning' if e['id'] == 'E04' else 'neutral'} for e in item['evidence']]}
-    records = {'kind': 'records', 'id': 'theses', 'title': '', 'emptyText': '暂无事项',
-        'datasets': [{'id': key, 'label': label,
-                      'description': f"研究截止（模拟）：{facts['metadata'][key + '_research_as_of']} · 待人工决定 {sum(item['requires_human_decision'] for item in facts['scenarios'][key]['items'])} 项；估值未随场景改变。",
-                      'items': [record(item, key) for item in facts['scenarios'][key]['items']]}
-                     for key, label in [('r1', 'r1 · 初始状态'), ('r2', 'r2 · 预设反证')]]}
-    stamp = int(datetime(2026, 9, 23, 0, 30, tzinfo=timezone.utc).timestamp() * 1000)
-    return {'version': 1, 'title': '低频投资组合',
-        'description': '虚构数据 · USD · 估值截至 2026.09.21 收盘；r1 / r2 为预设研究场景，未连接账户。',
-        'snapshot': {'id': 'portfolio-demo-v1', 'observedAt': stamp, 'producedAt': stamp},
-        'rows': [{'id': 'performance', 'title': '01 · 组合表现', 'layout': 'two-wide-end', 'cells': [metrics, nav]},
-                 {'id': 'allocation', 'title': '02 · 资金投向', 'layout': 'three', 'cells': [distribution, weight_chart, table]},
-                 {'id': 'research', 'title': '03 · 投资观点', 'layout': 'one', 'cells': [records]}]}
+DESCRIPTION = '示例数据 · 脚本化模拟账户，非真实账户；行情、订单与成交均由脚本生成。数值为对账估值，盈亏未扣除费用与出入金。'
+TRACK = 'example-track'
+PLANNER = {'role': 'planner', 'card_id': 'example-planner-card', 'session_id': 'example-planner-session'}
+WORKER = {'role': 'worker', 'card_id': 'example-worker-card', 'session_id': 'example-worker-session'}
+# The broker is in-process, so the SDK interpreter and broker home are never used.
+CONFIG = {'profile': 'spy_cash', 'account_no': 'EXAMPLE-PAPER', 'broker_home': '/example/unused-broker-home',
+          'owner_track_id': TRACK, 'oauth_client_id': 'example-client', 'sdk_python_path': '/example/unused-sdk-python',
+          'max_order_bps': 10000}
+FIRST, LAST = date(2026, 7, 1), date(2026, 9, 30)
+HOLIDAYS = {date(2026, 7, 3), date(2026, 9, 7)}  # NYSE: Independence Day (observed), Labor Day
+SOURCES = ['neige://source/example-market-breadth', 'neige://source/example-macro-calendar']
+AFTER_CLOSE = date(2026, 8, 19)
+# Planner decisions: day -> (target bps, executions per order, rationale).
+DECISIONS = {
+    date(2026, 7, 1): (5000, 1, '示例理由：趋势与波动率处于常态区间，先建立 50% SPY 基础仓位，其余保留现金。'),
+    date(2026, 7, 22): (5000, 1, '示例理由：证据没有实质变化，维持 50% 目标；实际比例在偏离阈值内则无需调仓。'),
+    date(2026, 8, 5): (9000, 2, '示例理由：盈利修正与市场宽度同步改善，把 SPY 目标比例提高到 90%。'),
+    AFTER_CLOSE: (6000, 1, '示例理由：收盘后出现回撤信号，拟降到 60%；只在下一次开盘前有效，过期后由 Planner 重新判断。'),
+    date(2026, 9, 16): (7500, 1, '示例理由：议息会议前降低集中度，把 SPY 目标比例调到 75%。'),
+}
+CENT = Decimal('0.01')
+
+
+class ScriptedBroker:
+    """A simulated paper account: it keeps records and fills accepted orders; it has no sizing or valuation."""
+    def __init__(self, cash):
+        self.cash, self.shares, self.orders, self.fills, self.pending = Decimal(cash), 0, [], [], {}
+        self.price, self.quote_at, self.market_open, self.tranches = None, None, False, 1
+
+    def quote(self, price, at, market_open=True):
+        self.price, self.quote_at, self.market_open = price.quantize(CENT), at, market_open
+
+    def snapshot(self, since):
+        # The account history is small, so every observation returns all of it.
+        for order in self.orders:
+            if self.pending.get(order['order_id']) and self.market_open:
+                self.execute(order, self.pending[order['order_id']].pop(0))
+        return deepcopy({'identity': {'account_no': CONFIG['account_no'], 'account_channel': 'lb_papertrading'},
+                         'cash_usd': str(self.cash), 'available_cash_usd': str(self.cash),
+                         'shares': self.shares, 'available_shares': self.shares,
+                         'quote': {'price': str(self.price), 'at': self.quote_at.isoformat(), 'status': 'Normal'},
+                         'market_open': self.market_open, 'orders': self.orders, 'fills': self.fills})
+
+    def submit(self, request):
+        key = f'SIM-{len(self.orders) + 1:04}'
+        self.orders.append(request | {'order_id': key, 'quantity': str(request['quantity']),
+                                      'executed_quantity': '0', 'status': 'New'})
+        first = request['quantity'] // self.tranches
+        self.pending[key] = [first] * (self.tranches - 1) + [request['quantity'] - first * (self.tranches - 1)]
+        return key
+
+    def execute(self, order, quantity):
+        """One execution at the current quote; the next observation reports it."""
+        sign = 1 if order['side'] == 'Buy' else -1
+        self.shares += sign * quantity
+        self.cash -= sign * quantity * self.price
+        assert self.cash >= 0 and self.shares >= 0, 'the simulated account cannot go negative'
+        executed = int(order['executed_quantity']) + quantity
+        order['executed_quantity'] = str(executed)
+        order['status'] = 'Filled' if executed == int(order['quantity']) else 'PartialFilled'
+        self.fills.append({'trade_id': f'SIM-T{len(self.fills) + 1:04}', 'order_id': order['order_id'],
+                           'symbol': 'SPY.US', 'quantity': str(quantity), 'price': str(self.price),
+                           'time': self.quote_at.isoformat()})
+
+
+def trading_days():
+    day = FIRST
+    while day <= LAST:
+        if day.weekday() < 5 and day not in HOLIDAYS:
+            yield day
+        day += timedelta(days=1)
+
+
+def sessions():
+    """Deterministic integer-cent opening and closing SPY prices for each trading day."""
+    seed, close = 20260810, 60000
+    for day in trading_days():
+        seed = (seed * 1103515245 + 12345) % 2 ** 31
+        opening = close + seed % 201 - 95
+        seed = (seed * 1103515245 + 12345) % 2 ** 31
+        close = opening + seed % 1401 - 680
+        yield day, Decimal(opening) / 100, Decimal(close) / 100
+
+
+def new_york(day, hour, minute, second=0):
+    return datetime.combine(day, time(hour, minute, second), NEW_YORK).astimezone(timezone.utc)
+
+
+def simulate(root):
+    """Drive the production Allocation through the script and return its publication input."""
+    clock = {'now': None}
+    broker = ScriptedBroker('100000')
+    app = Allocation(root, AllocationConfig.parse(CONFIG), broker, clock=lambda: clock['now'])
+
+    def at(day, hour, minute, second=0):
+        clock['now'] = new_york(day, hour, minute, second)
+        return clock['now']
+
+    def decide(day, valid_until):
+        target, broker.tranches, rationale = DECISIONS[day]
+        key = f'spy-{day:%Y%m%d}'
+        app.call(TRACK, 'spy.plan', {'decision_id': key, 'target_spy_bps': target, 'rationale': rationale,
+                                     'source_refs': SOURCES, 'valid_until': valid_until.isoformat()}, PLANNER)
+        clock['now'] += timedelta(seconds=20)
+        app.call(TRACK, 'spy.execute', {'decision_id': key}, WORKER)
+
+    def observe():
+        """One background-loop pass; every scripted observation must reconcile cleanly."""
+        [(track, state)] = app.process_once()
+        assert track == TRACK and state['error'] is None, state['error']
+        return state
+
+    for day, opening, close in sessions():
+        broker.quote(opening, at(day, 9, 30))
+        at(day, 9, 31); observe()
+        if day in DECISIONS and day != AFTER_CLOSE:
+            at(day, 10, 0); decide(day, clock['now'] + timedelta(hours=6))
+            broker.quote(opening, at(day, 10, 0, 30))
+            at(day, 10, 1); observe()  # reconcile, size and submit (or record a no-op)
+            for step in range(broker.tranches):
+                broker.quote(opening + (close - opening) * (step + 1) / 4, at(day, 10, 5 + 25 * step))
+                at(day, 10, 6 + 25 * step); observe()  # reconcile the next execution
+        broker.quote(close, at(day, 15, 58, 30))
+        at(day, 15, 59); state = observe()
+        if day == AFTER_CLOSE:
+            # Requested after the close and valid only until before the next open: it waits, then expires.
+            at(day, 16, 30); decide(day, new_york(day + timedelta(days=1), 9, 25))
+            broker.quote(close, at(day, 16, 0), market_open=False)
+            at(day, 16, 31); state = observe()
+    return state
+
+
+def create_view(state):
+    """The production overview, with only its top-level description marked as example data."""
+    view = tables(state)['spy.overview']
+    # The production helper re-derives the content snapshot identity for the replaced description.
+    return native_view(state, view['title'], view['rows'], DESCRIPTION)
+
+
+def build():
+    with tempfile.TemporaryDirectory() as root:
+        return create_view(simulate(root))
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    facts = json.loads((ROOT / 'demo-facts.json').read_text())
-    view = create_view(facts)
+    view = build()
     encoded = json.dumps(view, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
     destination = ROOT / 'native-demo.json'
     if args.check:
@@ -104,7 +184,8 @@ def main():
         assert recipe_path.read_text() == recipe, 'Native Recipe drift'
     else:
         recipe_path.write_text(recipe)
-    print(json.dumps({'assets': facts['portfolio']['total'], 'rows': len(view['rows']), 'bytes': len(encoded.encode())}))
+    print(json.dumps({'rows': len(view['rows']), 'bytes': len(encoded.encode())}))
+
 
 if __name__ == '__main__':
     main()

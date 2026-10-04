@@ -331,6 +331,18 @@ has no publication clock, so live `producedAt` is explicitly null even when
 reconciliation or journal times are known. Rendering never fabricates a refresh
 or generation time. Legacy table source IDs and their payloads are unchanged.
 
+`examples/native-demo.json` and its `neige-block view` copy
+`examples/native-demo.md` are the real `spy.overview` projection of example
+data. `examples/build_native_demo.py` drives the production `Allocation` with a
+fixed clock and a scripted, simulated paper account. The account supplies about
+three months of New York trading-day SPY quotes, cash, shares, orders and
+executions. Planner targets and Worker requests enter through `Allocation.call`,
+and the background pass, sizing, reconciliation and valuation are production
+code. The builder replaces only the view's top-level description, which marks
+the data as an example and not a real account. Regenerate the files with
+`python3 plugins/paper-trading/examples/build_native_demo.py`. The `--check` flag
+verifies that the committed files are byte-identical to a fresh run.
+
 ## Automatic SPY/cash profile
 
 This profile runs a daily SPY/cash target allocation with the official

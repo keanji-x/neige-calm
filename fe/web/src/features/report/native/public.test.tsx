@@ -134,17 +134,28 @@ it('keeps disclosures control and panel IDs distinct for author-chosen suffixes'
   expect(panel?.hidden).toBe(false);
 });
 
-it('preserves the selected research scenario and disclosures rather than reverting to r1', async () => {
-  const example = nativeViewPayloadSchema.parse(JSON.parse(readFileSync(resolve(process.cwd(), '../plugins/paper-trading/examples/native-demo.json'), 'utf8')));
-  const records = example.rows[2].cells[0];
+/** Renderer fixture: a second record scenario whose item differs from r1 by its badge and disclosure. */
+function withScenarios(view: typeof payload) {
+  const scenarios = structuredClone(view);
+  const records = scenarios.rows[2].cells[0];
   if (records.kind !== 'records') throw new Error('Expected records fixture');
-  const label = records.datasets.find(dataset => dataset.id === 'r2')!.items.flatMap(item => item.disclosures).find(disclosure => disclosure.id === 'E04')!.label;
+  const [first] = records.datasets;
+  const [item] = first.items;
+  records.datasets.push({ ...first, id: 'r2', label: 'r2 · 预设反证', items: [{ ...item,
+    badges: [{ label: '状态', value: '支持减弱', tone: 'warning' }],
+    disclosures: [{ id: 'e2', label: '反证记录 · 2026-09-24', body: '完成记录缺少一个分片', note: '预设场景', tone: 'warning' }] }] });
+  return nativeViewPayloadSchema.parse(scenarios);
+}
+
+it('preserves the selected record scenario and disclosures rather than reverting to r1', async () => {
+  const example = withScenarios(payload);
+  const label = '反证记录 · 2026-09-24';
   render(<NativeReportView payload={example} />);
   await userEvent.click(screen.getByRole('button', { name: 'r2 · 预设反证' }));
   const article = screen.getByText('支持减弱').closest('article')!;
   await userEvent.click(within(article).getByRole('button', { name: '查看详情' }));
   await userEvent.click(screen.getByRole('button', { name: label }));
-  await userEvent.click(screen.getByRole('button', { name: '展开 低频投资组合' }));
+  await userEvent.click(screen.getByRole('button', { name: `展开 ${example.title}` }));
   const dialog = within(screen.getByRole('dialog'));
   expect(dialog.getByRole('button', { name: 'r2 · 预设反证' }).getAttribute('aria-pressed')).toBe('true');
   expect(dialog.getAllByText('支持减弱')).toHaveLength(2);

@@ -1,61 +1,49 @@
+"""The committed example is the production SPY overview of a scripted simulated account."""
 import json
 from pathlib import Path
 import runpy
-from decimal import Decimal
+
+import jsonschema
+
+from paper_trading.allocation_report import tables
+from paper_trading.report_views import native_view
 
 EXAMPLES = Path(__file__).parents[1] / 'examples'
+SCHEMA = json.loads((Path(__file__).parents[3] / 'crates/calm-types/src/report_blocks/native_view.schema.json').read_text())
+BUILDER = runpy.run_path(str(EXAMPLES / 'build_native_demo.py'))
 
-def test_native_demo_uses_one_structured_payload_and_no_executable_components():
-    build = runpy.run_path(str(EXAMPLES / 'build_native_demo.py'))['create_view']
-    facts = json.loads((EXAMPLES / 'demo-facts.json').read_text())
-    view = build(facts)
-    assert view == json.loads((EXAMPLES / 'native-demo.json').read_text())
-    assert [row['layout'] for row in view['rows']] == ['two-wide-end', 'three', 'one']
-    kinds = [cell['kind'] for row in view['rows'] for cell in row['cells']]
-    assert kinds == ['metrics', 'time-series', 'distribution', 'time-series', 'table', 'records']
-    metrics = view['rows'][0]['cells'][0]['items']
-    assert metrics[0]['value']['amount'] == 1084620
-    assert metrics[2]['value']['amount'] == 6040
-    groups = view['rows'][2]['cells'][0]['datasets']
-    assert sum(next(badge['value'] for badge in item['badges'] if badge['label'] == '处理') == '待人工决定' for item in groups[0]['items']) == 2
-    assert sum(next(badge['value'] for badge in item['badges'] if badge['label'] == '处理') == '待人工决定' for item in groups[1]['items']) == 3
-    assert all('actions' not in item for group in groups for item in group['items'])
-    assert (EXAMPLES / 'native-demo.md').read_text().startswith('```neige-block view\n')
 
-def test_native_demo_retains_research_cutoff_for_each_scenario():
-    build = runpy.run_path(str(EXAMPLES / 'build_native_demo.py'))['create_view']
-    facts = json.loads((EXAMPLES / 'demo-facts.json').read_text())
-    view = build(facts)
-    for group in view['rows'][2]['cells'][0]['datasets']:
-        assert facts['metadata'][group['id'] + '_research_as_of'] in group['description']
+def committed():
+    return json.loads((EXAMPLES / 'native-demo.json').read_text())
 
-def test_compact_template_retains_complete_analytical_facts_for_planner():
-    build = runpy.run_path(str(EXAMPLES / 'build_native_demo.py'))['create_view']
-    facts = json.loads((EXAMPLES / 'demo-facts.json').read_text())
-    view = build(facts)
-    table = view['rows'][1]['cells'][2]['table']
-    assert [column['key'] for column in table['columns']] == ['name', 'price', 'change']
-    assert len(table['rows']) == len(facts['portfolio']['assets'])
-    for group in view['rows'][2]['cells'][0]['datasets']:
-        pnl = Decimal(0)
-        for record, source in zip(group['items'], facts['scenarios'][group['id']]['items'], strict=True):
-            fields = {field['label']: field['value'] for field in record['facts']}
-            assert [field['label'] for field in record['facts'][:2]] == ['关联敞口', '下次核验（模拟）']
-            assert fields['核验期限'] == source['deadline']
-            assert fields['登记时间'] == source['registered']
-            assert fields['资料状态'] == source['data']
-            assert len(record['disclosures']) == len(source['evidence'])
-            assert [d['body'] for d in record['disclosures']] == [e['quote'] for e in source['evidence']]
-            assert [d['note'] for d in record['disclosures']] == [e['note'] for e in source['evidence']]
-            assert all(e['at'].replace('.', '-') in d['label'] for d, e in zip(record['disclosures'], source['evidence'], strict=True))
-            assert set(record) == {'id', 'subtitle', 'title', 'summary', 'badges', 'facts', 'sections', 'disclosures'}
-            if source.get('type') != 'constraint':
-                asset = facts['portfolio']['assets'][source['asset']]
-                assert fields['标的代码'] == asset['symbol']
-                assert Decimal(fields['持仓数量 / 股'].replace(',', '')) == Decimal(str(asset['quantity']))
-                assert Decimal(fields['持仓市值 / USD'].replace(',', '')) == Decimal(str(asset['value']))
-                amount = Decimal(fields['本日盈亏贡献 / USD'].replace(',', ''))
-                assert amount == Decimal(str(asset['day']))
-                pnl += amount
-        cash = next(asset for asset in facts['portfolio']['assets'] if asset['id'] == 'cash')
-        assert pnl + Decimal(str(cash['day'])) == Decimal(str(facts['portfolio']['daily']))
+
+def test_example_is_the_production_overview_of_the_scripted_run(tmp_path):
+    state = BUILDER['simulate'](tmp_path)
+    production = tables(state)['spy.overview']
+    example = committed()
+    # Everything except the top-level description is exactly the production projection.
+    assert {k: v for k, v in example.items() if k not in ('description', 'snapshot')} == \
+        {k: v for k, v in production.items() if k not in ('description', 'snapshot')}
+    assert example['snapshot']['observedAt'] == production['snapshot']['observedAt'] is not None
+    assert example['snapshot']['producedAt'] is None
+    # The snapshot identity stays content-derived over the replaced description.
+    assert example == native_view(state, production['title'], production['rows'], example['description'])
+    jsonschema.Draft202012Validator(SCHEMA).validate(example)
+    json.dumps(example, allow_nan=False)
+    recipe = (EXAMPLES / 'native-demo.md').read_text()
+    assert recipe == '```neige-block view\n' + json.dumps(example, ensure_ascii=False, separators=(',', ':')) + '\n```\n'
+
+
+def test_example_never_claims_a_real_account():
+    example = committed()
+    assert example['description'].startswith('示例数据 · 脚本化模拟账户，非真实账户')
+    assert '长桥' not in json.dumps(example, ensure_ascii=False)
+
+
+def test_scripted_run_exercises_every_shown_execution_outcome():
+    records = next(c for row in committed()['rows'] for c in row['cells'] if c['kind'] == 'records')
+    [dataset] = records['datasets']
+    outcomes = {item['id']: (item['badges'][0]['value'], len(item['disclosures'])) for item in dataset['items']}
+    assert outcomes == {'spy-20260916': ('已成交', 1), 'spy-20260819': ('已过期', 0), 'spy-20260805': ('已成交', 2),
+                        'spy-20260722': ('无需调仓', 0), 'spy-20260701': ('已成交', 1)}
+    assert all('actions' not in item for item in dataset['items'])
