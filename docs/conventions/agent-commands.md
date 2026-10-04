@@ -117,7 +117,7 @@ Decisions, one line each:
 
 | Name | Meaning (only this) |
 |---|---|
-| `<noun>_id` | the identifier of that noun: `track_id`, `attempt_id`, `terminal_id`, `source_id`, `entry_id`, `preview_id`, `observation_id`. A bare `id` is never a parameter. |
+| `<noun>_id` | the identifier of that noun: `track_id`, `attempt_id`, `terminal_id`, `source_id`, `entry_id`, `preview_id`, `observation_id`. A bare `id` is never a top-level parameter (nested `ops[].id` in `report_commit` is a block id, §9). |
 | `key` | the task key: the plan's stable name of a task. Nothing else is called `key` at top level. |
 | `idempotency_key` | a caller-chosen replay key for a write; a replay returns the first result |
 | `expected_version` | the optimistic lock of a `set` or `rm` |
@@ -190,7 +190,10 @@ Agent-facing JSON-RPC codes, one meaning each:
 
 - **Minted name:** `plugin_<id>_<tool>`, where `<tool>` is the manifest tool name with every
   character outside `[A-Za-z0-9_]` written `_`. Registering a manifest refuses two tools whose
-  minted names are equal. Routing stays an exact `(id, tool)` lookup and never parses the name.
+  minted names are equal. One minting function owns the minted name, and discovery, routing
+  (today `transport.rs:674` compares the suffix with the raw manifest name) and recorded plugin
+  results all use it; routing looks the minted name up and dispatch sends the plugin its original
+  upstream name.
 - **Native tool names** (manifest-authored) are written in the minted form already:
   `<object>_<verb>` with §3's verbs and §4's parameters, so nothing is rewritten. A tool that wraps
   a known CLI mirrors that CLI's words instead (`gh_pr_list`, `git_worktree_add`). A connector
@@ -231,12 +234,16 @@ Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes
 
 Proposed (cheap, registry-driven, Appendix B):
 
-- `served_tool_names_pass_providers_unchanged`: every name in `tools/list` (kernel and plugin)
-  matches `[A-Za-z0-9_]+` and its `mcp__neige__` form is within Codex's 128 bytes.
-- `kernel_tool_actions_are_in_the_vocabulary`: every action is one §3 verb.
+- `served_tool_names_use_the_word_alphabet`: every name in `tools/list` matches `[A-Za-z0-9_]+`.
+  B0 asserts it for kernel tools; B5 extends it to every plugin tool.
+- `served_tool_names_fit_the_codex_cap`: the `mcp__neige__` form of every kernel and native
+  plugin tool is within 128 bytes. Connector tools are exempt (§9).
+- `kernel_tool_actions_are_in_the_vocabulary`: every action is one §3 verb (added in B1c, once
+  every retired verb is gone).
 - `plugin_ids_are_words`: every registered and built-in manifest id matches `[a-z0-9]{2,32}`.
-- `kernel_tool_params_use_the_vocabulary`: every input key, recursively, is snake_case and is not
-  one of the retired names (`id`, `after`, `cancelled`, `time_zone`, `request_id`, `select`).
+- `kernel_tool_params_use_the_vocabulary`: every input key, recursively, is snake_case (opaque
+  payloads skipped, §4), and no top-level key is a retired name (`id`, `after`, `cancelled`,
+  `time_zone`, `request_id`, `select`).
 - `every_kernel_tool_refuses_unknown_arguments`: calls each registered kernel tool with an unknown
   key and asserts -32602 `<tool>: unknown argument …` naming the valid keys.
 
@@ -250,7 +257,10 @@ Proposed (cheap, registry-driven, Appendix B):
 - Plugin host-callback error codes (-32001/-32003/-32004) differ from §5; plugin channel only.
 - Paged tools have fixed page sizes; `limit` is not offered on them.
 - A connector tool whose `mcp__neige__plugin_<id>_<tool>` exceeds 128 bytes is still cut and
-  hash-suffixed by Codex (#2003 K1); B0's test pins this for kernel and native tools only.
+  hash-suffixed by Codex (#2003 K1); `served_tool_names_fit_the_codex_cap` covers kernel and
+  native tools only.
+- `report_commit`'s nested `ops[].id` is a bare block id; renaming it to `block_id` changes the
+  report op contract without an observed pain (kept).
 - Native plugin tools repeat their id as the first word (`plugin_market_market_quote`,
   `plugin_barra_barra_series`). Dropping it would rename recipe-named tools (cut, Appendix B).
 
@@ -298,6 +308,7 @@ prefix. Consumers: P prompts and templates, G goldens, F `fe`, T tests, R recipe
 | error prefixes `plan_cancel:`, `track_report:`, `task_verdict:`, … | the tool name | — | T |
 | 18 schemas without closed input; shared parsers ignore unknown keys | refuse unknown keys (§4) | — | T |
 | forwarder exit 4 for transport failures | 3 | — | T, `1801` doc |
+| forwarder exit 5 for a non-UTF-8 argument (`neige-cli/src/main.rs:70`) | 2 | — | T (`neige-cli/tests/forwarder.rs`), `1801` doc |
 
 ## Appendix B — Implementation slices (proposal)
 
@@ -309,14 +320,14 @@ guide budget (7,489 / 7,500 B) before and after; trim wording, never raise a cap
 
 | # | Slice | Pain | Acceptance | Must go red first |
 |---|---|---|---|---|
-| B0 | Separator: every kernel tool `neige_<o>_<a>`, plugin prefix `plugin_`, `task_done` / `task_fail`; CLI split at `_`; delete the Codex respelling for kernel tools in `tool_names.rs` and the extra spellings `source_capture` accepts; one migration (numbered last) respelling the stored `$.item.tool` values and recipe bodies (revision bump); the retired-name sweep rejects dotted kernel names (host callbacks excepted) | the model sees a different name than prompts and docs | `tools/list` names equal the prompt names byte for byte; CLI commands unchanged except `task done` / `task fail` | New `served_tool_names_pass_providers_unchanged`; mutation: mint one kernel tool with `.` → red: that test, the grammar test and the sweep |
-| B1a | View verbs: `task_ls`/`task_cancel`, `source_ls`, `area_ls`, `link_ls`, `report_describe`, `track_status`, `workspace_ls`/`cat`/`diff`/`log`, `tool ls`; one new migration (numbered last) renaming the stored `$.item.tool` values and the 1 recipe (revision bump), mapping the 0134 output names | synonyms, noun actions | No old name in the registry, prompts or `fe`; the migration rewrites only the tool field | New `kernel_tool_actions_are_in_the_vocabulary`; mutation: register `neige_plan_list` again → red: that test, the golden, the retired-name sweep and the direct-call tests using the literal |
+| B0 | Separator: every kernel tool `neige_<o>_<a>`, plugin prefix `plugin_`, `task_done` / `task_fail`; CLI split at `_`; the kernel-tool part of `tool_names.rs` goes (kernel names are no longer respelled); `source_capture` keeps resolving sanitized plugin spellings until B5; one migration (numbered last) respelling the stored `$.item.tool` values and recipe bodies (revision bump); the retired-name sweep rejects dotted kernel names (host callbacks excepted) | the model sees a different name than prompts and docs | `tools/list` names equal the prompt names byte for byte; CLI commands unchanged except `task done` / `task fail` | New `served_tool_names_use_the_word_alphabet` (kernel tools) and `served_tool_names_fit_the_codex_cap`; mutation: mint one kernel tool with `.` → red: the alphabet test, the grammar test and the sweep |
+| B1a | View verbs: `task_ls`/`task_cancel`, `source_ls`, `area_ls`, `link_ls`, `report_describe`, `track_status`, `workspace_ls`/`cat`/`diff`/`log`, `tool ls`; B1's one migration (numbered last, extended by B1b and B1c before release) maps B0's output names (`neige_plan_list` …), renaming the stored `$.item.tool` values and the 1 recipe (revision bump); its test runs the real chain 0134 → B0 → B1 on seeded rows | synonyms, noun actions | No retired view name in the registry, prompts or `fe`; the migration rewrites only the tool field | Retired-name sweep extended with the B1a names; mutation: register `neige_plan_list` again → red: the sweep, the golden and the direct-call tests using the literal |
 | B1b | Terminal: `observe` → `read`, `resolve` → `show`, flag `observe` → `read`, `request_id` → `idempotency_key` | anchored read named two ways | Input still refuses without a prior read; approvals unchanged | `stale_observation` and "read first" refusal tests name `neige_terminal_read`; mutation: keep `observe` in the refusal text → red |
-| B1c | Calendar and preview: `add/ls/set/rm`, `entry_id`, `to`, `preview_id`; `task_accept` / `task_reject` | CRUD words, effect in a flag | `calendar_set` no longer takes `cancelled`; `rm` stops wakes | Migration test seeds accepted and rejected `task.verdict` rows and a `calendar.list` row and the recipe, and reads back the new names; mutation: drop one map row → red |
+| B1c | Calendar and preview: `add/ls/set/rm`, `entry_id`, `to`, `preview_id`; `task_accept` / `task_reject` | CRUD words, effect in a flag | `calendar_set` no longer takes `cancelled`; `rm` stops wakes | Migration test seeds accepted and rejected `task.verdict` rows and a `calendar.list` row and the recipe, and reads back the new names; new `kernel_tool_actions_are_in_the_vocabulary`; mutation: drop one map row → red, and register `neige_task_verdict` again → red |
 | B2 | Parameters and paging: `cursor` everywhere (string), `report_read` `blocks`/`sections`/`detail`, `ratify_request` `text`, outputs `timezone`, plus the parameter vocabulary test | `after` with two types; one selection spelled two ways | `workspace_log` pages with a string cursor; `fe` wire regenerated with `npm run gen:api` | New `kernel_tool_params_use_the_vocabulary`; mutation: rename `cursor` back to `after` on one tool → red |
 | B3 | Results: snake_case report outputs; `{reports: […]}` with `track_id`/`updated_at` | `docRev` beside `updated_at` | CLI `--json` and MCP agree; refusal texts say `doc_rev` | New `report_tool_results_are_snake_case` over real `read`/`write`/`commit`/`find` calls (recursion skips `payload`); mutation: restore `docRev` → red |
-| B4 | Errors and exits: transport-level unknown-key refusal for every kernel tool, codes per §5, tool-name prefixes, forwarder exit 3 | silent unknown keys; overloaded codes | Every kernel tool refuses `{"zz": 1}` with its valid keys | New `every_kernel_tool_refuses_unknown_arguments`; mutation: skip the check for one tool → red; existing `kernel_exit_codes_are_exactly_0_1_4` plus a forwarder twin |
-| B5 | Plugin ids and minted names: the seven ids of §6 become words in the manifests (repo and installed), kernel references and one migration over every table that stores a plugin id or a minted plugin name (plugins, plugin_kv, plugin_tokens, report sources, scopes and bindings, transcript `plugin_<id>_…` names, recipes; count each on 4140 first); native manifest tool names respelled `_` (`gh.pr.checks` → `gh_pr_checks`); the validator takes `[a-z0-9]{2,32}` and refuses colliding minted names | ids in three shapes; `-` and `.` rewritten by Codex but not by Claude | Every served plugin name passes `served_tool_names_pass_providers_unchanged`; nothing on 4140 still holds an old id | New `plugin_ids_are_words`; mutation: restore one old built-in id → red |
+| B4 | Errors and exits: transport-level unknown-key refusal for every kernel tool, codes per §5, tool-name prefixes, forwarder exits 3 (transport) and 2 (non-UTF-8 argument) | silent unknown keys; overloaded codes | Every kernel tool refuses `{"zz": 1}` with its valid keys | New `every_kernel_tool_refuses_unknown_arguments`; mutation: skip the check for one tool → red; existing `kernel_exit_codes_are_exactly_0_1_4` plus a forwarder twin |
+| B5 | Plugin ids and minted names: the seven ids of §6 become words in the manifests (repo and installed), kernel references and one migration over every table that stores a plugin id or a minted plugin name (plugins, plugin_kv, plugin_tokens, report sources, scopes and bindings, transcript `plugin_<id>_…` names, recipes; count each on 4140 first); native manifest tool names respelled `_` (`gh.pr.checks` → `gh_pr_checks`); the validator takes `[a-z0-9]{2,32}` and refuses colliding minted names; one minting function for discovery, routing and recorded results (§6); `source_capture` then drops its sanitized-spelling fallback and keeps only stripping the `mcp__<server>__` qualifier | ids in three shapes; `-` and `.` rewritten by Codex but not by Claude | Every served plugin name passes `served_tool_names_use_the_word_alphabet`; a connector tool named `foo.bar` is served as `…_foo_bar` and called upstream as `foo.bar`; nothing on 4140 still holds an old id | New `plugin_ids_are_words`; mutation: restore one old built-in id → red |
 
 **Approved scope (owner, 2026-10-04):** B0, B1 (B1a–B1c, one migration) and B2 first, then B5.
 B0, B1 and B5 carry migrations (L2). B3 and B4 come later. Order: B0 → B1a → B1b → B1c → B2 → B5.
@@ -324,7 +335,8 @@ B0 is a mechanical respelling (≈ 1,360 occurrences of a dotted kernel name out
 them in `crates/calm-server/tests`). The other slices stay near 1k lines; B1a is the largest
 (≈ 260 name occurrences in crates, fe, plugins and docs).
 
-**Cut (recorded, no observed pain):** `admin.*` → `track_gc`/`db_vacuum` (hidden, 0 stored
+**Cut (recorded, no observed pain).** A cut item overrides the general rules above for that item
+until it is taken up: `admin.*` → `track_gc`/`db_vacuum` (hidden, 0 stored
 calls); `ratify_request` → another object; `terminal_input` → `send`; `terminal_control` split;
 `source_capture` → `add` (one recipe would need a rewrite); `{"ok": true}` → `{}`; `track_rename`'s
 `{ok: false, refused}` → -32409 (deliberately not an error today); calendar entry field
