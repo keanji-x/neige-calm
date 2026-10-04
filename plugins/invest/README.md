@@ -54,7 +54,7 @@ snapshot and before every submit: all of today's orders (any non-terminal status
 included, blocks), and US orders from earlier days (GTC/GTD) placed within the last 400 days. SDK
 5.2.0 documents neither a server default nor a range limit for `history_orders`' `start_at`
 (`openapi.pyi:7555,7566`), so the window is explicit. **Residual:** an active order placed before the
-window, or one from an earlier day that the server reports as  (the earlier-days query keeps
+window, or one from an earlier day that the server reports as `Unknown` (the earlier-days query keeps
 the server's active-status filter), is invisible until it fills; its fill then breaks the per-symbol holdings equality, and
 reconciliation refuses execution (fail closed on fill). Decision and order amounts are summed over
 every persisted fill; only the fill table shows the latest 500.
