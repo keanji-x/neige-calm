@@ -374,7 +374,7 @@ fn task_kind() -> Value {
                     "type": "string",
                     "enum": ["checkout", "upstream"],
                     "default": "checkout",
-                    "description": "`upstream`: a codex/claude `read_write` task that catches the track up: the kernel fetches the upstream, starts the checkout there, and the worker replays the track's last done commit."
+                    "description": "`upstream` (codex/claude, read_write): start at the upstream the kernel fetches; replay the last done commit."
                 },
                 "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
                 "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }

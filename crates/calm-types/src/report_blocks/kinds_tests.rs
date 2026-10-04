@@ -648,8 +648,11 @@ fn task_start_rules_name_the_valid_choices() {
     );
     refused(
         &|p| p["spawn"] = json!(crate::task_recovery::TASK_CHILD_TRACK_ROUTE),
-        "start: \"upstream\" runs in the track's checkout; it requires spawn \"in-wave\", not \
-         \"sub-wave\"",
+        &format!(
+            "start: \"upstream\" runs in the track's checkout; it requires spawn {:?}, not {:?}",
+            crate::task_recovery::TASK_IN_TRACK_ROUTE,
+            crate::task_recovery::TASK_CHILD_TRACK_ROUTE
+        ),
     );
     let tombstone = json!({"key":"old","tombstone":{},"declared_by":"user",
         "tombstoned_by":"user","start":"upstream"});

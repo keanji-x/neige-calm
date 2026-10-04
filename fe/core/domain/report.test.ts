@@ -146,7 +146,7 @@ describe('readTrackReport', () => {
         blocks: [{
           id: 'b-1', kind: 'task', rev: 1,
           payload: {
-            key: 'catch-up', kind: 'codex', goal: 'Catch up', ready: true, declared_by: 'spec',
+            key: 'catch-up', kind: 'codex', goal: 'Catch up', ready: true, declared_by: 'user',
             start: 'upstream',
           },
         }],
