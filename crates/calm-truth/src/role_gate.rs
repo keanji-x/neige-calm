@@ -360,8 +360,8 @@ pub fn enforce_role(
         }
     }
 
-    // (2.8) `review.round` + `ratify.requested` are planner-only; User/Kernel/Plugin
-    // do NOT pass, or a forged `converged=true` would bypass the review protocol.
+    // (2.8) Only the planner may author `review.round` and `ratify.requested`;
+    // User/Kernel/Plugin do NOT pass. `review.round` now exists only as historical rows.
     if matches!(
         event,
         Event::ReviewRound { .. } | Event::RatifyRequested { .. }

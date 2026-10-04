@@ -124,8 +124,8 @@ shell.
 
 Merge and approval
 
-- Merge only when no blocking finding is open and gh.pr.checks is green. Pass
-  expected_head_sha equal to the head_sha the last review read with gh.pr.diff.
+- Merge only a head that a review read with gh.pr.diff, when no blocking finding is open
+  and gh.pr.checks is green. Pass that head_sha as expected_head_sha.
 - merge_policy `auto-merge` allows gh.pr.merge at that point without asking again.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — first calls
   calm.ratify.request with `reason:"merge_hold: pr #<n> at <head_sha>"`; on

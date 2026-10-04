@@ -191,6 +191,7 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
         FixtureSpec {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
+            template_input: None,
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
@@ -252,6 +253,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         FixtureSpec {
             goal: None,
             template_id: Some("issue-development".into()),
+            template_input: Some(auto_merge_input()),
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
@@ -595,6 +597,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
         FixtureSpec {
             goal: None,
             template_id: Some("issue-development".into()),
+            template_input: Some(auto_merge_input()),
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: Some(FixtureIssue {
                 number: CAPSTONE_ISSUE_NUMBER,
@@ -802,6 +805,11 @@ async fn real_planner_drives_issue_to_close_capstone() {
         .await
         .expect("stop git-forge plugin");
     shutdown_shared_codex(&fx.shared).await;
+}
+
+/// These runs steer the Planner to merge without asking, so the bound input says so: an absent merge_policy means hold-for-ratify.
+fn auto_merge_input() -> Value {
+    json!({ "merge_policy": "auto-merge" })
 }
 
 fn remaining(deadline: Instant) -> Duration {
