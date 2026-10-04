@@ -827,8 +827,8 @@
     }
 
     .brand .brandMark {
-      inline-size: 1em;
-      block-size: 1em;
+      inline-size: calc(var(--glyph) * 1.25);
+      block-size: calc(var(--glyph) * 1.25);
     }
   }
 }
