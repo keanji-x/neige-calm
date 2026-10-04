@@ -1642,27 +1642,28 @@ impl SharedCodexAppServer {
             )));
         }
         #[cfg(feature = "fixtures")]
-        let fake_answer = self.fake.as_ref().map(|fake| {
-            fake.reverted_threads
-                .lock()
-                .expect("fake shared codex reverted threads mutex poisoned")
-                .push((
-                    thread_id.to_string(),
-                    before_turn_id.to_string(),
-                    fake.next_turn.load(Ordering::SeqCst).saturating_sub(1),
-                ));
-            if fake.revert_turn_not_found.load(Ordering::SeqCst) {
-                Err(CalmError::CodexRefused(format!(
-                    "thread/revert failed: turn not found: {before_turn_id} (code -32600)"
-                )))
-            } else {
-                Ok(serde_json::json!({ "thread": { "id": thread_id } }))
-            }
-        });
+        let fake_answer: Option<provider::codex::error::Result<serde_json::Value>> =
+            self.fake.as_ref().map(|fake| {
+                fake.reverted_threads
+                    .lock()
+                    .expect("fake shared codex reverted threads mutex poisoned")
+                    .push((
+                        thread_id.to_string(),
+                        before_turn_id.to_string(),
+                        fake.next_turn.load(Ordering::SeqCst).saturating_sub(1),
+                    ));
+                if fake.revert_turn_not_found.load(Ordering::SeqCst) {
+                    Err(provider::codex::error::Error::Refused(format!(
+                        "thread/revert failed: turn not found: {before_turn_id} (code -32600)"
+                    )))
+                } else {
+                    Ok(serde_json::json!({ "thread": { "id": thread_id } }))
+                }
+            });
         #[cfg(not(feature = "fixtures"))]
-        let fake_answer: Option<Result<serde_json::Value>> = None;
+        let fake_answer: Option<provider::codex::error::Result<serde_json::Value>> = None;
         match fake_answer {
-            Some(answer) => crate::codex_appserver::thread_revert_outcome(Ok(answer?))?,
+            Some(answer) => crate::codex_appserver::thread_revert_outcome(answer)?,
             None => {
                 self.connected_client()
                     .await?
