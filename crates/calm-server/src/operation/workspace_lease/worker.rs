@@ -340,11 +340,24 @@ async fn catch_up_tx(
         }
     };
     let deadline = tokio::time::Instant::now() + CLEAN_CHECK_TIMEOUT;
-    // Step 3.
-    let merge_base = git_stdout(path, &["merge-base", &work, &upstream.sha], deadline).await?;
+    // Step 3. `merge-base` exits 1 with nothing on stderr when the two commits are unrelated.
+    let silent = format!("{work} and {} share no history", upstream.sha);
+    let merge_base = git_stdout(
+        path,
+        &["merge-base", &work, &upstream.sha],
+        deadline,
+        Some(silent),
+    )
+    .await?;
     // Step 4: bounded like the clean check (K13); the repository's filters run without
     // credentials (`isolated_git_command`).
-    git_stdout(path, &["reset", "-q", "--keep", &upstream.sha], deadline).await?;
+    git_stdout(
+        path,
+        &["reset", "-q", "--keep", &upstream.sha],
+        deadline,
+        None,
+    )
+    .await?;
     Ok(CatchUpFacts {
         upstream_name: upstream.name,
         upstream: upstream.sha,
@@ -355,15 +368,21 @@ async fn catch_up_tx(
 }
 
 /// One bounded git run in `dir` whose failure refuses the attempt as
-/// [`TRACK_WORKTREE_UNAVAILABLE`]; its trimmed stdout.
-async fn git_stdout(dir: &Path, args: &[&str], deadline: tokio::time::Instant) -> Result<String> {
+/// [`TRACK_WORKTREE_UNAVAILABLE`]; its trimmed stdout. `silent` is the reason a failure that
+/// printed nothing on stderr gives.
+async fn git_stdout(
+    dir: &Path,
+    args: &[&str],
+    deadline: tokio::time::Instant,
+    silent: Option<String>,
+) -> Result<String> {
     let output = run_git(dir, args, deadline).await.map_err(unavailable)?;
     if !output.status.success() {
-        return Err(unavailable(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(unavailable(match silent {
+            Some(silent) if stderr.is_empty() => silent,
+            _ => format!("git {} failed: {stderr}", args.join(" ")),
+        }));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

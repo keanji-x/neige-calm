@@ -405,6 +405,120 @@ async fn a_publish_over_a_foreign_commit_fails_and_leaves_the_remote() {
     assert_eq!(gh_log(fx), "", "no gh invocation");
 }
 
+/// Copy `attempt`'s task, delivery and candidate rows as an attempt of a second track (a copy of
+/// this track's row), with the candidate at `commit`. Returns the second track's id.
+async fn candidate_of_another_track(fx: &Fx, attempt: &str, commit: &str) -> String {
+    let other = format!("{}-other", fx.track());
+    let other_attempt = format!("{other}:copied");
+    let mut conn = fx.pool().acquire().await.unwrap();
+    for (sql, binds) in [
+        (
+            "CREATE TEMP TABLE r5_track AS SELECT * FROM tracks WHERE id = ?1",
+            vec![fx.track().to_string()],
+        ),
+        ("UPDATE r5_track SET id = ?1", vec![other.clone()]),
+        ("INSERT INTO tracks SELECT * FROM r5_track", vec![]),
+        (
+            "CREATE TEMP TABLE r5_task AS SELECT * FROM tasks WHERE id = ?1",
+            vec![attempt.to_string()],
+        ),
+        (
+            "UPDATE r5_task SET id = ?1, track_id = ?2",
+            vec![other_attempt.clone(), other.clone()],
+        ),
+        ("INSERT INTO tasks SELECT * FROM r5_task", vec![]),
+        (
+            "CREATE TEMP TABLE r5_delivery AS SELECT * FROM task_git_deliveries \
+             WHERE producer_attempt_id = ?1",
+            vec![attempt.to_string()],
+        ),
+        (
+            "UPDATE r5_delivery SET delivery_id = 'r5-' || delivery_id, track_id = ?1, \
+             producer_attempt_id = ?2, operation_key = 'r5-' || operation_key, \
+             forge_idempotency_key = 'r5-' || forge_idempotency_key",
+            vec![other.clone(), other_attempt.clone()],
+        ),
+        (
+            "INSERT INTO task_git_deliveries SELECT * FROM r5_delivery",
+            vec![],
+        ),
+        (
+            "CREATE TEMP TABLE r5_candidate AS SELECT * FROM task_candidates \
+             WHERE producer_attempt_id = ?1",
+            vec![attempt.to_string()],
+        ),
+        (
+            "UPDATE r5_candidate SET candidate_id = 'r5-' || candidate_id, track_id = ?1, \
+             producer_attempt_id = ?2, commit_sha = ?3, ref_name = 'r5-' || ref_name",
+            vec![other.clone(), other_attempt.clone(), commit.to_string()],
+        ),
+        (
+            "INSERT INTO task_candidates SELECT * FROM r5_candidate",
+            vec![],
+        ),
+    ] {
+        let mut query = sqlx::query(sql);
+        for bind in binds {
+            query = query.bind(bind);
+        }
+        query
+            .execute(&mut *conn)
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+    other
+}
+
+/// R5 (#2058 D1) — the remote branch is at X, the done candidate of ANOTHER track: the lease list
+/// is this track's candidates only, so the script exits 22 before any push or gh and the remote
+/// keeps X.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_refuses_a_remote_head_that_is_another_tracks_candidate() {
+    let _env = publish_env(None).await;
+    let w = development_world().await;
+    let fx = &w.fx;
+    declare_task(fx, "a", json!({})).await;
+    let a = wait_running(fx, "a").await;
+    std::fs::write(a.cwd.join("a.txt"), "a\n").unwrap();
+    a.complete(fx).await;
+    candidate_commit(fx, &a.task.id).await;
+    wait_task(fx, "a", |task| task.status == TaskStatus::Done).await;
+    let (other, x) = foreign_clone(fx, None);
+    git(
+        &other,
+        &[
+            "push",
+            "-q",
+            "origin",
+            &format!("HEAD:refs/heads/{}", fx.worker_branch()),
+        ],
+    );
+    let other_track = candidate_of_another_track(fx, &a.task.id, &x).await;
+    let owners: Vec<(String,)> =
+        sqlx::query_as("SELECT track_id FROM task_candidates WHERE commit_sha = ?1")
+            .bind(&x)
+            .fetch_all(&fx.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        owners,
+        vec![(other_track,)],
+        "X is another track's candidate"
+    );
+
+    let error = publish(fx, "r5").await.expect_err("X is not this track's");
+
+    assert!(
+        error
+            .message
+            .contains("forge action exited with code 22; probe reports not landed"),
+        "{error:?}"
+    );
+    assert_eq!(remote_branch(fx).as_deref(), Some(x.as_str()));
+    assert!(pr_opened_heads(fx).await.is_empty());
+    assert_eq!(gh_log(fx), "", "no gh invocation");
+}
+
 /// R1 (#2058 D1) — the published head P is this track's own candidate, so a done candidate C'
 /// that does not contain P (the checkout was reset to the upstream, as a catch-up does) replaces
 /// it: the remote branch and the PR head are C', and the PR is the same one.

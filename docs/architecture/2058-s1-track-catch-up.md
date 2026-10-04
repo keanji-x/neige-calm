@@ -213,10 +213,15 @@ and use the existing fixtures (bare origin, `gh` shim):
   origin from another clone and deletes the trigger. Publish fails, and the remote stays `X`. (A
   pre-push hook cannot stand in: it runs after the push's advertisement, so even `--force` is
   rejected there, K20.)
+- **R5** `publish_refuses_a_remote_head_that_is_another_tracks_candidate`. This track's done
+  attempt's task, delivery and candidate rows are copied as rows of a second track whose
+  candidate is a foreign commit `X`, and the remote branch is put at `X`. Publish fails with
+  `exited with code 22`, the remote stays `X`, and `gh` is not invoked: `$7` lists this track's
+  candidates only.
 
 Predicted red sets: MA1 (push without `--force-with-lease`) → {R1, C1} (C1 publishes a
 replacement); MA2 (the ownership `case` always matches) → {R2}; MA3 (D2 reverted to the fixed
-text) → {R2}; MA4 (the lease replaced by unconditional `--force`) → {R4}. The tests that pin the old
+text) → {R2}; MA4 (the lease replaced by unconditional `--force`) → {R4}. MA5 (`track_candidates` filters `WHERE ?1 IS NOT NULL` instead of by track) → {R5}. The tests that pin the old
 text use the dead-process path or `contains` (`forge_action_adapter.rs:1284,2954,3102`,
 `forge_merge_crash_reboot.rs:406`, `git_forge_track_worktree.rs:273`) and stay green.
 
@@ -280,6 +285,10 @@ lockstep (no event changes), `deferred_write_tx_invariant`, `scripts/ci/ratchets
   declare it again.
 - A `reset --keep` killed at 20 s can leave `index.lock`; the next clean check reports
   `track-worktree-unavailable` until it is removed.
+- A prepare that fails after `reset --keep` but before its transaction commits (the worker
+  environment, the card create or the lease insert) rolls back the transaction but not the reset,
+  so the D6 2a note is lost and HEAD is at `U`; the next catch-up still replays `T` from the
+  database.
 
 ## 9. 4140 evidence (orchestrator, 2026-10-04)
 
