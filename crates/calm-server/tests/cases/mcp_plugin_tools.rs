@@ -1141,9 +1141,9 @@ async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
     }
 }
 
-#[path = "recipe_slots.rs"]
-mod recipe_slots;
 #[path = "mcp_plugin_tools/caller_identity.rs"]
 mod caller_identity;
 #[path = "mcp_plugin_tools/invest_caller_identity.rs"]
 mod invest_caller_identity;
+#[path = "recipe_slots.rs"]
+mod recipe_slots;
