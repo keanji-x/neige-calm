@@ -249,3 +249,15 @@ it.each(['light', 'dark'] as const)('paints the avatar with the card fill, not t
   expect(getComputedStyle(avatar).backgroundColor).toBe(cardFill);
   expect(getComputedStyle(avatar).backgroundColor).not.toBe(getComputedStyle(rail).backgroundColor);
 });
+
+
+it('reveals the recovery menu when hiding an Area from a deeply scrolled rail', async () => {
+  const { rail } = await renderRail();
+  await page.getByRole('button', { name: 'Area actions for Area 39' }).click();
+  expect(rail.scrollTop).toBeGreaterThan(0);
+  await page.getByRole('menuitem', { name: 'Hide group', exact: true }).click();
+  const options = document.querySelector<HTMLElement>('[aria-label="Sidebar view options"]')!;
+  expect(document.activeElement).toBe(options);
+  expect(options.getBoundingClientRect().top).toBeGreaterThanOrEqual(rail.getBoundingClientRect().top);
+  expectUncovered(options);
+});

@@ -130,7 +130,7 @@ export function Sidebar({
   useEffect(() => {
     if (!pendingOptionsFocusRef.current) return;
     pendingOptionsFocusRef.current = false;
-    railRef.current?.querySelector<HTMLButtonElement>('[aria-label="Sidebar view options"]')?.focus({ preventScroll: true });
+    railRef.current?.querySelector<HTMLButtonElement>('[aria-label="Sidebar view options"]')?.focus();
   });
 
   const activeTrackId = routeParamFromPath(currentPath, '/track/') ?? null;
