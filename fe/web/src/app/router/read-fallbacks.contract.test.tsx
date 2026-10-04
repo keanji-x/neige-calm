@@ -108,14 +108,18 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     const rail = await screen.findByRole('navigation', { name: 'Workspace' });
-    const alert = await within(rail).findByRole('alert');
-    expect(alert.textContent).toContain('Areas');
+    const indicator = await within(rail).findByRole('button', { name: '连接状态：连接异常' });
+    expect(within(rail).queryByRole('alert')).toBeNull();
+    await userEvent.click(indicator);
+    const details = screen.getByRole('dialog', { name: '连接详情' });
+    expect(details.textContent).toContain('Areas');
     expect(within(rail).queryByRole('button', { name: 'Create your first area' })).toBeNull();
     expect(within(rail).getByRole('button', { name: 'Go to Today' })).toBeTruthy();
     broken = false;
-    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await userEvent.click(within(details).getByRole('button', { name: '重试读取' }));
     await within(rail).findByRole('button', { name: 'Collapse area One' });
-    await waitFor(() => expect(within(rail).queryByRole('alert')).toBeNull());
+    await waitFor(() => expect(within(rail).queryByRole('button', { name: '连接状态：连接异常' })).toBeNull());
+    expect(screen.queryByRole('dialog', { name: '连接详情' })).toBeNull();
   });
 
   it('keeps cached Areas while a refresh fails and recovers locally', async () => {
@@ -128,11 +132,16 @@ describe('degraded workspace reads stay usable', () => {
     await within(rail).findByRole('button', { name: 'Collapse area One' });
     broken = true;
     await act(() => client.invalidateQueries({ queryKey: ['areas'] }));
-    const alert = await within(rail).findByRole('alert');
+    const indicator = await within(rail).findByRole('button', { name: '连接状态：连接异常' });
+    expect(within(rail).queryByRole('alert')).toBeNull();
     expect(within(rail).getByRole('button', { name: 'Collapse area One' })).toBeTruthy();
+    await userEvent.click(indicator);
+    const details = screen.getByRole('dialog', { name: '连接详情' });
+    expect(details.textContent).toContain('Area refresh unavailable');
     broken = false;
-    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(within(rail).queryByRole('alert')).toBeNull());
+    await userEvent.click(within(details).getByRole('button', { name: '重试读取' }));
+    await waitFor(() => expect(within(rail).queryByRole('button', { name: '连接状态：连接异常' })).toBeNull());
+    expect(screen.queryByRole('dialog', { name: '连接详情' })).toBeNull();
   });
 
   it('lets an offline Area draft be cancelled without creating it on reconnect', async () => {
