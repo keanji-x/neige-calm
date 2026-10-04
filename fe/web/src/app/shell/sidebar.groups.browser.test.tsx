@@ -39,9 +39,32 @@ it('places view options before collapse and shares group disclosure, keyboard ac
     </ThemeProvider>
   </UiPreferencesProvider>);
 
+  const areasTitle = page.getByRole('button', { name: 'Collapse Areas', exact: true }).element()
+    .querySelector<HTMLElement>('[title="Areas"]')!;
+  const areaTitle = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element()
+    .querySelector<HTMLElement>('[title="Work"]')!;
+  expect(areaTitle.getBoundingClientRect().left).toBeGreaterThan(areasTitle.getBoundingClientRect().left);
+
   const options = page.getByRole('button', { name: 'Sidebar view options' });
   const collapse = page.getByRole('button', { name: 'Collapse sidebar' });
   const today = page.getByRole('button', { name: 'Go to Today' });
+  const areasDisclosure = page.getByRole('button', { name: 'Collapse Areas', exact: true });
+  const areasMarker = areasDisclosure.element().querySelector<HTMLElement>('span[aria-hidden="true"]')!;
+  await today.hover();
+  expect(getComputedStyle(areasMarker).opacity).toBe('0');
+  await areasDisclosure.hover();
+  expect(getComputedStyle(areasMarker).opacity).toBe('1');
+  await areasDisclosure.click();
+  await today.hover();
+  expect(getComputedStyle(areasMarker).opacity).toBe('1');
+  await page.getByRole('button', { name: 'Expand Areas', exact: true }).click();
+  await today.hover();
+  expect(getComputedStyle(areasMarker).opacity).toBe('0');
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Tab}');
+  await expect.element(areasDisclosure).toHaveFocus();
+  expect(getComputedStyle(areasMarker).opacity).toBe('1');
+  await today.click();
+
   const optionsBox = options.element().getBoundingClientRect();
   const collapseBox = collapse.element().getBoundingClientRect();
   expect(today.element().getBoundingClientRect().right).toBeLessThanOrEqual(optionsBox.left);

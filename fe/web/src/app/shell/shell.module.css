@@ -505,6 +505,33 @@
     rotate: 90deg;
   }
 
+  /* Section labels retain the rail edge; only Area rows reserve a leading disclosure gutter. */
+  .groupHeading .areaRow {
+    display: flex;
+    gap: var(--space-2);
+    padding-inline: 0 var(--control-h);
+  }
+
+  .groupHeading .groupWithoutActions {
+    padding-inline-end: 0;
+  }
+
+  .groupHeading .chevron {
+    position: static;
+    order: 1;
+    inline-size: var(--glyph-sm);
+    block-size: var(--glyph-sm);
+    translate: none;
+    flex-shrink: 0;
+    opacity: 0;
+  }
+
+  .groupHeading .areaRow[aria-expanded="false"] .chevron,
+  .groupHeading .areaRow:hover .chevron,
+  .groupHeading .areaRow:focus-visible .chevron {
+    opacity: 1;
+  }
+
   /* Areas and inventory status groups share one 13px medium text role.
      Icon slots and the shared group text role establish hierarchy without extra indent. */
   .areaName {
