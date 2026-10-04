@@ -1,1 +1,1 @@
-Workspace report grant required. Read date changes; page with after + through_event_id. Use edits for full bodies.
+Grant required. Date changes; after + through_event_id pages.

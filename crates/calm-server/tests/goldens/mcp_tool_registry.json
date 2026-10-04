@@ -1686,7 +1686,7 @@
   },
   {
     "name": "neige.workspace.changes",
-    "description_sha256": "8c475ae64b6718e4d63c09e93fa762de3d4fbd6df90fdbb9db6ad594d696eaba",
+    "description_sha256": "20170c02dd967538243e11a617f5ec7bfd69a80b5efb51c0b11291e2d1e0695e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1715,7 +1715,7 @@
   },
   {
     "name": "neige.workspace.edits",
-    "description_sha256": "41005a595003a875605f96c5ce9f08f9d160ea74732322a67ca964138b6fef4e",
+    "description_sha256": "c17a67a42b4ea5ed73590857ed069e82b999d2f29e560776550bc50c48a7588e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1750,7 +1750,7 @@
   },
   {
     "name": "neige.workspace.report",
-    "description_sha256": "a5de00367acbce4f6b50a78507412b4d7a7707ed930ce34570ac76a0fce85c8e",
+    "description_sha256": "2c052d2a7601a0b9c30d34f97f6215e8abbe406c37fed2fda9c9d5ee7daf274c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1772,7 +1772,7 @@
   },
   {
     "name": "neige.workspace.reports",
-    "description_sha256": "d774221a35af8aa4064ddf15aebf920efc63dbf199547e4bcc3fd7d6d72cd3e7",
+    "description_sha256": "9de81ae1f93d28e8df6269d9d5cbd473c556b5c5a12457ba7f22b9e99158423e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
