@@ -4,6 +4,7 @@ import json
 import jsonschema
 import pytest
 
+from invest import series
 from invest.portfolio import TOOLS
 from invest.settings import OPTIONAL, REQUIRED, InvestConfig
 from recipe import slots, views
@@ -18,7 +19,7 @@ VERBS = {'ls', 'cat', 'show', 'status', 'log', 'diff', 'find', 'describe', 'read
 def test_manifest_exposes_exactly_the_app_tools_named_object_verb():
     assert MANIFEST['id'] == 'invest'
     names = [tool['name'] for tool in MANIFEST['exposes_tools']]
-    assert len(names) == len(TOOLS) and set(names) == TOOLS
+    assert len(names) == len(TOOLS) + 1 and set(names) == TOOLS | {series.TOOL}
     for name in names:
         noun, verb = name.split('_')
         assert noun.isalnum() and noun.islower() and verb in VERBS, name

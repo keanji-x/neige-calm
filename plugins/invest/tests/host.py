@@ -40,15 +40,20 @@ class Host:
             self.send({"jsonrpc": "2.0", "id": frame["id"], "result": {"overlay_id": "fixture"}})
         return frame
 
-    def request(self, method, params):
+    def response(self, method, params):
+        """The whole response frame, a JSON-RPC error included."""
         self.sequence += 1
         key = self.sequence
         self.send({"jsonrpc": "2.0", "id": key, "method": method, "params": params})
         while True:
             frame = self.receive()
             if frame.get("id") == key and "method" not in frame:
-                assert "error" not in frame, frame
-                return frame["result"]
+                return frame
+
+    def request(self, method, params):
+        frame = self.response(method, params)
+        assert "error" not in frame, frame
+        return frame["result"]
 
     def tool(self, name, args, track, caller=None):
         params = {"name": name, "arguments": args, "_meta": {"dev.neige/track": {"id": track}}}

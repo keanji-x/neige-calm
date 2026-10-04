@@ -75,10 +75,11 @@ class Broker:
         self.workdir = workdir
         self.timeout_seconds = timeout_seconds
 
-    def _run(self, argv: list[str]) -> str:
+    def _run(self, argv: list[str], timeout_seconds=None) -> str:
         env = {key: os.environ[key] for key in _ENV_KEYS if key in os.environ}
         env["HOME"] = self.config.broker_home
-        deadline = time.monotonic() + self.timeout_seconds
+        limit = self.timeout_seconds if timeout_seconds is None else min(self.timeout_seconds, timeout_seconds)
+        deadline = time.monotonic() + limit
         try:
             child = subprocess.Popen(
                 [self.config.sdk_python_path, *argv], cwd=self.workdir, env=env,
@@ -136,15 +137,15 @@ class Broker:
                 child.stdout.close()
                 child.stderr.close()
 
-    def _json(self, argv: list[str]) -> object:
-        raw = self._run(argv)
+    def _json(self, argv: list[str], timeout_seconds=None) -> object:
+        raw = self._run(argv, timeout_seconds)
         try:
             return json.loads(raw, object_pairs_hook=_json_object, parse_constant=_invalid_constant,
                               parse_float=Decimal)
         except (ValueError, RecursionError):
             raise BrokerError("Invalid broker JSON response; outcome may be unknown") from None
 
-    def request(self, method, body):
+    def request(self, method, body, timeout_seconds=None):
         # Typed configuration and exact operations only; no model-selected paths or endpoints.
         args = ['-I', str(Path(__file__).with_name('sdk_bridge.py')),
                 '--access-region', self.config.access_region,
@@ -153,10 +154,14 @@ class Broker:
                 '--max-order-bps', str(self.config.max_order_bps),
                 '--quote-max-age-seconds', str(self.config.quote_max_age_seconds),
                 method, '--request', json.dumps(body, allow_nan=False)]
-        return _object(self._json(args))
+        return _object(self._json(args, timeout_seconds))
 
     def snapshot(self, since, symbols):
         return self.request('snapshot', {'since': since, 'symbols': symbols})
+
+    def series(self, symbols, start, end, timeout_seconds):
+        """Daily candlesticks for `series_show`; read-only market data, bounded by the caller's deadline."""
+        return self.request('series', {'symbols': symbols, 'start': start, 'end': end}, timeout_seconds)
 
     def submit(self, request):
         result = self.request('submit', request)

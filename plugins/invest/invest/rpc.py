@@ -5,8 +5,9 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 
-from . import VERSION
+from . import VERSION, series
 from .runtime import Runtime
 from .broker import Broker
 from .portfolio import Portfolio
@@ -81,8 +82,23 @@ def serve():
                 message = str(error) if isinstance(error, ValueError) else "invalid request or unavailable ledger"
                 reply(frame["id"], {"isError": True, "content": [{"type": "text", "text": message}]})
 
-    worker_thread = threading.Thread(target=worker, name="invest-tools", daemon=True)
-    worker_thread.start()
+    def series_worker():
+        # Its own thread: a slow SDK read for a chart never delays a portfolio tool call.
+        while True:
+            frame = series_work.get()
+            params = frame["params"]
+            try:
+                series.admit(params.get("_meta"))
+                reply(frame["id"], series.show(runtime.portfolio.broker, params.get("arguments", {}),
+                                               time.time_ns() // 1_000_000))
+            except series.Refused as error:
+                rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": error.code, "message": str(error)}})
+            except Exception:
+                reply(frame["id"], series.tool_error("invalid request or unavailable source"))
+
+    series_work = queue.Queue(maxsize=32)
+    for target, name in ((worker, "invest-tools"), (series_worker, "invest-series")):
+        threading.Thread(target=target, name=name, daemon=True).start()
     try:
         for line in sys.stdin:
             request_id = None
@@ -128,7 +144,7 @@ def serve():
                                                    "inputSchema": t["input_schema"], "annotations": t["annotations"]}
                                                   for t in manifest["exposes_tools"]]})
                 elif method == "tools/call":
-                    work.put_nowait(frame)
+                    (series_work if params.get("name") == series.TOOL else work).put_nowait(frame)
                 else:
                     raise ValueError("unknown method")
             except Exception as error:

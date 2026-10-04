@@ -2,10 +2,11 @@
 
 Generalized from `plugins/paper-trading/paper_trading/sdk_bridge.py`: the OAuth context, the paper
 identity proof, cash and the session calendar are unchanged; positions, quotes and orders cover any
-US stock instead of SPY alone. Symbols here are the SDK's `CODE.US`.
+US stock instead of SPY alone. Symbols here are the SDK's `CODE.US`. `series` reads daily
+candlesticks for `series_show` through the quote context alone.
 """
 import argparse
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -33,6 +34,13 @@ ACTIVE = ('NotReported', 'ReplacedNotReported', 'ProtectedNotReported', 'Varieti
 # per-symbol holdings equality in reconciliation, which refuses execution (fail closed on fill).
 ACTIVE_LOOKBACK = timedelta(days=400)
 MAX_SYMBOLS = 512
+# `series`: at most 8 symbols per request (the `market.series` contract). SDK 5.2.0 caps
+# `candlesticks` at 1000 rows (openapi.pyi:3457) and documents no ceiling or truncation end for
+# `history_candlesticks_by_date`, so each window request spans at most 1000 calendar days (about 690
+# sessions), and a request answering 1000 rows or more is refused as possibly truncated.
+SERIES_MAX_SYMBOLS = 8
+SERIES_CHUNK_DAYS = 1000
+SERIES_ROW_CEILING = 1000
 
 
 class OrderNotSubmitted(ValueError):
@@ -56,8 +64,8 @@ def us_symbol(value):
     return value
 
 
-def contexts(client_id, interactive=False, access_region="global"):
-    from longbridge.openapi import AssetContext, Config, OAuthBuilder, QuoteContext, TradeContext
+def sdk_config(client_id, interactive=False, access_region="global"):
+    from longbridge.openapi import Config, OAuthBuilder
 
     def authorize(url):
         if not interactive:
@@ -68,10 +76,15 @@ def contexts(client_id, interactive=False, access_region="global"):
         raise ValueError("unknown official access region")
     host = ACCESS_POINTS[access_region]
     oauth = OAuthBuilder(client_id).build(authorize)
-    config = Config.from_oauth(oauth, http_url="https://openapi." + host,
+    return Config.from_oauth(oauth, http_url="https://openapi." + host,
         quote_ws_url="wss://openapi-quote." + host + "/v2",
         trade_ws_url="wss://openapi-trade." + host + "/v2",
         enable_papertrading=True, enable_overnight=False, enable_print_quote_packages=False)
+
+
+def contexts(client_id, interactive=False, access_region="global"):
+    from longbridge.openapi import AssetContext, QuoteContext, TradeContext
+    config = sdk_config(client_id, interactive, access_region)
     return AssetContext(config), TradeContext(config), QuoteContext(config)
 
 
@@ -279,6 +292,64 @@ def submit(asset, trade, quote, expected, request, policy):
     return {'order_id': result.order_id}
 
 
+def bar_date(value):
+    """A daily candlestick's session date: the New York calendar date of its timestamp."""
+    return value.astimezone(NY).date()
+
+
+def bar(row):
+    return [bar_date(row.timestamp).isoformat(), str(row.open), str(row.high), str(row.low), str(row.close),
+            str(row.volume)]
+
+
+def daily_bars(quote, symbol, start, end):
+    """Forward-adjusted regular-session daily bars of `symbol` over `[start, end]`, ascending, in
+    requests of at most SERIES_CHUNK_DAYS calendar days."""
+    from longbridge.openapi import AdjustType, Period, TradeSessions
+    bars, lo = {}, start
+    while lo <= end:
+        hi = min(end, lo + timedelta(days=SERIES_CHUNK_DAYS - 1))
+        rows = quote.history_candlesticks_by_date(symbol, Period.Day, AdjustType.ForwardAdjust, lo, hi,
+                                                  TradeSessions.Intraday)
+        if len(rows) >= SERIES_ROW_CEILING:
+            raise ValueError('candlestick window may be truncated')
+        for row in rows:
+            day = bar_date(row.timestamp)
+            if not lo <= day <= hi or day in bars:
+                raise ValueError('candlestick dated outside its window or twice')
+            bars[day] = bar(row)
+        lo = hi + timedelta(days=1)
+    return [bars[day] for day in sorted(bars)]
+
+
+def series(quote, request):
+    """Per symbol, first the newest daily bar the source lists (the probe that certifies earlier
+    bars as closed), then the window's daily bars. One symbol's failure never fails another's, and
+    its reason is fixed text: no SDK message reaches the tool reply."""
+    from longbridge.openapi import AdjustType, Period, TradeSessions
+    exact(request, {'symbols', 'start', 'end'})
+    symbols = request['symbols']
+    if not isinstance(symbols, list) or not 1 <= len(symbols) <= SERIES_MAX_SYMBOLS:
+        raise ValueError('symbols must list 1 to 8 SDK symbols')
+    start, end = (date.fromisoformat(request[k]) for k in ('start', 'end'))
+    if start > end:
+        raise ValueError('start must not be later than end')
+    answers = {}
+    for symbol in symbols:
+        us_symbol(symbol)
+        try:
+            latest = quote.candlesticks(symbol, Period.Day, 1, AdjustType.ForwardAdjust, TradeSessions.Intraday)
+            if not latest:
+                answers[symbol] = {'error': 'the source listed no daily bar'}
+                continue
+            probed = max(bar_date(row.timestamp) for row in latest)
+            answers[symbol] = {'complete_through': probed.isoformat(),
+                               'bars': daily_bars(quote, symbol, start, end)}
+        except Exception:
+            answers[symbol] = {'error': 'official SDK candlestick query failed'}
+    return {'series': answers}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--access-region', choices=('global', 'cn'), default='global')
@@ -287,10 +358,16 @@ def main():
     parser.add_argument('--cash-buffer-bps', type=int, default=200)
     parser.add_argument('--max-order-bps', type=int, default=1000)
     parser.add_argument('--quote-max-age-seconds', type=int, default=60)
-    parser.add_argument('method', choices=('login', 'snapshot', 'submit'))
+    parser.add_argument('method', choices=('login', 'snapshot', 'submit', 'series'))
     parser.add_argument('--request', default='{}')
     args = parser.parse_args()
     identifier(args.client_id); identifier(args.account)
+    if args.method == 'series':
+        # Market data only: no trade or asset context, no account proof, no order path.
+        from longbridge.openapi import QuoteContext
+        quote = QuoteContext(sdk_config(args.client_id, False, args.access_region))
+        print(json.dumps(series(quote, json.loads(args.request)), allow_nan=False))
+        return
     try:
         asset, trade, quote = contexts(args.client_id, args.method == 'login', args.access_region)
     except Exception:

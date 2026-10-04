@@ -5,9 +5,10 @@ A multi-instrument US paper portfolio on one dedicated Longbridge paper account 
 saves target weights, an ordinary Worker task requests their execution, and the App's background
 loop reconciles, sizes and submits official-SDK paper orders and publishes native Report data units.
 
-This is slice P1: the ledger, decisions and executions over many symbols, the held limit, the
-portfolio units and recipe. Research Tracks, theses, issued keys and the lease (P2) and the chart
-series tool (P3) build on it. `plugins/paper-trading` keeps running until the cut-over (§3.8).
+Slice P1 is the ledger, decisions and executions over many symbols, the held limit, the portfolio
+units and recipe; slice P3 adds `series_show`, the chart series tool. Research Tracks, theses,
+issued keys and the lease (P2) build on them. `plugins/paper-trading` and `plugins/market` keep
+running until the cut-over (§3.8).
 
 ## Verification
 
@@ -27,9 +28,28 @@ for wide histories. No credentials, network or broker orders are used.
 | `portfolio_status` | portfolio Planner or Worker | Persisted snapshot, positions, targets, instruments, limits, decisions with their legs, fills, errors |
 | `decision_add` | portfolio Planner | An immutable decision: `weights: [{symbol, bps}]`, `message`, `source_refs`, `valid_until` (≤ 24 h) |
 | `execution_add` | portfolio Worker | Marks the queued decision `requested` and wakes the loop; never contacts the broker |
+| `series_show` | the chart resolver only | Daily, weekly or monthly bars for a report's `chart.series` block |
 
 The App reads the Track and the caller from host metadata (`dev.neige/track`, `dev.neige/caller`).
-Every tool refuses any Track but `portfolio_track_id`. Refusals start with the tool name.
+Every portfolio tool refuses any Track but `portfolio_track_id`. Refusals start with the tool name.
+
+## Chart series
+
+`series_show` answers a report's `chart.series` block, for example
+`{"source": "neige://plugin/invest/series_show", "series": ["US:SPY"], "range": "1Y"}`, on any
+Track. It follows the `market.series` contract for US symbols: all seven keys are required, a
+request past `deadline_ms` is refused before any SDK call, and each asset gets its own `ok`,
+`unknown_asset` (not `US:<CODE>`) or `unavailable` entry. The bars are the official SDK's
+forward-adjusted, regular-session daily candlesticks, read through the quote context alone
+(`sdk_bridge.py … series`) on a thread of their own, so a slow chart never delays a portfolio tool.
+US is never relaxed: a bar or period is included only when the source already lists a later daily
+bar. A candlestick is dated by the New York date of its timestamp, and each window request spans at
+most 1000 calendar days; a request answering 1000 rows or more is refused as possibly truncated.
+
+Only the kernel's background resolver may call it: it accepts a call that carries the Track and no
+`dev.neige/caller`, and refuses every agent call with JSON-RPC error -32403 before contacting the
+SDK. It declares `openWorldHint: true`, which agents running under `approval_policy: never` cannot
+approve anyway.
 
 ## Instruments and limits
 

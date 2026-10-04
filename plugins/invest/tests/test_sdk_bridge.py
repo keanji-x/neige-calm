@@ -250,3 +250,81 @@ def test_unknown_order_status_today_blocks_preflight(sdk):
     with pytest.raises(bridge.OrderNotSubmitted):
         submit(sdk)
     assert sdk.calls == []
+
+
+def candle(day, close, hour=0):
+    """A daily candlestick stamped at New York midnight of its session (plus `hour`)."""
+    stamp = datetime.combine(day, datetime.min.time(), tzinfo=bridge.NY) + timedelta(hours=hour)
+    return NS(timestamp=stamp, open=Decimal('1'), high=Decimal('2'), low=Decimal('0.5'), close=Decimal(close),
+              volume=10)
+
+
+@pytest.fixture
+def quote(monkeypatch):
+    from datetime import date
+    module = NS(Period=NS(Day='Period.Day'), AdjustType=NS(ForwardAdjust='AdjustType.ForwardAdjust'),
+                TradeSessions=NS(Intraday='TradeSessions.Intraday'))
+    monkeypatch.setitem(sys.modules, 'longbridge.openapi', module)
+    state = NS(calls=[], days={}, latest={}, rows=None)
+
+    class Quote:
+        def candlesticks(self, symbol, period, count, adjust, sessions):
+            state.calls.append(('probe', symbol, period, count, adjust, sessions))
+            if symbol not in state.latest:
+                raise RuntimeError('private SDK diagnostic')
+            return [candle(state.latest[symbol], '9')]
+
+        def history_candlesticks_by_date(self, symbol, period, adjust, start, end, sessions):
+            state.calls.append(('window', symbol, start, end, period, adjust, sessions))
+            if state.rows is not None:
+                return state.rows
+            return [candle(d, '5') for d in state.days.get(symbol, []) if start <= d <= end]
+    return NS(quote=Quote(), state=state, date=date)
+
+
+def test_series_probes_then_fetches_the_window_in_bounded_requests(quote):
+    d = quote.date
+    quote.state.latest = {'AAA.US': d(2026, 9, 11)}
+    quote.state.days = {'AAA.US': [d(2021, 6, 1), d(2024, 1, 2), d(2026, 9, 10)]}
+    answer = bridge.series(quote.quote, {'symbols': ['AAA.US'], 'start': '2021-06-01', 'end': '2026-09-10'})
+    assert answer == {'series': {'AAA.US': {'complete_through': '2026-09-11', 'bars': [
+        [day.isoformat(), '1', '2', '0.5', '5', '10'] for day in quote.state.days['AAA.US']]}}}
+    probe, *windows = quote.state.calls
+    assert probe == ('probe', 'AAA.US', 'Period.Day', 1, 'AdjustType.ForwardAdjust', 'TradeSessions.Intraday')
+    # Contiguous, non-overlapping requests of at most 1000 calendar days covering the whole window.
+    assert windows[0][2] == d(2021, 6, 1) and windows[-1][3] == d(2026, 9, 10)
+    assert all((w[3] - w[2]).days < bridge.SERIES_CHUNK_DAYS for w in windows)
+    assert all(a[3] + timedelta(days=1) == b[2] for a, b in zip(windows, windows[1:]))
+    assert {w[4:] for w in windows} == {('Period.Day', 'AdjustType.ForwardAdjust', 'TradeSessions.Intraday')}
+
+
+def test_series_dates_bars_by_their_new_york_session(quote):
+    d = quote.date
+    quote.state.latest = {'AAA.US': d(2026, 9, 11)}
+    # 16:00 New York is 20:00 UTC: still the same session date.
+    quote.state.rows = [candle(d(2026, 9, 10), '5', hour=16)]
+    answer = bridge.series(quote.quote, {'symbols': ['AAA.US'], 'start': '2026-09-01', 'end': '2026-09-10'})
+    assert answer['series']['AAA.US']['bars'][0][0] == '2026-09-10'
+
+
+def test_series_failures_stay_per_symbol_and_never_quote_the_sdk(quote):
+    d = quote.date
+    # CCC's probe raises: its own entry fails, AAA still answers.
+    quote.state.latest = {'AAA.US': d(2026, 9, 11)}
+    quote.state.rows = [candle(d(2026, 9, 10), '5')]
+    answer = bridge.series(quote.quote, {'symbols': ['CCC.US', 'AAA.US'], 'start': '2026-09-01', 'end': '2026-09-10'})
+    assert answer['series']['CCC.US'] == {'error': 'official SDK candlestick query failed'}
+    assert answer['series']['AAA.US']['complete_through'] == '2026-09-11'
+    assert 'private' not in json.dumps(answer)
+    # A window answering the row ceiling may be truncated, and a bar outside its window is refused.
+    quote.state.rows = [candle(d(2026, 9, 10), '5')] * bridge.SERIES_ROW_CEILING
+    answer = bridge.series(quote.quote, {'symbols': ['AAA.US'], 'start': '2026-09-01', 'end': '2026-09-10'})
+    assert 'error' in answer['series']['AAA.US']
+    quote.state.rows = [candle(d(2026, 8, 1), '5')]
+    answer = bridge.series(quote.quote, {'symbols': ['AAA.US'], 'start': '2026-09-01', 'end': '2026-09-10'})
+    assert 'error' in answer['series']['AAA.US']
+    with pytest.raises(ValueError):
+        bridge.series(quote.quote, {'symbols': ['700.HK'], 'start': '2026-09-01', 'end': '2026-09-10'})
+    with pytest.raises(ValueError):
+        bridge.series(quote.quote, {'symbols': [f'A{i}.US' for i in range(9)], 'start': '2026-09-01',
+                                    'end': '2026-09-10'})

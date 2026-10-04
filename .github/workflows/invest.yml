@@ -6,12 +6,16 @@ on:
       - 'plugins/invest/**'
       - '.github/workflows/invest.yml'
       - 'crates/calm-types/src/report_blocks/native_view.schema.json'
+      - 'crates/calm-server/tests/fixtures/market_series_reply.json'
+      - 'plugins/market/manifest.json'
   push:
     branches: [main]
     paths:
       - 'plugins/invest/**'
       - '.github/workflows/invest.yml'
       - 'crates/calm-types/src/report_blocks/native_view.schema.json'
+      - 'crates/calm-server/tests/fixtures/market_series_reply.json'
+      - 'plugins/market/manifest.json'
 
 permissions:
   contents: read
