@@ -1,7 +1,7 @@
-import { sidebarOrder, type SidebarGroupId, type SidebarOrderScope } from '../../../../core/view/sidebar-layout.ts';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 
 import { createStorageKey, DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
+import { sidebarOrder, type SidebarGroupId, type SidebarOrderScope } from '../../../../core/view/sidebar-layout.ts';
 import { useState } from '../../ui/state/public.ts';
 
 type Preference = boolean | string | null;
