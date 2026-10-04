@@ -535,6 +535,7 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
                     idempotency_key: key,
                     model: None,
                     reasoning_effort: None,
+                    side: None,
                 }),
                 opening_briefing: None,
                 first_message: None,
@@ -1055,5 +1056,182 @@ async fn an_agent_cannot_choose_the_first_conversation_model() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let (_, rows) = b.list_conversations(&track_id).await;
     assert_eq!(rows, json!([]));
+    b.shutdown_harnesses().await;
+}
+
+#[tokio::test]
+async fn side_conversation_has_its_own_identity_and_frozen_context() {
+    let b = boot().await;
+    let track = b.create_track("side-source").await;
+    let planner: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")
+            .bind(&track)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    let root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(&track)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    let body = json!({"text": "side-question-unique", "side": {
+        "source_card_id": planner, "context": "snapshot-unique-text"
+    }});
+    let path = format!("/api/tracks/{track}/conversations");
+    let (status, created) = b
+        .request("POST", &path, Some("side-key"), Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap();
+    assert_ne!(id, planner);
+    assert_eq!(created["sourceCardId"], planner);
+    assert_eq!(b.card_role(id).await, "assistant");
+    assert_eq!(b.copies_in_harness("snapshot-unique-text", 1).await, 1);
+    assert_eq!(b.copies_in_harness("side-question-unique", 1).await, 1);
+    let after_root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+            .bind(&track)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(root, after_root);
+    let (_, rows) = b.list_conversations(&track).await;
+    assert_eq!(rows[0]["sourceCardId"], planner);
+    let (status, replay) = b
+        .request("POST", &path, Some("side-key"), Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{replay}");
+    assert_eq!(replay["id"], id);
+    let mut changed = body;
+    changed["side"]["context"] = json!("changed-snapshot");
+    let (status, response) = b
+        .request("POST", &path, Some("side-key"), Some(changed))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert_eq!(b.copies_in_harness("snapshot-unique-text", 1).await, 1);
+    b.shutdown_harnesses().await;
+}
+
+#[tokio::test]
+async fn side_conversation_refuses_cross_track_source_before_minting() {
+    let b = boot().await;
+    let source_track = b.create_track("source").await;
+    let target_track = b.create_track("target").await;
+    let (_, parent) = b
+        .create_conversation(&source_track, "parent", "hello")
+        .await;
+    let (status, response) = b
+        .request(
+            "POST",
+            &format!("/api/tracks/{target_track}/conversations"),
+            Some("cross-track"),
+            Some(json!({"text": "question", "side": {
+                "source_card_id": parent["id"], "context": "quoted text"
+            }})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(b.list_conversations(&target_track).await.1, json!([]));
+    b.shutdown_harnesses().await;
+}
+
+#[tokio::test]
+async fn side_conversation_refuses_worker_missing_and_oversized_sources() {
+    let b = boot().await;
+    let track = b.create_track("source-validation").await;
+    let worker = b.mint_codex_worker_card(&track).await;
+    let (_, parent) = b.create_conversation(&track, "valid-parent", "hello").await;
+    for (key, source, context, expected) in [
+        (
+            "worker",
+            worker,
+            "text".to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "missing",
+            "missing-card".to_string(),
+            "text".to_string(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "too-long",
+            parent["id"].as_str().unwrap().to_string(),
+            "😀".repeat(12_001),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let (status, response) = b.request("POST", &format!("/api/tracks/{track}/conversations"), Some(key),
+            Some(json!({"text": "question", "side": {"source_card_id": source, "context": context}}))).await;
+        assert_eq!(status, expected, "{response}");
+    }
+    assert_eq!(
+        b.list_conversations(&track)
+            .await
+            .1
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    b.shutdown_harnesses().await;
+}
+
+#[tokio::test]
+async fn side_source_cannot_be_forged_through_rest() {
+    let b = boot().await;
+    let track = b.create_track("source-protection").await;
+    let (_, parent) = b
+        .create_conversation(&track, "source-parent", "parent")
+        .await;
+    let (status, child) = b.request("POST", &format!("/api/tracks/{track}/conversations"), Some("source-child"),
+        Some(json!({"text": "question", "side": {"source_card_id": parent["id"], "context": "text"}}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{child}");
+    for value in [json!("forged-source"), json!(17), Value::Null] {
+        let (status, response) = b.request("PATCH", &format!("/api/cards/{}", child["id"].as_str().unwrap()), None,
+            Some(json!({"payload": {"schemaVersion": 1, "harness_profile": "assistant", "side_source_card_id": value}}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    }
+    b.shutdown_harnesses().await;
+}
+
+#[tokio::test]
+async fn side_source_survives_rest_and_trusted_payload_replacement() {
+    let b = boot().await;
+    let track = b.create_track("source-sticky").await;
+    let (_, parent) = b
+        .create_conversation(&track, "sticky-parent", "parent")
+        .await;
+    let (_, child) = b.request("POST", &format!("/api/tracks/{track}/conversations"), Some("sticky-child"),
+        Some(json!({"text": "question", "side": {"source_card_id": parent["id"], "context": "text"}}))).await;
+    let id = child["id"].as_str().unwrap();
+    let replacement = json!({"schemaVersion": 1, "harness_profile": "assistant"});
+    let (status, updated) = b
+        .request(
+            "PATCH",
+            &format!("/api/cards/{id}"),
+            None,
+            Some(json!({"payload": replacement.clone()})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["payload"]["side_source_card_id"], parent["id"]);
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let updated = calm_server::db::sqlite::card_update_tx(&mut tx, id, calm_server::model::CardPatch {
+        payload: Some(json!({"schemaVersion": 1, "harness_profile": "assistant", "side_source_card_id": "forged-trusted-source"})),
+        ..Default::default()
+    }).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(updated.payload["side_source_card_id"], parent["id"]);
+    let (_, rows) = b.list_conversations(&track).await;
+    assert_eq!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == child["id"])
+            .unwrap()["sourceCardId"],
+        parent["id"]
+    );
     b.shutdown_harnesses().await;
 }

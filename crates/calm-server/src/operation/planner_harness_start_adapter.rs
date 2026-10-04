@@ -294,6 +294,8 @@ pub struct PlannerHarnessStartOperationPayload {
 /// The user-supplied part of a lazily minted conversation card; everything the kernel owns (kind, role, `deletable`, the profile marker) is pinned by the adapter.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LazyMintCardSeed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<crate::side_conversation::SideConversation>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -505,6 +507,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             .ok_or_else(|| CalmError::NotFound(format!("track {}", payload.track_id)))?;
         // The lazy-mint branch: `validate` runs BEFORE the operation row exists, so the card is this operation's own output. These checks must stay strictly narrower than the ordinary branch.
         if let Some(seed) = payload.create_card.as_ref() {
+            if let Some(side) = &seed.side {
+                if payload.profile != HarnessProfile::Assistant || payload.actor != ActorId::User {
+                    return Err(CalmError::Forbidden(
+                        "Only the user may create an assistant discussion branch".into(),
+                    ));
+                }
+                side.validate(self.repo.as_ref(), &payload.track_id).await?;
+            }
             if (seed.model.is_some() || seed.reasoning_effort.is_some())
                 && payload.actor != ActorId::User
             {
@@ -652,11 +662,20 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let defer_runtime_start = payload.force_new_thread;
         // The briefing is rendered HERE, inside the mint transaction, and MUST stay ABOVE this transaction's first write: its reads run on a pool
         // connection, and once `tx` holds RESERVED on `events` the shared-lock read deadlocks against it (pinned by `briefing_ordering_survives_contention_in_the_mint_transaction`).
-        let opening_briefing = match payload.opening_briefing {
-            Some(OpeningBriefing::TodaysActivityOnTheLaunchpad) => {
-                launchpad_opening_briefing(self.repo.as_ref(), track_id.as_str()).await?
+        let side = payload
+            .create_card
+            .as_ref()
+            .and_then(|seed| seed.side.as_ref());
+        let opening_briefing = if let Some(side) = side {
+            side.validate(self.repo.as_ref(), &track_id).await?;
+            Some(side.opening_context())
+        } else {
+            match payload.opening_briefing {
+                Some(OpeningBriefing::TodaysActivityOnTheLaunchpad) => {
+                    launchpad_opening_briefing(self.repo.as_ref(), track_id.as_str()).await?
+                }
+                Some(OpeningBriefing::CallerSuppliesItsOwn) | None => None,
             }
-            Some(OpeningBriefing::CallerSuppliesItsOwn) | None => None,
         };
         if let Some(briefing) = opening_briefing.as_deref() {
             // `Internal`, not `BadRequest`: nothing the caller sent can make this fire.
@@ -680,6 +699,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 ("schemaVersion".to_string(), json!(1)),
                 ("harness_profile".to_string(), json!(minted_marker)),
             ]);
+            if let Some(side) = &seed.side {
+                card_payload.insert(
+                    crate::validation::SIDE_SOURCE_CARD_PAYLOAD_KEY.into(),
+                    json!(side.source_card_id),
+                );
+            }
             if seed.model.is_some() || seed.reasoning_effort.is_some() {
                 crate::planner_model::CardModelSelection::apply_to_payload(
                     &mut card_payload,

@@ -11,6 +11,9 @@ import {
 } from '../keys/mcp-tools.js';
 import { sha256Hex } from './sha256.js';
 
+/** A frozen discussion source; does not name a provider session. */
+export type SideConversation = Readonly<{ source_card_id: string; context: string }>;
+
 /** What kind of thing the conversation is; `'track-assistant'` is derived server-side from the card's own marker. */
 export type ConversationKind =
   | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'track-assistant';
@@ -22,6 +25,8 @@ export type ConversationState =
 export type Conversation = Readonly<{
   id: string;
   trackId: string;
+  /** Saved parent of a discussion branch; absent for ordinary conversations. */
+  sourceCardId?: string;
   /**
    * The track's title; absent when a per-Track list does not repeat it, so surfaces that name
    * tracks must resolve it.
@@ -653,6 +658,7 @@ const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.ob
   updatedAt: z.number(),
   // Required and nullable, as the kernel sends it; an older kernel's rows lack it and are rejected.
   lastTurnCompletedAt: z.number().nullable(),
+  sourceCardId: z.string().optional(),
 });
 
 /**
@@ -663,6 +669,7 @@ export function toTrackConversation(row: TrackConversationSummary): Conversation
   return {
     id: row.id,
     trackId: row.trackId,
+    ...(row.sourceCardId === undefined ? {} : { sourceCardId: row.sourceCardId }),
     title: row.title,
     kind: 'track-assistant',
     state: row.state,
@@ -684,13 +691,14 @@ export function trackConversationsOperation(trackId: string): ApiOperation<Conve
  * conversation after a timeout.
  */
 export function createTrackConversationOperation(
-  trackId: string, text: string, idempotencyKey: string, selection: ModelSelection,
+  trackId: string, text: string, idempotencyKey: string, selection: ModelSelection, side?: SideConversation,
 ): ApiOperation<Conversation> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/conversations`,
     headers: { 'Idempotency-Key': idempotencyKey },
     body: { text,
+      ...(side === undefined ? {} : { side }),
       ...(selection.model === null ? {} : { model: selection.model }),
       ...(selection.reasoning_effort === null ? {} : { reasoning_effort: selection.reasoning_effort }),
     },

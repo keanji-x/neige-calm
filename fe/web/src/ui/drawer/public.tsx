@@ -1,6 +1,6 @@
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 
 import { Icon } from '../icon/public.tsx';
 import { MobileHeader } from '../mobile-header/public.tsx';
@@ -24,8 +24,15 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, resize }: {
+export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false }: {
   open: boolean;
+  id?: string;
+  /** An independent second card displayed below this one, or switched on compact screens. */
+  companion?: ReactNode;
+  /** Keep the primary card mounted as companions open and close. */
+  stacked?: boolean;
+  /** Render inside a companion slot rather than positioning another overlay. */
+  inline?: boolean;
   /** The drawer's accessible name, painted once: in the desktop header row, or in the shared compact Header. */
   title: string;
   /** Accessible destination announced by the compact header's back control. */
@@ -48,6 +55,17 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   const wasOpen = useRef(open);
   const shouldRestoreFocus = useRef(false);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+
+  // A companion may be removed by its owner instead of receiving open=false.
+  // Restore while its focused DOM is still attached, before React removes it.
+  useLayoutEffect(() => () => {
+    const pane = panelRef.current;
+    if (pane === null || !pane.contains(document.activeElement)) return;
+    const target = previouslyFocusedRef.current;
+    if (target !== null && target.isConnected && target !== document.body && focusTook(target)) return;
+    document.querySelector<HTMLElement>('[data-nc-page-title]')?.focus();
+  }, []);
+
 
   /* The caller drops its selection the instant it asks for a close, so the retracting panel shows its last frame. A ref, not state: it must never cause a render. */
   const lastFrame = useRef<{
@@ -77,8 +95,14 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       /* Escape during IME composition is the IME's Escape; closing on it would take the draft. `keyCode === 229` is kept only to match the router's copy of this guard — `isComposing` is the working fence. WebKit may dispatch `compositionend` before that Escape; unverified. */
       if (event.isComposing || event.keyCode === 229) return;
-      const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
-      if (layers.item(layers.length - 1) === panelRef.current) onClose();
+      const origin = event.target instanceof Element ? event.target.closest('[data-nc-drawer]') : null;
+      if (origin !== null) {
+        if (origin === panelRef.current) onClose();
+        return;
+      }
+      const layers = [...document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]')]
+        .filter((layer) => layer.closest('[hidden]') === null);
+      if (layers.at(-1) === panelRef.current) onClose();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => { document.removeEventListener('keydown', onKeyDown); };
@@ -115,22 +139,23 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   /* Compact pages and reduced motion skip the exit animation, so closing never waits for one the stylesheet does not play. */
   if (!open && !closing) return null;
   /* `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by; a CSS Module class cannot be named across modules. It stays on during the closing animation. */
-  return (
+  const card = (
     <>
     <div
+      id={id}
       ref={panelRef}
-      className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
-      role="complementary"
+      className={`${styles.drawer} ${inline ? styles.embedded : ''} ${closing ? styles.drawerClosing : ''}`}
+      role={inline ? "region" : "complementary"}
       data-nc-drawer=""
       data-nc-escape-layer={open ? '' : undefined}
       data-nc-drawer-resizable={width !== undefined ? '' : undefined}
       /* Labelled once: by the painted desktop title, or, compact, by the name the shared Header also paints. */
-      {...(compact ? { 'aria-label': frame.title } : { 'aria-labelledby': titleId })}
+      {...(compact && !inline ? { 'aria-label': frame.title } : { 'aria-labelledby': titleId })}
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
     >
       {/* The header is before the scroller in the DOM, so the first Tab out of the container lands on its controls. */}
-      {compact ? (
+      {compact && !inline ? (
         <div className={styles.mobileHeader}>
           <MobileHeader
             title={frame.title}
@@ -169,5 +194,12 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       data-nc-drawer-seam=""
     />
     </>
+  );
+  if (companion === undefined && !stacked) return card;
+  return (
+    <div className={styles.stack}>
+      <div className={styles.cell}>{card}</div>
+      <div className={styles.cell} hidden={companion === undefined}>{companion}</div>
+    </div>
   );
 }

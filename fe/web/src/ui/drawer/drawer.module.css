@@ -450,4 +450,40 @@
       animation: none;
     }
   }
+
+  .stack {
+    position: absolute;
+    inset-block: var(--space-9) var(--space-11);
+    inset-inline-end: var(--space-10);
+    z-index: var(--z-overlay);
+    inline-size: var(--conversation-span, 40cqi);
+    max-inline-size: calc(100% - var(--space-10) * 2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .cell {
+    position: relative;
+    flex: 1;
+    min-block-size: 0;
+  }
+
+  .cell[hidden] { display: none; }
+
+  .cell > .seam {
+    inset-block: 0;
+    inset-inline-end: calc(var(--space-10) * -1);
+  }
+
+  .cell > .drawer,
+  .embedded {
+    position: relative;
+    inset: auto;
+    inline-size: 100%;
+    max-inline-size: none;
+    block-size: 100%;
+  }
+
+
 }

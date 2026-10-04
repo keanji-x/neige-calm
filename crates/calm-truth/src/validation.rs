@@ -24,13 +24,16 @@ pub const PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY: &str = "template_context";
 /// The Planner card's backend (`AgentProvider` serde names), minted at track creation and
 /// backfilled `"codex"` by migration 0117. Missing or unknown makes the card not a harness card.
 pub const PLANNER_PROVIDER_PAYLOAD_KEY: &str = "planner_provider";
+/// Creation-owned origin of an assistant discussion branch.
+pub const SIDE_SOURCE_CARD_PAYLOAD_KEY: &str = "side_source_card_id";
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 3] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 4] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
+    SIDE_SOURCE_CARD_PAYLOAD_KEY,
 ];
 
 /// Whether a stored value of a server-owned key is the shape the kernel mints (and so is kept
@@ -40,8 +43,8 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
         // Even corrupt snapshots stay protected: startup must report the
         // corruption, not erase it and silently drop the working method.
         PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY => true,
-        // A Planner never changes backend; a corrupt value must survive so the card stays not-a-harness.
-        PLANNER_PROVIDER_PAYLOAD_KEY => true,
+        // Creation-owned identity stays immutable, including a corrupt stored value.
+        PLANNER_PROVIDER_PAYLOAD_KEY | SIDE_SOURCE_CARD_PAYLOAD_KEY => true,
         TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
         _ => false,
     }

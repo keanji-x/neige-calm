@@ -548,6 +548,7 @@ pub mod event;
 pub mod event_cursor;
 pub mod events_prune;
 pub mod kernel_bin_path;
+pub mod side_conversation;
 pub use calm_types::ids;
 pub mod mcp_server;
 pub mod mentions;

@@ -320,6 +320,10 @@ mod runtime_view_tests;
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackConversationSummary {
+    /// The source conversation of a discussion branch; absent for ordinary conversations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source_card_id: Option<String>,
     /// The assistant card's id; the conversation's identity everywhere.
     pub id: String,
     /// The track this conversation lives on.

@@ -7923,7 +7923,7 @@
               "object",
               "null"
             ],
-            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`. Every kernel-minted server-owned value the card already carries is kept."
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`, `side_source_card_id`. Every kernel-minted server-owned value the card already carries is kept."
           },
           "sort": {
             "type": [
@@ -9747,6 +9747,17 @@
               "null"
             ]
           },
+          "side": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SideConversation",
+                "description": "Optional discussion source and frozen text excerpt. Does not fork provider history."
+              }
+            ]
+          },
           "text": {
             "type": "string",
             "description": "The first message. Validated exactly like `POST /api/cards/{id}/planner/input`, and\nbefore anything is minted, so a rejected message leaves no card behind."
@@ -10975,6 +10986,24 @@
           }
         }
       },
+      "SideConversation": {
+        "type": "object",
+        "required": [
+          "source_card_id",
+          "context"
+        ],
+        "properties": {
+          "context": {
+            "type": "string",
+            "description": "A frozen excerpt of loaded user/assistant text, not a complete history fork."
+          },
+          "source_card_id": {
+            "type": "string",
+            "description": "A Planner or assistant card on this same track; never a provider session id."
+          }
+        },
+        "additionalProperties": false
+      },
       "SourceOrigin": {
         "oneOf": [
           {
@@ -11799,6 +11828,13 @@
             ],
             "format": "int64",
             "description": "When the conversation's last non-interrupted turn ended, or `null` when there is none."
+          },
+          "sourceCardId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The source conversation of a discussion branch; absent for ordinary conversations."
           },
           "state": {
             "oneOf": [
@@ -12917,6 +12953,7 @@
         "required": [
           "areaCreateIdempotency",
           "conversationCreateModel",
+          "conversationSide",
           "kernelVersion",
           "apiVersion",
           "syncEventVersion",
@@ -12947,6 +12984,10 @@
           "conversationCreateModel": {
             "type": "boolean",
             "description": "First-message model selection is part of atomic conversation creation."
+          },
+          "conversationSide": {
+            "type": "boolean",
+            "description": "Atomic discussion creation with a persisted source and frozen text snapshot."
           },
           "databaseId": {
             "type": "string",

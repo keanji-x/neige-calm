@@ -11,7 +11,7 @@ import { Dialog } from '../../../ui/dialog/public.tsx';
 import { TrackPage, type TrackInputNotification, type TrackPageProps } from './public.tsx';
 import { card, renderPage, track } from './test-fixtures.tsx';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it('leaves Escape to a dialog above an open panel', async () => {
   const closePanel = vi.fn();
@@ -667,6 +667,7 @@ describe('TrackPage card inventory', () => {
   });
 
   it('keeps quick Chat floating on Report and leaves Conversations as history only', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     const onQuickChat = vi.fn();
     renderPage({
       conversationList: <button type="button">Previous conversation</button>,
@@ -880,4 +881,19 @@ describe('the desktop Planner entry', () => {
     renderPage({ onReply: vi.fn(), onCloseBoard: vi.fn(), board: <div>Worker output</div> });
     expect(screen.queryByRole('button', { name: 'Planner' })).toBeNull();
   });
+});
+
+
+it('does not mount the mobile Chat entry on desktop', () => {
+  renderPage({ onStartConversation: vi.fn() });
+  expect(document.querySelector('[data-nc-mobile-report-chat]')).toBeNull();
+});
+
+it('hides the mobile Chat entry while a conversation or another panel obscures Report', () => {
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+  renderPage({ onStartConversation: vi.fn(), conversationOpen: true });
+  expect(document.querySelector('[data-nc-mobile-report-chat]')).toBeNull();
+  cleanup();
+  renderPage({ onStartConversation: vi.fn(), mobilePanelObscured: true });
+  expect(document.querySelector('[data-nc-mobile-report-chat]')).toBeNull();
 });

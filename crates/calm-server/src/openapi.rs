@@ -284,6 +284,7 @@ use utoipa::OpenApi;
         SendPlannerInputResponse,
         TrackConversationSummary,
         crate::routes::track_conversations::NewTrackConversationBody,
+        crate::side_conversation::SideConversation,
         InterruptPlannerCardResponse,
         crate::routes::planner_rewind::RewindPlannerRequest,
         crate::routes::planner_rewind::RewindPlannerResponse,

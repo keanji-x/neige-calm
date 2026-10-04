@@ -308,9 +308,11 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   };
 }
 
+import type { SideConversation } from '../../../../core/domain/conversation.ts';
+
 export type ConversationMutations = Readonly<{
   /** The key identifies the DRAFT, not the attempt: a retry after a timeout must reuse it, or it mints a second conversation. */
-  create: (text: string, idempotencyKey: string, selection: ModelSelection) => Promise<Conversation>;
+  create: (text: string, idempotencyKey: string, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
   /** Re-read the list and hand back what it now holds. */
   refresh: () => Promise<Conversation[]>;
 }>;
@@ -333,8 +335,8 @@ export function useTrackConversationMutations(
   const client = useQueryClient();
   const create = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: ({ text, idempotencyKey, selection }: { text: string; idempotencyKey: string; selection: ModelSelection }, transport: ApiTransportPort) =>
-      runInteractiveWrite(transport, createTrackConversationOperation(trackId, text, idempotencyKey, selection), unauthorized),
+    mutationFn: ({ text, idempotencyKey, selection, side }: { text: string; idempotencyKey: string; selection: ModelSelection; side?: SideConversation }, transport: ApiTransportPort) =>
+      runInteractiveWrite(transport, createTrackConversationOperation(trackId, text, idempotencyKey, selection, side), unauthorized),
     onSuccess: (row) => {
       /* Written through as well as invalidated: the drawer switches to this row in the same tick. */
       client.setQueryData<Conversation[]>(queryKeys.trackConversations(trackId), (current) => {
@@ -349,7 +351,7 @@ export function useTrackConversationMutations(
     },
   });
   return {
-    create: (text, idempotencyKey, selection) => create.mutateAsync({ text, idempotencyKey, selection }),
+    create: (text, idempotencyKey, selection, side) => create.mutateAsync({ text, idempotencyKey, selection, side }),
     refresh: () => client.fetchQuery({
       ...trackConversationsQueryOptions(transport, trackId, unauthorized),
       staleTime: 0,
@@ -359,6 +361,7 @@ export function useTrackConversationMutations(
 
 const serverVersionSchema = z.object({
   conversationCreateModel: z.boolean().optional(),
+  conversationSide: z.boolean().optional(),
   webCompatVersion: z.number(),
   minWebCompatVersion: z.number(),
   syncEventVersion: z.number(),

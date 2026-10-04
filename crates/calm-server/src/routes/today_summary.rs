@@ -209,6 +209,7 @@ pub(crate) async fn write_today_summary(
             headers,
             track_id.clone(),
             NewTrackConversationBody {
+                side: None,
                 text: TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
                 model: None,
                 reasoning_effort: None,

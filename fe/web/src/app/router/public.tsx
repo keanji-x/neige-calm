@@ -1,3 +1,5 @@
+import { sideConversationSnapshot } from '../../../../core/domain/side-conversation.ts';
+import type { SideConversation } from '../../../../core/domain/conversation.ts';
 import { writeClipboardText } from '../../ui/operation-feedback/clipboard.ts';
 import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation.ts';
 import { useConversationStop } from '../conversations/stop.ts';
@@ -189,6 +191,8 @@ type ConversationStore = Readonly<{
 
 /** A server-backed list and the real Track whose rows may enter the tab registry. */
 type ConversationRouteIntent = Readonly<{
+  /** Open panes own their live rows; list refreshes must not overwrite them. */
+  ownedCardIds?: readonly string[];
   rows: readonly Conversation[];
   rememberOn: string;
 }>;
@@ -222,6 +226,7 @@ function errorMessage(error: unknown, fallback: string): string {
 
 /** Everything about the open conversation that does *not* come from its turns. */
 type ConversationFacts = Readonly<{
+  sourceCardId?: string;
   cardId: string;
   trackId: string;
   trackTitle: string | undefined;
@@ -240,6 +245,7 @@ function describeConversation(
 ): Conversation {
   return {
     id: facts.cardId, trackId: facts.trackId,
+    ...(facts.sourceCardId === undefined ? {} : { sourceCardId: facts.sourceCardId }),
     /* Absent, not `''`: list rows do not repeat the surrounding Track title.
        `ChatList` renders the difference; `''` would render a blank. */
     ...(facts.trackTitle === undefined ? {} : { trackTitle: facts.trackTitle }),
@@ -295,6 +301,8 @@ export function useConversationStore(
   const scopeState = scope?.state ?? null;
   const serverRows = routeIntent.rows;
   const rememberOn = routeIntent.rememberOn;
+  const ownedCardIds = routeIntent.ownedCardIds;
+  const sourceCardId = serverRows.find((row) => row.id === cardId)?.sourceCardId;
   /* Held across renders: the live replies read and re-read this query by its key, and number its reads. */
   const transcriptReads = useTranscriptReads();
   const transcriptQuery = useMemo(
@@ -469,9 +477,9 @@ export function useConversationStore(
     : phase === 'issuing_interrupt' ? { kind: 'stopping' }
     : stop.feedback?.kind === 'requesting' && !working ? null : stop.feedback;
   const facts = useMemo<ConversationFacts | null>(() => trackId === undefined ? null : {
-    cardId, trackId, trackTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
+    sourceCardId, cardId, trackId, trackTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
     state: scopeState, working, stalled, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
-  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled]);
+  }, [sourceCardId, cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled]);
   /** What the reader is looking at: every turn, echoes included. */
   const conversation = useMemo(
     () => facts === null ? null : describeConversation(facts, turns), [facts, turns],
@@ -499,7 +507,7 @@ export function useConversationStore(
       if (row.trackId !== rememberOn) continue;
       /* The open row belongs to the effect above; writing the plain row over it here
                would undo it on every render. */
-      if (row.id === conversation?.id) continue;
+      if (row.id === conversation?.id || ownedCardIds?.includes(row.id)) continue;
       /* A row arrives with `turns` absent and `title` null on the wire; carrying the
                remembered values keeps a confirmed count and derived name from being
                forgotten on refresh. A title the server does send wins. */
@@ -511,7 +519,7 @@ export function useConversationStore(
         registry.turnsOf(row.id),
       );
     }
-  }, [conversation?.id, registry, rememberOn, serverRows]);
+  }, [conversation?.id, registry, rememberOn, serverRows, ownedCardIds]);
 
   const listedConversations = useMemo(
     () => serverRows.map((row) => withRememberedTitle(
@@ -778,7 +786,7 @@ type ConversationPanelSource = Readonly<{
     scopeOf: (conversationId: string) => PlannerConversationScope | null;
     /** The id the card minted under this key will have, derived before the POST. */
     derivedCardId: (idempotencyKey: string) => string;
-    create: (text: string, idempotencyKey: string, selection: ModelSelection) => Promise<Conversation>;
+    create: (text: string, idempotencyKey: string, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
     refresh: () => Promise<readonly Conversation[]>;
     /** The one row a Planner reads and the Area whose `area/reports/` it reads, which is what `@` offers; `null` where no row is a Planner's. A track conversation is an Assistant, which `area/reports/` refuses. */
     planner: Readonly<{ cardId: string; areaId: string }> | null;
@@ -918,21 +926,74 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
  * not a `Conversation`: the card is minted by the first message, so until one is
  * sent there is no card id and nothing to fetch.
  */
+/** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
+  transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
+  options?: { showTrack?: boolean },
+) {
+  const registry = useConversationRegistry();
+  const compact = useCompactViewport();
+  const [sideError, setSideError] = useState<string | null>(null);
+  const mainTarget = useConversationViewTarget(source.scopeId);
+  const parentId = mainTarget[0]?.kind === 'row' ? mainTarget[0].id : null;
+  const capabilities = useQuery({ queryKey: ['server-version'],
+    queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized), enabled: parentId !== null && !compact, retry: false });
+  const sideSlot = `${source.scopeId}:side:${parentId ?? ''}`;
+  const sideTarget = useConversationViewTarget(sideSlot);
+  const sideDraft = registry.draftOf(sideSlot);
+  const childId = sideTarget[0]?.kind === 'row' ? sideTarget[0].id : null;
+  const child = source.rows.find((row) => row.id === childId);
+  const belongsToParent = !compact && parentId !== null && (sideTarget[0]?.kind === 'draft'
+    ? sideDraft?.side?.source_card_id === parentId : child?.sourceCardId === parentId);
+  const ownedCardIds = useMemo(() => [parentId, belongsToParent ? childId : null]
+    .filter((id): id is string => id !== null), [parentId, belongsToParent, childId]);
+  const side = useConversationPane(transport, unauthorized, source, sideTarget,
+    { ...options, ownedCardIds, inline: true, slotId: sideSlot, enabled: belongsToParent });
+  const main = useConversationPane(transport, unauthorized, source, mainTarget,
+    { ...options, ownedCardIds, sideError, stacked: !compact, showSideCommand: !compact, companion: belongsToParent && side.isOpen ? side.drawer : undefined,
+      onSide: (parent, entries, question) => {
+        if (compact) { setSideError('Side conversations are available on desktop.'); return false; }
+        if (capabilities.data?.conversationSide !== true) {
+          setSideError('Side conversations require a server that reports support. Update or reconnect, then try again.');
+          return false;
+        }
+        setSideError(null);
+        if (sideDraft !== null && sideDraft.sentText !== null) {
+          sideTarget[1]({ kind: 'draft' });
+          if (question !== '') { setSideError('This side draft still has an unsettled delivery. Continue or retry it before starting another.'); return false; }
+          return;
+        }
+        if (question === '') {
+          const saved = source.rows.find((row) => row.sourceCardId === parent.id);
+          if (saved !== undefined) { sideTarget[1]({ kind: 'row', id: saved.id }); return; }
+        }
+        registry.startDraft({ scopeId: sideSlot, key: mintIdempotencyKey(),
+          side: sideConversationSnapshot(parent.id, entries), model: FOLLOW_INSTALLATION_DEFAULT,
+          text: question === '' ? null : question, autoSend: question !== '',
+          sentText: null, creating: false, error: null, remedy: null });
+        sideTarget[1]({ kind: 'draft' });
+      },
+    });
+  return main;
+}
+
+function useConversationPane(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
-  options?: { showTrack?: boolean },
+  target: ReturnType<typeof useConversationViewTarget>,
+  options?: { showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
+    companion?: React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
      retain their separate ConversationProvider lifecycle. */
-  const [openTarget, setOpenTarget] = useConversationViewTarget(source.scopeId);
+  const [openTarget, setOpenTarget] = target;
   /* The conversation whose composer this route was asked to put the caret in. Held
        here because the request is cleared in the same commit that opens the row;
        dropped when the drawer closes. */
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
   const [resendConfirmation, setResendConfirmation] = useState<string | null>(null);
-  const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
+  const openRowId = options?.enabled === false ? null : openTarget?.kind === 'row' ? openTarget.id : null;
   /* A track conversation runs on Codex; Claude is a Planner-only backend (#1791). */
   const draftCatalog = useQuery({ ...modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized),
     enabled: openTarget?.kind === 'draft' });
@@ -945,7 +1006,7 @@ function useConversationPanel(
     ? source.scopeOf(openRowId)
     : null;
   const routeIntent: ConversationRouteIntent = {
-    rows: source.rows, rememberOn: source.rememberOn,
+    rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds,
   };
 
 
@@ -1004,7 +1065,7 @@ function useConversationPanel(
     store.historyReady && !store.historyLoading && store.historyError === null);
 
   /* Only this route's slot is visible, reopenable or sendable here. */
-  const sourceScopeId = source.scopeId;
+  const sourceScopeId = options?.slotId ?? source.scopeId;
   const draft = registry.draftOf(sourceScopeId);
   const adoptedDraftId = registry.adoptedDraftIdOf(sourceScopeId);
   const creating = draft?.creating ?? false;
@@ -1059,7 +1120,7 @@ function useConversationPanel(
        belong to another track. */
   useEffect(() => {
     const requestedOpenId = registry.requestedOpenId;
-    if (requestedOpenId === null) return;
+    if (requestedOpenId === null || options?.inline === true) return;
     /* Captured here, not read at render time: the request is cleared in the same
            commit that opens the row. */
     const focusComposer = registry.requestedOpenFocusesComposer;
@@ -1067,7 +1128,7 @@ function useConversationPanel(
     setOpenTarget({ kind: 'row', id: requestedOpenId });
     if (focusComposer) setComposerFocusFor(requestedOpenId);
     registry.clearOpenRequest();
-  }, [registry, rows, setOpenTarget]);
+  }, [registry, rows, setOpenTarget, options?.inline]);
 
   useEffect(() => {
     if (open === null) return;
@@ -1076,8 +1137,8 @@ function useConversationPanel(
       if (!store.working || store.stopping) return;
       const target = event.target;
       if (!(target instanceof Element)) return;
-      const region = target.closest('[role="complementary"]');
-      if (region === null) return;
+      const region = target.closest('[data-nc-drawer]');
+      if (region === null || region.id !== `conversation-${open.id}`) return;
       /* The source panel is a second `complementary` on the same track, and its Escape
                must not reach the planner; the region is asked whether it holds the panel's marker. */
       if (region.querySelector('[data-nc-report-source]') !== null) return;
@@ -1104,7 +1165,7 @@ function useConversationPanel(
     /* The key is minted once, for the draft, not per send: a different key on the
            retry is a different derived card. */
     registry.startDraft({
-      scopeId: source.scopeId,
+      scopeId: sourceScopeId,
       model: FOLLOW_INSTALLATION_DEFAULT,
       key: mintIdempotencyKey(),
       text: null, sentText: null, creating: false, error: null, remedy: null,
@@ -1148,6 +1209,10 @@ function useConversationPanel(
   /* The draft's own send: it runs while there is no card, and its text lives in the
        registry's draft entry until the row it created is adopted. */
   const refuseOfflineDraft = (attempt: ConversationDraft, text: string): boolean => {
+    if (attempt.side !== undefined && draftCapabilities.data?.conversationSide !== true) {
+      amendDraft(attempt, { text, error: 'This server does not report side conversation support. Update or reconnect before retrying.', remedy: 'retry' });
+      return true;
+    }
     if ((attempt.model.model !== null || attempt.model.reasoning_effort !== null) && !supportsDraftModel) {
       amendDraft(attempt, { text, error: 'This server does not support choosing the first message’s model yet.', remedy: 'retry' });
       return true;
@@ -1170,7 +1235,8 @@ function useConversationPanel(
 
   const sendDraft = (text: string) => {
     if (creating || draft === null) return;
-    const { create, refresh, scopeId, derivedCardId } = source;
+    const { create, refresh, derivedCardId } = source;
+    const scopeId = sourceScopeId;
     /* The server refuses `text.trim().is_empty()` but counts `chars()` on the
            untrimmed text, in Unicode scalar values: so the blank check trims, the
            length check does not, and `Array.from` counts code points. */
@@ -1211,7 +1277,7 @@ function useConversationPanel(
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        const created = await create(text, attempt.key, attempt.model);
+        const created = await create(text, attempt.key, attempt.model, attempt.side);
         if (current()) adopt(attempt, created);
         else amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
       } catch (error: unknown) {
@@ -1284,7 +1350,8 @@ function useConversationPanel(
 
   const sendAsNewConversation = () => {
     if (creating || draft === null || draft.text === null) return;
-    const { create, refresh, scopeId, derivedCardId } = source;
+    const { create, refresh, derivedCardId } = source;
+    const scopeId = sourceScopeId;
     const text = draft.text;
     if (refuseOfflineDraft(draft, text)) return;
     const current = admitDraft(draft); if (current === null) return;
@@ -1307,7 +1374,7 @@ function useConversationPanel(
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        const created = await create(text, attempt.key, attempt.model);
+        const created = await create(text, attempt.key, attempt.model, attempt.side);
         if (current()) adopt(attempt, created);
         else amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
       } catch (error: unknown) {
@@ -1340,7 +1407,21 @@ function useConversationPanel(
 
   /* A draft belonging to another Track is not open here: `draft` is read only
      from this route's provider slot. */
-  const draftOpen = openTarget?.kind === 'draft' && draft !== null;
+  const contextSourceId = draft?.side?.source_card_id ?? open?.sourceCardId;
+  const contextSource = source.rows.find((row) => row.id === contextSourceId);
+  const draftOpen = options?.enabled !== false && openTarget?.kind === 'draft' && draft !== null;
+
+  const autoSent = useRef<string | null>(null);
+  const sendDraftRef = useRef(sendDraft);
+  sendDraftRef.current = sendDraft;
+  useEffect(() => {
+    if (!draftOpen || draft?.autoSend !== true || draft.text === null || draft.sentText !== null
+      || creating || autoSent.current === draft.key) return;
+    autoSent.current = draft.key;
+    // Consume the one-shot intent before delivery; retry keys must never re-arm it.
+    registry.editDraft(draft, (current) => ({ ...current, autoSend: false }));
+    sendDraftRef.current(draft.text);
+  }, [draftOpen, draft, creating, registry]);
 
   return {
     isOpen: open !== null || draftOpen,
@@ -1364,10 +1445,15 @@ function useConversationPanel(
     startConversation: start,
     drawer: (
       <Drawer
+        id={open === null ? undefined : `conversation-${open.id}`}
+        inline={options?.inline}
+        stacked={options?.stacked}
+        companion={options?.companion}
+        closeLabel={options?.inline === true ? 'Close side conversation' : 'Close conversation'}
         open={open !== null || draftOpen}
         /* A draft has no name yet, and naming it after the words being typed
            would rename the drawer on every keystroke. */
-        title={open !== null ? conversationName(open) : draftOpen ? 'Untitled' : ''}
+        title={options?.inline === true ? 'Side conversation · Codex' : open !== null ? conversationName(open) : draftOpen ? 'Untitled' : ''}
         mobileBackLabel="Conversations"
         onClose={closeDrawer}
         resize={drawerResize}
@@ -1387,7 +1473,7 @@ function useConversationPanel(
                 )}
               </ChatFooterNotice>
             )}
-            <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother}
+            <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={options?.inline === true ? undefined : startAnother}
               mentionTrigger={mentionTrigger}
               draft={{ text: newConversationText, onChange: setNewConversationText }}
               /* A track conversation is not a Planner create: no availability gate here (#1817). */
@@ -1460,6 +1546,9 @@ function useConversationPanel(
               }}
               onCancel={() => setResendConfirmation(null)}
             />
+            {options?.sideError != null && (
+              <ChatFooterNotice><ChatFooterError message={options.sideError} /></ChatFooterNotice>
+            )}
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
@@ -1483,6 +1572,9 @@ function useConversationPanel(
               /* `delivered` is the one outcome that licenses forgetting the images; every
                                other one leaves the message with the reader. */
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
+              showSideCommand={options?.showSideCommand}
+              onSideConversation={options?.onSide === undefined || !store.historyReady ? undefined
+                : (question) => options.onSide?.(open, store.turnsOf(open.id), question)}
               onSend={(text) => edit.send(open.id, () => store.send(open.id, text, attachments.items, true))}
               allowEmptyText={attachments.items.length > 0}
               /* The queue lives inside the composer, above the field: these messages have
@@ -1504,7 +1596,7 @@ function useConversationPanel(
               /* `stopping` keeps Stop shown while the interrupt is in flight; `interrupt()`
                                already refuses a second one. */
               onStop={store.working || store.stopping ? store.interrupt : undefined}
-              onNewConversation={startAnother}
+              onNewConversation={options?.inline === true ? undefined : startAnother}
               mentionTrigger={mentionTrigger}
               /* The kernel reads the selection when it hands a batch to codex, so a change
                                lands on the next turn not yet issued; a REFUSED turn is re-issued and
@@ -1535,6 +1627,10 @@ function useConversationPanel(
           </>
         )}
       >
+        {(draft?.side !== undefined && draftOpen || open?.sourceCardId !== undefined) && (
+          <p>From {contextSource === undefined ? 'an earlier conversation' : conversationName(contextSource)}.
+            {' '}Uses a snapshot of loaded text, not complete history. Replies use Codex.</p>
+        )}
         {/* Shown back because the composer clears its field on send; nothing here
                     claims they arrived. */}
         {draftOpen && (draft?.text == null

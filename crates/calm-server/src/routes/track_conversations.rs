@@ -43,6 +43,9 @@ pub fn router() -> Router<AppState> {
 /// Body of `POST /api/tracks/{track_id}/conversations`: the first message.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct NewTrackConversationBody {
+    /// Optional discussion source and frozen text excerpt. Does not fork provider history.
+    #[serde(default)]
+    pub side: Option<crate::side_conversation::SideConversation>,
     /// The first message. Validated exactly like `POST /api/cards/{id}/planner/input`, and
     /// before anything is minted, so a rejected message leaves no card behind.
     pub text: String,
@@ -200,6 +203,7 @@ pub(crate) async fn create_track_conversation_inner(
             idempotency_key: Some(idempotency_key.clone()),
             model: body.model,
             reasoning_effort: body.reasoning_effort,
+            side: body.side,
         }),
         // The caller decides; `prepare_tx` renders. `None` (what older payloads deserialize
         // to) means "no briefing".
@@ -277,6 +281,7 @@ async fn load_track_conversation_summaries(
     // evaluates, so planner and assistant rows read one definition of "the last turn ended".
     let sql = format!(
         r#"SELECT c.id                                   AS id,
+                  json_extract(c.payload, '$.side_source_card_id') AS source_card_id,
                   c.track_id                              AS track_id,
                   c.title                                AS title,
                   ws.state                               AS state,
@@ -313,6 +318,7 @@ async fn load_track_conversation_summaries(
 
 #[derive(sqlx::FromRow)]
 struct TrackConversationRow {
+    source_card_id: Option<String>,
     id: String,
     track_id: String,
     title: Option<String>,
@@ -331,6 +337,7 @@ impl TryFrom<TrackConversationRow> for TrackConversationSummary {
             .transpose()
             .map_err(CalmError::Internal)?;
         Ok(TrackConversationSummary {
+            source_card_id: row.source_card_id,
             id: row.id,
             track_id: row.track_id,
             title: row.title,

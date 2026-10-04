@@ -1172,7 +1172,12 @@ mod tests {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
         assert_eq!(
             SERVER_OWNED_CARD_PAYLOAD_KEYS,
-            ["terminal_signals", "template_context", "planner_provider"]
+            [
+                "terminal_signals",
+                "template_context",
+                "planner_provider",
+                "side_source_card_id"
+            ]
         );
         let probes = [json!(true), json!({}), json!("declared"), Value::Null];
         for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {

@@ -36,6 +36,7 @@ import {
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
 import styles from './thread.module.css';
+import { sideQuestion } from '../../../../../core/domain/side-conversation.ts';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
 import { CurrentStatusNotice } from './outcome-notice.tsx';
 import { moveIntoComposer } from './edit-motion.ts';
@@ -478,6 +479,8 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
   label: 'New conversation',
 });
 
+export const SIDE_CONVERSATION_COMMAND = Object.freeze({ id: 'side-conversation', label: 'Side conversation' });
+
 /** Checked by shape: the `void` half of `onSend`'s signature is a return the caller does not make. */
 function isThenable(value: unknown): value is Promise<SendOutcome> {
   return typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
@@ -485,7 +488,7 @@ function isThenable(value: unknown): value is Promise<SendOutcome> {
 
 /** Astryx's ChatComposer; we own the value and the send callback so the kernel path stays a string. */
 export function ChatComposer({
-  onSend, onStop, onNewConversation, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
+  onSend, onStop, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
   draft: controlledDraft, footerActions, sendAdornment,
   drawer, headerActions, allowEmptyText = false, mentionTrigger,
 }: {
@@ -497,6 +500,10 @@ export function ChatComposer({
   onStop?: () => void;
   /** The same callback the module head's `+` fires; absent where the `+` is absent, which is what keeps the `/` menu from existing. */
   onNewConversation?: () => void;
+  /** Starts a separate discussion using a frozen context excerpt. */
+  onSideConversation?: (question: string) => void | boolean;
+  /** Hide this command on surfaces that cannot open a second card. */
+  showSideCommand?: boolean;
   disabled?: boolean;
   /** A send was taken and waits to go (an Edit's rewind is still out): Send turns into a spinner that takes no press. */
   sendWaiting?: boolean;
@@ -527,6 +534,8 @@ export function ChatComposer({
   /* Read through a ref so `triggers` can be a stable array: `useTriggerMenu` compares the active trigger by identity on every input event. */
   const newConversationRef = useRef(onNewConversation);
   newConversationRef.current = onNewConversation;
+  const sideConversationRef = useRef(onSideConversation);
+  sideConversationRef.current = onSideConversation;
 
   const rootRef = useRef<HTMLDivElement>(null);
   const [sendCount, setSendCount] = useState(0);
@@ -562,27 +571,33 @@ export function ChatComposer({
     parkedFocus.current = document.activeElement;
   }, [sendCount, disabled, focusRequest]);
 
+  const hasNewCommand = onNewConversation !== undefined;
+  const hasSideCommand = onSideConversation !== undefined && showSideCommand;
   const commandTrigger = useMemo<ChatComposerTrigger>(() => ({
     character: '/',
-    searchSource: createStaticSource([NEW_CONVERSATION_COMMAND]),
+    searchSource: createStaticSource([
+      ...(hasNewCommand ? [NEW_CONVERSATION_COMMAND] : []),
+      ...(hasSideCommand ? [SIDE_CONVERSATION_COMMAND] : []),
+    ]),
     menuLabel: 'Commands',
     emptySearchResultsText: 'No command by that name',
     /* `item.label` is deliberately not rendered. */
-    renderItem: () => (
+    renderItem: (item) => (
       <span className={styles.commandItem}>
         {/* The `+`'s own glyph: this is the same action. No label — `Icon` is `aria-hidden` and the row's name comes from the item's `label`. */}
         <Icon name="plus" size="sm" />
-        <span className={styles.commandName}>new</span>
-        <span className={styles.commandHint}>This one stays in the list</span>
+        <span className={styles.commandName}>{item.id === SIDE_CONVERSATION_COMMAND.id ? 'side' : 'new'}</span>
+        <span className={styles.commandHint}>{item.id === SIDE_CONVERSATION_COMMAND.id ? 'Discuss with a text snapshot' : 'This one stays in the list'}</span>
       </span>
     ),
     /* A command is run, not inserted: returning `''` leaves the composer clear, and Astryx has already deleted the typed `/new`. */
-    onSelect: () => {
-      newConversationRef.current?.();
+    onSelect: (item) => {
+      if (item.id === SIDE_CONVERSATION_COMMAND.id) sideConversationRef.current?.('');
+      else newConversationRef.current?.();
       return '';
     },
-  }), []);
-  const hasCommands = onNewConversation !== undefined;
+  }), [hasNewCommand, hasSideCommand]);
+  const hasCommands = onNewConversation !== undefined || onSideConversation !== undefined;
   /* One array per combination: a new array per render would make `useTriggerMenu` drop an open menu. */
   const triggers = useMemo<ChatComposerTrigger[]>(() => [
     ...(hasCommands ? [commandTrigger] : []),
@@ -594,6 +609,16 @@ export function ChatComposer({
     const text = value.trim();
     /* `allowEmptyText` is the caller saying the message carries an image. */
     if ((text === '' && !allowEmptyText) || disabled) return;
+    const question = onSideConversation === undefined ? null : sideQuestion(text);
+    if (question !== null) {
+      if (onSideConversation?.(question) === false) {
+        // Astryx clears after calling onSend; restore after its clear, like a refused send.
+        void Promise.resolve().then(() => setDraft((current) => current === '' ? text : current));
+        return;
+      }
+      setDraft('');
+      return;
+    }
     const outcome = onSend(text);
     setDraft('');
     /* Cleared optimistically, put back only for the outcome that says the server stored nothing, and only into an empty field. Excluded: `unresolved` (no idempotency key, so a second delivery is one Enter away), `abandoned` (another conversation) and `not-sent` (must not take the field from an earlier send still waiting). */

@@ -2,6 +2,7 @@ import {
   createContext, useCallback, useContext, useMemo, useRef, type ReactNode,
 } from 'react';
 
+import type { SideConversation } from '../../../../core/domain/conversation.ts';
 import type { ModelSelection, Conversation, OptimisticConversationTurn, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { EMPTY_COMPOSER, isSameComposer, withRefill, type ComposerContent } from '../../../../core/domain/conversation-rewind.ts';
 import { NO_UPLOAD, type UploadState } from '../../features/planner/attachments.tsx';
@@ -14,6 +15,10 @@ import { useReducer, useState } from '../../ui/state/public.ts';
 export type ConversationDraft = Readonly<{
   /** The Track this draft belongs to. */
   scopeId: string;
+  /** Frozen source attached to this draft and every retry of it. */
+  side?: SideConversation;
+  /** `/side question` sends the prepared question once; recovery thereafter is explicit. */
+  autoSend?: boolean;
   /** Chosen before sending and locked while delivery is unconfirmed. */
   model: ModelSelection;
   /** Identifies the draft to the server; minted once, never once per send. */

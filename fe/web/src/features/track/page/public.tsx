@@ -530,7 +530,8 @@ export function TrackPage({
       {board}
       </div>
 
-      {!boardOpen && !mobilePanelOpen && onStartConversation !== undefined && (
+      {compactViewport && !conversationOpen && !mobilePanelObscured
+        && !boardOpen && !mobilePanelOpen && onStartConversation !== undefined && (
         <AstryxButton
           className={styles.mobileReportChatFab}
           data-nc-mobile-report-chat=""

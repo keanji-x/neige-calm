@@ -278,7 +278,12 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
     let (state, track_id, repo) = boot_with_repo().await;
     assert_eq!(
         SERVER_OWNED_CARD_PAYLOAD_KEYS,
-        ["terminal_signals", "template_context", "planner_provider"]
+        [
+            "terminal_signals",
+            "template_context",
+            "planner_provider",
+            "side_source_card_id"
+        ]
     );
     for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
         for (kind, value) in [

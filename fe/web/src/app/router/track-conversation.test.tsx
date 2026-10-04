@@ -2899,3 +2899,153 @@ it('an edited conversation retry cannot cross recovery after its reconciliation 
     expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
   } finally { fetch.mockRestore(); }
 });
+
+
+const sideVersion = () => ok({ conversationSide: true, webCompatVersion: 1, minWebCompatVersion: 1, syncEventVersion: 1, dbInstanceId: 'side-db' });
+
+describe('side conversations', () => {
+  it('keeps the parent open, creates an independent child with a text snapshot and reopens it', async () => {
+    let child: Row & { sourceCardId: string } | null = null;
+    const { requests } = setup((request) => {
+      if (request.path === '/api/version') return sideVersion();
+      if (request.path === CONVERSATIONS && request.method === 'POST') {
+        child = { ...derivedRow('w1', request), sourceCardId: ASSISTANT_CARD.id };
+        return created(child);
+      }
+      if (request.path === CONVERSATIONS) return ok([assistantRow(), ...(child === null ? [] : [child])]);
+      if (request.path.startsWith(`/api/cards/${ASSISTANT_CARD.id}/harness/items`)) return ok([
+        harnessMessage(1, 'agentMessage', { id: 'reply', type: 'agentMessage', text: 'Parent explanation' }),
+      ]);
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByText('Parent explanation');
+    await write('/side Why this design?');
+    const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+    expect(creates(requests, CONVERSATIONS)[0].body).toMatchObject({ text: 'Why this design?',
+      side: { source_card_id: ASSISTANT_CARD.id, context: 'Assistant: Parent explanation' } });
+    expect(screen.getByRole('complementary', { name: 'Assistant' })).toBeTruthy();
+    await waitFor(() => expect(within(branch).getByRole('combobox', { name: 'Message' }).getAttribute('contenteditable')).toBe('true'));
+    const field = within(branch).getByRole('combobox', { name: 'Message' });
+    await typeInto(field, 'Follow-up');
+    fireEvent.keyDown(field, { key: 'Enter' });
+    await waitFor(() => expect(requests.some((request) => request.method === 'POST'
+      && request.path === `/api/cards/${child!.id}/planner/input`)).toBe(true));
+    expect(requests.filter((request) => request.method === 'POST'
+      && request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/input`)).toEqual([]);
+    fireEvent.click(within(branch).getByRole('button', { name: 'Close side conversation' }));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Side conversation · Codex' })).toBeNull());
+    await write('/side');
+    await screen.findByRole('region', { name: 'Side conversation · Codex' });
+    expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+  });
+
+  it('keeps an unsent side draft separate from the parent composer', async () => {
+    setup((request) => request.path === '/api/version' ? sideVersion() : undefined);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('/side');
+    const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
+    const field = within(branch).getByRole('combobox', { name: 'Message' });
+    await typeInto(field, 'Unsent side words');
+    fireEvent.click(within(branch).getByRole('button', { name: 'Close side conversation' }));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Side conversation · Codex' })).toBeNull());
+    expect(messageField().textContent).toBe('');
+    await write('/side');
+    const reopened = await screen.findByRole('region', { name: 'Side conversation · Codex' });
+    expect(within(reopened).getByRole('combobox', { name: 'Message' }).textContent).toBe('Unsent side words');
+  });
+});
+
+
+it('refuses side creation on an older server without sending the command to the parent', async () => {
+  const { requests } = setup((request) => request.path === '/api/version'
+    ? ok({ webCompatVersion: 1, minWebCompatVersion: 1, syncEventVersion: 1, dbInstanceId: 'old-db' }) : undefined);
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('/side Keep this question');
+  await screen.findByText('Side conversations require a server that reports support. Update or reconnect, then try again.');
+  expect(messageField().textContent).toBe('/side Keep this question');
+  expect(creates(requests, CONVERSATIONS)).toEqual([]);
+  expect(requests.filter((request) => request.method === 'POST' && request.path.endsWith('/planner/input'))).toEqual([]);
+});
+
+it('adopts a side conversation whose create reply was lost in its own draft slot', async () => {
+  let child: Row & { sourceCardId: string } | null = null;
+  const { requests } = setup((request) => {
+    if (request.path === '/api/version') return sideVersion();
+    if (request.path === CONVERSATIONS && request.method === 'POST') {
+      child = { ...derivedRow('w1', request), sourceCardId: ASSISTANT_CARD.id };
+      return failure(500, 'internal', 'reply lost');
+    }
+    if (request.path === CONVERSATIONS) return ok([assistantRow(), ...(child === null ? [] : [child])]);
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('/side Did it arrive?');
+  const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
+  await waitFor(() => expect(within(branch).getByRole('combobox', { name: 'Message' }).getAttribute('contenteditable')).toBe('true'));
+  expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+  expect(screen.getByRole('complementary', { name: 'Assistant' })).toBeTruthy();
+  expect(within(branch).queryByText('reply lost')).toBeNull();
+});
+
+it('interrupts only the focused pane when parent and side turns both run', async () => {
+  const child = { ...assistantRow({ id: 'child-running', title: 'Running side', updatedAt: 40 }), sourceCardId: ASSISTANT_CARD.id };
+  const { requests } = setup((request) => {
+    if (request.path === '/api/version') return sideVersion();
+    if (request.path === CONVERSATIONS) return ok([assistantRow(), child]);
+    if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r',
+      phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+    if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', stopped: true });
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('/side');
+  const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
+  const field = within(branch).getByRole('combobox', { name: 'Message' });
+  await waitFor(() => expect(within(branch).getByRole('button', { name: 'Stop' })).toBeTruthy());
+  field.focus();
+  fireEvent.keyDown(field, { key: 'Escape' });
+  await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1));
+  expect(requests.find((request) => request.path.endsWith('/planner/interrupt'))?.path).toBe('/api/cards/child-running/planner/interrupt');
+  expect(screen.getByRole('complementary', { name: 'Assistant' })).toBeTruthy();
+});
+
+
+it('does not offer an ordinary /new draft in the side-only slot', async () => {
+  setup((request) => request.path === '/api/version' ? sideVersion() : undefined);
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('/side');
+  const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
+  await typeInto(within(branch).getByRole('combobox', { name: 'Message' }), '/');
+  expect(screen.queryByRole('option', { name: /^new/ })).toBeNull();
+  expect(branch.isConnected).toBe(true);
+});
+
+it('consumes automatic side submission once before an exhausted retry key changes', async () => {
+  let child: Row & { sourceCardId: string } | null = null;
+  const { requests } = setup((request) => {
+    if (request.path === '/api/version') return sideVersion();
+    if (request.path === CONVERSATIONS && request.method === 'POST') {
+      if (creates(requests, CONVERSATIONS).length === 1) return failure(409, 'idempotency_key_exhausted', 'key exhausted');
+      child = { ...derivedRow('w1', request), sourceCardId: ASSISTANT_CARD.id };
+      return created(child);
+    }
+    if (request.path === CONVERSATIONS) return ok([assistantRow(), ...(child === null ? [] : [child])]);
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('/side Retry deliberately');
+  const retry = await screen.findByRole('button', { name: 'Try again' });
+  await act(async () => { await Promise.resolve(); });
+  expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+  fireEvent.click(retry);
+  await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(2));
+  expect(creates(requests, CONVERSATIONS)[1].body).toEqual(creates(requests, CONVERSATIONS)[0].body);
+});

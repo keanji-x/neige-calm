@@ -528,6 +528,10 @@ recipe_revision: number | null, workspace: TrackWorkspace, created_at: number, u
  */
 export type TrackConversationSummary = { 
 /**
+ * The source conversation of a discussion branch; absent for ordinary conversations.
+ */
+sourceCardId?: string, 
+/**
  * The assistant card's id; the conversation's identity everywhere.
  */
 id: string, 
