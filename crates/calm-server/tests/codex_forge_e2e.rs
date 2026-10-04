@@ -1219,12 +1219,8 @@ fn fixture_origin_names_github_and_reaches_the_local_bare_repo() {
     clone_for_track(&origin, &clone);
     point_origin_at_github(&clone, &origin, &fixture_github_url());
 
-    let configured = git_stdout(&clone, ["config", "--get", "remote.origin.url"]);
-    assert_eq!(configured, fixture_github_url());
     assert_eq!(
-        configured
-            .trim_start_matches("https://github.com/")
-            .trim_end_matches(".git"),
+        cross_checked_origin_repo(&issue_development_method(), &clone),
         issue_development_input(1)["repo"]
     );
     let local = origin.display().to_string();
@@ -1266,7 +1262,7 @@ fn issue_development_input_binds_against_the_shipped_manifest() {
 }
 
 /// The fixture's Planner card carries the issue-development working method the create route
-/// stores, whose repo cross-check reads the configured origin URL.
+/// stores.
 #[test]
 fn template_planner_card_payload_carries_the_issue_development_method() {
     let payload = calm_server::routes::tracks::template_planner_card_payload_for_test(
@@ -1275,14 +1271,11 @@ fn template_planner_card_payload_carries_the_issue_development_method() {
         ISSUE_DEVELOPMENT,
     )
     .expect("planner card payload");
-    let method = calm_server::templates::TemplateRoster::builtin()
-        .get(ISSUE_DEVELOPMENT)
-        .expect("builtin template")
-        .recipe()
-        .body;
-    assert_eq!(payload["template_context"]["body"], json!(method));
+    assert_eq!(
+        payload["template_context"]["body"],
+        json!(issue_development_method())
+    );
     assert_eq!(payload["prompt"], "goal");
-    assert!(method.contains("`git config --get remote.origin.url`"));
 }
 
 /// gh shim `issue view --json body`: a seeded per-issue body file wins; absent

@@ -10,13 +10,14 @@ use calm_server::operation::planner_harness_start_adapter::{
 use calm_server::operation::{OperationKey, OperationOutcome};
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionProjectionRepo};
-use calm_server::templates::{ISSUE_DEVELOPMENT, TemplateRoster};
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
 use super::agent_diag::panic_with_agent_diag;
-use super::codex_fixture::{Fixture, PLANNER_SESSION_ID, issue_development_input};
-use super::git_helpers::git_stdout;
+use super::codex_fixture::{
+    Fixture, PLANNER_SESSION_ID, cross_checked_origin_repo, issue_development_input,
+    issue_development_method,
+};
 
 pub async fn boot_planner_harness_via_start_op(fx: &Fixture, goal: String) {
     let request = PlannerHarnessStartOperationPayload {
@@ -143,19 +144,10 @@ pub async fn assert_planner_prompt_binds_issue_development(fx: &Fixture, issue_n
         .split_once("## Selected Template\n")
         .unwrap_or_else(|| panic!("no template working method in the prompt:\n{prompt}"));
     let snapshot: Value = serde_json::from_str(snapshot).expect("template snapshot json");
-    let method = TemplateRoster::builtin()
-        .get(ISSUE_DEVELOPMENT)
-        .expect("builtin issue-development template")
-        .recipe()
-        .body;
+    let method = issue_development_method();
     assert_eq!(snapshot["body"], json!(method));
-    assert!(method.contains("`git config --get remote.origin.url`"));
-
-    let origin = git_stdout(&fx.track_cwd, ["config", "--get", "remote.origin.url"]);
     assert_eq!(
-        origin
-            .trim_start_matches("https://github.com/")
-            .trim_end_matches(".git"),
+        cross_checked_origin_repo(&method, &fx.track_cwd),
         input["repo"],
         "the template's repo cross-check must accept the fixture origin"
     );

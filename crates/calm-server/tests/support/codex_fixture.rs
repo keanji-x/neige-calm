@@ -67,6 +67,45 @@ pub fn fixture_github_url() -> String {
     format!("https://github.com/{FIXTURE_GITHUB_REPO}.git")
 }
 
+/// The command the issue-development repo cross-check runs; its first line is the URL git fetches
+/// origin from, as configured before any `url.<base>.insteadOf` rewrite.
+pub const REPO_CROSS_CHECK_CMD: &str = "git config --get-all remote.origin.url";
+
+/// The builtin issue-development working method.
+pub fn issue_development_method() -> String {
+    calm_server::templates::TemplateRoster::builtin()
+        .get(ISSUE_DEVELOPMENT)
+        .expect("builtin issue-development template")
+        .recipe()
+        .body
+}
+
+/// The template's repo cross-check run in `repo`: `method` must still name
+/// [`REPO_CROSS_CHECK_CMD`]; returns owner/name of the command's first line.
+pub fn cross_checked_origin_repo(method: &str, repo: &Path) -> String {
+    assert!(
+        method.contains(&format!("`{REPO_CROSS_CHECK_CMD}`")),
+        "the issue-development method no longer names `{REPO_CROSS_CHECK_CMD}`"
+    );
+    let mut argv = REPO_CROSS_CHECK_CMD.split(' ');
+    let output = StdCommand::new(argv.next().expect("program"))
+        .args(argv)
+        .current_dir(repo)
+        .output()
+        .expect("run the repo cross-check");
+    assert!(
+        output.status.success(),
+        "{REPO_CROSS_CHECK_CMD} failed in {}",
+        repo.display()
+    );
+    let urls = String::from_utf8_lossy(&output.stdout);
+    let first = urls.lines().next().expect("origin has a url");
+    first
+        .trim_start_matches("https://github.com/")
+        .trim_end_matches(".git")
+        .to_string()
+}
+
 /// Valid issue-development `template_input` for `issue_number` of [`FIXTURE_GITHUB_REPO`], with
 /// `merge_policy` `auto-merge` so a run merges without a ratification.
 pub fn issue_development_input(issue_number: u64) -> Value {
