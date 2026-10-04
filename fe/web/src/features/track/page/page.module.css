@@ -81,7 +81,7 @@
        when the row has abundant room. Spend the matching space at the trailing
        edge; the outer heading still owns truncation for genuinely long names. */
     max-inline-size: calc(100% + var(--space-2));
-    font-size: var(--text-lg);
+    font-size: var(--text-md);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-tight);
     letter-spacing: var(--tracking-tight);

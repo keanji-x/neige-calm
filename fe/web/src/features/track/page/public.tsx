@@ -4,7 +4,6 @@ import { TrackTitle } from '../title/public.tsx';
 
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { DropdownMenu as AstryxDropdownMenu } from '@astryxdesign/core/DropdownMenu';
-import { getIcon as getAstryxIcon } from '@astryxdesign/core/Icon';
 import { Markdown } from '@astryxdesign/core/Markdown';
 import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
@@ -387,7 +386,7 @@ export function TrackPage({
                 button={{
                   ref: desktopActionsRef,
                   label: `Track actions for ${trackDisplayTitle(track.title)}`,
-                  icon: getAstryxIcon('moreHorizontal'),
+                  icon: <Icon name="more" />,
                   variant: 'ghost',
                   size: 'sm',
                   isIconOnly: true,

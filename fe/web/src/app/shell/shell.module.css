@@ -828,14 +828,15 @@
 
     .brand {
       gap: var(--space-3);
-      font-size: var(--text-lg);
+      font-size: var(--text-md);
+      font-weight: var(--weight-semibold);
       letter-spacing: var(--tracking-tight);
       color: var(--text);
     }
 
     .brand .brandMark {
-      inline-size: calc(var(--glyph) * 1.25);
-      block-size: calc(var(--glyph) * 1.25);
+      inline-size: var(--glyph);
+      block-size: var(--glyph);
     }
   }
 }
