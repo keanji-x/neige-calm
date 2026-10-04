@@ -20,6 +20,8 @@ fn frozen_forge_six_shape_defaults_new_optional_fields() {
         "area_id": "area-01",
         "card_id": "card-01",
         "subject": {
+            "phase": "impl",
+            "slice_id": "6",
             "pr_number": 760
         },
         "argv": ["/bin/true"],
@@ -39,7 +41,7 @@ fn frozen_forge_six_shape_defaults_new_optional_fields() {
     .expect("slice 6 frozen forge shape remains readable");
 
     assert!(frozen.context.is_empty());
-    assert!(frozen.subject.is_some());
+    assert_eq!(frozen.subject.map(|subject| subject.pr_number), Some(760));
     assert!(frozen.event_spec.is_some());
 }
 

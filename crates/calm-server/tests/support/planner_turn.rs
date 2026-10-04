@@ -10,14 +10,12 @@ use calm_server::operation::planner_harness_start_adapter::{
 use calm_server::operation::{OperationKey, OperationOutcome};
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionProjectionRepo};
-use calm_server::templates::TemplateRoster;
+use calm_server::templates::{ISSUE_DEVELOPMENT, TemplateRoster};
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
 use super::agent_diag::panic_with_agent_diag;
-use super::codex_fixture::{
-    Fixture, ISSUE_DEVELOPMENT_TEMPLATE_ID, PLANNER_SESSION_ID, issue_development_input,
-};
+use super::codex_fixture::{Fixture, PLANNER_SESSION_ID, issue_development_input};
 use super::git_helpers::git_stdout;
 
 pub async fn boot_planner_harness_via_start_op(fx: &Fixture, goal: String) {
@@ -146,7 +144,7 @@ pub async fn assert_planner_prompt_binds_issue_development(fx: &Fixture, issue_n
         .unwrap_or_else(|| panic!("no template working method in the prompt:\n{prompt}"));
     let snapshot: Value = serde_json::from_str(snapshot).expect("template snapshot json");
     let method = TemplateRoster::builtin()
-        .get(ISSUE_DEVELOPMENT_TEMPLATE_ID)
+        .get(ISSUE_DEVELOPMENT)
         .expect("builtin issue-development template")
         .recipe()
         .body;

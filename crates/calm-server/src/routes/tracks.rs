@@ -1936,10 +1936,8 @@ pub fn template_planner_card_payload_for_test(
     provider: AgentProvider,
     template_id: &str,
 ) -> Result<serde_json::Value> {
-    let template = TemplateRoster::builtin()
-        .get(template_id)
-        .ok_or_else(|| CalmError::NotFound(format!("template {template_id}")))?;
-    planner_card_payload(goal, provider, Some(&compile_template(template)?))
+    let snapshot = prepare_template_report(TemplateRoster::builtin(), template_id)?;
+    planner_card_payload(goal, provider, Some(&snapshot))
 }
 
 pub(crate) fn planner_harness_layout_payload(

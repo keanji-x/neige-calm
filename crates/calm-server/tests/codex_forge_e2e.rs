@@ -20,6 +20,7 @@ use calm_server::harness::{HarnessState, Observation, PlannerHarness};
 use calm_server::ids::{ActorId, TrackId};
 use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
 use calm_server::plugin_host::Manifest;
+use calm_server::templates::ISSUE_DEVELOPMENT;
 use serde_json::{Value, json};
 use support::agent_diag::panic_with_agent_diag;
 use support::codex_fixture::*;
@@ -1271,11 +1272,11 @@ fn template_planner_card_payload_carries_the_issue_development_method() {
     let payload = calm_server::routes::tracks::template_planner_card_payload_for_test(
         Some("goal".into()),
         calm_server::session_projection_repo::AgentProvider::Codex,
-        ISSUE_DEVELOPMENT_TEMPLATE_ID,
+        ISSUE_DEVELOPMENT,
     )
     .expect("planner card payload");
     let method = calm_server::templates::TemplateRoster::builtin()
-        .get(ISSUE_DEVELOPMENT_TEMPLATE_ID)
+        .get(ISSUE_DEVELOPMENT)
         .expect("builtin template")
         .recipe()
         .body;

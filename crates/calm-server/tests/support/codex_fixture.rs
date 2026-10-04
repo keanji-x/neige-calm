@@ -31,6 +31,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedDaemonState};
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
+use calm_server::templates::ISSUE_DEVELOPMENT;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::TrackReportPayload;
@@ -60,7 +61,6 @@ pub const TASK_KEY: &str = "forge-e2e";
 pub const PLANNER_SESSION_ID: &str = "codex-forge-e2e-planner-session";
 /// The GitHub repository the fixture checkout's origin names; the local bare origin serves it.
 pub const FIXTURE_GITHUB_REPO: &str = "neige-e2e/forge-fixture";
-pub const ISSUE_DEVELOPMENT_TEMPLATE_ID: &str = "issue-development";
 
 /// The fixture origin's configured URL: GitHub's for [`FIXTURE_GITHUB_REPO`].
 pub fn fixture_github_url() -> String {
@@ -277,9 +277,7 @@ pub async fn boot_forge_e2e_fixture(
             title: "codex-forge-e2e".into(),
             sort: None,
             cwd: track_cwd.display().to_string(),
-            template_id: fixture
-                .bound_issue
-                .map(|_| ISSUE_DEVELOPMENT_TEMPLATE_ID.to_string()),
+            template_id: fixture.bound_issue.map(|_| ISSUE_DEVELOPMENT.to_string()),
             plugin_scope: Some(PLUGIN_ID.into()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -326,7 +324,7 @@ pub async fn boot_forge_e2e_fixture(
             calm_server::routes::tracks::template_planner_card_payload_for_test(
                 fixture.goal.clone(),
                 AgentProvider::Codex,
-                ISSUE_DEVELOPMENT_TEMPLATE_ID,
+                ISSUE_DEVELOPMENT,
             )
             .expect("issue-development planner card payload"),
         ),
