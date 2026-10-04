@@ -141,7 +141,7 @@ Docker 开发端口默认发布到主机的**所有网络接口**。容器还会
 
 ## 开发与验证
 
-任何改动（包括纯文档改动）在提交评审前都要通过 CI lint job 的文本棘轮（术语与 prose）：
+任何改动（包括纯文档改动）在提交评审前都要通过 CI lint job 的文本 gate：
 
 ```bash
 scripts/local-ratchet-gates.sh

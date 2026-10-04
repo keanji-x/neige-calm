@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Run the cross-tree text ratchets the way the CI lint job runs them, so a change
-# (including a docs-only one) that is green under local-rust-gates.sh is not red in CI.
-# Mirrors the ci.yml steps "terminology ratchet (#1316 S0)" and "prose ratchet (#1635 S6)".
-# Not covered: the ratchets' `--selftest` steps and the other lint-job text gates.
+# Run the CI lint job's text gates locally, so a change (including a docs-only one)
+# that is green under local-rust-gates.sh is not red in CI.
+# The gate list is read from ci.yml: every lint-job step whose whole command is
+# `./scripts/gate-*.sh`. Not covered: the `--selftest` steps and the Rust-only steps.
 # Counts come from `git grep`: they measure tracked files in the working tree, not HEAD.
 # Usage: scripts/local-ratchet-gates.sh
 
@@ -32,8 +32,18 @@ dirty_note() {
 
 dirty_note
 
+ci=.github/workflows/ci.yml
+mapfile -t gates < <(
+  awk '/^  lint:$/ { in_lint = 1; next }
+       in_lint && /^  [A-Za-z0-9_-]+:$/ { exit }
+       in_lint && /^ +run: \.\/scripts\/gate-[A-Za-z0-9_.-]+\.sh *$/ { print $2 }' "$ci" 2>/dev/null
+)
+if [ "${#gates[@]}" -eq 0 ]; then
+  echo "error: found no \`run: ./scripts/gate-*.sh\` step in the lint job of $ci" >&2
+  exit 2
+fi
+
 declare -A result=()
-gates=(./scripts/gate-1316-terminology-ratchet.sh ./scripts/gate-prose-ratchet.sh)
 for gate in "${gates[@]}"; do
   printf '\n=== %s\n' "$gate"
   if "$gate"; then result[$gate]=PASS; else result[$gate]=FAIL; fi

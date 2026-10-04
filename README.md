@@ -187,7 +187,7 @@ The Docker development port is published on **all host interfaces by default**. 
 ## Development
 
 Every change, including a docs-only one, must pass the CI lint job's text
-ratchets (terminology and prose) before review:
+gates before review:
 
 ```bash
 scripts/local-ratchet-gates.sh

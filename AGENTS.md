@@ -9,26 +9,40 @@ unless the task requires it.
 
 1. Inspect the real implementation, full call path, existing tests, and current
    worktree state. Preserve unrelated changes.
-2. Define one clear outcome and its acceptance checks. Write an issue or short
-   design first only for large, risky, authority-boundary, or persistence-boundary
-   changes.
+2. Define one clear outcome and its acceptance checks, and choose its review
+   tier. Write an issue or short design first only for large, risky,
+   authority-boundary, or persistence-boundary changes.
 3. For a bug, add the smallest stable reproduction first and confirm it is red.
    If it does not reproduce, report that rather than inventing a cause.
 4. Implement the smallest root-cause fix. Exercise production entry points; do
    not copy the behavior under test into fixtures or helper scripts.
 5. Run focused tests, mutation-verify critical assertions, then run the gates
    appropriate to the changed surface.
-6. For non-mechanical changes, review the complete diff through two independent
-   channels. Classify findings with evidence, fix all blocking findings and
-   in-scope actionable findings, then run both reviews fresh against the updated
-   diff.
+6. Review the complete diff at its tier. Classify findings with evidence and
+   fix every blocking finding.
 7. Re-run invalidated checks after every fix, rebase, conflict resolution, or
-   generated-artifact change. Deliver only when review is converged, required
-   gates are green, and the diff contains only intended files.
+   generated-artifact change. Deliver only when review has converged at its
+   tier, required gates are green, and the diff contains only intended files.
 
 Keep implementation and review isolated. Allow only one writer per worktree;
 use separate worktrees for parallel agents or independent review. Never clean a
 worktree with destructive commands such as `git checkout` or `git reset --hard`.
+
+## Review tiers
+
+Review strength follows how hard a change is to undo, not its line count.
+Choose the tier at the start, state it with a one-line reason in the pull
+request, and raise it when the change turns out to cross a boundary. Never
+lower it mid-review.
+
+- **L0, mechanical:** typos, copy, lockfiles, CI tweaks, and pure renames. CI
+  is the gate; no review channel is required.
+- **L1, default:** a change that crosses none of the L2 boundaries. Use one
+  review channel. After a fix, the channel that raised the finding re-checks
+  the fix and its delta instead of re-reviewing the whole diff.
+- **L2, high risk:** authority, persistence, isolation, or security
+  boundaries; database migrations; or a large diff. Use two independent review
+  channels, and re-run both fresh after every fix.
 
 ## Review and fix loop
 
@@ -38,16 +52,21 @@ worktree with destructive commands such as `git checkout` or `git reset --hard`.
   or source-level check, not by weighing reviewer confidence.
 - Fix the defect class, not one visible instance. After a fix, sweep sibling
   branches and callers for the same failure mode.
-- Every fix requires a fresh review. A user-approved round limit applies only to
-  recorded non-blocking findings; blockers always continue the loop. Escalate a
-  diverging loop or an architectural conflict instead of stopping silently.
+- A finding is blocking when it breaks behavior, data integrity, security, or
+  the stated acceptance. Fix other findings only when they are cheap and in
+  scope; otherwise record them as known gaps without another round. Prefer
+  closing a finding by deleting a mechanism or narrowing scope over adding one.
+- Every fix is re-checked as its tier requires. A user-approved round limit
+  applies only to recorded non-blocking findings; blockers always continue the
+  loop. Escalate a diverging loop or an architectural conflict instead of
+  stopping silently.
 - Convergence means no unresolved blocking finding, no unexplained test failure,
   all required checks actually green, and no unrelated or generated-file drift.
 
 ## Architecture review priorities
 
-Both review channels must explicitly check these three points for implementation
-changes, using the real call paths and ownership layers:
+Every review channel must explicitly check these three points for
+implementation changes, using the real call paths and ownership layers:
 
 - **Abstraction boundaries:** keep domain rules in their owning component,
   template, or feature. The kernel owns generic lifecycle and authorization;
@@ -110,7 +129,7 @@ Run only the smallest relevant tests while iterating and before delivery. Do
 not run workspace-wide `nextest` by default; the broad suite belongs to CI.
 
 ```bash
-# Every change, including docs-only: the CI lint job's text ratchets
+# Every change, including docs-only: the CI lint job's text gates
 scripts/local-ratchet-gates.sh
 
 # Rust: select the affected package and test-name filter
@@ -129,9 +148,9 @@ scripts/local-rust-gates.sh --quick
 ```
 
 - Run `scripts/local-ratchet-gates.sh` for every change, including docs-only
-  ones. It runs the CI lint job's terminology and prose ratchets, which the
-  commands above do not; it measures tracked files in the working tree, so
-  `git add -N` new files first.
+  ones. It runs every unconditional `scripts/gate-*.sh` step of the CI lint
+  job, which the commands above do not; it measures tracked files in the
+  working tree, so `git add -N` new files first.
 - Add `--features calm-server/codex-e2e` to a targeted Rust command only when
   the affected test requires that feature. Narrow further with `--lib` or
   `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local

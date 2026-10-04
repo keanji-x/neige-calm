@@ -71,38 +71,11 @@ Never claim a check was run when it was not.
 ### Verification
 
 Run only the smallest relevant checks while iterating and before requesting
-review. Workspace-wide Rust tests run in CI and are not a routine local step:
-
-```bash
-# Every change, including docs-only: the CI lint job's text ratchets
-scripts/local-ratchet-gates.sh
-
-# Rust: select the affected package and test-name filter
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
-  cargo nextest run --locked \
-  -p <package> <test-name-filter> --test-threads 8
-
-# When the Rust change also needs the compile, lint, and OpenAPI preflight
-scripts/local-rust-gates.sh --quick
-
-# Next-generation frontend
-(cd fe && npm ci && npm run lint && npm run build && npm test)
-
-# Browser tests when browser behavior changes
-(cd fe && npx playwright install --with-deps chromium && npm run test:browser)
-
-# Default stack end-to-end tier when an integrated flow changes
-./e2e/run.sh
-```
-
-Run `scripts/local-ratchet-gates.sh` for every change, including docs-only ones;
-it runs the CI lint job's terminology and prose ratchets over tracked files in
-the working tree (`git add -N` new files first). Add
-`--features calm-server/codex-e2e` only when the affected Rust test requires
-it. Narrow further with `--lib` or `--test <test-target>` when useful. Do not run
-the full `scripts/local-rust-gates.sh` unless explicitly requested or changing
-the gate/nextest configuration itself; CI is authoritative for the broad
-workspace suite.
+review. The commands, and when each one applies, are listed under
+[Verification in AGENTS.md](AGENTS.md#verification); run
+`scripts/local-ratchet-gates.sh` for every change, including docs-only ones.
+Workspace-wide Rust tests run in CI and are not a routine local step. Use the
+default stack end-to-end tier (`./e2e/run.sh`) when an integrated flow changes.
 
 When an API schema or generated binding changes, run the relevant generation
 command and commit every generated artifact it updates. Tests for a defect or
