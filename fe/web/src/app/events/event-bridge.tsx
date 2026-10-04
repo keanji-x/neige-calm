@@ -10,6 +10,7 @@ import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import type { UnconfiguredEventStream } from '../../systems/events/event-stream.ts';
 import { applyEventEffects } from './query-invalidation-adapter.ts';
 import { trackLookupContext } from './track-lookup.ts';
+import { usePublishConnectionState } from '../providers/connection-status.tsx';
 
 export type EventBridgeProps = Readonly<{
   client: QueryClient;
@@ -24,6 +25,12 @@ export type EventBridgeProps = Readonly<{
 
 /** Renders an inert marker so a contract test can assert where in the tree the bridge sits. */
 export function EventBridge({ client, stream, syncEventVersion, dbInstanceId, cursor, context }: EventBridgeProps) {
+  const publishConnectionState = usePublishConnectionState();
+  useEffect(() => {
+    if (publishConnectionState === null) return;
+    const release = stream.onConnectionState(publishConnectionState);
+    return () => { release(); publishConnectionState('disconnected'); };
+  }, [stream, publishConnectionState]);
   // The connection depends only on stream identity and the protocol ceiling; everything else is read
   // through a ref so fresh prop identities can never tear down and reopen the socket.
   const latest = useRef({ client, cursor, context, dbInstanceId });

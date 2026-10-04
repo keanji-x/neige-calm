@@ -9,12 +9,13 @@ import { observeRecoveryLifecycle, useRecoveryState } from '../../systems/recove
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { WEB_COMPAT_VERSION, type ProviderRuntime, type ServerVersionInfo } from '../providers/public.tsx';
+import { ConnectionStatusScope } from '../providers/connection-status.tsx';
 import { coordinateRecoveryQueries } from '../providers/recovery-queries.ts';
 import { runOperation } from '../providers/queries.ts';
 import { ReadReceiptScopeProvider } from '../providers/ui-preferences.tsx';
 import { clearSessionArtifacts } from './session-gate.tsx';
 import styles from './recovery-presentation.module.css';
-import { RecoveryPresentation, RecoveryStatus } from './recovery-presentation.tsx';
+import { RecoveryPresentation, RecoveryStatus, recoveryStatusLabel } from './recovery-presentation.tsx';
 export function RecoveryGate({ children, transport, unauthorized, client, runtime, cursorStore, renderLogin, renderEventBridge, recovery }: Readonly<{
   children: ReactNode; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; client: QueryClient;
   runtime: ProviderRuntime; cursorStore: { clear(): void }; renderLogin: () => ReactNode;
@@ -46,7 +47,9 @@ export function RecoveryGate({ children, transport, unauthorized, client, runtim
     {privateVisible ? <div key={session.scopeRevision} className={styles.workspace}>
       {/* Receipts are scoped by the stable database identity, never the per-boot
           instance id (#1722 §5.2); a kernel without one leaves the scope null. */}
-      <ReadReceiptScopeProvider id={session.version!.databaseId ?? null} nowMs={session.version!.nowMs ?? null}>{children}</ReadReceiptScopeProvider>
+      <ConnectionStatusScope value={{ connected: state.phase === 'connected',
+        label: recoveryStatusLabel(state.phase), detail: state.detail, retry: session.retry }}>
+      <ReadReceiptScopeProvider id={session.version!.databaseId ?? null} nowMs={session.version!.nowMs ?? null}>{children}</ReadReceiptScopeProvider></ConnectionStatusScope>
     </div>
       : state.phase === 'login' ? renderLogin() : state.phase === 'update' ? <main><h1>{state.detail}</h1><a href="http://tauri.localhost/">返回连接页</a></main>
         : <RecoveryPresentation />}

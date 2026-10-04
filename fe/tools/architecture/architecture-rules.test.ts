@@ -287,7 +287,7 @@ describe('architecture/no-create-context-outside-allowlist', () => {
 });
 
 describe('architecture allowlists', () => {
-  it.each(['router/new-track-drafts', 'providers/ui-preferences'])('permits only the exact %s context path', async (ownerPath) => {
+  it.each(['router/new-track-drafts', 'providers/ui-preferences', 'providers/connection-status'])('permits only the exact %s context path', async (ownerPath) => {
     const eslint = new ESLint({
       cwd: root,
       overrideConfigFile: true,

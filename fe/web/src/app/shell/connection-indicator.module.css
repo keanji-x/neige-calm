@@ -1,0 +1,11 @@
+@layer features {
+  .wrap { flex: 0 0 auto; }
+  .trigger { display: grid; place-items: center; inline-size: var(--space-6); block-size: var(--control-h); cursor: pointer; border-radius: var(--radius-sm); }
+  .trigger:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  .dot { inline-size: var(--dot-sm); block-size: var(--dot-sm); border-radius: 50%; background: var(--error); }
+  .trigger[data-nc-connection-status='connected'] .dot { background: var(--success); }
+  .details { max-block-size: 60dvh; overflow: auto; padding: var(--space-4); }
+  .line { margin-block: var(--space-3); color: var(--text-2); font-size: var(--text-xs); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .retry { padding: var(--space-3); margin-block-start: var(--space-3); border-radius: var(--radius-sm); color: var(--text); font-size: var(--text-xs); cursor: pointer; }
+  .retry:hover, .retry:focus-visible { background: var(--overlay-hover-strong); }
+}

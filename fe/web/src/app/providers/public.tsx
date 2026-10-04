@@ -8,6 +8,7 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { BundledConnectionNotice } from '../auth/bundled-connection.tsx';
 import { ReadReceiptScopeProvider } from './ui-preferences.tsx';
 import styles from './preflight-status.module.css';
+import { LiveConnectionProvider } from './connection-status.tsx';
 
 /**
  * This bundle's view of the negotiated wire contract. Must equal `WEB_COMPAT_VERSION` in
@@ -37,7 +38,7 @@ export function AppProviders({ children, runtime, renderEventBridge, cursorStore
   cursorStore: Pick<SyncCursorPort, 'clear'>; client: QueryClient;
 }) {
   return <QueryClientProvider client={client}><ThemeProvider storage={runtime.storage}>
-    <ServerCompatGate client={client} runtime={runtime} renderEventBridge={renderEventBridge} cursorStore={cursorStore}>{children}</ServerCompatGate>
+    <LiveConnectionProvider><ServerCompatGate client={client} runtime={runtime} renderEventBridge={renderEventBridge} cursorStore={cursorStore}>{children}</ServerCompatGate></LiveConnectionProvider>
   </ThemeProvider></QueryClientProvider>;
 }
 

@@ -18,10 +18,13 @@ export function RecoveryPresentation() {
     </main>
   </div>;
 }
+export function recoveryStatusLabel(phase: RecoveryState['phase']): string {
+  return phase === 'connected' ? '已连接' : phase === 'syncing' ? '正在同步' :
+    phase === 'offline' ? '离线 · 正在重试' : phase === 'login' ? '需要重新登录' :
+      phase === 'update' ? '需要更新' : '正在恢复连接';
+}
 export function RecoveryStatus({ state, retry }: Readonly<{ state: RecoveryState; retry(): void }>) {
-  const label = state.phase === 'connected' ? '已连接' : state.phase === 'syncing' ? '正在同步' :
-    state.phase === 'offline' ? '离线 · 正在重试' : state.phase === 'login' ? '需要重新登录' :
-      state.phase === 'update' ? '需要更新' : '正在恢复连接';
+  const label = recoveryStatusLabel(state.phase);
   return <details className={styles.status} data-nc-recovery-status={state.phase}>
     <summary><span role="status" aria-live="polite">{label}</span></summary>
     <div className={styles.details}>

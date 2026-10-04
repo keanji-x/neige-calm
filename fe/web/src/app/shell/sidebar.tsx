@@ -9,7 +9,7 @@ import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { Menu } from '../../ui/menu/public.tsx';
-import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { ConnectionIndicator } from './connection-indicator.tsx';
 import {
   OperationFeedback, useDeleteConfirm, useOperationFeedback,
 } from '../../ui/operation-feedback/public.tsx';
@@ -192,7 +192,7 @@ export function Sidebar({
             <span className={styles.brandText}>Today</span>
           </button>
         )}
-        {collapsed ? (
+        {collapsed && (
           <button
             type="button"
             className={styles.iconButton}
@@ -202,7 +202,9 @@ export function Sidebar({
           >
             <span className={styles.brandMark} aria-hidden="true" />
           </button>
-        ) : (
+        )}
+        <ConnectionIndicator readError={readError} activityError={activityError} loading={readLoading} onRetry={onRetryRead} />
+        {!collapsed && (
           <div className={styles.brandActions}>
             <DropdownMenu placement="below" button={{
               label: 'Sidebar view options', icon: <Icon name="more" />,
@@ -225,9 +227,6 @@ export function Sidebar({
           </div>
         )}
       </div>
-      {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
-      {activityError !== null && <ErrorBox message={`Track activity is unavailable: ${activityError}`} onRetry={onRetryRead} />}
-      {readLoading && <div role="status">Loading workspace…</div>}
       <OperationFeedback feedback={writeFeedback} />
 
       {collapsed ? (

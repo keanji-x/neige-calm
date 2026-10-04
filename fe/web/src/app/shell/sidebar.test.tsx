@@ -77,21 +77,32 @@ async function requestAreaDelete(): Promise<void> {
 }
 
 describe('workspace read feedback', () => {
-  it('shows loading, read failure, and retries the workspace read', async () => {
+  it('keeps loading and read failures in the connection disclosure and retries the read', async () => {
     const onRetryRead = vi.fn();
     const { update } = renderSidebar({ readLoading: true, onRetryRead });
-    expect(screen.getByText('Loading workspace…')).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: '连接详情' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /^连接状态/ }));
+    expect(within(screen.getByRole('dialog', { name: '连接详情' })).getByText('正在读取工作区…')).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
     update({ readLoading: false, readError: 'areas down', onRetryRead });
-    expect(screen.getByRole('alert').textContent).toContain('areas down');
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: '连接详情' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '连接状态：连接异常' }));
+    expect(within(screen.getByRole('dialog', { name: '连接详情' })).getByText('areas down')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '重试读取' }));
     expect(onRetryRead).toHaveBeenCalledTimes(1);
   });
 
-  it('warns that track activity is unavailable and retries it', async () => {
+  it('collects read and activity errors behind one indicator even with a collapsed sidebar', async () => {
     const onRetryRead = vi.fn();
-    renderSidebar({ activityError: 'overlays down', onRetryRead });
-    expect(screen.getByRole('alert').textContent).toContain('Track activity is unavailable: overlays down');
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    renderSidebar({ collapsed: true, readError: 'HTTP 503', activityError: 'overlays down', onRetryRead });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: '连接详情' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: /^连接状态/ })).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: /^连接状态/ }));
+    expect(within(screen.getByRole('dialog', { name: '连接详情' })).getByText('HTTP 503')).toBeTruthy();
+    expect(within(screen.getByRole('dialog', { name: '连接详情' })).getByText('Track activity is unavailable: overlays down')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '重试读取' }));
     expect(onRetryRead).toHaveBeenCalledTimes(1);
   });
 });
