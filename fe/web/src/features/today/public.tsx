@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import { activityNameBit } from '../../../../core/domain/activity.ts';
 import {
-  activeTracksOn, hasFailed, isClosed, isWorking, needsUserAttention, type Track,
+  activeTracksOn, hasFailed, isClosed, isWorking, needsUserAttention, trackRecentAt, type Track,
 } from '../../../../core/domain/track.ts';
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
@@ -288,7 +288,8 @@ function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, r
   const scheduledAgenda = scheduledEvents
     .filter((event) => sameDay(event.date, selected) && (showClosed || !isClosed(event.track)))
     .toSorted((left, right) => left.hour - right.hour);
-  const trackAgenda = activeTracksOn(tracks, selected, now);
+  const trackAgenda = activeTracksOn(tracks, selected, now)
+    .sort((left, right) => trackRecentAt(right) - trackRecentAt(left));
   const scheduledIds = new Set(scheduledAgenda.map((event) => event.track.id));
 
   return (

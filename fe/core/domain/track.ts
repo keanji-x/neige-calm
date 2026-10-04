@@ -41,7 +41,7 @@ export type TrackActivity = Readonly<{
   attention: AttentionKind;
   /** Same overlay: high-water mark of completion-class evidence; the read receipt compares against it. */
   activityAt: number | null;
-  /** Latest finite write/evidence time from the kernel activity overlay; used only for Area ordering. */
+  /** Latest finite write/evidence time from the kernel activity overlay; used for recent-activity ordering. */
   recentAt: number | null;
   /** Same overlay: every notification — an ask or planner down — with the kernel's words for it. */
   attentionItems: readonly ActivityItem[];
@@ -221,7 +221,7 @@ function finiteOrNull(value: number): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** Effective recency for an Area row. Malformed fixtures fail closed onto the remaining finite evidence. */
+/** Effective recency for a track row. Malformed fixtures fail closed onto the remaining finite evidence. */
 export function trackRecentAt(track: Track): number {
   const rowTime = finiteOrNull(track.updatedAt) ?? finiteOrNull(track.createdAt) ?? 0;
   const overlayTime = track.recentAt === null ? null : finiteOrNull(track.recentAt);

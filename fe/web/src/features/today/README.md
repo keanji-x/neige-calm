@@ -4,7 +4,10 @@ Today mounts Week/Month date navigation in the desktop sidebar. Dates show Track
 counts above and task counts below. Task details and Activity size to their
 content, with each list capped at 12rem and scrolling when necessary. Both lists shrink to keep the card within the
 available height, including in Month view. Activity shows update times
-and a closed-track visibility toggle. No separate Open group is rendered.
+and a closed-track visibility toggle. Track activity is ordered by latest row or
+overlay update, newest first; equal times retain the selector’s creation-time/id
+order. Scheduled events keep their chronological order above the track rows.
+No separate Open group is rendered.
 
 Today owns date selection and Track counts. The app queries the visible date
 window and selected day; Calendar projects task counts from those entries.

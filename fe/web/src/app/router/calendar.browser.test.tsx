@@ -237,3 +237,24 @@ for (const [taskCount, trackCount] of [[0, 0], [0, 20], [20, 0], [20, 20], [1, 1
     }
   });
 }
+
+it('shows recently updated Activity first in the integrated calendar sidebar', async () => {
+  await page.viewport(1440, 1000);
+  const { NEUTRAL_ACTIVITY } = await import('../../../../core/domain/track.ts');
+  const { TrackRow } = await import('../../features/track/row/public.tsx');
+  const now = Date.parse('2026-10-02T09:00:00+08:00');
+  const base = { ...NEUTRAL_ACTIVITY, areaId: 'work', sort: 1, cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null };
+  const tracks = [
+    { ...base, id: 'newer-created', title: 'Older update', createdAt: now - 1_000, updatedAt: now - 1_000 },
+    { ...base, id: 'older-created', title: 'Recent update', createdAt: now - 86_400_000, updatedAt: now },
+  ];
+  render(<TodayPage tracks={tracks} areas={[]} activityAvailable nowMs={now}
+    renderTrackRow={(track, options) => <TrackRow track={track} {...options} nowMs={now} onOpen={() => undefined} />}
+    renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange} onWindowChange={() => undefined}
+      timezone="Asia/Shanghai" month={ready([])} day={ready([])} enabled pending={false}
+      onRetry={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={() => Promise.resolve()} />} />);
+  const activity = page.getByRole('region', { name: 'Activity list' });
+  await expect.element(activity.getByRole('button', { name: /^Track Recent update/ })).toBeVisible();
+  const titles = [...activity.element().querySelectorAll('button')].map((row) => row.getAttribute('aria-label'));
+  expect(titles).toEqual([expect.stringMatching(/^Track Recent update/), expect.stringMatching(/^Track Older update/)]);
+});

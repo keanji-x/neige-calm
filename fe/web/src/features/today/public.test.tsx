@@ -118,6 +118,21 @@ describe('Today calendar label', () => {
 });
 
 describe('Today agenda', () => {
+  it('orders activity by latest row or overlay update and reorders after an update without mutating inputs', () => {
+    const older = track({ id: 'older', title: 'Older update', createdAt: NOW - DAY, updatedAt: NOW - 3_000 });
+    const newer = track({ id: 'newer', title: 'Newer update', createdAt: NOW - 3 * DAY, updatedAt: NOW - 1_000 });
+    const overlay = track({ id: 'overlay', title: 'Recent activity', createdAt: NOW - 2 * DAY, updatedAt: NOW - 4_000, recentAt: NOW });
+    const tracks = Object.freeze([older, newer, overlay]);
+    const props = { activityAvailable: true, renderTrackRow, nowMs: NOW, areas: [area()], tracks };
+    const view = render(<TodayPage {...props} />);
+    const titles = () => [...screen.getByRole('region', { name: 'Activity list' }).querySelectorAll('[data-nc-role="row"]')]
+      .map((row) => row.textContent);
+    expect(titles()).toEqual(['Recent activity', 'Newer update', 'Older update']);
+    expect(tracks.map((candidate) => candidate.id)).toEqual(['older', 'newer', 'overlay']);
+    view.rerender(<TodayPage {...props} tracks={[{ ...older, updatedAt: NOW + 1 }, newer, overlay]} />);
+    expect(titles()).toEqual(['Older update', 'Recent activity', 'Newer update']);
+  });
+
   it('hands each agenda track to the injected renderer in the compact variant with update time', () => {
     const seen: { id: string; variant: string }[] = [];
     render(<TodayPage
