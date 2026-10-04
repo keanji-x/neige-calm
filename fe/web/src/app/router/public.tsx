@@ -1308,7 +1308,7 @@ function useConversationPane(
                 </ChatFooterRemedy>
               </ChatFooterNotice>
             )}
-            {store.failedSend !== null && !edit.refusedReplace && (
+            {store.failedSend !== null && (
               <ChatFooterNotice>
                 <ChatFooterError message={store.failedSend.delivery === 'unknown'
                   ? `Delivery is unconfirmed. ${store.failedSend.message}` : `Not sent. ${store.failedSend.message}`} />

@@ -11,6 +11,7 @@ import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conv
 import {
   outboxView, settleSendOp, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
 } from '../../../../core/domain/conversation-outbox.ts';
+import { withRefill } from '../../../../core/domain/conversation-rewind.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, OfflineSubmissionError } from '../providers/queries.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -141,7 +142,7 @@ export function useConversationOutbox({
     const sentTo = cardId;
     const { key, echo, fromComposer, replaces } = op;
     const attachments: readonly PlannerAttachment[] = echo.attachments ?? [];
-    const settle = (next: SendOp) => editOutbox(sentTo, (current) => settleSendOp(current, key, next));
+    const settle = (next: SendOp | null) => editOutbox(sentTo, (current) => settleSendOp(current, key, next));
     let answeredRead = 0;
     /* An unknown answer is sent again under the same key, so the server queues the message at most once. Each
        retry is admitted again; one that cannot go out counts as an attempt. */
@@ -168,11 +169,20 @@ export function useConversationOutbox({
       return 'delivered';
     }, (error: unknown): SendOutcome => {
       const failed = error instanceof KeyedSendFailure ? error : new KeyedSendFailure(error, 'unknown');
+      const message = failed.cause instanceof Error && failed.cause.message !== '' ? failed.cause.message : 'Could not send the message.';
+      if (replaces !== null && failed.delivery === 'refused') {
+        /* Refused before any write: the turn is untouched, so the op is settled by its refill alone. Its words and
+           images go back to the composer it was sent from and nothing of it stays in the outbox, so the thread is
+           the server's again and the turn can be edited anew. */
+        settle(null);
+        registry.editComposer(sentTo, (current) => withRefill(current, { text: echo.text, attachments }));
+        registry.noteRefusedEdit(sentTo, message);
+        return 'refused';
+      }
       settle({
         key, echo, fromComposer, replaces, phase: 'failed', delivery: failed.delivery,
         /* The admission's own words ("nothing was sent", "will not send automatically") would contradict Try again. */
-        message: failed.cause instanceof OfflineSubmissionError ? OFFLINE_RETRY
-          : failed.cause instanceof Error && failed.cause.message !== '' ? failed.cause.message : 'Could not send the message.',
+        message: failed.cause instanceof OfflineSubmissionError ? OFFLINE_RETRY : message,
       });
       return failed.delivery === 'refused' ? 'refused' : 'unresolved';
     }).then((outcome) => shownCardId.current === sentTo ? outcome : 'abandoned');

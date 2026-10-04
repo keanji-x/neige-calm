@@ -1,12 +1,12 @@
 import { useEffect } from 'react';
 
 import type { ConversationTurnOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { replacingTurn, type FailedSendOp, type ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
-import { editedTurnRefill, isLatestTurn } from '../../../../core/domain/conversation-rewind.ts';
+import { replacingTurn, type ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
+import { editedTurnRefill, isComposerEmpty, isLatestTurn } from '../../../../core/domain/conversation-rewind.ts';
 import { useConversationRegistry } from './public.tsx';
 
-/** Beside a replace the server refused: the words are back in the composer, and they are a new message now. */
-const REFUSED_NOTE = 'Your message is still in the composer; sending adds a new one.';
+/** Beside a refused replace while its words are still in the composer: they are a new message now. */
+const REFILLED_NOTE = 'Your message is back in the composer; sending adds a new one.';
 
 /**
  * Edit (#1923) as a composer mode for the open conversation. The click puts the turn's message in that conversation's
@@ -23,13 +23,9 @@ export function useConversationEdit({ conversationId, transcript, historyReady, 
   /** Asks for the caret in that conversation's composer if it is the one shown. */
   focusComposer: (conversationId: string) => void;
 }) {
-  const { editOf, beginEdit, cancelEdit, leaveEdit, editNoticeOf, outboxOf } = useConversationRegistry();
+  const { editOf, beginEdit, cancelEdit, leaveEdit, editNoticeOf, outboxOf, composerOf } = useConversationRegistry();
   const held = conversationId === null ? null : editOf(conversationId);
-  const ops = conversationId === null ? [] : outboxOf(conversationId);
-  const replacing = replacingTurn(ops);
-  const failed = ops.findLast((op): op is FailedSendOp => op.phase === 'failed');
-  /* Until the next Edit or send: an Edit held again is news of its own. */
-  const refused = held === null && failed !== undefined && failed.replaces !== null && failed.delivery === 'refused' ? failed : null;
+  const replacing = conversationId === null ? null : replacingTurn(outboxOf(conversationId));
   /* A turn that is no longer the latest cannot be replaced: the server only ever removes the latest. */
   const stale = historyReady && held !== null && !isLatestTurn(transcript, held.outcomeId) ? held.outcomeId : null;
   useEffect(() => {
@@ -58,12 +54,12 @@ export function useConversationEdit({ conversationId, transcript, historyReady, 
     replacing: replacing !== null,
     /** The outcome of the turn shown marked: being edited, or being replaced until the server answers. */
     marked: held?.outcomeId ?? replacing?.outcomeId ?? null,
-    /** A refused replace speaks here; every other failed send speaks through the send footer. */
-    refusedReplace: failed !== undefined && failed.replaces !== null && failed.delivery === 'refused',
-    /** What the last Edit came to, as shown above the composer; a turn that moved on is news, not a failure. */
-    notice: refused !== null
-      ? { tone: 'error', lines: [`Edit failed: ${refused.message}`, REFUSED_NOTE] } as const
-      : notice === null ? null : { tone: 'neutral', lines: ['This message can no longer be replaced; sending adds a new one.'] } as const,
+    /** What the last Edit came to, as shown above the composer; a turn that moved on is news, not a failure. The
+     * refused line says where the words are only while they are there. */
+    notice: notice === null ? null : notice.kind === 'refused'
+      ? { tone: 'error', lines: [`Edit failed: ${notice.message}`,
+        ...(conversationId === null || isComposerEmpty(composerOf(conversationId)) ? [] : [REFILLED_NOTE])] } as const
+      : { tone: 'neutral', lines: ['This message can no longer be replaced; sending adds a new one.'] } as const,
     start,
   };
 }

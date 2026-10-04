@@ -110,8 +110,11 @@ export type ConversationEdit = Readonly<{
   refill: ComposerContent;
 }>;
 
-/** An Edit that ended because a newer turn arrived first, shown above its composer until its next Edit or send. */
-export type EditNotice = Readonly<{ kind: 'stale' }>;
+/**
+ * How this conversation's last Edit ended, shown above its composer until its next Edit or send: a newer turn
+ * arrived first, or the server refused the replace (the turn is untouched and its words are back in the composer).
+ */
+export type EditNotice = Readonly<{ kind: 'stale' } | { kind: 'refused'; message: string }>;
 
 export type RememberedConversation = Readonly<{
   conversation: Conversation;
@@ -172,6 +175,8 @@ export type ConversationRegistry = Readonly<{
   cancelEdit: (conversationId: string) => void;
   /** The edited turn is no longer the latest: edit mode ends and the composer keeps what it holds. */
   leaveEdit: (conversationId: string, outcomeId: string) => void;
+  /** The server refused an Edit's replace, changing nothing: say why above that conversation's composer. */
+  noteRefusedEdit: (conversationId: string, message: string) => void;
   editNoticeOf: (conversationId: string) => EditNotice | null;
   /** One card's image uploads, held here so a remount or another route sees an upload still in flight. */
   uploadOf: (cardId: string) => UploadState;
@@ -308,6 +313,9 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     writeEdit(conversationId, null);
     noteEdit(conversationId, { kind: 'stale' });
   }, [noteEdit, writeEdit]);
+  const noteRefusedEdit = useCallback((conversationId: string, message: string) => {
+    noteEdit(conversationId, { kind: 'refused', message });
+  }, [noteEdit]);
   const editOf = useCallback((conversationId: string) => edits[conversationId] ?? null, [edits]);
   const editNoticeOf = useCallback((conversationId: string) => editNotices[conversationId] ?? null, [editNotices]);
   const remember = useCallback((conversation: Conversation, given: readonly TranscriptEntry[]) => {
@@ -378,10 +386,10 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       adoptedDraftIdOf, finishDraftAdoption,
       outboxOf, beginSend, editOutbox, nextRead,
       composerOf, editComposer, newConversationComposerOf, editNewConversationComposer,
-      editOf, beginEdit, cancelEdit, leaveEdit, editNoticeOf, uploadOf, editUpload,
+      editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedEdit, editNoticeOf, uploadOf, editUpload,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, nextRead,
+      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedEdit, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, nextRead,
       remember, requestOpen,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf,
       updateExisting],

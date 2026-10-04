@@ -1416,7 +1416,7 @@ describe('track conversations', () => {
   const editBar = () => drawerElement().querySelector<HTMLElement>('[data-nc-edit-bar]');
   const markedMessages = () => Array.from(drawerElement().querySelectorAll('[data-nc-turn="you"][data-nc-editing]')).map((said) => said.textContent);
   const markedImages = () => Array.from(drawerElement().querySelectorAll('[data-nc-turn-attachments][data-nc-editing] img')).map((image) => image.getAttribute('src'));
-  const REFUSED_NOTE = 'Your message is still in the composer; sending adds a new one.';
+  const REFUSED_NOTE = 'Your message is back in the composer; sending adds a new one.';
   /** An earlier turn, then the one to edit (with its image), until a replace is answered 200. */
   function twoTurnSetup(input: () => ApiTransportResponse | Promise<ApiTransportResponse> = inputAccepted) {
     let stage: 'before' | 'replaced' = 'before';
@@ -1561,6 +1561,35 @@ describe('track conversations', () => {
     await submit();
     await waitFor(() => expect(inputBodies(requests)).toHaveLength(2));
     expect(inputBodies(requests)[1]).toEqual({ text: 'Original prompt', attachments: [ATTACHMENT_ID] });
+    expect(screen.queryByText('Edit failed: This turn cannot be edited; nothing was changed')).toBeNull();
+  });
+
+  it('leaves nothing of a refused replace but its words: emptied, the thread is the server’s and the turn editable again', async () => {
+    const { requests } = twoTurnSetup(notReplaceable);
+    await openEditableAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    await submit();
+    await screen.findByText('Edit failed: This turn cannot be edited; nothing was changed');
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    await clearField();
+    removeComposerImage();
+    await waitFor(() => expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull());
+    await settleFor(20);
+    /* No echo of the refused send: the thread is the two stored turns, and the edited one is still the latest. */
+    expect(Array.from(drawerElement().querySelectorAll('[data-nc-turn="you"]')).map((said) => said.textContent))
+      .toEqual(['Earlier prompt', 'Original prompt']);
+    expect(screen.getByText('Original answer', { exact: true })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Edit message' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Regenerate response' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy response' })).toBeTruthy();
+    /* The notice no longer says the words are in the composer, which they are not. */
+    expect(screen.getByText('Edit failed: This turn cannot be edited; nothing was changed')).toBeTruthy();
+    expect(screen.queryByText(REFUSED_NOTE)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(inputBodies(requests)).toHaveLength(1);
+    /* And it can be edited again, which clears the notice. */
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    expect(messageField().textContent).toBe('Original prompt');
     expect(screen.queryByText('Edit failed: This turn cannot be edited; nothing was changed')).toBeNull();
   });
 
