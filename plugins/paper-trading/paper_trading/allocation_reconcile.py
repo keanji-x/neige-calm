@@ -31,7 +31,7 @@ def validate_snapshot(raw, config, now):
             'actual_spy_bps': str(Decimal(shares) * price / equity * 10000) if equity else '0'}
 
 
-def reconcile(db, ledger, raw, snapshot):
+def reconcile(db, ledger, raw, snapshot, opening_shares):
     decisions = ledger.decisions(db)
     requests = {r['id']: json.loads(r['body']) for r in db.execute('SELECT * FROM order_requests')}
     if not isinstance(raw['orders'], list) or len(raw['orders']) > 500:
@@ -106,7 +106,7 @@ def reconcile(db, ledger, raw, snapshot):
             db.execute('INSERT INTO fills VALUES (?,?)', (key, encoded(normalized)))
             ledger.event(db, 'allocation_fill', normalized)
     fills = ledger.fills(db)
-    expected_shares = sum(f['quantity'] * (1 if archived[f['order_id']]['side'] == 'Buy' else -1)
+    expected_shares = opening_shares + sum(f['quantity'] * (1 if archived[f['order_id']]['side'] == 'Buy' else -1)
                           for f in fills if f['order_id'] in archived)
     for order_id, decision in owned.items():
         order = details[order_id]

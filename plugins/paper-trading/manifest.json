@@ -21,7 +21,8 @@
       "max_order_bps": {"type": "integer", "description": "SPY order step as basis points of current cash plus SPY market value, 1-10000; omitted value 1000 (10%). Includes 1% sizing reserve; not a market-price guarantee."},
       "cash_buffer_bps": {"type": "integer", "description": "SPY profile cash reserve, 1-2000 basis points; omitted value 200."},
       "drift_bps": {"type": "integer", "description": "SPY allocation no-trade band, 0-1000 basis points; omitted value 100."},
-      "quote_max_age_seconds": {"type": "integer", "description": "SPY execution quote freshness, 1-120 seconds; omitted value 60."}
+      "quote_max_age_seconds": {"type": "integer", "description": "SPY execution quote freshness, 1-120 seconds; omitted value 60."},
+      "opening_shares": {"type": "integer", "description": "SPY profile: the SPY shares already held when this ledger starts, acknowledged by the operator; non-negative integer, omitted value 0. Must equal the broker's holding at the first reconciliation; immutable per ledger."}
     },
     "required": ["account_no", "broker_home"],
     "additionalProperties": false

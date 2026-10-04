@@ -355,9 +355,13 @@ creates targets or submits an additional order to eliminate residual drift;
 new targets come only from the Planner. Sources are durable citation references
 supplied by the Planner; the App does not verify their content.
 
-Use a fresh data directory and a dedicated paper account with no existing
-positions or active orders. This profile and the supervised profile cannot share
-a data directory or switch on an existing portfolio. Preserve any previous
+Use a fresh data directory and a dedicated paper account with no active orders.
+If the account already holds SPY, set `opening_shares` to that exact share
+count; it must match the broker's holding at the first reconciliation, which
+then pins it to the ledger, and these shares become part of the allocation. Any
+other unexplained holding blocks execution, and a changed `opening_shares` is
+refused on an existing ledger. This profile and the supervised profile cannot
+share a data directory or switch on an existing portfolio. Preserve any previous
 ledger and resolve its orders and holdings before changing account use. Install
 on a kernel that sends the `dev.neige/caller` identity to local plugins; without
 it every SPY tool is refused. Local plugins share the service OS identity; this

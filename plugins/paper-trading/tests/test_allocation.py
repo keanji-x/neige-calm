@@ -440,3 +440,68 @@ def test_spy_unsubmitted_decision_expires_while_the_broker_is_unavailable(alloca
     assert after['decisions'][0]['state'] == 'expired' and not r.submits()
     r.plan(decision_id='replacement', valid_until=(NOW + timedelta(hours=3)).isoformat())
     assert r.status()['decisions'][-1]['state'] == 'queued'
+
+
+def _opening(r, opening, shares):
+    """Broker holding `shares` before this ledger's first reconciliation, acknowledged as `opening`."""
+    values = r.values if opening is None else r.values | {'opening_shares': opening}
+    r.config = AllocationConfig.parse(values)
+    r.restart()
+    state = r.read(); state['snapshot']['shares'] = state['snapshot']['available_shares'] = shares; r.write(state)
+
+
+def test_spy_acknowledged_opening_shares_reconcile_and_can_be_traded(allocation_rig):
+    r = allocation_rig; _opening(r, 13, 13)
+    state = r.step()
+    assert state['error'] is None and state['snapshot']['shares'] == 13
+    assert [v['shares'] for v in state['valuations']] == [13]
+    # A later Buy of 54 reconciles against 13 + 54 owned shares.
+    r.plan(); r.execute()
+    assert r.order()['side'] == 'Buy' and r.order()['quantity'] == 54
+    r.publish(); after = r.fill('order-1', 67, '4600', 'buy-fill', 54)
+    assert after['error'] is None and after['snapshot']['shares'] == 67
+    # Acknowledged opening shares belong to the portfolio: a zero target sells them too.
+    r.plan(decision_id='allocation-2', target_spy_bps=0)
+    state = r.read(); state['response'] = {'order_id': 'order-2'}; r.write(state)
+    r.execute('allocation-2')
+    assert r.order()['side'] == 'Sell' and r.order()['quantity'] == 67
+    r.publish('order-2'); final = r.fill('order-2', 0, '11300', 'sell-fill', 67)
+    assert final['error'] is None and final['snapshot']['shares'] == 0
+    assert [d['state'] for d in final['decisions']] == ['settled', 'settled']
+
+
+@pytest.mark.parametrize('opening,shares', [(None, 13), (13, 12), (13, 14), (0, 13)],
+                         ids=['omitted', 'broker-below', 'broker-above', 'explicit-zero'])
+def test_spy_opening_shares_mismatch_blocks_first_reconciliation(allocation_rig, opening, shares):
+    r = allocation_rig; _opening(r, opening, shares); r.plan()
+    state = r.execute()
+    assert 'holdings disagree' in state['error'] and state['snapshot'] is None and state['valuations'] == []
+    assert state['decisions'][0]['state'] == 'requested' and not r.submits()
+    # Nothing was pinned: correcting the acknowledgement to the real holding reconciles.
+    _opening(r, shares, shares)
+    assert r.step()['snapshot']['shares'] == shares
+
+
+@pytest.mark.parametrize('changed', [None, 12, 14])
+def test_spy_opening_shares_cannot_change_on_an_existing_ledger(allocation_rig, changed):
+    r = allocation_rig; _opening(r, 13, 13)
+    before = r.step()
+    _opening(r, changed, 13 if changed is None else changed)
+    after = r.step()
+    assert 'opening_shares cannot change' in after['error']
+    assert after['snapshot'] == before['snapshot'] and after['valuations'] == before['valuations']
+
+
+def test_spy_ledger_reconciled_before_opening_shares_started_from_zero(allocation_rig):
+    r = allocation_rig
+    assert r.step()['snapshot']['shares'] == 0
+    with r.app.ledger.session() as db:
+        db.execute("DELETE FROM meta WHERE key='opening_shares'")  # a ledger from before the field
+    _opening(r, 13, 13)
+    assert 'opening_shares cannot change' in r.step()['error']
+
+
+@pytest.mark.parametrize('value', [-1, 1.0, '13', True, None])
+def test_spy_opening_shares_config_is_a_non_negative_integer(allocation_rig, value):
+    with pytest.raises(ValueError, match='opening_shares'):
+        AllocationConfig.parse(allocation_rig.values | {'opening_shares': value})

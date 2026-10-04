@@ -101,7 +101,10 @@ class Allocation:
                      if d['state'] in ('submitting', 'unknown', 'working')), default=None)
         raw = self.broker.snapshot(since)
         snapshot = validate_snapshot(raw, self.account, self.clock())
-        reconcile(db, self.ledger, raw, snapshot)
+        opening = self.opening_shares(db)
+        reconcile(db, self.ledger, raw, snapshot, opening)
+        # The first successful reconciliation pins the acknowledged opening holding.
+        self.ledger.set_meta(db, 'opening_shares', opening)
         self.ledger.set_meta(db, 'snapshot', snapshot)
         self.ledger.set_meta(db, 'error', None)
         # One reconciled valuation per New York quote date; the latest observation of that date wins.
@@ -111,6 +114,15 @@ class Allocation:
         db.execute('INSERT INTO valuations VALUES (?,?) ON CONFLICT(date) DO UPDATE SET body=excluded.body',
                    (sample['date'], encoded(sample)))
         return snapshot
+
+    def opening_shares(self, db):
+        """The operator-acknowledged SPY holding this ledger started from; immutable once reconciled."""
+        pinned = self.ledger.get_meta(db, 'opening_shares')
+        if pinned is None and self.ledger.get_meta(db, 'snapshot') is not None:
+            pinned = 0  # reconciled before the field existed, so it started from no shares
+        if pinned is not None and pinned != self.account.opening_shares:
+            raise ValueError(f'opening_shares cannot change on this ledger (reconciled with {pinned})')
+        return self.account.opening_shares
 
     def size(self, snapshot, plan):
         price = money(snapshot['price'])
