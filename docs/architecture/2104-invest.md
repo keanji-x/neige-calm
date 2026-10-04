@@ -1,36 +1,28 @@
 # Invest: a multi-instrument portfolio with long-lived research Tracks
 
-**Baseline:** `origin/main` 549be6f1d. The design was first read at 2dfb69d44.
-`git diff --stat 2dfb69d44 549be6f1d` touches two cited files: `plugins/paper-trading/spy-recipe.md`
-(#2102) and `routes/cards.rs`. Both are re-read below. Every other cited file is unchanged, and so
-are the prompt files and the registry golden that feed the F16 measurement.
+**Baseline:** `origin/main` 9e06ce5ab. The design was first read at 2dfb69d44, and this
+worktree's line numbers are from that tree. `git diff --stat 2dfb69d44 9e06ce5ab` touches only
+two cited files, both re-read: `plugins/paper-trading/spy-recipe.md` (#2102) and
+`routes/cards.rs` (F23 gives both trees' lines). Every other cited file is unchanged, as are the
+prompt files and the registry golden behind F16.
 Facts marked **4140** come from one read-only query of the production database (2026-10-04,
 migration 138).
 
-**Status:** design, revision 4. Review rounds 1–3 are folded in (§7). The research lifecycle is
+**Status:** design, revision 5. Review rounds 1–4 are folded in (§7). The research lifecycle is
 rebuilt on provenance, one issued key and a lease. Issue: #2104. Review tier: **L2**. Docs only.
 
-**Owner direction (not reopened):**
-- One Python plugin `invest` merges `plugins/paper-trading` and `plugins/market`.
-- One portfolio Track is the only broker writer.
-- Each covered instrument gets an ordinary top-level research Track; the two recipes are linked.
-- Kernel gaps: `neige_track_add` and plugin standing instructions.
-- Names follow `docs/conventions/agent-commands.md`; this lands after #2087 B0 and B5.
-- Compatibility covers 4140 only.
+**Owner direction (not reopened):** a Python plugin `invest` merges `plugins/paper-trading` and
+`plugins/market`; one portfolio Track is the only broker writer; each covered instrument gets an
+ordinary top-level research Track (linked recipes); the kernel gaps are `neige_track_add` and plugin
+standing instructions; names follow `docs/conventions/agent-commands.md`, after #2087 B0 and B5;
+compatibility covers 4140 only.
 
-**Owner decisions (on #2104):**
-1. Fresh start at cut-over.
-2. US market only.
-3. `neige_track_add` is listed for the Planner. K1 trims existing descriptions to make room and
-   never raises the 30,000 B cap; there is no CLI row.
-4. Retire `market`: the chart block on Track 7d686d59… moves to `invest`, and crypto charts go.
-5. Any stored recipe may be used, bounded by the cap.
-6. Each instrument is **held** (target weight > 0 or a position) or **watched** (a research Track,
-   no position), with separate limits `max_held` and `max_watched`. Moving watched → held is a
-   weight change. Projections fit any configured value by aggregating. The kernel cap must cover
-   held + watched.
-
-No owner question is open.
+**Owner decisions (on #2104; none open):** (1) fresh start at cut-over; (2) US only;
+(3) `neige_track_add` is listed, K1 trims descriptions and never raises the 30,000 B cap, no CLI
+row; (4) retire `market` (7d686d59…'s chart moves, crypto charts go); (5) any stored recipe,
+bounded by the cap; (6) an instrument is **held** (weight > 0 or a position) or **watched** (a
+research Track, no position), limited by `max_held` / `max_watched`; watched → held is a weight
+change; projections aggregate to fit any configured value; the kernel cap covers held + watched.
 
 ## 1. Problem, goals, non-goals
 
@@ -43,14 +35,11 @@ No owner question is open.
   (`spy-recipe.md:17`). No view is tracked over time.
 
 **Goals.**
-1. Target weights over US instruments, within operator bounds. The AI adds instruments inside
-   those bounds.
-2. One portfolio Track writes to the broker. Each covered instrument has a long-lived research
-   Track with its own calendar and recipe. Research Tracks never trade.
-3. Views raised in the portfolio are followed in the research Track, and their status flows
-   back.
-4. A generic kernel: a Planner opens a Track from a recipe, and an external plugin gives
-   Planners standing instructions.
+1. Target weights over US instruments; the AI adds instruments within operator bounds.
+2. One portfolio Track writes to the broker; each covered instrument has a long-lived research
+   Track with its own calendar and recipe, which never trades.
+3. Portfolio views are followed in the research Track, and their status flows back.
+4. A generic kernel: Planner-opened recipe Tracks and plugin standing instructions.
 
 **Non-goals.** Real money; other brokers; a Rust SDK; non-US markets; crypto charts; a
 ledger-migration framework; changing the renderer or the unit contracts.
@@ -81,7 +70,7 @@ ledger-migration framework; changing the renderer or the unit contracts.
 | F20 | `chart.series` needs `VENUE:SYMBOL`, with venue `[A-Z]{2,8}` and symbol `[A-Za-z0-9._-]{1,32}`, and a `neige://plugin/<id>/<tool>` source. | `chart_series.rs:131-139,163-167`; `kinds.rs:115-133` |
 | F21 | Unit contracts: time series ≤ 4 datasets × 6 series × 500 points; distribution ≤ 12 slices; records ≤ 4 datasets × 100; table ≤ 32 × 500. No validator checks that values are conserved. | `native_view.rs:122-128,167,227`; `native_view/model.rs:243,441-443` |
 | F22 | Reconciliation refuses unowned active orders and holdings that do not match the executions. Budgets: 500 orders, 5,000 executions. | `allocation_reconcile.py:83-84,112-129`; `sdk_bridge.py:146-153` |
-| F23 | A Codex Planner gets new instructions only at thread start; reset forces a new thread. Claude re-reads them at every `open_session`. | `routes/cards.rs:198,1199-1200` (re-read at 549be6f1d); `harness/backend.rs:102`; `claude_planner/wiring.rs:35-46` |
+| F23 | A Codex Planner gets new instructions only at thread start; reset forces a new thread. Claude re-reads them at every `open_session`. | `routes/cards.rs:198,1454-1455` (`:1199-1200` at 9e06ce5ab); `harness/backend.rs:102`; `claude_planner/wiring.rs:35-46` |
 | F24 | **4140:** `dev-neige-market` has no kv rows and no overlays. 7d686d59… and the SPY Track cite it. The SPY Track has 4 calendar rows. | read-only query |
 
 ## 3. Decisions
@@ -132,47 +121,61 @@ Recipes never copy an assessment into prose (the rule at `spy-recipe.md:17`).
 names a plugin.
 
 **One issued key per live symbol.** The ledger is the one source of truth.
-- Each live symbol S carries a counter `n` that never goes back down, and the current key
-  `invest-<venue>-<code>-<n>` (lowercase). It also stores the exact
-  `track_add = {recipe_id, title, idempotency_key, text, message}` for that key.
-- Every retry of `neige_track_add` within `n` is byte-identical and replays the same Track (F10).
-- A new `n` never reuses a key, so a dead key (F11) cannot block coverage.
+- `instrument_add` canonicalizes the symbol to upper case. A live symbol S carries a counter `n`
+  that never decreases and the current key `invest-<VENUE>-<CODE>-<n>`, which keeps case. The
+  key parses unambiguously: the venue `[A-Z]{2,8}` has no `-`, and `n` follows the last `-`.
+- The ledger also stores the exact
+  `track_add = {recipe_id, title: "<symbol> 研究 · <n>", idempotency_key, text, message}`.
+- **Retries.** A retry of `neige_track_add` within `n` is byte-identical and replays the same
+  Track (F10). A first creation under the key with *other* arguments is a portfolio Planner
+  mistake. The binding fingerprint then refuses every other request under that key forever
+  (`create.rs:225`), so the way out is renewal (n+1, below).
+- Renewal, or re-adding a dropped symbol, issues n+1. A key is never reused, so a dead key (F11)
+  cannot block coverage.
 
-**Write authority.** A call is *attested for S* when `creator_track_id == portfolio_track_id` and
-`creator_key == ` S's current key. Nothing is stored when the research Track first binds.
+**Write authority.** A call is *attested for S* exactly when S is `live`,
+`creator_track_id == portfolio_track_id`, and `creator_key ==` S's current key. Provenance cannot
+prove which recipe or text the creation used.
+- Nothing is stored at binding time.
 - Attested calls may `thesis_set` on S.
-- An attested call also republishes S's research units onto the caller. This is stateless: the
-  caller's Track id is used as the overlay target and is not stored.
-- A call whose provenance names the portfolio and an older key of S, or a dropped S, gets
-  `{state: "superseded", action: "close this Track"}` from `instrument_status`. Every write from
-  it is refused (-32409).
-- Any other caller is refused (-32403). That includes the portfolio Track itself, since it has
-  no creator.
+- Each attested call republishes S's research units onto the caller, statelessly (the
+  caller's id is the overlay target and is not stored). This is the view exception in
+  `agent-commands.md` §3.
+- Every call whose provenance names the portfolio and an older key of S, or a dropped S, is
+  refused with -32409 `superseded: close this Track`, views included.
+- Any other caller is refused with -32403, including the portfolio Track itself, which has no
+  creator.
 - A repeat call from the current Track is idempotent.
 
 **Lease.** Every attested call sets `last_seen_at` for S. This is **access metadata**, like the
-kernel's `last_activity_ms`: it never changes authority and is not domain state.
+kernel's `last_activity_ms`: it never bumps `version`, never changes authority, and is not domain
+state. `portfolio_status` marks S **stale** when either holds:
+- the current key was not seen within 120 minutes of issue (a constant), for example because
+  the Track was never created or its first turn failed;
+- the current key has not been seen for `lease_days` (default 8). The research recipe has a weekly
+  calendar entry, and every step starts with `instrument_status`.
 
-`portfolio_status` marks S **stale** when either holds:
-- the current key was never seen within `bind_minutes` (default 120) of being issued — for
-  example, the Track was never created or its first turn failed;
-- it has not been seen for `lease_days` (default 8). The research recipe has a weekly calendar
-  entry, and every step starts with `instrument_status`.
-
-Stale covers a never-bound key, a deleted or closed Track, and a dead Planner, without any area
-listing. The portfolio renews a stale symbol with **`instrument_set {symbol, expected_version,
-message}`**. Under §3 `set` ("replace one entry's value under `expected_version`"), the value
-replaced is S's issued key: n+1. The call returns the new `track_add`, which the Planner passes
-verbatim to `neige_track_add`. The old Track, if still alive, is told "superseded" on its next
-call and closes itself (`neige_track_close`).
+**Renewal.** The portfolio renews a stale S with **`instrument_set {symbol, expected_version,
+message}`**. It is `set` under §3 ("replace one entry's value under `expected_version`"): the
+value replaced is S's issued key, which becomes n+1. The call returns the new `track_add`, which
+the Planner passes verbatim to `neige_track_add`.
+- **What renewal restores.** Renewal restores coverage. It does **not** close the old Track. A
+  live superseded Track closes itself on its next call (`neige_track_close`). A silent one, such
+  as a dead Planner, stays open until a human closes it: `neige_track_close` closes only the
+  caller's own Track (`track_state.rs:237-245`).
+- **Cap refusals.** Silent Tracks count against the kernel cap. The cap's -32409 therefore lists
+  the creator's open created Tracks as `{track_id, title}`, in the message and in `data` (§3.4).
+- **Owner notice.** On that refusal, the portfolio Planner compares each title's `n` with the
+  current keys. It then calls `neige_user_notify` (today `neige.user.notify`) with the superseded
+  Tracks the owner should close.
 
 **States.**
 - `pending`: added, symbol not yet verified. No key exists.
 - `live`: verified, key `n` issued.
 - `dropped`: removed by `instrument_rm`, or refused by verification (with a reason).
 
-Only `pending` and `live` count toward limits. A dropped symbol may be re-added; `n` continues
-from where it stopped. Verification runs in the loop (F19), so no Track is created before the
+Only `pending` and `live` count toward limits. A dropped symbol may be re-added, which issues
+n+1. Verification runs in the loop (F19), so no Track is created before the
 symbol is checked.
 
 ### 3.4 `neige_track_add` (kernel gap 1, D3)
@@ -186,16 +189,16 @@ Planner (owner 3).
 
 | Aspect | Decision |
 |---|---|
-| Who | A Planner on an open creator Track whose plugin scope is `All` (`tool_visibility.rs:57-73`). A bound or fail-closed creator would otherwise escape its fence. A reports-only managed Planner is refused (`managed_track.rs:215-226`). |
+| Who | A Planner on an open creator Track whose plugin scope is `All` (`tool_visibility.rs:57-73`). A bound or fail-closed creator would otherwise escape its fence. A reports-only managed Planner is refused (`managed_track.rs:215-226`). The role has **one** gate: the in-transaction role gate, which makes the creation `TrackUpdated` Planner-only (`calm-truth/src/role_gate.rs:155-183`). Its `Forbidden` maps to -32403, as in `tools/plan.rs:703`. The handler adds no role check of its own. |
 | Depth | 1. Refused when the creator has a `creator_track_id`, and separately when it has a `parent_track_id`. |
-| Errors | Role, scope and depth refusals are -32403, raised with `RpcError::custom` as `managed_track.rs:221` does, not via `require_role*` (F13). The cap is state, so its refusal is -32409 (§5). The message names `--track-add-max-open`, the cap and the open count. |
+| Errors | Scope and depth refusals are -32403, raised with `RpcError::custom` as `managed_track.rs:221` does, not via `require_role*` (F13). The cap is state, so it is -32409 (§5). Its message names `--track-add-max-open`, the cap, the open count and the open created Tracks, and `data.open` lists them as `{track_id, title}` (the rows the count already reads). |
 | Recipes | Any stored recipe (owner 5; recipes are human-only, F14). |
 | Where | The creator's area (`registry.rs:66-74`); a managed workspace (`routes/tracks.rs:937-938`); the creator's Planner provider (`child_track_adapter.rs:240`); the default theme; actor `AiPlannerSession` (F13). |
 | Entry point | The keyed create (F10), extracted behind one function that takes an `ActorId`, a key and a fingerprint. REST and the tool both call it, keeping the area-delete lock and the Claude gate (F13). The tool reaches it through `AppContext.track_creator: OnceCell<Arc<dyn TrackCreator>>`, set at boot like `operation_runtime` (`registry.rs:174`); its implementation holds `RouteState`. |
 | Idempotency | The existing binding row, keyed `track-add/<creator_track_id>/<idempotency_key>`. REST refuses that prefix. The fingerprint covers the tool's own five inputs only, not derived fields such as the provider (contrast `create.rs:334-345`). A different request under the same key is -32409. |
-| Provenance | Migration, numbered last: `tracks.creator_track_id` and `tracks.creator_key` (the raw key), both or neither (a named `CHECK`), no `REFERENCES` (0085's reason), and an index on `creator_track_id`. `parent_track_id` stays NULL and the tree budget is untouched (F12). The provenance reaches plugins via `_meta` (`mcp.rs:425-427`). |
+| Provenance | Migration, numbered last: `tracks.creator_track_id` and `tracks.creator_key` (the raw key), both or neither (a named `CHECK`), no `REFERENCES` (0085's reason), and an index on `creator_track_id`. `parent_track_id` stays NULL and the tree budget is untouched (F12). The provenance reaches plugins via `_meta`, built in **one** typed place that both `tools_call` and `forge_tools_call` use (`mcp.rs:424-430,448-454`). |
 | Cap | `--track-add-max-open <u32>`, a clap arg on `Config` (`config.rs:8`, with a range like `:159-166`): 1..=256, default 16, no env var. It counts the creator's open created Tracks inside the create transaction's closure (`routes/tracks.rs:1281`). |
-| Cap and plugin limits | The plugin cannot read the cap (F15). It checks statically that `max_held + max_watched ≤ 254` (the cap range minus a margin of 2). The runbook sets the cap to at least `max_held + max_watched + 2`. A mismatch shows up as the -32409 above; S stays stale, and `portfolio_status` shows it. |
+| Cap and plugin limits | The plugin cannot read the cap (F15). It checks statically that `max_held + max_watched ≤ 254` (the cap range minus a margin of 2). The runbook sets the cap to at least `max_held + max_watched + 2`. A mismatch, or silent superseded Tracks (§3.3), show up as the -32409 above. S stays stale, and the Planner notifies the owner. |
 | Events and UI | The ordinary create events (`routes/tracks.rs:1567-1590`). No visible UI change; the generated `Track` type gains two fields. |
 | Creator closes | Nothing cascades. |
 | Budget | 29,929 B: summed over the 30 Planner rows of `mcp_tool_registry.json`. Each row counts the description bytes (prompt `trim_end`; `task.verdict` rendered with its guidance; every SHA-256 matched the golden) plus the compact schema bytes. That leaves 71 B. K1 adds about 1.1 KB and trims at least that much from the largest descriptions (`report.commit` 1,535 B, `terminal.input` 1,479 B, `source.capture` 1,397 B, `plan.list` 1,362 B). It re-measures on its own base. |
@@ -221,13 +224,17 @@ does not race plugin-host boot. It is assembled in `planner_instructions` (`:417
 picks it up at thread start or reset; Claude at every `open_session` (F23).
 
 **Aggregate cap: 4,096 B over every appended byte.**
-- 160 B are always reserved, so instruction blocks (each heading `## Plugin <id>\n` plus its
-  text) are admitted in id order only while they fit in 3,936 B.
-- If any plugin is left out, one line is appended:
-  `## Plugin instructions omitted (budget): <id>, <id>, …`. It is cut at an ASCII boundary to at
-  most 160 B including its newline, ending with `…` when cut.
-- Each omitted plugin also gets a warning log line.
-- The total therefore never exceeds 4,096 B.
+- A block is `## Plugin <id>\n` + text + `\n`, so it is 44 + text bytes for a 32-byte id.
+- The fixed notice `## Plugin instructions omitted (over budget); see the server log\n` is 65 B.
+  Those 65 B are always reserved: blocks are admitted in id order while they fit in 4,031 B.
+- If any plugin is left out, the notice is appended once, and each omitted id gets a warning log
+  line. The total never exceeds 4,096 B.
+- **Boundary fixture:** three plugins with 32-byte ids and 1,990 B texts, so each block is
+  2,034 B.
+  - Correct: the first block is admitted (2,034 ≤ 4,031); the second is not (4,068 > 4,031);
+    the notice brings the total to 2,099 B.
+  - Without the reservation: two blocks fit in 4,096 (4,068); the third is omitted, and the
+    notice makes 4,133 B > 4,096, so the test goes red.
 
 **Recipes and trust.** Recipes keep only layout and schedule (#2098). Trust is the same class as
 tool descriptions (`docs/architecture/1413-local-plugin-trust.md`).
@@ -246,15 +253,16 @@ The plugin id is `invest`, and every tool is served as `plugin_invest_<tool>`. S
 | `instrument_add` | `add` W | portfolio Planner | *`symbol`*, `message` | — |
 | `instrument_set` | `set` W | portfolio Planner | *`symbol`*, `expected_version`, `message` → the new `track_add` (key n+1) | — |
 | `instrument_rm` | `rm` W | portfolio Planner | *`symbol`*, `expected_version`, `message`; refused while held | — |
-| `instrument_status` | `status` V | research Planner/Worker | `{}` → its symbol, position, theses; or `superseded` | — |
+| `instrument_status` | `status` V | research Planner/Worker | `{}` → its symbol, position, theses; a superseded caller gets -32409 | — |
 | `thesis_add` | `add` W | portfolio Planner | `thesis_id`, *`symbol`*, *`stance`*, `title`, `summary`, `body`, *`source_refs`* | — |
 | `thesis_set` | `set` W | attested research Planner | `thesis_id`, *`assessment`*, `summary`, *`source_refs`*, `expected_version` | — |
 | `thesis_rm` | `rm` W | portfolio Planner | `thesis_id`, `expected_version`, `message` | — |
 | `series_show` | `show` V | chart resolver only | the `market.series` contract, US only | `market.series` |
 
 **Verb rules.**
-- Views change no domain state. The only things a view touches are the access metadata
-  `last_seen_at` and the projection refresh (§3.3).
+- Views change no domain state. A view may stamp access metadata (`last_seen_at`) and refresh
+  derived projections onto the caller's own Track (§3.3). The convention allows exactly this:
+  `docs/conventions/agent-commands.md` §3 (the "A view may stamp access metadata" line).
 - Every `set` and `rm` takes `expected_version`.
 - There are no compound actions.
 - `series_show` declares `openWorldHint: true`. It accepts only calls that carry Track `_meta`
@@ -319,8 +327,8 @@ what it replaces.
 |---|---|---|
 | `portfolio.weights` | 12 slices | top 10 + 其他 + 现金; slices sum to equity |
 | `portfolio.weight_history` | 6 series | top 4 now + 其他 + 现金; each point sums to 100% |
-| `portfolio.holdings` | 500 rows | top 499 + 其他 (value sum) |
-| `portfolio.decision_log` | 50 records × 12 facts | top 11 weights + 其他 per record |
+| `portfolio.holdings` | 500 rows | every held symbol + 现金 (≤ 255 rows: no aggregation needed) |
+| `portfolio.decision_log` | 50 records; per record ≤ 12 facts, ≤ 12 badges, ≤ 20 disclosures | facts: top 11 weights + 其他. Badges: state, `created_at`, `valid_until`. Disclosures: one per order, top 19 + 其他 |
 | `thesis.board` | 100 records × 8 sections | one record per counted symbol (held by weight, then watched): top 99 + one 其他 record with counts by assessment; sections are the ≤ 3 open theses (`title` → label, `summary` → body) |
 | `thesis.records` (research) | 100 records | ≤ 3 open + the 20 latest retired |
 | `nav_history`, `fill_log` | 500 points, 500 rows | 260 points, latest 500 fills |
@@ -335,7 +343,7 @@ asserts this.
 - limits: `max_held`, `max_watched` (each ≥ 1, sum ≤ 254), `max_weight_bps`;
 - trading: `cash_buffer_bps`, `drift_bps`, `max_order_bps`, `quote_max_age_seconds`,
   `poll_seconds`;
-- lease: `bind_minutes`, `lease_days`;
+- lease: `lease_days` (the bind window is a constant);
 - `opening_positions: [{symbol, shares}]`, immutable per ledger (it generalizes
   `allocation.py:115-122`).
 
@@ -361,16 +369,24 @@ once K2 and P1–P3 are deployed:
    first message.
 5. Enable `invest` with `opening_positions = [{symbol: "US:SPY", shares: <step 3>}]` and the
    §3.7 config.
-6. Reset the portfolio Planner (`POST /api/cards/<planner>/planner/reset`, F23); its first thread
-   predates `invest`. On its first turn it covers `US:SPY`.
+6. Reset the portfolio Planner (`POST /api/cards/<planner>/planner/reset`, F23); its first
+   thread predates `invest`. Neither creation nor reset seeds a turn, and saving a recipe creates
+   no calendar. So **send the first message** in the Track's chat
+   (`POST /api/cards/<planner>/planner/input`, `routes/cards.rs:171`), asking it to set up its
+   calendar and cover `US:SPY`.
 7. Edit Track 7d686d59…'s `chart.series` source to `neige://plugin/invest/series_show`, deleting
    its CRYPTO series (owner 4), then uninstall `market`. K2 will then inject invest's
    instructions into 7d686d59…, so those instructions open by naming the two invest Track kinds
    and say to ignore the rest elsewhere.
+8. **Standing duty:** when the portfolio Planner sends a cap notice (§3.3), close the superseded
+   research Tracks it lists.
 
-**Acceptance check C:** the first `invest` reconciliation succeeds, with holdings equal to
-`opening_positions` and no unowned active order. An extra active order on the fake broker must
-fail it.
+**Acceptance check C:**
+- The first `invest` reconciliation succeeds, with holdings equal to `opening_positions` and no
+  unowned active order. An extra active order on the fake broker must fail it.
+- After step 6, `portfolio_status` shows `US:SPY` `live` with `last_seen_at` set, meaning its
+  research Track was created and made its first attested call.
+- Both the portfolio Track and the SPY research Track have calendar rows.
 
 ## 4. Slices
 
@@ -387,10 +403,10 @@ Each mutation is single-factor, and `→ {…}` lists the complete set of tests 
 
 | # | Slice (≈ lines) | Tier | Must go red first |
 |---|---|---|---|
-| K1 | `neige_track_add`, provenance in `_meta`, description trims (~1k) | L2 | Tests: `track_add_records_provenance_not_parent`; `…_refuses_past_open_cap` (cap 2: two adds, the third refused, nothing closed); `…_counts_only_open_tracks` (cap 2: two adds, close one, the third admitted); `…_refuses_worker`; `…_refuses_bound_creator`; `…_refuses_created_creator`; `…_refuses_child_creator`; `…_replays_and_refuses_changed_request`; `…_fingerprint_ignores_provider`; `…_delivers_text_once`; `plugin_track_meta_carries_provenance`. Mutations: drop the count → {`refuses_past_open_cap`}; also count closed Tracks → {`counts_only_open_tracks`}; drop the role gate → {`refuses_worker`}; drop the scope check → {`refuses_bound_creator`}; drop the `creator_track_id` half → {`refuses_created_creator`}; drop the `parent_track_id` half → {`refuses_child_creator`}; omit `creator_key` → {`plugin_track_meta_carries_provenance`} |
-| K2 | standing instructions (~500) | L2 | Tests: `plugin_instructions_follow_report_references`, `…_skip_unreferenced_tracks`, `…_skip_disabled_plugin`, `…_read_from_row_before_host_boot`, `…_aggregate_never_exceeds_cap` (five plugins with 32-byte ids and 2,048 B texts), `manifest_v4_refuses_planner_instructions`. Mutations: predicate always `true` → {`skip_unreferenced_tracks`}; skip the 160 B reservation → {`aggregate_never_exceeds_cap`} |
+| K1 | `neige_track_add`, provenance in `_meta`, description trims (~1k) | L2 | Tests: `track_add_records_provenance_not_parent`; `…_refuses_past_open_cap` (cap 2: two adds, the third refused, nothing closed); `…_counts_only_open_tracks` (cap 2: two adds, close one, the third admitted); `…_refuses_worker` (a regression test: the in-transaction gate is the only role gate, so there is no mutation row for it); `…_cap_refusal_lists_open_tracks`; `…_refuses_bound_creator`; `…_refuses_created_creator`; `…_refuses_child_creator`; `…_replays_and_refuses_changed_request`; `…_fingerprint_ignores_provider`; `…_delivers_text_once`; `plugin_track_meta_carries_provenance` (through `tools_call` and `forge_tools_call`). Mutations: drop the count → {`refuses_past_open_cap`}; also count closed Tracks → {`counts_only_open_tracks`}; drop `data.open` from the cap refusal → {`cap_refusal_lists_open_tracks`}; drop the scope check → {`refuses_bound_creator`}; drop the `creator_track_id` half → {`refuses_created_creator`}; drop the `parent_track_id` half → {`refuses_child_creator`}; omit `creator_key` → {`plugin_track_meta_carries_provenance`} |
+| K2 | standing instructions (~500) | L2 | Tests: `plugin_instructions_follow_report_references`, `…_skip_unreferenced_tracks`, `…_skip_disabled_plugin`, `…_read_from_row_before_host_boot`, `…_aggregate_never_exceeds_cap` (the §3.5 boundary fixture: three 32-byte ids, 1,990 B texts), `manifest_v4_refuses_planner_instructions`. Mutations: predicate always `true` → {`skip_unreferenced_tracks`}; skip the 65 B reservation → {`aggregate_never_exceeds_cap`} |
 | P1 | invest core (~1k, Python): ledger, decisions, executions, multi-symbol bridge, portfolio units, recipe | L2 | Tests: `test_weights_respect_bounds`, `test_held_after_counts_positions`, `test_sells_before_buys_settled_cash_only`, `test_research_track_cannot_trade`, `test_leg_remarks_are_unique`, `test_unowned_active_order_blocks`, `test_opening_positions_pin_first_reconciliation`, `test_cutover_refuses_unquiesced_account`, `test_projections_conserve_value` (40 held: slices and series sum to the total, 其他 equals the omitted sum), and a port of `caller_identity.rs:45`. Mutations: drop the Track fence → {`research_track_cannot_trade`}; drop 其他 from weights → {`projections_conserve_value`} |
-| P2 | instruments, keys, lease, theses, research units and recipe, `planner_instructions` (~800) | L2 | Tests: `test_attestation_requires_portfolio_creator_and_current_key`, `test_superseded_key_refused`, `test_never_seen_key_goes_stale`, `test_lease_expiry_goes_stale`, `test_set_issues_next_key_with_byte_identical_args`, `test_views_change_no_domain_state`, `test_last_seen_never_changes_authority`, `test_fourth_open_thesis_refused_state_unchanged`, `test_rm_retires_open_theses`, `test_dropped_counts_toward_no_limit`, `test_units_fit_caps_at_max_config` (254 symbols, max-length CJK, every unit validated and ≤ 4 MiB), `test_unit_ids_injective`, kernel `invest_recipe_slots_resolve`. Mutations: accept any key of the symbol → {`superseded_key_refused`}; drop the bind window → {`never_seen_key_goes_stale`}; ignore `lease_days` → {`lease_expiry_goes_stale`}; drop the thesis cap → {`fourth_open_thesis_refused_state_unchanged`}; skip retiring on rm → {`rm_retires_open_theses`} |
+| P2 | instruments, keys, lease, theses, research units and recipe, `planner_instructions` (~800) | L2 | Tests: `test_attestation_requires_portfolio_creator_and_current_key` (cases: a foreign creator; S's thesis written with the current key of another symbol; a `pending` S), `test_superseded_key_refused` (S's older key), `test_never_seen_key_goes_stale`, `test_lease_expiry_goes_stale`, `test_set_issues_next_key_with_byte_identical_args`, `test_views_change_no_domain_state`, `test_last_seen_never_changes_authority` (and never bumps `version`), `test_fourth_open_thesis_refused_state_unchanged`, `test_rm_retires_open_theses`, `test_dropped_counts_toward_no_limit`, `test_units_fit_caps_at_max_config` (254 symbols, max-length CJK, every unit validated and ≤ 4 MiB), `test_unit_ids_injective`, kernel `invest_recipe_slots_resolve`. Mutations: accept any key of S → {`superseded_key_refused`}; accept any current key regardless of symbol → {`attestation_requires_portfolio_creator_and_current_key`}; drop the 120-minute bind window → {`never_seen_key_goes_stale`}; ignore `lease_days` → {`lease_expiry_goes_stale`}; drop the thesis cap → {`fourth_open_thesis_refused_state_unchanged`}; skip retiring on rm → {`rm_retires_open_theses`} |
 | P3 | `series_show` on the Longbridge SDK (~600); remove `plugins/market` | L1 | Tests: `test_series_contract_matches_market_series`, `test_series_refuses_agent_caller`, kernel `chart_series_resolves_through_invest` (the real resolver, `resolver.rs:573-575`). Mutation: accept an agent caller → {`series_refuses_agent_caller`} |
 | C | cut-over (§3.8) | ops | check C |
 
@@ -403,9 +419,10 @@ L2 means two independent review channels, re-run fresh after every fix (AGENTS.m
 - **Overlay churn.** Portfolio units are republished every tick; #1995 owns that. Research units
   change only on research calls, so between wakes they show their snapshot time.
 - **Rule drift.** The rules live only in the plugin, and review checks the recipes.
-- **Wrong-argument Tracks.** A Track created with arguments other than the issued `track_add` is
-  never attested. It cannot write, it stays inside the cap until closed, and its symbol goes
-  stale, which leads to renewal.
+- **Portfolio Planner mistakes.** A first creation under the current key with other arguments
+  *is* attested: provenance cannot see the arguments. The recovery is renewal (§3.3). A Track
+  under any other key is never attested.
+- **Silent superseded Tracks** hold cap slots until the owner closes them (§3.3, runbook step 8).
 
 ## 6. Rejected alternatives
 
@@ -419,16 +436,13 @@ L2 means two independent review channels, re-run fresh after every fix (AGENTS.m
 
 | Round | Finding | Resolution |
 |---|---|---|
-| 1 | A-B1 bound creator; A-B2 fan-out | Fixed: scope `All`; depth 1 with both halves tested |
-| 1 | A-B3/B-1/B-2 binding sequence | Superseded by r4 (§3.3) |
-| 1 | A-B4 runbook order; B-4 quiescence | Fixed: reset step 6; steps 1–3 and check C |
-| 1 | B-3 unit contracts | Fixed by aggregation at any config, with conservation |
-| 1 | B-5 CLI row | Owner 3 |
-| 2 | A-B1 churn; B-4 tests that cannot go red | Fixed: only counted states; rm retires theses; 4th-thesis test |
-| 2 | B-1 bind in a view; B-2 truncated outline; B-3 background Track | Superseded by r4: no bind, no listing; F4 corrected; `series_show` keys on the missing caller |
-| 3 | lifecycle blockers in every round | **Restructured (r4):** provenance + one issued key + lease. Deleted: `coverage_add`, `coverage_rm`, the `coverages` table, the `reserved`/`checked`/`refused` states, the `area/reports/` existence check and K1's `closed_at`. `instrument_set` renews the key |
-| 3 | A-B3 unit and field caps, ids | Fixed: input bounds, board projected from title and summary, decision weights top 11 + 其他, `VENUE.CODE` ids, max-config CJK byte test |
-| 3 | A-B4/B-1 K2 marker overflow | Fixed: one summary line within a fixed 160 B reservation; per-plugin warnings; 32-byte-id test |
-| 3 | B-2 conservation | Fixed: `test_projections_conserve_value` |
-| 3 | S3, S4, B nit tables | Deleted `thesis_ls` and `instrument_ls`; dropped `sources` and `reviews` |
-| 3 | nits | Raw `creator_key`, idempotent repeats; held-after and the 254 sum; the count site is `:1281`; -32403 via `RpcError::custom`, the cap -32409; risks wording and test shapes; the cap is set at the K1 deploy; crypto series deleted; K2 notice for 7d686d59…; new baseline |
+| 1 | Bound creator; fan-out; runbook order; quiescence; CLI row | Scope `All`; depth 1 with both halves; reset step; steps 1–3 and check C; owner 3 |
+| 1–3 | Research lifecycle (binding, generations, lost-Track checks): blockers in every round | **Restructured (r4):** provenance + one issued key + lease. Deleted `coverage_add`/`coverage_rm`, the `coverages` table, the `reserved`/`checked`/`refused` states, the listing check and K1's `closed_at` |
+| 1–3 | Unit contracts, churn, caps, ids, conservation | Aggregation at any config; only counted states; rm retires theses; input bounds; `VENUE.CODE`; CJK byte test; `test_projections_conserve_value` |
+| 2 | Background calls carry a Track | F4 corrected; `series_show` keys on the absent caller |
+| 3 | Simplifications | Deleted `thesis_ls`, `instrument_ls`, `sources`, `reviews` |
+| 4 | A-B1/B-2 silent superseded Tracks eat the cap | Promise narrowed (§3.3): renewal restores coverage, not cleanup. The cap -32409 lists `{track_id, title}`; the Planner sends `neige_user_notify`; runbook step 8; test `cap_refusal_lists_open_tracks` |
+| 4 | A-B2/B-3 predictions that cannot go red | K2 fixture re-derived (1,990 B texts: 2,099 vs 4,133 B); the role gate is only the in-transaction gate, and `refuses_worker` is a regression test; P2 has a cross-symbol case and two separate mutations |
+| 4 | B-4 bootstrap | Step 6 sends a first message; check C requires `US:SPY` live and seen, plus calendar rows on both Tracks |
+| 4 | B-1 wrong-argument Track under the right key | False promise deleted. Attestation is exactly "portfolio-created, current key, `live`". A mismatched creation is a Planner mistake, recovered by renewal (the fingerprint refuses that key forever) |
+| 4 | Nits | Decision-log badges and disclosures; upper-case symbols and case-kept keys; `live` required; re-add issues n+1; `last_seen_at` does not bump `version`; one typed `_meta` builder; the view exception added to `agent-commands.md` §3; superseded folded into -32409; constant bind window; holdings branch deleted; fixed K2 notice; F23 cites both trees |
