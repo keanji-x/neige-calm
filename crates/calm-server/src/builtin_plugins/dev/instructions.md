@@ -4,7 +4,7 @@ The development plugin supports Git worktrees, validation and pull requests thro
 
 Its tools are named `plugin.dev.neige.git-forge_<name>` (e.g. `plugin.dev.neige.git-forge_gh.pr.checks`); list them with `neige tools names --prefix plugin.dev.neige.git-forge_`.
 
-To deliver an attached Git Track, use `neige.track.publish`. It pushes a completed task's candidate and opens or reuses the PR. Report-only work does not need a PR.
+To deliver an attached Git Track, use `neige.dev.publish`. It pushes a completed task's candidate and opens or reuses the PR. Report-only work does not need a PR.
 
 The selected template determines when review and user ratification are required; read its working method and acceptance conditions.
 

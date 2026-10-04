@@ -155,16 +155,6 @@ pub enum Observation {
         commit_sha: String,
         branch: String,
     },
-    ReviewRound {
-        track_id: TrackId,
-        phase: String,
-        slice_id: String,
-        pr_number: Option<u64>,
-        head_sha: Option<String>,
-        n: u32,
-        cap: u32,
-        converged: bool,
-    },
     RatifyRequested {
         track_id: TrackId,
         reason: String,
@@ -229,7 +219,6 @@ impl Observation {
             | Observation::ForgeIssueClosed { .. }
             | Observation::WorktreeProvisioned { .. }
             | Observation::WorktreeCommitted { .. }
-            | Observation::ReviewRound { .. }
             | Observation::RatifyRequested { .. }
             | Observation::RatifyResolved { .. } => HarnessInputPresentation::System,
         }
@@ -252,7 +241,6 @@ impl Observation {
             | Observation::ForgeIssueClosed { .. }
             | Observation::WorktreeProvisioned { .. }
             | Observation::WorktreeCommitted { .. }
-            | Observation::ReviewRound { .. }
             | Observation::RatifyRequested { .. }
             | Observation::RatifyResolved { .. } => true,
             Observation::TrackGoal { .. }
@@ -445,28 +433,6 @@ impl Observation {
             }
             Observation::WorktreeCommitted { branch, .. } => {
                 format!("A worker git worktree committed branch {branch}. Re-read the track state.")
-            }
-            Observation::ReviewRound {
-                phase,
-                slice_id,
-                pr_number,
-                head_sha,
-                n,
-                cap,
-                converged,
-                ..
-            } => {
-                let subject = match pr_number {
-                    Some(pr) => format!("{phase}/{slice_id}/PR #{pr}"),
-                    None => format!("{phase}/{slice_id}/design"),
-                };
-                let head = head_sha
-                    .as_deref()
-                    .map(|sha| format!(" at {sha}"))
-                    .unwrap_or_default();
-                format!(
-                    "Review round {n}/{cap} for {subject}{head} recorded converged={converged}. Re-read the track state."
-                )
             }
             Observation::RatifyRequested { reason, .. } => {
                 format!("Ratification was requested: {reason}. Re-read the track state.")
@@ -1152,25 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn review_and_ratify_observations_are_hard_fire() {
-        let review = Observation::ReviewRound {
-            track_id: TrackId::from("track-1"),
-            phase: "impl".into(),
-            slice_id: "5b".into(),
-            pr_number: Some(760),
-            head_sha: Some("head-sha".into()),
-            n: 2,
-            cap: 8,
-            converged: true,
-        };
-        assert!(review.is_hard_fire());
-        let text = review.to_turn_text();
-        assert!(text.contains("2/8"), "round count missing: {text}");
-        assert!(
-            text.contains("converged=true"),
-            "convergence missing: {text}"
-        );
-
+    fn ratify_observations_are_hard_fire() {
         let requested = Observation::RatifyRequested {
             track_id: TrackId::from("track-1"),
             reason: "cap_exhausted".into(),

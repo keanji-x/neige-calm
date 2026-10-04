@@ -136,12 +136,10 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. } => true,
         // Workspace / worktree lifecycle notices are read back on demand (`neige.plan.list`);
-        // `review.round` is planner-authored, so pushing it would be self-echo.
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
         | Event::WorktreeProvisioned { .. }
-        | Event::WorktreeCommitted { .. }
-        | Event::ReviewRound { .. } => false,
+        | Event::WorktreeCommitted { .. } => false,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
             let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
@@ -1123,7 +1121,6 @@ impl Inner {
             | Event::WorkspaceLeased { .. }
             | Event::WorktreeProvisioned { .. }
             | Event::WorktreeCommitted { .. }
-            | Event::ReviewRound { .. }
             | Event::WorktreeRemoved { .. } => {
                 tracing::warn!(
                     kind = envelope.event.kind_tag(),
@@ -1522,23 +1519,6 @@ pub(crate) fn harness_observation_from_event(
         Event::ForgePrMerged { subject, .. } => Some(HarnessObservation::ForgePrMerged {
             track_id: track_id.clone(),
             pr_number: subject.pr_number,
-        }),
-        Event::ReviewRound {
-            subject,
-            head_sha,
-            n,
-            cap,
-            converged,
-            ..
-        } => Some(HarnessObservation::ReviewRound {
-            track_id: track_id.clone(),
-            phase: subject.phase.clone(),
-            slice_id: subject.slice_id.clone(),
-            pr_number: subject.pr_number,
-            head_sha: head_sha.clone(),
-            n: *n,
-            cap: *cap,
-            converged: *converged,
         }),
         Event::RatifyRequested { reason, .. } => Some(HarnessObservation::RatifyRequested {
             track_id: track_id.clone(),

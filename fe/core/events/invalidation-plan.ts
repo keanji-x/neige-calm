@@ -234,7 +234,6 @@ function policies(): PolicyMap {
   'workspace.leased': noop('Workspace leases have no query consumer.'),
   'workspace.released': noop('Workspace releases have no query consumer.'),
   'forge.pr.merged': noop('Forge merge rows have no query consumer.'),
-  'review.round': noop('Review rounds have no query consumer.'),
   'ratify.requested': noop('Ratification requests have no query consumer.'),
   'ratify.resolved': noop('Ratification decisions have no query consumer.'),
   'proposal.submitted': noop('The proposal UI is withdrawn.'),

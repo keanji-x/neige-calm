@@ -84,8 +84,8 @@ pub enum RoleViolation {
     )]
     NotKernelForTaskGateResult { actor: String },
 
-    #[error("only planner cards may emit review/ratify request events (actor={actor})")]
-    NotPlannerForReviewRatify { actor: String },
+    #[error("only planner cards may emit ratify request events (actor={actor})")]
+    NotPlannerForRatify { actor: String },
 
     #[error("only User may emit ratify.resolved (actor={actor})")]
     NotUserForRatifyResolved { actor: String },
@@ -360,22 +360,18 @@ pub fn enforce_role(
         }
     }
 
-    // (2.8) Only the planner may author `review.round` and `ratify.requested`;
-    // User/Kernel/Plugin do NOT pass. `review.round` now exists only as historical rows.
-    if matches!(
-        event,
-        Event::ReviewRound { .. } | Event::RatifyRequested { .. }
-    ) {
+    // (2.8) Only the planner may author `ratify.requested`; User/Kernel/Plugin do NOT pass.
+    if matches!(event, Event::RatifyRequested { .. }) {
         match actor {
             ActorId::AiPlanner(card_id) => {
                 if cache.get(card_id) != Some(CardRole::Planner) {
-                    return Err(RoleViolation::NotPlannerForReviewRatify {
+                    return Err(RoleViolation::NotPlannerForRatify {
                         actor: actor.to_string(),
                     });
                 }
             }
             _ => {
-                return Err(RoleViolation::NotPlannerForReviewRatify {
+                return Err(RoleViolation::NotPlannerForRatify {
                     actor: actor.to_string(),
                 });
             }
@@ -1204,33 +1200,6 @@ mod tests {
         }
     }
 
-    fn review_round() -> Event {
-        Event::ReviewRound {
-            track_id: TrackId::from("w"),
-            subject: crate::event::ReviewSubject {
-                phase: "impl".into(),
-                slice_id: "5b".into(),
-                pr_number: Some(760),
-            },
-            head_sha: Some("abc123".into()),
-            n: 1,
-            cap: 3,
-            converged: true,
-            channels: vec![
-                crate::event::ChannelVerdict {
-                    role: "reviewer-a".into(),
-                    verdict: crate::event::ChannelVerdictKind::Approved,
-                },
-                crate::event::ChannelVerdict {
-                    role: "reviewer-b".into(),
-                    verdict: crate::event::ChannelVerdictKind::Approved,
-                },
-            ],
-            root_cause: None,
-            idempotency_key: "review.round:w:impl:5b:760:1".into(),
-        }
-    }
-
     fn ratify_requested() -> Event {
         Event::RatifyRequested {
             track_id: TrackId::from("w"),
@@ -1656,7 +1625,7 @@ mod tests {
     }
 
     #[test]
-    fn review_round_and_ratify_requested_are_planner_only_760() {
+    fn ratify_requested_is_planner_only_760() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let planner = CardId::from("planner-1");
@@ -1664,7 +1633,7 @@ mod tests {
         cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
 
-        for event in [review_round(), ratify_requested()] {
+        for event in [ratify_requested()] {
             let res = enforce_role(
                 &ActorId::AiPlanner(planner.clone()),
                 &event,
@@ -1693,8 +1662,8 @@ mod tests {
                 let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
                     .expect_err(&format!("{label} must be refused {}", event.kind_tag()));
                 assert!(
-                    matches!(err, RoleViolation::NotPlannerForReviewRatify { .. }),
-                    "{label}: expected NotPlannerForReviewRatify, got {err:?}",
+                    matches!(err, RoleViolation::NotPlannerForRatify { .. }),
+                    "{label}: expected NotPlannerForRatify, got {err:?}",
                 );
             }
         }

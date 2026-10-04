@@ -792,7 +792,6 @@ mod tests {
     };
     use crate::shared_codex_appserver::SharedCodexAppServer;
     use crate::track_area_cache::TrackAreaCache;
-    use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
     use serde_json::json;
 
     #[tokio::test]
@@ -987,29 +986,6 @@ mod tests {
                     track_id: track.id.clone(),
                     card_id: verifying_worker.id.clone(),
                     lease_id: "lease-replay".into(),
-                },
-                false,
-            ),
-            (
-                ActorId::AiPlanner(planner_card.id.clone()),
-                track_scope.clone(),
-                Event::ReviewRound {
-                    track_id: track.id.clone(),
-                    subject: ReviewSubject {
-                        phase: "impl".into(),
-                        slice_id: "5b".into(),
-                        pr_number: Some(760),
-                    },
-                    head_sha: Some("head-sha".into()),
-                    n: 1,
-                    cap: 8,
-                    converged: false,
-                    channels: vec![ChannelVerdict {
-                        role: "design-correctness".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    }],
-                    root_cause: Some("tests failing".into()),
-                    idempotency_key: format!("review.round:{}:impl:5b:760:1", track.id),
                 },
                 false,
             ),

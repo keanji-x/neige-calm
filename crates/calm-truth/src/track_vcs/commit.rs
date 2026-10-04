@@ -93,7 +93,6 @@ pub async fn commit_events_with_author_in_tx(
             Event::WorkspaceLeased { .. }
                 | Event::WorkspaceReleased { .. }
                 | Event::ForgePrMerged { .. }
-                | Event::ReviewRound { .. }
                 | Event::RatifyRequested { .. }
                 | Event::RatifyResolved { .. }
                 | Event::ForgeScanCompleted { .. }

@@ -1,18 +1,19 @@
-//! `neige.track.publish` (#1830 S3, Planner-only): push `neige/track-<id>` to the checkout's
+//! `neige.dev.publish` (#1830 S3, Planner-only): push `neige/track-<id>` to the checkout's
 //! upstream URL and open (or reuse) its PR, only when the branch tip is the commit of a `done`
 //! attempt of this track (`docs/architecture/1830-s3-push-pr-reclaim.md` D1–D7).
 //!
 //! The refusals (`refused: publish-…`, `-32409`, the repository's Conflict convention) are
 //! answered before any operation exists. The publish itself is one kernel forge action under
-//! `GIT_FORGE_PLUGIN_ID`, run in the track worktree by `GIT_TRACK_PUBLISH_SCRIPT` after the
+//! `GIT_FORGE_PLUGIN_ID`, run in the track worktree by `PR_PUBLISH_SCRIPT` after the
 //! credential split `FORGE_SHELL_PRELUDE`; the Planner waits for it and gets the PR inline.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use calm_types::forge_git::{
-    FORGE_SHELL_PRELUDE, GIT_TRACK_PUBLISH_OUTPUT_PROBE_SCRIPT, GIT_TRACK_PUBLISH_PROBE_SCRIPT,
-    GIT_TRACK_PUBLISH_SCRIPT,
+use calm_types::forge_git::FORGE_SHELL_PRELUDE;
+
+use super::publish_scripts::{
+    PR_PUBLISH_OUTPUT_PROBE_SCRIPT, PR_PUBLISH_PROBE_SCRIPT, PR_PUBLISH_SCRIPT,
 };
 use serde_json::{Value, json};
 
@@ -23,7 +24,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::emit::worker_delivery_payload;
+use crate::mcp_server::transport::forge_action_payload;
 use crate::mcp_server::transport::{PluginForgePayload, submit_forge_action_with_key};
 use crate::model::{CardRole, TaskStatus, Track, new_id};
 use crate::operation::OperationOutcome;
@@ -31,10 +32,10 @@ use crate::operation::forge_action_adapter::ProbeSpec;
 use crate::operation::workspace_lease::upstream::track_remote;
 use crate::workspace_materialize::isolated_git_command;
 
-pub const TOOL_TRACK_PUBLISH: &str = "neige.track.publish";
+pub const TOOL_DEV_PUBLISH: &str = "neige.dev.publish";
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(track_publish_descriptor(), wrap(track_publish));
+    registry.register(dev_publish_descriptor(), wrap(dev_publish));
 }
 
 fn wrap<F, Fut>(f: F) -> ToolHandler
@@ -52,10 +53,10 @@ where
     })
 }
 
-fn track_publish_descriptor() -> ToolDescriptor {
+fn dev_publish_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_TRACK_PUBLISH.into(),
-        description: include_str!("../../../prompts/tools/neige.track.publish.md")
+        name: TOOL_DEV_PUBLISH.into(),
+        description: include_str!("../../../prompts/tools/neige.dev.publish.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -77,7 +78,7 @@ fn required_string(args: &Value, name: &str, non_empty: bool) -> Result<String, 
         .and_then(Value::as_str)
         .filter(|value| !non_empty || !value.trim().is_empty())
         .map(str::to_string)
-        .ok_or_else(|| RpcError::invalid_params(format!("track_publish: missing `{name}`")))
+        .ok_or_else(|| RpcError::invalid_params(format!("dev_publish: missing `{name}`")))
 }
 
 fn refused(text: String) -> RpcError {
@@ -85,7 +86,7 @@ fn refused(text: String) -> RpcError {
 }
 
 fn internal(error: impl std::fmt::Display) -> RpcError {
-    RpcError::internal(format!("track_publish: {error}"))
+    RpcError::internal(format!("dev_publish: {error}"))
 }
 
 /// One `task_candidates` row of the track with its attempt's status.
@@ -237,12 +238,12 @@ fn publish_payload(
 ) -> PluginForgePayload {
     let (sha, branch, url) = (dest.tip.as_str(), dest.branch.as_str(), dest.url.as_str());
     let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
-    worker_delivery_payload(
+    forge_action_payload(
         // The sha is in the payload (argv and probe), not the key: the same key replays its first
         // publish, and the same key over a moved tip is `idempotency_payload_conflict`.
         format!("track.publish:{idempotency_key}"),
         shell_argv(
-            GIT_TRACK_PUBLISH_SCRIPT,
+            PR_PUBLISH_SCRIPT,
             &[sha, branch, url, &dest.base, title, body],
         ),
         ForgeEventSpec {
@@ -257,16 +258,16 @@ fn publish_payload(
             .collect(),
         },
         ProbeSpec {
-            probe_argv: shell_argv(GIT_TRACK_PUBLISH_PROBE_SCRIPT, &[sha, branch, url]),
+            probe_argv: shell_argv(PR_PUBLISH_PROBE_SCRIPT, &[sha, branch, url]),
             output_probe_argv: Some(shell_argv(
-                GIT_TRACK_PUBLISH_OUTPUT_PROBE_SCRIPT,
+                PR_PUBLISH_OUTPUT_PROBE_SCRIPT,
                 &[sha, branch, url],
             )),
         },
     )
 }
 
-async fn track_publish(
+async fn dev_publish(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
@@ -351,8 +352,12 @@ mod tests {
 
     #[test]
     fn descriptor_is_planner_only_and_named() {
-        let d = track_publish_descriptor();
-        assert_eq!(d.name, TOOL_TRACK_PUBLISH);
+        let d = dev_publish_descriptor();
+        assert_eq!(d.name, "neige.dev.publish");
         assert_eq!(d.visible_to_roles, &[CardRole::Planner]);
+        let mut registry = ToolRegistry::new();
+        register_into(&mut registry);
+        assert!(registry.lookup("neige.dev.publish").is_some());
+        assert!(registry.lookup("neige.track.publish").is_none()); // retired-name: rejection input
     }
 }

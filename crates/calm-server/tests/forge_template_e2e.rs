@@ -22,9 +22,7 @@ use calm_server::db::sqlite::{
     session_start_runtime_tx,
 };
 use calm_server::db::write_with_actor_events_typed;
-use calm_server::event::{
-    ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision, ReviewSubject,
-};
+use calm_server::event::{Event, EventBus, EventScope, RatifyDecision};
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, spawn_recovered_harness,
 };
@@ -71,7 +69,7 @@ use tower::ServiceExt;
 const PLUGIN_ID: &str = "dev.neige.git-forge";
 const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
 const PR_LIST_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.list";
-const PUBLISH_TOOL: &str = "neige.track.publish";
+const PUBLISH_TOOL: &str = "neige.dev.publish";
 const PR_DIFF_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.diff";
 const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
 const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
@@ -552,7 +550,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
 
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
-    assert_tool_succeeded(&create_resp, "neige.track.publish");
+    assert_tool_succeeded(&create_resp, "neige.dev.publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let opened = opened_rows[0].clone();
     assert_track_event(&opened, &fx.track_id);
@@ -719,7 +717,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
 
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
-    assert_tool_succeeded(&create_resp, "neige.track.publish");
+    assert_tool_succeeded(&create_resp, "neige.dev.publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let pr_number = opened_rows[0].payload["pr_number"]
         .as_u64()
@@ -831,7 +829,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
 
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
-    assert_tool_succeeded(&create_resp, "neige.track.publish");
+    assert_tool_succeeded(&create_resp, "neige.dev.publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let pr_number = opened_rows[0].payload["pr_number"]
         .as_u64()
@@ -1117,7 +1115,7 @@ async fn merge_hold_ratify_pauses_then_merges_on_grant() {
 }
 
 #[tokio::test]
-async fn historical_review_round_does_not_recover_into_pending_queue_but_ratify_events_do() {
+async fn ratify_events_recover_into_pending_queue() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1125,7 +1123,6 @@ async fn historical_review_round_does_not_recover_into_pending_queue_but_ratify_
     let _env = setup_forge_env();
 
     let fx = boot_fixture().await;
-    seed_historical_review_round(&fx).await;
     request_ratification(&fx, "merge_hold: pr #760 at head-sha-recovery").await;
     let (status, body) = post_ratify(&fx, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -1166,12 +1163,6 @@ async fn historical_review_round_does_not_recover_into_pending_queue_but_ratify_
     .expect("recovered harness");
 
     let pending = wait_for_recovered_pending(&handle).await;
-    assert!(
-        !pending
-            .iter()
-            .any(|obs| matches!(obs, Observation::ReviewRound { .. })),
-        "review.round must not recover into the pending queue (#1727 S1): {pending:?}"
-    );
     assert!(
         pending.iter().any(|obs| matches!(
             obs,
@@ -1920,50 +1911,6 @@ async fn call_review_tool(
         .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
-/// Seed one historical `review.round` row as the removed write tool once recorded it; actor MUST be
-/// `AiPlanner(planner card)` with `EventScope::Track` (role_gate makes review.round planner-only).
-async fn seed_historical_review_round(fx: &Fixture) {
-    let track_id = TrackId::from(fx.track_id.clone());
-    fx.repo
-        .log_pure_event(
-            ActorId::AiPlanner(CardId::from(fx.planner_card_id.clone())),
-            EventScope::Track {
-                track: track_id.clone(),
-                area: AreaId::from(fx.area_id.clone()),
-            },
-            None,
-            &fx.events,
-            &fx.card_role_cache,
-            &fx.track_area_cache,
-            Event::ReviewRound {
-                track_id: track_id.clone(),
-                subject: ReviewSubject {
-                    phase: "impl".into(),
-                    slice_id: "760".into(),
-                    pr_number: Some(760),
-                },
-                head_sha: Some("head-sha-recovery".into()),
-                n: 1,
-                cap: 1,
-                converged: false,
-                channels: vec![
-                    ChannelVerdict {
-                        role: "reviewer-a".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    },
-                    ChannelVerdict {
-                        role: "reviewer-b".into(),
-                        verdict: ChannelVerdictKind::Approved,
-                    },
-                ],
-                root_cause: Some("scripted review did not converge".into()),
-                idempotency_key: format!("review.round:{track_id}:impl:760:760:1"),
-            },
-        )
-        .await
-        .expect("seed historical review.round");
-}
-
 async fn request_ratification(fx: &Fixture, reason: &str) -> EventRow {
     let before = event_rows(&fx.repo, "ratify.requested").await.len();
     let resp = call_review_tool(fx, TOOL_RATIFY_REQUEST, json!({ "reason": reason }))
@@ -2097,7 +2044,7 @@ async fn drive_pr_to_diff(
     let base_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "origin/main"]);
 
     let create_resp = publish_delivery(fx, title, "Completed review candidate", "publish").await;
-    assert_tool_succeeded(&create_resp, "neige.track.publish");
+    assert_tool_succeeded(&create_resp, "neige.dev.publish");
     let opened = wait_for_event_matching(&fx.repo, "forge.pr.opened", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["head_sha"] == json!(head_sha)

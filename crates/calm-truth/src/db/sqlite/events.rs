@@ -698,6 +698,10 @@ impl RepoEventWrite for SqlxRepo {
 
         let mut out = Vec::with_capacity(rows.len());
         for (id, kind, payload_text, event_version, sk, sc, sw, scard) in rows {
+            // Retired review rows remain in raw history but have no current event contract.
+            if kind == "review.round" {
+                continue;
+            }
             let payload: serde_json::Value = match serde_json::from_str(&payload_text) {
                 Ok(v) => v,
                 Err(e) => {
@@ -789,6 +793,10 @@ impl RepoEventWrite for SqlxRepo {
 
         let mut out = Vec::with_capacity(rows.len());
         for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) in rows {
+            // Retired review rows remain in raw history but have no current event contract.
+            if kind == "review.round" {
+                continue;
+            }
             let payload: serde_json::Value = match serde_json::from_str(&payload_text) {
                 Ok(v) => v,
                 Err(e) => {

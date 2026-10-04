@@ -100,7 +100,7 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `harness.transcript.cleared` | invalidate harness items + planner run | a reset always emits `harness.phase.changed` too, which carries the lists |
 | `harness.user_message.enqueued` | invalidate harness items + planner run + both conversation lists | reset and enqueue cross the transcript/run boundary |
 | `harness.transcript.rewound` | invalidate harness items + planner run + both conversation lists + track detail | what `harness.phase.changed` invalidates: a rewind deletes the turn's rows and persists the snapshot |
-| `plugin.*`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
+| `plugin.*`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
 | unknown / future kind | ignored, no throw | the plan lookup returns an empty plan |
 
 Control frames: `replay-complete` → invalidate everything (`keys: null`) plus a

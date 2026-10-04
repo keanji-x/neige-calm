@@ -15,7 +15,7 @@ track's checkout.
 candidate refs are removed when the track or its area is deleted (S1 D7), not by a separate
 reclaim. **Acceptance change:** "removed after merge" becomes "removed when the track is
 deleted". The follow-up #1868 removes `gh.pr.create` from git-forge; the MCP publication
-entry point is now `neige.track.publish`.
+entry point is now `neige.dev.publish`.
 
 ## 1. Facts
 
@@ -190,7 +190,7 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
 - A `url.*.pushInsteadOf` can rewrite the direct push URL to another repository. The exit-21
   PR-head check then fails the publish; nothing refuses it ahead of time.
 - A Planner can still push or open a PR by hand in a terminal. #1868 removes the plugin's
-  `gh.pr.create`; MCP publication uses `neige.track.publish`.
+  `gh.pr.create`; MCP publication uses `neige.dev.publish`.
 - The plugin's other `gh.*` lowerings still run `gh` in the track worktree with the full forge env.
 - The tip can move between the D3 check and the push; the pushed sha was a done candidate and the
   tip when checked, and a later commit is published by the next call.

@@ -6,7 +6,7 @@ use std::process::Command;
 
 /// The retired kernel tool names: the old `calm.` prefix on any kernel object, plus the removed
 /// aliases and shims by their own spelling.
-const RETIRED_TOOL_NAME: &str = r"\bcalm\.(admin|area|calendar|dispatch_request|get_track_state|plan|preview|ratify|report|review|source|task|task_completed|task_failed|terminal|track|update_task_meta|user)\b";
+const RETIRED_TOOL_NAME: &str = r"\b(?:calm\.(admin|area|calendar|dispatch_request|get_track_state|plan|preview|ratify|report|review|source|task|task_completed|task_failed|terminal|track|update_task_meta|user)|neige\.track\.publish)\b";
 
 /// The retired MCP server key as a client spells it, assembled from two literals so this file does
 /// not carry the token it hunts.
@@ -73,6 +73,7 @@ fn offending(line: &str, patterns: &[regex::Regex]) -> bool {
 fn the_sweep_patterns_hit_only_retired_names() {
     let patterns = patterns();
     for hit in [
+        "neige.track.publish",        // retired-name: rejection input
         "`calm.track.cat_at`",        // retired-name: rejection input
         "calm.report.write_markdown", // retired-name: rejection input
         "calm.task_completed",        // retired-name: rejection input
@@ -84,6 +85,7 @@ fn the_sweep_patterns_hit_only_retired_names() {
         assert!(offending(hit, &patterns), "must be red: {hit}");
     }
     for miss in [
+        "neige.dev.publish",
         "calm.db",
         "calm_server::mcp_server",
         "calm-server",

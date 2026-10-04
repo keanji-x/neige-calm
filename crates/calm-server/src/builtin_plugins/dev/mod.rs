@@ -1,6 +1,7 @@
 //! Development capability: Git payload construction and candidate-bound publication.
 pub mod git_actions;
 pub mod publish;
+mod publish_scripts;
 
 pub(crate) const PLUGIN_ID: &str = "dev.neige.git-forge";
 

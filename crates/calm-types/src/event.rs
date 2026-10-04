@@ -253,31 +253,6 @@ pub struct ForgeMergeSubject {
     pub pr_number: u64,
 }
 
-/// Logical review subject key for `review.round`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct ReviewSubject {
-    pub phase: String,
-    pub slice_id: String,
-    pub pr_number: Option<u64>,
-}
-
-/// Per-channel verdict recorded on a `review.round`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct ChannelVerdict {
-    pub role: String,
-    pub verdict: ChannelVerdictKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub enum ChannelVerdictKind {
-    Approved,
-    ChangesRequested,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -646,18 +621,6 @@ pub enum Event {
         subject: ForgeMergeSubject,
         head_sha: String,
         merge_sha: String,
-    },
-    #[serde(rename = "review.round")]
-    ReviewRound {
-        track_id: TrackId,
-        subject: ReviewSubject,
-        head_sha: Option<String>,
-        n: u32,
-        cap: u32,
-        converged: bool,
-        channels: Vec<ChannelVerdict>,
-        root_cause: Option<String>,
-        idempotency_key: String,
     },
     #[serde(rename = "ratify.requested")]
     RatifyRequested { track_id: TrackId, reason: String },
@@ -1040,7 +1003,6 @@ impl Event {
                 }
             }
             Event::ForgePrMerged { track_id, .. }
-            | Event::ReviewRound { track_id, .. }
             | Event::RatifyRequested { track_id, .. }
             | Event::RatifyResolved { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
@@ -1127,7 +1089,6 @@ impl Event {
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
-            Event::ReviewRound { .. } => "review.round",
             Event::RatifyRequested { .. } => "ratify.requested",
             Event::RatifyResolved { .. } => "ratify.resolved",
             Event::ProposalSubmitted { .. } => "proposal.submitted",
@@ -1287,7 +1248,6 @@ pub fn topics(ev: &Event) -> Vec<String> {
         ],
 
         Event::ForgePrMerged { track_id, .. }
-        | Event::ReviewRound { track_id, .. }
         | Event::RatifyRequested { track_id, .. }
         | Event::RatifyResolved { track_id, .. }
         | Event::ForgeScanCompleted { track_id, .. }
@@ -1580,26 +1540,6 @@ mod scope_tests {
             merge_sha: "merge-sha".into(),
         };
         assert_eq!(forge_pr_merged.kind_tag(), "forge.pr.merged");
-
-        let review_round = Event::ReviewRound {
-            track_id: TrackId::from("track-1"),
-            subject: ReviewSubject {
-                phase: "impl".into(),
-                slice_id: "5b".into(),
-                pr_number: Some(760),
-            },
-            head_sha: Some("head-sha".into()),
-            n: 1,
-            cap: 8,
-            converged: false,
-            channels: vec![ChannelVerdict {
-                role: "design-correctness".into(),
-                verdict: ChannelVerdictKind::ChangesRequested,
-            }],
-            root_cause: Some("tests failing".into()),
-            idempotency_key: "review.round:track-1:impl:5b:760:1".into(),
-        };
-        assert_eq!(review_round.kind_tag(), "review.round");
 
         let ratify_requested = Event::RatifyRequested {
             track_id: TrackId::from("track-1"),
@@ -2638,24 +2578,6 @@ mod scope_tests {
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
             },
-            Event::ReviewRound {
-                track_id: TrackId::from("track-1"),
-                subject: ReviewSubject {
-                    phase: "impl".into(),
-                    slice_id: "5b".into(),
-                    pr_number: Some(760),
-                },
-                head_sha: Some("head-sha".into()),
-                n: 1,
-                cap: 8,
-                converged: false,
-                channels: vec![ChannelVerdict {
-                    role: "design-correctness".into(),
-                    verdict: ChannelVerdictKind::ChangesRequested,
-                }],
-                root_cause: Some("tests failing".into()),
-                idempotency_key: "review.round:track-1:impl:5b:760:1".into(),
-            },
             Event::RatifyRequested {
                 track_id: TrackId::from("track-1"),
                 reason: "cap_exhausted".into(),
@@ -2908,28 +2830,6 @@ mod scope_tests {
                     "subject": { "pr_number": 760 },
                     "head_sha": "head-sha",
                     "merge_sha": "merge-sha",
-                }),
-            ),
-            (
-                "review.round",
-                "review.round",
-                serde_json::json!({
-                    "track_id": "track-1",
-                    "subject": {
-                        "phase": "impl",
-                        "slice_id": "5b",
-                        "pr_number": 760,
-                    },
-                    "head_sha": "head-sha",
-                    "n": 1,
-                    "cap": 8,
-                    "converged": false,
-                    "channels": [
-                        { "role": "design-correctness", "verdict": "changes_requested" },
-                        { "role": "failure-path", "verdict": "approved" },
-                    ],
-                    "root_cause": "tests failing",
-                    "idempotency_key": "review.round:track-1:impl:5b:760:1",
                 }),
             ),
             (

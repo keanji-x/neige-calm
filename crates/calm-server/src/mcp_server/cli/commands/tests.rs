@@ -796,7 +796,7 @@ fn task_report_surfaces_name_the_execution_id_attempt_id() {
     // Where `idempotency_key` is a real caller-chosen dedupe key, not a task execution id.
     const CALLER_DEDUPE_KEY_PROMPTS: [&str; 2] = [
         "prompts/tools/neige.calendar.create.md",
-        "prompts/tools/neige.track.publish.md",
+        "prompts/tools/neige.dev.publish.md",
     ];
     const RETIRED_NAMES: [&str; 5] = [
         "idempotency_key",

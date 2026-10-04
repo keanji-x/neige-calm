@@ -12,7 +12,7 @@ use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::event::{Event, ForgeMergeSubject};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{NewArea, NewTrack, RequestTheme};
-use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
+use calm_types::event::RatifyDecision;
 use sqlx::Row;
 use std::time::Duration;
 
@@ -271,7 +271,7 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
 }
 
 #[tokio::test]
-async fn review_ratify_only_batch_does_not_advance_head() {
+async fn ratify_only_batch_does_not_advance_head() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
@@ -300,30 +300,6 @@ async fn review_ratify_only_batch_does_not_advance_head() {
     let before = head(repo.pool(), &track.id).await.expect("head before");
 
     let events = vec![
-        Event::ReviewRound {
-            track_id: track.id.clone(),
-            subject: ReviewSubject {
-                phase: "impl".into(),
-                slice_id: "5b".into(),
-                pr_number: Some(760),
-            },
-            head_sha: Some("head-sha".into()),
-            n: 1,
-            cap: 8,
-            converged: false,
-            channels: vec![
-                ChannelVerdict {
-                    role: "design-correctness".into(),
-                    verdict: ChannelVerdictKind::ChangesRequested,
-                },
-                ChannelVerdict {
-                    role: "failure-path".into(),
-                    verdict: ChannelVerdictKind::Approved,
-                },
-            ],
-            root_cause: Some("tests failing".into()),
-            idempotency_key: format!("review.round:{}:impl:5b:760:1", track.id),
-        },
         Event::RatifyRequested {
             track_id: track.id.clone(),
             reason: "cap_exhausted".into(),

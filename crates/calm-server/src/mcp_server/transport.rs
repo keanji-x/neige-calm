@@ -2,6 +2,8 @@
 //! One socket under `<data_dir>/mcp/kernel.sock` (mode 0600); a connection must `initialize` before any `tools/*` request.
 
 mod call;
+mod forge_payload;
+pub(crate) use forge_payload::{PluginForgePayload, forge_action_payload};
 mod catalog;
 pub(crate) use catalog::tool_descriptors_for_connection;
 pub(crate) mod plugin_tool_names;
@@ -32,7 +34,7 @@ use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use calm_types::event::{ForgeEventSpec, ForgeMergeSubject};
 use calm_types::worker::WorkerSessionId;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -761,22 +763,6 @@ pub(crate) fn plugin_tool_entry(
         return ToolEntry::NotRunning;
     }
     ToolEntry::Found(entry.clone())
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct PluginForgePayload {
-    pub(crate) argv: Vec<String>,
-    pub(crate) idem_key: String,
-    #[serde(default)]
-    pub(crate) event_spec: Option<ForgeEventSpec>,
-    #[serde(default)]
-    pub(crate) subject: Option<ForgeMergeSubject>,
-    #[serde(default)]
-    pub(crate) context: serde_json::Map<String, Value>,
-    #[serde(default)]
-    pub(crate) probe: Option<ProbeSpec>,
-    #[serde(default)]
-    pub(crate) parked: bool,
 }
 
 /// Semantic subset used for idempotency payload comparison. `argv` is excluded so a retry with edited volatile argv dedups instead of conflicting;

@@ -21,7 +21,7 @@ use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{FieldSource, ForgeEventSpec};
 use crate::mcp_server::registry::AppContext;
-use crate::mcp_server::tools::emit::worker_delivery_payload;
+use crate::mcp_server::transport::forge_action_payload;
 use crate::mcp_server::transport::{
     ForgeActionSubmission, PluginForgePayload, submit_forge_action_with_key,
 };
@@ -234,7 +234,7 @@ pub(crate) fn forge_payload_for(
     let git_common_dir = utf8(&base.git_common_dir, "git_common_dir")?;
     let ref_name = candidate_ref_name(&delivery.track_id, &delivery.card_id, &delivery.delivery_id);
     let message = delivery_message(delivery, outcome);
-    Ok(worker_delivery_payload(
+    Ok(forge_action_payload(
         delivery_idem_key(&delivery.delivery_id),
         delivery_argv(
             &message,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { HarnessItem, HarnessPhaseTag } from '../api/generated/wire.js';
 import {
-  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, TRACK_PUBLISH_TOOL,
+  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, DEV_PUBLISH_TOOL,
   TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 
@@ -605,9 +605,9 @@ describe('harnessItemToActivity', () => {
 
   it.each([
     [TRACK_RENAME_TOOL, 'Naming the track', 'Named the track'],
-    [TRACK_PUBLISH_TOOL, 'Publishing the track', 'Published the track'],
+    [DEV_PUBLISH_TOOL, 'Publishing the PR', 'Published the PR'],
   ])('renders %s as a write, not as a look at the track', (tool, running, finished) => {
-    expect(tool.startsWith(TRACK_TOOL_PREFIX)).toBe(true);
+    expect(tool.startsWith(TRACK_TOOL_PREFIX)).toBe(tool === TRACK_RENAME_TOOL);
     const started = harnessItemToActivity(row({
       item_type: 'mcpToolCall', method: 'item/started',
       params: JSON.stringify({ item: { tool } }),

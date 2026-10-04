@@ -492,7 +492,6 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::WorkspaceReleased { .. }
         | Event::TrackWakeRequested { .. } => {}
         Event::ForgePrMerged { .. }
-        | Event::ReviewRound { .. }
         | Event::RatifyRequested { .. }
         | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }

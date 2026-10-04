@@ -54,7 +54,7 @@ fn permits_from_env_fallback_paths() {
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
 use crate::ids::AreaId;
-use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
+use calm_types::event::RatifyDecision;
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 
 /// A candidate-shape settlement for `task_id` on track `w`; `wake_reason` is the only field the
@@ -221,24 +221,6 @@ fn dispatcher_filter_matches_push_kinds() {
         subject: crate::event::ForgeMergeSubject { pr_number: 1 },
         head_sha: "head-sha".into(),
         merge_sha: "merge-sha".into(),
-    })));
-    assert!(!filter.matches(&env(Event::ReviewRound {
-        track_id: track.clone(),
-        subject: ReviewSubject {
-            phase: "impl".into(),
-            slice_id: "5b".into(),
-            pr_number: Some(760),
-        },
-        head_sha: Some("head-sha".into()),
-        n: 1,
-        cap: 8,
-        converged: false,
-        channels: vec![ChannelVerdict {
-            role: "design-correctness".into(),
-            verdict: ChannelVerdictKind::ChangesRequested,
-        }],
-        root_cause: Some("tests failing".into()),
-        idempotency_key: "review.round:w:impl:5b:760:1".into(),
     })));
     assert!(filter.matches(&env(Event::RatifyRequested {
         track_id: track.clone(),
@@ -1225,24 +1207,6 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             card_id: worker.clone(),
             lease_id: "lease".into(),
         },
-        Event::ReviewRound {
-            track_id: track.clone(),
-            subject: ReviewSubject {
-                phase: "impl".into(),
-                slice_id: "5b".into(),
-                pr_number: Some(760),
-            },
-            head_sha: Some("head-sha".into()),
-            n: 1,
-            cap: 8,
-            converged: false,
-            channels: vec![ChannelVerdict {
-                role: "design-correctness".into(),
-                verdict: ChannelVerdictKind::ChangesRequested,
-            }],
-            root_cause: Some("tests failing".into()),
-            idempotency_key: "review.round:w:impl:5b:760:1".into(),
-        },
         Event::WorktreeProvisioned {
             track_id: track.clone(),
             card_id: worker.clone(),
@@ -1603,40 +1567,6 @@ fn harness_observation_from_event_mapping_pin() {
         Some(HarnessObservation::ForgePrMerged {
             track_id: track.clone(),
             pr_number: 760,
-        })
-    );
-    assert_eq!(
-        harness_observation_from_event(
-            &track,
-            &Event::ReviewRound {
-                track_id: TrackId::from("payload-track-ignored"),
-                subject: ReviewSubject {
-                    phase: "impl".into(),
-                    slice_id: "5b".into(),
-                    pr_number: Some(760),
-                },
-                head_sha: Some("head-sha".into()),
-                n: 1,
-                cap: 8,
-                converged: false,
-                channels: vec![ChannelVerdict {
-                    role: "design-correctness".into(),
-                    verdict: ChannelVerdictKind::ChangesRequested,
-                }],
-                root_cause: Some("tests failing".into()),
-                idempotency_key: "review.round:track-map:impl:5b:760:1".into(),
-            },
-            Some("impl-parser")
-        ),
-        Some(HarnessObservation::ReviewRound {
-            track_id: track.clone(),
-            phase: "impl".into(),
-            slice_id: "5b".into(),
-            pr_number: Some(760),
-            head_sha: Some("head-sha".into()),
-            n: 1,
-            cap: 8,
-            converged: false,
         })
     );
     assert_eq!(
@@ -2125,29 +2055,6 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             },
             ActorId::KernelDispatcher,
             true,
-            true,
-        ),
-        row(
-            Event::ReviewRound {
-                track_id: track.clone(),
-                subject: ReviewSubject {
-                    phase: "impl".into(),
-                    slice_id: "5b".into(),
-                    pr_number: Some(760),
-                },
-                head_sha: Some("head-sha".into()),
-                n: 1,
-                cap: 8,
-                converged: false,
-                channels: vec![ChannelVerdict {
-                    role: "design-correctness".into(),
-                    verdict: ChannelVerdictKind::ChangesRequested,
-                }],
-                root_cause: None,
-                idempotency_key: "review.round:w:impl:5b:760:1".into(),
-            },
-            ActorId::KernelDispatcher,
-            false,
             true,
         ),
         row(

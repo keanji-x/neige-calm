@@ -252,3 +252,65 @@ async fn events_raw_window_since_probes_raw_rows_and_respects_probe_limit() {
         );
     }
 }
+
+#[tokio::test]
+async fn retired_review_rows_are_preserved_but_do_not_block_typed_readers() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let payload = serde_json::json!({
+        "track_id": "retired-track", "subject": {"phase": "impl", "slice_id": "5b", "pr_number": 760},
+        "head_sha": "head-sha", "n": 1, "cap": 8, "converged": false,
+        "channels": [{"role": "correctness", "verdict": "changes_requested"}],
+        "root_cause": "historical", "idempotency_key": "review.round:retired-track:impl:5b:760:1"
+    }).to_string();
+    let actor = serde_json::to_string(&ActorId::AiPlanner("historical-planner".into())).unwrap();
+    let retired: i64 = sqlx::query_scalar(
+        "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+         VALUES('review.round',?,?,0,'track','retired-track') RETURNING id",
+    )
+    .bind(&payload)
+    .bind(&actor)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    let live: i64 = sqlx::query_scalar(
+        "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+         VALUES('ratify.requested',?,?,0,'track','retired-track') RETURNING id",
+    )
+    .bind(r#"{"track_id":"retired-track","reason":"continue"}"#)
+    .bind(&actor)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        Event::from_kind_and_payload("review.round", serde_json::from_str(&payload).unwrap())
+            .is_err()
+    );
+    let ids: Vec<_> = repo
+        .events_since(0, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(id, ..)| id)
+        .collect();
+    assert_eq!(ids, vec![live]);
+    let rows = repo
+        .events_for_track("retired-track", &["review.round", "ratify.requested"], None)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, live);
+    assert_eq!(
+        repo.events_raw_window_since(0, 1).await.unwrap(),
+        (1, Some(retired))
+    );
+    assert_eq!(
+        repo.events_raw_window_since(retired, 1).await.unwrap(),
+        (1, Some(live))
+    );
+    let stored: String = sqlx::query_scalar("SELECT payload FROM events WHERE id=?")
+        .bind(retired)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(stored, payload);
+}

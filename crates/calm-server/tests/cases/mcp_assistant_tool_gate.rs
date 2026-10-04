@@ -41,7 +41,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Naming the track is a planner judgement.
     "neige.track.rename",
     // Publishing the track's verified commit is a Planner action.
-    "neige.track.publish",
+    "neige.dev.publish",
     // Closing the track is a Planner action; only the user reopens.
     "neige.track.close",
     // Speaking from a background sync turn is a planner action.
@@ -147,7 +147,7 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
         let error = resp
             .get("error")
             .unwrap_or_else(|| panic!("`{tool}` must refuse an assistant caller, got: {resp:#?}"));
-        if *tool == "neige.track.publish" {
+        if *tool == "neige.dev.publish" {
             assert_eq!(
                 error["code"].as_i64(),
                 Some(-32601),

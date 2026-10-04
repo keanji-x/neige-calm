@@ -11,9 +11,7 @@ use calm_server::model::{
     Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
-use calm_types::event::{
-    ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject, TaskContextRef,
-};
+use calm_types::event::{RatifyDecision, TaskContextRef};
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
 use calm_types::verify_target::{
@@ -877,35 +875,6 @@ golden_test!(
 );
 
 golden_test!(
-    review_round,
-    "review.round.json",
-    Event::ReviewRound {
-        track_id: TrackId::from("track-01"),
-        subject: ReviewSubject {
-            phase: "impl".into(),
-            slice_id: "5b".into(),
-            pr_number: Some(760),
-        },
-        head_sha: Some("head-sha".into()),
-        n: 1,
-        cap: 8,
-        converged: false,
-        channels: vec![
-            ChannelVerdict {
-                role: "design-correctness".into(),
-                verdict: ChannelVerdictKind::ChangesRequested,
-            },
-            ChannelVerdict {
-                role: "failure-path".into(),
-                verdict: ChannelVerdictKind::Approved,
-            },
-        ],
-        root_cause: Some("tests failing".into()),
-        idempotency_key: "review.round:track-01:impl:5b:760:1".into(),
-    }
-);
-
-golden_test!(
     ratify_requested,
     "ratify.requested.json",
     Event::RatifyRequested {
@@ -1242,7 +1211,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 53] = [
+const ALL_KIND_TAGS: [&str; 52] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1281,7 +1250,6 @@ const ALL_KIND_TAGS: [&str; 53] = [
     "workspace.leased",
     "workspace.released",
     "forge.pr.merged",
-    "review.round",
     "ratify.requested",
     "ratify.resolved",
     "proposal.submitted",
@@ -1327,7 +1295,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 82,
+        files, 81,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1382,7 +1350,6 @@ fn kind_tag_list_matches_enum() {
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
-            Event::ReviewRound { .. } => "review.round",
             Event::RatifyRequested { .. } => "ratify.requested",
             Event::RatifyResolved { .. } => "ratify.resolved",
             Event::ProposalSubmitted { .. } => "proposal.submitted",
@@ -1405,7 +1372,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        53,
+        52,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

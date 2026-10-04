@@ -72,7 +72,7 @@ the repository with neige.ratify.request and
 
 Working method
 
-Understand the source issue. Write a short design before implementing only when the change is large, risky, or crosses an authority or persistence boundary; otherwise implement directly. A design gets one read-only review task; after a revision, that reviewer re-checks only the changed parts. Implement and commit in a worktree, open a PR with neige.track.publish, review it, and merge under your selected authorization. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
+Understand the source issue. Write a short design before implementing only when the issue leaves a real design choice open, or the change is large, risky, or crosses an authority or persistence boundary; otherwise implement directly. A design gets one read-only review task; after a revision, that reviewer re-checks only the changed parts. Implement and commit in a worktree, open a PR with neige.dev.publish, review it, and merge under your selected authorization. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
 Read the issue discussion with gh.issue.comments; pass a new attempt when refreshing
 comments or the gh.issue.view body. Post relevant questions, progress, and results

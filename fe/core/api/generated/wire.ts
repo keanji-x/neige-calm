@@ -98,13 +98,6 @@ export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKi
  */
 last_turn_completed_ms?: number, };
 
-/**
- * Per-channel verdict recorded on a `review.round`.
- */
-export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
-
-export type ChannelVerdictKind = "approved" | "changes_requested";
-
 export type DailyTrackResolved = { date: string, time_zone: string, track_id: string, };
 
 /**
@@ -203,7 +196,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { track_id: TrackId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { track_id: TrackId, reason: string, } } | { "ev": "ratify.resolved", "data": { track_id: TrackId, decision: RatifyDecision, 
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "ratify.requested", "data": { track_id: TrackId, reason: string, } } | { "ev": "ratify.resolved", "data": { track_id: TrackId, decision: RatifyDecision, 
 /**
  * The user's text with the decision, trimmed; absent when they sent none.
  */
@@ -421,11 +414,6 @@ export type ReportEdit = { track_id: string, edit_id: string, summary_before: st
 export type ReportEditEntry = { event_id: number, at: number, edit: ReportEdit, };
 
 export type ReportEditsPage = { edits: Array<ReportEditEntry>, next_cursor: number | null, };
-
-/**
- * Logical review subject key for `review.round`.
- */
-export type ReviewSubject = { phase: string, slice_id: string, pr_number: number | null, };
 
 /**
  * One D3.0 sample of a checkout: HEAD, the porcelain status lines, and the lease-provenance observation.

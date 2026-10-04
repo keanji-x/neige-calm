@@ -29,8 +29,8 @@ export const TRACK_TOOL_PREFIX = 'neige.track.';
 /** A `neige.track.*` tool that is a WRITE — keep it out of the `TRACK_TOOL_PREFIX` read bucket. */
 export const TRACK_RENAME_TOOL = 'neige.track.rename';
 
-/** A `neige.track.*` WRITE too: pushes the track branch and opens or reuses its PR. */
-export const TRACK_PUBLISH_TOOL = 'neige.track.publish';
+/** Development publication: pushes the candidate branch and opens or reuses its PR. */
+export const DEV_PUBLISH_TOOL = 'neige.dev.publish';
 
 /** The planner's way to speak to the reader from a background turn; rendered as an agent turn, text verbatim from `arguments.text`. */
 export const USER_NOTIFY_TOOL = 'neige.user.notify';

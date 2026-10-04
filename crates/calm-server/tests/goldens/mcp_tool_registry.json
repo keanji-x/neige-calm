@@ -354,6 +354,39 @@
     ]
   },
   {
+    "name": "neige.dev.publish",
+    "description_sha256": "9dcce7307177667623cb9650ff4c162b2b5ea5c87a86f190493204db6ced7da0",
+    "input_schema": {
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "title",
+        "body"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige.plan.cancel",
     "description_sha256": "8eb8c2c11056c05ed1bbd83d624716d198dfd57d22ad93257fea56d5dc28bfa9",
     "input_schema": {
@@ -1559,39 +1592,6 @@
       "readOnlyHint": true
     },
     "visible_to_roles": []
-  },
-  {
-    "name": "neige.track.publish",
-    "description_sha256": "6a91955c21452bc05b51573c997f82a65d497802fc36fc7f87e08324589a8e5b",
-    "input_schema": {
-      "properties": {
-        "body": {
-          "type": "string"
-        },
-        "idempotency_key": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "title": {
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "idempotency_key",
-        "title",
-        "body"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
   },
   {
     "name": "neige.track.rename",

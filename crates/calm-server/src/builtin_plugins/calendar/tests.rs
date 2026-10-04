@@ -745,7 +745,7 @@ async fn scoped_catalog_respects_builtin_lifecycle_and_track_owner() {
             .iter()
             .any(|tool| tool.name.starts_with("neige.calendar."))
     );
-    assert!(names.iter().any(|tool| tool.name == "neige.track.publish"));
+    assert!(names.iter().any(|tool| tool.name == "neige.dev.publish"));
 }
 
 #[tokio::test]

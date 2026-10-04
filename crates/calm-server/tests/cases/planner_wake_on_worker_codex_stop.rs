@@ -29,7 +29,6 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
-use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -369,7 +368,9 @@ async fn wait_for_worker_hook_stop(harness: &PlannerHarness, card: &CardId) -> V
 }
 
 async fn wait_for_turn_text_containing(shared: &SharedCodexAppServer, needle: &str) -> String {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // This fixture starts Resumed; the watchdog must exhaust its recovery budget first.
+    let deadline =
+        Instant::now() + HarnessConfig::default().resumed_reconcile_budget + Duration::from_secs(2);
     loop {
         let turns = shared.started_turns_for_test();
         for (_thread_id, items) in &turns {
@@ -435,72 +436,13 @@ async fn worker_codex_stop_hook_reaches_planner_harness_observation_queue() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// The wait is the harness's own `debounce_max_wait` plus a margin — had the event been
-/// queued, the hard-fire turn would have been issued well inside it.
 #[tokio::test]
-async fn live_review_round_event_does_not_reach_the_planner_harness_or_issue_a_turn() {
+async fn live_gate_result_reaches_the_planner_harness_and_issues_a_turn() {
     let boot = boot().await;
     let _dispatcher = spawn_dispatcher(&boot);
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    boot.repo
-        .log_pure_event(
-            ActorId::AiPlanner(boot.planner_card_id.clone()),
-            EventScope::Track {
-                track: boot.track_id.clone(),
-                area: boot.area_id.clone(),
-            },
-            None,
-            &boot.events,
-            &boot.card_role_cache,
-            &boot.track_area_cache,
-            Event::ReviewRound {
-                track_id: boot.track_id.clone(),
-                subject: ReviewSubject {
-                    phase: "impl".into(),
-                    slice_id: "5b".into(),
-                    pr_number: Some(760),
-                },
-                head_sha: Some("head-sha".into()),
-                n: 1,
-                cap: 8,
-                converged: false,
-                channels: vec![
-                    ChannelVerdict {
-                        role: "design-correctness".into(),
-                        verdict: ChannelVerdictKind::ChangesRequested,
-                    },
-                    ChannelVerdict {
-                        role: "failure-path".into(),
-                        verdict: ChannelVerdictKind::Approved,
-                    },
-                ],
-                root_cause: Some("tests failing".into()),
-                idempotency_key: format!("review.round:{}:impl:5b:760:1", boot.track_id),
-            },
-        )
-        .await
-        .expect("persist review.round event");
-
-    tokio::time::sleep(HarnessConfig::default().debounce_max_wait + Duration::from_secs(1)).await;
-    let pending = boot.harness.pending_queue_for_test().await;
-    assert!(
-        !pending
-            .iter()
-            .any(|obs| matches!(obs, Observation::ReviewRound { .. })),
-        "review.round must not be queued; pending={pending:?}"
-    );
-    assert!(
-        boot.shared.started_turns_for_test().is_empty(),
-        "review.round must not issue a turn; turns={:?}",
-        boot.shared.started_turns_for_test()
-    );
-
-    // Positive control.
     let task = seed_task(&boot, "gate", None, TaskStatus::Verifying).await;
     emit_gate_result(&boot, &task).await;
-    let text = wait_for_turn_text_containing(&boot.shared, "gate passed").await;
-    assert!(!text.contains("Review round"), "turn text={text}");
+    wait_for_turn_text_containing(&boot.shared, "gate passed").await;
     boot.harness.shutdown().await.unwrap();
 }
 

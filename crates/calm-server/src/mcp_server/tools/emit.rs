@@ -3,16 +3,13 @@
 
 use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
-use crate::event::{Event, ForgeEventSpec};
+use crate::event::Event;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::transport::PluginForgePayload;
 use crate::model::CardRole;
-use crate::operation::forge_action_adapter::ProbeSpec;
-use serde_json::Map;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -107,24 +104,6 @@ async fn submit_reported_delivery(
             error = %error,
             "worker report persisted but its delivery submission failed; the scheduler resubmits"
         );
-    }
-}
-
-/// The one constructor of a worker delivery payload (the kernel delivery's).
-pub(crate) fn worker_delivery_payload(
-    idem_key: String,
-    argv: Vec<String>,
-    table: ForgeEventSpec,
-    probes: ProbeSpec,
-) -> PluginForgePayload {
-    PluginForgePayload {
-        argv,
-        idem_key,
-        event_spec: Some(table),
-        subject: None,
-        context: Map::new(),
-        probe: Some(probes),
-        parked: false,
     }
 }
 

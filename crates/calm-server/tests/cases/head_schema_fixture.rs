@@ -74,6 +74,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0134_neige_tool_names.sql",
     "0135_worker_report_recipe_names.sql",
     "0136_managed_daily_tracks.sql",
+    "0137_neige_dev_publish.sql",
 ];
 
 #[test]

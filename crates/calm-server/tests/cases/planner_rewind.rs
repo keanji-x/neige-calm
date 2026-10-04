@@ -82,6 +82,16 @@ async fn stored_snapshot(boot: &Boot) -> Value {
         .expect("a persisted snapshot")
 }
 
+// The run loop publishes its in-memory phase before committing the snapshot. Tests that
+// compare persisted state must wait for that commit, including the matching turn identity.
+async fn wait_for_stored_phase(boot: &Boot, phase: &str, turn_id: &str) {
+    wait_for("the persisted turn phase", || async {
+        let snapshot = stored_snapshot(boot).await;
+        snapshot["phase"] == phase && snapshot["last_turn_id"] == turn_id
+    })
+    .await;
+}
+
 fn emit_item(boot: &Boot, turn_id: &str, item: Value) {
     boot.daemon.emit_notification_for_test(Notification::Item {
         method: "item/completed".into(),
@@ -123,6 +133,7 @@ async fn start_turn(boot: &Boot, text: &str, attachments: &[String]) -> (String,
     })
     .await;
     let turn_id = format!("fake-turn-{:04}", started + 1);
+    wait_for_stored_phase(boot, "turn_running", &turn_id).await;
     let client_id = boot.daemon.started_turn_client_ids_for_test()[started as usize]
         .clone()
         .expect("the drain sends its projection key");
@@ -151,6 +162,7 @@ async fn finish_turn(boot: &Boot, turn_id: &str, client_id: &str, text: &str) {
             }
     })
     .await;
+    wait_for_stored_phase(boot, "turn_completed", turn_id).await;
 }
 
 async fn run_turn(boot: &Boot, text: &str) -> String {
@@ -355,6 +367,7 @@ async fn a_turn_that_carried_a_system_update_is_refused() {
             )
     })
     .await;
+    wait_for_stored_phase(&boot, "turn_running", TURN_B).await;
     let client = boot.daemon.started_turn_client_ids_for_test()[1]
         .clone()
         .unwrap();

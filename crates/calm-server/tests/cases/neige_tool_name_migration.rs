@@ -113,6 +113,74 @@ async fn tool_of(f: &Fx, id: i64) -> Value {
 }
 
 #[tokio::test]
+async fn stored_pr_publication_calls_move_to_dev_without_changing_arguments() {
+    let f = fx().await;
+    let t = f.track("publish history").await;
+    let planner = f
+        .card(&t, "publish-planner", "planner", CardRole::Planner)
+        .await;
+    let ws = f
+        .session(
+            &planner,
+            "publish-session",
+            WorkerSessionKind::SharedPlanner,
+            WorkerSessionState::Idle,
+            Some("publish-thread"),
+            Some(Fx::harness_snapshot()),
+            1_000,
+        )
+        .await;
+    let mut seeded = Vec::new();
+    for (i, tool) in [
+        "calm.track.publish",
+        "neige.track.publish",
+        "neige.track.rename",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let params = json!({"item": {"tool": tool, "type": "mcpToolCall", "status": "completed",
+            "arguments": {"title": "neige.track.publish", "idempotency_key": "keep", "body": "PR"}}});
+        let id = f
+            .transcript_item(
+                &ws,
+                &planner,
+                &t,
+                &format!("publish-{i}"),
+                "mcpToolCall",
+                "item/completed",
+                params.clone(),
+            )
+            .await;
+        seeded.push((id, tool, params));
+    }
+    run_the_migration(&f).await;
+    let migration = calm_truth::MIGRATOR
+        .iter()
+        .find(|m| m.description == "neige dev publish")
+        .unwrap();
+    sqlx::raw_sql(&migration.sql)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    for (id, tool, mut params) in seeded {
+        if tool != "neige.track.rename" {
+            params["item"]["tool"] = json!("neige.dev.publish");
+        }
+        assert_eq!(tool_of(&f, id).await, params);
+    }
+    // Reapplying a data migration changes no additional fields.
+    sqlx::raw_sql(&migration.sql)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM harness_items WHERE json_extract(params, '$.item.tool') = 'neige.track.publish'"
+    ).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[tokio::test]
 async fn stored_tool_names_and_recipes_read_back_under_neige() {
     let f = fx().await;
     let t = f.track("history").await;

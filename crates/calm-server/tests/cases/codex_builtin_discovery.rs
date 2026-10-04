@@ -12,7 +12,7 @@ async fn real_planner_discovers_builtin_tool_on_first_turn() {
         .await;
     let goal = "This disposable fixture is a tool availability probe, not an issue-development task. \
         Use your discovered MCP tools directly; do not use shell commands, custom clients or create tasks. \
-        First invoke neige.track.publish with idempotency_key=bootstrap-discovery-probe, \
+        First invoke neige.dev.publish with idempotency_key=bootstrap-discovery-probe, \
         title=Discovery probe, body=No candidate. Observe its publish-not-a-candidate refusal: \
         this fresh fixture has no delivered attempt. Report the result and stop.".to_string();
     let fx = match boot_forge_e2e_fixture(
@@ -46,7 +46,7 @@ async fn real_planner_discovers_builtin_tool_on_first_turn() {
             .find(|params| {
                 params["item"]["type"] == "mcpToolCall"
                     && params["item"]["server"] == "neige"
-                    && params["item"]["tool"] == "neige.track.publish"
+                    && params["item"]["tool"] == "neige.dev.publish"
             });
         if let Some(publish) = publish {
             assert_eq!(publish["item"]["status"], "failed", "{publish:#}");

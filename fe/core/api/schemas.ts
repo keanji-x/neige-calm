@@ -590,17 +590,6 @@ export const forgeMergeSubjectSchema = z.object({
   pr_number: z.number(),
 });
 
-export const reviewSubjectSchema = z.object({
-  phase: z.string(),
-  slice_id: z.string(),
-  pr_number: z.number().nullable(),
-});
-
-export const channelVerdictSchema = z.object({
-  role: z.string(),
-  verdict: z.enum(['approved', 'changes_requested']),
-});
-
 export const ratifyDecisionSchema = z.enum(['grant', 'deny']);
 
 /** The forge action adapter observed a PR merge and completed the parked operation. */
@@ -611,22 +600,6 @@ export const forgePrMergedSchema = z.object({
     subject: forgeMergeSubjectSchema,
     head_sha: z.string(),
     merge_sha: z.string(),
-  }),
-});
-
-/** The planner recorded one dual-review convergence round for a review subject. */
-export const reviewRoundSchema = z.object({
-  ev: z.literal('review.round'),
-  data: z.object({
-    track_id: z.string(),
-    subject: reviewSubjectSchema,
-    head_sha: z.string().nullable(),
-    n: z.number(),
-    cap: z.number(),
-    converged: z.boolean(),
-    channels: z.array(channelVerdictSchema),
-    root_cause: z.string().nullable(),
-    idempotency_key: z.string(),
   }),
 });
 
@@ -943,7 +916,6 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   workspaceLeasedSchema,
   workspaceReleasedSchema,
   forgePrMergedSchema,
-  reviewRoundSchema,
   ratifyRequestedSchema,
   ratifyResolvedSchema,
   proposalSubmittedSchema,
@@ -1006,7 +978,6 @@ export type TaskContextAdvancedEvent = z.infer<typeof taskContextAdvancedSchema>
 export type WorkspaceLeasedEvent = z.infer<typeof workspaceLeasedSchema>;
 export type WorkspaceReleasedEvent = z.infer<typeof workspaceReleasedSchema>;
 export type ForgePrMergedEvent = z.infer<typeof forgePrMergedSchema>;
-export type ReviewRoundEvent = z.infer<typeof reviewRoundSchema>;
 export type RatifyRequestedEvent = z.infer<typeof ratifyRequestedSchema>;
 export type RatifyResolvedEvent = z.infer<typeof ratifyResolvedSchema>;
 export type ProposalSubmittedEvent = z.infer<typeof proposalSubmittedSchema>;
