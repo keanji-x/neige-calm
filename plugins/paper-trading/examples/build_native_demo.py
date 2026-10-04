@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT.parent))
 from paper_trading.allocation import NEW_YORK, Allocation  # noqa: E402
 from paper_trading.allocation_config import AllocationConfig  # noqa: E402
 from paper_trading.allocation_report import tables  # noqa: E402
+from paper_trading.config import timestamp  # noqa: E402
 from paper_trading.report_views import native_view  # noqa: E402
 
 DESCRIPTION = '示例数据 · 脚本化模拟账户，非真实账户；行情、订单与成交均由脚本生成。数值为对账估值，盈亏未扣除费用与出入金。'
@@ -30,6 +31,7 @@ WORKER = {'role': 'worker', 'card_id': 'example-worker-card', 'session_id': 'exa
 # The broker is in-process, so the SDK interpreter and broker home are never used.
 CONFIG = {'profile': 'spy_cash', 'account_no': 'EXAMPLE-PAPER', 'broker_home': '/example/unused-broker-home',
           'owner_track_id': TRACK, 'oauth_client_id': 'example-client', 'sdk_python_path': '/example/unused-sdk-python',
+          # One order may reach the target, so each decision shows one complete outcome (the default caps a step at 10%).
           'max_order_bps': 10000}
 FIRST, LAST = date(2026, 7, 1), date(2026, 9, 30)
 HOLIDAYS = {date(2026, 7, 3), date(2026, 9, 7)}  # NYSE: Independence Day (observed), Labor Day
@@ -48,26 +50,36 @@ CENT = Decimal('0.01')
 
 class ScriptedBroker:
     """A simulated paper account: it keeps records and fills accepted orders; it has no sizing or valuation."""
-    def __init__(self, cash):
+    def __init__(self, cash, clock):
         self.cash, self.shares, self.orders, self.fills, self.pending = Decimal(cash), 0, [], [], {}
         self.price, self.quote_at, self.market_open, self.tranches = None, None, False, 1
+        self.clock, self.submitted = clock, {}
 
     def quote(self, price, at, market_open=True):
         self.price, self.quote_at, self.market_open = price.quantize(CENT), at, market_open
 
     def snapshot(self, since):
-        # The account history is small, so every observation returns all of it.
         for order in self.orders:
             if self.pending.get(order['order_id']) and self.market_open:
                 self.execute(order, self.pending[order['order_id']].pop(0))
+        # Window records like the SDK bridge: today's orders and executions, plus history from `since`
+        # (None once nothing is unresolved, so older resolved orders take reconcile's archived path).
+        now = self.clock()
+        start = timestamp(since) if since is not None else None
+        today = lambda at: at.astimezone(NEW_YORK).date() == now.astimezone(NEW_YORK).date()
+        recent = lambda at: start is not None and start <= at <= now
+        orders = [o for o in self.orders if today(self.submitted[o['order_id']]) or recent(self.submitted[o['order_id']])]
+        fills = [f for f in self.fills if today(timestamp(f['time']))]
+        fills += [f for f in self.fills if recent(timestamp(f['time']))]
         return deepcopy({'identity': {'account_no': CONFIG['account_no'], 'account_channel': 'lb_papertrading'},
                          'cash_usd': str(self.cash), 'available_cash_usd': str(self.cash),
                          'shares': self.shares, 'available_shares': self.shares,
                          'quote': {'price': str(self.price), 'at': self.quote_at.isoformat(), 'status': 'Normal'},
-                         'market_open': self.market_open, 'orders': self.orders, 'fills': self.fills})
+                         'market_open': self.market_open, 'orders': orders, 'fills': fills})
 
     def submit(self, request):
         key = f'SIM-{len(self.orders) + 1:04}'
+        self.submitted[key] = self.clock()
         self.orders.append(request | {'order_id': key, 'quantity': str(request['quantity']),
                                       'executed_quantity': '0', 'status': 'New'})
         first = request['quantity'] // self.tranches
@@ -114,7 +126,7 @@ def new_york(day, hour, minute, second=0):
 def simulate(root):
     """Drive the production Allocation through the script and return its publication input."""
     clock = {'now': None}
-    broker = ScriptedBroker('100000')
+    broker = ScriptedBroker('100000', lambda: clock['now'])
     app = Allocation(root, AllocationConfig.parse(CONFIG), broker, clock=lambda: clock['now'])
 
     def at(day, hour, minute, second=0):

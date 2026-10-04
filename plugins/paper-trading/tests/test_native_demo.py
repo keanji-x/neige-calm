@@ -40,7 +40,7 @@ def test_example_never_claims_a_real_account():
     assert '长桥' not in json.dumps(example, ensure_ascii=False)
 
 
-def test_scripted_run_exercises_every_shown_execution_outcome():
+def test_example_records_the_scripted_decision_outcomes():
     records = next(c for row in committed()['rows'] for c in row['cells'] if c['kind'] == 'records')
     [dataset] = records['datasets']
     outcomes = {item['id']: (item['badges'][0]['value'], len(item['disclosures'])) for item in dataset['items']}
