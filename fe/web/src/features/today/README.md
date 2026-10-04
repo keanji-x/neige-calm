@@ -1,8 +1,9 @@
 # Calendar commitments (#1913)
 
 Today mounts Week/Month date navigation in the desktop sidebar. Dates show Track
-counts above and task counts below. Task details remain in the fixed-height
-scrolling list below; Activity is a separate fixed-height list with update times
+counts above and task counts below. Task details and Activity size to their
+content, with each list capped at 12rem and scrolling when necessary. Both lists shrink to keep the card within the
+available height, including in Month view. Activity shows update times
 and a closed-track visibility toggle. No separate Open group is rendered.
 
 Today owns date selection and Track counts. The app queries the visible date

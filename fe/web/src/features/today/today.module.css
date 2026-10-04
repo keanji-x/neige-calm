@@ -103,8 +103,9 @@
 
   .withCalendar .panelColumn { align-self: stretch; block-size: 100%; overflow: hidden; }
   .panelColumn > div { padding-block-start: var(--space-3); }
+  .withCalendar .panelColumn > div { block-size: auto; }
   .filterAction { width: var(--control-h-sm); min-width: var(--control-h-sm); height: var(--control-h-sm); padding: 0; margin-inline-end: calc(var(--space-2) * -1); }
-  .activityScroll { flex: 1 1 12rem; min-block-size: 0; block-size: 12rem; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
+  .activityScroll { flex: 1 1 auto; min-block-size: 0; max-block-size: 12rem; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
 
   .section {
     display: flex;

@@ -198,3 +198,42 @@ it('counts a weekly entry on each projected occurrence in Week and Month and sho
   await expect.element(page.getByRole('textbox', { name: 'Task title' })).not.toBeInTheDocument();
   await page.screenshot({ path: '../../../../test-results/calendar-weekly-details.png' });
 });
+
+for (const [taskCount, trackCount] of [[0, 0], [0, 20], [20, 0], [20, 20], [1, 1]]) {
+  it(`sizes Today lists to their content with ${taskCount} tasks and ${trackCount} tracks`, async () => {
+    await page.viewport(1440, 768);
+    const { NEUTRAL_ACTIVITY } = await import('../../../../core/domain/track.ts');
+    const entries: CalendarListedEntry[] = Array.from({ length: taskCount }, (_, index) => ({
+      id: `compact-task-${index}`, version: 1, cancelled: false, source_track_id: null,
+      created_by: 'user', created_at: 1, updated_at: 1, occurrences: [],
+      task: { title: `Task ${index}`, description: '', schedule: { kind: 'all_day', date: '2026-10-04' } },
+    }));
+    const tracks = Array.from({ length: trackCount }, (_, index) => ({ ...NEUTRAL_ACTIVITY,
+      id: `compact-track-${index}`, areaId: 'area', title: `Track ${index}`, sort: index,
+      cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1,
+    }));
+    render(<div style={{ height: 'calc(100dvh - 56px)', display: 'flex' }}>
+      <TodayPage tracks={tracks} areas={[]} activityAvailable nowMs={Date.parse('2026-10-04T09:00:00+08:00')}
+        renderTrackRow={(track) => <div style={{ height: 28 }}>{track.title}</div>}
+        conversationList={<p>No conversations yet.</p>}
+        renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange}
+          timezone="Asia/Shanghai" month={ready(entries)} day={ready(entries)} enabled pending={false}
+          onWindowChange={() => undefined} onRetry={() => undefined} onSettings={() => undefined}
+          onOpenTrack={() => undefined} onSave={() => Promise.resolve()} />} />
+    </div>);
+    for (const [name, count] of [['Task list', taskCount], ['Activity list', trackCount]] as const) {
+      const list = page.getByRole('region', { name }).element();
+      if (count <= 1) expect(list.getBoundingClientRect().height).toBeLessThan(60);
+      else {
+        expect(list.clientHeight).toBeGreaterThan(0);
+        expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
+      }
+    }
+    const conversations = page.getByRole('heading', { name: 'Conversations', exact: true }).element();
+    expect(conversations.getBoundingClientRect().bottom).toBeLessThan(768);
+    if (taskCount === 0 && trackCount === 0) {
+      const card = conversations.closest('aside')!.firstElementChild!;
+      expect(card.getBoundingClientRect().height).toBeLessThan(400);
+    }
+  });
+}

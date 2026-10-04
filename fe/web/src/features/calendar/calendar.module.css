@@ -76,7 +76,7 @@
   .dateLink:hover .dateBadge { background: var(--overlay-hover); }
   .dateLink:hover .selectedDate { background: var(--accent-soft); }
   .dayDetails { display: flex; flex-direction: column; flex: 1 1 auto; min-block-size: calc(var(--row-h) * 2); margin-top: var(--space-4); padding-top: 0; }
-  .taskScroll { flex: 1 1 12rem; min-block-size: 0; block-size: 12rem; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
+  .taskScroll { flex: 1 1 auto; min-block-size: 0; max-block-size: 12rem; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
   .taskItem { padding: 0; }
   .detailRow { display: grid; grid-template-columns: var(--dot-sm) minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); min-height: var(--row-h); }
   .detailTitle { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: var(--weight-normal); font-size: var(--text-base); }
