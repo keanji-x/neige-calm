@@ -1,1 +1,1 @@
-Read report changes for date (YYYY-MM-DD) in the grant’s time zone. First-before to last-after patches are grouped per Track, including closed Tracks and net reverts. Follow next_cursor using after and preserve through_event_id for the same snapshot. patch_truncated means inspect individual edits for full evidence. No changes is an empty changes array; failures are errors.
+Workspace report grant required. Read date changes in grant time zone. Page with after + through_event_id; inspect edits for truncated patches.

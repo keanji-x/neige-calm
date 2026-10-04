@@ -1,1 +1,1 @@
-Enumerate user-visible Areas’ current and closed Track reports. Requires a kernel-issued workspace report read grant. Follow next_cursor with after until null. Returns report metadata, not bodies. No write authority is granted.
+Requires a workspace report read grant. List visible report metadata. Follow next_cursor with after.

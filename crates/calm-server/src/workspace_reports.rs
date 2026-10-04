@@ -79,7 +79,7 @@ pub async fn changes(
             "continuation requires through_event_id".into(),
         ));
     }
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
     let through = match query.through_event_id {
         Some(id) if id >= 0 => id,
         Some(_) => {

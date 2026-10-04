@@ -195,8 +195,7 @@ async fn picker_lists_the_site_template_after_the_builtins() {
         .map(|t| t["id"].as_str().expect("id"))
         .collect();
     let mut expected: Vec<&str> = calm_server::templates::TemplateRoster::builtin()
-        .entries()
-        .iter()
+        .user_entries()
         .map(|t| t.key())
         .collect();
     expected.push(SITE_X);

@@ -865,8 +865,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
 async fn create_stores_the_roster_key_as_template_id() {
     let boot = boot().await;
     for key in calm_server::templates::TemplateRoster::builtin()
-        .entries()
-        .iter()
+        .user_entries()
         .map(|t| t.key())
     {
         let (status, body) = post(
@@ -1253,8 +1252,7 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
             .map(|entry| entry["id"].as_str().expect("template id"))
             .collect();
         let roster_ids: Vec<&str> = calm_server::templates::TemplateRoster::builtin()
-            .entries()
-            .iter()
+            .user_entries()
             .map(|template| template.key())
             .collect();
         assert_eq!(
@@ -1438,8 +1436,8 @@ async fn listed_template_keys_create_their_exact_recipes() {
     assert_eq!(
         anchors.len(),
         calm_server::templates::TemplateRoster::builtin()
-            .entries()
-            .len(),
+            .user_entries()
+            .count(),
         "the roster grew or shrank; this table is the one place that must be \
          edited by hand when it does"
     );

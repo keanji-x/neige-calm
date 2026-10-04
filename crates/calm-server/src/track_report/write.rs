@@ -291,7 +291,7 @@ async fn persist(
             })?;
             let reports_only: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_track_identities WHERE track_id=?1 AND tool_policy='reports')")
                 .bind(track.id.as_str()).fetch_one(&mut **tx).await?;
-            if reports_only && matches!(author, EditAuthor::Planner | EditAuthor::Assistant) {
+            if reports_only && (author == EditAuthor::Planner || author == EditAuthor::Assistant) {
                 let closed: bool = sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
                     .bind(track_id.as_str()).fetch_one(&mut **tx).await?;
                 if closed { return Err(CalmError::Forbidden("Agents may only read this closed report-planning Track.".into())); }

@@ -535,8 +535,7 @@ mod tests {
             .map(|template| template["id"].as_str().expect("id"))
             .collect();
         let mut expected: Vec<&str> = calm_server::templates::TemplateRoster::builtin()
-            .entries()
-            .iter()
+            .user_entries()
             .map(|template| template.key())
             .collect();
         expected.push("site/x");

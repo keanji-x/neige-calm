@@ -317,7 +317,14 @@ impl TemplateRoster {
         Ok(template)
     }
 
-    /// Every entry, in picker order.
+    /// Publicly creatable entries in picker order.
+    pub fn user_entries(&self) -> impl Iterator<Item = &Template> {
+        self.entries
+            .iter()
+            .filter(|template| template.user_creatable())
+    }
+
+    /// Every registered entry, including kernel-only templates.
     pub fn entries(&self) -> &[Template] {
         &self.entries
     }

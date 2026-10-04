@@ -1,1 +1,1 @@
-Read individual report edits for date and track_id, bounded by through_event_id from the changes page. Follow next_cursor using after until null. Returns full before/after summary and body, including intervening edits and reversions. Requires a workspace report read grant; no write authority is granted.
+Requires a workspace report read grant. Read date/track_id edits bounded by through_event_id. Follow next_cursor as after. Full before/after content.

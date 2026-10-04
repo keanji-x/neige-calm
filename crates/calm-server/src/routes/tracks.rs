@@ -4034,7 +4034,7 @@ mod tests {
         #[tokio::test]
         async fn admission_key_is_the_rosters_own_borrow() {
             let s = route_state().await;
-            for template in s.templates.entries() {
+            for template in s.templates.user_entries() {
                 let caller_spelling = String::from(template.key());
                 assert_ne!(
                     caller_spelling.as_ptr(),

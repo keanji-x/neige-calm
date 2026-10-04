@@ -10,7 +10,7 @@ test('keeps Today usable without claiming zero activity when Areas is unavailabl
       served += 1;
     } else await route.continue();
   });
-  await page.goto('/next/');
+  await page.goto('/next/today/legacy');
   const main = page.getByRole('main');
   const failure = main.getByRole('alert').filter({ hasText: 'Areas temporarily unavailable' });
   // Wait for the stub's answer first so a slow load reports as "stub never asked", not "failure state never rendered".
