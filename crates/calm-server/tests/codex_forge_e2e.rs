@@ -1245,6 +1245,35 @@ fn fixture_origin_names_github_and_reaches_the_local_bare_repo() {
     );
 }
 
+/// A multi-valued `remote.origin.url` whose first value names another repository: the template's
+/// repo cross-check reads the first value, so it reports that repository, not input.repo.
+#[test]
+fn repo_cross_check_reads_the_first_of_several_origin_urls() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let origin = tmp.path().join("origin.git");
+    let clone = tmp.path().join("clone");
+    init_bare_origin(&origin, &tmp.path().join("seed"));
+    clone_for_track(&origin, &clone);
+    run_git(
+        &clone,
+        [
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/neige-e2e/other-repo.git",
+        ],
+    );
+    let fixture_url = fixture_github_url();
+    run_git(
+        &clone,
+        ["config", "--add", "remote.origin.url", fixture_url.as_str()],
+    );
+
+    let observed = cross_checked_origin_repo(&issue_development_method(), &clone);
+    assert_eq!(observed, "neige-e2e/other-repo");
+    assert_ne!(observed, issue_development_input(1)["repo"]);
+}
+
 /// The bound input the fixture writes passes the shipped git-forge input schema, through the check
 /// the track binding re-runs at Planner start.
 #[test]

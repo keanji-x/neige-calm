@@ -1931,6 +1931,7 @@ fn planner_card_payload(
 /// The Planner card payload `POST /api/tracks` mints for the builtin roster template
 /// `template_id`, for integration fixtures that create the track without the route (#2016).
 #[cfg(feature = "fixtures")]
+#[doc(hidden)]
 pub fn template_planner_card_payload_for_test(
     goal: Option<String>,
     provider: AgentProvider,

@@ -67,8 +67,8 @@ pub fn fixture_github_url() -> String {
     format!("https://github.com/{FIXTURE_GITHUB_REPO}.git")
 }
 
-/// The command the issue-development repo cross-check runs; its first line is the URL git fetches
-/// origin from, as configured before any `url.<base>.insteadOf` rewrite.
+/// The command the issue-development repo cross-check runs; its first line is the configured origin
+/// URL, before any `url.<base>.insteadOf` rewrite.
 pub const REPO_CROSS_CHECK_CMD: &str = "git config --get-all remote.origin.url";
 
 /// The builtin issue-development working method.

@@ -62,7 +62,7 @@ Check the repository
 
 Repo cross-check: before any repository write, compare input.repo
 against the first line of `git config --get-all remote.origin.url` run in the track cwd (the
-URL git fetches from, as configured before any url.insteadOf rewrite; owner/name after
+configured origin URL, before any url.insteadOf rewrite; owner/name after
 stripping the host and a trailing .git).
 On mismatch do NOT proceed or declare execution tasks.
 Record both observed repositories in 待你定, ask the user to correct or confirm
