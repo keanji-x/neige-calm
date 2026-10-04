@@ -1519,7 +1519,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/view/track-page.ts",
-    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex 3eb354e..84b3dd4 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -54,7 +54,8 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa\n     kind: title !== null ? card.kind : null,\n     badges,\n     status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}` }),\n-    activity: rowActivity(activity, card.id),\n+    // MUT-1722-S2B-4: a card row spins on its runtime status again\n+    activity: rowActivity(activity, card.id) ?? (card.runtime?.status === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
+    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex 3eb354e..84b3dd4 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -54,7 +54,8 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa\n     kind: title !== null ? card.kind : null,\n     badges,\n     status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}`, detail: null }),\n-    activity: rowActivity(activity, card.id),\n+    // MUT-1722-S2B-4: a card row spins on its runtime status again\n+    activity: rowActivity(activity, card.id) ?? (card.runtime?.status === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
     "expected_red": [
       "TrackPage task inventory card and task rows paint activity.cards, not runtime status"
     ],
