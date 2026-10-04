@@ -4,7 +4,7 @@ title = "Issue development"
 description = "Develop a GitHub issue through implementation, review and an authorized merge."
 instructions = """
 Read the issue and confirm the repository and requirements.
-Review the design for correctness and failure paths, then implement and verify the change.
+When a design is needed, have it reviewed once, then implement and verify the change.
 Open a PR and review it. Merge only under your selected authorization.
 """
 +++
@@ -72,7 +72,7 @@ the repository with neige.ratify.request and
 
 Working method
 
-Understand the source issue. When it leaves a real design choice open, write a short design and have it reviewed before implementing; otherwise implement directly. Implement and commit in a worktree, open a PR with neige.track.publish, review it, and merge under your selected authorization. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
+Understand the source issue. Write a short design before implementing only when the issue leaves a real design choice open, or the change is large, risky, or crosses an authority, persistence, isolation or security boundary; otherwise implement directly. A design gets one read-only review task; after a revision, that reviewer re-checks only the changed parts. Implement and commit in a worktree, open a PR with neige.track.publish, review it, and merge under your selected authorization. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
 Read the issue discussion with gh.issue.comments; pass a new attempt when refreshing
 comments or the gh.issue.view body. Post relevant questions, progress, and results
@@ -83,15 +83,18 @@ Read pull requests with the git-forge tools, not the gh CLI: gh.pr.diff returns 
 
 Review
 
-- Choose the review level per change and record it with a one-line reason in 决策: one
-  read-only review task for an ordinary change; two independent review tasks when the
-  change crosses an authority, persistence, isolation or security boundary, adds a
-  database migration, or is large.
+- Choose the review level for the PR's code change (design review stays at one task) and
+  record it with a one-line reason in 决策: one read-only review task for an ordinary
+  change; two independent review tasks when the change crosses an authority,
+  persistence, isolation or security boundary, adds a database migration, or is large.
 - Give reviewers the implementing attempt's gate result and gh.pr.checks as mechanical
   evidence; a reviewer runs a check only to test its own hypothesis.
 - A finding blocks only when it is a defect this change introduces or a structural
   problem in the approach. Fix cheap in-scope findings. Post the other findings worth
   keeping as one gh.issue.comment on the source issue; drop pure style.
+- A removal stays a removal: it adds no new mechanism, hand-built fixture or extra test,
+  and leaves historical design documents unchanged; reviewers raise either as a
+  structural finding.
 - After a fix, the reviewer that raised the finding re-checks the fix; with two review
   tasks, both re-check.
 - When blocking findings still arrive after three review rounds, stop patching them one

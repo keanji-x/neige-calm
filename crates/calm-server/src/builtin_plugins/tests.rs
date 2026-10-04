@@ -275,6 +275,12 @@ async fn builtin_issue_instructions_remain_documentation_when_dev_is_disabled() 
             scope == Some(ID)
         );
         if scope == Some(ID) {
+            let tool_prefix =
+                crate::plugin_results::registry_name(&get(ID).unwrap().manifest().id, "");
+            assert!(
+                prompt.contains(&tool_prefix),
+                "the guide must name the minted tool prefix {tool_prefix}"
+            );
             fx.host.disable(ID).await.unwrap();
             let prompt = crate::operation::planner_harness_start_adapter::planner_instructions(
                 fx.repo.as_ref(),
