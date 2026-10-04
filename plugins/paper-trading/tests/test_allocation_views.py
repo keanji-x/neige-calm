@@ -246,14 +246,13 @@ def test_spy_recipe_contract_matches_body_and_published_units(allocation_rig):
     body = re.sub(r'<!--.*?-->', '', text, flags=re.S)
     headings = re.findall(r'^# (.+)$', body, flags=re.M)
     assert headings == [s['h1'] for s in contract['sections']]
-    assert headings[:3] == ['组合表现', '资金投向', '调仓决策'] and headings[-1] == '执行记录'
-    # Upserted execution task blocks append at the end of the Report, so no routine step may rewrite
-    # the last section: a rewrite that omitted a declared task block would be refused.
+    assert headings == ['组合表现', '仓位配置', '调仓决策']
+    # Execution tasks append to the final section; routine research must leave all views and tasks intact.
     steps = re.findall(r'^- (?:Pre-market|Post-close|Weekly):.*$', text, flags=re.M)
-    assert len(steps) == 3 and not any(headings[-1] in step for step in steps)
-    assert 'No step rewrites 组合表现, 资金投向, 调仓决策 or 执行记录' in text
+    assert len(steps) == 3 and all('reply in the conversation' in step for step in steps)
+    assert 'No step rewrites 组合表现, 仓位配置 or 调仓决策' in text
     assert 'A user edit of this Report requests no step.' in text
-    assert [s['h1'] for s in contract['sections'] if s.get('omit_if_empty')] == ['待你定']
+    assert not any(s.get('omit_if_empty') for s in contract['sections'])
     # Account mode is recipe context, never unit data (see the example's marker rule).
     assert '长桥官方模拟账户 · SPY／现金' in text
     views = recipe.views(body)
@@ -269,8 +268,8 @@ def test_spy_recipe_contract_matches_body_and_published_units(allocation_rig):
     assert len(expects) == len(slots) and set(expects) == set(published)
     for kind, unit in published.items():
         assert unit['cell']['kind'] == expects[kind], kind
-    sections = re.split(r'^# ', body, flags=re.M)
-    assert next(s for s in sections if s.startswith('来源与边界')).rstrip().endswith('仅作研究，不构成交易建议。')
+    assert 'ending 仅作研究，不构成交易建议。' in text
+    assert "Persist the decision's sourced reasoning" in text
 
 
 class Filling(Prescribed):

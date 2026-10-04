@@ -81,7 +81,7 @@ it('gives empty titles fallback accessible names and omits their headings', asyn
   expect(screen.getAllByRole('region').map(region => region.getAttribute('aria-label'))).toEqual(['明细']);
   expect(container.querySelector('section:not([aria-label])')).toBeTruthy();
   expect(container.querySelector('p[class*="description"]')).toBeNull();
-  await userEvent.click(screen.getByRole('button', { name: '展开视图' }));
+  await userEvent.click(screen.getByRole('button', { name: '放大查看' }));
   const dialog = screen.getByRole('dialog', { name: '视图' });
   expect(within(dialog).queryByRole('heading', { level: 2 })).toBeNull();
 });

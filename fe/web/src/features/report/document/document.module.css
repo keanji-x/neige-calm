@@ -481,6 +481,7 @@
    */
   .h1::before {
     content: counter(report-section, decimal-leading-zero);
+    white-space: nowrap;
     position: absolute;
     inset-inline-end: calc(100% + var(--space-10));
     font-family: var(--font-mono);

@@ -17,6 +17,12 @@
     line-height: var(--leading-snug);
   }
 
+  /* Dense tables retain a reading measure; their wrapper owns horizontal
+     scrolling so timestamps and identifiers do not become vertical text. */
+  .table:has(> thead > tr > th:nth-child(5)) {
+    min-inline-size: var(--measure-prose);
+  }
+
   .caption {
     margin-block-end: var(--space-4);
     font-size: var(--text-xs);
@@ -41,6 +47,7 @@
   }
 
   .cell {
+    overflow-wrap: normal;
     padding-block: var(--space-3);
     padding-inline: var(--space-4) var(--space-6);
     border-block-end: 1px solid var(--hairline);

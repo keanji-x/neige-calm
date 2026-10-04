@@ -41,7 +41,7 @@ it.each([1440, 736, 390, 320])('native composition renders without frames or ove
 it('wide inspection is a native accessible dialog, not an embedded page', async () => {
   await page.viewport(1440, 1000);
   render(<NativeReportView payload={payload} />);
-  await page.getByRole('button', { name: '展开 运营概览' }).click();
+  await page.getByRole('button', { name: '放大查看 运营概览' }).click();
   await expect.element(page.getByRole('dialog', { name: '运营概览' })).toBeVisible();
   expect(document.querySelector('iframe')).toBeNull();
   await userEvent.keyboard('{Escape}');
@@ -51,7 +51,7 @@ it('wide inspection is a native accessible dialog, not an embedded page', async 
 it.each([1440, 390, 320])('keeps Close visible for an accepted unbroken title at %i', async width => {
   await page.viewport(width, 1000);
   render(<NativeReportView payload={{ ...payload, title: 'X'.repeat(200) }} />);
-  await page.getByRole('button', { name: `展开 ${'X'.repeat(200)}` }).click();
+  await page.getByRole('button', { name: `放大查看 ${'X'.repeat(200)}` }).click();
   const close = document.querySelector<HTMLElement>('[role="dialog"] button[aria-label="Close"]')!;
   const box = close.getBoundingClientRect();
   expect(box.left).toBeGreaterThanOrEqual(0);
@@ -149,7 +149,7 @@ it('reaches disclosures and snapshot controls using the unchanged shared dialog'
   await page.viewport(1440, 1000);
   render(<NativeReportView payload={payload} />);
   await page.getByRole('button', { name: '查看详情', exact: true }).click();
-  await page.getByRole('button', { name: '展开 运营概览' }).click();
+  await page.getByRole('button', { name: '放大查看 运营概览' }).click();
   const detailClose = page.getByRole('button', { name: '收起详情', exact: true }).element() as HTMLElement;
   detailClose.focus();
   await userEvent.keyboard('{Tab}');
@@ -162,4 +162,30 @@ it('reaches disclosures and snapshot controls using the unchanged shared dialog'
   expect(document.activeElement?.textContent).toContain('快照信息');
   await userEvent.keyboard('{Enter}');
   await expect.element(page.getByRole('dialog').getByText(/operations-r1/)).toBeVisible();
+});
+
+it('keeps the App fill timestamps readable in a local table scroller at 320px', async () => {
+  await page.viewport(320, 1000);
+  const decisions = nativeViewPayloadSchema.parse(demo.views[2]);
+  const { container } = render(<main style={{ inlineSize: 288, margin: 16 }}><NativeReportView payload={decisions} resolveOverlay={resolveDemo} /></main>);
+  const table = container.querySelector('table')!;
+  const scroller = table.parentElement!;
+  const timestamp = table.querySelector('tbody td:last-child')!;
+  expect(timestamp.getBoundingClientRect().width).toBeGreaterThan(120);
+  expect(scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth);
+  scroller.scrollLeft = scroller.scrollWidth;
+  expect(timestamp.getBoundingClientRect().right).toBeLessThanOrEqual(scroller.getBoundingClientRect().right + 1);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(320);
+});
+
+it('gives the App holdings a full row below the charts in an intermediate slot', async () => {
+  await page.viewport(768, 1000);
+  const allocation = nativeViewPayloadSchema.parse(demo.views[1]);
+  const { container } = render(<main style={{ inlineSize: 700 }}><NativeReportView payload={allocation} resolveOverlay={resolveDemo} /></main>);
+  const cells = container.querySelector('section > div')!.children;
+  const first = cells[0].getBoundingClientRect();
+  const holdings = cells[2].getBoundingClientRect();
+  expect(holdings.top).toBeGreaterThan(first.bottom);
+  expect(holdings.width).toBeGreaterThan(first.width * 1.8);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(768);
 });

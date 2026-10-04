@@ -40,7 +40,7 @@ it('opens publisher-supplied badges and disclosure text without interpreting the
 
 it('opens the existing native wide dialog and restores the opener', async () => {
   render(<NativeReportView payload={payload} />);
-  const button = screen.getByRole('button', { name: '展开 运营概览' });
+  const button = screen.getByRole('button', { name: '放大查看 运营概览' });
   await userEvent.click(button);
   expect(screen.getByRole('dialog', { name: '运营概览' })).toBeTruthy();
   expect(document.querySelector('iframe')).toBeNull();
@@ -87,7 +87,7 @@ it('preserves inspection state in both directions across wide reading', async ()
   await userEvent.click(screen.getByRole('button', { name: '队列' }));
   await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
   await userEvent.click(screen.getByRole('button', { name: disclosureLabel(payload) }));
-  await userEvent.click(screen.getByRole('button', { name: '展开 运营概览' }));
+  await userEvent.click(screen.getByRole('button', { name: '放大查看 运营概览' }));
   const dialog = within(screen.getByRole('dialog'));
   expect(dialog.getByRole('button', { name: '合计' }).getAttribute('aria-pressed')).toBe('true');
   expect(dialog.getByRole<HTMLInputElement>('slider').value).toBe('0');
@@ -155,7 +155,7 @@ it('preserves the selected record scenario and disclosures rather than reverting
   const article = screen.getByText('支持减弱').closest('article')!;
   await userEvent.click(within(article).getByRole('button', { name: '查看详情' }));
   await userEvent.click(screen.getByRole('button', { name: label }));
-  await userEvent.click(screen.getByRole('button', { name: `展开 ${example.title}` }));
+  await userEvent.click(screen.getByRole('button', { name: `放大查看 ${example.title}` }));
   const dialog = within(screen.getByRole('dialog'));
   expect(dialog.getByRole('button', { name: 'r2 · 预设反证' }).getAttribute('aria-pressed')).toBe('true');
   expect(dialog.getAllByText('支持减弱')).toHaveLength(2);

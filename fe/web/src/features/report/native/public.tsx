@@ -1,7 +1,7 @@
 import {
   resolveLiveSlot, type LiveSlotResolution, type NativeComponent, type NativeLiveSlot, type NativeSnapshot, type NativeViewPayload,
 } from '../../../../../core/domain/report-view.ts';
-import { useId, useMemo } from 'react';
+import { useId, useMemo, type ReactNode } from 'react';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { BarChart, MeterChart, MetricGroup, DistributionChart, TimeSeriesChart, type PlotSelection } from '../../../ui/data-visualization/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
@@ -56,7 +56,7 @@ function provenance(payload: NativeViewPayload, resolutions: Resolutions) {
   }
   return entries;
 }
-function Composition({ payload, resolutions, ...reading }: ReadingProps & { payload: NativeViewPayload; resolutions: Resolutions }) {
+function Composition({ payload, resolutions, action, ...reading }: ReadingProps & { payload: NativeViewPayload; resolutions: Resolutions; action?: ReactNode }) {
   const snapshotId = useId();
   const sources = provenance(payload, resolutions);
   return <div className={styles.composition}>
@@ -67,11 +67,14 @@ function Composition({ payload, resolutions, ...reading }: ReadingProps & { payl
         {cell.kind === 'live' ? <Slot slot={cell} resolutions={resolutions} {...reading} /> : <Titled component={cell} at={cell.id} {...reading} />}
       </div>)}</div>
     </section>)}
-    {sources.length > 0 && <div className={styles.snapshot}><button type="button" className={styles.disclosureToggle} aria-expanded={reading.inspection.snapshotOpen}
+    {(sources.length > 0 || action !== undefined) && <footer className={styles.footer}>
+      {sources.length > 0 && <div className={styles.snapshot}><button type="button" className={styles.disclosureToggle} aria-expanded={reading.inspection.snapshotOpen}
       aria-controls={snapshotId} onClick={() => reading.onInspection({ ...reading.inspection, snapshotOpen: !reading.inspection.snapshotOpen })}>
       <Icon name="chevron-right" size="sm" />快照信息</button>
       <div id={snapshotId} hidden={!reading.inspection.snapshotOpen}>{sources.map(({ key, label, snapshot }) =>
         <p key={key}>{label} · 资料截止 {instant(snapshot.observedAt)} · 生成 {instant(snapshot.producedAt)}</p>)}</div></div>}
+      {action}
+    </footer>}
   </div>;
 }
 export function NativeReportView({ payload, resolveOverlay, onOpenSourceLink }: {
@@ -87,9 +90,9 @@ export function NativeReportView({ payload, resolveOverlay, onOpenSourceLink }: 
   const reading = { inspection, onInspection: setInspection, onOpenSourceLink, resolutions };
   const title = payload.title === '' ? null : <h2>{payload.title}</h2>;
   return <div className={styles.root}>
-    <header className={styles.header}>{title}<button type="button" className={styles.expand}
-      aria-label={payload.title === '' ? '展开视图' : `展开 ${payload.title}`} title="展开视图" onClick={() => setExpanded(true)}><Icon name="arrow-up" size="sm" /></button></header>
-    <Composition payload={payload} {...reading} />
+    {title !== null && <header className={styles.header}>{title}</header>}
+    <Composition payload={payload} {...reading} action={<button type="button" className={styles.wideToggle}
+      aria-label={payload.title === '' ? '放大查看' : `放大查看 ${payload.title}`} title="放大查看" onClick={() => setExpanded(true)}><Icon name="fullscreen" size="sm" />放大查看</button>} />
     <Dialog open={expanded} onClose={() => setExpanded(false)} title={payload.title === '' ? '视图' : payload.title} hideTitleRow wide>
       <div className={styles.root}>
         <header className={styles.header}>{title}<button type="button" className={styles.expand}
