@@ -1,0 +1,39 @@
+name: Invest plugin
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/invest/**'
+      - '.github/workflows/invest.yml'
+      - 'crates/calm-types/src/report_blocks/native_view.schema.json'
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/invest/**'
+      - '.github/workflows/invest.yml'
+      - 'crates/calm-types/src/report_blocks/native_view.schema.json'
+
+permissions:
+  contents: read
+
+env:
+  NPM_CONFIG_AUDIT: 'false'
+
+concurrency:
+  group: invest-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: invest-plugin (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install 'pytest>=8,<10' 'jsonschema>=4.18,<5'
+      - name: Test SDK runner, ledger and stdio entry-point contracts
+        run: python -m pytest plugins/invest/tests -q

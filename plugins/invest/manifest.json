@@ -1,0 +1,73 @@
+{
+  "manifest_version": 4,
+  "id": "invest",
+  "version": "0.1.0",
+  "min_kernel_version": "0.0.1",
+  "display_name": "Invest portfolio",
+  "entrypoint": {"command": "run"},
+  "permissions": {"overlays_write": ["track"]},
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "account_no": {"type": "string", "description": "Exact operator-verified lb_papertrading account number. Cannot change on an existing ledger."},
+      "broker_home": {"type": "string", "description": "Absolute HOME containing the dedicated Longbridge paper-account SDK login."},
+      "oauth_client_id": {"type": "string", "description": "Separately authorized official SDK OAuth client; never decrypt CLI credentials."},
+      "sdk_python_path": {"type": "string", "description": "Absolute Python interpreter with the official Longbridge SDK 5.2.0."},
+      "access_region": {"type": "string", "enum": ["global", "cn"], "default": "global", "description": "Official SDK access point. Select cn on the mainland-China network. No endpoint override or fallback."},
+      "portfolio_track_id": {"type": "string", "description": "The portfolio Track: the only Track that may decide, execute or read the portfolio."},
+      "max_held": {"type": "integer", "description": "Most symbols held at once (weighted above 0 or in a position), 1-255; max_held + max_watched <= 255."},
+      "max_watched": {"type": "integer", "description": "Most covered symbols that are not held, 1-255; the kernel open-Track cap must be at least max_held + max_watched + 1."},
+      "max_weight_bps": {"type": "integer", "description": "Largest target weight of one symbol, 1-10000 basis points of account value."},
+      "cash_buffer_bps": {"type": "integer", "default": 200, "description": "Cash reserve, 1-2000 basis points; weights sum to at most 10000 minus this."},
+      "drift_bps": {"type": "integer", "default": 100, "description": "Per-symbol no-trade band, 0-1000 basis points."},
+      "max_order_bps": {"type": "integer", "default": 1000, "description": "Largest single order, 1-10000 basis points of account value, including a 1% price reserve."},
+      "quote_max_age_seconds": {"type": "integer", "default": 60, "description": "Quote freshness required to send an order, 1-120 seconds."},
+      "poll_seconds": {"type": "integer", "default": 60, "description": "Reconciliation interval, 5-3600 seconds."},
+      "opening_positions": {"type": "string", "default": "[]", "description": "JSON array of {\"symbol\": \"US:SPY\", \"shares\": 13}: the holdings already in the account when this ledger starts. Must equal the broker's holdings at the first reconciliation; immutable per ledger; at most max_held symbols."}
+    },
+    "required": ["account_no", "broker_home", "oauth_client_id", "sdk_python_path", "portfolio_track_id", "max_held", "max_watched", "max_weight_bps"],
+    "additionalProperties": false
+  },
+  "exposes_tools": [
+    {
+      "name": "portfolio_status",
+      "description": "Portfolio Track Planner or Worker. Read the persisted portfolio without contacting the broker: snapshot (check its time), positions, target weights, covered instruments (pending/live/dropped, held or watched), limits, decisions with their order legs, fills and errors.",
+      "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "annotations": {"title": "portfolio_status", "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "decision_add",
+      "description": "Portfolio Track Planner only. Persist an immutable target-weight decision over live covered US instruments with captured sources and validity; never reads or writes the broker. A symbol left out, or at 0, is sold. Each weight <= max_weight_bps, the sum <= 10000 - cash_buffer_bps, and symbols weighted above 0 plus those still in a position <= max_held (rotate a full book in two decisions: sell, then buy once the sells settle). One unresolved decision at a time; repeating the same decision returns it. Then declare a read-only codex Worker task whose goal names the decision_id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "decision_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,54}$", "description": "1-55 lowercase letters, digits or hyphens, so the Worker task key inv-exec-<decision_id> is valid."},
+          "weights": {
+            "type": "array", "maxItems": 255,
+            "items": {
+              "type": "object",
+              "properties": {
+                "symbol": {"type": "string", "description": "VENUE:CODE, US only, for example US:SPY."},
+                "bps": {"type": "integer", "minimum": 0, "maximum": 10000}
+              },
+              "required": ["symbol", "bps"],
+              "additionalProperties": false
+            }
+          },
+          "message": {"type": "string", "minLength": 10, "maxLength": 6000, "description": "Why these weights: the sourced reasoning shown in the decision log."},
+          "source_refs": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string"}},
+          "valid_until": {"type": "string", "format": "date-time", "description": "At most 24 hours ahead."}
+        },
+        "required": ["decision_id", "weights", "message", "source_refs", "valid_until"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "decision_add", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "execution_add",
+      "description": "Portfolio Track Worker only. Durably request execution of the exact persisted, unexpired, queued decision (state becomes requested) and wake the App's loop; this call never contacts the broker. The loop sends one regular-session DAY market order per symbol outside the drift band to the pinned official PAPER account, one at a time, sells first, buys from settled cash only. Repeating the request records nothing. Poll portfolio_status until the decision is done, noop or expired, or your stated limit; its error says why it waits. Uncertain orders are never resubmitted.",
+      "input_schema": {"type": "object", "properties": {"decision_id": {"type": "string"}}, "required": ["decision_id"], "additionalProperties": false},
+      "annotations": {"title": "execution_add", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    }
+  ]
+}

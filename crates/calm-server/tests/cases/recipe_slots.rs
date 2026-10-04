@@ -1,4 +1,4 @@
-//! The shipped SPY recipe's template slots, read from the recipe itself so no test keeps a
+//! A shipped plugin recipe's template slots, read from the recipe itself so no test keeps a
 //! second list of the App's published kinds.
 
 use std::collections::BTreeMap;
@@ -8,10 +8,12 @@ use calm_types::report_blocks::native_view::{ComponentKind, NativeView, RowCell}
 use calm_types::report_blocks::{KIND_VIEW, parse_fence, split_body};
 use serde::Deserialize;
 
-pub fn plugin_file(name: &str) -> String {
+/// `plugins/<plugin>/<name>` of this checkout.
+pub fn plugin_file(plugin: &str, name: &str) -> String {
     std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/paper-trading")
+            .join("../../plugins")
+            .join(plugin)
             .join(name),
     )
     .unwrap()
@@ -19,9 +21,9 @@ pub fn plugin_file(name: &str) -> String {
 
 /// Every live slot of the recipe's `view` fences: overlay kind -> the cell kind it expects. Each
 /// fence decodes as the kernel decodes it (`track_report_hydrate.rs`); inline cells are skipped.
-pub fn slots() -> BTreeMap<String, ComponentKind> {
+pub fn slots(plugin: &str, recipe: &str) -> BTreeMap<String, ComponentKind> {
     let mut slots = BTreeMap::new();
-    for fence in split_body(&plugin_file("spy-recipe.md"))
+    for fence in split_body(&plugin_file(plugin, recipe))
         .iter()
         .filter_map(|slice| parse_fence(&slice.raw))
         .filter(|fence| fence.kind == KIND_VIEW)

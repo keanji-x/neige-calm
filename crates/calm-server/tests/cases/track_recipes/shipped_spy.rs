@@ -5,16 +5,22 @@ use std::collections::BTreeSet;
 
 use calm_types::report_blocks::native_view::{validate, validate_unit};
 
-#[path = "../spy_recipe_slots.rs"]
-mod spy_recipe_slots;
-use spy_recipe_slots::{plugin_file, slots};
+#[path = "../recipe_slots.rs"]
+mod recipe_slots;
 
 use super::*;
+
+const PLUGIN: &str = "paper-trading";
+const RECIPE: &str = "spy-recipe.md";
+
+fn plugin_file(name: &str) -> String {
+    recipe_slots::plugin_file(PLUGIN, name)
+}
 
 #[tokio::test]
 async fn the_shipped_spy_recipe_is_admitted_with_its_template_views_intact() {
     let boot = boot().await;
-    let body = plugin_file("spy-recipe.md");
+    let body = plugin_file(RECIPE);
     let (status, created) = send(
         boot.app.clone(),
         "POST",
@@ -52,7 +58,7 @@ fn every_slot_of_the_committed_spy_example_resolves_a_valid_unit() {
         validate(view).unwrap_or_else(|error| panic!("template view: {error}"));
     }
     let overlays = example["overlays"].as_object().expect("overlays");
-    let slots = slots();
+    let slots = recipe_slots::slots(PLUGIN, RECIPE);
     for (kind, expects) in &slots {
         let unit = overlays
             .get(kind)
