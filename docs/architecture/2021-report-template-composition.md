@@ -1,9 +1,10 @@
 # Report template composition: the template places, the plugin publishes data units
 
 Baseline: `origin/main` 5971cf5e6. Every `file:line` below was read on that tree.
-Status: design, revision 2 (review round 1 folded in, §7). No code changes in this PR.
-Owner questions in §6 are **pending owner decision**; the design names its recommendation
-but does not depend on the answer except where stated.
+Status: design, revision 3 (review round 1 and owner decisions folded in, §7). No code
+changes in this PR. Owner decisions (2026-10-04, final): no kernel guard for template
+views; live `table` and `chart.series` stay single-block references; the supervised
+paper profile is deleted (slice S0). No owner question remains open.
 
 ## 1. Problem, goals, non-goals
 
@@ -19,7 +20,8 @@ which heading, in which row and whether side by side.
 their titles and layouts (`plugins/paper-trading/paper_trading/allocation_views.py:93,125,160-162`);
 `spy-recipe.md:29-33` embeds it under one H1. The template cannot split it, reorder it or
 put a research section between its rows. The supervised profile does the same with seven
-views (`paper_trading/report_views.py:196-219`, `recipe.md:83-117`).
+views (`paper_trading/report_views.py:196-219`, `recipe.md:83-117`); S0 deletes that
+profile (§3.3), so only the SPY profile is migrated.
 
 Further costs of the current shape:
 
@@ -38,7 +40,7 @@ Further costs of the current shape:
 2. One **composition** mechanism: the inline `view` block. `view.live` is removed.
    Single-block live references that compose nothing, the live `table`
    (`kinds.rs:494-508`) and `chart.series` (`report_blocks/chart_series.rs:126-139`), stay
-   as they are; whether live `table` later folds into live slots is §6 Q3 (pending).
+   as they are and are not folded into live slots (owner decision).
 3. Each live cell resolves, validates and degrades independently, with a visible
    placeholder in its own slot.
 4. No plugin identity in kernel or frontend: resolution stays the generic exact
@@ -204,8 +206,9 @@ any `RowCell::Live` as `unavailable`.
 - The Planner does not author or rewrite template views. Enforcement stays as today:
   recipe instructions name the template-owned H1s, and routine steps use section-scoped
   replace, which validates and rewrites only its own section (`track_report/sections.rs:100-113`).
-  A full `write_markdown` may still rewrite non-prose blocks (`track_report.rs:681-684`);
-  a kernel guard is §6 Q1 (pending).
+  A full `write_markdown` may still rewrite non-prose blocks (`track_report.rs:681-684`).
+  There is no kernel guard for template views (owner decision): status-quo parity with
+  `view.live` and every other non-prose block.
 - Guidance edits: the `view` usage (`prompts/report-kinds/view.md`, returned in the
   `calm.report.blocks.kinds` result) explains live slots as template-owned references;
   `prompts/tools/calm.report.read.md` names view live slots. The Planner tool surface is
@@ -275,8 +278,8 @@ in the S4 PR.
 5. Any 409 aborts the run; re-read and restart from step 2. No retries with stale revisions.
 6. Recipe rows from the scan: `PUT /api/track-recipes/{id}` with the new body (user actor
    only, `track_recipes.rs:121-127`).
-7. Retired overlay rows (`spy.overview`, `spy.portfolio`, `spy.decisions`, `spy.fills`,
-   and the `paper.*` view kinds if any) deleted with `POST /api/overlays/delete`
+7. Retired overlay rows (`spy.overview`, `spy.portfolio`, `spy.decisions`, `spy.fills`)
+   deleted with `POST /api/overlays/delete`
    (`routes/overlays.rs:151-195`); rows are never collected otherwise
    (`calm-truth/src/db/sqlite/overlay.rs:55-68`).
 
@@ -310,21 +313,68 @@ every fact they showed is in `spy.account`, `spy.holdings`, `spy.weights`,
 `allocation_report.py:18`) is recipe context, not data: it stays in the recipe's 来源与边界
 prose, so units never claim a broker and the example marker rule (§3.4) still holds.
 
-### 3.3 Supervised `paper.*` views (depends on §6 Q2, pending)
+### 3.3 Supervised profile: deleted (owner decision, slice S0)
 
 The supervised profile is not used on 4140 (the plugin instance runs `spy_cash`; no 4140
-Track embeds `paper.*` views). If the owner **keeps** it, S3 converts it:
+Track embeds `paper.*` views), so S0 deletes it outright instead of converting it. S0 is
+independent of the contract work and touches only `plugins/paper-trading` and its CI step.
 
-| View today | Units |
-|---|---|
-| `paper.overview` (`report_views.py:57-141`) | `paper.account` (metrics), `paper.realized` (bars), `paper.budget` (meter), `paper.notices` (records, publisher empty text instead of a conditional row), `paper.reconciliation` (records) |
-| `paper.activity` (`:144-154`) | `paper.activity_log` (records) |
-| `paper.review_cards` (`:157-167`) | `paper.review_log` (records) |
-| `paper.{alert,strategy,order,trade}_details` (`:170-193,196-219`) | `paper.alert_table`, `paper.strategy_table`, `paper.order_table`, `paper.trade_table` (table) |
+**Delete** (supervised-only modules and files):
 
-and rewrites `recipe.md:83-117` as template views. If the owner **deletes** it, S3 removes
-the profile's view projections and `recipe.md` instead. Either way the legacy `paper.*`
-tables (`paper_trading/report.py:26-75`) are outside this design.
+- `paper_trading/strategy.py` (`Portfolio`, the eight `paper.*` tools), `engine.py`,
+  `research.py`, `reconcile.py`, `operator.py`, `recipe.md`.
+- `paper_trading/portfolio.py`, after moving `BROKER_ACTIVE`/`BROKER_TERMINAL`
+  (`portfolio.py:9-11`) into `allocation_reconcile.py`, their only SPY user (`:7`).
+- `paper_trading/report.py`, after moving `display_cell`/`table` (`report.py:8-19`), used
+  by `allocation_report.py:3`, into `report_views.py`.
+- Tests: `test_strategy.py`, `test_strategy_process.py`, `test_engine.py`,
+  `test_report.py`, `test_report_views.py`, `test_report_view_regressions.py`,
+  `test_process.py` (after moving its `Host` class, which `test_allocation.py:318` uses,
+  into `tests/host.py` together with the `ROOT` constant it takes from `conftest.py`),
+  `conftest.py` (otherwise only the supervised `rig` fixture on `Engine`/`Config`,
+  `conftest.py:18-98`), `fixture_cli.py`, `smoke_host.py`, `browser_smoke.cjs`.
+
+**Keep and trim** (what `spy_cash` still uses):
+
+- `report_views.py`: keeps the generic helpers `native_view`, `row`, `scalar`, `unknown`,
+  `metric`, `record`, `records` (`:12-54`, used by `allocation_views.py:8`) plus the moved
+  `display_cell`/`table`, so it is the one presentation-helper module; deletes `overview`,
+  `activity`, `reviews`, `details`, `table_view`, `view_payloads` (`:57-219`) and their
+  imports (`:8-9`).
+- `report_text.py`: keeps `money_text`, `bounded` (`allocation_views.py:7`); deletes
+  `state_text`, `event_text` (`:16-78`).
+- `config.py`: keeps `money`, `integer`, `broker_money`, `timestamp`, `identifier`, `exact`
+  (used by `allocation*.py` and `sdk_bridge.py:14`); deletes `calendar_date`, `symbol`,
+  `AccountConfig`, `StrategyConfig`, `Config` (`:46-54,73-78,85-190`). `AllocationConfig`
+  inlines the account checks it borrows from `AccountConfig.parse`
+  (`allocation_config.py:34-35`).
+- `broker.py`: keeps `BrokerError`, `_object`, the environment allowlist, output cap and
+  `Broker.__init__`/`_run`/`_json`, which `AllocationBroker` subclasses
+  (`allocation_broker.py:4-26`); deletes the CLI order/cancel/read surface (`order_args`,
+  `cancel_args`, `identity` through `execute`, `broker.py:53-69,107-108,179-249`).
+  `test_broker.py` keeps only the base-runner contracts.
+- `ledger.py`: deletes `Ledger.reviews` (`:100-112`). The schema stays byte-for-byte: the
+  live 4140 SPY ledger created those tables, and dropping unused `CREATE TABLE IF NOT
+  EXISTS` lines buys nothing at a persistence boundary.
+- `rpc.py`: only the `Allocation` path (`:116-118`); deletes the supervised branch
+  (`:119-125`), its imports (`:10-13`) and the per-profile tool filter (`:144`).
+- `runtime.py`: publishes only `allocation_report.tables` (`:4-5,21`).
+- `manifest.json`: deletes the eight `paper.*` tools; `profile` becomes required with the
+  single value `spy_cash` and no default (it stays the explicit opt-in to automatic
+  execution, and the 4140 config already sets it); deletes `cli_path`, unused by SPY.
+- README: rewrites the intro (`README.md:1-15`) and deletes the supervised sections
+  (`:17-345`), keeping the account/login prerequisites and the example paragraph
+  (`:334-345`) the SPY section relies on.
+- CI: `.github/workflows/paper-trading.yml:37` step name drops "process and
+  human-confirmation"; the pytest path (`:39`) is unchanged.
+
+**Deploy order on 4140.** `AllocationConfig.parse` uses `exact` (`allocation_config.py:26-30`),
+so a stored `cli_path` would make the new code refuse to start. Before deploying S0, read
+the plugin config in the DB copy; if it sets `cli_path`, remove it through Settings first
+(the current code accepts its absence). Historical design docs
+(`docs/design-paper-trading-loop.md`, `docs/design-paper-strategy-configuration.md`,
+`docs/design-paper-report-hierarchy.md`, `docs/design-spy-cash-rebalance.md:11`) stay as
+history.
 
 ### 3.4 Example and frontend fixtures
 
@@ -440,6 +490,25 @@ runs `scripts/local-ratchet-gates.sh`; Rust runs use the targeted `cargo nextest
 form from AGENTS.md. Mutation plans name one single-factor production mutation and the
 complete predicted red set, per language.
 
+**S0: delete the supervised paper profile** (`plugins/paper-trading`, its CI step;
+independent of S1-S4, can merge and deploy first).
+
+- Everything listed in §3.3, including the 4140 `cli_path` check before deploy.
+- Tests: the remaining suite (`python -m pytest plugins/paper-trading/tests -q`, now
+  `test_allocation*.py`, `test_native_demo.py`, `test_sdk_bridge.py`, trimmed
+  `test_broker.py`) green; `build_native_demo.py --check` unchanged;
+  `cargo nextest -p calm-server real_spy_app_admits_planner_plan_and_worker_execution_request`
+  (the kernel test that boots the real App) green; a new process test that `initialize`
+  refuses a missing or unknown `profile`.
+- Acceptance: `git grep -n -E 'Portfolio\b|AccountConfig|StrategyConfig|paper\.(strategy|ingest|decide|status|refresh|pause|journal|review)\b|fixture_cli|paper_trading\.(engine|strategy|operator|research|reconcile|portfolio|report)\b|supervised' -- plugins/paper-trading .github`
+  matches nothing (this includes the "supervised CLI" wording in
+  `allocation_broker.py:1`).
+- Coverage note: the supervised isolated-host smoke (`smoke_host.py`) goes with the
+  profile; SPY process-level coverage stays in `test_allocation.py` (real `run`
+  subprocess through `Host`) and the kernel test above.
+- Mutation, Python: make `rpc.py` treat a missing `profile` as `spy_cash`. Red: the new
+  missing-profile refusal test only.
+
 **S1: contract, write validation, transition fence, frontend rendering** (calm-types,
 generated artifacts, `fe/core/domain`, `features/report/native`, the two `view.live` fence
 points). One slice because the generated TypeScript union changes with the DTO and the
@@ -495,14 +564,18 @@ golden).
 **S3: plugin data units, recipes, example** (`plugins/paper-trading`).
 
 - `allocation_views.py` emits the §3.2 units and deletes the SPY detail tables;
-  `spy-recipe.md` per §4; supervised profile per the Q2 answer (§3.3); regenerate the
-  example; update README; frontend example tests (§3.4).
+  `spy-recipe.md` per §4; regenerate the example; update README; frontend example tests
+  (§3.4); the kernel test that boots the real App
+  (`crates/calm-server/tests/cases/mcp_plugin_tools/caller_identity.rs:160-177`, today
+  waiting for `spy.overview` and validating it as a view) waits for `spy.decision_log` and
+  validates it with `validate_unit("records", …)`.
 - Tests: units validate against the generated `DataUnit` schema; the existing projection
   tests move to units; `test_spy_recipe_contract_matches_body_and_published_views`
   (`tests/test_allocation_views.py:224-240`) becomes set equality between recipe slot
   sources and published unit kinds in both directions, with each slot's `expects` equal
   to the published unit's kind; H1 order equals the contract and the last H1 is 执行记录;
-  `build_native_demo.py --check`; `smoke_host.py` (`:78-94`) exercises template views.
+  `build_native_demo.py --check`; `cargo nextest -p calm-server
+  real_spy_app_admits_planner_plan_and_worker_execution_request`.
 - Mutation, Python: drop `spy.account` from the published units. Red:
   `test_spy_recipe_contract_matches_body_and_published_views` and
   `test_example_is_the_production_output_of_the_scripted_run` only.
@@ -530,7 +603,7 @@ golden).
   and this document; an old `view.live` fence is rejected at each write-end family (block
   upsert, Replace, recipe, fork); surface budget re-measured.
 
-## 6. Risks and open questions
+## 6. Risks and owner decisions
 
 **Risks.**
 
@@ -543,16 +616,13 @@ golden).
   units are a few KB. No aggregate cap by design (§2.5).
 - SPY grows from four to eight overlay kinds per poll tick; the churn is #1995's.
 
-**Open questions, pending owner decision.**
+**Owner decisions (2026-10-04, final; no open questions).**
 
-1. Should the kernel refuse non-user edits to `view` blocks containing live slots
-   (template-owned blocks)? Recommendation: no guard, status-quo parity with every other
-   non-prose block; rely on recipe guidance and section-scoped writes.
-2. Keep or delete the supervised paper profile (`report_views.py`, `recipe.md`, the
-   `paper.*` views)? It is not used on 4140. §3.3 covers both answers.
-3. Should live `table` blocks later fold into live slots (one live-data mechanism, needs a
-   rewrite of `plugins/market` and `plugins/barra` Tracks on 4140), or stay a released
-   single-block form? Recommendation: keep.
+1. No kernel guard for template views: recipe guidance plus section-scoped writes,
+   status-quo parity with `view.live` (§2.7).
+2. The supervised paper profile is deleted (§3.3, S0).
+3. Live `table` and `chart.series` stay single-block live references; they are not folded
+   into live slots (§1 goal 2).
 
 ## 7. Revision log
 
@@ -570,3 +640,12 @@ Revision 2 (review round 1, nothing blocking):
   `DataUnit`, the DB-copy precondition scan and the rewrite runbook with the Planner
   wake, per-language mutation plans with red sets, the complete S4 removal list.
 - New pending owner question on the supervised profile; 执行记录 kept non-optional.
+
+Revision 3 (owner decisions):
+
+- Q1 and Q3 recorded as decided (no guard; keep live `table`/`chart.series`); the open
+  question list is empty.
+- Supervised profile deleted as its own first slice S0 (§3.3): delete list, keep-and-trim
+  list for helpers `spy_cash` still uses, manifest/config and deploy-order note, test and
+  CI sweep, acceptance grep, mutation plan. S3 now covers only `spy_cash` units and adds
+  the kernel real-App test (`caller_identity.rs`) to its sweep.
