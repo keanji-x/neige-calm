@@ -1,9 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
-import { Drawer } from '../../ui/drawer/public.tsx';
-import { createUiPreferences, UiPreferencesProvider, useDrawerReadingWidth, type UiPreferenceStorage } from './ui-preferences.tsx';
+import { createUiPreferences } from './ui-preferences.tsx';
 
 afterEach(cleanup);
 
@@ -63,26 +62,16 @@ describe('browser display preferences', () => {
     expect(throwing.previewViewport('t1', 'fe')).toBe('mobile');
   });
 
-  /* The production wiring: the drawer's toggle through `useDrawerReadingWidth` into the provider's store. */
-  describe('the drawer reading width', () => {
-    function DrawerWithWidth() {
-      return <Drawer open title="Chat" onClose={vi.fn()} readingWidth={useDrawerReadingWidth()}><p>body</p></Drawer>;
-    }
-    const mount = (storage: UiPreferenceStorage) => render(
-      <UiPreferencesProvider preferences={createUiPreferences(storage)}><DrawerWithWidth /></UiPreferencesProvider>,
-    );
-    const toggle = () => screen.getByRole('button', { name: /reading width|Restore width/ });
-
-    it('is off by default and remembered per browser across app instances', () => {
+  /* The shell applies it (`app/shell/drawer-width.browser.test.tsx`); this is what is remembered. */
+  describe('the conversation drawer width', () => {
+    it('is unset by default and remembered per browser across app instances', () => {
       const storage = memoryStorage();
-      mount(storage);
-      expect(toggle().getAttribute('aria-pressed')).toBe('false');
-      fireEvent.click(toggle());
-      expect(screen.getByRole('button', { name: 'Restore width' }).getAttribute('aria-pressed')).toBe('true');
-      cleanup();
-      mount(storage);
-      expect(screen.getByRole('button', { name: 'Restore width' }).getAttribute('aria-pressed')).toBe('true');
-      expect(createUiPreferences(storage).drawerExpanded()).toBe(true);
+      const first = createUiPreferences(storage);
+      expect(first.drawerWidth()).toBeNull();
+      first.setDrawerWidth(47.5);
+      expect(createUiPreferences(storage).drawerWidth()).toBe(47.5);
+      first.setDrawerWidth(null);
+      expect(createUiPreferences(storage).drawerWidth()).toBeNull();
     });
 
     /* The production scope is `[origin, userId, dbInstanceId]` and `dbInstanceId` changes on every kernel boot. */
@@ -92,27 +81,25 @@ describe('browser display preferences', () => {
       const first = createUiPreferences(storage);
       first.setRecoveryScope(scope('owner', 'boot-1'));
       first.setConversation('track', 'chat');
-      render(<UiPreferencesProvider preferences={first}><DrawerWithWidth /></UiPreferencesProvider>);
-      fireEvent.click(toggle());
-      expect(toggle().getAttribute('aria-pressed')).toBe('true');
-      cleanup();
+      first.setDrawerWidth(52);
 
       const restarted = createUiPreferences(storage);
       restarted.setRecoveryScope(scope('owner', 'boot-2'));
       expect(restarted.conversation('track')).toBeNull();
-      render(<UiPreferencesProvider preferences={restarted}><DrawerWithWidth /></UiPreferencesProvider>);
-      expect(screen.getByRole('button', { name: 'Restore width' }).getAttribute('aria-pressed')).toBe('true');
+      expect(restarted.drawerWidth()).toBe(52);
       first.setRecoveryScope(scope('another-user', 'boot-2'));
-      expect(first.drawerExpanded()).toBe(false);
+      expect(first.drawerWidth()).toBeNull();
     });
 
-    it('keeps the choice in memory, and keeps rendering, when browser storage throws', () => {
-      mount({ getItem() { throw new Error('denied'); }, setItem() { throw new Error('quota'); } });
-      expect(toggle().getAttribute('aria-pressed')).toBe('false');
-      fireEvent.click(toggle());
-      expect(screen.getByRole('button', { name: 'Restore width' }).getAttribute('aria-pressed')).toBe('true');
-      fireEvent.click(toggle());
-      expect(screen.getByRole('button', { name: 'Expand reading width' }).getAttribute('aria-pressed')).toBe('false');
+    it('keeps the width in memory when browser storage throws', () => {
+      const preferences = createUiPreferences({ getItem() { throw new Error('denied'); }, setItem() { throw new Error('quota'); } });
+      expect(preferences.drawerWidth()).toBeNull();
+      preferences.setDrawerWidth(30);
+      expect(preferences.drawerWidth()).toBe(30);
+    });
+
+    it.each(['true', '"wide"', '"-4"', '"0"', '"Infinity"', '42'])('reads %s as no width', (stored) => {
+      expect(createUiPreferences({ getItem: () => stored, setItem: () => {} }).drawerWidth()).toBeNull();
     });
   });
 

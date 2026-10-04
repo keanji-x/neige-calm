@@ -92,46 +92,42 @@ describe('Drawer', () => {
     }
   });
 
-  it('offers no width toggle unless the caller owns a reading width', () => {
+  it('offers no resize edge unless the caller owns the width', () => {
     open();
-    expect(screen.queryByRole('button', { name: 'Expand reading width' })).toBeNull();
-    expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-expanded')).toBe(false);
+    expect(screen.queryByRole('separator')).toBeNull();
+    expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-resizable')).toBe(false);
   });
 
-  it('toggles the reading width in place, before the close in the header’s tab order', () => {
-    const onExpandedChange = vi.fn();
-    const drawer = (expanded: boolean) => (
-      <Drawer open title="Chat" onClose={vi.fn()} readingWidth={{ expanded, onExpandedChange }}><p>body</p></Drawer>
-    );
-    const { rerender } = render(drawer(false));
-    const toggle = screen.getByRole('button', { name: 'Expand reading width' });
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
-    expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-expanded')).toBe(false);
+  it('puts the resize edge after the header in the tab order, and resets it from the keyboard or a double click', () => {
+    const resize = { onPreview: vi.fn(), onCommit: vi.fn() };
+    render(<Drawer open title="Chat" onClose={vi.fn()} resize={resize}><p>body</p></Drawer>);
+    const edge = screen.getByRole('separator', { name: 'Resize conversation' });
+    expect(edge.getAttribute('aria-orientation')).toBe('vertical');
+    expect(edge.tabIndex).toBe(0);
+    expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-resizable')).toBe(true);
     const close = screen.getByRole('button', { name: 'Close conversation' });
-    expect(toggle.compareDocumentPosition(close) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    toggle.focus();
-    fireEvent.click(toggle);
-    expect(onExpandedChange).toHaveBeenCalledWith(true);
+    expect(close.compareDocumentPosition(edge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    rerender(drawer(true));
-    expect(screen.getByRole('button', { name: 'Restore width' })).toBe(toggle);
-    expect(document.activeElement).toBe(toggle);
-    expect(toggle.getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-expanded')).toBe(true);
-    fireEvent.click(toggle);
-    expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+    fireEvent.keyDown(edge, { key: 'Home' });
+    expect(resize.onPreview).toHaveBeenLastCalledWith(null);
+    expect(resize.onCommit).toHaveBeenLastCalledWith(null);
+    fireEvent.keyDown(edge, { key: 'Tab' });
+    expect(resize.onCommit).toHaveBeenCalledOnce();
+    fireEvent.doubleClick(edge);
+    expect(resize.onCommit).toHaveBeenCalledTimes(2);
+    expect(resize.onCommit).toHaveBeenLastCalledWith(null);
   });
 
-  it('keeps a compact drawer at full width whatever the reading-width choice', () => {
+  it('keeps a compact drawer at full width with no resize edge', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({
       matches: true,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     })));
     try {
-      render(<Drawer open title="Chat" onClose={vi.fn()} readingWidth={{ expanded: true, onExpandedChange: vi.fn() }}><p>body</p></Drawer>);
-      expect(screen.queryByRole('button', { name: 'Restore width' })).toBeNull();
-      expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-expanded')).toBe(false);
+      render(<Drawer open title="Chat" onClose={vi.fn()} resize={{ onPreview: vi.fn(), onCommit: vi.fn() }}><p>body</p></Drawer>);
+      expect(screen.queryByRole('separator')).toBeNull();
+      expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-resizable')).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }

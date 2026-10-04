@@ -1,7 +1,6 @@
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
 import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
-import { IconButton } from '@astryxdesign/core/IconButton';
 
 import { Icon } from '../icon/public.tsx';
 import { MobileHeader } from '../mobile-header/public.tsx';
@@ -71,10 +70,15 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-/** The desktop reading-width choice. The caller owns and remembers it; `app/shell` widens the span off `data-nc-drawer-expanded`. */
-export type DrawerReadingWidth = Readonly<{ expanded: boolean; onExpandedChange: (expanded: boolean) => void }>;
+/** Where the dragged edge went, in rem; `null` is the default width. The caller owns, applies and remembers it: `onPreview` once a frame while the edge moves, `onCommit` when it settles. The drawer stamps `data-nc-drawer-resizable` so the caller's stylesheet can apply the width only while this drawer is open. */
+export type DrawerResize = Readonly<{ onPreview: (rem: number | null) => void; onCommit: (rem: number | null) => void }>;
 
-export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, readingWidth }: {
+/** One arrow press moves the edge this far. */
+const KEY_STEP_REM = 1;
+
+const remPx = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+
+export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, resize }: {
   open: boolean;
   /** The drawer's accessible name, painted once: in the desktop header row, or in the shared compact Header. */
   title: string;
@@ -86,26 +90,74 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   children: ReactNode;
   /** Pinned below the scrolling body; a slot rather than the last child because the body scrolls and this must not. */
   footer?: ReactNode;
-  /** Absent: no width toggle. Compact viewports are already full width, so they never show it or apply it. */
-  readingWidth?: DrawerReadingWidth;
+  /** Absent: no resize handle and the default width. Compact viewports are already full width, so they never show it. */
+  resize?: DrawerResize;
 }) {
   const compact = useCompactViewport();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  /* Taken as the reader presses the width toggle, put back once the new width is laid out: the browser's scroll anchoring stands down when an ancestor's width changes, so a reflowed transcript would otherwise move under the reader. */
-  const readingPlace = useRef<ReadingPlace | null>(null);
-  const expanded = !compact && readingWidth?.expanded === true;
+  const handleRef = useRef<HTMLDivElement | null>(null);
+  /* `pending` is the width the next frame applies; `moved` keeps a press without a drag from pinning the default to a number. */
+  const drag = useRef<{
+    pointerId: number; startX: number; startPx: number; place: ReadingPlace | null; frame: number; pending: number | null; moved: boolean;
+  } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const width = compact ? undefined : resize;
+  /* The card's share of its containing block, for the separator's value. Measured, not derived: the span's clamp belongs to the caller's stylesheet. */
+  const [widthPercent, setWidthPercent] = useState<number | null>(null);
   useLayoutEffect(() => {
-    const place = readingPlace.current;
+    const panel = panelRef.current;
+    if (width === undefined || panel === null) return;
+    const measure = () => {
+      const region = panel.offsetParent?.clientWidth ?? 0;
+      setWidthPercent(region > 0 ? Math.round(panel.getBoundingClientRect().width / region * 100) : null);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => { observer.disconnect(); };
+  }, [width, open]);
+
+  /* The browser's scroll anchoring stands down when an ancestor's width changes, so a reflowed transcript would otherwise move under the reader: the place is taken before the width moves and put back after, synchronously, since reading a rect lays the new width out. */
+  const keepingReadingPlace = (place: ReadingPlace | null, change: () => void) => {
+    change();
     const pane = scrollRef.current;
-    readingPlace.current = null;
     if (place === null || pane === null) return;
     if (place.atEnd) pane.scrollTop = pane.scrollHeight;
     else if (place.mark !== null && markConnected(place.mark)) {
       pane.scrollTop += place.mark.getBoundingClientRect().top - pane.getBoundingClientRect().top - place.top;
     }
-  }, [expanded]);
+  };
+  const placeNow = () => (scrollRef.current === null ? null : readingPlaceIn(scrollRef.current));
+  /* The rendered width after the caller's clamp, so what is remembered is what is on screen. */
+  const renderedRem = () => (panelRef.current?.getBoundingClientRect().width ?? 0) / remPx();
+  const settle = (rem: number | null) => {
+    if (width === undefined) return;
+    keepingReadingPlace(placeNow(), () => { width.onPreview(rem); });
+    width.onCommit(rem === null ? null : renderedRem());
+  };
+  const applyPending = () => {
+    const current = drag.current;
+    if (current === null || current.pending === null || width === undefined) return;
+    const rem = current.pending;
+    current.pending = null;
+    current.moved = true;
+    keepingReadingPlace(current.place, () => { width.onPreview(rem); });
+  };
+  const endDrag = () => {
+    const current = drag.current;
+    if (current === null) return;
+    cancelAnimationFrame(current.frame);
+    applyPending();
+    drag.current = null;
+    setDragging(false);
+    if (handleRef.current?.hasPointerCapture(current.pointerId)) handleRef.current.releasePointerCapture(current.pointerId);
+    if (current.moved) width?.onCommit(renderedRem());
+  };
+  /* A drawer that unmounts mid-drag owes no more frames. */
+  useEffect(() => () => { if (drag.current !== null) cancelAnimationFrame(drag.current.frame); }, []);
   const [closing, setClosing] = useState(false);
   const wasOpen = useRef(open);
   const shouldRestoreFocus = useRef(false);
@@ -176,7 +228,6 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
 
   /* Compact pages and reduced motion skip the exit animation, so closing never waits for one the stylesheet does not play. */
   if (!open && !closing) return null;
-  const width = compact ? undefined : readingWidth;
   /* `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by; a CSS Module class cannot be named across modules. It stays on during the closing animation. */
   return (
     <>
@@ -186,7 +237,8 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       role="complementary"
       data-nc-drawer=""
       data-nc-escape-layer={open ? '' : undefined}
-      data-nc-drawer-expanded={expanded ? '' : undefined}
+      data-nc-drawer-resizable={width !== undefined ? '' : undefined}
+      data-nc-drawer-resizing={dragging ? '' : undefined}
       /* Labelled once: by the painted desktop title, or, compact, by the name the shared Header also paints. */
       {...(compact ? { 'aria-label': frame.title } : { 'aria-labelledby': titleId })}
       tabIndex={-1}
@@ -204,25 +256,10 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       ) : (
         <header className={styles.header}>
           <h2 id={titleId} className={styles.title} title={frame.title}>{frame.title}</h2>
-          {/* The same element in both states, so pressing it keeps focus. */}
-          {width !== undefined && (
-            <IconButton
-              className={styles.control}
-              label={expanded ? 'Restore width' : 'Expand reading width'}
-              aria-pressed={expanded}
-              variant="ghost"
-              size="sm"
-              icon={<Icon name={expanded ? 'restore-width' : 'expand-width'} />}
-              onClick={() => {
-                if (scrollRef.current !== null) readingPlace.current = readingPlaceIn(scrollRef.current);
-                width.onExpandedChange(!expanded);
-              }}
-            />
-          )}
           <button
             type="button"
             data-nc-role="icon"
-            className={`${styles.control} ${styles.close}`}
+            className={styles.close}
             aria-label={closeLabel}
             title="Close"
             onClick={onClose}
@@ -238,6 +275,55 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
         </div>
       </div>
       {frame.footer}
+      {/* Last in the card so the first Tab off the container still lands on the header. The edge is the card's leading side; it widens toward the page. */}
+      {width !== undefined && (
+        /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- a focusable separator is ARIA's window splitter, an operable widget; the plugin classes every separator as static. */
+        <div
+          ref={handleRef}
+          className={styles.handle}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize conversation"
+          aria-valuenow={widthPercent ?? undefined}
+          /* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- as above: the splitter takes focus so arrows and Home can move it. */
+          tabIndex={0}
+          title="Drag to resize · double-click to reset"
+          /* No focus and no text selection from a press: the drag must leave the caret where the reader left it. */
+          onMouseDown={(event) => { event.preventDefault(); }}
+          onPointerDown={(event) => {
+            if (event.button !== 0 || drag.current !== null) return;
+            event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            drag.current = {
+              pointerId: event.pointerId,
+              startX: event.clientX,
+              startPx: panelRef.current?.getBoundingClientRect().width ?? 0,
+              place: placeNow(),
+              frame: 0,
+              pending: null,
+              moved: false,
+            };
+            setDragging(true);
+          }}
+          onPointerMove={(event) => {
+            const current = drag.current;
+            if (current === null || event.pointerId !== current.pointerId) return;
+            const pending = current.pending;
+            current.pending = (current.startPx + current.startX - event.clientX) / remPx();
+            if (pending === null) current.frame = requestAnimationFrame(applyPending);
+          }}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onLostPointerCapture={endDrag}
+          onDoubleClick={() => { settle(null); }}
+          onKeyDown={(event) => {
+            const step = event.key === 'ArrowLeft' ? KEY_STEP_REM : event.key === 'ArrowRight' ? -KEY_STEP_REM : null;
+            if (step === null && event.key !== 'Home') return;
+            event.preventDefault();
+            settle(step === null ? null : renderedRem() + step);
+          }}
+        />
+      )}
     </div>
     {/* The seam is after the card in source order deliberately and is not marked `data-nc-drawer`: one drawer must present one marker for `app/shell`'s `:has()` rule. */}
     <div

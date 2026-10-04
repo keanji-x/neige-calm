@@ -10,7 +10,6 @@ import type { ReportSourceLinkTarget, SourceResolution } from '../../../../core/
 import { ReportSourcePanel, reportSourcePanelTitle, SOURCE_PANEL_COPY } from '../../features/report/source/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { ApiError, trackSourceQueryOptions, type SourceRead } from '../providers/queries.ts';
-import { useDrawerReadingWidth } from '../providers/ui-preferences.tsx';
 
 /** Data wins while it exists; a `missing` read is data, so a dangling citation is never an error here. */
 export function sourceResolutionOf(result: Pick<UseQueryResult<SourceRead>, 'data' | 'isError' | 'error'>): SourceResolution {
@@ -40,7 +39,6 @@ export function ReportSourceDrawer({ transport, trackId, target, unauthorized, o
     enabled: sourceId !== null,
   });
   const resolution = sourceResolutionOf(query);
-  const readingWidth = useDrawerReadingWidth();
   return (
     <Drawer
       open={target !== null}
@@ -48,7 +46,6 @@ export function ReportSourceDrawer({ transport, trackId, target, unauthorized, o
       mobileBackLabel="Report"
       closeLabel={SOURCE_PANEL_COPY.closeLabel}
       onClose={onClose}
-      readingWidth={readingWidth}
     >
       {target !== null && (
         <ReportSourcePanel target={target} resolution={resolution} onRetry={() => { void query.refetch(); }} />

@@ -1823,7 +1823,8 @@ describe('track conversations', () => {
     fireEvent.click(disclosure);
     expect(screen.getAllByText(reason, { exact: true })).toHaveLength(1);
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByRole('separator')).toBeTruthy();
+    /* The notice's own rule, not the drawer's resize edge. */
+    expect(screen.getAllByRole('separator').filter((separator) => separator.getAttribute('aria-label') !== 'Resize conversation')).toHaveLength(1);
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
     fireEvent.keyDown(messageField(), { key: 'Enter' });

@@ -217,7 +217,7 @@
    * ── The header row ─────────────────────────────────────────────────────────
    *
    * **A quiet row, not a band.** Desktop paints the conversation's name on the
-   * left and the reading-width toggle and Close on the right, on one row as
+   * left and Close on the right, on one row as
    * tall as the controls (`--control-h`). It shares the card's ground (no new
    * fill) and is set off by one full-width hairline below it — the design
    * system's "internal structure takes the separators it needs". The scroller
@@ -227,7 +227,7 @@
    *
    * The title is one line at the interface rank and ellipsizes; the full name
    * stays reachable through its `title`. It takes the free space, so the
-   * fixed 28px controls never move it.
+   * fixed 28px close never moves it.
    *
    * **Why the close is a chevron and may never be an X.** The page header's
    * *delete track* sits in the same column a pointer-flick above; two
@@ -237,8 +237,8 @@
    * end it. X stays reserved for destruction. Anything added to this row
    * inherits that obligation.
    *
-   * The controls are `--space-6` apart, the gap §4.3 asks of two adjacent
-   * controls, and keep the full 28px hit area (§5, 2.5.8).
+   * Controls keep `--space-6` from the title, the gap §4.3 asks of
+   * adjacent controls, and the full 28px hit area (§5, 2.5.8).
    */
   .header {
     display: flex;
@@ -262,14 +262,9 @@
     white-space: nowrap;
   }
 
-  /* Both controls: Astryx's ghost `IconButton` at `sm` and the close are the
-     same 28px box with the same resting ink. */
-  .control {
+  .close {
     flex: none;
     color: var(--text-3);
-  }
-
-  .close {
     display: grid;
     place-items: center;
     inline-size: var(--control-h);
@@ -283,6 +278,51 @@
   .close:focus-visible {
     background: var(--overlay-hover-strong);
     color: var(--text);
+  }
+
+  /*
+   * ── The resize edge ────────────────────────────────────────────────────────
+   *
+   * An 8px strip down the card's leading side, over the content (the body's
+   * own inset is the same 8px, so it covers padding, not text). It paints
+   * nothing at rest — the shadow is already the edge — and draws one 2px line
+   * on hover, focus or drag, `--hairline-strong` for a pointer and `--accent`
+   * for the keyboard and a drag in progress, so the reader sees which edge
+   * moves before pressing. `touch-action: none` keeps a pen drag from
+   * scrolling the page. The drag holds pointer capture, so a fast pointer
+   * that outruns the strip keeps this cursor, and the press is cancelled, so
+   * it never starts a text selection.
+   */
+  .handle {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: 0;
+    z-index: 1;
+    inline-size: var(--nc-card-inset, var(--space-4));
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .handle::after {
+    position: absolute;
+    inset-block: var(--nc-card-radius, var(--radius-lg));
+    inset-inline-start: 0;
+    inline-size: 2px;
+    border-radius: 1px;
+    content: "";
+  }
+
+  .handle:hover::after {
+    background: var(--hairline-strong);
+  }
+
+  .handle:focus-visible {
+    outline: none;
+  }
+
+  .handle:focus-visible::after,
+  .drawer[data-nc-drawer-resizing] .handle::after {
+    background: var(--accent);
   }
 
   .scroll {

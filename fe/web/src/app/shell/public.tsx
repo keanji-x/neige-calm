@@ -28,6 +28,8 @@ import { MobileWorkspaceHeader } from './mobile-header.tsx';
 import { MobileTracks } from './mobile-tracks.tsx';
 import { MobilePages } from './mobile-pages.tsx';
 import { SettingsOverlay, settingsSectionForPath } from './settings-overlay.tsx';
+import { useDrawerWidthHost } from './drawer-width.tsx';
+import type { DrawerResize } from '../../ui/drawer/public.tsx';
 import { Sidebar } from './sidebar.tsx';
 import styles from './shell.module.css';
 
@@ -59,6 +61,11 @@ type MobileTrackChoices = Readonly<{ tracks: readonly Track[]; loading: boolean;
 type ReadMobileTrackChoices = (areaId: string) => MobileTrackChoices;
 const MobileTrackChoicesContext = createContext<ReadMobileTrackChoices | null>(null);
 export function useMobileTrackChoices(): ReadMobileTrackChoices | null { return useContext(MobileTrackChoicesContext); }
+
+const DrawerResizeContext = createContext<DrawerResize | undefined>(undefined);
+export const DrawerResizeProvider = DrawerResizeContext.Provider;
+/** The resize contract for the route's conversation drawer (`./drawer-width.tsx`); `undefined` outside the shell, which means no handle. */
+export function useConversationDrawerResize(): DrawerResize | undefined { return useContext(DrawerResizeContext); }
 
 const MobileHeaderTitleContext = createContext<HTMLElement | null>(null);
 export function useMobileHeaderTitleHost(): HTMLElement | null {
@@ -119,6 +126,7 @@ export function AppShell({
    * choice and wins at every width. */
   const preferences = useUiPreferences();
   const manualRailCollapsed = preferences.railCollapsed();
+  const drawerWidth = useDrawerWidthHost(preferences);
   const narrowRail = useCompactViewport();
   const [mobileSection, setMobileSection] = useState<MobileSection | null>(null);
   const mobileNavOpen = mobileSection !== null;
@@ -392,7 +400,7 @@ export function AppShell({
 
         </div>
       </div>
-      <main className={styles.main} inert={narrowRail && mobileNavOpen} aria-hidden={narrowRail && mobileNavOpen ? true : undefined}>
+      <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={narrowRail && mobileNavOpen} aria-hidden={narrowRail && mobileNavOpen ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage} hidden={narrowRail && settingsOpen}>
@@ -404,7 +412,7 @@ export function AppShell({
                   loading: workspace.areasLoading || workspace.tracksLoadingByArea.get(areaId) === true,
                   error: workspace.areasError?.message ?? workspace.trackErrorsByArea.get(areaId)?.message ?? null,
                   onRetry: retryRead,
-                })}><Outlet /></MobileTrackChoicesContext.Provider>
+                })}><DrawerResizeProvider value={drawerWidth.resize}><Outlet /></DrawerResizeProvider></MobileTrackChoicesContext.Provider>
               </MobileHeaderTitleContext.Provider>
             </MobileHeaderActionsContext.Provider>
           </MobileSectionContext.Provider>

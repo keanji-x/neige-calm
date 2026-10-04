@@ -109,9 +109,9 @@ import {
   RecipesPage, type RecipeDraft, type RecipeWriteOutcome,
 } from '../../features/report/recipe/public.tsx';
 import { useTheme } from '../theme/public.tsx';
-import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, useDrawerReadingWidth, useUiPreferences, useReadReceipt, type UiPreferences } from '../providers/ui-preferences.tsx';
+import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, useUiPreferences, useReadReceipt, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { TrackSelector } from '../shell/track-selector.tsx';
-import { AppShell, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost, useMobileTrackChoices } from '../shell/public.tsx';
+import { AppShell, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost, useMobileTrackChoices } from '../shell/public.tsx';
 import {
   ConversationProvider, useConversationRegistry,
   type ConversationDraft, type ConversationDraftId, type FailedConversationSend,
@@ -996,7 +996,7 @@ function useConversationPanel(
   /* While an Edit is held (editing, replacing, or its replaced turn not yet read away) nothing else acts on the conversation. */
   const respondable = canContinue && edit.held === null;
   const preferences = useUiPreferences();
-  const readingWidth = useDrawerReadingWidth();
+  const drawerResize = useConversationDrawerResize();
   // Receipts compare the row's completion time, not `updatedAt`, which also moves
   // when the reader queues a message. `null` is never unread.
   const openActivity = rows.find(row => row.id === open?.id);
@@ -1370,7 +1370,7 @@ function useConversationPanel(
         title={open !== null ? conversationName(open) : draftOpen ? 'Untitled' : ''}
         mobileBackLabel="Conversations"
         onClose={closeDrawer}
-        readingWidth={readingWidth}
+        resize={drawerResize}
         footer={draftOpen ? (
           <>
             {/* The strip is welded to the well's top edge, so it renders before the composer. */}
