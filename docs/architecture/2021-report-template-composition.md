@@ -1,7 +1,7 @@
 # Report template composition: the template places, the plugin publishes data units
 
 Baseline: `origin/main` 54b79918c. Every `file:line` below was read on that tree.
-Status: design, revision 5 (review rounds 1-3 and owner decisions folded in, §7). No code
+Status: design, revision 6 (review rounds 1-3 and owner decisions folded in, §7). No code
 changes in this PR. Owner decisions (2026-10-04, final): no kernel guard for template
 views; live `table` and `chart.series` stay single-block references; the supervised
 paper profile is deleted (slice S0). No owner question remains open.
@@ -138,7 +138,15 @@ Published per overlay kind on the Track through the unchanged `neige.overlay.set
   (`^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`, the pattern `view.live` already
   publishes at `track_report_blocks/contracts.rs:455`), which the frontend generator
   compiles (`fe/tools/report-view/generate.mjs:70`). The pattern is a copy of the Rust
-  rule; the shared fixture's `slot-bad-source` entry pins that both sides agree.
+  rule; the shared fixture's `slot-bad-source` entry pins that both sides agree. Copies
+  today: three literals in `track_report_blocks/contracts.rs` (`:100,191,455`) and
+  `LIVE_TABLE_SOURCE_PATTERN` in `fe/core/domain/report.ts:45`, which also serves live
+  tables and `chart.series` (`:49,56,68`). S1 subtracts on the Rust side: one
+  `LIVE_SOURCE_PATTERN` const beside `validate_live_source`, used by the three
+  `contracts.rs` schemas, and a calm-types test that the exported `LiveSlot.source`
+  pattern equals it. On the frontend `LIVE_TABLE_SOURCE_PATTERN` stays, because it owns
+  live table and `chart.series` decoding, which the native-view generator does not; S1
+  adds one assertion that it equals the generated `LiveSlot.source` pattern.
 - No title: the cell's title is the unit's (publisher label). The template owns row
   titles, the view title and description, and the surrounding Markdown headings.
 - A unit whose `cell.kind` differs from `expects` is `unavailable` in that slot, so a
@@ -152,7 +160,7 @@ snapshot rule. The existing 256 KiB canonical cap applies to the template
 (`kinds.rs:30,96-107`). It runs at every write end that already calls `validate_payload`:
 block upsert, Replace, write_markdown, section replace, recipe create/update, track create
 and fork (`track_report.rs:648,684`, `track_report/sections.rs:113`,
-`routes/track_recipes.rs:95-108`, `routes/tracks.rs:599,614,1832`). Overlay writes stay
+`routes/track_recipes.rs:95-108`, `routes/tracks.rs:599,1786,1832`). Overlay writes stay
 opaque (`callbacks.rs:210-213`, `calm-truth/src/validation.rs:489-491`).
 
 **Read time (each live slot independently, in row and cell order).**
@@ -280,7 +288,9 @@ SELECT id, title FROM track_recipes WHERE body LIKE '%view.live%';
 
 Result on the current 4140 copy: three Tracks, each with one `view.live` and three live
 tables (`spy.portfolio`, `spy.decisions`, `spy.fills`): the live SPY Track
-`7c0dd087ed9c4f7895ce4c6bb574c327` and the closed Tracks `2800396680…` and `1144b00f…`.
+`7c0dd087ed9c4f7895ce4c6bb574c327` and the closed Tracks `2800396680…` and `1144b00f…`;
+and one recipe, `d2a8d568…` "SPY 与现金 · 每日例程" (the `spy-recipe.md` body: one
+`view.live` and three live tables).
 Run it again immediately before deploying S4; S4 deploys only on two empty results.
 
 **Disposition.**
@@ -304,7 +314,10 @@ the S4 PR. The H1 更多明细 (`spy-recipe.md:57`) becomes 执行记录.
 
 1. Timing: outside the SPY Calendar windows (New York time Mon-Fri 08:45-11:00 and
    16:30-17:30, Sat 10:00-11:00, `spy-recipe.md:6-9`), with the Planner idle and no
-   decision in flight. The operator cannot call `spy.status`: it refuses callers that
+   decision about to be submitted: only `submitting` flips on restart
+   (`ledger.py:50-53`), and `queued` and `requested` are the states that lead into it
+   (`working` is already acknowledged by the broker and survives a restart). The operator
+   cannot call `spy.status`: it refuses callers that
    are not a Planner or Worker (`allocation.py:51-54`, pinned by `test_allocation.py:328`).
    Instead, a read-only query on the ledger:
 
@@ -329,11 +342,16 @@ the S4 PR. The H1 更多明细 (`spy-recipe.md:57`) becomes 执行记录.
 5. Failure handling: a failed step 3 changed nothing; re-read and start again at step 2.
    A failed step 4 delete leaves a valid report with the new instructions; re-read the
    revisions and retry only the remaining deletes.
-6. Recipe rows from the scan: `PUT /api/track-recipes/{id}` with the new body (user actor
-   only, `track_recipes.rs:121-127`).
+6. Recipe rows from the scan: `PUT /api/track-recipes/{id}` (user actor only,
+   `track_recipes.rs:121-127`). For `d2a8d568…` the body is the §4 `spy-recipe.md`, which
+   recipe ingress normalizes (`track_recipes.rs:33-77,199-200,230-231`). The kernel accepts
+   it only from S1 on (live slots), and it matches published units only after S3, so the
+   PUT runs in this S4 runbook.
 7. Retired overlay rows (`spy.overview`, `spy.portfolio`, `spy.decisions`, `spy.fills`, on
    every Track the scan names) deleted with `POST /api/overlays/delete`
-   (`routes/overlays.rs:151-195`); rows are never collected otherwise
+   (`routes/overlays.rs:151-195`). Short of uninstalling the plugin
+   (`overlays_clear_by_plugin`, `db/mod.rs:776`, called at `plugin_host/lifecycle.rs:218`),
+   nothing else removes them; entity deletes sweep by entity
    (`calm-truth/src/db/sqlite/overlay.rs:55-68`).
 
 **The Planner wake this causes.** User edits wake the Planner
@@ -441,9 +459,13 @@ supervised ledger file stops S0 for an owner decision.
   argument. Kept and re-driven: environment allowlist (`:234`), timeout and reap
   (`:321-338`), combined output bound (`:340-351`), the exact-limit case with a JSON
   object of exactly `MAX_OUTPUT_BYTES` (1 MiB) bytes (`:354-356`), launch failure
-  (`:359-363`), Decimal token preservation (`:96-100`), the duplicate-key, NaN and
-  invalid-UTF-8 non-leak cases (`:303-319`) and invalid configuration (`:366-374`, now
-  on the `AllocationBroker` constructor). The CLI-only tests go.
+  (`:359-363`), Decimal token preservation (`:96-100`), all five non-leak cases
+  (`:303-319`: non-zero exit with secret stdout and stderr, not-JSON, invalid UTF-8, NaN,
+  duplicate key; the exit path is `broker.py:149-150`), now also asserting that the argv
+  secrets `account_no` and `oauth_client_id` (`allocation_broker.py:21`) appear in no
+  error, and invalid configuration (`:366-374`, now on the `AllocationBroker`
+  constructor). The helpers they rely on move with the runner: `_argument` (`:47`),
+  `_json_object` (`:82`), `_invalid_constant` (`:91`). The CLI-only tests go.
 - `ledger.py`: deletes `Ledger.reviews` (`:100-112`). The schema stays byte-for-byte: the
   live 4140 SPY ledger created those tables, and dropping unused `CREATE TABLE IF NOT
   EXISTS` lines buys nothing at a persistence boundary.
@@ -503,7 +525,8 @@ Consumers to update in S3: `tests/test_native_demo.py:20-49`;
 render `views` through `NativeReportView` with a resolver that calls the production
 `trackOverlayPayload` over overlay wires built from `overlays`, not a test copy of the
 lookup. The shared fixture `test-data/native-view-v1.json` (`native_view_tests.rs:134-139`)
-gains live-slot views plus valid and invalid units in S1.
+gains live-slot view entries in S1 and, by intent, no unit entries: unit validation
+parity is pinned by per-language unit and resolver tests (§5 S1).
 
 ## 4. Proposed `spy-recipe.md` report body
 
@@ -596,7 +619,14 @@ normalization re-renders fences canonically, `track_recipes.rs:33-77`):
 Each slice is independently reviewable and green and is deployed in order. Every slice
 runs `scripts/local-ratchet-gates.sh`; Rust runs use the targeted `cargo nextest -p <pkg>`
 form from AGENTS.md. Mutation plans name one single-factor production mutation and the
-complete predicted red set, per language. S1, S2 and S4 change Rust and frontend text, so
+complete predicted red set, per language.
+
+**Planning baselines, not authority.** Per-slice cites, red sets and test names in this
+document are planning baselines read at 54b79918c. Each slice re-derives them against
+its own base and proves them with its own mutation run and two-channel review; the
+document is not the authority for line numbers.
+
+S1, S2 and S4 change Rust and frontend text, so
 `scripts/gate-prose-ratchet.baseline.tsv` and `scripts/gate-1316-terminology-ratchet.baseline.tsv`
 may need `--update-baseline` as generated artifacts of those slices.
 
@@ -604,8 +634,9 @@ may need `--update-baseline` as generated artifacts of those slices.
 decision is `submitting` turns it into `unknown` (`ledger.py:50-53`). Every deploy that
 restarts the plugin, directly or through the kernel, runs under the §3.1 step-1
 conditions: outside the SPY Calendar windows, and the read-only ledger query of §3.1
-step 1 returns no `queued`, `requested` or `submitting` decision (the operator cannot
-use `spy.status`, which refuses non-agent callers). If a restart still lands mid-submission,
+step 1 returns no `queued`, `requested` or `submitting` decision. Only `submitting` flips
+on restart; the other two lead into it. (The operator cannot use `spy.status`, which
+refuses non-agent callers.) If a restart still lands mid-submission,
 the outcome is fail-closed: the decision becomes `unknown`, is reconciled against broker
 records and is never resubmitted (`allocation.py:213-215`, `allocation_reconcile.py:52-60`).
 
@@ -640,7 +671,10 @@ renderer's exhaustive switch (`native/public.tsx:14-29`) must handle it in the s
 - Rust: `DataUnit`, `LiveSlot`, `RowCell` with its dispatching deserializer,
   `ComponentKind` with the exhaustive `Component::kind`, nullable view snapshot with its
   rule, shared `validate_snapshot`, `validate_unit(expects, payload)` capped by the
-  existing `MAX_LIVE_VIEW_BYTES`; `generated_schema()` exports `DataUnit`.
+  existing `MAX_LIVE_VIEW_BYTES`; `generated_schema()` exports `DataUnit`;
+  `LIVE_SOURCE_PATTERN` (§2.4). The `view` kind's discovery schema
+  (`contracts.rs:463-464`) then also carries the `DataUnit` definitions, which the Planner
+  never authors; that is harmless (they are unreferenced from the root).
 - Generated artifacts via the real generator: `native_view.schema.json`,
   `fe/core/domain/report-view.generated.ts` and `report-view.types.generated.ts`.
   `fe/tools/report-view/generate.mjs` exports only the root `NativeView` today
@@ -720,15 +754,19 @@ golden).
   `build_native_demo.py --check`; `cargo nextest -p calm-server
   real_spy_app_admits_planner_plan_and_worker_execution_request`.
   `test_spy_production_stdio_entrypoint_and_overlays` (`test_allocation.py:312`) waits
-  today for the old kinds (`:339-340`); it waits for all eight unit kinds.
+  today for the old kinds with no deadline (`:344`): `Host.receive` times out only after
+  15 s of silence, and the runtime republishes every kind on each 5 s tick
+  (`runtime.py:20-28`, `poll_seconds` 5 at `test_allocation.py:27`). S3 makes it wait for
+  all eight unit kinds under a monotonic deadline, the `wait_for` pattern of the same file
+  (`:302-309`).
   `test_example_is_the_production_overview_of_the_scripted_run`
   (`tests/test_native_demo.py:20`) is renamed
   `test_example_is_the_production_output_of_the_scripted_run`.
 - Mutation, Python: drop `spy.account` from the published units. Red:
   `test_spy_recipe_contract_matches_body_and_published_views`,
   `test_example_is_the_production_output_of_the_scripted_run`,
-  `test_spy_production_stdio_entrypoint_and_overlays` (its wait for all eight kinds times
-  out in `Host.receive`, `tests/test_process.py:48-49`), and the two tests whose
+  `test_spy_production_stdio_entrypoint_and_overlays` (an `AssertionError` at its
+  deadline; without the S3 deadline it would hang, not fail), and the two tests whose
   description assertions move to `tables(state)['spy.account']`: the reconciliation-error
   check of `test_overview_is_valid_before_reconciliation_and_after_errors`
   (`test_allocation_views.py:218`) and `test_snapshot_identity_covers_the_description`
@@ -740,7 +778,7 @@ golden).
   is deployed; production restarts follow the machine runbook.
 - Rename `MAX_LIVE_VIEW_BYTES` to `MAX_LIVE_UNIT_BYTES` (`kinds.rs:31-32`) and its users.
 - Remove: `KIND_LIVE_VIEW`, its `DATA_KINDS` entry, dispatch and `validate_live_view`
-  (`kinds.rs:13,32,42,83,510-524`) and its re-exports (`report_blocks/mod.rs:23-25`);
+  (`kinds.rs:13,42,83,510-524`) and its re-exports (`report_blocks/mod.rs:23-25`);
   `kinds_tests.rs` cases (`:58-76,345`); `live_view_kind` (`contracts.rs:447-461`) and
   `prompts/report-kinds/view.live.md`; the `view.live` wording in
   `prompts/tools/calm.report.blocks.kinds.md` and `calm.report.read.md`;
@@ -853,3 +891,21 @@ Revision 5 (review round 3; nothing blocking):
   parametrized and never wrong-kind, single-slot pending and cap tests, one lookup).
 - Cites: `rpc.py` imports, CI step `:38`, README verification paragraph kept, the exact
   observation text, the source-rule copy, the 4040 symlink note.
+
+Revision 6 (review round 3 follow-up; one blocking item):
+
+- Blocking: the S3 stdio overlay wait gets a monotonic deadline, so the drop-`spy.account`
+  mutation fails with an `AssertionError` instead of hanging (`test_allocation.py:344`).
+- Planning-baseline statement added to §5: line cites, red sets and test names are
+  re-derived per slice.
+- Fixture contradiction removed (no unit entries, by intent); recipe `d2a8d568…` recorded
+  and its PUT body named; all five non-leak cases plus argv-secret assertions and the
+  moving helpers named; Host cite no longer points at a deleted file; source-pattern
+  copies: one Rust const plus one equality assertion in each language.
+- Nits: `MAX_LIVE_VIEW_BYTES` renamed, not removed; fork prose-fence cite `:1786`;
+  overlay collection statement narrowed; restart guard wording; harmless `DataUnit` defs
+  in the `view` discovery schema.
+- Considered and rejected: deleting the closed Tracks' `view.live` blocks after the S4
+  deploy. After S4 a stored `view.live` is an unknown kind, so reading or deleting it could
+  fail, and the S4 gate must stay "zero hits anywhere". The rev-5 plan (delete before S4)
+  stands.
