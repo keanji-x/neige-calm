@@ -921,3 +921,6 @@ async fn update_with_a_header_off_line_1_is_a_400_that_writes_nothing() {
         "the refused PUT wrote nothing"
     );
 }
+
+#[path = "track_recipes/shipped_spy.rs"]
+mod shipped_spy;

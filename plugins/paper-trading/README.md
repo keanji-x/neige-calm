@@ -4,7 +4,7 @@ One dedicated Longbridge paper account, one owning Track and one SPY/cash
 target allocation. The Planner researches and persists a target, an ordinary
 Worker task requests its execution, and the App's background loop sizes,
 submits and reconciles official-SDK paper orders and renders native Report
-views. AI research runs in the existing Neige agent, not inside another model
+data units. AI research runs in the existing Neige agent, not inside another model
 client. The required `spy_cash` profile is the explicit opt-in to automatic
 paper execution without per-order confirmation; its setup and boundaries are
 documented below.
@@ -16,23 +16,23 @@ python3 -m pip install 'pytest>=8,<10' 'jsonschema>=4.18,<5'
 python3 -m pytest plugins/paper-trading/tests -q
 ```
 
-`jsonschema` validates the published views against the crate-owned native view
-schema; it is a test-only dependency. Tests run the production App, its stdio
+`jsonschema` validates the published data units and the recipe's template views
+against the crate-owned native view schema; it is a test-only dependency. Tests run the production App, its stdio
 entry point and its SDK subprocess runner against deterministic fixture
 executables that only return prescribed broker records. No real credentials or
 broker orders are needed.
 
-`examples/native-demo.json` and its `neige-block view` copy
-`examples/native-demo.md` are the real `spy.overview` projection of example
-data. `examples/build_native_demo.py` drives the production `Allocation` with a
-fixed clock and a scripted, simulated paper account. The account supplies about
-three months of New York trading-day SPY quotes, cash, shares, orders and
-executions. Planner targets and Worker requests enter through `Allocation.call`,
-and the background pass, sizing, reconciliation and valuation are production
-code. The builder replaces only the view's top-level description, which marks
-the data as an example and not a real account. Regenerate the files with
-`python3 plugins/paper-trading/examples/build_native_demo.py`. The `--check` flag
-verifies that the committed files are byte-identical to a fresh run.
+`examples/native-demo.json` holds `views`, the template views of
+`spy-recipe.md`, and `overlays`, every data unit the App publishes for example
+data, by overlay kind. `examples/build_native_demo.py` drives the production
+`Allocation` with a fixed clock and a scripted, simulated paper account. The
+account supplies about three months of New York trading-day SPY quotes, cash,
+shares, orders and executions. Planner targets and Worker requests enter through
+`Allocation.call`, and the background pass, sizing, reconciliation, valuation and
+units are production code. The builder replaces only each view's description,
+which marks the data as an example and not a real account. Regenerate the file
+with `python3 plugins/paper-trading/examples/build_native_demo.py`. The `--check`
+flag verifies that the committed file is byte-identical to a fresh run.
 
 ## Automatic SPY/cash profile
 
@@ -164,20 +164,25 @@ settled cash or unavailable shares. The loop retries each poll until the
 decision expires. Market holidays and half trading days are checked against the
 broker calendar.
 
-The Report opens with `spy.overview`, one live native view: total equity,
-the previous New York trading day's valuation and the day's change, equity and
-return history against the SPY price, current and historical SPY/cash weights,
-holdings, and recent decisions with their actual fills. Every successful
+The App publishes eight data units, each one cell with its own labels, units,
+tones and empty text: `spy.nav` (total equity, the previous New York trading
+day's valuation and the day's change), `spy.nav_history` (equity and return
+history against the SPY price), `spy.weights` and `spy.weight_history`
+(current and historical SPY/cash weights), `spy.holdings`, `spy.decision_log`
+(the latest 50 decisions with up to 20 actual fills each), `spy.fill_log`
+(every fill in the status list) and `spy.account` (reconciliation time or
+error, quote time, order step, cash reserve and available cash). The recipe's
+template views place them: 组合表现, 资金投向 and 调仓决策 open the Report, and
+the template, not the App, owns their headings, rows and layouts. Every successful
 reconciliation upserts one valuation sample (date, reconciliation time, equity,
 cash, shares, price; exact decimal strings) per America/New_York quote date in the ledger's
-`valuations` table, so the latest observation of each date wins. The overview
-projection reads the latest 260 samples; agent tool responses omit them. Values are reconciled paper-account valuations;
-P&L includes no fee or deposit adjustment. `spy.portfolio`, `spy.decisions`
-and `spy.fills` remain native live detail tables. The Planner rewrites the
+`valuations` table, so the latest observation of each date wins. The history
+units read the latest 260 samples; agent tool responses omit them. Values are reconciled paper-account valuations;
+P&L includes no fee or deposit adjustment. The Planner rewrites the
 research sections (结论, 待你定, 核心逻辑, 关键数据, 风险与证伪, 催化剂与跟踪, 复盘,
-来源与边界) to its current judgment rather than appending dated notes. 更多明细 is
-the last section and is never rewritten: it holds the detail tables, and each
-upserted execution task block is appended there at the end of the Report.
+来源与边界) to its current judgment rather than appending dated notes, and never
+rewrites the template views. 执行记录 is the last section and is never rewritten:
+each upserted execution task block is appended there at the end of the Report.
 
 **Known gap:** the App cannot prove that the Planner created the requesting
 Worker task. Any Worker-role caller on the owner Track may request execution of

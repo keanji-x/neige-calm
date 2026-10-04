@@ -17,7 +17,7 @@ DECISION_ID = re.compile(r'[a-z0-9][a-z0-9-]{0,54}')
 TOOLS = frozenset(('spy.plan', 'spy.execute', 'spy.status', 'spy.refresh'))
 FINAL = frozenset(('settled', 'noop', 'rejected', 'canceled', 'expired'))
 NEW_YORK = ZoneInfo('America/New_York')
-HISTORY = 260  # about one year of trading-day valuation samples in the overview projection
+HISTORY = 260  # about one year of trading-day valuation samples in the history units
 
 
 def valuation_date(quote_at):

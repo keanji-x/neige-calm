@@ -155,25 +155,29 @@ async fn real_spy_app_admits_planner_plan_and_worker_execution_request() {
         fx.thread_id.strip_prefix("thread-").unwrap()
     );
 
-    // The App's own projection must pass the validator that live-view hydration applies
-    // (track_report_hydrate.rs); any relational violation makes the whole overview unavailable.
+    // The App's own unit must pass `validate_unit`, the kernel's read-side check of one live
+    // slot; any violation makes that slot unavailable.
     let deadline = Instant::now() + Duration::from_secs(30);
-    let overview = loop {
+    let decision_log = loop {
         let published = fx
             .repo
             .overlays_for("track", fx.track_id.as_str())
             .await
             .unwrap()
             .into_iter()
-            .find(|o| o.plugin_id == id && o.kind == "spy.overview")
+            .find(|o| o.plugin_id == id && o.kind == "spy.decision_log")
             .map(|o| o.payload);
-        if let Some(view) = published.filter(|v| v.to_string().contains("caller-proof")) {
-            break view;
+        if let Some(unit) = published.filter(|v| v.to_string().contains("caller-proof")) {
+            break unit;
         }
-        assert!(Instant::now() < deadline, "spy.overview was not published");
+        assert!(
+            Instant::now() < deadline,
+            "spy.decision_log was not published"
+        );
         sleep(Duration::from_millis(100)).await;
     };
-    calm_types::report_blocks::native_view::validate(&overview)
-        .unwrap_or_else(|error| panic!("spy.overview is not a valid native view: {error}"));
+    use calm_types::report_blocks::native_view::{ComponentKind, validate_unit};
+    validate_unit(ComponentKind::Records, &decision_log)
+        .unwrap_or_else(|error| panic!("spy.decision_log is not a valid records unit: {error}"));
     fx.plugin_host.stop(&id).await.unwrap();
 }

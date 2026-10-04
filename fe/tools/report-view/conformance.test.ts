@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { nativeViewPayloadSchema } from '../../core/domain/report-view.js';
+import { nativeViewPayloadSchema, resolveLiveSlot } from '../../core/domain/report-view.js';
 import { LIVE_TABLE_SOURCE_PATTERN, readTrackReport, tableBlockPayloadSchema } from '../../core/domain/report.js';
 import { inlineTableBlockPayloadSchema } from '../../core/domain/report-table.js';
+import { trackOverlayPayload, type OverlayWire } from '../../core/domain/track.js';
 
 const fixture = JSON.parse(readFileSync(new URL('../../../test-data/native-view-v1.json', import.meta.url), 'utf8')) as {
   valid: Record<string, unknown>;
@@ -47,9 +48,18 @@ describe('native view conformance shared with the kernel', () => {
     expect(new RegExp(source.pattern).source).toBe(LIVE_TABLE_SOURCE_PATTERN.source);
     expect(source.maxLength).toBe(2048);
   });
-  it('accepts the real App-authored portfolio example', () => {
-    const example = JSON.parse(readFileSync(new URL('../../../plugins/paper-trading/examples/native-demo.json', import.meta.url), 'utf8')) as unknown;
-    expect(nativeViewPayloadSchema.safeParse(example).success).toBe(true);
+  it('resolves every slot of the real App-authored SPY example through the production lookup', () => {
+    const read = (path: string) => JSON.parse(readFileSync(new URL(`../../../plugins/paper-trading/${path}`, import.meta.url), 'utf8')) as unknown;
+    const example = read('examples/native-demo.json') as { views: unknown[]; overlays: Record<string, unknown> };
+    const { id } = read('manifest.json') as { id: string };
+    const overlays: OverlayWire[] = Object.entries(example.overlays).map(([kind, payload]) => ({
+      id: kind, plugin_id: id, entity_kind: 'track', entity_id: 'example', kind, payload, updated_at: 0,
+    }));
+    const slots = example.views.map(view => nativeViewPayloadSchema.parse(view))
+      .flatMap(view => view.rows.flatMap(row => row.cells)).flatMap(cell => cell.kind === 'live' ? [cell] : []);
+    const states = slots.map(slot => resolveLiveSlot(slot, source => trackOverlayPayload('example', overlays, source)));
+    expect(states.filter(resolution => resolution.state !== 'ok')).toEqual([]);
+    expect(new Set(slots.map(slot => slot.source))).toEqual(new Set(Object.keys(example.overlays).map(kind => `neige://plugin/${id}/${kind}`)));
   });
   it('accepts all native primitives with explicit missing values', () => {
     expect(nativeViewPayloadSchema.parse(fixture.valid)).toEqual(fixture.valid);

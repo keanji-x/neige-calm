@@ -10,13 +10,15 @@ import pytest
 from paper_trading.allocation import TOOLS, Allocation
 from paper_trading.allocation_broker import AllocationBroker
 from paper_trading.allocation_config import OPTIONAL, REQUIRED, AllocationConfig
-from paper_trading.allocation_report import tables
+from paper_trading.allocation_views import units
 from .host import Host
 
 NOW = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)
 ROOT = Path(__file__).parents[1]
 PLANNER = {'role': 'planner', 'card_id': 'planner-card', 'session_id': 'planner-session'}
 WORKER = {'role': 'worker', 'card_id': 'worker-card', 'session_id': 'worker-session'}
+UNIT_KINDS = {'spy.nav', 'spy.nav_history', 'spy.weights', 'spy.weight_history', 'spy.holdings',
+              'spy.decision_log', 'spy.fill_log', 'spy.account'}
 
 
 @pytest.fixture
@@ -341,7 +343,10 @@ def test_spy_production_stdio_entrypoint_and_overlays(allocation_rig):
         assert not host.tool('spy.refresh', {}, track='owner', caller=WORKER).get('isError')
         result = wait_for(host, lambda s: s['decisions'][0]['state'] == 'settled')
         assert result['snapshot']['shares'] == 60
-        while not {'spy.overview', 'spy.portfolio', 'spy.decisions', 'spy.fills'} <= {p['kind'] for p in host.overlays}:
+        # The runtime republishes every unit each poll tick; a missing kind fails at the deadline, never hangs.
+        deadline = time.monotonic() + 20
+        while not UNIT_KINDS <= {p['kind'] for p in host.overlays}:
+            assert time.monotonic() < deadline, UNIT_KINDS - {p['kind'] for p in host.overlays}
             host.receive()
         for overlay in host.overlays:
             # The kernel callback frame: every overlay belongs to the owning Track and carries its projection.
@@ -599,16 +604,17 @@ def test_spy_unchanged_reconciliation_appends_no_false_transition(allocation_rig
     assert second['journal'] == first['journal']
 
 
-def test_spy_tables_publish_only_declared_columns(allocation_rig):
+def test_spy_table_units_publish_only_declared_columns(allocation_rig):
     r = allocation_rig; r.plan(); r.execute(); r.publish()
     state = r.fill('order-1', 60, '4000', 'buy-fill', 60)
     assert state['error'] is None and state['fills']
-    published = {kind: payload for kind, payload in tables(state).items() if 'columns' in payload}
-    assert set(published) == {'spy.portfolio', 'spy.decisions', 'spy.fills'}
+    published = {kind: unit['cell']['table'] for kind, unit in units(state).items() if unit['cell']['kind'] == 'table'}
+    assert set(published) == {'spy.holdings', 'spy.fill_log'}
     for kind, payload in published.items():
         assert set(payload) == {'columns', 'rows', 'caption'}, kind
         assert isinstance(payload['caption'], str) and payload['caption'], kind
-        assert all(set(column) == {'key', 'label'} and column['label'] for column in payload['columns']), kind
+        assert all({'key', 'label'} <= set(column) <= {'key', 'label', 'align'} and column['label']
+                   for column in payload['columns']), kind
         declared = {column['key'] for column in payload['columns']}
         assert payload['rows'], kind
         # The kernel refuses a row key that is not a declared column.

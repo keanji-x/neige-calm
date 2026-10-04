@@ -1,11 +1,12 @@
-"""Build the example SPY overview through the production allocation path. No broker access.
+"""Build the example SPY Report data through the production allocation path. No broker access.
 
 A scripted, simulated paper account supplies quotes, cash, SPY shares, orders and
 executions. Everything else runs in production code: Planner targets and Worker
 requests enter through ``Allocation.call``, the background pass is
 ``Allocation.process_once`` (reconciliation, sizing, submission, valuation), and
-the view is ``allocation_report.tables(...)['spy.overview']``. Only the view's
-top-level description is replaced, so the example never claims a real account.
+the overlays are ``allocation_views.units(...)``. The views are the template views
+of ``spy-recipe.md``; only their descriptions are replaced, so the example never
+claims a real account.
 """
 import argparse
 from copy import deepcopy
@@ -13,6 +14,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -20,9 +22,8 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent))
 from paper_trading.allocation import NEW_YORK, Allocation  # noqa: E402
 from paper_trading.allocation_config import AllocationConfig  # noqa: E402
-from paper_trading.allocation_report import tables  # noqa: E402
+from paper_trading.allocation_views import units  # noqa: E402
 from paper_trading.config import timestamp  # noqa: E402
-from paper_trading.report_views import native_view  # noqa: E402
 
 DESCRIPTION = '示例数据 · 脚本化模拟账户，非真实账户；行情、订单与成交均由脚本生成。数值为对账估值，盈亏未扣除费用与出入金。'
 TRACK = 'example-track'
@@ -167,36 +168,34 @@ def simulate(root):
     return state
 
 
-def create_view(state):
-    """The production overview, with only its top-level description marked as example data."""
-    view = tables(state)['spy.overview']
-    # The production helper re-derives the content snapshot identity for the replaced description.
-    return native_view(state, view['title'], view['rows'], DESCRIPTION)
+def template_views():
+    """The recipe's template views, each with only its description marked as example data."""
+    fences = re.findall(r'^```neige-block view\n(.*?)\n```$', (ROOT.parent / 'spy-recipe.md').read_text(), flags=re.M | re.S)
+    return [json.loads(fence) | {'description': DESCRIPTION} for fence in fences]
+
+
+def create_example(state):
+    """The template views and every production data unit of the scripted run, by overlay kind."""
+    return {'views': template_views(), 'overlays': units(state)}
 
 
 def build():
     with tempfile.TemporaryDirectory() as root:
-        return create_view(simulate(root))
+        return create_example(simulate(root))
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    view = build()
-    encoded = json.dumps(view, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
+    example = build()
+    encoded = json.dumps(example, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
     destination = ROOT / 'native-demo.json'
     if args.check:
         assert destination.read_text() == encoded, 'Native Demo fixture drift'
     else:
         destination.write_text(encoded)
-    recipe = '```neige-block view\n' + json.dumps(view, ensure_ascii=False, allow_nan=False, separators=(',', ':')) + '\n```\n'
-    recipe_path = ROOT / 'native-demo.md'
-    if args.check:
-        assert recipe_path.read_text() == recipe, 'Native Recipe drift'
-    else:
-        recipe_path.write_text(recipe)
-    print(json.dumps({'rows': len(view['rows']), 'bytes': len(encoded.encode())}))
+    print(json.dumps({'views': len(example['views']), 'overlays': len(example['overlays']), 'bytes': len(encoded.encode())}))
 
 
 if __name__ == '__main__':

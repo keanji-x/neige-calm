@@ -4,7 +4,9 @@ import { afterEach, expect, it } from 'vitest';
 import '../../../styles/entry.css';
 import source from '../../../../../../test-data/native-view-v1.json?raw';
 import demoSource from '../../../../../../plugins/paper-trading/examples/native-demo.json?raw';
+import manifestSource from '../../../../../../plugins/paper-trading/manifest.json?raw';
 import { nativeViewPayloadSchema } from '../../../../../core/domain/report-view.ts';
+import { trackOverlayPayload, type OverlayWire } from '../../../../../core/domain/track.ts';
 import { NativeReportView } from './public.tsx';
 import { ReportDocument } from '../document/public.tsx';
 import { TimeSeriesChart } from '../../../ui/data-visualization/public.tsx';
@@ -12,6 +14,14 @@ import { TimeSeriesChart } from '../../../ui/data-visualization/public.tsx';
 afterEach(cleanup);
 const fixture = JSON.parse(source) as { valid: unknown };
 const payload = nativeViewPayloadSchema.parse(fixture.valid);
+/** The real App example: the recipe's template views over the App's units, through the production lookup. */
+const demo = JSON.parse(demoSource) as { views: unknown[]; overlays: Record<string, unknown> };
+const demoPlugin = (JSON.parse(manifestSource) as { id: string }).id;
+const demoOverlays: OverlayWire[] = Object.entries(demo.overlays).map(([kind, unit]) => ({
+  id: kind, plugin_id: demoPlugin, entity_kind: 'track', entity_id: 'example', kind, payload: unit, updated_at: 0,
+}));
+const resolveDemo = (source: string) => trackOverlayPayload('example', demoOverlays, source);
+const performance = nativeViewPayloadSchema.parse(demo.views[0]);
 
 it.each([1440, 736, 390, 320])('native composition renders without frames or overflow at %i', async width => {
   await page.viewport(width, 1000);
@@ -63,14 +73,11 @@ it.each(['view', 'view.live'] as const)('keeps a %s backlink beside its composit
   expect(note.left).toBeGreaterThanOrEqual(block.right);
 });
 
-it('uses the authored narrow-summary ratio and keeps decisions visible in a wide first viewport', async () => {
+it('uses the template\'s narrow-summary ratio for the App\'s performance units', async () => {
   await page.viewport(1440, 1000);
-  const demo = nativeViewPayloadSchema.parse(JSON.parse(demoSource));
-  const { container } = render(<main style={{ inlineSize: 1120, padding: 16 }}><NativeReportView payload={demo} /></main>);
-  const summary = page.getByRole('region', { name: '01 · 组合表现' }).element();
-  const children = summary.querySelector('h3 + div')!.children;
+  const { container } = render(<main style={{ inlineSize: 1120, padding: 16 }}><NativeReportView payload={performance} resolveOverlay={resolveDemo} /></main>);
+  const children = container.querySelector('section > div')!.children;
   expect(children[1].getBoundingClientRect().width / children[0].getBoundingClientRect().width).toBeGreaterThan(1.8);
-  expect(page.getByRole('region', { name: '03 · 调仓决策' }).element().getBoundingClientRect().top).toBeLessThan(850);
   const slider = page.getByRole('slider', { name: '总资产变化 观察日期' }).element() as HTMLInputElement;
   expect(getComputedStyle(slider).opacity).toBe('0');
   slider.focus();
@@ -107,10 +114,8 @@ it('contains long observation tooltips inside the plot without covering the lege
 
 it('keeps summary and curve beside each other in an ordinary report slot', async () => {
   await page.viewport(1440, 1000);
-  const demo = nativeViewPayloadSchema.parse(JSON.parse(demoSource));
-  render(<main style={{ inlineSize: 700 }}><NativeReportView payload={demo} /></main>);
-  const row = page.getByRole('region', { name: '01 · 组合表现' }).element();
-  const cells = row.querySelector('h3 + div')!.children;
+  const { container } = render(<main style={{ inlineSize: 700 }}><NativeReportView payload={performance} resolveOverlay={resolveDemo} /></main>);
+  const cells = container.querySelector('section > div')!.children;
   expect(Math.abs(cells[0].getBoundingClientRect().top - cells[1].getBoundingClientRect().top)).toBeLessThan(2);
   expect(cells[1].getBoundingClientRect().width).toBeGreaterThan(cells[0].getBoundingClientRect().width);
 });

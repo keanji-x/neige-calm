@@ -1,7 +1,7 @@
 """Polling and publication continue without an active agent conversation."""
 import threading
 
-from .allocation_report import tables
+from .allocation_views import units
 
 
 class Runtime:
@@ -17,7 +17,7 @@ class Runtime:
             self.wake.clear()
             try:
                 for track, state in self.portfolio.process_once():
-                    for kind, payload in tables(state).items():
+                    for kind, payload in units(state).items():
                         if self.closed.is_set():
                             return
                         self.publish(track, kind, payload)

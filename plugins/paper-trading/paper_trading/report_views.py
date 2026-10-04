@@ -1,4 +1,4 @@
-"""Native Report presentation helpers: inert view, row, cell and table data."""
+"""Native Report presentation helpers: inert data units, cells and table data."""
 from datetime import datetime
 import hashlib
 import json
@@ -6,8 +6,8 @@ import json
 from .report_text import bounded
 
 
-def native_view(state, title, rows, description=''):
-    """Publish inert composition data with an identity derived from this projection.
+def unit(state, cell):
+    """Publish one inert data unit: a single cell with an identity derived from this projection.
 
     Reconciliation supplies the observation time. This pure projection has no
     publication clock, so producedAt stays explicitly unknown. Event times
@@ -15,14 +15,9 @@ def native_view(state, title, rows, description=''):
     """
     observed = state['snapshot']['at'] if state['snapshot'] else None
     observed = int(datetime.fromisoformat(observed.replace('Z', '+00:00')).timestamp() * 1000) if observed is not None else None
-    identity = hashlib.sha256(json.dumps([title, description, rows, observed], ensure_ascii=False,
+    identity = hashlib.sha256(json.dumps([cell, observed], ensure_ascii=False,
                                          sort_keys=True, allow_nan=False).encode()).hexdigest()
-    return {'version': 1, 'title': title, 'description': description,
-            'snapshot': {'id': identity, 'observedAt': observed, 'producedAt': None}, 'rows': rows}
-
-
-def row(identity, cells, title, layout):
-    return {'id': identity, 'title': title, 'layout': layout, 'cells': cells}
+    return {'snapshot': {'id': identity, 'observedAt': observed, 'producedAt': None}, 'cell': cell}
 
 
 def scalar(amount, unit='$', decimals=0, signed=False, placement='prefix'):

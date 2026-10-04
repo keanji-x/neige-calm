@@ -1,4 +1,4 @@
-"""Valuation history and the live SPY overview, driven through the production Allocation."""
+"""Valuation history and the live SPY data units, driven through the production Allocation."""
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -10,11 +10,15 @@ import jsonschema
 import pytest
 
 from paper_trading.allocation import Allocation
-from paper_trading.allocation_report import tables
+from paper_trading.allocation_views import units
 from .test_allocation import NOW, allocation_rig  # noqa: F401 - pytest fixture
 
 ROOT = Path(__file__).parents[1]
 SCHEMA = json.loads((ROOT.parents[1] / 'crates/calm-types/src/report_blocks/native_view.schema.json').read_text())
+# The generated contract's own DataUnit definition: the envelope a live slot resolves to.
+UNIT_SCHEMA = {'$schema': SCHEMA['$schema'], '$defs': SCHEMA['$defs'], '$ref': '#/$defs/DataUnit'}
+PLUGIN = json.loads((ROOT / 'manifest.json').read_text())['id']
+MAX_UNIT_BYTES = 4 * 1024 * 1024  # calm-types MAX_LIVE_VIEW_BYTES: the per-unit read cap
 
 
 class Prescribed:
@@ -62,22 +66,20 @@ def advance(r, broker, quote_at, price):
     return r.step()
 
 
-def overview(state):
-    return tables(state)['spy.overview']
+def valid(unit):
+    jsonschema.Draft202012Validator(UNIT_SCHEMA).validate(unit)
+    encoded = json.dumps(unit, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()
+    assert len(encoded) <= MAX_UNIT_BYTES
+    return unit
 
 
-def cell(view, identity):
-    return next(c for row in view['rows'] for c in row['cells'] if c['id'] == identity)
+def cells(state):
+    """Every published unit, each validated as a data unit, by overlay kind."""
+    return {kind: valid(unit)['cell'] for kind, unit in units(state).items()}
 
 
-def metrics(view):
-    return {item['id']: item for item in cell(view, 'assets')['items']}
-
-
-def valid(view):
-    jsonschema.Draft202012Validator(SCHEMA).validate(view)
-    json.dumps(view, allow_nan=False)
-    return view
+def metrics(cell):
+    return {item['id']: item for item in cell['items']}
 
 
 def test_valuation_sample_per_new_york_quote_date_latest_wins(allocation_rig):
@@ -107,8 +109,7 @@ def test_previous_day_pnl_uses_a_strictly_earlier_new_york_date(allocation_rig):
     r = allocation_rig
     state = filled(r)
     assert [s['date'] for s in state['valuations']] == ['2026-09-30']
-    view = valid(overview(state))
-    items = metrics(view)
+    items = metrics(cells(state)['spy.nav'])
     # Several same-day observations exist, but none is a previous trading day: never invent zero.
     for key in ('previous', 'pnl', 'change'):
         assert items[key]['value']['state'] == 'unknown', key
@@ -117,15 +118,16 @@ def test_previous_day_pnl_uses_a_strictly_earlier_new_york_date(allocation_rig):
     assert items['nav']['emphasis'] == 'primary' and 'SPY 市值 $6,000.00' in items['nav']['detail']
     observe(r, datetime(2026, 10, 1, 14, tzinfo=timezone.utc), '105')
     state = observe(r, datetime(2026, 10, 1, 18, tzinfo=timezone.utc), '104')
-    items = metrics(valid(overview(state)))
+    published = cells(state)
+    items = metrics(published['spy.nav'])
     assert items['previous']['value']['amount'] == 10000.0 and '09.30' in items['previous']['label']
     assert items['pnl']['value'] == {'state': 'known', 'amount': 240.0, 'unit': '$', 'decimals': 2,
                                      'signed': True, 'placement': 'prefix'}
     assert items['pnl']['tone'] == 'positive'
     assert items['change']['value']['amount'] == 2.4 and items['change']['value']['unit'] == '%'
-    holdings = cell(overview(state), 'holdings')['table']['rows']
+    holdings = published['spy.holdings']['table']['rows']
     assert holdings[0] == {'name': 'SPY · 60 股', 'price': '104.00', 'value': '6,240.00', 'change': '+4.00%'}
-    assert [s['value'] for s in cell(overview(state), 'weights')['slices']] == [6240.0, 4000.0]
+    assert [s['value'] for s in published['spy.weights']['slices']] == [6240.0, 4000.0]
     assert holdings[1]['name'] == '现金' and holdings[1]['value'] == '4,000.00'
 
 
@@ -135,8 +137,8 @@ def test_returns_and_benchmark_are_rebased_at_each_range_start(allocation_rig):
     broker = in_process(r)
     for day in range(1, 46):
         state = advance(r, broker, NOW + timedelta(days=day), str(100 + day))
-    view = valid(overview(state))
-    chart = cell(view, 'nav-history')
+    published = cells(state)
+    chart = published['spy.nav_history']
     assert [d['id'] for d in chart['datasets']] == ['assets-all', 'returns-all', 'assets-1m', 'returns-1m']
     samples = state['valuations']
     for suffix, window in (('all', samples), ('1m', [s for s in samples if s['date'] >= '2026-10-15'])):
@@ -151,13 +153,13 @@ def test_returns_and_benchmark_are_rebased_at_each_range_start(allocation_rig):
                     float(round(Decimal(last['price']) / Decimal(window[0]['price']) * 100 - 100, 4))]
         assert returns['points'][-1]['values'] == expected
         assert assets['points'][-1]['values'] == [float(Decimal(4000) + 60 * Decimal(last['price']))]
-    weights = cell(view, 'weight-history')
+    weights = published['spy.weight_history']
     assert [d['style'] for d in weights['datasets']] == ['stacked', 'line']
     point = weights['datasets'][0]['points'][-1]
     assert point['values'] == [float(round(Decimal(60 * 145) / Decimal(4000 + 60 * 145) * 100, 4)),
                                float(round(Decimal(4000) / Decimal(4000 + 60 * 145) * 100, 4))]
-    short = valid(overview(state | {'valuations': samples[:3]}))
-    assert [d['id'] for d in cell(short, 'nav-history')['datasets']] == ['assets-all', 'returns-all']
+    short = cells(state | {'valuations': samples[:3]})
+    assert [d['id'] for d in short['spy.nav_history']['datasets']] == ['assets-all', 'returns-all']
 
 
 def test_decision_records_show_targets_states_and_actual_fills(allocation_rig):
@@ -165,8 +167,7 @@ def test_decision_records_show_targets_states_and_actual_fills(allocation_rig):
     filled(r)
     r.plan(decision_id='allocation-2', target_spy_bps=3000)
     state = r.step()
-    view = valid(overview(state))
-    records = cell(view, 'decisions')
+    records = cells(state)['spy.decision_log']
     [dataset] = records['datasets']
     first, second = dataset['items']
     assert [first['id'], second['id']] == ['allocation-2', 'allocation-1']
@@ -180,8 +181,9 @@ def test_decision_records_show_targets_states_and_actual_fills(allocation_rig):
     assert sections['来源'] == 'neige://source/research-1\nneige://source/market-1'
     [fill] = second['disclosures']
     assert '60 股' in fill['body'] and '$100' in fill['body'] and 'buy-fill' in fill['body']
-    empty = cell(valid(overview(state | {'decisions': [], 'fills': []})), 'decisions')
-    assert empty['datasets'][0]['items'] == [] and empty['emptyText']
+    empty = cells(state | {'decisions': [], 'fills': []})
+    assert empty['spy.decision_log']['datasets'][0]['items'] == [] and empty['spy.decision_log']['emptyText']
+    assert empty['spy.fill_log']['table']['rows'] == [] and empty['spy.fill_log']['table']['caption']
 
 
 def test_history_and_records_stay_bounded(allocation_rig):
@@ -191,52 +193,77 @@ def test_history_and_records_stay_bounded(allocation_rig):
         advance(r, broker, NOW + timedelta(days=day), '100')
     clock = NOW + timedelta(days=299, seconds=30)  # quote stays fresh for execution
     r.app.clock = lambda: clock
+    # The largest accepted plan: a 6000-character rationale in 3-byte UTF-8 and 20 maximal sources.
+    rationale = '理' * 6000
+    refs = [f'neige://source/{index:02}-' + 'r' * 494 for index in range(20)]
     for index in range(55):
-        r.plan(decision_id=f'noop-{index:02}', target_spy_bps=0,
+        r.plan(decision_id=f'noop-{index:02}', target_spy_bps=0, rationale=rationale, source_refs=refs,
                valid_until=(clock + timedelta(hours=1)).isoformat())
         state = r.execute(f'noop-{index:02}')
     assert len(state['valuations']) == 260
     assert state['valuations'][-1]['date'] == (NOW + timedelta(days=299)).date().isoformat()
-    view = valid(overview(state))
-    assert len(cell(view, 'nav-history')['datasets'][0]['points']) == 260
-    items = cell(view, 'decisions')['datasets'][0]['items']
+    published = cells(state)  # each unit within the 4 MiB per-unit read cap
+    assert len(published['spy.nav_history']['datasets'][0]['points']) == 260
+    assert all(len(d['points']) == 260 for d in published['spy.weight_history']['datasets'])
+    items = published['spy.decision_log']['datasets'][0]['items']
     assert len(items) == 50 and items[0]['id'] == 'noop-54'
+    sections = {s['label']: s['body'] for s in items[0]['sections']}
+    assert sections['理由'] == rationale and len(sections['来源']) == 8000
 
 
-def test_overview_is_valid_before_reconciliation_and_after_errors(allocation_rig):
+def test_units_are_valid_before_reconciliation_and_after_errors(allocation_rig):
     r = allocation_rig
     state = projected(r)
-    view = valid(overview(state))
-    assert view['snapshot']['observedAt'] is None and view['snapshot']['producedAt'] is None
-    assert all(item['value']['state'] == 'unknown' for item in metrics(view).values())
-    assert cell(view, 'weights')['slices'] == [] and cell(view, 'holdings')['table']['rows'] == []
-    assert overview(state) == view and state == projected(r)
+    published = units(state)
+    assert set(cells(state)) == set(published)
+    assert all(u['snapshot']['observedAt'] is None and u['snapshot']['producedAt'] is None for u in published.values())
+    assert all(item['value']['state'] == 'unknown' for item in metrics(published['spy.nav']['cell']).values())
+    assert published['spy.weights']['cell']['slices'] == [] and published['spy.holdings']['cell']['table']['rows'] == []
+    account = metrics(published['spy.account']['cell'])
+    for key in ('reconciliation', 'quote', 'available-cash'):
+        assert account[key]['value'] == {'state': 'unknown', 'reason': '尚未完成账户对账'}, key
+    assert account['max-order']['value']['amount'] == 100.0 and account['cash-buffer']['value']['amount'] == 2.0
+    assert units(state) == published and state == projected(r)
     filled(r)
     broken = r.read(); broken['snapshot']['identity']['account_no'] = 'OTHER'; r.write(broken)
     state = r.step()
-    view = valid(overview(state))
-    assert '上次成功对账' in view['description']
-    assert view['snapshot']['observedAt'] == int(NOW.timestamp() * 1000)
-    assert [row['layout'] for row in view['rows']] == ['two-wide-end', 'three', 'one']
-    assert [row['title'] for row in view['rows']] == ['01 · 组合表现', '02 · 资金投向', '03 · 调仓决策']
+    published = units(state)
+    reconciliation = metrics(cells(state)['spy.account'])['reconciliation']
+    # A failed reconciliation is publisher meaning: a negative account item, not a platform staleness rule.
+    assert reconciliation['tone'] == 'negative' and reconciliation['value'] == {'state': 'text', 'text': state['error']}
+    assert reconciliation['detail'].startswith('最近一次对账失败；当前显示 2026-09-30 11:00 纽约时间')
+    assert all(u['snapshot']['observedAt'] == int(NOW.timestamp() * 1000) for u in published.values())
 
 
-def test_spy_recipe_contract_matches_body_and_published_views(allocation_rig):
+def test_spy_recipe_contract_matches_body_and_published_units(allocation_rig):
     text = (ROOT / 'spy-recipe.md').read_text()
     contract = json.loads(re.match(r'<!-- neige:contract (.*) -->\n', text).group(1))
     body = re.sub(r'<!--.*?-->', '', text, flags=re.S)
     headings = re.findall(r'^# (.+)$', body, flags=re.M)
     assert headings == [s['h1'] for s in contract['sections']]
-    assert headings[0] == '组合概览' and headings[-1] == '更多明细'
+    assert headings[:3] == ['组合表现', '资金投向', '调仓决策'] and headings[-1] == '执行记录'
     # Upserted execution task blocks append at the end of the Report, so no routine step may rewrite
     # the last section: a rewrite that omitted a declared task block would be refused.
     steps = re.findall(r'^- (?:Pre-market|Post-close|Weekly):.*$', text, flags=re.M)
     assert len(steps) == 3 and not any(headings[-1] in step for step in steps)
-    assert 'No step rewrites 更多明细' in text
+    assert 'No step rewrites 组合表现, 资金投向, 调仓决策 or 执行记录' in text
+    assert 'A user edit of this Report requests no step.' in text
     assert [s['h1'] for s in contract['sections'] if s.get('omit_if_empty')] == ['待你定']
-    sources = re.findall(r'"source":"neige://plugin/dev-neige-paper-trading/([^"]+)"', body)
-    assert sources == ['spy.overview', 'spy.portfolio', 'spy.decisions', 'spy.fills']
-    assert set(sources) == set(tables(projected(allocation_rig)))
+    # Account mode is recipe context, never unit data (see the example's marker rule).
+    assert '长桥官方模拟账户 · SPY／现金' in text
+    views = [json.loads(v) for v in re.findall(r'^```neige-block view\n(.*?)\n```$', body, flags=re.M | re.S)]
+    assert len(views) == 3
+    for view in views:
+        jsonschema.Draft202012Validator(SCHEMA).validate(view)
+    slots = [c for view in views for row in view['rows'] for c in row['cells']]
+    assert all(c['kind'] == 'live' and c['source'].startswith(f'neige://plugin/{PLUGIN}/') for c in slots)
+    expects = {c['source'].rsplit('/', 1)[1]: c['expects'] for c in slots}
+    # Every plugin source in the body is one of these slots: no live table names a retired kind.
+    assert re.findall(rf'"source":"neige://plugin/{PLUGIN}/([^"]+)"', body) == list(expects)
+    published = units(projected(allocation_rig))
+    assert len(expects) == len(slots) and set(expects) == set(published)
+    for kind, unit in published.items():
+        assert unit['cell']['kind'] == expects[kind], kind
     sections = re.split(r'^# ', body, flags=re.M)
     assert next(s for s in sections if s.startswith('来源与边界')).rstrip().endswith('仅作研究，不构成交易建议。')
 
@@ -269,10 +296,19 @@ def test_status_keeps_recent_fills_and_complete_decision_totals(allocation_rig):
     times = [f['time'] for f in state['fills']]
     assert len(times) == 200 and times == sorted(times)
     assert times[-1] == (NOW + timedelta(seconds=quantity - 1)).isoformat()
-    [record] = cell(valid(overview(state)), 'decisions')['datasets'][0]['items']
+    published = cells(state)
+    [record] = published['spy.decision_log']['datasets'][0]['items']
     assert f'已成交 {quantity} 股' in record['summary']
+    # A decision lists at most 20 fills; the fill log carries every fill in the bounded status list.
+    assert len(record['disclosures']) == 20
+    fills = published['spy.fill_log']['table']
+    assert [row['trade_id'] for row in fills['rows']] == [f['trade_id'] for f in reversed(state['fills'])]
+    assert fills['rows'][0]['time'].endswith('纽约时间') and fills['caption'].startswith('最近 200 笔成交')
 
 
-def test_snapshot_identity_covers_the_description(allocation_rig):
+def test_snapshot_identity_covers_each_unit_cell(allocation_rig):
     state = filled(allocation_rig)
-    assert overview(state)['snapshot']['id'] != overview(state | {'error': 'broker unavailable'})['snapshot']['id']
+    before, after = units(state), units(state | {'error': 'broker unavailable'})
+    assert before['spy.account']['snapshot']['id'] != after['spy.account']['snapshot']['id']
+    # Identity is per unit: a cell the error does not change keeps its identity.
+    assert before['spy.nav']['snapshot']['id'] == after['spy.nav']['snapshot']['id']

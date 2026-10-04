@@ -1,11 +1,15 @@
-"""Live SPY/cash overview: a pure projection of reconciled ledger state; no broker access."""
+"""Live SPY/cash data units: pure projections of reconciled ledger state; no broker access.
+
+Each published kind is one cell with its labels, units, tones and empty text. The Report
+template (spy-recipe.md) decides headings, rows, layouts and slot order.
+"""
 from datetime import date, timedelta
 from decimal import Decimal
 
 from .allocation import NEW_YORK, valuation_date
 from .config import timestamp
 from .report_text import bounded, money_text
-from .report_views import metric, native_view, record, records, row, scalar, unknown
+from .report_views import metric, record, records, scalar, table, unit, unknown
 
 
 STATES = {'queued': '等待执行', 'requested': '已请求执行', 'submitting': '正在提交', 'working': '委托处理中',
@@ -39,7 +43,7 @@ def tone(amount):
     return 'positive' if amount > 0 else 'negative' if amount < 0 else 'neutral'
 
 
-def performance(snapshot, previous, samples):
+def nav(snapshot, previous):
     if snapshot is None:
         items = [metric('nav', '总资产', unknown(PENDING), '', primary=True),
                  metric('previous', '上一交易日估值', unknown(PENDING), ''),
@@ -65,7 +69,10 @@ def performance(snapshot, previous, samples):
             items.append(metric('change', '本日涨跌', scalar(change(equity, before), '%', 2, True, 'suffix'),
                                 '相对上一交易日估值', tone(delta)) if before > 0 else
                          metric('change', '本日涨跌', unknown('上一交易日估值为零'), '相对上一交易日估值'))
-    assets = {'kind': 'metrics', 'id': 'assets', 'title': '', 'items': items}
+    return {'kind': 'metrics', 'id': 'nav', 'title': '', 'items': items}
+
+
+def nav_history(samples):
     datasets = []
     last = date.fromisoformat(samples[-1]['date']) if samples else None
     ranges = [('all', '全部', samples)]
@@ -87,42 +94,49 @@ def performance(snapshot, previous, samples):
                          'series': [{'id': 'portfolio', 'label': '组合', 'palette': SPY},
                                     {'id': 'benchmark', 'label': 'SPY 价格', 'palette': BENCHMARK}],
                          'points': points})
-    history = {'kind': 'time-series', 'id': 'nav-history', 'title': '总资产变化',
-               'caption': '每个纽约交易日最后一次对账估值；收益视图区间起点归零，SPY 价格收益为基准；未扣除费用与出入金。',
-               'emptyText': '完成首次对账后开始记录估值', 'datasets': datasets}
-    return row('performance', [assets, history], '01 · 组合表现', 'two-wide-end')
+    return {'kind': 'time-series', 'id': 'nav-history', 'title': '总资产变化',
+            'caption': '每个纽约交易日最后一次对账估值；收益视图区间起点归零，SPY 价格收益为基准；未扣除费用与出入金。',
+            'emptyText': '完成首次对账后开始记录估值', 'datasets': datasets}
 
 
-def allocation(snapshot, previous, samples):
-    slices, rows = [], []
+def weights(snapshot):
+    slices = []
     if snapshot is not None:
         price, cash, shares = Decimal(snapshot['price']), Decimal(snapshot['cash_usd']), snapshot['shares']
-        # Whole dollars keep the renderer's float total exact; the table carries cents.
+        # Whole dollars keep the renderer's float total exact; the holdings table carries cents.
         slices = [{'id': 'spy', 'label': 'SPY', 'value': float(round(shares * price)), 'palette': SPY},
                   {'id': 'cash', 'label': '现金', 'value': float(round(cash)), 'palette': CASH}]
+    return {'kind': 'distribution', 'id': 'weights', 'title': '当前占比', 'unit': 'USD',
+            'emptyText': PENDING, 'slices': slices}
+
+
+def weight_history(samples):
+    weighted = [s for s in samples if Decimal(s['equity_usd']) > 0]
+    return {'kind': 'time-series', 'id': 'weight-history', 'title': '历史仓位', 'caption': '按市值 / 总资产，包含现金。',
+            'emptyText': '完成首次对账后开始记录仓位', 'datasets': [
+                {'id': style, 'label': label, 'unit': '%', 'style': style,
+                 'series': [{'id': 'spy', 'label': 'SPY', 'palette': SPY},
+                            {'id': 'cash', 'label': '现金', 'palette': CASH}],
+                 'points': [{'date': s['date'], 'values': [
+                     ratio(s['shares'] * Decimal(s['price']), Decimal(s['equity_usd'])),
+                     ratio(Decimal(s['cash_usd']), Decimal(s['equity_usd']))]} for s in weighted]}
+                for style, label in [('stacked', '堆叠'), ('line', '折线')]]}
+
+
+def holdings(snapshot, previous):
+    rows = []
+    if snapshot is not None:
+        price, cash, shares = Decimal(snapshot['price']), Decimal(snapshot['cash_usd']), snapshot['shares']
         rows = [{'name': f'SPY · {shares} 股', 'price': f'{price:,.2f}', 'value': f'{shares * price:,.2f}',
                  'change': f"{change(price, Decimal(previous['price'])):+.2f}%" if previous else '—'},
                 {'name': '现金', 'price': '—', 'value': f'{cash:,.2f}', 'change': '—'}]
-    distribution = {'kind': 'distribution', 'id': 'weights', 'title': '当前占比', 'unit': 'USD',
-                    'emptyText': PENDING, 'slices': slices}
-    weighted = [s for s in samples if Decimal(s['equity_usd']) > 0]
-    weights = {'kind': 'time-series', 'id': 'weight-history', 'title': '历史仓位', 'caption': '按市值 / 总资产，包含现金。',
-               'emptyText': '完成首次对账后开始记录仓位', 'datasets': [
-                   {'id': style, 'label': label, 'unit': '%', 'style': style,
-                    'series': [{'id': 'spy', 'label': 'SPY', 'palette': SPY},
-                               {'id': 'cash', 'label': '现金', 'palette': CASH}],
-                    'points': [{'date': s['date'], 'values': [
-                        ratio(s['shares'] * Decimal(s['price']), Decimal(s['equity_usd'])),
-                        ratio(Decimal(s['cash_usd']), Decimal(s['equity_usd']))]} for s in weighted]}
-                   for style, label in [('stacked', '堆叠'), ('line', '折线')]]}
-    caption = (f"行情时间 {new_york(snapshot['quote_at'])} · 本日涨跌相对上一交易日估值中的 SPY 价格"
-               if snapshot else PENDING)
-    holdings = {'kind': 'table', 'id': 'holdings', 'title': '持仓明细', 'table': {
+    caption = (f"行情时间 {new_york(snapshot['quote_at'])} · 本日涨跌相对上一交易日估值中的 SPY 价格 · "
+               '以券商记录为准；整数股与成交价格可能使实际比例偏离目标。' if snapshot else PENDING)
+    return {'kind': 'table', 'id': 'holdings', 'title': '持仓明细', 'table': {
         'columns': [{'key': key, 'label': label, 'align': align} for key, label, align in [
             ('name', '标的', 'left'), ('price', '现价 / USD', 'right'),
             ('value', '市值 / USD', 'right'), ('change', '本日涨跌', 'right')]],
         'rows': rows, 'caption': caption}}
-    return row('allocation', [distribution, weights, holdings], '02 · 资金投向', 'three')
 
 
 def decision_record(decision, fills):
@@ -147,16 +161,52 @@ def decision_record(decision, fills):
                                for index, fill in enumerate(owned[:20])])
 
 
-def overview(state):
+def decision_log(decisions, fills):
+    items = [decision_record(d, fills) for d in reversed(decisions[-DECISIONS:])]
+    return records('decisions', '', 'Planner 保存目标比例后，调仓决策会显示在这里。', items, label='调仓决策',
+                   description=f'最近 {DECISIONS} 项决策，最新在前；每项最多列出 20 笔成交。'
+                               '收到委托编号表示券商已受理；成交状态以对账为准。')
+
+
+def fill_log(fills):
+    return {'kind': 'table', 'id': 'fills', 'title': '', 'table': table(
+        [('trade_id', '成交编号'), ('order_id', '委托编号'), ('quantity', '股数'),
+         ('price', '成交价 / 美元'), ('time', '成交时间')], [f | {'time': new_york(f['time'])} for f in reversed(fills)],
+        f'最近 {len(fills)} 笔成交，最新在前；以券商成交记录为准，包括未匹配到决策的成交；本版本不计算费用和净收益。')}
+
+
+def policy(key, label, bps, detail):
+    return metric(key, label, scalar(float(Decimal(bps) / 100), '%', 2, placement='suffix'), detail)
+
+
+def account(state):
+    snapshot, error = state['snapshot'], state['error']
+    if error:
+        kept = f"当前显示 {new_york(snapshot['at'])} 对账的数据" if snapshot else '尚无成功对账的数据'
+        reconciled = metric('reconciliation', '对账状态', {'state': 'text', 'text': bounded(error)},
+                            f'最近一次对账失败；{kept}。', 'negative')
+    elif snapshot:
+        reconciled = metric('reconciliation', '对账状态', {'state': 'text', 'text': new_york(snapshot['at'])},
+                            '最近一次成功对账；数值为对账估值')
+    else:
+        reconciled = metric('reconciliation', '对账状态', unknown(PENDING), '')
+    quote = ({'state': 'text', 'text': new_york(snapshot['quote_at'])} if snapshot else unknown(PENDING))
+    available = (scalar(float(Decimal(snapshot['available_cash_usd'])), decimals=2) if snapshot else unknown(PENDING))
+    return {'kind': 'metrics', 'id': 'account', 'title': '', 'items': [
+        reconciled, metric('quote', '行情时间', quote, '最近一次对账读取的 SPY 行情'),
+        policy('max-order', '单次调仓上限', state['policy']['max_order_bps'], '占账户总值；每项决策最多一笔订单'),
+        policy('cash-buffer', '现金保留', state['policy']['cash_buffer_bps'], '占账户总值；目标比例不超过 100% 减此值'),
+        metric('available-cash', '可用现金', available, 'USD · 券商报告的可用现金')]}
+
+
+def units(state):
+    """Every SPY/cash Track overlay: one data unit per kind, newest reconciled state."""
     snapshot, samples = state['snapshot'], state['valuations']
     today = valuation_date(snapshot['quote_at']) if snapshot else None
     previous = next((s for s in reversed(samples) if today and s['date'] < today), None)
-    items = [decision_record(d, state['fills']) for d in reversed(state['decisions'][-DECISIONS:])]
-    decisions = records('decisions', '', 'Planner 保存目标比例后，调仓决策会显示在这里。', items, label='调仓决策',
-                        description=f'最近 {DECISIONS} 项决策，最新在前；每项最多列出 20 笔成交。')
-    description = '长桥官方模拟账户 · USD · 数值为对账估值，盈亏未扣除费用与出入金。'
-    if state['error']:
-        description += ' 最近一次对账失败，当前显示上次成功对账的数据。'
-    return native_view(state, 'SPY 与现金组合', [
-        performance(snapshot, previous, samples), allocation(snapshot, previous, samples),
-        row('decisions', [decisions], '03 · 调仓决策', 'one')], description)
+    cells = {'spy.nav': nav(snapshot, previous), 'spy.nav_history': nav_history(samples),
+             'spy.weights': weights(snapshot), 'spy.weight_history': weight_history(samples),
+             'spy.holdings': holdings(snapshot, previous),
+             'spy.decision_log': decision_log(state['decisions'], state['fills']),
+             'spy.fill_log': fill_log(state['fills']), 'spy.account': account(state)}
+    return {kind: unit(state, cell) for kind, cell in cells.items()}
