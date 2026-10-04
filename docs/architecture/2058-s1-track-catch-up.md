@@ -93,14 +93,17 @@ Verified at fd26e2267 by reading the code, or by the command shown.
     learn fresh because it cannot fetch (K1).
 - **D5 Fetch.** For a `start: "upstream"` task, `drive_spawn` awaits
   `refresh_upstream(repo_root)` before it submits (K11, K12). This is outside every
-  transaction. Within one boot a re-drive fetches again (single-flight absorbs it). Receipts are
-  in memory, and after a restart the boot drives pending ops through the driver, not
-  `drive_spawn`: prepare then finds no `KernelFetch` receipt and refuses (fails closed).
+  transaction. A re-drive fetches again (single-flight absorbs it), including a crash during the
+  fetch: the claimed task re-enters through `resume_dispatched` → `drive_spawn`
+  (`scheduler/mod.rs:1762-1792`). Receipts are in memory, so only an op already submitted before
+  a restart reaches prepare through the driver with no `KernelFetch` receipt; it is refused
+  (fails closed).
 - **D6 Prepare, after the clean-tree check** (`prepare_worker_lease_with_tx`; refusals take the
   `spawn-failed: refused: …` wire):
-  0. `H` = HEAD, which must be on `refs/heads/neige/track-<id>` (`worktree_head_ref`, K19), else
-     `track-worktree-unavailable: the checkout is on <ref>, not neige/track-<id>`. Nothing is
-     reset off the track branch; the spawn check stays.
+  0. `H` = HEAD, which must be on `refs/heads/<worker_branch(..)>` (`worker.rs:99-104`, the
+     branch the spawn check uses; `worktree_head_ref`, K19), else `track-worktree-unavailable: the
+     checkout is on <ref or "a detached HEAD">, not <branch>` (as `base.rs:480` renders it).
+     Nothing is reset off the worker branch; the spawn check stays.
   1. `T` = the commit of the track's newest candidate whose attempt is done. Publish and prepare
      share this query (it moves out of `publish.rs`). With none, prepare refuses
      `track-nothing-to-replay: no attempt of this track is done; declare the task without start`.
@@ -151,7 +154,7 @@ Verified at fd26e2267 by reading the code, or by the command shown.
 | 6 | — | Releases and delivers: commits `C'` (parent `U`), then runs the gate | `task.git_delivery_settled`; candidate `C'`; the task is `done` |
 | 7 | `neige.track.publish {key, title, body}` | S3 D3 passes (`C'` is done). D1 reads remote `P` (the old candidate, ours) and force-with-lease pushes `C'`. The open PR on the same branch is reused, and its head becomes `C'` | Result `{pr_number, head_sha: C'}`; `forge.pr.opened{head_sha: C'}`. On GitHub the same PR shows a force-push, one commit, and a new `synchronize` CI run |
 | 8 | Reviews the new head (K16), then merges under ratify with `expected_head_sha = C'` | As today | `ratify.*`, `forge.pr.merged` |
-| 5′ | (the worker fails) | The delivery commits the partial work `F` as `failed` | `task.failed`; publish gives `publish-candidate-not-done`. Next, an ordinary task may continue from `F`, or another `start:"upstream"` task replays `T` |
+| 5′ | (the worker fails) | The delivery commits the partial work `F` as `failed` | `task.failed`; publish gives `publish-candidate-not-done`. Next, an ordinary task may continue from `F` (the worker left partial work), or another `start:"upstream"` task replays `T` |
 | 4′ | (spawn fails after the reset) | Compensation delivers a `failed` candidate pinned at `U` (`codex_adapter/mod.rs:1063`) | `task.failed spawn-failed: … HEAD is at upstream <U>; the track's work is in <T>; declare another start:"upstream" task` (D6 2a). An ordinary task here would build on `U` without the track's work |
 | 7′ | (someone pushed to the branch) | The script exits 22 before the push | `publish-failed: … exited with code 22; probe reports not landed`; the Planner asks the user |
 
@@ -180,7 +183,7 @@ the catch-up is done, the tip is a failed or unsettled candidate, and publish re
 | A spawn failure after the reset leaves the branch at `U` | yes | Replaying `T` again is safe (D6); publish refuses `U` |
 | An ordinary task after a never-ran catch-up builds on `U` without the track's work, and D1 then replaces the PR with it | yes | rule + findable text (D6 2a, D9, trace 4′); backstop in KNOWN GAPS |
 | The reset moves a branch other than the track's | yes | D6 step 0; spawn check kept (K19) |
-| A restart between fetch and prepare refuses the catch-up | yes | fails closed with `track-upstream-unavailable` (D5) |
+| A restart after the op is submitted, before its prepare, refuses the catch-up | yes | fails closed with `track-upstream-unavailable` (D5) |
 | Git holds the op tx during the reset | yes (same class as K13) | bounded at 20 s |
 | Stderr of a failed forge action is dropped | no (S3 §7) | none (D2 surfaces the exit code only) |
 | The PR base is the checkout's upstream at publish time | no (S3 gap) | none |
@@ -203,8 +206,10 @@ and use the existing fixtures (bare origin, `gh` shim):
   unchanged, and `gh` is not invoked.
 - **R3** The first publish creates the branch (existing P1 stays green).
 - **R4** `a_writer_between_the_lease_read_and_the_push_is_never_overwritten`. A `git` shim on PATH
-  next to the `gh` shim passes everything through; on `ls-remote` while a trigger file exists, it
-  first lets the real `ls-remote` answer (`P`, ours), then pushes a foreign commit `X` to the
+  next to the `gh` shim passes everything through; only on the publish script's `ls-remote <url> refs/heads/<b>`
+  while a trigger file exists (not on the `ls-remote --get-url` that `destination()` runs first,
+  `publish.rs:166-184` → `upstream.rs:158-162`, else R4 takes the exit-22 path), it first lets
+  the real `ls-remote` answer (`P`, ours), then pushes a foreign commit `X` to the
   origin from another clone and deletes the trigger. Publish fails, and the remote stays `X`. (A
   pre-push hook cannot stand in: it runs after the push's advertisement, so even `--force` is
   rejected there, K20.)
@@ -234,19 +239,20 @@ removes the `.rej`:
 - **C3** `a_catch_up_whose_fetch_fails_is_refused`: the origin is unreachable after the
   worktree is made. Result: `track-upstream-unavailable`, no lease, and HEAD unchanged.
 - **C4** `a_catch_up_without_a_done_attempt_is_refused` (`track-nothing-to-replay`, HEAD
-  unchanged). A managed track gives `track-upstream-unavailable`.
+  unchanged). A managed track with a done attempt passes step 0 (its worker branch is `main`)
+  and gives `track-upstream-unavailable`.
 - **C6** `a_catch_up_on_a_foreign_branch_is_refused_and_moves_nothing`: the idle worktree is
   switched to a clean human branch with an unpublished commit. Result: `track-worktree-unavailable`
   naming that branch; the human branch and `neige/track-<id>` are both unchanged.
 - **C7** `a_catch_up_whose_spawn_fails_names_the_upstream_and_the_work`
   (`fail_next_thread_start_for_test`, `shared_codex_appserver.rs:3736`): the task fails with
   `spawn-failed` text containing "HEAD is at upstream `<O1>`; the track's work is in `<T>`;
-  declare another start:"upstream" task".
+  declare another start:"upstream" task", and `neige/track-<id>` is at `O1` afterwards.
 - **C5** (`kinds_tests`) `start` with terminal, `read_only`, the child-track `spawn` or an
   unknown value is rejected, and the error lists the choices.
 
 Predicted red sets: MB1 (prepare skips the reset) → {C1, C2}; MB2 (`drive_spawn` skips the
-fetch; the create-time receipt still says `O0`) → {C1, C2, C3}; MB3 (`T` = HEAD) → {C2}; MB4
+fetch; the create-time receipt still says `O0`) → {C1, C2, C3, C7}; MB3 (`T` = HEAD) → {C2}; MB4
 (any upstream source is accepted) → {C3}; MB5 (D6 step 0 dropped) → {C6}; MB6 (the scheduler's
 failed-op arm omits the D6 2a sentence) → {C7}.
 
@@ -270,7 +276,8 @@ lockstep (no event changes), `deferred_write_tx_invariant`, `scripts/ci/ratchets
 - A catch-up op that goes Stuck after the reset leaves HEAD at `U`; the next catch-up replays `T`.
 - If the Planner ignores the D9 rule and runs an ordinary task from `U`, the merge review of its
   `head_sha` (K16) is the backstop; the track's work stays in candidate refs (K18).
-- A restart after the fetch and before prepare refuses the catch-up (D5); declare it again.
+- A restart after the worker op is submitted and before its prepare refuses the catch-up (D5);
+  declare it again.
 - A `reset --keep` killed at 20 s can leave `index.lock`; the next clean check reports
   `track-worktree-unavailable` until it is removed.
 
