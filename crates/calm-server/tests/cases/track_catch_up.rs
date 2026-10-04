@@ -184,6 +184,35 @@ async fn a_catch_up_starts_at_the_fetched_upstream_and_delivers_one_linear_commi
     );
 }
 
+/// #2112 — a catch-up fetches and starts from the track branch's own upstream: the primary
+/// checkout on another branch whose upstream has moved elsewhere changes neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_catch_up_ignores_the_branch_the_primary_checkout_moved_to() {
+    let (w, _) = catch_up_world().await;
+    let fx = &w.fx;
+    done_edit(fx, "work", TRACK_EDIT).await;
+    let o1 = move_upstream(fx, UPSTREAM_EDIT);
+    git(&fx.track_root, &["checkout", "-q", "-b", "side"]);
+    git(
+        &fx.track_root,
+        &["commit", "-q", "--allow-empty", "-m", "side work"],
+    );
+    git(&fx.track_root, &["push", "-q", "-u", "origin", "side"]);
+    let side = head(&fx.track_root);
+
+    declare_catch_up(fx, "catch-up").await;
+    let started = wait_running(fx, "catch-up").await;
+
+    assert_eq!(
+        head(&started.cwd),
+        o1,
+        "not the primary's side branch {side}"
+    );
+    assert_eq!(started.base_sha, o1);
+    let prompt = card_prompt(fx, &started).await;
+    assert!(prompt.contains(&starts_from(&o1)), "{prompt}");
+}
+
 /// C2 (D6 step 1) — the first catch-up fails with partial work F on O1; the second replays T, the
 /// last done commit, not F, starts at O1 again, and names where the checkout was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

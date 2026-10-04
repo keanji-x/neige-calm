@@ -623,7 +623,7 @@ async fn plan_list(
     let bases: Vec<Option<String>> = entries.iter().map(|(_, base)| base.clone()).collect();
     let staleness = crate::git_candidate::staleness::upstream_staleness_blocking(
         track.id.to_string(),
-        track.workspace.path.clone(),
+        track.workspace.agent_cwd().to_string(),
         bases,
     )
     .await;

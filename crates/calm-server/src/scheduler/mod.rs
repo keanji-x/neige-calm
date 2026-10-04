@@ -139,25 +139,13 @@ pub fn compute_ready(tasks: &[Task], occupancy: crate::db::sqlite::CheckoutOccup
         .collect()
 }
 
-/// #2058 D5: fetch the upstream a catch-up of `track` starts from (the repository its prepare
-/// reads, [`crate::operation::workspace_lease::worker::catch_up_repo_root`]). Bounded and
-/// fail-soft: a failed fetch leaves no fetch receipt, which prepare refuses.
+/// #2058 D5: fetch the upstream a catch-up of `track` starts from: that of the branch of the
+/// checkout its worker runs in and its prepare reads, `agent_cwd()` (#2112: the track worktree,
+/// never the main checkout). Bounded and fail-soft: a failed fetch leaves no fetch receipt, which
+/// prepare refuses.
 async fn refresh_catch_up_upstream(track: &Track) {
-    let workspace = &track.workspace;
-    match crate::operation::workspace_lease::worker::catch_up_repo_root(
-        track.id.as_str(),
-        workspace.kind,
-        &workspace.path,
-        workspace.worktree.as_deref(),
-    ) {
-        Ok(Some(repo_root)) => {
-            crate::operation::workspace_lease::upstream_fetch::refresh_upstream(&repo_root).await;
-        }
-        Ok(None) => {}
-        Err(error) => {
-            tracing::warn!(track_id = %track.id, error = %error, "catch-up: no repository to fetch");
-        }
-    }
+    let checkout = std::path::Path::new(track.workspace.agent_cwd());
+    crate::operation::workspace_lease::upstream_fetch::refresh_upstream(checkout).await;
 }
 
 /// Build the worker-operation payload as a pure function of the frozen task row, so a

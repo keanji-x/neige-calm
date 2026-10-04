@@ -54,6 +54,8 @@ Verified at c3886d776 by reading the code, or by the query or command shown (414
   `track_worktree_target(..).repo_root`: `url` is both the push destination and gh's `--repo`
   (H14), so the two cannot diverge; the base is `merge` without `refs/heads/`. With no upstream, or remote `.`, it refuses: `refused: publish-no-upstream: <repo_root>
   has no upstream remote to push to; set one with git branch --set-upstream-to and retry`.
+  #2112 replaces `repo_root` with the track worktree: the kernel copies the checkout's upstream
+  onto `neige/track-<id>` when it makes the branch, and publish reads that branch's own upstream.
 - **D3 The equality rule.** The tip is `git rev-parse --verify refs/heads/neige/track-<id>^{commit}`
   (isolated git, in `repo_root`). It must equal the `commit_sha` of a `task_candidates` row of this
   track whose attempt has `status = 'done'` (H11). This is one SQL read and adds no new state.
@@ -186,7 +188,8 @@ Predicted red sets over `track_publish` and the plugin's unit tests:
   read `~/.config/gh/hosts.yml`. This is the same boundary as `isolated_git_command` (H5).
 - An operator whose `git push` authenticates only through a GH_* variable gets an inline push
   failure. A rewritten branch cannot be published (no force push).
-- The PR base is the checkout's upstream at publish time, not at track creation.
+- The PR base is the checkout's upstream at publish time, not at track creation. Fixed by #2112:
+  it is the track branch's own upstream, recorded at track creation.
 - A `url.*.pushInsteadOf` can rewrite the direct push URL to another repository. The exit-21
   PR-head check then fails the publish; nothing refuses it ahead of time.
 - A Planner can still push or open a PR by hand in a terminal. #1868 removes the plugin's

@@ -92,7 +92,8 @@ Verified at fd26e2267 by reading the code, or by the command shown.
     delivery or the candidate (K10). It would also need a commit id, which the Planner cannot
     learn fresh because it cannot fetch (K1).
 - **D5 Fetch.** For a `start: "upstream"` task, `drive_spawn` awaits
-  `refresh_upstream(repo_root)` before it submits (K11, K12). This is outside every
+  `refresh_upstream(repo_root)` before it submits (K11, K12). #2112: `refresh_upstream` and
+  step 2 read the track worktree, so `U` is the upstream of `neige/track-<id>` itself. This is outside every
   transaction. A re-drive fetches again (single-flight absorbs it), including a crash during the
   fetch: the claimed task re-enters through `resume_dispatched` → `drive_spawn`
   (`scheduler/mod.rs:1762-1792`). Receipts are in memory, so only an op already submitted before
@@ -186,7 +187,7 @@ the catch-up is done, the tip is a failed or unsettled candidate, and publish re
 | A restart after the op is submitted, before its prepare, refuses the catch-up | yes | fails closed with `track-upstream-unavailable` (D5) |
 | Git holds the op tx during the reset | yes (same class as K13) | bounded at 20 s |
 | Stderr of a failed forge action is dropped | no (S3 §7) | none (D2 surfaces the exit code only) |
-| The PR base is the checkout's upstream at publish time | no (S3 gap) | none |
+| The PR base is the checkout's upstream at publish time | no (S3 gap) | #2112: the track branch's own upstream, recorded at track creation |
 | The tip moves between the S3 D3 check and the push | no (S3 gap) | none |
 | `candidate.upstream` lags until a fetch | no (S2 as-built) | D5 refreshes it as a side effect |
 | A Planner pushes by hand from a terminal | no (S3 gap) | none |

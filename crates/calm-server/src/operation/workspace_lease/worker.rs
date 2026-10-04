@@ -229,11 +229,7 @@ async fn prepare_worker_lease_with_tx(
     ensure_clean_tree(&path).await?;
     let catch_up = match start {
         TaskStart::Checkout => None,
-        TaskStart::Upstream => {
-            let repo_root =
-                catch_up_repo_root(track_id, kind, &workspace_path, worktree.as_deref())?;
-            Some(catch_up_tx(tx, track_id, &path, &branch, repo_root.as_deref()).await?)
-        }
+        TaskStart::Upstream => Some(catch_up_tx(tx, track_id, &path, &branch).await?),
     };
     // One HEAD sample: the declared head is compared with the base the lease records, so the
     // spawn's base check also holds the declared head.
@@ -268,35 +264,16 @@ async fn prepare_worker_lease_with_tx(
     })
 }
 
-/// #2058: the repository whose upstream a catch-up starts from — an attached track's main
-/// repository (its worktree's `repo_root`), a managed track's directory. `None` for an attached
-/// track without a worktree, which runs no worker. The scheduler fetches it (D5) and prepare
-/// reads it (D6), so both name the same repository.
-pub(crate) fn catch_up_repo_root(
-    track_id: &str,
-    kind: TrackWorkspaceKind,
-    workspace_path: &str,
-    worktree: Option<&str>,
-) -> Result<Option<PathBuf>> {
-    match (kind, worktree) {
-        (_, Some(worktree)) => Ok(Some(
-            super::track_worktree::track_worktree_target(track_id, worktree)?.repo_root,
-        )),
-        (TrackWorkspaceKind::Managed, None) => Ok(Some(PathBuf::from(workspace_path))),
-        (TrackWorkspaceKind::Attached, None) => Ok(None),
-    }
-}
-
 /// #2058 D6 steps 0–4, after the clean-tree check: the checkout `path` is on `branch` at `H`;
-/// `T` is the track's newest done candidate; `U` is the upstream of `repo_root` as the kernel's
-/// fetch left it; `M` is their merge base; then `reset --keep U`. Every refusal comes before the
-/// reset, so a refused catch-up leaves HEAD where it was.
+/// `T` is the track's newest done candidate; `U` is the upstream of `branch` itself as the
+/// kernel's fetch left it (#2112: never of the branch an attached track's main checkout is on);
+/// `M` is their merge base; then `reset --keep U`. Every refusal comes before the reset, so a
+/// refused catch-up leaves HEAD where it was.
 async fn catch_up_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
     path: &Path,
     branch: &str,
-    repo_root: Option<&Path>,
 ) -> Result<CatchUpFacts> {
     // Step 0: nothing is reset off the worker branch (the spawn check stays, K19).
     let expected = format!("refs/heads/{branch}");
@@ -317,11 +294,7 @@ async fn catch_up_tx(
         )));
     };
     // Step 2: only an upstream the kernel fetched for this catch-up (D5) is fresh enough.
-    let known = match repo_root {
-        Some(repo_root) => super::upstream::last_known_upstream(repo_root)?,
-        None => None,
-    };
-    let upstream = match known {
+    let upstream = match super::upstream::last_known_upstream(path)? {
         Some(known) if known.source == UpstreamSource::KernelFetch => known,
         other => {
             let why = match other {
@@ -331,7 +304,9 @@ async fn catch_up_tx(
                     known.source.as_str(),
                     known.sha
                 ),
-                None => "the checkout has no upstream to fetch".to_string(),
+                None => format!(
+                    "{branch} has no upstream to fetch; set one with git branch --set-upstream-to"
+                ),
             };
             return Err(CalmError::Conflict(format!(
                 "refused: {TRACK_UPSTREAM_UNAVAILABLE}: {why}. {}",

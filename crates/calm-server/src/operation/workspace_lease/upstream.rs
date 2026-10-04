@@ -139,17 +139,32 @@ pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
     }))
 }
 
-/// #1933: the remote a track's work goes to. It is the upstream of the branch the track's MAIN
-/// repository has checked out (`track_worktree_target(..).repo_root`): a `neige/track-*` branch
-/// has no upstream. Dev publish pushes there, and a read-only worker's prompt names it. `None`
-/// when that branch has no remote upstream (detached, no complete config, or a local `.`).
+/// #1933: the remote a track's work goes to. It is the upstream of `neige/track-<id>` itself,
+/// read in the track worktree (#2112: [`record_branch_upstream`] copies the checkout's upstream
+/// onto the branch when the worktree is made, so the main checkout changing branches moves
+/// nothing). Dev publish pushes there, and a read-only worker's prompt names it. `None` when the
+/// branch has no remote upstream (no complete config, or a local `.`).
 pub(crate) fn track_remote(
     track_id: &str,
     worktree: &str,
 ) -> Result<(super::WorkspaceLeaseTarget, Option<Upstream>)> {
     let target = super::track_worktree::track_worktree_target(track_id, worktree)?;
-    let upstream = head_upstream(&target.repo_root)?.filter(|upstream| upstream.remote != ".");
+    let upstream = head_upstream(&target.path)?.filter(|upstream| upstream.remote != ".");
     Ok((target, upstream))
+}
+
+/// #2112: give `branch` the upstream `upstream` names (`branch.<b>.remote` /
+/// `branch.<b>.merge`), as `git branch --set-upstream-to` would without needing a tracking ref.
+pub(crate) fn record_branch_upstream(
+    repo_root: &Path,
+    branch: &str,
+    upstream: &Upstream,
+) -> Result<()> {
+    for (key, value) in [("remote", &upstream.remote), ("merge", &upstream.merge)] {
+        let key = format!("branch.{branch}.{key}");
+        git_success(repo_root, &["config", "--", &key, value])?;
+    }
+    Ok(())
 }
 
 /// `git ls-remote --get-url <remote>`: the URL a fetch of `remote` would

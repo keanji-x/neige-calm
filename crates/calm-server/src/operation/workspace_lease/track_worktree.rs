@@ -12,7 +12,9 @@ use crate::error::{CalmError, Result};
 use crate::model::Track;
 use crate::workspace_materialize::isolated_git_command;
 
-use super::upstream::{LeaseStart, choose_lease_start, diverged_refusal};
+use super::upstream::{
+    LeaseStart, choose_lease_start, diverged_refusal, head_upstream, record_branch_upstream,
+};
 use super::{
     GitWorktreeRegistration, WorkspaceLeaseTarget, ensure_workspace_worktree_root_excluded,
     git_failed, git_ref_exists, git_worktree_registration, remove_workspace_worktree,
@@ -57,8 +59,8 @@ pub(crate) fn track_worktree_target(
 /// Make the track's worktree if it has one and it is not there yet. The upstream is refreshed
 /// first (bounded, fail-soft), then the git work runs on a blocking thread: a registered
 /// directory is done, an existing branch is checked out again, else a new branch starts by the
-/// checkout's relation to its upstream (`choose_lease_start`); git refuses whatever else is at
-/// the path. A diverged checkout is refused
+/// checkout's relation to its upstream (`choose_lease_start`) and keeps that upstream as its own
+/// (#2112); git refuses whatever else is at the path. A diverged checkout is refused
 /// (`attached-repo-diverged`) and a repository without a commit fails.
 pub(crate) async fn ensure_track_worktree(track: &Track) -> Result<()> {
     let Some(worktree) = track.workspace.worktree.as_deref() else {
@@ -89,6 +91,12 @@ fn ensure_track_worktree_blocking(target: &WorkspaceLeaseTarget) -> Result<()> {
     if git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch))? {
         command.arg(&target.path).arg(&target.branch);
     } else {
+        // #2112: the new branch keeps the checkout's upstream as of now; publish and catch-up
+        // read it from the branch, never from whatever the checkout is on later. Written first:
+        // config for a branch `worktree add` then fails to make is rewritten by the retry.
+        if let Some(upstream) = head_upstream(&target.repo_root)? {
+            record_branch_upstream(&target.repo_root, &target.branch, &upstream)?;
+        }
         let base = track_worktree_base(&target.repo_root)?;
         command
             .args(["-b", &target.branch])

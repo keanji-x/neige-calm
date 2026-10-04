@@ -135,7 +135,8 @@ async fn candidate_facts(
 }
 
 /// What the publish pushes and where: the tip of the track branch, the upstream URL (both the
-/// push destination and gh's `--repo`, D2) and the base branch.
+/// push destination and gh's `--repo`, D2) and the base branch — the track branch's own upstream
+/// (#2112), never the branch the main checkout is on now.
 struct Destination {
     worktree: PathBuf,
     branch: String,
@@ -158,9 +159,10 @@ async fn destination(track: &Track) -> Result<Destination, RpcError> {
         let (target, upstream) = track_remote(&track_id, &worktree).map_err(internal)?;
         let Some(upstream) = upstream else {
             return Err(refused(format!(
-                "publish-no-upstream: {} has no upstream remote to push to; set one with git \
-                 branch --set-upstream-to and retry",
-                target.repo_root.display()
+                "publish-no-upstream: {} has no upstream remote to push to; set one with git -C \
+                 {} branch --set-upstream-to and retry",
+                target.branch,
+                target.path.display()
             )));
         };
         let tip = branch_tip(&target.repo_root, &target.branch)?;

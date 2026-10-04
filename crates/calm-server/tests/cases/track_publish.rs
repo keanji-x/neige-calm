@@ -1,6 +1,6 @@
 //! #1830 S3 — `neige.dev.publish` (`docs/architecture/1830-s3-push-pr-reclaim.md` §5): the
-//! Planner of an attached track pushes `neige/track-<id>` to the checkout's upstream URL and opens
-//! or reuses the PR, only when the branch tip is the commit of a `done` attempt of this track; no
+//! Planner of an attached track pushes `neige/track-<id>` to its own upstream URL (the checkout's
+//! when the track worktree was made, #2112) and opens or reuses the PR, only when the branch tip is the commit of a `done` attempt of this track; no
 //! kernel git script shows its repository's code a GitHub token.
 //!
 //! The world is S2's (`track_worker_cwd::world`): a clone of a local bare origin, the track
@@ -270,7 +270,7 @@ async fn a_delivery_commit_hook_never_sees_a_github_token() {
     assert_eq!(std::fs::read_to_string(&seen).unwrap(), "unset");
 }
 
-/// D7 and D2 — a track without its own worktree, then a checkout without an upstream, are
+/// D7 and D2 — a track without its own worktree, then a track branch without an upstream, are
 /// refused before any operation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn publish_refuses_without_a_worktree_or_an_upstream() {
@@ -279,14 +279,15 @@ async fn publish_refuses_without_a_worktree_or_an_upstream() {
     let fx = &w.fx;
     done_candidate(fx, "a").await;
 
-    git(&fx.track_root, &["branch", "--unset-upstream"]);
+    git(&fx.worktree, &["branch", "--unset-upstream"]);
     let message = refused(publish(fx, "no-upstream").await);
     assert_eq!(
         message,
         format!(
             "refused: publish-no-upstream: {} has no upstream remote to push to; set one with \
-             git branch --set-upstream-to and retry",
-            fx.track_root.display()
+             git -C {} branch --set-upstream-to and retry",
+            fx.worker_branch(),
+            fx.worktree.display()
         )
     );
 
@@ -302,6 +303,31 @@ async fn publish_refuses_without_a_worktree_or_an_upstream() {
     );
     assert_eq!(remote_branch(fx), None);
     assert_eq!(publish_op_count(fx).await, 0);
+}
+
+/// #2112 — the push target and the PR base are the track branch's own upstream, recorded when the
+/// track worktree was made: the primary checkout moving to another branch, without an upstream
+/// and then with one of its own, changes neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_ignores_the_branch_the_primary_checkout_moved_to() {
+    let _env = publish_env(None).await;
+    let w = development_world().await;
+    let fx = &w.fx;
+    let a = done_candidate(fx, "a").await;
+
+    git(&fx.track_root, &["checkout", "-q", "-b", "side"]);
+    let first = publish(fx, "p1").await.unwrap();
+    assert_eq!(first["base"], json!("main"), "{first}");
+    assert_eq!(remote_branch(fx).as_deref(), Some(a.as_str()));
+
+    git(&fx.track_root, &["push", "-q", "-u", "origin", "side"]);
+    let b = done_candidate(fx, "b").await;
+    let second = publish(fx, "p2").await.unwrap();
+    assert_eq!(second["base"], json!("main"), "{second}");
+    assert_eq!(remote_branch(fx).as_deref(), Some(b.as_str()));
+    let log = gh_log(fx);
+    assert!(log.contains(" --base main "), "{log}");
+    assert!(!log.contains(" --base side "), "{log}");
 }
 
 /// A second done candidate is pushed fast-forward and reuses the open PR.

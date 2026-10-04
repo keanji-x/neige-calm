@@ -292,6 +292,11 @@ async fn attached_create_makes_the_track_worktree_at_the_upstream() {
         git_stdout(&worktree, ["symbolic-ref", "HEAD"]),
         format!("refs/heads/neige/track-{track_id}")
     );
+    assert_eq!(
+        git_stdout(&worktree, ["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/main",
+        "#2112: the track branch keeps the checkout's upstream"
+    );
     assert_eq!(head(&up.clone), clone_head, "the clone's HEAD is unchanged");
     assert_eq!(porcelain(&up.clone), clone_status, "and so is its status");
 

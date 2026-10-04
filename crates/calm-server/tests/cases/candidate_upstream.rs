@@ -1,7 +1,8 @@
 //! #1777 B — `neige.plan.list.candidate.upstream`: every bound candidate reads the commit, as last
-//! known now, of the upstream of the branch the Track's checkout is on now, and how many commits its
-//! base (since #1830 S2 the track worktree's HEAD) is behind it. Absent when that branch has no known
-//! upstream. Read-only: the read fetches nothing and writes no ref.
+//! known now, of the upstream of the branch the Track's own checkout (the track worktree, #2112) is
+//! on now, and how many commits its base (since #1830 S2 the track worktree's HEAD) is behind it.
+//! Absent when that branch has no known upstream. Read-only: the read fetches nothing and writes no
+//! ref.
 
 use std::path::{Path, PathBuf};
 
@@ -48,14 +49,18 @@ async fn plan_list_reads_how_far_an_upstream_candidate_is_behind() {
     .await;
     let origin = origin.unwrap();
     let repo = fx.track_root.clone();
-    // The upstream is set after the track worktree was made, so no kernel fetch receipt exists and
-    // the checkout's own tracking ref is what is last known.
+    // The upstream is set on the track branch after the track worktree was made, so no kernel
+    // fetch receipt exists and the repository's own tracking ref is what is last known. The main
+    // checkout's branch has none (#2112: it is not the track's).
     git(
         &repo,
         &["remote", "add", "origin", origin.to_str().unwrap()],
     );
     git(&repo, &["fetch", "-q", "origin"]);
-    git(&repo, &["branch", "-q", "--set-upstream-to=origin/main"]);
+    git(
+        &fx.worktree,
+        &["branch", "-q", "--set-upstream-to=origin/main"],
+    );
     let commit_upstream = |message: &str| {
         git(&origin, &["commit", "-q", "--allow-empty", "-m", message]);
         git(&origin, &["rev-parse", "HEAD"])
@@ -101,8 +106,10 @@ async fn plan_list_reads_how_far_an_upstream_candidate_is_behind() {
         "{refs_before}"
     );
 
-    // No known upstream for the checkout's branch now: nothing to measure against.
-    git(&repo, &["branch", "-q", "--unset-upstream"]);
+    // No known upstream for the track branch now: nothing to measure against, though the main
+    // checkout's branch has one.
+    git(&repo, &["branch", "-q", "--set-upstream-to=origin/main"]);
+    git(&fx.worktree, &["branch", "-q", "--unset-upstream"]);
     let entry = fx.plan_entry("up").await;
     assert_eq!(entry["candidate"]["binding"], "bound", "{entry}");
     assert_eq!(
