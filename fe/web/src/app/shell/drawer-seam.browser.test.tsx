@@ -11,7 +11,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
  * registration is first-come, so importing a CSS Module first inverts the order. */
 import '../../styles/entry.css';
 
+import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import type { ReportOutlineItem } from '../../../../core/domain/report.ts';
+import { ChatThread } from '../../features/chat/thread/public.tsx';
 import reportDocument from '../../features/report/document/document.module.css';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
 import trackPage from '../../features/track/page/page.module.css';
@@ -373,5 +375,197 @@ describe('the drawer against a real rendering engine', () => {
     });
     expect(onClose).toHaveBeenCalledTimes(1);
     await untilGone();
+  });
+});
+
+/* #1923 S4: the drawer's desktop reading-width toggle, against the real shell span rules. */
+describe('expanded reading width', () => {
+  const conversation: Conversation = {
+    id: 'c1', trackId: 't1', trackTitle: 'Track', title: null, kind: 'codex', state: 'idle', updatedAt: 1, turns: 1,
+  };
+  const WIDE_LINE = `const route = ${'resolveRoute(origin, destination).'.repeat(8)}hops;`;
+  const WIDE_TABLE = [
+    `| ${Array.from({ length: 12 }, (_, index) => `Column ${index + 1}`).join(' | ')} |`,
+    `| ${Array.from({ length: 12 }, () => '---').join(' | ')} |`,
+    `| ${Array.from({ length: 12 }, (_, index) => `cell-${index + 1}-without-any-break-opportunity`).join(' | ')} |`,
+  ].join('\n');
+  const REPLY = ['The plan, as code and as a table.', '', '```ts', WIDE_LINE, '```', '', WIDE_TABLE, '',
+    ...Array.from({ length: 30 }, (_, index) => `Paragraph ${index + 1} of the long reply, long enough to wrap across the conversation column at either width.`)].join('\n\n');
+  const TURNS: readonly TranscriptEntry[] = [
+    { id: 'u1', author: 'you', text: 'Show me the plan.', atMs: 1 },
+    { id: 'r1', author: 'agent', text: REPLY, atMs: 2 },
+  ];
+
+  /** `Page`, with the reading width owned by the page the way the router owns it, and a long reply. */
+  function WidthPage({ onClose, initiallyOpen = false }: { onClose?: () => void; initiallyOpen?: boolean }) {
+    const [open, setOpen] = useState(initiallyOpen);
+    const [expanded, setExpanded] = useState(false);
+    return (
+      <div className={shell.shell}>
+        <div aria-hidden="true" />
+        <main className={shell.main}>
+          <span data-testid="panel-span-probe" style={{ position: 'absolute', inlineSize: 'var(--panel-span)' }} />
+          <h1 data-nc-page-title="" tabIndex={-1}>Today</h1>
+          <aside data-nc-panel="">
+            <button type="button" data-testid="opener" onClick={() => { setOpen(true); }}>Conversation Chat</button>
+          </aside>
+          <Drawer open={open} title="Chat" onClose={() => { setOpen(false); onClose?.(); }}
+            readingWidth={{ expanded, onExpandedChange: setExpanded }}>
+            <ChatThread canContinue conversation={conversation} turns={TURNS} cards={{}} stalled={false} />
+          </Drawer>
+        </main>
+      </div>
+    );
+  }
+
+  const drawer = () => document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+  const scroller = () => document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  const toggle = () => drawer().querySelector<HTMLElement>('button[aria-pressed]');
+  const spanOf = (element: Element) => element.getBoundingClientRect().width / document.querySelector('main')!.getBoundingClientRect().width;
+  const scrollsSideways = (box: Element) => ['auto', 'scroll'].includes(getComputedStyle(box).overflowX);
+  /** The box that scrolls `element` sideways: Astryx puts it inside a code block and around a table. Never the drawer's own scroller. */
+  function sidewaysScroller(element: Element): HTMLElement | null {
+    const inside = [element, ...element.querySelectorAll('*')].find(scrollsSideways);
+    if (inside !== undefined) return inside as HTMLElement;
+    for (let box = element.parentElement; box !== null && box !== scroller(); box = box.parentElement) {
+      if (scrollsSideways(box)) return box;
+    }
+    return null;
+  }
+  /** The element holding a paragraph's text: Astryx's Markdown paragraphs are not `<p>`. */
+  function paragraphStarting(prefix: string): HTMLElement {
+    const walker = document.createTreeWalker(drawer(), NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (node.textContent?.startsWith(prefix)) return node.parentElement!;
+    }
+    throw new Error(`no paragraph starts with ${prefix}`);
+  }
+  async function settled() {
+    await Promise.all(drawer().getAnimations().map((animation) => animation.finished));
+    await new Promise((resolve) => { requestAnimationFrame(() => { resolve(null); }); });
+  }
+  /** Neither the page nor the drawer's pane scrolls sideways; the code block and the table each scroll in their own box. */
+  function expectNoSidewaysPage() {
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(document.documentElement.clientWidth);
+    expect(scroller().scrollWidth).toBeLessThanOrEqual(scroller().clientWidth);
+    for (const [name, element] of [['code block', drawer().querySelector('pre')!], ['table', drawer().querySelector('table')!]] as const) {
+      const own = sidewaysScroller(element);
+      expect(own, name).not.toBeNull();
+      expect(own!.scrollWidth, name).toBeGreaterThan(own!.clientWidth);
+    }
+  }
+
+  it('widens the card and the panel track it covers, and narrows them back', async () => {
+    await page.viewport(1400, 900);
+    render(<WidthPage />);
+    await click(opener());
+    const probe = document.querySelector<HTMLElement>('[data-testid="panel-span-probe"]')!;
+    expect(spanOf(drawer())).toBeCloseTo(0.4, 2);
+    expect(toggle()!.getAttribute('aria-label')).toBe('Expand reading width');
+
+    await click(toggle()!);
+    expect(drawer().hasAttribute('data-nc-drawer-expanded')).toBe(true);
+    expect(spanOf(drawer())).toBeCloseTo(0.7, 2);
+    expect(spanOf(probe)).toBeCloseTo(0.7, 2);
+    const laid = getComputedStyle(drawer());
+    expect(laid.insetInlineEnd).toBe('24px');
+    expect(drawer().getBoundingClientRect().left).toBeGreaterThanOrEqual(document.querySelector('main')!.getBoundingClientRect().left + 24);
+
+    await click(toggle()!);
+    expect(toggle()!.getAttribute('aria-label')).toBe('Expand reading width');
+    expect(spanOf(drawer())).toBeCloseTo(0.4, 2);
+    expect(spanOf(probe)).toBeCloseTo(0.4, 2);
+  });
+
+  it('keeps focus on the toggle and the reader where they were in the transcript', async () => {
+    await page.viewport(1400, 900);
+    render(<WidthPage />);
+    await click(opener());
+    await settled();
+    const pane = scroller();
+    expect(pane.scrollHeight).toBeGreaterThan(pane.clientHeight * 2);
+    pane.scrollTop = pane.scrollHeight;
+    await page.getByRole('button', { name: 'Expand reading width' }).click();
+    expect(document.activeElement).toBe(toggle());
+    expect(toggle()!.getAttribute('aria-pressed')).toBe('true');
+    expect(scroller()).toBe(pane);
+    expect(pane.scrollHeight - pane.scrollTop - pane.clientHeight).toBeLessThanOrEqual(1);
+
+    /* At the end it stays at the end when narrowing makes the transcript taller. */
+    await page.getByRole('button', { name: 'Restore width' }).click();
+    expect(document.activeElement).toBe(toggle());
+    expect(pane.scrollHeight - pane.scrollTop - pane.clientHeight).toBeLessThanOrEqual(1);
+
+    /* Mid-transcript, both ways: the paragraph the reader is on keeps its place in the pane across the reflow. */
+    const paragraph = paragraphStarting('Paragraph 12 ');
+    pane.scrollTop += paragraph.getBoundingClientRect().top - pane.getBoundingClientRect().top - pane.clientHeight / 2 + 4;
+    for (const name of ['Expand reading width', 'Restore width']) {
+      const before = paragraph.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+      await page.getByRole('button', { name }).click();
+      expect(document.activeElement).toBe(toggle());
+      expect(Math.abs(paragraph.getBoundingClientRect().top - pane.getBoundingClientRect().top - before)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('still closes on Escape and on Close while expanded, and returns focus to the opener', async () => {
+    await page.viewport(1400, 900);
+    const onClose = vi.fn();
+    render(<WidthPage onClose={onClose} />);
+    opener().focus();
+    await click(opener());
+    await page.getByRole('button', { name: 'Expand reading width' }).click();
+    expect(document.activeElement).toBe(toggle());
+    await act(async () => {
+      toggle()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await untilGone();
+    await untilFocused(opener, 'the opener');
+
+    await click(opener());
+    expect(drawer().hasAttribute('data-nc-drawer-expanded')).toBe(true);
+    expect(spanOf(drawer())).toBeCloseTo(0.7, 2);
+    await click(drawer().querySelector<HTMLElement>('button[aria-label="Close conversation"]')!);
+    await untilGone();
+    await untilFocused(opener, 'the opener');
+  });
+
+  it.each([false, true])('scrolls neither the page nor the pane sideways at 1280 (expanded: %s)', async (expanded) => {
+    await page.viewport(1280, 800);
+    render(<WidthPage initiallyOpen />);
+    if (expanded) await click(toggle()!);
+    await settled();
+    expect(drawer().hasAttribute('data-nc-drawer-expanded')).toBe(expanded);
+    expectNoSidewaysPage();
+  });
+
+  it('has no toggle on a phone, where the conversation is already the full width', async () => {
+    await page.viewport(390, 844);
+    try {
+      render(<WidthPage initiallyOpen />);
+      await settled();
+      expect(toggle()).toBeNull();
+      expect(drawer().hasAttribute('data-nc-drawer-expanded')).toBe(false);
+      expect(drawer().getBoundingClientRect().width).toBe(390);
+      expectNoSidewaysPage();
+    } finally { await page.viewport(1400, 900); }
+  });
+
+  it('ignores an expanded choice made on desktop once the viewport is a phone', async () => {
+    await page.viewport(1400, 900);
+    try {
+      render(<WidthPage initiallyOpen />);
+      await click(toggle()!);
+      expect(drawer().hasAttribute('data-nc-drawer-expanded')).toBe(true);
+      await page.viewport(390, 844);
+      await waitFor(() => expect(toggle()).toBeNull());
+      expect(drawer().hasAttribute('data-nc-drawer-expanded')).toBe(false);
+      expect(drawer().getBoundingClientRect().width).toBe(390);
+      expectNoSidewaysPage();
+      await page.viewport(1400, 900);
+      await waitFor(() => expect(toggle()?.getAttribute('aria-pressed')).toBe('true'));
+      expect(spanOf(drawer())).toBeCloseTo(0.7, 2);
+    } finally { await page.viewport(1400, 900); }
   });
 });

@@ -131,6 +131,11 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return typeof value === 'boolean' ? value : null;
     },
     setRailCollapsed: (value: boolean) => write('rail-collapsed', value, true),
+    /** The desktop drawer's expanded reading width; one choice for every drawer, off by default. */
+    drawerExpanded(): boolean {
+      return read('drawer-expanded') === true;
+    },
+    setDrawerExpanded: (value: boolean) => write('drawer-expanded', value, true),
     /** A report preview block's device choice (#1780), as the block serialized it; per Track and block key. */
     previewViewport(trackId: string, key: string): string | null {
       const value = read(`preview-viewport:${trackId}:${key}`);
@@ -168,6 +173,12 @@ export function useUiPreferences(): UiPreferences {
   const preferences = context ?? local;
   useSyncExternalStore(preferences.subscribe, preferences.getSnapshot, preferences.getSnapshot);
   return preferences;
+}
+
+/** The drawer's reading-width choice, remembered per browser (in memory when storage is unavailable). */
+export function useDrawerReadingWidth() {
+  const preferences = useUiPreferences();
+  return { expanded: preferences.drawerExpanded(), onExpandedChange: preferences.setDrawerExpanded };
 }
 
 type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;

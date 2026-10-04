@@ -230,7 +230,7 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByText(/Pick a model to start it again/)).toBeNull();
   });
 
-  it('offers exactly the close, Send and the model picker, and no other control at all', async () => {
+  it('offers exactly the close, the reading-width toggle, Send and the model picker, and no other control at all', async () => {
     setupWithTurns();
     await openConversationWithTurns();
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
@@ -239,7 +239,7 @@ describe('planner conversation regressions', () => {
       .map((button) => button.getAttribute('aria-label') ?? button.textContent);
     /* No catalog answers `GET /api/models`, so the trigger reads `Model: Default` and no effort control appears. */
     expect([...names].sort()).toEqual([
-      'Attach an image', 'Close conversation', 'Model: Default', 'Send',
+      'Attach an image', 'Close conversation', 'Expand reading width', 'Model: Default', 'Send',
     ]);
     expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
   });

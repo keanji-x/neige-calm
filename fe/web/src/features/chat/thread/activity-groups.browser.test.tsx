@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
 import { ChatThread } from './public.tsx';
+import drawerStyles from '../../../ui/drawer/drawer.module.css';
 import type { Conversation, ConversationActivity, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 
 afterEach(cleanup);
@@ -67,7 +68,9 @@ describe('tool activity groups', () => {
     const { container } = render(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity('a'), { id: 'm', author: 'agent', text: 'Then', atMs: 2 }, activity('b')]} />,
     );
-    expect(container.querySelectorAll('[data-nc-state]')).toHaveLength(2);
+    const runs = [...thread(container).children].filter((child) => /tool-[ab]/.test(child.textContent ?? ''));
+    expect(runs).toHaveLength(2);
+    expect(runs.every((run) => run.hasAttribute('data-nc-entry'))).toBe(true);
     expect(container.querySelector('[aria-expanded]')).toBeNull();
     expect(screen.queryByRole('group')).toBeNull();
   });
@@ -169,18 +172,23 @@ describe('tool activity groups', () => {
       running('new-running', 'new-command'),
     ];
     rerender(<ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false} conversation={conversation({ state: 'running' })} turns={next} />);
-    expect(workingMarks()).toHaveLength(1);
-    expect(spinners()).toHaveLength(0);
+    /* The one mark is the new lone call's own, at the live tail; the historical group shows none. */
+    const fresh = screen.getByText('new-command').closest<HTMLElement>('[data-nc-entry]')!;
+    const onlyFreshSpins = () => {
+      expect(spinners()).toHaveLength(1);
+      expect(fresh.contains(spinners()[0])).toBe(true);
+      expect(workingMarks()).toHaveLength(0);
+    };
+    onlyFreshSpins();
     expect(container.querySelector('[data-nc-thread] [role="status"]')!.checkVisibility()).toBe(false);
     const button = groupButton(container);
     act(() => { fireEvent.click(button); });
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(visible(screen.getByText('old-command'))).toBe(true);
-    expect(spinners()).toHaveLength(0);
+    onlyFreshSpins();
     act(() => { fireEvent.click(button); });
     expect(button.getAttribute('aria-expanded')).toBe('false');
-    expect(spinners()).toHaveLength(0);
-    expect(workingMarks()).toHaveLength(1);
+    onlyFreshSpins();
   });
 
   it('shows one live mark for a tail group with an earlier call still running, open or closed', () => {
@@ -295,9 +303,9 @@ describe('tool activity groups', () => {
     expect(visible(screen.getByText('test failed'))).toBe(true);
 
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />);
-    expect(container.querySelector('[aria-expanded]')).toBeNull();
+    /* A run of one is the vendor's single-call row, and the opened detail is replayed onto it. */
     expect(screen.queryByRole('group')).toBeNull();
-    expect(container.querySelectorAll('[data-nc-state]')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /Ran npm test/ }).getAttribute('aria-expanded')).toBe('true');
     expect(visible(screen.getByText('test failed'))).toBe(true);
 
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
@@ -403,6 +411,28 @@ describe('tool activity groups', () => {
     expect(button.textContent).toContain('Running');
     expect(fits()).toBe(true);
     act(() => { fireEvent.click(button); });
+    expect(fits()).toBe(true);
+    act(() => { fireEvent.click(screen.getByRole('button', { name: /^Error:.*Ran a-very-long/ })); });
+    expect(visible(screen.getByText(failed.detail!))).toBe(true);
+    expect(fits()).toBe(true);
+  });
+
+  /* Measured on the drawer's own scroller and body: Astryx bleeds an interactive row 4px past its box for the hover fill, inside the body's inset, as it does in an open group. */
+  it('fits a narrow conversation with a lone failed call, closed and open', () => {
+    const failed = activity('bad', {
+      state: 'failed', verb: 'Ran', target: 'a-very-long-command-'.repeat(8),
+      detail: 'error: /an/unbroken/path/that/is/far/longer/than/the/column/allows/for.rs',
+    });
+    const { container } = render(
+      <div className={drawerStyles.scroll} data-nc-drawer-scroll="" style={{ width: 280 }}>
+        <div className={drawerStyles.bodyInner}>
+          <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />
+        </div>
+      </div>,
+    );
+    const pane = container.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+    const fits = () => pane.scrollWidth <= pane.clientWidth;
+    expect(screen.queryByRole('group')).toBeNull();
     expect(fits()).toBe(true);
     act(() => { fireEvent.click(screen.getByRole('button', { name: /^Error:.*Ran a-very-long/ })); });
     expect(visible(screen.getByText(failed.detail!))).toBe(true);

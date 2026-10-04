@@ -115,6 +115,20 @@
     --panel-span: var(--conversation-span);
   }
 
+  /*
+   * Expanded reading (#1923), chosen in the drawer's header on desktop only;
+   * `ui/drawer` stamps the marker and never on a compact viewport. 70cqi puts
+   * a 100-column code line or a six-column table inside the card at 1440 with
+   * the rail open (840px); the 60rem ceiling stops prose from running past
+   * ~120 characters on a wide screen and leaves the report a visible strip.
+   * The card's own `max-inline-size` still keeps both page pads. Everything
+   * that follows `--conversation-span` (the covered panel track, the report
+   * measure, the rail preview) follows this too.
+   */
+  .main:has([data-nc-drawer-expanded]) {
+    --conversation-span: clamp(22rem, 70cqi, 60rem);
+  }
+
   .main:has([data-nc-drawer]) [data-nc-panel] {
     visibility: hidden;
   }

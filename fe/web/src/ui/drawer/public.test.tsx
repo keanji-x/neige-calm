@@ -92,6 +92,51 @@ describe('Drawer', () => {
     }
   });
 
+  it('offers no width toggle unless the caller owns a reading width', () => {
+    open();
+    expect(screen.queryByRole('button', { name: 'Expand reading width' })).toBeNull();
+    expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-expanded')).toBe(false);
+  });
+
+  it('toggles the reading width in place, after the close in the tab order', () => {
+    const onExpandedChange = vi.fn();
+    const drawer = (expanded: boolean) => (
+      <Drawer open title="Chat" onClose={vi.fn()} readingWidth={{ expanded, onExpandedChange }}><p>body</p></Drawer>
+    );
+    const { rerender } = render(drawer(false));
+    const toggle = screen.getByRole('button', { name: 'Expand reading width' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-expanded')).toBe(false);
+    const close = screen.getByRole('button', { name: 'Close conversation' });
+    expect(close.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    toggle.focus();
+    fireEvent.click(toggle);
+    expect(onExpandedChange).toHaveBeenCalledWith(true);
+
+    rerender(drawer(true));
+    expect(screen.getByRole('button', { name: 'Restore width' })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-expanded')).toBe(true);
+    fireEvent.click(toggle);
+    expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps a compact drawer at full width whatever the reading-width choice', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })));
+    try {
+      render(<Drawer open title="Chat" onClose={vi.fn()} readingWidth={{ expanded: true, onExpandedChange: vi.fn() }}><p>body</p></Drawer>);
+      expect(screen.queryByRole('button', { name: 'Restore width' })).toBeNull();
+      expect(screen.getByRole('complementary').hasAttribute('data-nc-drawer-expanded')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('puts the footer outside the scrolling body', () => {
     open({ footer: <form aria-label="composer" /> });
     const bodyInner = screen.getByText('the transcript').parentElement;

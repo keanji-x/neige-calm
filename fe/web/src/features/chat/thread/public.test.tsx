@@ -16,8 +16,8 @@ const RAIL_FIXTURE_EXCHANGES = 5;
 
 const NOW = 1_760_000_000_000;
 
-/* The thread's working marks are decorative by contract; counted by the marker, not by a label. */
-const workingMarks = () => document.querySelectorAll('[data-nc-activity="working"]');
+/* The thread's working marks are decorative by contract; counted by the marker, not by a label. A running tool call's mark is the execution motion in the vendor's status slot. */
+const workingMarks = () => document.querySelectorAll('[data-nc-activity="working"], [data-nc-motion="execution"]');
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -572,37 +572,43 @@ describe('ChatThread', () => {
     expect(said.querySelector('h1, h2, h3, em, strong')).toBeNull();
   });
 
-  it('states failure in text and exposes activity state through the shared attribute', () => {
+  /* A lone call is the vendor's single-call row: its status is said by Astryx, a failure with no reason as `Failed`. */
+  it('states a lone failure in text, with no working mark', () => {
     const { container } = render(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ state: 'failed' })]} />,
     );
     expect(screen.getByText('Failed')).toBeTruthy();
-    expect(container.querySelector('[data-nc-state="failed"]')).toBeTruthy();
+    expect(container.querySelector('[data-nc-entry]')?.textContent).toBe('FailedRannpm test');
     expect(container.querySelector('[data-nc-activity]')).toBeNull();
   });
 
-  it('prints the reason inside the element that carries the state', () => {
-    const { container } = render(
+  it('opens a lone failure’s whole reason from its own row', () => {
+    const reason = 'error: no test specified — npm ERR! Test failed. See above for more details. '.repeat(3).trim();
+    render(
       <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
-        turns={[activity({ state: 'failed', detail: 'error: no test specified' })]}
+        turns={[activity({ state: 'failed', detail: reason })]}
       />,
     );
-    expect(screen.getByText('Failed')).toBeTruthy();
-    const line = container.querySelector('[data-nc-state="failed"]')!;
-    expect(line.textContent).toContain('error: no test specified');
+    const row = screen.getByRole('button', { name: /Ran\s*npm test/, expanded: false });
+    expect(row.textContent).toContain(`Error: ${reason}`);
+    expect(screen.queryByText(reason)).toBeNull();
+    fireEvent.click(row);
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText(reason).closest('[data-nc-detail]')).not.toBeNull();
   });
 
   it('prints nothing but the line itself when the action succeeded', () => {
     const { container } = render(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity()]} />,
     );
-    expect(container.textContent).toBe('Rannpm test');
+    expect(container.textContent).toBe('CompleteRannpm test');
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
-  /** The duration element's whole text: a substring of the page cannot pin a number (`14.3s` contains `4.3s`). Reached positionally because the spans carry hashed CSS-module class names. */
+  /** The duration element's whole text: a substring of the page cannot pin a number (`14.3s` contains `4.3s`). Reached positionally because the vendor's spans carry hashed class names; the duration is the row's last item. */
   function durationText(container: HTMLElement): string | null {
-    const row = container.querySelector('[data-nc-state]')!.children[0];
+    const row = container.querySelector('[data-nc-entry]')!.children[0];
     return row.children[row.children.length - 1].textContent;
   }
 
@@ -615,14 +621,14 @@ describe('ChatThread', () => {
     rerender(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 120 })]} />,
     );
-    expect(container.textContent).toBe('Rannpm test');
+    expect(container.textContent).toBe('CompleteRannpm test');
   });
 
   it('draws the line at one second, to the millisecond', () => {
     const { container, rerender } = render(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 999 })]} />,
     );
-    expect(container.textContent).toBe('Rannpm test');
+    expect(container.textContent).toBe('CompleteRannpm test');
 
     rerender(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity({ durationMs: 1_000 })]} />,
@@ -653,7 +659,7 @@ describe('ChatThread', () => {
         turns={[activity({ state: 'running', verb: 'Running', durationMs: 5_000 })]}
       />,
     );
-    expect(container.textContent).toBe('Runningnpm test');
+    expect(container.textContent).toBe('RunningRunningnpm test');
   });
 
   it('shows exactly one live mark after a completed activity while live', () => {

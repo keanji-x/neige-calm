@@ -192,8 +192,12 @@ describe('a run whose own element goes', () => {
   const later = [activity('later-1'), activity('later-2')];
   const thread = () => document.querySelector<HTMLElement>('[data-nc-thread]')!;
   const headerOf = (group: HTMLElement) => group.querySelector<HTMLElement>('[aria-expanded]')!;
-  /** The transcript's own line for the failed call, once its run is one call. */
-  const failedLine = () => thread().querySelector<HTMLElement>('p[data-nc-state="failed"]')!;
+  /** The failed call's row: Astryx's own disclosure, in a group or alone. */
+  const failedRow = () => screen.getByRole('button', { name: /Ran npm test/ });
+  /** The run of one the failed call stands in, once its run is one call. */
+  const failedLine = () => failedRow().closest<HTMLElement>('[data-nc-entry]')!;
+  /** The run of one whose call targets `target`: a done call has no row, so its run's element is the landing. */
+  const lineOf = (target: string) => [...thread().children].find((child) => child.textContent?.includes(target)) as HTMLElement;
 
   /** Opens the `index`th group with the keyboard and Tabs onto the failed call's row. */
   async function focusFailedRow(index = 0) {
@@ -213,18 +217,18 @@ describe('a run whose own element goes', () => {
     expect(element.hasAttribute('data-nc-landing')).toBe(false);
   }
 
-  it('keeps focus on the same call when its run shrinks to that call’s line, and Tabs on from there', async () => {
+  it('keeps focus on the same call’s row when its run shrinks to that call, and Tabs on from there', async () => {
     const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     await focusFailedRow();
 
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, boundary, ...later]} />);
     expect(screen.queryByRole('group', { name: '2 tool calls' })).not.toBeNull();
-    const line = failedLine();
-    expect(line.textContent).toContain('failure evidence');
-    expectLent(line);
+    const row = failedRow();
+    expect(row.textContent).toContain('failure evidence');
+    expect(document.activeElement).toBe(row);
+    expect(document.querySelector('[data-nc-landing]')).toBeNull();
     await userEvent.keyboard('{Tab}');
     expect(document.activeElement).toBe(headerOf(screen.getByRole('group', { name: '2 tool calls' })));
-    expectReturned(line);
   });
 
   it('lands a reader on the run’s header on the line of the one call it has left', () => {
@@ -236,11 +240,11 @@ describe('a run whose own element goes', () => {
     expectLent(failedLine());
   });
 
-  it('brings a reader on the line back to the call’s row when the rest of its run returns open', async () => {
+  it('brings a reader on the lone row back to the call’s row when the rest of its run returns open', async () => {
     const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     await focusFailedRow();
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, boundary, ...later]} />);
-    expectLent(failedLine());
+    expect(document.activeElement).toBe(failedRow());
 
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     const group = screen.getAllByRole('group')[0];
@@ -281,8 +285,7 @@ describe('a run whose own element goes', () => {
     await focusFailedRow();
 
     rerender(harness([boundary, nearby]));
-    const line = thread().querySelector<HTMLElement>('p[data-nc-state="done"]')!;
-    expect(line.textContent).toContain('nearby');
+    const line = lineOf('nearby');
     expectLent(line);
     await userEvent.keyboard('{Tab}');
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
@@ -295,8 +298,7 @@ describe('a run whose own element goes', () => {
     await focusFailedRow();
 
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[earlier, boundary]} />);
-    const line = thread().querySelector<HTMLElement>('p[data-nc-state="done"]')!;
-    expect(line.textContent).toContain('earlier');
+    const line = lineOf('earlier');
     expectLent(line);
   });
 
@@ -310,8 +312,7 @@ describe('a run whose own element goes', () => {
     await focusFailedRow(1);
 
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...earlier, boundary, reply, nearby]} />);
-    const line = thread().querySelector<HTMLElement>('p[data-nc-state="done"]')!;
-    expect(line.textContent).toContain('nearby');
+    const line = lineOf('nearby');
     expectLent(line);
     expect(headerOf(screen.getByRole('group', { name: '2 tool calls' })).hasAttribute('data-nc-landing')).toBe(false);
   });
@@ -336,19 +337,22 @@ describe('a run whose own element goes', () => {
     expectReturned(reply);
   });
 
-  /* Asserted after a real key press, so `:focus-visible` is genuinely engaged. */
+  /* Asserted after a real key press, so `:focus-visible` is genuinely engaged. The header stood for the whole run, so a run of one is landed on as a whole and the next Tab enters its row. */
   it('draws no focus ring on a landing that is not a control', async () => {
     const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed, boundary, ...later]} />);
     await focusFailedRow();
+    await userEvent.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(document.activeElement).toBe(headerOf(screen.getAllByRole('group')[0]));
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, boundary, ...later]} />);
     const line = failedLine();
     expectLent(line);
     expect(line.matches(':focus-visible')).toBe(true);
     expect(getComputedStyle(line).outlineStyle).toBe('none');
     await userEvent.keyboard('{Tab}');
-    const header = document.activeElement as HTMLElement;
-    expect(header.matches(':focus-visible')).toBe(true);
-    expect(getComputedStyle(header).outlineStyle).not.toBe('none');
+    const row = document.activeElement as HTMLElement;
+    expect(row).toBe(failedRow());
+    expect(row.matches(':focus-visible')).toBe(true);
+    expect(getComputedStyle(row).outlineStyle).not.toBe('none');
   });
 
   it('does not take focus from where the reader moved it before the run left whole', async () => {
@@ -436,9 +440,9 @@ describe('a window that shares nothing with the last', () => {
   const reply = (atMs: number): TranscriptEntry => ({ id: 'reply', author: 'agent', text: 'Newer work', atMs });
   const thread = () => document.querySelector<HTMLElement>('[data-nc-thread]')!;
   const headerOf = (group: HTMLElement) => group.querySelector<HTMLElement>('[aria-expanded]')!;
-  /** The transcript's line for the run of one whose call is `id`. */
-  const lineOf = (id: string) => [...thread().querySelectorAll<HTMLElement>('p[data-nc-state="done"]')]
-    .find((line) => line.textContent?.includes(`tool-${id}`))!;
+  /** The element of the run of one whose call is `id`. */
+  const lineOf = (id: string) => [...thread().children]
+    .find((child) => child.textContent?.includes(`tool-${id}`)) as HTMLElement;
 
   async function focusFailedRow() {
     headerOf(screen.getByRole('group')).focus();
@@ -500,9 +504,9 @@ describe('a note whose focus another effect took', () => {
   const boundary: TranscriptEntry = { id: 'reply', author: 'agent', text: 'Later work', atMs: 2 };
   const more: TranscriptEntry = { id: 'more', author: 'agent', text: 'And more', atMs: 3 };
   const later = [activity('later-1'), activity('later-2')];
-  const thread = () => document.querySelector<HTMLElement>('[data-nc-thread]')!;
   const headerOf = (group: HTMLElement) => group.querySelector<HTMLElement>('[aria-expanded]')!;
-  const failedLine = () => thread().querySelector<HTMLElement>('p[data-nc-state="failed"]')!;
+  /** The run of one the failed call stands in. */
+  const failedLine = () => screen.getByRole('button', { name: /Ran npm test/ }).closest<HTMLElement>('[data-nc-entry]')!;
 
   function Parker({ on }: { on: boolean }) {
     useLayoutEffect(() => {
@@ -569,9 +573,9 @@ describe('a note whose focus another effect took', () => {
     expect(other.contains(document.activeElement)).toBe(false);
   });
 
-  it('keeps the note, and the loan, across a commit that leaves a landed line holding focus', async () => {
+  it('keeps the note, and the loan, across a commit that leaves a landed line holding focus', () => {
     const { rerender } = render(harness([done, failed, boundary]));
-    await focusFailedRow();
+    headerOf(screen.getAllByRole('group')[0]).focus();
     rerender(harness([failed, boundary]));
     const line = failedLine();
     expectLent(line);
@@ -622,8 +626,8 @@ describe('the loan a landing makes', () => {
   const failed = activity('failed', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'failure evidence' });
   const done = activity('done', { target: 'pwd' });
   const boundary: TranscriptEntry = { id: 'reply', author: 'agent', text: 'Later work', atMs: 2 };
-  const thread = () => document.querySelector<HTMLElement>('[data-nc-thread]')!;
-  const failedLine = () => thread().querySelector<HTMLElement>('p[data-nc-state="failed"]')!;
+  /** The run of one the failed call stands in. */
+  const failedLine = () => screen.getByRole('button', { name: /Ran npm test/ }).closest<HTMLElement>('[data-nc-entry]')!;
 
   function Parker({ on }: { on: boolean }) {
     useLayoutEffect(() => {
@@ -639,11 +643,11 @@ describe('the loan a landing makes', () => {
     </>
   );
   const headerOf = () => screen.getByRole('group').querySelector<HTMLElement>('[aria-expanded]')!;
-  /** Lands the reader on the failed call's line and hands the line back. */
+  /** Lands a reader on the group's header on the run of one it shrinks to, and hands that element back. */
   async function landOnLine(rerender: (ui: ReactNode) => void) {
     headerOf().focus();
-    await userEvent.keyboard('{Enter}{Tab}');
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Ran npm test/ }));
+    await userEvent.keyboard('{Enter}');
+    expect(document.activeElement).toBe(headerOf());
     rerender(harness([failed, boundary]));
     const line = failedLine();
     expect(document.activeElement).toBe(line);

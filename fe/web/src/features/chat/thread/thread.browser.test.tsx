@@ -1827,10 +1827,11 @@ describe('the reply’s type, through Astryx’s markdown', () => {
   });
 });
 
-/* A flex line fills and wraps before it shrinks, and `.activityTarget`'s `overflow: hidden` zeroes its minimum size; jsdom computes no layout, so only this tier can count rows. */
-describe('the activity line’s row count, as the engine lays it out', () => {
+/* A lone call is Astryx's single-call row, the same row a group draws; jsdom computes no layout, so only this tier can count rows. */
+describe('a lone tool call’s row, as the engine lays it out', () => {
   /** `clip()` cuts at `ACTIVITY_TARGET_MAX`, so 64 characters is the widest noun that can reach this component. */
   const LONG_TARGET = 'cargo clippy --workspace --all-targets --all-features -- -D war…';
+  const REASON = 'error: expected resolveRoute(origin=A, destination=D) to include hop C but received [A, B, D] (core/route/cache.test.ts:42:17)';
 
   function activity(overrides: Partial<ConversationActivity>): ConversationActivity {
     return {
@@ -1839,12 +1840,12 @@ describe('the activity line’s row count, as the engine lays it out', () => {
     };
   }
 
-  /** Text selectors stay independent of the decorative status slot. */
-  const lines = () => [...document.querySelectorAll<HTMLElement>('p[data-nc-state]')];
-
-  const rowOf = (line: HTMLElement) => line.children[0] as HTMLElement;
-  const verbOf = (line: HTMLElement) => line.querySelector<HTMLElement>('[data-nc-activity-verb]')!;
-  const nounOf = (line: HTMLElement) => line.querySelector<HTMLElement>('[data-nc-activity-target]')!;
+  /** Each lone call's element: the transcript child that carries the call's target. */
+  const runOf = (target: string) => [...document.querySelectorAll<HTMLElement>('[data-nc-thread] > [data-nc-entry]')]
+    .find((element) => element.textContent?.includes(target))!;
+  /** The painted text, not Astryx's visually hidden status announcement. */
+  const painted = (run: HTMLElement, text: string) => [...run.querySelectorAll<HTMLElement>('span')]
+    .find((span) => span.textContent === text && span.getBoundingClientRect().width > 1)!;
 
   /** Same row when vertical extents overlap, not when tops are equal: the spans are set in different families and aligned on their baselines. */
   const sameRow = (a: HTMLElement, b: HTMLElement) => {
@@ -1852,54 +1853,49 @@ describe('the activity line’s row count, as the engine lays it out', () => {
     return x.top < y.bottom && y.top < x.bottom;
   };
 
-  it('keeps a long done line on one row, ellipsized beside the verb', async () => {
+  it('keeps a long done call on one row, ellipsized beside the verb, with its duration once', async () => {
     await page.viewport(1400, 900);
     expect(LONG_TARGET).toHaveLength(64);
     render(<RailPane turns={[
-      activity({}),
+      activity({ durationMs: 4_300 }),
       { id: 'reply', author: 'agent', text: 'Next check', atMs: 0 },
       activity({ id: 'a2', target: 'ls' }),
     ]} />);
     await frame();
 
-    const [long, short] = lines();
-    expect(long.getBoundingClientRect().height)
-      .toBe(short.getBoundingClientRect().height);
-    expect(sameRow(nounOf(long), verbOf(long))).toBe(true);
-    expect(nounOf(long).clientWidth).toBeLessThan(nounOf(long).scrollWidth);
+    const [long, short] = [runOf(LONG_TARGET), runOf('ls')];
+    expect(long.getBoundingClientRect().height).toBe(short.getBoundingClientRect().height);
+    const noun = painted(long, LONG_TARGET);
+    expect(sameRow(noun, painted(long, 'Ran'))).toBe(true);
+    expect(sameRow(painted(long, '4.3s'), noun)).toBe(true);
+    expect(long.textContent?.match(/4\.3s/g)).toHaveLength(1);
+    expect(noun.clientWidth).toBeLessThan(noun.scrollWidth);
   });
 
-  it('lays a failed line out as exactly two rows, whatever else is on it', async () => {
+  it('keeps a failed call on one row until it is opened, then shows the whole reason under it', async () => {
     await page.viewport(1400, 900);
     render(<RailPane turns={[
-      activity({ state: 'failed', durationMs: 8_400, detail: 'error: no test specified' }),
+      activity({ state: 'failed', durationMs: 8_400, detail: REASON }),
       { id: 'reply', author: 'agent', text: 'Next check', atMs: 0 },
       activity({ id: 'a2', target: 'ls' }),
     ]}
     />);
     await frame();
 
-    const [failed, done] = lines();
-    const row = rowOf(failed);
-    const items = [...row.children].filter(item => item.getAttribute('aria-hidden') !== 'true') as HTMLElement[];
-    expect(items.map((item) => item.textContent))
-      .toEqual(['Ran', LONG_TARGET, 'Failed', '8.4s']);
+    const failed = runOf(LONG_TARGET);
+    const done = runOf('ls');
+    expect(failed.getBoundingClientRect().height).toBeCloseTo(done.getBoundingClientRect().height, 1);
+    const row = screen.getByRole('button', { name: /Ran/, expanded: false });
+    expect(failed.contains(row)).toBe(true);
+    expect(sameRow(painted(failed, LONG_TARGET), painted(failed, 'Ran'))).toBe(true);
+    expect(screen.queryByText(REASON)).toBeNull();
 
-    for (const item of items.slice(1)) expect(sameRow(item, verbOf(failed))).toBe(true);
-
-    const detail = failed.children[1] as HTMLElement;
-    expect(detail.textContent).toBe('error: no test specified');
-    expect(detail.getBoundingClientRect().top)
-      .toBeGreaterThanOrEqual(row.getBoundingClientRect().bottom);
-
-    const box = failed.getBoundingClientRect();
-    expect(box.height).toBeCloseTo(
-      row.getBoundingClientRect().height + detail.getBoundingClientRect().height, 1,
-    );
-    expect(row.getBoundingClientRect().height)
-      .toBeCloseTo(done.getBoundingClientRect().height, 1);
-
-    expect(nounOf(failed).clientWidth).toBeLessThan(nounOf(failed).scrollWidth);
+    await userEvent.click(row);
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    const detail = screen.getByText(REASON);
+    expect(detail.checkVisibility()).toBe(true);
+    expect(detail.getBoundingClientRect().top).toBeGreaterThanOrEqual(row.getBoundingClientRect().bottom);
+    expect(pane().scrollWidth).toBeLessThanOrEqual(pane().clientWidth);
   });
 });
 

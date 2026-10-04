@@ -127,7 +127,6 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   const tailCarriesLiveMark = tail === undefined ? false
     : tailQuiet !== undefined ? tailQuiet.entries.some((entry) => entry === lastTurn)
     : tail.activities === null ? tail.entry.author === 'agent'
-    : tail.activities.length === 1 ? tail.activities[0].state === 'running'
     : toolCallGroupShowsRunning(tail.activities.map(toolCallOf), groupUi.get(tail.key)?.expanded ?? false);
   /* The rail is portalled into the drawer's seam (`.drawer` is `overflow: hidden`, so a descendant cannot reach it). Held in state because a portal needs the node at render time. */
   const [railSeam, setRailSeam] = useState<HTMLElement | null>(null);
@@ -221,13 +220,25 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     };
   }, [railShown, exchangeKey]);
 
+  /* A run of calls, one or more, keyed by `key`: Astryx draws one call inline and two or more as a group. `runLive` is the live tail's alone — a run the conversation has moved past must not look like it resumed. */
+  const renderRun = (activities: readonly ConversationActivity[], key: string, runLive: boolean): ReactNode => (
+    <ToolCallGroup
+      /* Carried by membership, not read off any one call, so the run keeps its element as calls are appended, prepended or dropped. */
+      key={key}
+      entry={key}
+      calls={activities.map(toolCallOf)}
+      ui={groupUi.get(key) ?? untouchedToolCallGroup()}
+      onExpandedChange={(expanded) => updateGroupUi(key, (ui) => ({ ...ui, expanded }))}
+      onDetailOpenChange={(callKey, open) => updateGroupUi(key, (ui) => withDetailOpen(ui, callKey, open))}
+      live={runLive}
+    />
+  );
+
   /* One entry, in the position `turns` gives it; `index` is what the exchange, gap and live-mark rules are stated over. */
   const renderEntry = (turn: TranscriptEntry, key = turn.id, showLive = live): ReactNode => {
     const index = indexOf.get(turn) ?? -1;
     const last = index === turns.length - 1;
-    if (turn.author === 'activity') {
-      return <ActivityLine key={turn.id} entry={key} activity={turn} live={showLive && last} />;
-    }
+    if (turn.author === 'activity') return renderRun([turn], key, showLive && last);
     if (turn.author === 'system') {
       return (
         <div key={turn.id} data-nc-entry={key}>
@@ -347,25 +358,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
               </div>
             );
           }
-          const last = (activities?.at(-1) ?? turn) === lastTurn;
-          if (turn.author === 'activity') {
-            if (activities !== null && activities.length > 1) {
-              return (
-                <ToolCallGroup
-                  /* Carried by membership, not read off any one call, so the group keeps its element as calls are appended, prepended or dropped. */
-                  key={key}
-                  entry={key}
-                  calls={activities.map(toolCallOf)}
-                  ui={groupUi.get(key) ?? untouchedToolCallGroup()}
-                  onExpandedChange={(expanded) => updateGroupUi(key, (ui) => ({ ...ui, expanded }))}
-                  onDetailOpenChange={(callKey, open) => updateGroupUi(key, (ui) => withDetailOpen(ui, callKey, open))}
-                  /* The same `live && last` a lone line answers to: a group the conversation has moved past must not look like it resumed. */
-                  live={live && last}
-                />
-              );
-            }
-            return <ActivityLine key={turn.id} entry={key} activity={turn} live={live && last} />;
-          }
+          if (activities !== null) return renderRun(activities, key, live && activities.at(-1) === lastTurn);
           return renderEntry(turn, key);
         })}
         {/* A reply that has not arrived yet still gets a place to arrive in; the placeholder keeps the one mark visible unless the tail carries it. */}
@@ -447,7 +440,7 @@ function formatActivityDuration(durationMs: number): string {
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
 }
 
-/** Two or more adjacent activities render as the vendor's grouped tool calls; a lone one keeps `ActivityLine`. `key` is the activity id (stable from started to completed); `resultDetail` is wrapped in `data-nc-detail`, which the vendor mounts only while open — that is how `ToolCallGroup` reads its state. */
+/** Every run of activities renders through the vendor's tool calls: one inline, two or more grouped. `key` is the activity id (stable from started to completed); `resultDetail` is wrapped in `data-nc-detail`, which the vendor mounts only while open — that is how `ToolCallGroup` reads its state. The vendor prints `duration` on completed calls only. */
 function toolCallOf(activity: ConversationActivity): ChatToolCallItem {
   const duration = activity.durationMs !== null && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
     ? formatActivityDuration(activity.durationMs)
@@ -463,42 +456,6 @@ function toolCallOf(activity: ConversationActivity): ChatToolCallItem {
       ? undefined
       : <div data-nc-detail={activity.id}><Code>{activity.detail}</Code></div>,
   };
-}
-
-/** One action, one line. The failure reason is a second row inside the same `<p>`, which keeps `data-nc-state` on the line; a `flex-wrap` could not do it, since a flex line wraps before it shrinks. */
-function ActivityLine({ activity, entry, live }: {
-  activity: ConversationActivity;
-  /** The run's carried key, stamped as `data-nc-entry` — a run of one is still a run (`useToolCallFocus`). */
-  entry: string;
-  live: boolean;
-}) {
-  const running = activity.state === 'running';
-  const duration = !running && activity.durationMs !== null
-    && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
-    ? formatActivityDuration(activity.durationMs)
-    : null;
-  return (
-    <p
-      className={`${styles.activity} ${activity.state === 'failed' ? styles.activityFailed : ''}`}
-      data-nc-state={activity.state}
-      data-nc-entry={entry}
-    >
-      <span className={styles.activityRow}>
-        <span className={styles.activityStatus} aria-hidden="true">
-          {running && live && <ActivityIndicator state="working" motion="execution" />}
-          {activity.state === 'done' && <svg className={styles.toolCheck} viewBox="0 0 16 16" focusable="false"><path d="m3 8 3 3 7-7" /></svg>}
-        </span>
-        <span data-nc-activity-verb="">{activity.verb}</span>
-        {activity.target !== null
-          && <span className={styles.activityTarget} data-nc-activity-target="">{activity.target}</span>}
-        {activity.state === 'failed' && <span className={styles.activityFailure}>Failed</span>}
-        {duration !== null && <span className={styles.activityDuration}>{duration}</span>}
-      </span>
-      {activity.detail !== null && (
-        <span className={styles.activityDetail}>{activity.detail}</span>
-      )}
-    </p>
-  );
 }
 
 /** `/new` in the composer: the panel column (and its `+`) is hidden while a drawer is open, so this is the only new-conversation door from inside a conversation. It runs the `+`'s own callback; `undefined` means no trigger at all. */

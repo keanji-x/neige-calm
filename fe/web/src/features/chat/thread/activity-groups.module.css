@@ -37,8 +37,8 @@
     display: none;
   }
 
-  /* Preserve the vendor's status role and dimensions; its direct SVG is replaced by our execution mark. */
-  .group [role='status'] > svg { display: none; }
+  /* Preserve the vendor's status role and dimensions; its direct SVG is replaced by our execution mark, which is portalled in as a direct SVG child too and must stay painted. */
+  .group [role='status'] > svg:not([data-nc-motion]) { display: none; }
 
   /* Remove only completed calls' tinted disks; failure glyphs keep their error treatment. */
   .group div:has(> span > [data-nc-tool-complete]) > span:first-child > span:first-child,

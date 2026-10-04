@@ -216,17 +216,11 @@
   /*
    * ── The floating corner control ───────────────────────────────────────────
    *
-   * **There is one of them, and there is now nothing else it could be.** The
-   * corner used to hold a pair — the reset and the close, 2px apart in a
-   * `.controls` flex group. The reset first became a line of text at the end
-   * of the transcript, and is now gone from the product entirely (#1139), so
-   * the close is the only control this card floats. What went with the pair is
-   * the whole §4.3 gap exception that used to be argued in this note: it was
-   * measured on ink widths of a ✕ and an ↺ inside a head band that no longer
-   * exists, for a pair that no longer exists. A rule about the distance
-   * between two controls has nothing to say about one, so it is deleted rather
-   * than restated. Anything that ever joins the close here re-opens §4.3's
-   * `--space-6` question from scratch, at today's glyphs.
+   * **The close, and on desktop the reading-width toggle beside it.** The
+   * corner once held the close and a reset; the reset is gone (#1139). The
+   * width toggle (#1923) now sits inboard of the close, `--space-6` apart, the
+   * gap §4.3 asks of two adjacent controls. It stays after the close in the
+   * DOM so the first Tab off the container still lands on Close.
    *
    * **There is no head band.** The band is deleted, and with it the 21.7px
    * `--nc-head-band` derivation and the "the card now owes the page two
@@ -298,6 +292,16 @@
   .close:focus-visible {
     background: var(--overlay-hover-strong);
     color: var(--text);
+  }
+
+  /* Astryx's ghost `IconButton` at `sm` is the same 28px box; only its place
+     and resting ink are the close's. */
+  .widthToggle {
+    position: absolute;
+    z-index: var(--z-raised);
+    inset-block-start: var(--nc-card-inset, var(--space-4));
+    inset-inline-end: calc(var(--nc-card-inset, var(--space-4)) + var(--control-h) + var(--space-6));
+    color: var(--text-3);
   }
 
   /* The transcript now has the scrolling region to itself: the close floats

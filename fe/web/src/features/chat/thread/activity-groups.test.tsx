@@ -150,8 +150,9 @@ describe('a run rebuilt after shrinking to one call, under StrictMode', () => {
     expect(screen.getByText('test failed')).toBeTruthy();
 
     rerender(thread([failed]));
-    expect(container.querySelector('[aria-expanded]')).toBeNull();
-    expect(screen.getByText('test failed')).toBeTruthy();
+    /* A run of one is the vendor's single-call row: the opened detail is replayed onto it, once. */
+    expect(screen.getByRole('button', { name: /Ran\s*npm test/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByText('test failed')).toHaveLength(1);
 
     rerender(thread([done, failed]));
     const header = container.querySelector<HTMLElement>('[aria-expanded]')!;

@@ -1,4 +1,4 @@
-// A run of tool calls as Astryx's `ChatToolCalls`, with what the reader did to it
+// A run of tool calls, one or more, as Astryx's `ChatToolCalls`, with what the reader did to it
 // (open state, opened failure details, focus) held outside the vendor's element.
 
 import { useLayoutEffect, useRef, type FocusEvent, type KeyboardEvent, type RefObject, type SyntheticEvent } from 'react';
@@ -41,7 +41,7 @@ export function toolCallGroupShowsRunning(
 }
 
 export type ToolCallGroupProps = Readonly<{
-  /** Two or more; a lone call is `ChatThread`'s own line. Each carries its activity id as `key`. */
+  /** One or more: Astryx draws one call inline without the group header, two or more as a group. Each carries its activity id as `key`. */
   calls: readonly ChatToolCallItem[];
   /** The run's carried key — what `ChatThread` keys this element on — stamped as `data-nc-entry` for `useToolCallFocus`. */
   entry: string;
@@ -57,9 +57,12 @@ export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpen
   const [motionHosts, setMotionHosts] = useState<readonly HTMLElement[]>([]);
   // Astryx owns row/detail focus. Replace only its status ink, using its semantic status slot.
   useLayoutEffect(() => {
-    const hosts = live && rootRef.current !== null
-      ? [...rootRef.current.querySelectorAll<HTMLElement>('[role="status"]')]
-        .filter(host => ui.expanded || (rootRef.current !== null && headerOf(rootRef.current)?.contains(host))) : [];
+    const root = rootRef.current;
+    /* A lone call has no header: its one row is always the visible one. */
+    const header = root === null ? null : headerOf(root);
+    const hosts = live && root !== null
+      ? [...root.querySelectorAll<HTMLElement>('[role="status"]')]
+        .filter(host => ui.expanded || header === null || header.contains(host)) : [];
     setMotionHosts(previous => previous.length === hosts.length && previous.every((host, index) => host === hosts[index])
       ? previous : hosts);
   }, [calls, live, ui.expanded]);
@@ -104,8 +107,8 @@ export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpen
       <ChatToolCalls
         ref={rootRef}
         className={styles.group}
-        role="group"
-        aria-label={`${calls.length} tool calls`}
+        /* A lone call is one row, not a group of one. */
+        {...(calls.length > 1 ? { role: 'group', 'aria-label': `${calls.length} tool calls` } : {})}
         isExpanded={expanded}
         onExpandedChange={onExpandedChange}
         onClick={noteToggle}
@@ -155,7 +158,7 @@ function rowOf(root: HTMLElement, calls: readonly ChatToolCallItem[], key: strin
   return index === -1 ? undefined : detailRows(root)[index];
 }
 
-/** The group header is a direct child; detail rows carry aria-expanded too. */
+/** The group header is a direct child; detail rows carry aria-expanded too. A lone call has none: its row sits inside a wrapper. */
 function headerOf(root: HTMLElement): HTMLElement | null {
   return root.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded]');
 }
@@ -168,12 +171,12 @@ function entryRoot(thread: HTMLElement, key: string): HTMLElement | null {
   return null;
 }
 
-/** A run of calls, of any length: a group, or `ChatThread`'s line for a run of one. */
+/** A run of calls, of any length. */
 function isRun(entry: KeyedTranscriptGroup): boolean {
   return entry.activities !== null;
 }
 
-/** A run of two or more calls — what `ToolCallGroup` draws; one call is `ChatThread`'s line. */
+/** A run of two or more calls — the vendor's group, with a header; one call is drawn inline. */
 function isGroup(entry: KeyedTranscriptGroup): boolean {
   return entry.activities !== null && entry.activities.length > 1;
 }
@@ -275,16 +278,16 @@ function landingFor(
   callsOf: (activities: readonly ConversationActivity[]) => readonly ChatToolCallItem[],
   uiOf: (run: string) => ToolCallGroupUi,
 ): HTMLElement | null {
-  /* The same call wherever it is drawn now, else the same run. */
+  /* The same call wherever it is drawn now — its row, when it has one and that row is shown — else the same run. */
   const byCall = focused.call === null ? undefined
     : entries.find((entry) => entry.activities?.some((activity) => activity.id === focused.call) ?? false);
   const same = byCall ?? entries.find((entry) => entry.key === focused.run);
   if (same?.activities != null) {
     const root = entryRoot(thread, same.key);
     if (root === null) return null;
-    if (!isGroup(same)) return root;
-    const row = focused.call !== null && uiOf(same.key).expanded ? rowOf(root, callsOf(same.activities), focused.call) : undefined;
-    return row ?? headerOf(root);
+    const shown = !isGroup(same) || uiOf(same.key).expanded;
+    const row = focused.call !== null && shown ? rowOf(root, callsOf(same.activities), focused.call) : undefined;
+    return row ?? (isGroup(same) ? headerOf(root) : root);
   }
   /* Where the run stood: before the first still-shown entry after it; at the end when only earlier entries survive; before everything when none do — unless the window went back. */
   const survives = new Set(entries.map((entry) => entry.key));
@@ -293,7 +296,7 @@ function landingFor(
   const stood = next !== undefined ? entries.findIndex((entry) => entry.key === next)
     : keys.some((key) => survives.has(key)) || windowWentBack(was, entries) ? entries.length
     : 0;
-  /* Else the nearest run, after first — its header, or its line if a run of one; else whatever stands there now. */
+  /* Else the nearest run, after first — its header, or its own element if a run of one; else whatever stands there now. */
   const near = entries.slice(stood).find(isRun) ?? entries.slice(0, stood).findLast(isRun);
   const stand = near ?? entries[Math.min(stood, entries.length - 1)];
   if (stand === undefined) return null;

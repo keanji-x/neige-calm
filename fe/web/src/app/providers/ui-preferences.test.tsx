@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
-import { createUiPreferences } from './ui-preferences.tsx';
+import { Drawer } from '../../ui/drawer/public.tsx';
+import { createUiPreferences, UiPreferencesProvider, useDrawerReadingWidth, type UiPreferenceStorage } from './ui-preferences.tsx';
+
+afterEach(cleanup);
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -57,6 +61,38 @@ describe('browser display preferences', () => {
     expect(throwing.previewViewport('t1', 'fe')).toBeNull();
     throwing.setPreviewViewport('t1', 'fe', 'mobile');
     expect(throwing.previewViewport('t1', 'fe')).toBe('mobile');
+  });
+
+  /* The production wiring: the drawer's toggle through `useDrawerReadingWidth` into the provider's store. */
+  describe('the drawer reading width', () => {
+    function DrawerWithWidth() {
+      return <Drawer open title="Chat" onClose={vi.fn()} readingWidth={useDrawerReadingWidth()}><p>body</p></Drawer>;
+    }
+    const mount = (storage: UiPreferenceStorage) => render(
+      <UiPreferencesProvider preferences={createUiPreferences(storage)}><DrawerWithWidth /></UiPreferencesProvider>,
+    );
+    const toggle = () => screen.getByRole('button', { name: /reading width|Restore width/ });
+
+    it('is off by default and remembered per browser across app instances', () => {
+      const storage = memoryStorage();
+      mount(storage);
+      expect(toggle().getAttribute('aria-pressed')).toBe('false');
+      fireEvent.click(toggle());
+      expect(screen.getByRole('button', { name: 'Restore width' }).getAttribute('aria-pressed')).toBe('true');
+      cleanup();
+      mount(storage);
+      expect(screen.getByRole('button', { name: 'Restore width' }).getAttribute('aria-pressed')).toBe('true');
+      expect(createUiPreferences(storage).drawerExpanded()).toBe(true);
+    });
+
+    it('keeps the choice in memory, and keeps rendering, when browser storage throws', () => {
+      mount({ getItem() { throw new Error('denied'); }, setItem() { throw new Error('quota'); } });
+      expect(toggle().getAttribute('aria-pressed')).toBe('false');
+      fireEvent.click(toggle());
+      expect(screen.getByRole('button', { name: 'Restore width' }).getAttribute('aria-pressed')).toBe('true');
+      fireEvent.click(toggle());
+      expect(screen.getByRole('button', { name: 'Expand reading width' }).getAttribute('aria-pressed')).toBe('false');
+    });
   });
 
   it('rejects valid JSON of the wrong preference type', () => {

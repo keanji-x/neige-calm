@@ -1,6 +1,7 @@
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { IconButton } from '@astryxdesign/core/IconButton';
 
 import { Icon } from '../icon/public.tsx';
 import { MobileHeader } from '../mobile-header/public.tsx';
@@ -14,6 +15,21 @@ export function drawerSeamAround(inside: Element | null): HTMLElement | null {
   return card?.parentElement?.querySelector<HTMLElement>('[data-nc-drawer-seam]') ?? null;
 }
 
+/** Where the reader is in the pane: at its end, or reading the element at its middle, `top` px below the pane's top. */
+type ReadingPlace = Readonly<{ atEnd: boolean; element: Element | null; top: number }>;
+
+function readingPlaceIn(pane: HTMLElement): ReadingPlace {
+  const box = pane.getBoundingClientRect();
+  /* `?.` because jsdom has no hit testing; the toggle still toggles there, it only keeps no place. */
+  const hit = document.elementFromPoint?.(box.left + box.width / 2, box.top + box.height / 2) ?? null;
+  const element = hit !== null && hit !== pane && pane.contains(hit) ? hit : null;
+  return {
+    atEnd: pane.scrollHeight - pane.scrollTop - pane.clientHeight <= 1,
+    element,
+    top: element === null ? 0 : element.getBoundingClientRect().top - box.top,
+  };
+}
+
 /** Focus `element` and read the result back — CSS-based prediction disagreed with the engine. `aria-hidden`/`inert` are checked by attribute first because `focus()` succeeds into them. */
 function focusTook(element: HTMLElement): boolean {
   if (element.closest('[aria-hidden="true"], [inert]') !== null) return false;
@@ -21,7 +37,10 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer }: {
+/** The desktop reading-width choice. The caller owns and remembers it; `app/shell` widens the span off `data-nc-drawer-expanded`. */
+export type DrawerReadingWidth = Readonly<{ expanded: boolean; onExpandedChange: (expanded: boolean) => void }>;
+
+export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, readingWidth }: {
   open: boolean;
   /** The drawer's accessible name; compact/mobile also paints it in the shared Header, desktop keeps it unpainted. */
   title: string;
@@ -33,9 +52,25 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   children: ReactNode;
   /** Pinned below the scrolling body; a slot rather than the last child because the body scrolls and this must not. */
   footer?: ReactNode;
+  /** Absent: no width toggle. Compact viewports are already full width, so they never show it or apply it. */
+  readingWidth?: DrawerReadingWidth;
 }) {
   const compact = useCompactViewport();
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  /* Taken as the reader presses the width toggle, put back once the new width is laid out: the browser's scroll anchoring stands down when an ancestor's width changes, so a reflowed transcript would otherwise move under the reader. */
+  const readingPlace = useRef<ReadingPlace | null>(null);
+  const expanded = !compact && readingWidth?.expanded === true;
+  useLayoutEffect(() => {
+    const place = readingPlace.current;
+    const pane = scrollRef.current;
+    readingPlace.current = null;
+    if (place === null || pane === null) return;
+    if (place.atEnd) pane.scrollTop = pane.scrollHeight;
+    else if (place.element?.isConnected === true) {
+      pane.scrollTop += place.element.getBoundingClientRect().top - pane.getBoundingClientRect().top - place.top;
+    }
+  }, [expanded]);
   const [closing, setClosing] = useState(false);
   const wasOpen = useRef(open);
   const shouldRestoreFocus = useRef(false);
@@ -106,6 +141,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
 
   /* Compact pages and reduced motion skip the exit animation, so closing never waits for one the stylesheet does not play. */
   if (!open && !closing) return null;
+  const width = compact ? undefined : readingWidth;
   /* `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by; a CSS Module class cannot be named across modules. It stays on during the closing animation. */
   return (
     <>
@@ -115,6 +151,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       role="complementary"
       data-nc-drawer=""
       data-nc-escape-layer={open ? '' : undefined}
+      data-nc-drawer-expanded={expanded ? '' : undefined}
       aria-label={frame.title}
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
@@ -141,7 +178,22 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
           <Icon name="chevron-right" />
         </button>
       )}
-      <div className={styles.scroll} data-nc-drawer-scroll="">
+      {/* After the close in the DOM, so the first Tab still lands on Close; painted to its left. The same element in both states, so pressing it keeps focus. */}
+      {width !== undefined && (
+        <IconButton
+          className={styles.widthToggle}
+          label={expanded ? 'Restore width' : 'Expand reading width'}
+          aria-pressed={expanded}
+          variant="ghost"
+          size="sm"
+          icon={<Icon name={expanded ? 'restore-width' : 'expand-width'} />}
+          onClick={() => {
+            if (scrollRef.current !== null) readingPlace.current = readingPlaceIn(scrollRef.current);
+            width.onExpandedChange(!expanded);
+          }}
+        />
+      )}
+      <div ref={scrollRef} className={styles.scroll} data-nc-drawer-scroll="">
         <div className={styles.bodyInner}>
           {frame.children}
         </div>

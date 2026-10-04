@@ -86,7 +86,7 @@ describe('QuietSyncFold in the thread', () => {
 
     const body = details?.querySelector('[data-nc-quiet-sync-body]');
     expect(body?.querySelector('[data-nc-turn="system"]')).not.toBeNull();
-    expect(body?.querySelector('[data-nc-state]')).not.toBeNull();
+    expect(body?.querySelector('[data-nc-entry="act1"]')?.textContent).toContain('Read report');
     expect(body?.querySelector('[data-nc-turn="agent"]')?.textContent).toContain('nothing to do');
     expect(container.querySelectorAll('[data-nc-turn="agent"]')).toHaveLength(2);
     expect(container.querySelector('[data-nc-turn="agent"]')?.closest('[data-nc-turn="quiet-sync"]')).toBeNull();
@@ -176,7 +176,8 @@ describe('QuietSyncFold in the thread', () => {
     const exchanges = [...container.querySelectorAll('[data-nc-exchange]')];
     expect(exchanges).toHaveLength(2);
     expect(exchanges.every((row) => row.closest('[data-nc-turn="quiet-sync"]') === null)).toBe(true);
-    expect(folds[0]?.querySelectorAll('[data-nc-state]')).toHaveLength(1);
+    expect(folds[0]?.querySelectorAll('[data-nc-entry="act2"]')).toHaveLength(1);
+    expect(folds[0]?.querySelector('[data-nc-entry="act3"]')).toBeNull();
   });
 
   it('draws no fold at all for a conversation without a report-edit wake', () => {
