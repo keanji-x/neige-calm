@@ -1000,6 +1000,30 @@ describe('track conversations', () => {
   const composerImages = () => Array.from(drawerElement().querySelectorAll('[data-nc-attachments] img'))
     .map((image) => image.getAttribute('src'));
 
+  /** One stored turn of the assistant conversation: its prompt (with images), reply and outcome. */
+  const turnRows = (turnId: string, first: number, prompt: string, answer: string,
+    images: readonly (typeof REWIND_IMAGE)[] = []) => [
+    { ...harnessMessage(first, 'userMessage', { content: [{ text: prompt }] }), turn_id: turnId,
+      input_segments: [{ presentation: 'user', text: `User says:\n${prompt}`, attachments: images }] },
+    { ...harnessMessage(first + 1, 'agentMessage', { text: answer }), turn_id: turnId },
+    { ...harnessMessage(first + 2, '', {}), item_type: null, turn_id: turnId, method: 'turn/completed',
+      params: JSON.stringify({ id: turnId, status: 'completed', error: null }) },
+  ];
+  /** A conversation whose stored rows the case scripts read by read, answering run and rewind as an idle harness. */
+  function scriptedSetup(rows: () => readonly unknown[], extra: Reply = () => undefined) {
+    return setup(async (request) => {
+      const answered = await extra(request);
+      if (answered !== undefined) return answered;
+      if (request.path.includes(HISTORY_PATH)) return ok(pathCardId(request.path) === ASSISTANT_CARD.id ? rows() : []);
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r',
+        phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, attachments_supported: true });
+      if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: DRAFT_IMAGE_ID, contentType: 'image/png', size: 4,
+        url: `/api/cards/${pathCardId(request.path)}/planner/attachments/${DRAFT_IMAGE_ID}` });
+      return undefined;
+    });
+  }
+  const DRAFT_IMAGE_ID = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e70.png';
+
   /** The assistant conversation's one turn until a rewind is accepted, then nothing, as the server would page it. */
   function editSetup(rewind: () => ApiTransportResponse | Promise<ApiTransportResponse>, run: Record<string, unknown> = {},
     historyAfterRewind: () => Promise<void> = () => Promise.resolve(),
@@ -1318,13 +1342,6 @@ describe('track conversations', () => {
   it('withholds every action on a removed turn until a transcript read without it lands', async () => {
     let removed = false;
     let failReads = true;
-    const turnRows = (turnId: string, first: number, prompt: string, answer: string) => [
-      { ...harnessMessage(first, 'userMessage', { content: [{ text: prompt }] }), turn_id: turnId,
-        input_segments: [{ presentation: 'user', text: `User says:\n${prompt}`, attachments: [] }] },
-      { ...harnessMessage(first + 1, 'agentMessage', { text: answer }), turn_id: turnId },
-      { ...harnessMessage(first + 2, '', {}), item_type: null, turn_id: turnId, method: 'turn/completed',
-        params: JSON.stringify({ id: turnId, status: 'completed', error: null }) },
-    ];
     const earlier = turnRows('turn-0', 81, 'Earlier prompt', 'Earlier answer');
     const { requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH) && pathCardId(request.path) === ASSISTANT_CARD.id) {
@@ -1373,6 +1390,63 @@ describe('track conversations', () => {
     expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
     await act(async () => { finish(); await finished; });
     await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_SUFFIX))).toBe(true));
+  });
+
+  it('leaves the composer’s images alone when a delivered Regenerate sends the same images', async () => {
+    let stage: 'two-turns' | 'rewound' = 'two-turns';
+    const first = turnRows('turn-0', 81, 'Original prompt', 'First answer', [REWIND_IMAGE]);
+    const { requests } = scriptedSetup(() => stage === 'two-turns'
+      ? [...first, ...turnRows('turn', 91, 'Original prompt', 'Regenerated answer', [REWIND_IMAGE])] : first, (request) => {
+      if (!request.path.endsWith('/planner/rewind')) return undefined;
+      stage = 'rewound';
+      return rewindAccepted();
+    });
+    await editIntoComposer(requests);
+    await waitFor(() => expect(screen.queryByText('Regenerated answer', { exact: true })).toBeNull());
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate response' }));
+    await waitFor(() => expect(inputBodies(requests)).toEqual([{ text: 'Original prompt', attachments: [ATTACHMENT_ID] }]));
+    await act(async () => { await new Promise((done) => setTimeout(done, 20)); });
+    expect(messageField().textContent).toBe('Original prompt');
+    expect(composerImages()).toEqual([REWIND_IMAGE.url]);
+  });
+
+  it('puts a failed Regenerate’s words and images back beside the composer’s own image', async () => {
+    const { requests } = editSetup(rewindAccepted, {}, undefined, () => failure(400, 'bad_request', 'Not this time'));
+    await openEditableAssistant();
+    await attachAnImage();
+    await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_ID))).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate response' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    expect(composerImages().map((src) => src?.split('/').pop())).toEqual([DRAFT_IMAGE_ID, ATTACHMENT_ID]);
+    expect(inputBodies(requests)).toHaveLength(1);
+  });
+
+  it('puts a failed send’s words back with its image once', async () => {
+    editSetup(rewindAccepted, {}, undefined, () => failure(400, 'bad_request', 'Not this time'));
+    await openEditableAssistant();
+    await attachAnImage();
+    await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_ID))).toBe(true));
+    await typeInto(messageField(), 'Look at this');
+    await submit();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await waitFor(() => expect(messageField().textContent).toBe('Look at this'));
+    expect(composerImages().map((src) => src?.split('/').pop())).toEqual([DRAFT_IMAGE_ID]);
+  });
+
+  it('acts again on a later turn that reuses the removed turn’s id', async () => {
+    let stage: 'before' | 'rewound' | 'resent' = 'before';
+    const { requests } = scriptedSetup(() => stage === 'before' ? turnRows('turn', 91, 'Original prompt', 'Original answer', [REWIND_IMAGE])
+      : stage === 'rewound' ? [] : turnRows('turn', 101, 'Original prompt', 'A new answer', [REWIND_IMAGE]), (request) => {
+      if (request.path.endsWith('/planner/rewind')) { stage = 'rewound'; return rewindAccepted(); }
+      if (request.path.endsWith('/planner/input')) { stage = 'resent'; return inputAccepted(); }
+      return undefined;
+    });
+    await editIntoComposer(requests);
+    await submit();
+    await screen.findByText('A new answer', { exact: true });
+    expect(await screen.findByRole('button', { name: 'Regenerate response' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy response' })).toBeTruthy();
   });
 
   it('retires the edited message once it is delivered', async () => {
@@ -2004,7 +2078,7 @@ describe('registry write-through', () => {
         rows, rememberOn: 'w1',
       });
       const send = store.send;
-      useEffect(() => { latestSend = (text) => { void send(ASSISTANT_CARD.id, text); }; });
+      useEffect(() => { latestSend = (text) => { void send(ASSISTANT_CARD.id, text, [], true); }; });
       return null;
     }
 
@@ -2195,7 +2269,7 @@ describe('registry write-through', () => {
       const send = store.send;
       const turns = store.turnsOf(ASSISTANT_CARD.id);
       useEffect(() => {
-        latestSend = (text) => { void send(ASSISTANT_CARD.id, text); };
+        latestSend = (text) => { void send(ASSISTANT_CARD.id, text, [], true); };
         visibleTurns = turns;
       });
       return null;

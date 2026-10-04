@@ -3,7 +3,7 @@ import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation
 import { useConversationStop } from '../conversations/stop.ts';
 import { useLiveReplies, useTranscriptReads } from '../conversations/live-replies.ts';
 import { useConversationEdit } from '../conversations/edit.ts';
-import { EMPTY_COMPOSER, isComposerEmpty, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
+import { EMPTY_COMPOSER, isComposerEmpty, withRefill, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 // Code-based TanStack Router setup, built inside a factory so a test can inject the
@@ -158,8 +158,11 @@ type ConversationStore = Readonly<{
   failedSend: FailedConversationSend | null;
   matchingSendMessage: boolean;
   retrySend: (echoId: string) => void;
-  /** What became of the send. `attachments` are ids already uploaded; naming one here is what makes it permanent. */
-  send: (conversationId: string, text: string, attachments?: readonly PlannerAttachment[]) => Promise<SendOutcome>;
+  /**
+   * What became of the send. `attachments` are ids already uploaded; naming one here is what makes it permanent.
+   * `fromComposer`: they are the composer's own, so a delivery clears them (and the upload refusal) there.
+   */
+  send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean) => Promise<SendOutcome>;
   /** Whether this card's track can take image attachments at all. */
   attachmentsSupported: boolean;
   /** How full this conversation's context is; `null` when the harness has never said. */
@@ -512,7 +515,7 @@ export function useConversationStore(
     : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
   const send = async (
-    _conversationId: string, text: string, attachments: readonly PlannerAttachment[] = [],
+    _conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean,
   ): Promise<SendOutcome> => {
     if (_conversationId !== cardId || stalled || sendingRef.current || !registry.tryBeginSend(cardId)) return 'not-sent';
     sendingRef.current = true;
@@ -552,10 +555,13 @@ export function useConversationStore(
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
       /* The claim decides only who draws this message; written wherever the echo
                still lives, the registry unconditionally. */
-      /* Delivered images leave the composer they were sent from, whichever conversation is shown by now. */
-      const sentIds = new Set(attachments.map((attachment) => attachment.id));
-      registry.editComposer(sentTo, (current) => current.attachments.some((image) => sentIds.has(image.id))
-        ? { ...current, attachments: current.attachments.filter((image) => !sentIds.has(image.id)) } : current);
+      /* A composer send's delivered images leave the composer they were sent from, whichever conversation is shown by now. */
+      if (fromComposer) {
+        const sentIds = new Set(attachments.map((attachment) => attachment.id));
+        registry.editComposer(sentTo, (current) => current.attachments.some((image) => sentIds.has(image.id))
+          ? { ...current, attachments: current.attachments.filter((image) => !sentIds.has(image.id)) } : current);
+        registry.editUpload(sentTo, (current) => current.refusal === null ? current : { ...current, refusal: null });
+      }
       const claimedEntryId = sent.entry_id;
       if (claimedEntryId !== null && stillActive()) {
         setEchoes((current) => current.map((turn) =>
@@ -601,6 +607,7 @@ export function useConversationStore(
       sendFailure = {
         echo, message: errorMessage(error, 'Could not send the message.'),
         delivery: settled === 'refused' ? 'refused' : failedConversationDelivery(error instanceof ApiError ? error.failure : null),
+        fromComposer,
       };
       /* A failure belongs to the conversation that failed; the provider still records
                it for a remount of the owning card. */
@@ -692,11 +699,11 @@ export function useConversationStore(
       /* The retry carries the echo's images: an image-only message re-sent as
              `{ text: "" }` is refused, and the ids on a failed echo are still bound. */
       if (failedSend?.echo.id === echoId) {
-        void send(cardId, failedSend.echo.text, failedSend.echo.attachments);
+        void send(cardId, failedSend.echo.text, failedSend.echo.attachments ?? [], failedSend.fromComposer);
       }
     },
-    send: (conversationId, text, attachments) => failedSend === null || failedSend.delivery === 'refused'
-      ? send(conversationId, text, attachments) : Promise.resolve('not-sent'),
+    send: (conversationId, text, attachments, fromComposer) => failedSend === null || failedSend.delivery === 'refused'
+      ? send(conversationId, text, attachments, fromComposer) : Promise.resolve('not-sent'),
     attachmentsSupported: run.data?.attachments_supported ?? false,
     contextUsage: run.data?.token_usage ?? null,
     uploadAttachment: mutations.uploadAttachment,
@@ -981,6 +988,11 @@ function useConversationPanel(
   const showsRemovedTurn = open !== null && removedTurn !== null
     && store.turnsOf(open.id).some((entry) => entry.author === 'turn' && entry.turnId === removedTurn);
   const respondable = canContinue && !showsRemovedTurn;
+  const { forgetRemovedTurn } = registry;
+  const openId = open?.id ?? null;
+  useEffect(() => {
+    if (openId !== null && removedTurn !== null && store.historyReady && !showsRemovedTurn) forgetRemovedTurn(openId, removedTurn);
+  }, [forgetRemovedTurn, openId, removedTurn, showsRemovedTurn, store.historyReady]);
   const preferences = useUiPreferences();
   // Receipts compare the row's completion time, not `updatedAt`, which also moves
   // when the reader queues a message. `null` is never unread.
@@ -1404,7 +1416,9 @@ function useConversationPanel(
                     </ChatFooterRemedy>
                     <ChatFooterRemedy onClick={() => {
                       if (store.failedSend === null) return;
-                      setComposerText(store.failedSend.echo.text);
+                      const { echo } = store.failedSend;
+                      /* The failed message's words and images go back together; nothing already there is lost. */
+                      editComposer(open.id, (current) => withRefill(current, { text: echo.text, attachments: echo.attachments ?? [] }));
                       registry.clearFailedSend(open.id, store.failedSend.echo.id);
                     }}>Edit</ChatFooterRemedy>
                   </>
@@ -1458,7 +1472,7 @@ function useConversationPanel(
               /* `delivered` is the one outcome that licenses forgetting the images; every
                                other one leaves the message with the reader. */
               /* The images stay with the composer until the store reports them delivered. */
-              onSend={(text) => store.send(open.id, text, attachments.items)}
+              onSend={(text) => store.send(open.id, text, attachments.items, true)}
               allowEmptyText={attachments.items.length > 0}
               /* The queue lives inside the composer, above the field: these messages have
                                not reached the model, so they are not part of the conversation behind it. */
@@ -1546,7 +1560,7 @@ function useConversationPanel(
                 stalled={store.stalled}
                 copyText={showsRemovedTurn ? undefined : writeClipboardText}
                 regenerateMessage={respondable && !edit.requesting
-                  ? async (message) => { await store.send(open.id, message.text, message.attachments ?? []); }
+                  ? async (message) => { await store.send(open.id, message.text, message.attachments ?? [], false); }
                   : undefined}
                 editMessage={respondable && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0
                   && isComposerEmpty(composer) && !attachments.busy ? edit.run : undefined}

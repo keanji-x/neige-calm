@@ -97,6 +97,8 @@ export type FailedConversationSend = Readonly<{
   echo: OptimisticConversationTurn;
   message: string;
   delivery: 'rejected' | 'unknown' | 'refused';
+  /** Whether its images came from the composer, which a delivered retry then clears (a Regenerate's never did). */
+  fromComposer: boolean;
 }>;
 
 export type RememberedConversation = Readonly<{
@@ -152,6 +154,8 @@ export type ConversationRegistry = Readonly<{
   finishEdit: (conversationId: string, removed: Readonly<{ turnId: string; refill: ComposerContent }> | null) => void;
   /** The latest turn an Edit removed here: actions on it stay withheld while a cached transcript still shows it. */
   removedTurnOf: (conversationId: string) => string | null;
+  /** A transcript read without that turn landed: nothing is withheld any more. */
+  forgetRemovedTurn: (conversationId: string, turnId: string) => void;
   /** One card's image uploads, held here so a remount or another route sees an upload still in flight. */
   uploadOf: (cardId: string) => UploadState;
   editUpload: (cardId: string, next: (current: UploadState) => UploadState) => void;
@@ -241,6 +245,14 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   }, [editComposer]);
   const isEditing = useCallback((conversationId: string) => editing.has(conversationId), [editing]);
   const removedTurnOf = useCallback((conversationId: string) => removedTurns[conversationId] ?? null, [removedTurns]);
+  const forgetRemovedTurn = useCallback((conversationId: string, turnId: string) => {
+    setRemovedTurns((current) => {
+      if (current[conversationId] !== turnId) return current;
+      const next = { ...current };
+      delete next[conversationId];
+      return next;
+    });
+  }, []);
   const [uploads, setUploads] = useState<Readonly<Record<string, UploadState>>>({});
   const editUpload = useCallback((cardId: string, next: (current: UploadState) => UploadState) => {
     setUploads((current) => {
@@ -321,10 +333,10 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       pendingSendIds, failedSends, tryBeginSend, finishSend, clearFailedSend,
-      composerOf, editComposer, isEditing, tryBeginEdit, finishEdit, removedTurnOf, uploadOf, editUpload,
+      composerOf, editComposer, isEditing, tryBeginEdit, finishEdit, removedTurnOf, forgetRemovedTurn, uploadOf, editUpload,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editUpload, finishDraftAdoption, finishEdit, isEditing, removedTurnOf, uploadOf, finishSend, pendingSendIds,
+      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editUpload, finishDraftAdoption, forgetRemovedTurn, finishEdit, isEditing, removedTurnOf, uploadOf, finishSend, pendingSendIds,
       remember, requestOpen, failedSends, clearFailedSend,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginEdit, tryBeginSend, turnsOf,
       updateExisting],
