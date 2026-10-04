@@ -369,15 +369,29 @@ impl Stack {
         (outcome, root.spawned_token())
     }
 
+    /// Wait for the current turn's phase to be committed, not just visible in memory.
     pub async fn wait_phase(&self, worker_session_id: &str, phase: &str) {
         for _ in 0..400 {
             let snapshot = self.harness(worker_session_id).snapshot().await;
             if serde_json::to_value(snapshot.phase).unwrap() == phase {
-                return;
+                let persisted = self
+                    .repo()
+                    .session_projection_by_id(worker_session_id)
+                    .await
+                    .unwrap()
+                    .expect("the worker session row")
+                    .handle_state_json
+                    .expect("a persisted snapshot");
+                // A previous turn can have the same phase while this turn's write is pending.
+                if persisted["phase"] == phase
+                    && persisted["last_turn_id"] == json!(snapshot.last_turn_id)
+                {
+                    return;
+                }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("harness never reached {phase}");
+        panic!("harness never persisted {phase} for the current turn");
     }
 
     /// `POST /api/cards/{id}/planner/reset`.
