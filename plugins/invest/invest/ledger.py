@@ -123,8 +123,8 @@ class Ledger:
     @staticmethod
     def filled(db):
         """`{broker order id: {filled_quantity, filled_amount_usd}}` over every persisted fill, so
-        totals never depend on how many fills a view lists. Quantities sum in SQL; amounts sum as
-        exact decimals (an SQL REAL sum would round)."""
+        totals never depend on how many fills a view lists. Both sum in Python: amounts as exact
+        decimals, since an SQL REAL sum would round."""
         totals = {}
         for order_id, quantity, price in db.execute(
                 "SELECT json_extract(body,'$.order_id'), json_extract(body,'$.quantity'), "
