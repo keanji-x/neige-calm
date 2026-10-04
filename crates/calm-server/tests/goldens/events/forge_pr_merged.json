@@ -1,12 +1,10 @@
 {
-  "description": "forge.pr.merged carries the track routing id, phase/slice PR subject, and forge head/merge shas",
+  "description": "forge.pr.merged carries the track routing id, the merged PR number, and forge head/merge shas",
   "wire": {
     "ev": "forge.pr.merged",
     "data": {
       "track_id": "track-01",
       "subject": {
-        "phase": "impl",
-        "slice_id": "6",
         "pr_number": 760
       },
       "head_sha": "head-sha",

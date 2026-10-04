@@ -367,8 +367,6 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
 fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
     let pr = required_u64(args, "pr")?;
-    let phase = required_string(args, "phase")?;
-    let slice_id = required_string(args, "slice_id")?;
     let expected_head_sha = optional_string(args, "expected_head_sha")?;
     let mut argv = vec![
         "gh".into(),
@@ -443,11 +441,7 @@ fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
         })),
         true,
     )?;
-    payload["subject"] = json!({
-        "phase": phase,
-        "slice_id": slice_id,
-        "pr_number": pr
-    });
+    payload["subject"] = json!({ "pr_number": pr });
     Ok(payload)
 }
 

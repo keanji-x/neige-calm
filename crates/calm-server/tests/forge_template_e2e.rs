@@ -647,9 +647,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         PR_MERGE_TOOL,
         json!({
             "repo": repo_arg,
-            "pr": pr_number,
-            "phase": "impl",
-            "slice_id": "810"
+            "pr": pr_number
         }),
     )
     .await;
@@ -762,9 +760,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
         PR_MERGE_TOOL,
         json!({
             "repo": repo_arg,
-            "pr": pr_number,
-            "phase": "impl",
-            "slice_id": "810"
+            "pr": pr_number
         }),
     )
     .await;
@@ -893,8 +889,6 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
         card_id: "card-1".into(),
         subject: Some(
             serde_json::from_value(json!({
-                "phase": "impl",
-                "slice_id": "810",
                 "pr_number": pr_number
             }))
             .expect("merge subject"),
@@ -1085,7 +1079,7 @@ async fn reviewed_pr_merges_at_the_diffed_head_then_closes() {
     )
     .await;
 
-    let merged = merge_reviewed_pr(&fx, 44, &pr, "760").await;
+    let merged = merge_reviewed_pr(&fx, 44, &pr).await;
     let issue_closed = close_issue(&fx, 46, &pr.repo_arg, 760).await;
     let done = close_track(&fx, "e2e done").await;
 
@@ -1141,7 +1135,7 @@ async fn merge_hold_ratify_pauses_then_merges_on_grant() {
     .await;
     assert!(request.id < resolved.id);
 
-    let merged = merge_reviewed_pr(&fx, 64, &pr, "760").await;
+    let merged = merge_reviewed_pr(&fx, 64, &pr).await;
     close_issue(&fx, 66, &pr.repo_arg, 762).await;
     close_track(&fx, "done after the merge grant").await;
 
@@ -1268,8 +1262,6 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
         json!({
             "repo": pr.repo_arg.as_str(),
             "pr": pr.pr_number,
-            "phase": "impl",
-            "slice_id": "760",
             "expected_head_sha": pr.head_sha.as_str()
         }),
     )
@@ -2203,12 +2195,7 @@ async fn run_pr_checks(fx: &Fixture, id: i64, repo_arg: &str, pr_number: u64) ->
     .await
 }
 
-async fn merge_reviewed_pr(
-    fx: &Fixture,
-    id_base: i64,
-    pr: &ForgePrRun,
-    slice_id: &str,
-) -> EventRow {
+async fn merge_reviewed_pr(fx: &Fixture, id_base: i64, pr: &ForgePrRun) -> EventRow {
     run_pr_checks(fx, id_base, &pr.repo_arg, pr.pr_number).await;
 
     let merge_resp = call_tool(
@@ -2218,8 +2205,6 @@ async fn merge_reviewed_pr(
         json!({
             "repo": pr.repo_arg,
             "pr": pr.pr_number,
-            "phase": "impl",
-            "slice_id": slice_id,
             "expected_head_sha": pr.head_sha
         }),
     )

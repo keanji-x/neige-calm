@@ -223,14 +223,6 @@
             "type": "integer",
             "description": "Pull request number"
           },
-          "phase": {
-            "type": "string",
-            "description": "Review phase associated with the merge subject"
-          },
-          "slice_id": {
-            "type": "string",
-            "description": "Slice identifier associated with the merge subject"
-          },
           "expected_head_sha": {
             "type": "string",
             "description": "Optional expected head commit SHA for merge fencing"
@@ -238,9 +230,7 @@
         },
         "required": [
           "repo",
-          "pr",
-          "phase",
-          "slice_id"
+          "pr"
         ]
       },
       "annotations": {

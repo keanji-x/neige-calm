@@ -857,11 +857,20 @@ golden_test!(
     "forge_pr_merged.json",
     Event::ForgePrMerged {
         track_id: TrackId::from("track-01"),
-        subject: ForgeMergeSubject {
-            phase: "impl".into(),
-            slice_id: "6".into(),
-            pr_number: 760,
-        },
+        subject: ForgeMergeSubject { pr_number: 760 },
+        head_sha: "head-sha".into(),
+        merge_sha: "merge-sha".into(),
+    }
+);
+
+// The two historical `forge.pr.merged` rows on the 4140 DB still carry `phase`/`slice_id`, and the
+// replay reader skips a whole row on error, so the subject must keep ignoring the retired keys.
+golden_test!(
+    forge_pr_merged_historical_subject,
+    "forge_pr_merged.historical_subject.json",
+    Event::ForgePrMerged {
+        track_id: TrackId::from("track-01"),
+        subject: ForgeMergeSubject { pr_number: 1910 },
         head_sha: "head-sha".into(),
         merge_sha: "merge-sha".into(),
     }
@@ -1318,7 +1327,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 81,
+        files, 82,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {

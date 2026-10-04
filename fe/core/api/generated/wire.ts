@@ -261,9 +261,10 @@ export type FolderConflict = { folder_id: number, area_id: AreaId, conflict_path
 export type FolderConflictKind = "equal" | "ancestor" | "descendant";
 
 /**
- * Phase/slice PR identity carried by `forge.pr.merged`.
+ * The PR a `forge.pr.merged` event merged. Rows written before #2016 also carry `phase` and
+ * `slice_id`; deserialization ignores them, so those rows still replay.
  */
-export type ForgeMergeSubject = { phase: string, slice_id: string, pr_number: number, };
+export type ForgeMergeSubject = { pr_number: number, };
 
 /**
  * How one segment of a harness `userMessage` should be presented to a human. The rendered English

@@ -218,11 +218,7 @@ fn dispatcher_filter_matches_push_kinds() {
     })));
     assert!(filter.matches(&env(Event::ForgePrMerged {
         track_id: track.clone(),
-        subject: crate::event::ForgeMergeSubject {
-            phase: "impl".into(),
-            slice_id: "6".into(),
-            pr_number: 1,
-        },
+        subject: crate::event::ForgeMergeSubject { pr_number: 1 },
         head_sha: "head-sha".into(),
         merge_sha: "merge-sha".into(),
     })));
@@ -1278,11 +1274,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
     for forge_event in [
         Event::ForgePrMerged {
             track_id: track.clone(),
-            subject: crate::event::ForgeMergeSubject {
-                phase: "impl".into(),
-                slice_id: "6".into(),
-                pr_number: 1,
-            },
+            subject: crate::event::ForgeMergeSubject { pr_number: 1 },
             head_sha: "head-sha".into(),
             merge_sha: "merge-sha".into(),
         },
@@ -1602,11 +1594,7 @@ fn harness_observation_from_event_mapping_pin() {
             &track,
             &Event::ForgePrMerged {
                 track_id: TrackId::from("payload-track-ignored"),
-                subject: crate::event::ForgeMergeSubject {
-                    phase: "impl".into(),
-                    slice_id: "6".into(),
-                    pr_number: 760,
-                },
+                subject: crate::event::ForgeMergeSubject { pr_number: 760 },
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
             },
@@ -2131,11 +2119,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
         row(
             Event::ForgePrMerged {
                 track_id: track.clone(),
-                subject: crate::event::ForgeMergeSubject {
-                    phase: "impl".into(),
-                    slice_id: "6".into(),
-                    pr_number: 1,
-                },
+                subject: crate::event::ForgeMergeSubject { pr_number: 1 },
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
             },

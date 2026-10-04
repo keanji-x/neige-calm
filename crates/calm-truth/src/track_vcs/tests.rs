@@ -175,11 +175,7 @@ async fn forge_pr_merged_only_batch_does_not_advance_head() {
 
     let event = Event::ForgePrMerged {
         track_id: track.id.clone(),
-        subject: ForgeMergeSubject {
-            phase: "impl".into(),
-            slice_id: "6".into(),
-            pr_number: 760,
-        },
+        subject: ForgeMergeSubject { pr_number: 760 },
         head_sha: "head-sha".into(),
         merge_sha: "merge-sha".into(),
     };

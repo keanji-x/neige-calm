@@ -147,9 +147,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
         PR_MERGE_TOOL,
         json!({
             "repo": repo_arg,
-            "pr": pr_number,
-            "phase": "impl",
-            "slice_id": "840"
+            "pr": pr_number
         }),
     )
     .await;
@@ -353,9 +351,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         PR_MERGE_TOOL,
         json!({
             "repo": repo_arg,
-            "pr": pr_number,
-            "phase": "impl",
-            "slice_id": "840"
+            "pr": pr_number
         }),
     )
     .await;

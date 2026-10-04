@@ -1,0 +1,27 @@
+{
+  "description": "#2016 — rows written before gh.pr.merge dropped `phase`/`slice_id` (two on the 4140 DB) still carry them in `subject`. `ForgeMergeSubject` ignores the retired keys, so replay still reads the PR number; re-serialization emits only `pr_number`. Adding `deny_unknown_fields` to the subject makes step 1 fail and this test goes red.",
+  "wire": {
+    "ev": "forge.pr.merged",
+    "data": {
+      "track_id": "track-01",
+      "subject": {
+        "phase": "pr",
+        "pr_number": 1910,
+        "slice_id": "fix-flaky-1909"
+      },
+      "head_sha": "head-sha",
+      "merge_sha": "merge-sha"
+    }
+  },
+  "canonical": {
+    "ev": "forge.pr.merged",
+    "data": {
+      "track_id": "track-01",
+      "subject": {
+        "pr_number": 1910
+      },
+      "head_sha": "head-sha",
+      "merge_sha": "merge-sha"
+    }
+  }
+}

@@ -20,8 +20,6 @@ fn frozen_forge_six_shape_defaults_new_optional_fields() {
         "area_id": "area-01",
         "card_id": "card-01",
         "subject": {
-            "phase": "impl",
-            "slice_id": "6",
             "pr_number": 760
         },
         "argv": ["/bin/true"],
@@ -741,8 +739,6 @@ fn merge_payload(
         card_id: "card-1".into(),
         subject: Some(
             serde_json::from_value(json!({
-                "phase": "impl",
-                "slice_id": "815",
                 "pr_number": 42
             }))
             .expect("merge subject"),

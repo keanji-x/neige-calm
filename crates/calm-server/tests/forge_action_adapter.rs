@@ -181,11 +181,7 @@ fn event_spec_for(kind: &str) -> ForgeEventSpec {
 }
 
 fn subject() -> ForgeMergeSubject {
-    ForgeMergeSubject {
-        phase: "impl".into(),
-        slice_id: "slice-6".into(),
-        pr_number: 760,
-    }
+    ForgeMergeSubject { pr_number: 760 }
 }
 
 fn payload(boot: &TestBoot, idem_key: &str, argv: Vec<String>, result_path: PathBuf) -> Value {
@@ -1984,9 +1980,7 @@ while [ ! -f "$2" ]; do sleep 0.02; done
     assert_eq!(event_payload["merge_sha"], json!("abc123"));
     assert_eq!(event_payload["head_sha"], json!("def456"));
     assert_eq!(event_payload["track_id"], json!(boot.track_id));
-    assert_eq!(event_payload["subject"]["phase"], json!("impl"));
-    assert_eq!(event_payload["subject"]["slice_id"], json!("slice-6"));
-    assert_eq!(event_payload["subject"]["pr_number"], json!(760));
+    assert_eq!(event_payload["subject"], json!({ "pr_number": 760 }));
 
     Ok(())
 }

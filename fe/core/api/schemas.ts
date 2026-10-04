@@ -587,8 +587,6 @@ export const workspaceReleasedSchema = z.object({
 });
 
 export const forgeMergeSubjectSchema = z.object({
-  phase: z.string(),
-  slice_id: z.string(),
   pr_number: z.number(),
 });
 

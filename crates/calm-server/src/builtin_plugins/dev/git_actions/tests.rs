@@ -471,9 +471,7 @@ fn lowers_gh_pr_merge() {
         "gh.pr.merge",
         &json!({
             "repo": "owner/repo",
-            "pr": 42,
-            "phase": "impl",
-            "slice_id": "809"
+            "pr": 42
         }),
     )
     .expect("lower gh pr merge");
@@ -499,8 +497,6 @@ fn lowers_gh_pr_merge() {
                 }
             },
             "subject": {
-                "phase": "impl",
-                "slice_id": "809",
                 "pr_number": 42
             },
             "context": {},
@@ -535,8 +531,6 @@ fn lowers_gh_pr_merge() {
         &json!({
             "repo": "owner/repo",
             "pr": 42,
-            "phase": "impl",
-            "slice_id": "809",
             "expected_head_sha": "abc123"
         }),
     )
@@ -565,8 +559,6 @@ fn lowers_gh_pr_merge() {
                 }
             },
             "subject": {
-                "phase": "impl",
-                "slice_id": "809",
                 "pr_number": 42
             },
             "context": {},

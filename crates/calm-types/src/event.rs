@@ -245,12 +245,11 @@ pub enum HarnessQueueChange {
     Dropped,
 }
 
-/// Phase/slice PR identity carried by `forge.pr.merged`.
+/// The PR a `forge.pr.merged` event merged. Rows written before #2016 also carry `phase` and
+/// `slice_id`; deserialization ignores them, so those rows still replay.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ForgeMergeSubject {
-    pub phase: String,
-    pub slice_id: String,
     pub pr_number: u64,
 }
 
@@ -1576,11 +1575,7 @@ mod scope_tests {
 
         let forge_pr_merged = Event::ForgePrMerged {
             track_id: TrackId::from("track-1"),
-            subject: ForgeMergeSubject {
-                phase: "impl".into(),
-                slice_id: "6".into(),
-                pr_number: 760,
-            },
+            subject: ForgeMergeSubject { pr_number: 760 },
             head_sha: "head-sha".into(),
             merge_sha: "merge-sha".into(),
         };
@@ -2174,20 +2169,17 @@ mod scope_tests {
     fn forge_pr_merged_serde_round_trip_metadata_and_topics() {
         let merged = Event::ForgePrMerged {
             track_id: TrackId::from("track-1"),
-            subject: ForgeMergeSubject {
-                phase: "impl".into(),
-                slice_id: "6".into(),
-                pr_number: 760,
-            },
+            subject: ForgeMergeSubject { pr_number: 760 },
             head_sha: "head-sha".into(),
             merge_sha: "merge-sha".into(),
         };
         let json = serde_json::to_value(&merged).unwrap();
         assert_eq!(json["ev"], "forge.pr.merged");
         assert_eq!(json["data"]["track_id"], "track-1");
-        assert_eq!(json["data"]["subject"]["phase"], "impl");
-        assert_eq!(json["data"]["subject"]["slice_id"], "6");
-        assert_eq!(json["data"]["subject"]["pr_number"], 760);
+        assert_eq!(
+            json["data"]["subject"],
+            serde_json::json!({ "pr_number": 760 })
+        );
         assert_eq!(json["data"]["head_sha"], "head-sha");
         assert_eq!(json["data"]["merge_sha"], "merge-sha");
 
@@ -2642,11 +2634,7 @@ mod scope_tests {
             },
             Event::ForgePrMerged {
                 track_id: TrackId::from("track-1"),
-                subject: ForgeMergeSubject {
-                    phase: "impl".into(),
-                    slice_id: "6".into(),
-                    pr_number: 760,
-                },
+                subject: ForgeMergeSubject { pr_number: 760 },
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
             },
@@ -2917,11 +2905,7 @@ mod scope_tests {
                 "forge.pr.merged",
                 serde_json::json!({
                     "track_id": "track-1",
-                    "subject": {
-                        "phase": "impl",
-                        "slice_id": "6",
-                        "pr_number": 760,
-                    },
+                    "subject": { "pr_number": 760 },
                     "head_sha": "head-sha",
                     "merge_sha": "merge-sha",
                 }),
