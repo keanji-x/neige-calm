@@ -51,13 +51,16 @@ cross a boundary. Never lower it mid-review.
   or source-level check, not by weighing reviewer confidence.
 - Fix the defect class, not one visible instance. After a fix, sweep sibling
   branches and callers for the same failure mode.
-- A finding is blocking when it breaks behavior, data integrity, security, or
-  the stated acceptance. Fix other findings only when they are cheap and in
-  scope; otherwise record them as known gaps without another round. Prefer
-  closing a finding by deleting a mechanism or narrowing scope over adding one.
+- A finding blocks only when it is a defect (the change breaks behavior, data
+  integrity, security, or the stated acceptance) or a structural problem in
+  the approach. Fix other findings only when they are cheap and in scope;
+  otherwise record them as known gaps without another round. Prefer closing a
+  finding by deleting a mechanism or narrowing scope over adding one.
 - Every fix is re-checked as its tier requires; blockers always continue the
-  loop. Escalate a diverging loop or an architectural conflict instead of
-  stopping silently.
+  loop. When three rounds pass without convergence and findings are still
+  arriving, stop patching them one by one: look for the structural problem in
+  the approach that keeps producing them, and change or narrow the design.
+  Escalate an architectural conflict instead of stopping silently.
 - Convergence means no unresolved blocking finding, no unexplained test failure,
   all required checks actually green, and no unrelated or generated-file drift.
 
@@ -146,8 +149,9 @@ scripts/local-rust-gates.sh --quick
 ```
 
 - Run `scripts/local-ratchet-gates.sh` for every change, including docs-only
-  ones. It runs every `scripts/gate-*.sh` step of the CI lint job, which the commands above do not; it measures tracked files in the
-  working tree, so `git add -N` new files first.
+  ones. It runs every `scripts/gate-*.sh` step of the CI lint job, which the
+  commands above do not; it measures tracked files in the working tree, so
+  `git add -N` new files first.
 - Add `--features calm-server/codex-e2e` to a targeted Rust command only when
   the affected test requires that feature. Narrow further with `--lib` or
   `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local
