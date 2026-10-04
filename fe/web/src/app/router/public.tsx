@@ -165,8 +165,10 @@ type ConversationStore = Readonly<{
   failedSend: FailedSendOp | null;
   /** Resume the failed send under its key. */
   retrySend: (key: string) => void;
-  /** Edit or Dismiss: the failed send leaves the outbox; the caller puts its words back for Edit only. */
+  /** Edit: the failed send leaves the outbox; the caller puts its words and images back. */
   discardFailedSend: (key: string) => void;
+  /** Dismiss: the failed send leaves the outbox and nothing of it comes back, its composer images included. */
+  dismissFailedSend: (key: string) => void;
   /**
    * What became of the send. `attachments` are ids already uploaded; naming one here is what makes it permanent.
    * `fromComposer`: they are the composer's own, so a delivery clears them (and the upload refusal) there.
@@ -529,6 +531,7 @@ export function useConversationStore(
     failedSend: view.failed,
     retrySend: outbox.retrySend,
     discardFailedSend: outbox.discardFailedSend,
+    dismissFailedSend: outbox.dismissFailedSend,
     send: outbox.send,
     attachmentsSupported: run.data?.attachments_supported ?? false,
     contextUsage: run.data?.token_usage ?? null,
@@ -1317,8 +1320,8 @@ function useConversationPane(
                     onClick={() => { if (store.failedSend !== null) store.retrySend(store.failedSend.key); }}>
                     Try again
                   </ChatFooterRemedy>
-                  {/* The words stay out of the composer: they may already be delivered, and a read then shows them. */}
-                  <ChatFooterRemedy onClick={() => { if (store.failedSend !== null) store.discardFailedSend(store.failedSend.key); }}>
+                  {/* Nothing of it comes back to the composer: it may already be delivered, and a read then shows it. */}
+                  <ChatFooterRemedy onClick={() => { if (store.failedSend !== null) store.dismissFailedSend(store.failedSend.key); }}>
                     Dismiss
                   </ChatFooterRemedy>
                 </> : (store.failedSend.delivery !== 'refused' || composer.text === '') && <>

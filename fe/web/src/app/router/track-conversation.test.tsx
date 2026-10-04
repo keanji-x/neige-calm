@@ -603,8 +603,8 @@ describe('track conversations', () => {
     expect(messageField().textContent).toBe('');
   });
 
-  /* The outcome the composer reads must obey `stillActive()` like every other effect
-   * of a failure, or the first conversation's sentence lands in the second's composer. */
+  /* The outcome the composer reads is `abandoned` once another conversation is shown,
+   * or the first conversation's sentence lands in the second's composer. */
   it('does not put a refused sentence into the conversation the reader walked to', async () => {
     const held = new Map<string, () => void>();
     setup(async (request) => {
@@ -953,28 +953,49 @@ describe('track conversations', () => {
     expect(messageField().getAttribute('contenteditable')).toBe('true');
   });
 
-  it('[#2068] dismisses a spent unknown send without putting its words back; a read then shows it if it was stored', async () => {
+  it('[#2068] dismisses a spent unknown send without putting its words or images back; a read then shows it if it was stored', async () => {
     const text = 'Dismissed, maybe delivered';
     let rows: ReturnType<typeof harnessMessage>[] = [];
+    let dropping = true;
     const { client, requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok(rows);
-      if (request.path.endsWith('/planner/input')) throw new Error('response dropped');
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', attachments_supported: true, running_turn: null });
+      }
+      if (request.path.endsWith('/planner/attachments')) {
+        return ok({ attachmentId: ATTACHMENT_ID, contentType: 'image/png', size: 4,
+          url: `/api/cards/${pathCardId(request.path)}/planner/attachments/${ATTACHMENT_ID}` });
+      }
+      if (request.path.endsWith('/planner/input') && dropping) throw new Error('response dropped');
       return undefined;
     });
     const inputs = () => requests.filter((request) => request.path.endsWith('/planner/input'));
-    await sendUntilSpent(text);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await attachAnImage();
+    await waitFor(() => expect(composerImages()).toHaveLength(1));
+    await write(text);
+    expect((await screen.findByRole('alert')).textContent).toContain('Delivery is unconfirmed');
+    expect(inputBodies(requests)[0]).toEqual({ text, attachments: [ATTACHMENT_ID] });
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(within(drawerElement()).queryAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(0);
     expect(messageField().getAttribute('contenteditable')).toBe('true');
     expect(messageField().textContent).toBe('');
+    /* Its image may be bound to a stored message: it leaves the composer with the send, as a delivery takes it. */
+    expect(composerImages()).toEqual([]);
     expect(inputs()).toHaveLength(SEND_RETRIES + 1);
     /* It had been stored after all: the next read shows it, once. */
     rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
     await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
     await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
     expect(inputs()).toHaveLength(SEND_RETRIES + 1);
+    /* The next, unrelated message carries nothing of the dismissed one. */
+    dropping = false;
+    await write('Something else');
+    await waitFor(() => expect(inputs()).toHaveLength(SEND_RETRIES + 2));
+    expect(inputBodies(requests).at(-1)).toEqual({ text: 'Something else' });
   });
 
   it('[#2068] draws a spent unknown send once when its message drains, and its Try again leaves one', async () => {
@@ -1030,7 +1051,8 @@ describe('track conversations', () => {
     void client.invalidateQueries({ queryKey: historyKey });
     await waitFor(() => expect(held.history).toBeDefined());
     const early = held.history;
-    /* Closed, so the query layer neither cancels that read nor starts a new one when the answer refreshes. */
+    /* Closed, so the answer's refresh starts no new read; it cancels the early one, and the data from before the
+       answer is what the drawer reopens on. */
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     await act(async () => { held.input?.(); await Promise.resolve(); });
     held.history = undefined;
@@ -2417,7 +2439,7 @@ describe('track conversations', () => {
     await write('the first conversation speaks');
     await waitFor(() => expect(held.has(ASSISTANT_CARD.id)).toBe(true));
 
-    /* Conversation B, on the same panel instance: the walk that resets `sendingRef`. */
+    /* Conversation B, on the same panel instance, while A's send is still out in A's outbox. */
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
     await screen.findByRole('complementary', { name: 'Planner chat' });
