@@ -859,3 +859,25 @@ describe('TrackPage delete', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
+
+
+describe('the desktop Planner entry', () => {
+  it('opens the existing Planner through its supplied callback', async () => {
+    const onReply = vi.fn();
+    const onStartConversation = vi.fn();
+    renderPage({ onReply, onStartConversation });
+    await userEvent.click(screen.getByRole('button', { name: 'Planner' }));
+    expect(onReply).toHaveBeenCalledOnce();
+    expect(onStartConversation).not.toHaveBeenCalled();
+  });
+
+  it('offers the entry only when a Planner callback is supplied', () => {
+    renderPage();
+    expect(screen.queryByRole('button', { name: 'Planner' })).toBeNull();
+  });
+
+  it('keeps the execution board header focused on returning to the report', () => {
+    renderPage({ onReply: vi.fn(), onCloseBoard: vi.fn(), board: <div>Worker output</div> });
+    expect(screen.queryByRole('button', { name: 'Planner' })).toBeNull();
+  });
+});

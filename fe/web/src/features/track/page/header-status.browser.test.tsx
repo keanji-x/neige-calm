@@ -333,3 +333,31 @@ describe('the track closed status in the page header', () => {
     }
   });
 });
+
+
+describe('the report-to-Planner entry', () => {
+  it('stays visible beside a long title and focuses the supplied Planner', async () => {
+    await browserPage.viewport(1200, 800);
+    const onReply = vi.fn();
+    renderPage({ track: track({ title: 'A long-running report '.repeat(20) }), onReply });
+    const button = browserPage.getByRole('button', { name: 'Planner', exact: true }).element();
+    const box = button.getBoundingClientRect();
+    expect(box.width).toBeGreaterThan(40);
+    expect(box.right).toBeLessThanOrEqual(window.innerWidth);
+    await userEvent.click(button);
+    expect(onReply).toHaveBeenCalledOnce();
+  });
+
+  it('keeps failed-task explanations readable inside a narrow panel', async () => {
+    await browserPage.viewport(1200, 800);
+    const reason = 'Validation failed because the expected report snapshot is missing. '.repeat(4);
+    renderPage({ tasks: [{ blockId: 'verify', key: 'verify', state: 'ready', declaration: null,
+      status: 'failed', statusDetail: reason, kind: 'codex', workerCardId: null, pendingReason: null }] });
+    const group = document.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="failed"]')!;
+    expect(group.open).toBe(true);
+    const explanation = [...group.querySelectorAll<HTMLElement>('[aria-hidden="true"]')].find(element => element.textContent?.includes('Validation failed'))!;
+    expect(explanation.textContent).toContain('Validation failed');
+    expect(explanation.scrollWidth).toBeLessThanOrEqual(explanation.clientWidth);
+    expect(getComputedStyle(explanation).whiteSpace).toBe('normal');
+  });
+});

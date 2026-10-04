@@ -4,9 +4,9 @@ export type InventoryGroupKey = 'working' | 'attention' | 'waiting' | 'failed' |
 export type InventoryGroup<T> = Readonly<{ key: InventoryGroupKey; label: string; expanded: boolean; rows: readonly T[] }>;
 const GROUPS = Object.freeze([
   Object.freeze({ key: 'working', label: 'In progress', expanded: true }),
-  Object.freeze({ key: 'attention', label: 'Needs input', expanded: false }),
+  Object.freeze({ key: 'attention', label: 'Needs input', expanded: true }),
   Object.freeze({ key: 'waiting', label: 'Waiting', expanded: false }),
-  Object.freeze({ key: 'failed', label: 'Failed', expanded: false }),
+  Object.freeze({ key: 'failed', label: 'Failed', expanded: true }),
   Object.freeze({ key: 'done', label: 'Completed', expanded: false }),
   Object.freeze({ key: 'canceled', label: 'Canceled', expanded: false }),
   Object.freeze({ key: 'ready', label: 'Available', expanded: false }),

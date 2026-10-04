@@ -370,25 +370,37 @@ export function TrackPage({
         }
         actions={(
           <span className={styles.headerActions}>
-            <AstryxDropdownMenu
-              button={{
-                ref: desktopActionsRef,
-                label: `Track actions for ${trackDisplayTitle(track.title)}`,
-                icon: getAstryxIcon('moreHorizontal'),
-                variant: 'ghost',
-                size: 'sm',
-                isIconOnly: true,
-              }}
-              items={trackMutationActions}
-              hasChevron={false}
-              isMenuOpen={desktopActionsOpen}
-              onOpenChange={(isOpen) => {
-                setDesktopActionsOpen(isOpen);
-                if (!isOpen) {
-                  requestAnimationFrame(() => desktopActionsRef.current?.focus());
-                }
-              }}
-            />
+            {!boardOpen && onReply !== undefined && (
+              <AstryxButton
+                className={styles.plannerAction}
+                label="Planner"
+                variant="ghost"
+                size="sm"
+                icon={<Icon name="chat" />}
+                onClick={onReply}
+              />
+            )}
+            <span className={styles.trackActions}>
+              <AstryxDropdownMenu
+                button={{
+                  ref: desktopActionsRef,
+                  label: `Track actions for ${trackDisplayTitle(track.title)}`,
+                  icon: getAstryxIcon('moreHorizontal'),
+                  variant: 'ghost',
+                  size: 'sm',
+                  isIconOnly: true,
+                }}
+                items={trackMutationActions}
+                hasChevron={false}
+                isMenuOpen={desktopActionsOpen}
+                onOpenChange={(isOpen) => {
+                  setDesktopActionsOpen(isOpen);
+                  if (!isOpen) {
+                    requestAnimationFrame(() => desktopActionsRef.current?.focus());
+                  }
+                }}
+              />
+            </span>
           </span>
         )}
       />

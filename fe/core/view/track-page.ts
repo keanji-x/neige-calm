@@ -53,7 +53,7 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa
     title: name,
     kind: title !== null ? card.kind : null,
     badges,
-    status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}` }),
+    status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}`, detail: null }),
     activity: rowActivity(activity, card.id),
     actions,
   };
@@ -77,11 +77,13 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
   const reason = task.execution === undefined ? task.pendingReason?.message ?? null : task.execution.blockingReason;
+  const sourceDetail = task.execution === undefined ? task.statusDetail : boundedStatusDetail(task.execution.statusDetail);
+  const detail = [sourceDetail, reason].filter(Boolean).join(' — ') || null;
   const status = currentStatus !== null
     ? {
         token: currentStatus,
-        phrase: [taskStatusPhrase(task.execution?.label ?? currentStatus,
-          task.execution === undefined ? task.statusDetail : boundedStatusDetail(task.execution.statusDetail)), reason].filter(Boolean).join(' — '),
+        phrase: taskStatusPhrase(task.execution?.label ?? currentStatus, detail),
+        detail,
       }
     : null;
   const actions: RowAction[] = [{

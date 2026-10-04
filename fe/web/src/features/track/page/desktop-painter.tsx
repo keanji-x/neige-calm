@@ -125,6 +125,8 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
+  const group = panelRowGroup(row, 'tasks');
+  const explanation = group === 'failed' || group === 'attention' ? row.status?.detail ?? null : null;
   const revealControl = (
     <button
       type="button"
@@ -154,7 +156,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
     </button>
   );
   return (
-    <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
+    <li key={row.id} className={`${styles.taskRow} ${explanation === null ? '' : styles.taskRowDetailed}`} {...mark(MARKER.row, row.id)}>
       {revealControl}
       {/* `title` describes the destination without touching the accessible name, which stays the visible word (WCAG 2.5.3). */}
       {row.kind !== null && (open === null
@@ -170,6 +172,9 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
             {row.kind}
           </ListText>
         ))}
+      {explanation !== null && (
+        <ListText tone="secondary" className={styles.taskReason} aria-hidden="true">{explanation}</ListText>
+      )}
     </li>
   );
 }

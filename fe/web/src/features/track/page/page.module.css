@@ -537,10 +537,18 @@
      the page header. */
   .headerActions {
     display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
     color: var(--text-2);
   }
 
-  .headerActions button {
+  .plannerAction {
+    min-block-size: var(--control-h);
+    padding-inline: var(--space-4);
+    font-size: var(--text-base);
+  }
+
+  .trackActions button {
     inline-size: var(--control-h) !important;
     min-inline-size: var(--control-h) !important;
     block-size: var(--control-h) !important;
@@ -549,9 +557,9 @@
     color: inherit !important;
   }
 
-  .headerActions button:hover,
-  .headerActions button:focus-visible,
-  .headerActions button[aria-expanded='true'] {
+  .trackActions button:hover,
+  .trackActions button:focus-visible,
+  .trackActions button[aria-expanded='true'] {
     color: var(--text) !important;
   }
 
@@ -825,6 +833,21 @@
    * browser decided deserves a visible ring — so the two row types in this one
    * card behave the same way again.
    */
+  .taskRowDetailed {
+    flex-wrap: wrap;
+    row-gap: var(--space-0);
+  }
+
+  .taskReason {
+    flex: 1 0 100%;
+    min-inline-size: 0;
+    padding-block-end: var(--space-2);
+    font-size: var(--text-meta);
+    line-height: var(--leading-snug);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .taskRow:hover,
   .taskRow:has(:focus-visible) {
     background: var(--overlay-hover);
@@ -850,6 +873,10 @@
     text-align: start;
   }
 
+
+  .taskRowDetailed > .taskReveal {
+    min-block-size: var(--row-h);
+  }
   /* The invisible sheet makes every part of the row except the separately
      positioned worker-kind button reveal the declaration. The status word is
      inside this button and paints above the sheet so its native title remains

@@ -147,7 +147,7 @@ describe('paintModule action filtering', () => {
       title: 'Alpha',
       kind: 'shell',
       badges: [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
-      status: { token: 'running', phrase: 'running' },
+      status: { token: 'running', phrase: 'running', detail: null },
       activity: null,
       actions: [OPEN, DELETE],
     };

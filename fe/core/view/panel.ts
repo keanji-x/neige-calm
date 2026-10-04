@@ -11,6 +11,8 @@ export type RowStatus = Readonly<{
   token: string;
   /** The canonical readable phrase both surfaces consume; renderer chrome such as a `Status: ` prefix is not part of it. */
   phrase: string;
+  /** The authoritative explanation without the status label; null when no detail was supplied. */
+  detail: string | null;
 }>;
 
 /**

@@ -3,16 +3,16 @@ import type { PanelRow } from './panel.js';
 import { groupPanelRows } from './panel-groups.js';
 
 function row(id: string, status: string | null): PanelRow {
-  return { id, title: id, kind: null, badges: [], status: status === null ? null : { token: status, phrase: status }, activity: null, actions: [] };
+  return { id, title: id, kind: null, badges: [], status: status === null ? null : { token: status, phrase: status, detail: null }, activity: null, actions: [] };
 }
 
 describe('inventory status groups', () => {
-  it('keeps every task in a stable group and expands only work in progress', () => {
+  it('keeps every task in a stable group and expands work in progress and work needing attention', () => {
     const groups = groupPanelRows([row('done-a', 'done'), row('waiting', 'pending'), row('working', 'running'),
       row('done-b', 'done'), row('attention', 'needs_input'), row('failed', 'failed')], 'tasks');
     expect(groups.map(group => [group.key, group.rows.map(item => item.id), group.expanded])).toEqual([
-      ['working', ['working'], true], ['attention', ['attention'], false],
-      ['waiting', ['waiting'], false], ['failed', ['failed'], false], ['done', ['done-a', 'done-b'], false],
+      ['working', ['working'], true], ['attention', ['attention'], true],
+      ['waiting', ['waiting'], false], ['failed', ['failed'], true], ['done', ['done-a', 'done-b'], false],
     ]);
   });
 

@@ -77,7 +77,7 @@ const taskRow: PanelRow = Object.freeze({
     Object.freeze({ id: 'd1', text: 'declared', struck: false }),
     Object.freeze({ id: 'd2', text: 'declared', struck: true }),
   ]),
-  status: Object.freeze({ token: 'dispatched', phrase: 'Dispatched a moment ago' }),
+  status: Object.freeze({ token: 'dispatched', phrase: 'Dispatched a moment ago', detail: null }),
   activity: null,
   actions: Object.freeze<readonly RowAction[]>([
     Object.freeze({
@@ -93,7 +93,7 @@ const blankStatusRow: PanelRow = Object.freeze({
   title: 'T-2',
   kind: 'triage',
   badges: Object.freeze([]),
-  status: Object.freeze({ token: '', phrase: 'No status yet' }),
+  status: Object.freeze({ token: '', phrase: 'No status yet', detail: null }),
   activity: null,
   actions: Object.freeze([]),
 });

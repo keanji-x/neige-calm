@@ -284,7 +284,7 @@ describe('deriveTrackPageView tasks', () => {
       },
     })]).rows;
     expect(row.badges).toEqual([]);
-    expect(row.status).toEqual({ token: 'pending', phrase: 'pending — Track busy' });
+    expect(row.status).toEqual({ token: 'pending', phrase: 'pending — Track busy', detail: 'Track busy' });
     expect(row.actions[0]?.hint).toBe('Track busy');
     expect(row.actions[0]?.description).toBe('pending — Track busy');
   });
@@ -299,7 +299,7 @@ describe('deriveTrackPageView tasks', () => {
     })]).rows;
 
     expect(row.badges).toEqual([{ id: 'declaration', text: 'Not ready', struck: false }]);
-    expect(row.status).toEqual({ token: 'running', phrase: 'running' });
+    expect(row.status).toEqual({ token: 'running', phrase: 'running', detail: null });
   });
 
   it('carries the task’s worker kind, and null when the declaration names none', () => {
@@ -324,6 +324,7 @@ describe('deriveTrackPageView tasks', () => {
     expect(row.status).toEqual({
       token: 'failed',
       phrase: 'failed — track is not a git repository',
+      detail: 'track is not a git repository',
     });
   });
 });
@@ -364,9 +365,20 @@ it('labels a superseded worker card’s live status as its session’s, leaving 
   }).rowModules[0].rows;
 
   expect(stale.id).toBe('old-worker');
-  expect(stale.status).toEqual({ token: 'running', phrase: 'session running' });
+  expect(stale.status).toEqual({ token: 'running', phrase: 'session running', detail: null });
   expect(stale.badges).toEqual([{ id: 'session', text: 'session', struck: false }]);
   expect(current.id).toBe('new-worker');
-  expect(current.status).toEqual({ token: 'done', phrase: 'Done' });
+  expect(current.status).toEqual({ token: 'done', phrase: 'Done', detail: null });
   expect(current.badges).toEqual([]);
+});
+
+it('separates an execution label from its actual explanation', () => {
+  const execution = { attemptId: 'a1', generation: 1, status: 'failed', label: 'Failed',
+    statusDetail: 'Gate exited with code 1', workerCardId: null, blockingReason: null };
+  const [detailed, labelOnly] = tasksModule([
+    { ...task({ blockId: 'detail' }), execution },
+    { ...task({ blockId: 'label' }), execution: { ...execution, statusDetail: null } },
+  ]).rows;
+  expect(detailed.status).toEqual({ token: 'failed', phrase: 'Failed — Gate exited with code 1', detail: 'Gate exited with code 1' });
+  expect(labelOnly.status).toEqual({ token: 'failed', phrase: 'Failed', detail: null });
 });

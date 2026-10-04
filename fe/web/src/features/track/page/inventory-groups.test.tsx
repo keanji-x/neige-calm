@@ -23,3 +23,38 @@ it('shows working tasks and discloses completed tasks with their original action
   fireEvent.click(screen.getByRole('button', { name: 'finished-a' }));
   expect(onOpenTask).toHaveBeenCalledWith('finished-a');
 });
+
+it('exposes failed and blocked work immediately with the failure explanation', () => {
+  const onOpenTask = vi.fn();
+  const view = render(<TrackPage track={track()} tasks={[
+    { ...task('verify-layout', 'failed'), statusDetail: 'Gate exited with code 1' },
+    task('choose-layout', 'blocked'),
+  ]} cards={[]} openableCards={new Set()} mobilePanelObscured={false}
+    canReopenTrack={false} canCloseTrack={false} onRenameTrack={vi.fn()}
+    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onOpenTask={onOpenTask} />);
+  expect(view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="failed"]')?.open).toBe(true);
+  expect(view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="attention"]')?.open).toBe(true);
+  expect(screen.getByText('Gate exited with code 1', { exact: true })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'verify-layout' }));
+  expect(onOpenTask).toHaveBeenCalledWith('verify-layout');
+});
+
+it('keeps a failure without additional detail in one compact status line', () => {
+  render(<TrackPage track={track()} tasks={[task('verify', 'failed')]}
+    cards={[]} openableCards={new Set()} mobilePanelObscured={false}
+    canReopenTrack={false} canCloseTrack={false} onRenameTrack={vi.fn()}
+    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} />);
+  expect(screen.getAllByText('failed')).toHaveLength(1);
+});
+
+it('shows a label-only failed execution without inventing an explanation', () => {
+  const view = render(<TrackPage track={track()} tasks={[{ ...task('verify', 'failed'), execution: {
+    attemptId: 'attempt-1', generation: 1, status: 'failed', label: 'Failed',
+    statusDetail: null, workerCardId: null, blockingReason: null,
+  } }]} cards={[]} openableCards={new Set()} mobilePanelObscured={false}
+    canReopenTrack={false} canCloseTrack={false} onRenameTrack={vi.fn()}
+    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} />);
+  const row = view.container.querySelector('[data-nc-row="verify"]')!;
+  expect(row.querySelectorAll('[aria-hidden="true"]')).toHaveLength(1);
+  expect(screen.getAllByText('failed')).toHaveLength(1);
+});

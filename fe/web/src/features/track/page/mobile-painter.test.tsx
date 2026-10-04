@@ -72,7 +72,7 @@ const dispatched: PanelRow = {
   title: 'beta-gate',
   kind: 'terminal',
   badges: [],
-  status: { token: 'failed', phrase: 'failed — track /tmp/alpha is not a git repository' },
+  status: { token: 'failed', phrase: 'failed — track /tmp/alpha is not a git repository', detail: 'track /tmp/alpha is not a git repository' },
   activity: null,
   actions: [
     {
@@ -167,7 +167,7 @@ const bareStatus: PanelRow = {
   title: 'eta-run',
   kind: 'terminal',
   badges: [],
-  status: { token: 'running', phrase: 'running' },
+  status: { token: 'running', phrase: 'running', detail: null },
   activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-7', label: null,
@@ -181,7 +181,7 @@ const declaredAndRunning: PanelRow = {
   title: 'theta-check',
   kind: null,
   badges: [{ id: 'declaration', text: 'Not ready', struck: false }],
-  status: { token: 'failed', phrase: 'failed — the worker exited before it reported' },
+  status: { token: 'failed', phrase: 'failed — the worker exited before it reported', detail: 'the worker exited before it reported' },
   activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-8', label: null,
@@ -196,7 +196,7 @@ const emptyToken: PanelRow = {
   title: 'iota-probe',
   kind: 'claude',
   badges: [],
-  status: { token: '', phrase: 'the kernel has not named this state' },
+  status: { token: '', phrase: 'the kernel has not named this state', detail: null },
   activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-9', label: null,
@@ -211,7 +211,7 @@ const pendingReason: PanelRow = {
   title: 'kappa-queued',
   kind: 'codex',
   badges: [],
-  status: { token: 'pending', phrase: 'pending' },
+  status: { token: 'pending', phrase: 'pending', detail: null },
   activity: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-10', label: null,
