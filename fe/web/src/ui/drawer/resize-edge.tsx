@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
-import { readingPlaceIn, restoreReadingPlace, type ReadingPlace } from './reading-place.ts';
+import { capturePaneReadingPlaces, restorePaneReadingPlaces, type PaneReadingPlace, type PaneResizeGroup } from './resize-group.ts';
 
 /** Where the dragged edge went, in rem; `null` is the default width. The caller owns, applies and remembers it: `onPreview` once a frame while the edge moves, `onCommit` when it settles. The drawer stamps `data-nc-drawer-resizable` so the caller's stylesheet can apply the width only while this drawer is open. */
 export type DrawerResize = Readonly<{ onPreview: (rem: number | null) => void; onCommit: (rem: number | null) => void }>;
@@ -16,11 +16,12 @@ const remPx = () => parseFloat(getComputedStyle(document.documentElement).fontSi
 
 /* `pending` is the width the next frame applies. `settled` is the rendered width after the last applied frame — what is on screen once the caller's clamp has run — and stays `null` until the edge moves, so a press without a drag never pins the default to a number. */
 type Drag = {
-  pointerId: number; startX: number; startPx: number; place: ReadingPlace | null; frame: number; pending: number | null; settled: number | null;
+  pointerId: number; startX: number; startPx: number; places: readonly PaneReadingPlace[]; frame: number; pending: number | null; settled: number | null;
 };
 
-export function ResizeEdge({ resize, panelRef, scrollRef }: {
+export function ResizeEdge({ resize, panelRef, scrollRef, group = null }: {
   resize: DrawerResize;
+  group?: PaneResizeGroup | null;
   panelRef: RefObject<HTMLDivElement | null>;
   scrollRef: RefObject<HTMLDivElement | null>;
 }) {
@@ -32,7 +33,7 @@ export function ResizeEdge({ resize, panelRef, scrollRef }: {
     const panel = panelRef.current;
     if (panel === null) return;
     const measure = () => {
-      const region = panel.offsetParent?.clientWidth ?? 0;
+      const region = (group === null ? panel.offsetParent : group.host.current?.offsetParent)?.clientWidth ?? 0;
       setPercent(region > 0 ? Math.round(panel.getBoundingClientRect().width / region * 100) : null);
     };
     measure();
@@ -40,7 +41,7 @@ export function ResizeEdge({ resize, panelRef, scrollRef }: {
     const observer = new ResizeObserver(measure);
     observer.observe(panel);
     return () => { observer.disconnect(); };
-  }, [panelRef]);
+  }, [panelRef, group]);
 
   /* The unmount commits through the contract of the last render, not the first. A layout cleanup, so the drag ends in the commit that removes the edge: a passive one may run after the next frame, which would lay out a queued desktop width on a card that is now compact, or gone. */
   const latestResize = useRef(resize);
@@ -54,13 +55,13 @@ export function ResizeEdge({ resize, panelRef, scrollRef }: {
   }, []);
 
   /** Move the edge to `rem` with the reader kept on `place`, and return the width laid out. */
-  const resizeTo = (place: ReadingPlace | null, rem: number | null) => {
+  const resizeTo = (places: readonly PaneReadingPlace[], rem: number | null) => {
     resize.onPreview(rem);
-    restoreReadingPlace(scrollRef.current, place);
+    restorePaneReadingPlaces(places);
     return (panelRef.current?.getBoundingClientRect().width ?? 0) / remPx();
   };
   const settle = (rem: number | null) => {
-    const laid = resizeTo(scrollRef.current === null ? null : readingPlaceIn(scrollRef.current), rem);
+    const laid = resizeTo(capturePaneReadingPlaces(scrollRef.current, group), rem);
     resize.onCommit(rem === null ? null : laid);
   };
   const applyPending = () => {
@@ -68,7 +69,7 @@ export function ResizeEdge({ resize, panelRef, scrollRef }: {
     if (current === null || current.pending === null) return;
     const rem = current.pending;
     current.pending = null;
-    current.settled = resizeTo(current.place, rem);
+    current.settled = resizeTo(current.places, rem);
   };
   const endDrag = () => {
     const current = drag.current;
@@ -102,7 +103,7 @@ export function ResizeEdge({ resize, panelRef, scrollRef }: {
           pointerId: event.pointerId,
           startX: event.clientX,
           startPx: panelRef.current?.getBoundingClientRect().width ?? 0,
-          place: scrollRef.current === null ? null : readingPlaceIn(scrollRef.current),
+          places: capturePaneReadingPlaces(scrollRef.current, group),
           frame: 0,
           pending: null,
           settled: null,

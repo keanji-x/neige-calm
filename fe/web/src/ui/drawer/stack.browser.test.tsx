@@ -14,7 +14,7 @@ function Harness() {
   return <div style={{ position: 'relative', height: '900px', width: '100%', containerType: 'inline-size' }}>
     <Drawer open stacked title="Main conversation" onClose={() => {}}
       footer={<textarea aria-label="Main message" />}
-      companion={side && !compact ? <Drawer inline open title="Side conversation" closeLabel="Close side conversation"
+      companion={side && !compact ? (group) => <Drawer resizeGroup={group} inline open title="Side conversation" closeLabel="Close side conversation"
         onClose={() => setSide(false)} footer={<textarea aria-label="Side message" />}>
         <p>Independent discussion</p>
       </Drawer> : undefined}>

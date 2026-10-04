@@ -1,3 +1,4 @@
+import type { PaneResizeGroup } from '../../ui/drawer/resize-group.ts';
 import { sideConversationSnapshot } from '../../../../core/domain/side-conversation.ts';
 import type { SideConversation } from '../../../../core/domain/conversation.ts';
 import { writeClipboardText } from '../../ui/operation-feedback/clipboard.ts';
@@ -950,7 +951,7 @@ function useConversationPanel(
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
     { ...options, ownedCardIds, inline: true, slotId: sideSlot, enabled: belongsToParent });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, companion: belongsToParent && side.isOpen ? side.drawer : undefined,
+    { ...options, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, companion: belongsToParent && side.isOpen ? side.drawerFor : undefined,
       onSide: (parent, entries, question) => {
         if (compact) { setSideError('Side conversations are available on desktop.'); return false; }
         if (capabilities.data?.conversationSide !== true) {
@@ -983,7 +984,7 @@ function useConversationPane(
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationViewTarget>,
   options?: { showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
-    companion?: React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
+    companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
      retain their separate ConversationProvider lifecycle. */
@@ -1423,28 +1424,9 @@ function useConversationPane(
     sendDraftRef.current(draft.text);
   }, [draftOpen, draft, creating, registry]);
 
-  return {
-    isOpen: open !== null || draftOpen,
-    close: closeDrawer,
-    list: (
-      <ChatList
-        conversations={store.conversations}
-        cards={source.cards}
-        unreadIds={new Set(rows.filter(row => preferences.isUnread('conversation', row.id, row.lastTurnCompletedAt ?? 0)).map(row => row.id))}
-        activeId={open?.id ?? null}
-        /* The two local echoes for the open row only, handed over as facts: the list
-                   reads nothing off `Conversation.state`. */
-        local={open === null ? null : { id: open.id, working: store.working, stalled: store.stalled }}
-        showTrack={options?.showTrack ?? true}
-        onOpen={(conversation) => {
-          setOpenTarget({ kind: 'row', id: conversation.id });
-        }}
-      />
-    ),
-    action: <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
-    startConversation: start,
-    drawer: (
+  const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
       <Drawer
+        resizeGroup={resizeGroup}
         id={open === null ? undefined : `conversation-${open.id}`}
         inline={options?.inline}
         stacked={options?.stacked}
@@ -1680,7 +1662,30 @@ function useConversationPane(
           </>
         )}
       </Drawer>
+  );
+
+  return {
+    isOpen: open !== null || draftOpen,
+    close: closeDrawer,
+    list: (
+      <ChatList
+        conversations={store.conversations}
+        cards={source.cards}
+        unreadIds={new Set(rows.filter(row => preferences.isUnread('conversation', row.id, row.lastTurnCompletedAt ?? 0)).map(row => row.id))}
+        activeId={open?.id ?? null}
+        /* The two local echoes for the open row only, handed over as facts: the list
+                   reads nothing off `Conversation.state`. */
+        local={open === null ? null : { id: open.id, working: store.working, stalled: store.stalled }}
+        showTrack={options?.showTrack ?? true}
+        onOpen={(conversation) => {
+          setOpenTarget({ kind: 'row', id: conversation.id });
+        }}
+      />
     ),
+    action: <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
+    startConversation: start,
+    drawer: renderDrawer(),
+    drawerFor: renderDrawer,
   };
 }
 

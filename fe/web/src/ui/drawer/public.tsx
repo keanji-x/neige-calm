@@ -1,12 +1,13 @@
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
-import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import { Icon } from '../icon/public.tsx';
 import { MobileHeader } from '../mobile-header/public.tsx';
 import { useState } from '../state/public.ts';
 import { useCompactViewport } from '../viewport/public.ts';
 import styles from './drawer.module.css';
+import type { PaneResizeGroup } from './resize-group.ts';
 import { ResizeEdge, type DrawerResize } from './resize-edge.tsx';
 
 export type { DrawerResize } from './resize-edge.tsx';
@@ -24,11 +25,13 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false }: {
+export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null }: {
   open: boolean;
   id?: string;
   /** An independent second card displayed below this one, or switched on compact screens. */
-  companion?: ReactNode;
+  companion?: (group: PaneResizeGroup) => ReactNode;
+  /** Explicitly shares the host allocation and scrolling panes with a companion. */
+  resizeGroup?: PaneResizeGroup | null;
   /** Keep the primary card mounted as companions open and close. */
   stacked?: boolean;
   /** Render inside a companion slot rather than positioning another overlay. */
@@ -50,8 +53,20 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   const panelRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const parentResizeGroup = suppliedResizeGroup;
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const [panes] = useState(() => new Set<HTMLElement>());
+  const ownResizeGroup = useMemo<PaneResizeGroup>(() => ({ host: hostRef, panes }), [panes]);
+  const resizeGroup = parentResizeGroup ?? (stacked || companion !== undefined ? ownResizeGroup : null);
+
   const width = compact ? undefined : resize;
   const [closing, setClosing] = useState(false);
+  useLayoutEffect(() => {
+    const pane = scrollRef.current;
+    if (pane === null || resizeGroup === null) return;
+    resizeGroup.panes.add(pane);
+    return () => { resizeGroup.panes.delete(pane); };
+  }, [resizeGroup, open, closing]);
   const wasOpen = useRef(open);
   const shouldRestoreFocus = useRef(false);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
@@ -186,7 +201,8 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       </div>
       {frame.footer}
       {/* Last in the card so the first Tab off the container still lands on the header. Mounted only while open: the edge's lifetime is the drag's, so a close mid-drag ends it. */}
-      {open && width !== undefined && <ResizeEdge resize={width} panelRef={panelRef} scrollRef={scrollRef} />}
+      {open && width !== undefined && !stacked && companion === undefined && parentResizeGroup === null
+        && <ResizeEdge resize={width} panelRef={panelRef} scrollRef={scrollRef} group={resizeGroup} />}
     </div>
     {/* The seam is after the card in source order deliberately and is not marked `data-nc-drawer`: one drawer must present one marker for `app/shell`'s `:has()` rule. */}
     <div
@@ -197,9 +213,11 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   );
   if (companion === undefined && !stacked) return card;
   return (
-    <div className={styles.stack}>
+    <div ref={hostRef} className={styles.stack}>
       <div className={styles.cell}>{card}</div>
-      <div className={styles.cell} hidden={companion === undefined}>{companion}</div>
+      <div className={styles.cell} hidden={companion === undefined}>{companion?.(ownResizeGroup)}</div>
+      {open && width !== undefined && parentResizeGroup === null
+        && <ResizeEdge resize={width} panelRef={hostRef} scrollRef={scrollRef} group={resizeGroup} />}
     </div>
   );
 }

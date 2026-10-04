@@ -11,10 +11,11 @@ import { createAppRouter, APP_BASEPATH } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import '../../styles/entry.css';
+import { readingPlaceIn } from '../../ui/drawer/reading-place.ts';
 
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); await page.viewport(1280, 720); });
 
-function setup(outcome?: 'interrupted' | 'failed') {
+function setup(outcome?: 'interrupted' | 'failed', longText?: string) {
   const requests: ApiRequest[] = [];
   const track = { id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
@@ -47,6 +48,10 @@ function setup(outcome?: 'interrupted' | 'failed') {
       card_id: 'parent', track_id: track.id, thread_id: 'thread-parent', turn_id: null, turn_error_text: null,
       item_uuid: null, item_type: 'agentMessage', method: 'item/completed', created_at_ms: 1,
       params: JSON.stringify({ item: { id: 'explanation', type: 'agentMessage', text: 'The main conversation keeps working while a separate discussion explores this design.' } }) }];
+    if (longText !== undefined && request.path.includes('/harness/items')) body = [{ id: 1, worker_session_id: `session-${cardId}`,
+      card_id: cardId, track_id: track.id, thread_id: `thread-${cardId}`, turn_id: null, turn_error_text: null,
+      item_uuid: null, item_type: 'agentMessage', method: 'item/completed', created_at_ms: 1,
+      params: JSON.stringify({ item: { id: 'long-reply', type: 'agentMessage', text: longText } }) }];
     if (outcome !== undefined && request.path.startsWith('/api/cards/parent/harness/items')) {
       body = [{ id: 99, worker_session_id: 'session-parent', card_id: 'parent', track_id: track.id, thread_id: 'thread-parent',
         turn_id: 'finished-turn', turn_error_text: null, item_uuid: null, item_type: null, method: 'turn/completed',
@@ -83,6 +88,15 @@ it('runs /side through the production router and shows two independent desktop c
   const mobileChat = document.querySelector<HTMLElement>('[data-nc-mobile-report-chat]');
   expect(mobileChat).toBeNull();
   expect(sideBox.top).toBeGreaterThan(mainBox.bottom);
+  const handles = document.querySelectorAll<HTMLElement>('[role=separator][aria-label="Resize conversation"]');
+  expect(handles).toHaveLength(1);
+  await expect.poll(() => handles[0]?.getAttribute('aria-valuenow')).not.toBe(null);
+  const initialShare = Number(handles[0].getAttribute('aria-valuenow'));
+  expect(initialShare).toBeGreaterThan(0);
+  expect(initialShare).toBeLessThan(100);
+  handles[0].focus();
+  await userEvent.keyboard('{ArrowLeft}');
+  await expect.poll(() => Number(handles[0].getAttribute('aria-valuenow'))).toBeGreaterThan(initialShare);
   await field.fill('Unsent main question');
   await side.getByRole('combobox', { name: 'Message' }).fill('Unsent side question');
   await page.screenshot({ path: '../../../../test-results/side-conversation-integrated.png' });
@@ -118,4 +132,28 @@ it('keeps opened continuation details when a desktop conversation becomes mobile
   await page.viewport(390, 844);
   await expect.element(guidance).toBeVisible();
   await expect.element(composer).toHaveTextContent('Continue deliberately');
+});
+
+
+it('preserves the sibling reading anchor when the shared width changes', async () => {
+  await page.viewport(1512, 950);
+  setup(undefined, Array.from({ length: 60 }, (_, index) => `Paragraph ${index}. ${'A sentence that wraps as the conversation width changes. '.repeat(8)}`).join('\n\n'));
+  await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  const mainField = page.getByRole('combobox', { name: 'Message' });
+  await mainField.fill('/side Reading position');
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('region', { name: 'Side conversation · Codex' })).toBeVisible();
+  const handles = document.querySelectorAll<HTMLElement>('[role=separator][aria-label="Resize conversation"]');
+  handles[0].focus();
+  await userEvent.keyboard('{ArrowLeft}'.repeat(12));
+  const scrollers = document.querySelectorAll<HTMLElement>('[data-nc-drawer-scroll]');
+  const sibling = scrollers[1];
+  sibling.scrollTop = sibling.scrollHeight * 0.4;
+  const place = readingPlaceIn(sibling);
+  expect(place.atEnd).toBe(false);
+  expect(place.mark).not.toBeNull();
+  const before = place.mark!.getBoundingClientRect().top - sibling.getBoundingClientRect().top;
+  await userEvent.keyboard('{Home}');
+  const after = place.mark!.getBoundingClientRect().top - sibling.getBoundingClientRect().top;
+  expect(Math.abs(after - before)).toBeLessThan(2);
 });
