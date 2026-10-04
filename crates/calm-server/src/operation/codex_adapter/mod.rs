@@ -21,11 +21,12 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
+use crate::operation::task_prompt::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
     release::release_workspace_lease_by_id,
-    worker::{ReaderFacts, record_declared_head, verify_recorded_head, verify_worker_checkout},
+    worker::{record_declared_head, verify_recorded_head, verify_worker_checkout},
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::planner_model::TurnModelSelection;
@@ -1491,67 +1492,6 @@ pub(crate) async fn card_payload_get_tx(
         .0;
     serde_json::from_str(&payload_text)
         .map_err(|e| CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}")))
-}
-
-/// The task prompt both worker adapters render. A read-only task (#1917) is told it shares the
-/// checkout, which nothing enforces, and is given its repo, checkout, head and base (#1933).
-pub(crate) fn render_task_worker_prompt(
-    attempt_id: &str,
-    goal: &str,
-    context: &Value,
-    acceptance: Option<&str>,
-    reader: Option<&ReaderFacts>,
-) -> String {
-    let prompt = render_worker_prompt(goal, context, acceptance);
-    let reader = reader.map(render_reader_facts).unwrap_or_default();
-    format!(
-        "{prompt}{reader}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
-    )
-}
-
-fn render_reader_facts(reader: &ReaderFacts) -> String {
-    let mut out = "\n\nThis task is read-only: do not modify the checkout (no edits, commits or \
-                   generated files). Other read-only tasks may be reading it at the same time."
-        .to_string();
-    match &reader.repo {
-        Ok(url) => out.push_str(&format!("\nrepo: {url}")),
-        Err(why) => out.push_str(&format!("\nrepo: none ({why})")),
-    }
-    out.push_str(&format!("\ncheckout: {}", reader.checkout.display()));
-    for (name, commit) in [("head", &reader.head), ("base", &reader.base)] {
-        if let Some(commit) = commit {
-            out.push_str(&format!("\n{name}: {commit}"));
-        }
-    }
-    out
-}
-
-pub(crate) fn render_worker_prompt(
-    goal: &str,
-    context: &Value,
-    acceptance_criteria: Option<&str>,
-) -> String {
-    let mut out = String::new();
-    out.push_str("Goal:\n");
-    out.push_str(goal);
-
-    let context_str = match context {
-        Value::Null => String::new(),
-        Value::String(s) if s.trim().is_empty() => String::new(),
-        Value::Object(m) if m.is_empty() => String::new(),
-        Value::Array(a) if a.is_empty() => String::new(),
-        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
-    };
-    if !context_str.is_empty() {
-        out.push_str("\n\nContext:\n");
-        out.push_str(&context_str);
-    }
-
-    if let Some(ac) = acceptance_criteria.map(str::trim).filter(|s| !s.is_empty()) {
-        out.push_str("\n\nAcceptance criteria:\n");
-        out.push_str(ac);
-    }
-    out
 }
 
 async fn build_codex_env(

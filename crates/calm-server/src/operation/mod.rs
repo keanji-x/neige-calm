@@ -19,6 +19,7 @@ pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;
 pub mod planner_harness_start_adapter;
 pub(crate) mod task_launch;
+mod task_prompt;
 pub mod task_verify_adapter;
 pub mod terminal_adapter;
 pub(crate) mod terminal_disposal;

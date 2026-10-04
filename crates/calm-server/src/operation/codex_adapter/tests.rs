@@ -266,59 +266,6 @@ async fn try_prepare_worker_and_op(
     Ok((output, op))
 }
 
-#[test]
-fn task_worker_turn_input_names_the_execution_id_attempt_id() {
-    let out = render_task_worker_prompt("t:build", "g", &Value::Null, None, None);
-    assert!(out.ends_with("\n\nTask attempt_id: t:build\nEcho this exact attempt_id when reporting completion or failure."), "{out}");
-    assert!(
-        !out.contains("idempotency") && !out.contains("task_id"),
-        "{out}"
-    );
-}
-
-#[test]
-fn render_worker_prompt_goal_only() {
-    let out = render_worker_prompt("fix the bug", &Value::Null, None);
-    assert_eq!(out, "Goal:\nfix the bug");
-}
-
-#[test]
-fn render_worker_prompt_goal_plus_context() {
-    let ctx = serde_json::json!({ "issue": 42, "title": "x" });
-    let out = render_worker_prompt("fix it", &ctx, None);
-    assert!(out.starts_with("Goal:\nfix it"));
-    assert!(out.contains("\n\nContext:\n"));
-    assert!(out.contains("\"issue\": 42"));
-    assert!(out.contains("\"title\": \"x\""));
-    assert!(!out.contains("Acceptance criteria"));
-}
-
-#[test]
-fn render_worker_prompt_goal_plus_context_plus_ac() {
-    let ctx = serde_json::json!({ "pr": 7 });
-    let out = render_worker_prompt("ship", &ctx, Some("tests pass"));
-    assert!(out.contains("Goal:\nship"));
-    assert!(out.contains("\n\nContext:\n"));
-    assert!(out.contains("\"pr\": 7"));
-    assert!(out.ends_with("Acceptance criteria:\ntests pass"));
-}
-
-#[test]
-fn render_worker_prompt_skips_empty_context_object() {
-    let out = render_worker_prompt("g", &serde_json::json!({}), Some("ac"));
-    assert!(
-        !out.contains("Context"),
-        "empty {{}} should be skipped: {out}"
-    );
-    assert!(out.contains("Acceptance criteria:\nac"));
-}
-
-#[test]
-fn render_worker_prompt_skips_blank_ac() {
-    let out = render_worker_prompt("g", &Value::Null, Some("   "));
-    assert_eq!(out, "Goal:\ng");
-}
-
 #[tokio::test]
 async fn codex_worker_prepare_acquires_held_workspace_lease_cwd() {
     let harness = worker_lease_harness().await;

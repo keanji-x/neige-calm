@@ -20,7 +20,7 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id};
-use crate::operation::codex_adapter::render_task_worker_prompt;
+use crate::operation::task_prompt::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
