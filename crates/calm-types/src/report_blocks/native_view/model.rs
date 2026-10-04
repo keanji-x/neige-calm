@@ -14,7 +14,10 @@ pub struct NativeView {
     pub title: String,
     #[schema(max_length = 500)]
     pub description: String,
-    pub snapshot: Snapshot,
+    // Provenance of the inline cells: non-null exactly when the view has one.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schema(required = true)]
+    pub snapshot: Option<Snapshot>,
     #[schema(min_items = 1, max_items = 6)]
     pub rows: Vec<Row>,
 }
@@ -39,7 +42,69 @@ pub struct Row {
     pub title: String,
     pub layout: Layout,
     #[schema(min_items = 1, max_items = 3)]
-    pub cells: Vec<Component>,
+    pub cells: Vec<RowCell>,
+}
+// One template cell: a live slot the read side resolves, or an inline component.
+#[derive(ToSchema, TS)]
+#[serde(untagged)]
+pub enum RowCell {
+    Live(LiveSlot),
+    Inline(Component),
+}
+impl<'de> Deserialize<'de> for RowCell {
+    /// Reads `kind` once and dispatches, so an error names the real variant.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = Value::deserialize(deserializer)?;
+        if value.get("kind").and_then(Value::as_str) == Some("live") {
+            LiveSlot::deserialize(value)
+                .map(Self::Live)
+                .map_err(|e| D::Error::custom(format!("live slot: {e}")))
+        } else {
+            Component::deserialize(value)
+                .map(Self::Inline)
+                .map_err(D::Error::custom)
+        }
+    }
+}
+// A template's reference to one plugin data unit; the unit supplies the cell.
+#[derive(Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct LiveSlot {
+    pub kind: LiveTag,
+    #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
+    pub id: String,
+    // The literal must equal `kinds::LIVE_SOURCE_PATTERN`; utoipa takes only a literal.
+    #[schema(
+        max_length = 2048,
+        pattern = "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+    )]
+    pub source: String,
+    pub expects: ComponentKind,
+}
+#[derive(Deserialize, ToSchema, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum LiveTag {
+    Live,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentKind {
+    Metrics,
+    TimeSeries,
+    Distribution,
+    Table,
+    Bars,
+    Meter,
+    Records,
+}
+// The overlay payload a live slot resolves to: one cell with its own provenance.
+// `cell` is a `Component`, so a unit cannot nest another live slot.
+#[derive(Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DataUnit {
+    pub snapshot: Snapshot,
+    pub cell: Component,
 }
 #[derive(Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
@@ -407,10 +472,10 @@ pub enum TableScalar {
     Number(f64),
     Null(TableNull),
 }
-fn required_nullable<'de, D: serde::Deserializer<'de>>(
+fn required_nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
-) -> Result<Option<f64>, D::Error> {
-    Option::<f64>::deserialize(deserializer)
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Deserialize, TS)]

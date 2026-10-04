@@ -28,6 +28,21 @@
       ]}
     ]
   },
+  "valid_slots": {
+    "version": 1,
+    "title": "",
+    "description": "",
+    "snapshot": null,
+    "rows": [
+      {"id": "performance", "title": "", "layout": "two-wide-end", "cells": [
+        {"kind": "live", "id": "nav", "source": "neige://plugin/operations/capacity.summary", "expects": "metrics"},
+        {"kind": "live", "id": "nav-history", "source": "neige://plugin/operations/capacity.history", "expects": "time-series"}
+      ]},
+      {"id": "detail", "title": "明细", "layout": "one", "cells": [
+        {"kind": "live", "id": "detail", "source": "neige://plugin/operations/capacity.detail", "expects": "table"}
+      ]}
+    ]
+  },
   "canonical_sizes": [
     {"json": "1", "canonical": "1", "decoded_bytes": 1},
     {"json": "1.0", "canonical": "1.0", "decoded_bytes": 1},
@@ -84,6 +99,13 @@
     {"name": "obsolete workflow record field", "path": ["rows", 2, "cells", 0, "datasets", 0, "items", 0, "status"], "value": {"label": "unknown", "tone": "neutral"}},
     {"name": "positive observation beyond bound", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "values"], "value": [1000000000000001.0]},
     {"name": "negative observation beyond bound", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "values"], "value": [-1000000000000001.0]},
-    {"name": "huge finite observation", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "values"], "value": [1e+308]}
+    {"name": "huge finite observation", "path": ["rows", 0, "cells", 1, "datasets", 0, "points", 0, "values"], "value": [1e+308]},
+    {"name": "snapshot-null-with-inline-cell", "path": ["snapshot"], "value": null},
+    {"name": "snapshot-set-without-inline-cell", "path": ["rows"], "value": [{"id": "live", "title": "", "layout": "one", "cells": [{"kind": "live", "id": "nav", "source": "neige://plugin/operations/capacity.summary", "expects": "metrics"}]}]},
+    {"name": "duplicate-slot-id", "path": ["rows", 2, "cells"], "value": [{"kind": "live", "id": "usage", "source": "neige://plugin/operations/capacity.summary", "expects": "metrics"}]},
+    {"name": "slot-layout-width", "path": ["rows", 2, "cells"], "value": [{"kind": "live", "id": "nav", "source": "neige://plugin/operations/capacity.summary", "expects": "metrics"}, {"kind": "live", "id": "nav-history", "source": "neige://plugin/operations/capacity.summary", "expects": "metrics"}]},
+    {"name": "slot-bad-source", "path": ["rows", 2, "cells"], "value": [{"kind": "live", "id": "nav", "source": "neige://plugin/operations/capacity/summary", "expects": "metrics"}]},
+    {"name": "slot-long-source", "path": ["rows", 2, "cells"], "value": [{"kind": "live", "id": "nav", "source": "neige://plugin/operations/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "expects": "metrics"}]},
+    {"name": "slot-unknown-expects", "path": ["rows", 2, "cells"], "value": [{"kind": "live", "id": "nav", "source": "neige://plugin/operations/capacity.summary", "expects": "iframe"}]}
   ]
 }

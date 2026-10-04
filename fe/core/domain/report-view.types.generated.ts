@@ -1,7 +1,12 @@
 // Generated from calm-types; do not edit.
-export type NativeView = { version: number, title: string, description: string, snapshot: Snapshot, rows: Array<Row>, };
+export type NativeView = { version: number, title: string, description: string, snapshot: Snapshot | null, rows: Array<Row>, };
 export type Snapshot = { id: string, observedAt: number | null, producedAt: number | null, };
-export type Row = { id: string, title: string, layout: Layout, cells: Array<Component>, };
+export type Row = { id: string, title: string, layout: Layout, cells: Array<RowCell>, };
+export type RowCell = LiveSlot | Component;
+export type LiveSlot = { kind: LiveTag, id: string, source: string, expects: ComponentKind, };
+export type LiveTag = "live";
+export type ComponentKind = "metrics" | "time-series" | "distribution" | "table" | "bars" | "meter" | "records";
+export type DataUnit = { snapshot: Snapshot, cell: Component, };
 export type Layout = "one" | "two" | "three" | "two-wide-start" | "two-wide-end";
 export type Tone = "neutral" | "positive" | "warning" | "negative";
 export type Emphasis = "primary" | "normal";

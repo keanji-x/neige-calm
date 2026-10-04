@@ -55,6 +55,18 @@ fn date(value: &str) -> Result<(), String> {
     }
 }
 impl Component {
+    /// The cell kind; exhaustive, so a new variant cannot compile without one.
+    pub fn kind(&self) -> ComponentKind {
+        match self {
+            Self::Metrics { .. } => ComponentKind::Metrics,
+            Self::TimeSeries { .. } => ComponentKind::TimeSeries,
+            Self::Distribution { .. } => ComponentKind::Distribution,
+            Self::Table { .. } => ComponentKind::Table,
+            Self::Bars { .. } => ComponentKind::Bars,
+            Self::Meter { .. } => ComponentKind::Meter,
+            Self::Records { .. } => ComponentKind::Records,
+        }
+    }
     fn identity(&self) -> (&str, &str) {
         match self {
             Self::Metrics { id, title, .. }
@@ -254,6 +266,28 @@ impl Component {
         Ok(())
     }
 }
+impl RowCell {
+    fn id(&self) -> &str {
+        match self {
+            Self::Live(slot) => &slot.id,
+            Self::Inline(component) => component.identity().0,
+        }
+    }
+}
+fn validate_snapshot(snapshot: &Snapshot) -> Result<(), String> {
+    ids(std::iter::once(snapshot.id.as_str()))?;
+    for time in [snapshot.observed_at, snapshot.produced_at]
+        .into_iter()
+        .flatten()
+    {
+        integer(time, 0.0, 253402300799999.0)?;
+    }
+    Ok(())
+}
+fn validate_slot(slot: &LiveSlot) -> Result<(), String> {
+    text(&slot.source, super::kinds::MAX_STRING_CHARS)?;
+    super::kinds::validate_live_source(&slot.source)
+}
 pub fn validate(payload: &Value) -> Result<(), String> {
     let view: NativeView =
         serde_json::from_value(payload.clone()).map_err(|e| format!("view: {e}"))?;
@@ -262,19 +296,27 @@ pub fn validate(payload: &Value) -> Result<(), String> {
     }
     text(&view.title, 200)?;
     text(&view.description, 500)?;
-    ids(std::iter::once(view.snapshot.id.as_str()))?;
-    if let Some(time) = view.snapshot.observed_at {
-        integer(time, 0.0, 253402300799999.0)?;
-    }
-    if let Some(time) = view.snapshot.produced_at {
-        integer(time, 0.0, 253402300799999.0)?;
+    let inline = view
+        .rows
+        .iter()
+        .flat_map(|r| &r.cells)
+        .any(|c| matches!(c, RowCell::Inline(_)));
+    match (&view.snapshot, inline) {
+        (Some(snapshot), true) => validate_snapshot(snapshot)?,
+        (None, false) => {}
+        (None, true) => {
+            return Err("view.snapshot: required while the view has an inline cell".into());
+        }
+        (Some(_), false) => {
+            return Err("view.snapshot: must be null when every cell is a live slot".into());
+        }
     }
     count(view.rows.len(), 1, 6)?;
     ids(view.rows.iter().map(|r| r.id.as_str()))?;
     ids(view
         .rows
         .iter()
-        .flat_map(|r| r.cells.iter().map(|c| c.identity().0)))?;
+        .flat_map(|r| r.cells.iter().map(RowCell::id)))?;
     for row in view.rows {
         text(&row.title, 200)?;
         let expected = match row.layout {
@@ -284,11 +326,38 @@ pub fn validate(payload: &Value) -> Result<(), String> {
         };
         count(row.cells.len(), expected, expected)?;
         for cell in row.cells {
-            cell.validate()
-                .map_err(|e| format!("row {}: {e}", row.id))?;
+            match cell {
+                RowCell::Live(slot) => validate_slot(&slot),
+                RowCell::Inline(component) => component.validate(),
+            }
+            .map_err(|e| format!("row {}: {e}", row.id))?;
         }
     }
     Ok(())
+}
+
+/// Read-side check of one live slot's overlay payload: size cap, envelope, the
+/// template's expected kind, then the cell itself.
+pub fn validate_unit(expects: ComponentKind, payload: &Value) -> Result<(), String> {
+    let bytes = serde_json::to_vec(payload).map_err(|e| format!("unit: {e}"))?;
+    if bytes.len() > super::kinds::MAX_LIVE_VIEW_BYTES {
+        return Err(format!(
+            "unit: {} bytes exceeds the {} byte limit",
+            bytes.len(),
+            super::kinds::MAX_LIVE_VIEW_BYTES
+        ));
+    }
+    let unit: DataUnit =
+        serde_json::from_value(payload.clone()).map_err(|e| format!("unit: {e}"))?;
+    validate_snapshot(&unit.snapshot).map_err(|e| format!("unit.snapshot: {e}"))?;
+    let kind = unit.cell.kind();
+    if kind != expects {
+        return Err(format!(
+            "unit.cell: kind {kind:?} does not match the slot's expected {expects:?}"
+        ));
+    }
+    ids(std::iter::once(unit.cell.identity().0))?;
+    unit.cell.validate().map_err(|e| format!("unit.cell: {e}"))
 }
 
 /// Checked-in contract used by backend discovery; regenerate from the DTOs.
@@ -303,6 +372,8 @@ pub fn generated_schema() -> Value {
     let mut definitions = Vec::new();
     NativeView::schemas(&mut definitions);
     definitions.push((NativeView::name().into(), NativeView::schema()));
+    DataUnit::schemas(&mut definitions);
+    definitions.push((DataUnit::name().into(), DataUnit::schema()));
     let mut schema = serde_json::to_value(NativeView::schema()).unwrap();
     let definitions: serde_json::Map<String, Value> = definitions
         .into_iter()
@@ -347,6 +418,11 @@ pub fn typescript() -> String {
         NativeView::decl(&config),
         Snapshot::decl(&config),
         Row::decl(&config),
+        RowCell::decl(&config),
+        LiveSlot::decl(&config),
+        LiveTag::decl(&config),
+        ComponentKind::decl(&config),
+        DataUnit::decl(&config),
         Layout::decl(&config),
         Tone::decl(&config),
         Emphasis::decl(&config),

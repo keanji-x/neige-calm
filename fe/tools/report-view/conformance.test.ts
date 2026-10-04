@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { nativeViewPayloadSchema } from '../../core/domain/report-view.js';
-import { readTrackReport, tableBlockPayloadSchema } from '../../core/domain/report.js';
+import { LIVE_TABLE_SOURCE_PATTERN, readTrackReport, tableBlockPayloadSchema } from '../../core/domain/report.js';
 import { inlineTableBlockPayloadSchema } from '../../core/domain/report-table.js';
 
 const fixture = JSON.parse(readFileSync(new URL('../../../test-data/native-view-v1.json', import.meta.url), 'utf8')) as {
   valid: Record<string, unknown>;
+  valid_slots: Record<string, unknown>;
   wide_layouts: string[];
   neutral_palette: number;
   canonical_sizes: { json: string; canonical: string; decoded_bytes: number; view_boundary?: boolean }[];
@@ -33,6 +34,18 @@ describe('native view conformance shared with the kernel', () => {
     const backend = readFileSync(new URL('../../../crates/calm-server/src/mcp_server/tools/track_report_blocks/contracts.rs', import.meta.url), 'utf8');
     expect(backend).toContain('report_blocks::native_view::schema()');
     expect(backend).not.toContain('/../../fe/');
+  });
+  it('accepts the shared live-slot template', () => {
+    expect(nativeViewPayloadSchema.parse(fixture.valid_slots)).toEqual(fixture.valid_slots);
+  });
+  it('compiles the same live source rule the live table and chart.series decoders use', () => {
+    const contract = JSON.parse(readFileSync(new URL('../../../crates/calm-types/src/report_blocks/native_view.schema.json', import.meta.url), 'utf8')) as {
+      $defs: { LiveSlot: { properties: { source: { pattern: string; maxLength: number } } } };
+    };
+    const source = contract.$defs.LiveSlot.properties.source;
+    // RegExp#source escapes `/`, so compare compiled patterns, not the raw schema string.
+    expect(new RegExp(source.pattern).source).toBe(LIVE_TABLE_SOURCE_PATTERN.source);
+    expect(source.maxLength).toBe(2048);
   });
   it('accepts the real App-authored portfolio example', () => {
     const example = JSON.parse(readFileSync(new URL('../../../plugins/paper-trading/examples/native-demo.json', import.meta.url), 'utf8')) as unknown;

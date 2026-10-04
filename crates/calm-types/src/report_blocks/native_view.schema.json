@@ -372,6 +372,34 @@
         }
       ]
     },
+    "ComponentKind": {
+      "enum": [
+        "metrics",
+        "time-series",
+        "distribution",
+        "table",
+        "bars",
+        "meter",
+        "records"
+      ],
+      "type": "string"
+    },
+    "DataUnit": {
+      "additionalProperties": false,
+      "properties": {
+        "cell": {
+          "$ref": "#/$defs/Component"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/Snapshot"
+        }
+      },
+      "required": [
+        "snapshot",
+        "cell"
+      ],
+      "type": "object"
+    },
     "Dataset": {
       "additionalProperties": false,
       "properties": {
@@ -533,6 +561,41 @@
       ],
       "type": "string"
     },
+    "LiveSlot": {
+      "additionalProperties": false,
+      "properties": {
+        "expects": {
+          "$ref": "#/$defs/ComponentKind"
+        },
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/LiveTag"
+        },
+        "source": {
+          "maxLength": 2048,
+          "pattern": "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "source",
+        "expects"
+      ],
+      "type": "object"
+    },
+    "LiveTag": {
+      "enum": [
+        "live"
+      ],
+      "type": "string"
+    },
     "Metric": {
       "additionalProperties": false,
       "properties": {
@@ -672,7 +735,14 @@
           "type": "array"
         },
         "snapshot": {
-          "$ref": "#/$defs/Snapshot"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Snapshot"
+            }
+          ]
         },
         "title": {
           "maxLength": 200,
@@ -786,7 +856,7 @@
       "properties": {
         "cells": {
           "items": {
-            "$ref": "#/$defs/Component"
+            "$ref": "#/$defs/RowCell"
           },
           "maxItems": 3,
           "minItems": 1,
@@ -813,6 +883,16 @@
         "cells"
       ],
       "type": "object"
+    },
+    "RowCell": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LiveSlot"
+        },
+        {
+          "$ref": "#/$defs/Component"
+        }
+      ]
     },
     "Section": {
       "additionalProperties": false,
@@ -1077,7 +1157,14 @@
       "type": "array"
     },
     "snapshot": {
-      "$ref": "#/$defs/Snapshot"
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/Snapshot"
+        }
+      ]
     },
     "title": {
       "maxLength": 200,

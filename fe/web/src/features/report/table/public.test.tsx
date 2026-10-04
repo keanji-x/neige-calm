@@ -82,7 +82,7 @@ describe('ReportTableBlock — live tables', () => {
 
   it('says so when the overlay holds something that is not a table', () => {
     render(<ReportTableBlock payload={LIVE} resolveLive={() => ({ columns: 'nope' })} />);
-    expect(screen.getByText(/cannot read as a table/)).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toContain('cannot be displayed: this build cannot read it as a table');
     expect(screen.queryByRole('table')).toBeNull();
   });
 

@@ -97,7 +97,7 @@ pub(super) fn kinds_table() -> Value {
                         "source": {
                             "type": "string",
                             "maxLength": report_blocks::MAX_STRING_CHARS,
-                            "pattern": "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+                            "pattern": report_blocks::kinds::LIVE_SOURCE_PATTERN,
                             "description": "`neige://plugin/<plugin_id>/<tool>` — the plugin tool that \
                                 resolves the series, e.g. `neige://plugin/dev-neige-market/market.series`. \
                                 The plugin need not be installed when the block is written."
@@ -188,7 +188,7 @@ pub(super) fn kinds_table() -> Value {
                         "source": {
                             "type": "string",
                             "maxLength": report_blocks::MAX_STRING_CHARS,
-                            "pattern": "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+                            "pattern": report_blocks::kinds::LIVE_SOURCE_PATTERN,
                             "description": "`neige://plugin/<plugin_id>/<overlay_kind>` — the overlay whose payload (itself a `{columns, rows, caption?, highlight?}` document) is rendered here. The plugin need not be installed when the block is written."
                         },
                         "columns": {
@@ -452,7 +452,7 @@ fn live_view_kind() -> Value {
             "additionalProperties": false,
             "properties": {
                 "source": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS,
-                    "pattern": "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" },
+                    "pattern": report_blocks::kinds::LIVE_SOURCE_PATTERN },
                 "version": { "type": "integer", "const": 1 }
             }
         },

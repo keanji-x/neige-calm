@@ -116,6 +116,10 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
 /// under overlay kind `<kind>`. Deliberately not the report-link scheme parsed by [`crate::report_links`].
 pub const LIVE_SOURCE_PREFIX: &str = "neige://plugin/";
 
+/// [`validate_live_source`] as a JSON Schema `pattern`, for every published schema that carries a
+/// live `source`.
+pub const LIVE_SOURCE_PATTERN: &str = "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$";
+
 /// Shape check for a live `table`'s `source` (and a `chart.series` `source`): exactly two non-empty
 /// segments after the prefix. Existence is deliberately NOT checked: this crate has no registry.
 pub fn validate_live_source(source: &str) -> Result<(), String> {

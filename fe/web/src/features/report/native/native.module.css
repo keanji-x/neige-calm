@@ -2,7 +2,7 @@
   .root { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; min-inline-size: 0; overflow-wrap: anywhere; letter-spacing: 0; }
   .header, .controls { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
   .header h2 { margin: 0; font-size: 19px; font-weight: var(--weight-medium); }
-  .expand { border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text); inline-size: var(--control-h); block-size: var(--control-h); display: grid; place-items: center; }
+  .expand { margin-inline-start: auto; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text); inline-size: var(--control-h); block-size: var(--control-h); display: grid; place-items: center; }
   .composition { container-type: inline-size; }
   .recordBrowser { container-type: inline-size; }
   .description { color: var(--text-2); font-size: var(--text-xs); margin-block: var(--space-3) var(--space-5); }

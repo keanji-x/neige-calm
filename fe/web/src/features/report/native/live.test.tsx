@@ -63,12 +63,12 @@ it('retains explicit missing-overlay states', () => {
   const result = render(<ReportLiveViewBlock payload={source} />);
   expect(screen.getByText('This view does not carry live data.')).toBeTruthy();
   result.rerender(<ReportLiveViewBlock payload={source} resolveOverlay={() => undefined} />);
-  expect(screen.getByText(`Waiting for ${source.source}.`)).toBeTruthy();
+  expect(screen.getByText(`Waiting for ${source.source} — nothing has been pushed here yet.`)).toBeTruthy();
 });
 
 it('does not reinterpret a native composition as a legacy table overlay', () => {
   render(<ReportTableBlock payload={{ source: source.source }} resolveLive={() => payload} />);
-  expect(screen.getByText(/cannot read as a table/)).toBeTruthy();
+  expect(screen.getByRole('status').textContent).toContain('cannot be displayed: this build cannot read it as a table');
   expect(screen.queryByRole('heading', { name: payload.title })).toBeNull();
 });
 

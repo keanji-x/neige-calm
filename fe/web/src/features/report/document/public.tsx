@@ -239,7 +239,7 @@ function BlockBody({
       return <ReportTableBlock payload={block.payload} resolveLive={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
     case 'view.live':
       return <ReportLiveViewBlock payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
-    case 'view': return <NativeReportView payload={block.payload} onOpenSourceLink={onOpenSourceLink} />;
+    case 'view': return <NativeReportView payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'chart.series':
       return <ReportSeriesBlock payload={block.payload} blockId={block.id} rev={block.rev} resolve={resolveSeries} />;

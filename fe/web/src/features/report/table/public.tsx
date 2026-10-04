@@ -3,8 +3,8 @@ import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-s
 import {
   inlineTableBlockPayloadSchema, isLiveTablePayload, type TableBlockPayload,
 } from '../../../../../core/domain/report.ts';
+import { LivePlaceholder } from '../live/placeholder.tsx';
 import { InlineTable } from './inline.tsx';
-import styles from './table.module.css';
 
 export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink }: {
   payload: TableBlockPayload;
@@ -13,26 +13,18 @@ export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink }: {
 }) {
   if (isLiveTablePayload(payload)) {
     if (resolveLive === undefined) {
-      return <LiveTableNotice caption={payload.caption} text="This table is live and this view does not carry live data." />;
+      return <LivePlaceholder state="detached" source={payload.source} caption={payload.caption} />;
     }
     const resolved = resolveLive(payload.source);
     if (resolved === undefined) {
-      return <LiveTableNotice caption={payload.caption} text={`Waiting for ${payload.source} — nothing has been pushed here yet.`} />;
+      return <LivePlaceholder state="pending" source={payload.source} caption={payload.caption} />;
     }
     const decoded = inlineTableBlockPayloadSchema.safeParse(resolved);
     if (!decoded.success) {
-      return <LiveTableNotice caption={payload.caption} text={`${payload.source} holds something this build cannot read as a table.`} />;
+      return <LivePlaceholder state="unavailable" source={payload.source} reason="this build cannot read it as a table"
+        caption={payload.caption} />;
     }
     return <InlineTable payload={decoded.data} fallbackCaption={payload.caption} onOpenSourceLink={onOpenSourceLink} />;
   }
   return <InlineTable payload={payload} onOpenSourceLink={onOpenSourceLink} />;
-}
-
-function LiveTableNotice({ caption, text }: { caption?: string | null; text: string }) {
-  return (
-    <div className={styles.wrap}>
-      {caption != null && caption !== '' && <p className={styles.caption}>{caption}</p>}
-      <p className={styles.caption}>{text}</p>
-    </div>
-  );
 }

@@ -103,7 +103,9 @@ function definition(name) {
   lines.push(`const ${binding(name)} = ${value};`);
 }
 definition('NativeView');
-lines.push('', `export const nativeViewShapeSchema = ${binding('NativeView')};`, '');
+definition('DataUnit');
+lines.push('', `export const nativeViewShapeSchema = ${binding('NativeView')};`,
+  `export const dataUnitShapeSchema = ${binding('DataUnit')};`, '');
 /** @type {Array<[URL, string]>} */
 const outputs = [
   [new URL('../../../crates/calm-types/src/report_blocks/native_view.schema.json', import.meta.url), schemaText],
