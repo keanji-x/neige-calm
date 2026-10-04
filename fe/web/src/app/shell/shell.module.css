@@ -353,7 +353,10 @@
     color: var(--text);
   }
 
-  .spring {
+  .brandActions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     margin-inline-start: auto;
   }
 
@@ -404,7 +407,6 @@
     gap: 0;
   }
 
-  .sectionRows,
   .trackList {
     display: flex;
     flex-direction: column;
@@ -415,48 +417,6 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-  }
-
-  .sectionHead {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    block-size: var(--row-h);
-  }
-
-  /* Module labels use the same --row-h band on both side panels. Only the Areas label used to — it
-     inherited the slot from `.sectionHead`, which needs the height for its 28px
-     `+`. The other two were bare 11px boxes, which is why the same rank of
-     label sat at two different distances above its own rows.
-
-     The only "decoration" in the app: uppercase plus tracking, standing in for
-     a font size the rail does not have room to spend. 11px uppercase without
-     added tracking is not readable, so the two always travel together. It is
-     also now the *only* thing separating a section label from an area name,
-     which is a device doing exactly one job. */
-  .sectionTitle {
-    display: flex;
-    align-items: center;
-    block-size: var(--row-h);
-  }
-
-  /* A section action has no row to be discovered from, so it is always visible
-     — and therefore may not be 20px (§6.7). */
-  .sectionAction {
-    display: grid;
-    place-items: center;
-    inline-size: var(--control-h);
-    block-size: var(--control-h);
-    border-radius: var(--radius-sm);
-    line-height: var(--leading-none);
-    color: var(--text-3);
-    cursor: pointer;
-  }
-
-  .sectionAction:hover,
-  .sectionAction:focus-visible {
-    background: var(--overlay-hover-strong);
-    color: var(--text);
   }
 
   .areaRowWrap {
@@ -496,6 +456,22 @@
     cursor: pointer;
     transition: background-color var(--motion-quick) ease-out,
       color var(--motion-quick) ease-out;
+  }
+
+  .groupHeading {
+    display: grid;
+    min-inline-size: 0;
+  }
+
+  .groupAction {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: 0;
+    translate: 0 -50%;
+  }
+
+  .groupWithoutActions {
+    padding-inline-end: var(--space-3);
   }
 
   .areaRow:hover {

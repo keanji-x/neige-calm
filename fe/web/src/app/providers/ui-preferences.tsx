@@ -126,6 +126,15 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return read(`area-closed:${id}`) === true;
     },
     setAreaShowsClosed: (id: string, value: boolean) => write(`area-closed:${id}`, value, true),
+    /** Sidebar groups use stable browser choices; Area disclosures retain their existing keys. */
+    sidebarGroupExpanded(id: string): boolean {
+      return read(`browser:sidebar-group:${id}`) !== false;
+    },
+    setSidebarGroupExpanded: (id: string, value: boolean) => write(`browser:sidebar-group:${id}`, value, true),
+    sidebarGroupVisible(id: 'unread' | 'running'): boolean {
+      return read(`browser:sidebar-visible:${id}`) === true;
+    },
+    setSidebarGroupVisible: (id: 'unread' | 'running', value: boolean) => write(`browser:sidebar-visible:${id}`, value, true),
     conversation(id: string): string | null {
       const value = read(`conversation:${id}`);
       return typeof value === 'string' ? value : null;

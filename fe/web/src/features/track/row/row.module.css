@@ -327,16 +327,35 @@
     opacity: 0;
   }
 
-  /* "On" is expressed by staying put, not by a heavier glyph. One tone step is
-     all the extra it gets. The rail's colours belong only to the indicator
+  /* One tone step distinguishes the active pin action. The rail's colours
+     belong only to the indicator
      vocabulary (`ui/activity-indicator`: warn = waiting on you, error =
      broken, accent = unread, grey = in motion) and to the current location
      (`--accent-soft`); titles never carry a state colour; area identity does
      not enter the rail. */
   .pinOn {
+    color: var(--text-2);
+  }
+
+  /* The sidebar's Pinned group conveys membership, so its repeated row controls
+     appear only on hover/focus. Other surfaces retain their persistent pin mark. */
+  .wrapper:not(.wrapperRail) .pinOn {
     opacity: 1;
     pointer-events: auto;
-    color: var(--text-2);
+  }
+
+  /* Same stroke geometry, opposite action: a sidebar pin points up to pin and
+     down to unpin. Rotate only the decorative glyph, leaving the hit target fixed. */
+  .wrapperRail .pinOn svg {
+    rotate: 180deg;
+  }
+
+  /* Touch has no hover; keep both actions directly reachable on that surface. */
+  @media (hover: none) {
+    .wrapperRail .pin {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
 
 

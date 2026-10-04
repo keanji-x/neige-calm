@@ -327,3 +327,23 @@ it('receipts_are_isolated_per_user', () => {
   ownerAgain.setRecoveryScope(JSON.stringify(['https://server.test', 'owner', 'boot-2']));
   expect(ownerAgain.conversation('track')).toBeNull();
 });
+
+
+it('keeps sidebar display choices across server boots and scopes them to the user', () => {
+  const storage = memoryStorage();
+  const scope = (user: string, boot: string) => JSON.stringify(['https://server.test', user, boot]);
+  const first = createUiPreferences(storage);
+  first.setRecoveryScope(scope('owner', 'boot-1'));
+  first.setSidebarGroupVisible('unread', true);
+  first.setSidebarGroupVisible('running', true);
+  first.setSidebarGroupExpanded('pinned', false);
+  const restored = createUiPreferences(storage);
+  restored.setRecoveryScope(scope('owner', 'boot-2'));
+  expect(restored.sidebarGroupVisible('unread')).toBe(true);
+  expect(restored.sidebarGroupVisible('running')).toBe(true);
+  expect(restored.sidebarGroupExpanded('pinned')).toBe(false);
+  restored.setRecoveryScope(scope('other', 'boot-2'));
+  expect(restored.sidebarGroupVisible('unread')).toBe(false);
+  expect(restored.sidebarGroupVisible('running')).toBe(false);
+  expect(restored.sidebarGroupExpanded('pinned')).toBe(true);
+});

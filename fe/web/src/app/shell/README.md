@@ -16,9 +16,9 @@ signs out itself. `nowMs` exists so a test can pin the `pinned_at` stamp.
 
 `shell.module.css`, `@layer features` — app composition sits at the same cascade
 position as the features it wraps (see the comment in
-`tools/styles/repository-check.mjs`). The desktop Area group (`area-group.tsx`) reuses
-that rail geometry and keeps only its own `Show N more` control in
-`area-group.module.css`. Desktop Area colour arrives as inline `style`
+`tools/styles/repository-check.mjs`). Every desktop group composes `SidebarGroup`; groups with Tracks also use
+`SidebarTrackGroup` for the same row renderer, active-Track retention and
+`Show N more` control. `AreaGroup` supplies only Area membership and actions. Desktop Area colour arrives as inline `style`
 because it is per-row data. Phone Area rows use a monochrome folder icon;
 Track rows and Track-switcher choices use the matching file icon. The running pulse is a token-timed animation
 (`--motion-pulse`) with a `prefers-reduced-motion` opt-out.
@@ -90,7 +90,10 @@ real shell composition, Area routing, modal focus boundaries and panel history.
 
 ## Accessibility contract
 
-- The rail is a `<nav aria-label="Workspace">`; each section has an `<h2>`.
+- The rail is a `<nav aria-label="Workspace">`; each section has an `<h2>`
+  containing its disclosure button. All groups have an accessible group label.
+  Waiting on you, Pinned, Unread, Running and Areas share the same disclosure;
+  Area rows share its geometry and retain their own actions.
 - Track rows are `<button>` with `aria-current="page"` when their URL is open.
 - On the desktop rail, an Area is a muted disclosure button with `aria-expanded` and no page URL.
   Click, Enter, Space and assistive activation all toggle it immediately;
@@ -113,14 +116,26 @@ real shell composition, Area routing, modal focus boundaries and panel history.
 - Before that limit, the desktop Area leaves out closed Tracks (`railAreaTracks`),
   except one that is unread or open in the view, so `Show N more` never counts a
   hidden closed Track. The Area actions menu's `Show closed` / `Hide closed` item
-  lists every Track again. Waiting on you, Pinned and the phone Area page still
-  list closed Tracks.
+  lists every Track again. Shortcut groups and the phone Area page still list closed Tracks. All desktop
+  Track groups share the five-row limit, active-Track retention and reveal control.
+  Only the canonical Area row carries `aria-current`; shortcuts retain the active
+  Track past the limit without introducing duplicate current-page markers.
 - **Intentionally not done:** no skip-to-main link (INV-A11Y-058). The rail is
   short and this has never been raised as a pain point; re-evaluate if a second
   long section lands. "There is no skip link" is a decision, not a defect.
 - **Intentionally not done:** no `<a href>` navigation (INV-A11Y-061).
 
 ## Persistence
+
+The top-row view menu, between Today and sidebar collapse, offers plain Show/Hide actions for
+Unread and Running (both off by default). Each action closes the menu and changes
+its label to the opposite action for the next visit. Unread uses the existing completion
+receipt, not rename time or attention; reading removes it, while newer completion
+evidence brings it back. Running uses the kernel working verdict even if the
+Track also needs input. The groups are projections: Tracks remain in their Areas
+and may appear in several groups. Empty shortcut groups are omitted. Their
+visibility and workspace-group disclosure choices are stored per browser, origin
+and user and survive a server restart. Waiting on you remains enabled.
 
 Area disclosure, each Area's `Show closed` choice (`area-closed:<id>`, off by
 default) and the manual sidebar width choice are browser-local display
@@ -135,19 +150,20 @@ storage the choices remain in memory for the app instance.
 the behaviour; every invariant below was mutation-verified (break the production
 line, watch the named test go red) before landing.
 
-- **INV-SIDEBAR-007** — sections render **Waiting on you → Pinned → Areas**, and
+- **INV-SIDEBAR-007** — default sections render **Waiting on you → Pinned → Areas**
+  (enabled Unread and Running appear between Pinned and Areas), and
   **pinning is not relocation**: a pinned track appears under Pinned *and* in its
   area's list, and if it also needs attention it appears in all three.
 - **E2E-INV-SHELL-003** — the kernel system area must never reach the rail. The
   server filters it, `areaListQueryOptions` filters it again, and `Sidebar`
   filters it a third time with `visibleAreas`.
-- **INV-SIDEBAR-012** — the pin button is hover-revealed while a track is
-  unpinned and permanently visible once it is pinned (touch has no hover, so a
-  hover-only unpin would be unreachable). The reveal itself is CSS in
-  `features/track/row/row.module.css`: jsdom does not apply CSS Modules, so the
-  contract test proves only that the control is in the accessibility tree with
-  its `aria-pressed` state in both cases. **The visual half is a `browser`-tier
-  concern and is not covered here.**
+- **INV-SIDEBAR-012** — sidebar pin actions are hidden at rest on desktop,
+  including pinned Tracks repeated across groups. Hover or keyboard focus reveals
+  them; unpinned actions point up and pinned actions point down to unpin. Touch
+  displays both actions directly because it has no hover. The controls remain in
+  the focus order and carry their `aria-pressed` state. Other TrackRow variants
+  retain the persistent pinned mark. Browser checks cover the sidebar's actual
+  opacity, glyph direction and hover/focus behavior.
 - **INV-SIDEBAR-013** — every area row carries a **permanently visible** `+`
   whose accessible name is per-area (`New track in <area>`), plus a `title`; the
   rail has one per area, so a shared `"New track"` name would be N

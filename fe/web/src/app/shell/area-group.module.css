@@ -1,6 +1,6 @@
 /*
- * The Area group's own controls. Everything else in the group is rail geometry
- * shared with the rest of the shell, in `shell.module.css`.
+ * The sidebar Track groups' shared reveal control. All other group geometry lives
+ * with the rest of the shell, in `shell.module.css`.
  */
 @layer features {
   /*

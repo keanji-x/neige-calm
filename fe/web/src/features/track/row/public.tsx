@@ -25,7 +25,7 @@ export type TrackRowProps = Readonly<{
   /** Pins "now" so relative times cannot drift between render and assertion. */
   nowMs?: number;
   onOpen: (trackId: string) => void;
-  /** Supplying this reveals a pin button; once pinned it stays permanently visible, because touch has no hover. */
+  /** Supplying this reveals a pin action. Sidebar actions appear on hover/focus or touch; other variants keep pinned actions visible. */
   onSetPinned?: (trackId: string, pinned: boolean) => void;
   /** Supplying this reveals a delete button. The caller owns the confirm. */
   onDelete?: (trackId: string) => void;
@@ -57,7 +57,7 @@ export function relativeTime(atMs: number, nowMs: number): string {
   return 'now';
 }
 
-/** The row is a `<button>` and the pin/delete affordances are siblings, not children: nesting interactive elements is invalid HTML. The pin stays visible once pinned, because touch has no hover. */
+/** The row is a `<button>` and the pin/delete affordances are siblings, not children: nesting interactive elements is invalid HTML. Sidebar pin actions appear on hover/focus or touch; other variants keep the pinned mark visible. */
 export function TrackRow({
   track, variant = 'default', areaName, hourLabel, active = false, nowMs,
   onOpen, onSetPinned, onDelete, unread = false,

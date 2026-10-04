@@ -1,11 +1,10 @@
-// The workspace rail: three sections in a fixed order.
+// The workspace rail: shared groups with owner-defined membership and actions.
 
-import { ListText } from '../../ui/list-typography/public.tsx';
 import { useEffect, useRef } from 'react';
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 
-import { areaOf, visibleAreas, type Area } from '../../../../core/domain/area.ts';
-import { hasFailed, needsUserAttention, userVisibleTracks, type Track } from '../../../../core/domain/track.ts';
-import { TrackRow } from '../../features/track/row/public.tsx';
+import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
+import { hasFailed, isWorking, needsUserAttention, sortAreaTracksByRecent, userVisibleTracks, type Track } from '../../../../core/domain/track.ts';
 import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -18,7 +17,8 @@ import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
-import { AreaGroup, type RowProps } from './area-group.tsx';
+import { AreaGroup } from './area-group.tsx';
+import { SidebarGroup, SidebarTrackGroup } from './sidebar-group.tsx';
 import styles from './shell.module.css';
 
 export type SidebarProps = Readonly<{
@@ -84,6 +84,14 @@ export function Sidebar({
   const pinned = userTracks.filter((track) => track.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
 
+  const isUnread = (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0);
+  const groups = [
+    { id: 'waiting', title: 'Waiting on you', tracks: waiting, visible: true },
+    { id: 'pinned', title: 'Pinned', tracks: pinned, visible: true },
+    { id: 'unread', title: 'Unread', tracks: sortAreaTracksByRecent(userTracks.filter(isUnread)), visible: preferences.sidebarGroupVisible('unread') },
+    { id: 'running', title: 'Running', tracks: sortAreaTracksByRecent(userTracks.filter(isWorking)), visible: preferences.sidebarGroupVisible('running') },
+  ];
+
   const activeTrackId = routeParamFromPath(currentPath, '/track/') ?? null;
 
   const deletingArea = userAreas.find((area) => area.id === areaConfirm.target);
@@ -96,11 +104,12 @@ export function Sidebar({
   // Reveal the current row when visible without undoing manual Area collapse.
   const activeAreaId = userTracks.find((track) => track.id === activeTrackId)?.areaId;
   const activeAreaExpanded = activeAreaId === undefined ? true : preferences.areaExpanded(activeAreaId);
+  const areasExpanded = preferences.sidebarGroupExpanded('areas');
   useEffect(() => {
     if (collapsed || activeTrackId === null) return;
     railRef.current?.querySelector('[aria-current="page"]')
       ?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeTrackId, collapsed, activeAreaExpanded]);
+  }, [activeTrackId, collapsed, activeAreaExpanded, areasExpanded]);
 
   /* A collapsed Area initial is an entrance into the expanded tree: restore focus
        to the disclosure it reveals, or activating the unmounted initial drops focus
@@ -118,7 +127,7 @@ export function Sidebar({
   const rowProps = {
     // The receipt compares the overlay's completion high-water mark, not `updatedAt`
     // (which moves on every rename and pin); `null` is never unread.
-    isUnread: (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0),
+    isUnread,
     onGo,
     nowMs,
     onSetPinned: (trackId: string, next: boolean) => {
@@ -153,16 +162,27 @@ export function Sidebar({
             <span className={styles.brandMark} aria-hidden="true" />
           </button>
         ) : (
-          <button
-            type="button"
-            data-nc-role="icon"
-            className={`${styles.iconButton} ${styles.spring}`}
-            aria-label="Collapse sidebar"
-            aria-expanded="true"
-            onClick={onToggleCollapsed}
-          >
-            <Icon name="chevron-left" />
-          </button>
+          <div className={styles.brandActions}>
+            <DropdownMenu placement="below" button={{
+              label: 'Sidebar view options', icon: <Icon name="more" />,
+              isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.iconButton,
+            }}>
+              <DropdownMenuItem label={preferences.sidebarGroupVisible('unread') ? 'Hide unread' : 'Show unread'}
+                onClick={() => preferences.setSidebarGroupVisible('unread', !preferences.sidebarGroupVisible('unread'))} />
+              <DropdownMenuItem label={preferences.sidebarGroupVisible('running') ? 'Hide running' : 'Show running'}
+                onClick={() => preferences.setSidebarGroupVisible('running', !preferences.sidebarGroupVisible('running'))} />
+            </DropdownMenu>
+            <button
+              type="button"
+              data-nc-role="icon"
+              className={styles.iconButton}
+              aria-label="Collapse sidebar"
+              aria-expanded="true"
+              onClick={onToggleCollapsed}
+            >
+              <Icon name="chevron-left" />
+            </button>
+          </div>
         )}
       </div>
       {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
@@ -191,6 +211,7 @@ export function Sidebar({
               title={area.name}
               onClick={() => {
                 pendingAreaFocusRef.current = area.id;
+                preferences.setSidebarGroupExpanded('areas', true);
                 preferences.setAreaExpanded(area.id, true);
                 onToggleCollapsed();
               }}
@@ -201,23 +222,18 @@ export function Sidebar({
         </>
       ) : (
         <>
-          <TrackSection title="Waiting on you" tracks={waiting} areas={userAreas} {...rowProps} />
-          <TrackSection title="Pinned" tracks={pinned} areas={userAreas} {...rowProps} />
+          {groups.filter((group) => group.visible && group.tracks.length > 0).map((group) => (
+            <SidebarTrackGroup key={group.id} title={group.title} label={group.title} level="section"
+              tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
+              expanded={preferences.sidebarGroupExpanded(group.id)}
+              onToggle={(value) => preferences.setSidebarGroupExpanded(group.id, value)} {...rowProps} />
+          ))}
 
-          <div className={styles.section}>
-            <div className={styles.sectionHead}>
-              <ListText as="h2" tone="section" className={styles.sectionTitle}>Areas</ListText>
-              <button
-                type="button"
-                data-nc-role="icon"
-                className={styles.sectionAction}
-                aria-label="New area"
-                onClick={onRequestCreateArea}
-              >
-                <Icon name="plus" />
-              </button>
-            </div>
-
+          <SidebarGroup title="Areas" label="Areas" level="section"
+            expanded={areasExpanded}
+            onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}
+            actions={<button type="button" data-nc-role="icon" className={`${styles.iconButton} ${styles.groupAction}`}
+              aria-label="New area" onClick={onRequestCreateArea}><Icon name="plus" /></button>}>
             {readError === null && !readLoading && userAreas.length === 0 && (
               <button
                 type="button"
@@ -253,7 +269,7 @@ export function Sidebar({
                 ))}
               </div>
             )}
-          </div>
+          </SidebarGroup>
 
         </>
       )}
@@ -314,34 +330,5 @@ export function Sidebar({
         onCancel={areaConfirm.cancel}
       />
     </nav>
-  );
-}
-
-/** The two shortcut sections: a section with no rows does not render at all, and their rows are never marked current. */
-function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete, isUnread }: RowProps & {
-  title: string;
-  tracks: readonly Track[];
-  areas: readonly Area[];
-}) {
-  if (tracks.length === 0) return null;
-  return (
-    <div className={styles.section}>
-      <ListText as="h2" tone="section" className={styles.sectionTitle}>{title}</ListText>
-      <div className={styles.sectionRows}>
-        {tracks.map((track) => (
-          <TrackRow
-            key={track.id}
-            track={track}
-            unread={isUnread(track)}
-            areaName={areaOf(track.areaId, areas)?.name}
-            variant="rail"
-            nowMs={nowMs}
-            onOpen={(trackId) => onGo({ name: 'track', trackId })}
-            onSetPinned={onSetPinned}
-            onDelete={onDelete}
-          />
-        ))}
-      </div>
-    </div>
   );
 }

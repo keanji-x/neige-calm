@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Behaviour of the workspace rail: disclosure, badges, create/delete, account menu.
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -482,4 +482,95 @@ it('restores Area disclosure after the shell is remounted', async () => {
   renderSidebar({ tracks, currentPath: '/track/w1' }, createUiPreferences(storage));
   expect(screen.getByRole('button', { name: 'Expand area Work' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: /^Track Inside/ })).toBeNull();
+});
+
+
+describe('shared sidebar groups', () => {
+  const headings = () => screen.getAllByRole('heading').map((node) => node.textContent);
+  async function openOptions() {
+    await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
+  }
+
+  it('toggles Unread and Running independently and remembers both choices', async () => {
+    const storage = memoryStorage();
+    const preferences = createUiPreferences(storage);
+    preferences.setReadScope('db', 1);
+    const props = { tracks: [track({ activityAt: 10, working: true, attention: 'input', pinnedAt: 5 })] };
+    renderSidebar(props, preferences);
+    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Areas']);
+    await openOptions();
+    expect(screen.queryByRole('menuitemcheckbox')).toBeNull();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Show unread' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Areas']);
+    await openOptions();
+    expect(screen.getByRole('menuitem', { name: 'Hide unread' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Show running' }));
+    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']);
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sidebar view options' }));
+    cleanup();
+    const restored = createUiPreferences(storage);
+    restored.setReadScope('db', 1);
+    renderSidebar(props, restored);
+    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']);
+    await openOptions();
+    expect(screen.getByRole('menuitem', { name: 'Hide running' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hide unread' }));
+    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Running', 'Areas']);
+  });
+
+  it('uses completion receipts for Unread and live working state for Running independently of attention', () => {
+    const preferences = createUiPreferences();
+    preferences.setReadScope('db', 1);
+    preferences.setSidebarGroupVisible('unread', true);
+    preferences.setSidebarGroupVisible('running', true);
+    const tracks = [
+      track({ id: 'both', title: 'Both', activityAt: 10, working: true, attention: 'input', closedAt: 5 }),
+      track({ id: 'read', title: 'Read', activityAt: 8, updatedAt: 99 }),
+      track({ id: 'quiet', title: 'Renamed', activityAt: null, updatedAt: 100 }),
+    ];
+    preferences.markRead('track', 'read', 8);
+    const { update } = renderSidebar({ tracks }, preferences);
+    const unreadGroup = screen.getByRole('group', { name: 'Unread' });
+    const runningGroup = screen.getByRole('group', { name: 'Running' });
+    expect(within(unreadGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
+    expect(within(runningGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
+    act(() => preferences.markRead('track', 'both', 10));
+    expect(headings()).toEqual(['Waiting on you', 'Running', 'Areas']);
+    update({ tracks: tracks.map((row) => ({ ...row, working: false })) });
+    expect(headings()).toEqual(['Waiting on you', 'Areas']);
+    update({ tracks: tracks.map((row) => row.id === 'both' ? { ...row, working: false, activityAt: 11 } : row) });
+    expect(headings()).toEqual(['Waiting on you', 'Unread', 'Areas']);
+  });
+
+  it('shares disclosure and the five-row reveal across shortcut and Area groups', async () => {
+    const preferences = createUiPreferences(memoryStorage());
+    const tracks = Array.from({ length: 7 }, (_, index) => track({ id: `p${index}`, title: `P${index}`, pinnedAt: 20 - index }));
+    const { update } = renderSidebar({ tracks, currentPath: '/track/p6' }, preferences);
+    const group = screen.getByRole('group', { name: 'Pinned' });
+    expect(within(group).getAllByRole('button', { name: /^Track / })).toHaveLength(6);
+    await userEvent.click(within(group).getByRole('button', { name: 'Show 1 more in Pinned' }));
+    expect(within(group).getAllByRole('button', { name: /^Track / })).toHaveLength(7);
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse Pinned' }));
+    expect(within(group).queryAllByRole('button', { name: /^Track / })).toHaveLength(0);
+    update({ tracks, currentPath: '/track/p0' });
+    expect(screen.getByRole('button', { name: 'Expand Pinned' }).getAttribute('aria-expanded')).toBe('false');
+    await userEvent.click(screen.getByRole('button', { name: 'Expand Pinned' }));
+    expect(within(group).getAllByRole('button', { name: /^Track / })).toHaveLength(7);
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse Areas' }));
+    expect(screen.queryByRole('button', { name: 'Collapse area Work' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Expand Areas' }));
+    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
+  });
+
+  it('never surfaces system Tracks in enabled shortcut groups', () => {
+    const preferences = createUiPreferences();
+    preferences.setReadScope('db', 1);
+    preferences.setSidebarGroupVisible('unread', true);
+    preferences.setSidebarGroupVisible('running', true);
+    renderSidebar({ areas: [area({ kind: 'system' })], tracks: [track({ activityAt: 10, working: true })] }, preferences);
+    expect(headings()).toEqual(['Areas']);
+    expect(screen.queryByRole('button', { name: /^Track / })).toBeNull();
+  });
 });
