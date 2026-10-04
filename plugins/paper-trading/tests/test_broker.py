@@ -115,6 +115,14 @@ def test_json_fractional_price_preserves_broker_decimal_token(harness):
     assert price == Decimal("100.1234567890123456789")
 
 
+@pytest.mark.parametrize("value", [[], [{}], "text", 1, None, True])
+def test_non_object_response_is_refused(harness, value):
+    harness.reply(value)
+    with pytest.raises(BrokerError, match="Unexpected broker response shape"):
+        harness.snapshot()
+    assert len(harness.calls()) == 1
+
+
 def test_environment_allowlist_home_cwd_and_closed_stdin(harness, monkeypatch):
     allowed = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
                **{key: "http://fixture.invalid:8080" for key in (

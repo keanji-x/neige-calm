@@ -3,14 +3,15 @@
 Each call runs `sdk_bridge.py` under the configured SDK interpreter with typed
 configuration and one exact operation. The child gets an explicit environment:
 the PATH/LANG/proxy allowlist with HOME pinned to the broker home, so inherited
-Longbridge endpoint overrides, model keys and import paths never reach it. Its
-whole session is killed on every path, so no descendant outlives a call. The
-combined stdout and stderr size is bounded; only stdout is kept. JSON fractional
-numbers decode as Decimal, preserving the exact broker numeric token instead of
-rounding through a binary float; duplicate keys and non-JSON constants are
-refused. A failed, timed-out or malformed call raises BrokerError, whose message
-never contains output, arguments or credentials, and is never retried: once a
-submission may have started, its outcome stays unknown for reconciliation.
+Longbridge endpoint overrides, model keys and import paths never reach it. The
+child's process group is killed on every path, which also stops descendants that
+stay in that group. The combined stdout and stderr size is bounded; only stdout
+is kept. JSON fractional numbers decode as Decimal, preserving the exact broker
+numeric token instead of rounding through a binary float; duplicate keys and
+non-JSON constants are refused. A failed, timed-out or malformed call raises
+BrokerError, whose message never contains output, arguments or credentials, and
+is never retried: once a submission may have started, its outcome stays unknown
+for reconciliation.
 """
 import json
 from decimal import Decimal

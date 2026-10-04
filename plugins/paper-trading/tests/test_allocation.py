@@ -9,7 +9,7 @@ import pytest
 
 from paper_trading.allocation import Allocation
 from paper_trading.allocation_broker import AllocationBroker
-from paper_trading.allocation_config import AllocationConfig
+from paper_trading.allocation_config import OPTIONAL, REQUIRED, AllocationConfig
 from .host import Host
 
 NOW = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)
@@ -516,3 +516,63 @@ def test_spy_config_requires_a_profile(allocation_rig):
 def test_spy_config_refuses_any_profile_but_spy_cash(allocation_rig, profile):
     with pytest.raises(ValueError, match='spy_cash profile'):
         AllocationConfig.parse(allocation_rig.values | {'profile': profile})
+
+
+def test_spy_config_refuses_an_unknown_key(allocation_rig):
+    with pytest.raises(ValueError, match='missing or unknown fields'):
+        AllocationConfig.parse(allocation_rig.values | {'unexpected_setting': 1})
+
+
+def test_manifest_config_schema_matches_the_parsed_keys():
+    schema = json.loads((ROOT / 'manifest.json').read_text())['config_schema']
+    assert set(schema['properties']) == REQUIRED | OPTIONAL
+    assert set(schema['required']) == REQUIRED
+    assert len(schema['required']) == len(REQUIRED)
+
+
+@pytest.mark.parametrize('field,value', [('owner_track_id', 'other-owner'), ('account_no', 'PAPER456')])
+def test_spy_ledger_account_and_track_binding_cannot_change_on_restart(allocation_rig, field, value):
+    r = allocation_rig; r.plan()
+    r.config = AllocationConfig.parse(r.values | {field: value})
+    with pytest.raises(ValueError, match='binding cannot be changed'):
+        r.restart()
+    # The original binding still opens the ledger, with its decision intact.
+    r.config = AllocationConfig.parse(r.values)
+    r.restart()
+    assert [d['id'] for d in r.status()['decisions']] == ['allocation-1']
+
+
+@pytest.mark.parametrize('field,value', [('oauth_client_id', 'other-client'), ('broker_home', '/other/home')])
+def test_spy_execution_binding_cannot_change_on_restart(allocation_rig, field, value):
+    r = allocation_rig; r.plan()
+    r.config = AllocationConfig.parse(r.values | {field: value})
+    with pytest.raises(ValueError, match='SPY execution binding cannot change'):
+        r.restart()
+    r.config = AllocationConfig.parse(r.values)
+    r.restart()
+    assert [d['id'] for d in r.status()['decisions']] == ['allocation-1']
+
+
+class ProcessCrash(BaseException):
+    """Stands in for the process dying inside the broker write; no handler may absorb it."""
+
+
+def test_spy_restart_marks_a_crashed_submission_unknown_and_never_resubmits(allocation_rig, monkeypatch):
+    r = allocation_rig; r.plan(); r.request()
+
+    def crash(request):
+        raise ProcessCrash()
+    monkeypatch.setattr(r.broker, 'submit', crash)
+    with pytest.raises(ProcessCrash):
+        r.step()
+    with r.app.ledger.session() as db:
+        assert r.app.ledger.decision(db, 'allocation-1')['state'] == 'submitting'
+    monkeypatch.undo()
+    r.restart()
+    state = r.status()
+    assert state['decisions'][0]['state'] == 'unknown'
+    assert any(e['kind'] == 'submission_unknown' for e in state['journal'])
+    # Later passes reconcile only: the uncertain order is never written again.
+    for _ in range(2):
+        assert r.step()['decisions'][0]['state'] == 'unknown'
+    assert r.submits() == []

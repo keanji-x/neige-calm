@@ -5,6 +5,12 @@ from pathlib import Path
 from .config import exact, identifier
 
 
+REQUIRED = frozenset(('profile', 'account_no', 'broker_home', 'owner_track_id',
+                      'oauth_client_id', 'sdk_python_path'))
+OPTIONAL = frozenset(('poll_seconds', 'cash_buffer_bps', 'drift_bps', 'quote_max_age_seconds', 'max_order_bps',
+                      'access_region', 'opening_shares'))
+
+
 @dataclass(frozen=True)
 class AllocationConfig:
     account_no: str
@@ -22,11 +28,7 @@ class AllocationConfig:
 
     @classmethod
     def parse(cls, values):
-        required = {'profile', 'account_no', 'broker_home', 'owner_track_id',
-                    'oauth_client_id', 'sdk_python_path'}
-        optional = {'poll_seconds', 'cash_buffer_bps', 'drift_bps', 'quote_max_age_seconds', 'max_order_bps', 'access_region',
-                    'opening_shares'}
-        exact(values, required, optional)
+        exact(values, REQUIRED, OPTIONAL)
         if values['profile'] != 'spy_cash':
             raise ValueError('SPY allocation requires explicit spy_cash profile')
         obj = cls(**{k: v for k, v in values.items() if k != 'profile'})
