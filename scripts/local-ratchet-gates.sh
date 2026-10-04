@@ -3,7 +3,7 @@
 # that is green under local-rust-gates.sh is not red in CI.
 # The gate list is read from ci.yml: every lint-job step whose whole command is
 # `./scripts/gate-*.sh`. Not covered: the `--selftest` steps and the Rust-only steps.
-# Counts come from `git grep`: they measure tracked files in the working tree, not HEAD.
+# The ratchets count with `git grep`: they measure tracked files in the working tree, not HEAD.
 # Usage: scripts/local-ratchet-gates.sh
 
 set -uo pipefail

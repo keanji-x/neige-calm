@@ -30,16 +30,15 @@ worktree with destructive commands such as `git checkout` or `git reset --hard`.
 
 ## Review tiers
 
-Review strength follows how hard a change is to undo, not its line count.
-Choose the tier at the start, state it with a one-line reason in the pull
-request, and raise it when the change turns out to cross a boundary. Never
-lower it mid-review.
+Review strength follows how hard a change is to undo. State the tier with a
+one-line reason in the pull request, and raise it when the change turns out to
+cross a boundary. Never lower it mid-review.
 
 - **L0, mechanical:** typos, copy, lockfiles, CI tweaks, and pure renames. CI
   is the gate; no review channel is required.
 - **L1, default:** a change that crosses none of the L2 boundaries. Use one
-  review channel. After a fix, the channel that raised the finding re-checks
-  the fix and its delta instead of re-reviewing the whole diff.
+  review channel. After a fix, that channel re-checks the fix and its delta
+  instead of re-reviewing the whole diff.
 - **L2, high risk:** authority, persistence, isolation, or security
   boundaries; database migrations; or a large diff. Use two independent review
   channels, and re-run both fresh after every fix.
@@ -56,8 +55,7 @@ lower it mid-review.
   the stated acceptance. Fix other findings only when they are cheap and in
   scope; otherwise record them as known gaps without another round. Prefer
   closing a finding by deleting a mechanism or narrowing scope over adding one.
-- Every fix is re-checked as its tier requires. A user-approved round limit
-  applies only to recorded non-blocking findings; blockers always continue the
+- Every fix is re-checked as its tier requires; blockers always continue the
   loop. Escalate a diverging loop or an architectural conflict instead of
   stopping silently.
 - Convergence means no unresolved blocking finding, no unexplained test failure,
@@ -148,8 +146,7 @@ scripts/local-rust-gates.sh --quick
 ```
 
 - Run `scripts/local-ratchet-gates.sh` for every change, including docs-only
-  ones. It runs every unconditional `scripts/gate-*.sh` step of the CI lint
-  job, which the commands above do not; it measures tracked files in the
+  ones. It runs every `scripts/gate-*.sh` step of the CI lint job, which the commands above do not; it measures tracked files in the
   working tree, so `git add -N` new files first.
 - Add `--features calm-server/codex-e2e` to a targeted Rust command only when
   the affected test requires that feature. Narrow further with `--lib` or
