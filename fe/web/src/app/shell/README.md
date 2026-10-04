@@ -130,7 +130,8 @@ real shell composition, Area routing, modal focus boundaries and panel history.
 Every sidebar group has the same Move up, Move down and Hide group actions.
 Movement swaps visible siblings at the same level; boundary actions are disabled.
 Area editing, closed-Track display and deletion remain Area-owned menu entries.
-The top-row menu provides Hidden groups with Show actions, including Unread and
+The top-row menu provides Hidden groups with Show actions for every hidden
+workspace group, including Pinned, Waiting on you, Areas, Unread and
 Running (initially off). Restoring an Area also reveals and expands its Areas
 parent. Area entries say `Show area <name>` to distinguish same-named workspace
 groups. Hiding a group returns focus to the top-row menu and never navigates,

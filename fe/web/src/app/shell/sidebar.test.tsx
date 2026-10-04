@@ -664,3 +664,33 @@ it('distinguishes hidden Areas from workspace groups with the same title', async
   expect(screen.getByRole('menuitem', { name: 'Show Unread' })).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Show area Unread' })).toBeTruthy();
 });
+
+
+it('keeps Show recovery for every built-in group after all groups are hidden', async () => {
+  const preferences = createUiPreferences();
+  preferences.setReadScope('db', 1);
+  preferences.setSidebarGroupVisible('unread', true);
+  preferences.setSidebarGroupVisible('running', true);
+  const onGo = vi.fn();
+  const rows = [track({ title: 'Recoverable', pinnedAt: 5, attention: 'input', working: true, activityAt: 10 })];
+  renderSidebar({ tracks: rows, onGo }, preferences);
+  const titles = ['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas'];
+  for (const title of titles) {
+    await userEvent.click(screen.getByRole('button', { name: `Group actions for ${title}` }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
+  }
+  expect(screen.queryAllByRole('heading')).toHaveLength(0);
+  await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
+  for (const title of titles) expect(screen.getByRole('menuitem', { name: `Show ${title}` })).toBeTruthy();
+  await userEvent.keyboard('{Escape}{Escape}');
+  for (const title of titles) {
+    await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: `Show ${title}` }));
+  }
+  expect(screen.getAllByRole('heading').map(node => node.textContent)).toEqual(titles);
+  expect(screen.getAllByRole('button', { name: /^Track Recoverable/ })).toHaveLength(5);
+  expect(rows[0]?.pinnedAt).toBe(5);
+  expect(onGo).not.toHaveBeenCalled();
+});
