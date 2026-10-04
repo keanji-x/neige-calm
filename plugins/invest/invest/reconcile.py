@@ -5,15 +5,18 @@ decisions, and holdings are checked for every symbol, not SPY alone.
 """
 import json
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from .config import broker_money, integer, timestamp
 from .ledger import encoded
 from .symbols import from_sdk
 
 BROKER_TERMINAL = {"Filled", "Canceled", "Rejected", "Expired", "PartialWithdrawal"}
-BROKER_ACTIVE = {"NotReported", "New", "WaitToNew", "PartialFilled", "WaitToReplace",
-                 "PendingReplace", "Replaced", "WaitToCancel", "PendingCancel"}
+BROKER_ACTIVE = {"NotReported", "ReplacedNotReported", "ProtectedNotReported", "VarietiesNotReported",
+                 "New", "WaitToNew", "PartialFilled", "WaitToReplace", "PendingReplace", "Replaced",
+                 "WaitToCancel", "PendingCancel"}
 RESOLVED = ('settled', 'canceled', 'rejected', 'expired')
+NEW_YORK = ZoneInfo('America/New_York')
 
 
 def validate_snapshot(raw, config, now):
@@ -50,7 +53,11 @@ def validate_snapshot(raw, config, now):
         equity += shares * price
     if type(raw['market_open']) is not bool:
         raise ValueError('broker market session is required')
-    return {'at': now.isoformat(), 'cash_usd': str(cash), 'available_cash_usd': str(available),
+    # The trading session this observation values: the New York date of its newest quote, so a
+    # weekend or holiday read re-values the last session instead of inventing a new one.
+    newest = max((timestamp(q['at']) for q in quotes.values()), default=None)
+    return {'at': now.isoformat(), 'date': newest.astimezone(NEW_YORK).date().isoformat() if newest else None,
+            'cash_usd': str(cash), 'available_cash_usd': str(available),
             'equity_usd': str(equity), 'market_open': raw['market_open'],
             'positions': dict(sorted(positions.items())), 'quotes': dict(sorted(quotes.items()))}
 

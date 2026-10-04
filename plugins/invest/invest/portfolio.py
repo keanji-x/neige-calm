@@ -3,7 +3,6 @@ reconcile/submit loop that is the only broker writer."""
 from datetime import datetime, timedelta, timezone
 import json
 import re
-from zoneinfo import ZoneInfo
 
 from . import instruments
 from .config import exact, identifier, timestamp
@@ -17,14 +16,8 @@ DECISION_ID = re.compile(r'[a-z0-9][a-z0-9-]{0,54}')
 ROLES = {'portfolio_status': ('planner', 'worker'), 'decision_add': ('planner',), 'execution_add': ('worker',)}
 TOOLS = frozenset(ROLES)
 PORTFOLIO_TOOLS = TOOLS  # every tool of this slice acts on the portfolio Track
-NEW_YORK = ZoneInfo('America/New_York')
-HISTORY = 260  # about one year of trading-day valuation samples
+HISTORY = 260  # about one year of trading sessions: one valuation sample per session
 FILL_LOG = 500  # the fill table's rows; agent responses carry the latest 200
-
-
-def valuation_date(at):
-    """The America/New_York calendar date that owns a valuation sample."""
-    return timestamp(at).astimezone(NEW_YORK).date().isoformat()
 
 
 def parse_weights(raw):
@@ -49,9 +42,9 @@ class Portfolio:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.ledger = Ledger(root, config)
         with self.ledger.session() as db:
-            # Each acknowledged opening position starts as a pending, held instrument; a changed
-            # acknowledgement is refused by reconciliation and admits nothing.
-            if self.ledger.get_meta(db, 'opening_positions') in (None, dict(config.opening_positions)):
+            # Each acknowledged opening position starts as a pending, held instrument, until the first
+            # reconciliation pins them; a restart never re-admits a symbol later removed.
+            if self.ledger.get_meta(db, 'opening_positions') is None:
                 for symbol, _shares in config.opening_positions:
                     instruments.admit(self.ledger, db, symbol, self.clock())
 
@@ -167,12 +160,15 @@ class Portfolio:
         self.ledger.set_meta(db, 'snapshot', snapshot)
         self.ledger.set_meta(db, 'error', None)
         instruments.verify(self.ledger, db, snapshot)
-        sample = {'date': valuation_date(snapshot['at']), 'at': snapshot['at'],
-                  'equity_usd': snapshot['equity_usd'], 'cash_usd': snapshot['cash_usd'],
-                  'positions': {s: {'shares': p['shares'], 'price': p['price']}
-                                for s, p in snapshot['positions'].items()}}
-        db.execute('INSERT INTO valuations VALUES (?,?) ON CONFLICT(date) DO UPDATE SET body=excluded.body',
-                   (sample['date'], encoded(sample)))
+        # One sample per trading session (the newest quote's New York date); the latest read wins.
+        # Without any quote there is no session to value, so no sample.
+        if snapshot['date'] is not None:
+            sample = {'date': snapshot['date'], 'at': snapshot['at'],
+                      'equity_usd': snapshot['equity_usd'], 'cash_usd': snapshot['cash_usd'],
+                      'positions': {s: {'shares': p['shares'], 'price': p['price']}
+                                    for s, p in snapshot['positions'].items()}}
+            db.execute('INSERT INTO valuations VALUES (?,?) ON CONFLICT(date) DO UPDATE SET body=excluded.body',
+                       (sample['date'], encoded(sample)))
         return snapshot
 
     def status(self, db, fills_shown=200):

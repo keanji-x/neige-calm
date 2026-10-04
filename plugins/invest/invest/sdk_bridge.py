@@ -5,7 +5,7 @@ identity proof, cash and the session calendar are unchanged; positions, quotes a
 US stock instead of SPY alone. Symbols here are the SDK's `CODE.US`.
 """
 import argparse
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -22,6 +22,12 @@ from invest.symbols import from_sdk  # noqa: E402
 ACCESS_POINTS = {'global': 'longbridge.com', 'cn': 'longbridge.cn'}
 NY = ZoneInfo('America/New_York')
 TERMINAL = ('Filled', 'Canceled', 'Rejected', 'Expired', 'PartialWithdrawal')
+# Every SDK 5.2.0 `OrderStatus` that can still trade (`Unknown` is neither; it fails closed).
+ACTIVE = ('NotReported', 'ReplacedNotReported', 'ProtectedNotReported', 'VarietiesNotReported', 'WaitToNew', 'New',
+          'WaitToReplace', 'PendingReplace', 'Replaced', 'PartialFilled', 'WaitToCancel', 'PendingCancel')
+# How far back an order placed outside invest is searched for: GTC and GTD orders outlive their day,
+# and SDK 5.2.0 documents no lifetime bound for them, so the window is a deliberate bound.
+ACTIVE_LOOKBACK = timedelta(days=90)
 MAX_SYMBOLS = 512
 
 
@@ -152,6 +158,17 @@ def market(quote, symbols, now=None):
     return quotes, session, is_open
 
 
+def active_orders(trade, now):
+    """Every order that can still trade, account-wide and independent of invest's own legs: today's,
+    and US orders from earlier days (GTC/GTD) within the bounded window. The server's status filter
+    is not trusted; any status that is not terminal counts as active."""
+    from longbridge.openapi import Market, OrderStatus
+    statuses = [getattr(OrderStatus, name) for name in ACTIVE]
+    rows = trade.today_orders(status=statuses) + trade.history_orders(
+        status=statuses, market=Market.US, start_at=now - ACTIVE_LOOKBACK, end_at=now)
+    return [o for o in rows if enum(o.status) not in TERMINAL]
+
+
 def order(row):
     return {'order_id': row.order_id, 'symbol': row.symbol, 'side': enum(row.side),
             'order_type': enum(row.order_type), 'quantity': str(row.quantity),
@@ -171,8 +188,9 @@ def snapshot(asset, trade, quote, expected, request):
     now = datetime.now(timezone.utc)
     today = trade.today_orders()
     history = trade.history_orders(start_at=since, end_at=now) if since else []
-    # Deduplicate identities first, then read the authoritative detail for each.
-    ids = {o.order_id for o in today + history}
+    # Deduplicate identities first, then read the authoritative detail for each. Active orders from
+    # earlier days are read whatever invest's own history needs, so reconciliation sees them all.
+    ids = {o.order_id for o in today + history + active_orders(trade, now)}
     if len(ids) > 500:
         raise ValueError('SDK order history exceeds reconciliation budget')
     orders = [order(trade.order_detail(k)) for k in sorted(ids)]
@@ -217,7 +235,7 @@ def prepare_submission(asset, trade, quote, expected, request, policy):
     shares, available_shares = held.get(symbol, (0, 0))
     if shares != integer(request['basis_shares'], zero=True):
         raise ValueError('holdings changed before submission')
-    if any(enum(o.status) not in TERMINAL for o in trade.today_orders()):
+    if active_orders(trade, datetime.now(timezone.utc)):
         raise ValueError('active order appeared before submission')
     price = money(quotes[symbol]['price'])
     estimated = request['quantity'] * price * Decimal('1.01')

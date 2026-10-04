@@ -2,6 +2,8 @@
 from datetime import timedelta
 import re
 
+import pytest
+
 from rig import NOW
 
 
@@ -211,3 +213,45 @@ def test_transport_environment_allowlist(rig, monkeypatch):
     rig.step()
     keys = rig.calls()[0]['env_keys']
     assert 'LONGBRIDGE_HTTP_URL' not in keys and 'MODEL_API_KEY' not in keys
+
+
+def test_restart_never_readmits_a_pinned_opening_symbol(rig):
+    r = rig
+    r.quote('US:SPY', '100')
+    r.opening(SPY=13)
+    assert r.step()['opening_positions'] == {'US:SPY': 13}
+    with r.app.ledger.session() as db:  # a later slice's removal, applied directly
+        db.execute("UPDATE instruments SET state='dropped' WHERE symbol='US:SPY'")
+    r.restart()
+    assert [(i['symbol'], i['state']) for i in r.status()['instruments']] == [('US:SPY', 'dropped')]
+
+
+def test_order_is_capped_at_max_order_bps(rig):
+    r = rig
+    r.configure(max_order_bps=500)
+    r.quote('US:AAA', '100'); r.watch('US:AAA')
+    r.decide({'US:AAA': 6000}); r.execute()
+    # 5% of 10000 with the 1% price reserve: floor(500 / 101) shares.
+    assert [o['quantity'] for o in r.submits()] == [4]
+
+
+def test_drift_band_leaves_a_close_weight_untraded(rig):
+    r = rig
+    r.configure(drift_bps=100)
+    r.quote('US:AAA', '100'); r.watch('US:AAA')
+    r.decide({'US:AAA': 90})
+    assert r.execute()['decisions'][0]['state'] == 'noop' and r.submits() == []
+
+
+@pytest.mark.parametrize('quote,reason', [
+    ({'at': NOW - timedelta(minutes=5)}, 'stale'), ({'status': 'Halted'}, 'trading status is Halted')])
+def test_stale_or_halted_quote_waits(rig, quote, reason):
+    r = rig
+    r.quote('US:AAA', '100', at=quote.get('at'), status=quote.get('status', 'Normal'))
+    r.watch('US:AAA')
+    r.decide({'US:AAA': 5000})
+    decision = r.execute()['decisions'][0]
+    assert decision['state'] == 'requested' and reason in decision['error'] and r.submits() == []
+    r.quote('US:AAA', '100')
+    r.step()
+    assert [o['symbol'] for o in r.submits()] == ['AAA.US']

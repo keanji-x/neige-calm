@@ -3,13 +3,14 @@
 Each published kind is one cell with its labels, units, tones and empty text; the recipe's template
 views place them. Any configured number of held symbols fits the unit contracts by aggregation
 (#2104 §3.7): the top N entries by value, then one 其他 entry that is the exact sum of what it
-replaces, so every projection conserves value.
+replaces, so every projection conserves value. Amounts are apportioned in cents and shares of
+equity in 0.0001%, so the published entries sum exactly to equity and to 100%.
 """
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_FLOOR
 
 from .config import timestamp
-from .portfolio import NEW_YORK, valuation_date
+from .reconcile import NEW_YORK
 from .report_text import bounded, money_text
 from .report_views import metric, record, records, scalar, table, unit, unknown
 from .symbols import unit_id
@@ -35,16 +36,26 @@ def ranked(values, n):
     return (order, []) if len(order) <= n + 1 else (order[:n], order[n:])
 
 
+CENT, PERCENT_STEP = Decimal('0.01'), Decimal('0.0001')
+CASH_KEY = 'cash'  # never a `VENUE:CODE` symbol
+
+
+def apportion(values, total, step):
+    """`values` in multiples of `step` summing exactly to `total`, by largest remainder: each entry
+    moves by less than one step, and none is rounded on its own."""
+    floors = {k: (v / step).to_integral_value(rounding=ROUND_FLOOR) for k, v in values.items()}
+    missing = int(total / step - sum(floors.values()))
+    for key in sorted(values, key=lambda k: (-(values[k] / step - floors[k]), k))[:missing]:
+        floors[key] += 1
+    return {k: n * step for k, n in floors.items()}
+
+
 def percent(bps):
     return f'{Decimal(bps) / 100:.2f}%'
 
 
 def new_york(at):
     return f"{timestamp(at).astimezone(NEW_YORK):%Y-%m-%d %H:%M} 纽约时间"
-
-
-def ratio(part, whole):
-    return float(round(part / whole * 100, 4))
 
 
 def change(current, previous):
@@ -117,15 +128,16 @@ def nav_history(samples):
 def weights(snapshot):
     slices = []
     if snapshot is not None:
-        top, rest = ranked(values_of(snapshot['positions']), SLICES)
-        # Whole dollars keep the renderer's float total exact; the holdings table carries cents.
-        slices = [{'id': unit_id(s), 'label': s, 'value': float(round(v)), 'palette': palette(i)}
-                  for i, (s, v) in enumerate(top)]
+        exact = values_of(snapshot['positions'])
+        equity = Decimal(snapshot['equity_usd'])
+        cents = apportion(exact | {CASH_KEY: Decimal(snapshot['cash_usd'])}, equity.quantize(CENT), CENT)
+        top, rest = ranked(exact, SLICES)
+        slices = [{'id': unit_id(s), 'label': s, 'value': float(cents[s]), 'palette': palette(i)}
+                  for i, (s, _) in enumerate(top)]
         if rest:
             slices.append({'id': 'other', 'label': f'{OTHER} · {len(rest)} 个标的',
-                           'value': float(round(sum(v for _, v in rest))), 'palette': OTHER_PALETTE})
-        slices.append({'id': 'cash', 'label': CASH, 'value': float(round(Decimal(snapshot['cash_usd']))),
-                       'palette': CASH_PALETTE})
+                           'value': float(sum(cents[s] for s, _ in rest)), 'palette': OTHER_PALETTE})
+        slices.append({'id': 'cash', 'label': CASH, 'value': float(cents[CASH_KEY]), 'palette': CASH_PALETTE})
     return {'kind': 'distribution', 'id': 'weights', 'title': '当前占比', 'unit': 'USD',
             'emptyText': PENDING, 'slices': slices}
 
@@ -143,11 +155,12 @@ def weight_history(samples, snapshot):
         equity = Decimal(sample['equity_usd'])
         if equity <= 0:
             continue
-        held = values_of(sample['positions'])
-        values = [ratio(held.get(s, Decimal(0)), equity) for s in shown]
+        held = values_of(sample['positions']) | {CASH_KEY: Decimal(sample['cash_usd'])}
+        share = apportion({s: v / equity * 100 for s, v in held.items()}, Decimal(100), PERCENT_STEP)
+        values = [float(share.get(s, Decimal(0))) for s in shown]
         if rest:
-            values.append(ratio(sum((v for s, v in held.items() if s not in shown), Decimal(0)), equity))
-        points.append({'date': sample['date'], 'values': values + [ratio(Decimal(sample['cash_usd']), equity)]})
+            values.append(float(sum((v for s, v in share.items() if s != CASH_KEY and s not in shown), Decimal(0))))
+        points.append({'date': sample['date'], 'values': values + [float(share[CASH_KEY])]})
     return {'kind': 'time-series', 'id': 'weight-history', 'title': '历史仓位',
             'caption': f'按市值 / 总资产，包含现金；当前市值前 {SERIES} 名单列，其余合并为{OTHER}。',
             'emptyText': '完成首次对账后开始记录仓位', 'datasets': [
@@ -202,12 +215,17 @@ def decision_record(decision, fills):
                             'body': f"成交金额合计 {money_text(sum(a for _, a in hidden))}",
                             'note': FILL_NOTE, 'tone': 'neutral'})
     settled = sum(o['state'] == 'settled' for o in orders)
+    # `done` only says every leg resolved; a decision that filled nothing is not a success.
+    traded = any(o['filled_quantity'] for o in orders)
+    label, badge_tone = STATES[state], TONES.get(state, 'neutral')
+    if state == 'done' and not traded:
+        label, badge_tone = '已结束 · 未成交', 'warning'
     summary = f'{len(orders)} 笔委托 · 已成交 {settled} 笔' if orders else STATES[state]
     if decision['error']:
         summary += f" · 需关注：{decision['error']}"
     return record(decision['id'], f"目标 · {len(body['weights'])} 个标的 · 合计 {percent(sum(body['weights'].values()))}",
                   bounded(summary, 8000), subtitle='目标权重',
-                  badges=[{'label': '执行状态', 'value': STATES[state], 'tone': TONES.get(state, 'neutral')},
+                  badges=[{'label': '执行状态', 'value': label, 'tone': badge_tone},
                           {'label': '创建时间', 'value': new_york(decision['created_at']), 'tone': 'neutral'},
                           {'label': '有效期至', 'value': new_york(body['valid_until']), 'tone': 'neutral'}],
                   facts=facts,
@@ -263,7 +281,7 @@ def account(state):
 def units(state):
     """Every portfolio Track overlay: one data unit per kind, from the newest reconciled state."""
     snapshot, samples = state['snapshot'], state['valuations']
-    today = valuation_date(snapshot['at']) if snapshot else None
+    today = snapshot['date'] if snapshot else None
     previous = next((s for s in reversed(samples) if today and s['date'] < today), None)
     cells = {'portfolio.nav': nav(snapshot, previous), 'portfolio.nav_history': nav_history(samples),
              'portfolio.weights': weights(snapshot), 'portfolio.weight_history': weight_history(samples, snapshot),

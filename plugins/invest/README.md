@@ -49,13 +49,16 @@ Carried over from the paper plugin, per symbol: one unresolved decision at a tim
 symbol and decision, each ≤ `max_order_bps` of account value with a 1% price reserve; intent
 committed before the broker write; an uncertain submission is never resubmitted and is recovered
 only by its exact remark; unowned active orders and holdings that the owned executions do not
-explain block execution and roll back the observation.
+explain block execution and roll back the observation. Active orders are read account-wide every
+snapshot and before every submit: today's, and US orders from earlier days (GTC/GTD) placed within
+the last 90 days, a deliberate bound because SDK 5.2.0 documents no lifetime limit for them.
 
 New: at most one leg in flight; sells before buys; buys use settled cash only, so a buy waits for
 settled proceeds and ends without an order if still unfunded at `valid_until`. Each leg carries
 the remark `nc-inv-` + 32 hex digits of a digest of (account, decision, symbol), and the full digest
 as its client request ID. A decision ends `done` (some leg was sent), `noop` (no leg needed) or
-`expired` (its validity ended before any leg was sent).
+`expired` (its validity ended before any leg was sent); a `done` decision that filled nothing is
+shown as 已结束 · 未成交, not as a success.
 
 ## Configuration
 
@@ -89,4 +92,7 @@ running `invest/sdk_bridge.py … login`.
 placed by `portfolio-recipe.md`. Any number of held symbols fits the unit contracts by aggregation:
 `weights` shows the top 10 + 其他 + 现金, `weight_history` the top 4 now + 其他 + 现金, and each
 decision record its top 11 weights + 其他 and its top 19 legs by filled amount + 其他. 其他 is always
-the exact sum of what it replaces.
+the exact sum of what it replaces. Amounts are apportioned in cents and shares of equity in 0.0001%
+by largest remainder, so slices sum exactly to equity and every history point to 100%. Valuation
+history keeps one sample per trading session, dated by the newest quote's New York date, so a
+weekend or holiday read re-values the last session.

@@ -1,5 +1,5 @@
 """Portfolio data units: valid against the kernel's contract, and aggregated without losing value."""
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 
@@ -15,10 +15,43 @@ UNIT_SCHEMA = {'$schema': SCHEMA['$schema'], '$defs': SCHEMA['$defs'], '$ref': '
 MAX_UNIT_BYTES = 4 * 1024 * 1024  # calm-types MAX_LIVE_UNIT_BYTES
 
 
+def semantic(cell):
+    """The checks `native_view.rs` adds to the schema: unique ids, increasing dates, point width,
+    complete non-negative stacked values. (No Python hook reaches the kernel's `validate_unit`.)"""
+    def unique(ids):
+        assert len(ids) == len(set(ids)), ids
+    if cell['kind'] == 'metrics':
+        unique([i['id'] for i in cell['items']])
+    if cell['kind'] == 'distribution':
+        unique([s['id'] for s in cell['slices']])
+    if cell['kind'] == 'time-series':
+        unique([d['id'] for d in cell['datasets']])
+        for data in cell['datasets']:
+            unique([s['id'] for s in data['series']])
+            dates = [p['date'] for p in data['points']]
+            assert dates == sorted(set(dates)), dates
+            for point in data['points']:
+                assert len(point['values']) == len(data['series'])
+                if data['style'] == 'stacked':
+                    assert all(v is not None and v >= 0 for v in point['values'])
+    if cell['kind'] == 'records':
+        unique([d['id'] for d in cell['datasets']])
+        for data in cell['datasets']:
+            unique([i['id'] for i in data['items']])
+            for item in data['items']:
+                unique([e['id'] for e in item['disclosures']])
+
+
 def valid(unit):
     jsonschema.Draft202012Validator(UNIT_SCHEMA).validate(unit)
+    semantic(unit['cell'])
     assert len(json.dumps(unit, ensure_ascii=False, separators=(',', ':')).encode()) <= MAX_UNIT_BYTES
     return unit
+
+
+def exact(value):
+    """A published float back to the decimal it was written from."""
+    return Decimal(repr(value))
 
 
 def cells(state):
@@ -77,8 +110,8 @@ def test_projections_conserve_value(rig):
             equity = Decimal(sample['equity_usd'])
             omitted = sum(Decimal(p['shares']) * Decimal(p['price'])
                           for s, p in sample['positions'].items() if s not in shown)
-            assert abs(sum(point['values']) - 100) < 1e-3
-            assert abs(point['values'][4] - float(omitted / equity * 100)) < 1e-3
+            assert sum(exact(v) for v in point['values']) == 100
+            assert abs(exact(point['values'][4]) - omitted / equity * 100) <= Decimal('0.0001')
 
     # Holdings list every held symbol and cash.
     assert len(published['portfolio.holdings']['table']['rows']) == 41
@@ -105,3 +138,66 @@ def test_every_recipe_slot_is_published_and_valid(rig):
     published = cells(state)
     assert {row['name'] for row in published['portfolio.holdings']['table']['rows']} >= {'US:AAA · 30 股', '现金'}
     assert published['portfolio.fill_log']['table']['rows']
+
+
+def opening_account(r, cash, prices, shares):
+    """A simulated account already holding `shares` of each priced symbol, acknowledged as opening."""
+    r.configure(max_held=len(shares), opening_positions=json.dumps(
+        [{'symbol': 'US:' + s.split('.')[0], 'shares': n} for s, n in shares.items()]))
+    account = simulated(r, cash, prices)
+    account.positions = dict(shares)
+    return account
+
+
+def test_weights_keep_cents_and_other_is_the_omitted_sum(rig):
+    r = rig
+    prices = {f'S{i:02d}.US': f'{200 + i}.37' for i in range(10)} | {'S10.US': '100.01', 'S11.US': '100.01'}
+    opening_account(r, '899.49', prices, {s: 1 for s in prices})
+    state = r.step()
+    assert state['error'] is None
+    slices = {s['id']: exact(s['value']) for s in cells(state)['portfolio.weights']['slices']}
+    equity = Decimal(state['snapshot']['equity_usd'])
+    assert sum(slices.values()) == equity == Decimal('3148.21')
+    assert slices['other'] == Decimal('200.02') and slices['cash'] == Decimal('899.49')
+    assert slices['US.S00'] == Decimal('200.37')
+
+
+def test_weights_sum_to_equity_in_cents_with_sub_cent_values(rig):
+    r = rig
+    prices = {'AAA.US': '100.49', 'BBB.US': '0.3333', 'CCC.US': '0.6667'}
+    opening_account(r, '899.49', prices, {'AAA.US': 1, 'BBB.US': 3, 'CCC.US': 1})
+    state = r.step()
+    slices = [exact(s['value']) for s in cells(state)['portfolio.weights']['slices']]
+    assert sum(slices) == Decimal(state['snapshot']['equity_usd']).quantize(Decimal('0.01'))
+
+
+def test_valuations_are_dated_by_trading_session(rig):
+    r = rig
+    friday = datetime(2026, 10, 2, 19, 55, tzinfo=timezone.utc)
+    r.clock = lambda: friday + timedelta(minutes=1)
+    r.quote('US:AAA', '100', at=friday)
+    r.watch('US:AAA')
+    for day in (3, 4):  # Saturday and Sunday: the newest quote is still Friday's
+        r.clock = lambda day=day: datetime(2026, 10, day, 15, tzinfo=timezone.utc)
+        r.step()
+    monday = datetime(2026, 10, 5, 15, tzinfo=timezone.utc)
+    r.quote('US:AAA', '101', at=monday)
+    r.clock = lambda: monday + timedelta(minutes=1)
+    state = r.step()
+    assert [s['date'] for s in state['valuations']] == ['2026-10-02', '2026-10-05']
+    previous = {i['id']: i for i in cells(state)['portfolio.nav']['items']}['previous']
+    assert previous['label'] == '上一交易日估值 · 10.02'
+
+
+def test_a_decision_that_traded_nothing_is_not_shown_as_success(rig):
+    r = rig
+    r.quote('US:AAA', '100'); r.watch('US:AAA')
+    state = r.read(); state['response'] = {'status': 'not_submitted'}; r.write(state)
+    r.decide({'US:AAA': 5000})
+    state = r.execute()
+    state = r.step()
+    assert state['decisions'][0]['state'] == 'done'
+    assert [o['state'] for o in state['decisions'][0]['orders']] == ['rejected']
+    [record] = cells(state)['portfolio.decision_log']['datasets'][0]['items']
+    badge = record['badges'][0]
+    assert badge['tone'] != 'positive' and '未成交' in badge['value']

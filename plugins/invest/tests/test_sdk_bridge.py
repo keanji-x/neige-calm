@@ -1,5 +1,5 @@
 """The multi-symbol official-SDK adapter, against prescribed SDK response objects (no network)."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 import sys
@@ -17,7 +17,12 @@ def sdk(monkeypatch):
     calls, quoted = [], []
     state = NS(positions={'AAA.US': (50, 50), 'BBB.US': (10, 10)}, total='5000', cash='5000', settling='0',
                prices={'AAA.US': '100', 'BBB.US': '200', 'CCC.US': '10'}, quote_at=NOW, status='Normal',
-               channel='lb_papertrading', account='PAPER123', orders=[], currency='USD')
+               channel='lb_papertrading', account='PAPER123', orders=[], history=[], currency='USD',
+               history_queries=[])
+
+    def listed(rows, status):
+        wanted = None if status is None else {bridge.enum(s) for s in status}
+        return [o for o in rows if wanted is None or bridge.enum(o.status) in wanted]
 
     class Trade:
         def stock_positions(self):
@@ -33,11 +38,15 @@ def sdk(monkeypatch):
                        cash_infos=[NS(currency='USD', available_cash=Decimal(state.cash),
                                       settling_cash=Decimal(state.settling))])]
 
-        def today_orders(self):
-            return state.orders
+        def today_orders(self, status=None):
+            return listed(state.orders, status)
 
-        def history_orders(self, start_at, end_at):
-            return []
+        def history_orders(self, status=None, market=None, start_at=None, end_at=None):
+            state.history_queries.append({'status': status, 'market': market, 'start_at': start_at, 'end_at': end_at})
+            return listed([o for o in state.history if start_at is None or o.created_at >= start_at], status)
+
+        def order_detail(self, order_id):
+            return next(o for o in state.orders + state.history if o.order_id == order_id)
 
         def today_executions(self):
             return []
@@ -69,7 +78,9 @@ def sdk(monkeypatch):
         def read(self, size): return json.dumps({'MemberInfo': {'AccountNo': state.account}}).encode()
 
     monkeypatch.setattr(bridge.urllib.request, 'urlopen', lambda url, timeout: Response())
+    statuses = bridge.ACTIVE + ('Filled', 'Canceled', 'Rejected', 'Expired', 'PartialWithdrawal')
     module = NS(StatementType=NS(Daily='daily'), Market=NS(US='US'), OrderType=NS(MO='MO'),
+                OrderStatus=NS(**{name: f'OrderStatus.{name}' for name in statuses}),
                 OrderSide=NS(Buy='Buy', Sell='Sell'), OutsideRTH=NS(RTHOnly='RTH_ONLY'),
                 TimeInForceType=NS(Day='Day'))
     monkeypatch.setitem(sys.modules, 'longbridge.openapi', module)
@@ -180,3 +191,54 @@ def test_context_hard_codes_server_paper_enforcement(sdk, monkeypatch):
     module.AssetContext = module.TradeContext = module.QuoteContext = lambda config: config
     assert bridge.contexts('sdk-client', access_region='cn') == ('config', 'config', 'config')
     assert options[0]['enable_papertrading'] is True and options[0]['http_url'] == 'https://openapi.longbridge.cn'
+
+
+def gtc(status='New', days_ago=1):
+    """A long-lived order placed outside invest on an earlier day."""
+    return NS(order_id='gtc-1', symbol='QQQ.US', side='OrderSide.Buy', order_type='OrderType.LO', quantity=Decimal(1),
+              executed_quantity=Decimal(0), status=f'OrderStatus.{status}', remark='',
+              time_in_force='TimeInForceType.GoodTilCanceled', outside_rth='OutsideRTH.RTHOnly',
+              created_at=NOW - timedelta(days=days_ago))
+
+
+def test_snapshot_discovers_active_orders_from_earlier_days(sdk):
+    sdk.state.history = [gtc()]
+    raw = bridge.snapshot(sdk.asset, sdk.trade, sdk.quote, 'PAPER123', {'since': None, 'symbols': []})
+    assert [(o['order_id'], o['status']) for o in raw['orders']] == [('gtc-1', 'New')]
+    # The query is account-wide, US, active statuses only, over a bounded window.
+    [query] = sdk.state.history_queries
+    assert query['market'] == 'US' and {bridge.enum(s) for s in query['status']} == set(bridge.ACTIVE)
+    assert query['end_at'] == NOW and query['start_at'] == NOW - bridge.ACTIVE_LOOKBACK
+
+
+def test_preflight_refuses_beside_an_active_order_from_an_earlier_day(sdk):
+    sdk.state.history = [gtc()]
+    with pytest.raises(bridge.OrderNotSubmitted):
+        submit(sdk)
+    sdk.state.history = [gtc(status='Canceled')]
+    assert submit(sdk) == {'order_id': 'sdk-order'}
+    assert len(sdk.calls) == 1
+
+
+def test_historical_active_order_blocks_reconciliation_and_submit(sdk, rig):
+    """The production Portfolio over the real bridge: an unfilled GTC order placed yesterday."""
+    sdk.state.positions = {}
+
+    class SdkBroker:
+        def snapshot(self, since, symbols):
+            raw = bridge.snapshot(sdk.asset, sdk.trade, sdk.quote, 'PAPER123', {'since': since, 'symbols': symbols})
+            return json.loads(json.dumps(raw, default=str))
+
+        def submit(self, request):
+            return bridge.submit(sdk.asset, sdk.trade, sdk.quote, 'PAPER123', request, sdk.policy)['order_id']
+
+    rig.broker = SdkBroker(); rig.restart()
+    rig.watch('US:CCC')
+    rig.decide({'US:CCC': 500})
+    sdk.state.history = [gtc()]
+    state = rig.execute()
+    assert 'unowned active broker order' in state['error'] and sdk.calls == []
+    assert state['decisions'][0]['state'] == 'requested'
+    sdk.state.history = [gtc(status='Canceled')]
+    state = rig.step()
+    assert state['error'] is None and [c['symbol'] for c in sdk.calls] == ['CCC.US']
