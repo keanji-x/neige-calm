@@ -9,7 +9,7 @@ import {
 import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
   CONVERSATION_STATE_SOURCE, conversationCreateFailure,
-  createSerialWriter, createTrackConversationOperation,
+  createSerialWriter, createTrackConversationOperation, sendPlannerInputOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
   mergeTranscript, plannerQueueWriteFailure, readableCommand,
@@ -234,6 +234,15 @@ describe('track conversations', () => {
     expect(operation.body).toEqual({ text: 'hello' });
     expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-a' });
     expect(operation.responseSchema.parse(row).kind).toBe('track-assistant');
+  });
+
+  it('sends a planner message under the key its retries reuse', () => {
+    const operation = sendPlannerInputOperation('card 1', 'hello', ['image.png'], 'key-a');
+    expect(operation.method).toBe('POST');
+    expect(operation.path).toBe('/api/cards/card%201/planner/input');
+    expect(operation.body).toEqual({ text: 'hello', attachments: ['image.png'] });
+    expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-a' });
+    expect(sendPlannerInputOperation('card 1', 'hello', [], 'key-a').body).toEqual({ text: 'hello' });
   });
 
   /* A golden: the value is copied from the server's own test of `conversation_keys.rs`. */

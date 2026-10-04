@@ -13,6 +13,12 @@ import { queryKeys } from '../providers/queries.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
+/* A send's automatic retries wait no real time here; how long they back off is not under test. */
+vi.mock('../../../../core/domain/recovery/access.ts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../../core/domain/recovery/access.ts')>(),
+  recoveryDelay: () => 0,
+}));
+
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const CARD = { id: 'card-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::support::planner_queue_fixture::{
     Boot, Issuance, boot_with, boot_with_issuance, get, idle_snapshot, post_input,
-    post_input_with_attachments, send_json, upload_png,
+    post_input_with_attachments, upload_png,
 };
 
 /// Upload one png and hand back its id.
@@ -603,12 +603,11 @@ async fn naming_an_already_bound_attachment_again_is_accepted() {
 async fn a_traversal_shaped_id_is_rejected_by_the_body_schema() {
     let boot = boot_with(idle_snapshot(vec![])).await;
     let card_id = boot.planner_card.id.as_str().to_string();
-    let (status, body): (StatusCode, Value) = send_json(
+    let (status, body) = post_input_with_attachments(
         boot.app.clone(),
-        "POST",
-        format!("/api/cards/{card_id}/planner/input"),
-        "user",
-        json!({"text": "escape", "attachments": ["../../etc/passwd.png"]}),
+        &card_id,
+        "escape",
+        &["../../etc/passwd.png".to_string()],
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body={body}");

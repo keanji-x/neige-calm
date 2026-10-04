@@ -9,4 +9,6 @@
 // Revision 17 (#1913): Calendar REST and plugin data invalidation.
 // Revision18 (#1913 follow-up): plugin list requires lifecycle can_disable.
 // Revision 19 (#1967): calendar schedules may be weekly, and listed entries carry required occurrences.
-pub const REST_API_VERSION: &str = "19";
+// Revision 20 (#2043): `POST /api/cards/{id}/planner/input` requires an `Idempotency-Key`; an older
+// bundle sends none and every message would be refused.
+pub const REST_API_VERSION: &str = "20";

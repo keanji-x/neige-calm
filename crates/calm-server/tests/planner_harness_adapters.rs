@@ -589,7 +589,11 @@ async fn the_fake_app_server_streams_a_scripted_reply_until_interrupted() {
         .expect("runtime row");
     let harness = state.harness.get(&runtime.id).unwrap();
     harness
-        .observe_user_message_durable("fake-reply-hold: Hel|lo".into(), Vec::new())
+        .observe_user_message_durable(
+            "fake-reply-hold: Hel|lo".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
 

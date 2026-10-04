@@ -125,8 +125,8 @@ class CollectorTests(unittest.TestCase):
         calls = []
 
         class ApiResponses:
-            def call(self, method, path, body=None):
-                calls.append((method, path, body))
+            def call(self, method, path, body=None, extra_headers=None):
+                calls.append((method, path, body, extra_headers))
                 return {("GET", "/api/version"): {"buildSha": "source"},
                         ("POST", "/api/areas"): {"id": "area"},
                         ("POST", "/api/tracks"): {"id": "track"},
@@ -141,6 +141,7 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(name, "bootstrap")
             self.assertEqual(calls[-1][:2], ("POST", "/api/cards/planner/planner/input"))
             self.assertIn("Reply ready", calls[-1][2]["text"])
+            self.assertTrue(calls[-1][3]["Idempotency-Key"], "every planner send carries a key")
             self.assertEqual(expected_session, "session")
             self.assertEqual(round_.session, "session")
             raise BootstrapReached()

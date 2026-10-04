@@ -163,7 +163,10 @@ impl Fixture {
     }
 
     pub(super) async fn enqueue(&self, entries: Vec<QueueEntry>) {
-        self.harness.observe_durable_entries(entries).await.unwrap();
+        self.harness
+            .observe_durable_entries(entries, crate::harness::SendKey::unique_for_test())
+            .await
+            .unwrap();
     }
 
     /// The segments the last drain wrote to its projection row, read back from the transcript table.
@@ -224,7 +227,11 @@ async fn queued_commit_before_close_is_consumed_without_a_turn_and_later_user_in
     );
     // No stuck debounce/state after consuming the only observation.
     fx.harness
-        .observe_user_message_durable("please explain the result".into(), vec![])
+        .observe_user_message_durable(
+            "please explain the result".into(),
+            vec![],
+            crate::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     fx.issue().await;
@@ -296,7 +303,11 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
     assert!(stored.pending_entries().is_empty());
     // Positive control: the SAME recovered harness still issues a turn for real input.
     recovered
-        .observe_user_message_durable("please explain the result".into(), vec![])
+        .observe_user_message_durable(
+            "please explain the result".into(),
+            vec![],
+            crate::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     maybe_issue_turn(&recovered.inner).await.unwrap();

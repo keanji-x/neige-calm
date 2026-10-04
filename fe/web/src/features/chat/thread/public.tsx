@@ -618,7 +618,7 @@ export function ChatComposer({
     }
     const outcome = onSend(text);
     setDraft('');
-    /* Cleared optimistically, put back only for the outcome that says the server stored nothing, and only into an empty field. Excluded: `unresolved` (no idempotency key, so a second delivery is one Enter away), `abandoned` (another conversation) and `not-sent` (must not take the field from an earlier send still waiting). */
+    /* Cleared optimistically, put back only for the outcome that says the server stored nothing, and only into an empty field. Excluded: `unresolved` (the failed send holds them, and its Try again reuses the send's key; Enter would be a second message), `abandoned` (another conversation) and `not-sent` (must not take the field from an earlier send still waiting). */
     if (isThenable(outcome)) {
       void outcome.then((result) => {
         if (result !== 'refused') return;

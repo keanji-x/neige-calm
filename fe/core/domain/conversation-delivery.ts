@@ -1,5 +1,5 @@
 import type { ApiFailure } from '../api/types.js';
-import type { ConversationMessage, OptimisticConversationTurn } from './conversation.js';
+import { isSendRefusalCode } from './conversation.js';
 
 /** These explicit request rejections happen before dispatch; every other outcome requires checking delivery. */
 export function failedConversationDelivery(failure: ApiFailure | null): 'rejected' | 'unknown' {
@@ -9,23 +9,32 @@ export function failedConversationDelivery(failure: ApiFailure | null): 'rejecte
 }
 
 /**
- * A newly observed exact user message is a candidate for the reader to review, never proof
- * that this request arrived. Attachment ids are server-minted, one per upload, so they match
- * an image-only message whose text is blank.
+ * Whether a keyed send's failure leaves it unknown whether the message was stored, so the same key
+ * is sent again. `null` is a failure with no answer at all, such as a connection that is not ready.
  */
-export function hasUnseenMatchingConversationMessage(
-  serverTurns: readonly ConversationMessage[], echo: OptimisticConversationTurn,
-): boolean {
-  const text = echo.text.trim();
-  const echoAttachments = echo.attachments ?? [];
-  if (text === '' && echoAttachments.length === 0) return false;
-  return serverTurns.some((turn) => {
-    if (turn.author !== 'you') return false;
-    if (Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10) <= echo.serverHighWaterBefore) {
-      return false;
+export function isUnknownSendFailure(failure: ApiFailure | null): boolean {
+  return failedConversationDelivery(failure) === 'unknown'
+    && !isSendRefusalCode(failure?.kind === 'http' ? failure.code : null);
+}
+
+/** Automatic retries of one keyed send after its first attempt; an attempt that cannot go out counts too. */
+export const SEND_RETRIES = 5;
+
+/**
+ * Run `attempt` until it answers, fails for a reason other than an unknown outcome, or the retries
+ * are spent. Every attempt must reuse one `Idempotency-Key`; `pause` waits before retry `retry`.
+ */
+export async function retryUnknownSend<T>(
+  attempt: (index: number) => Promise<T>,
+  isUnknown: (error: unknown) => boolean,
+  pause: (retry: number) => Promise<void>,
+): Promise<T> {
+  for (let index = 0; ; index += 1) {
+    try {
+      return await attempt(index);
+    } catch (error) {
+      if (index >= SEND_RETRIES || !isUnknown(error)) throw error;
+      await pause(index);
     }
-    if (text !== '') return turn.text.trim() === text;
-    const rowIds = new Set((turn.attachments ?? []).map((attachment) => attachment.id));
-    return echoAttachments.every((attachment) => rowIds.has(attachment.id));
-  });
+  }
 }

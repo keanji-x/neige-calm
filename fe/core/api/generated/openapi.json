@@ -1378,12 +1378,23 @@
         "tags": [
           "cards"
         ],
+        "summary": "Queue one message for the card's harness, under a required `Idempotency-Key`.",
+        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\nactor) answers 200 with the first request's body and queues nothing, whatever happened to the\nmessage since. The same key with a different body is 409 `conflict`. A refusal stores and\nbinds nothing, so its key can be sent again. A card keeps its newest 64 keys; an older key is\na new send.",
         "operationId": "send_planner_input",
         "parameters": [
           {
             "name": "id",
             "in": "path",
             "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "**Required.** One key per message; a retry under it replays the first answer.",
             "required": true,
             "schema": {
               "type": "string"
@@ -1402,7 +1413,7 @@
         },
         "responses": {
           "200": {
-            "description": "User text queued for next harness turn",
+            "description": "User text queued for next harness turn, or the answer of the earlier request under this Idempotency-Key",
             "content": {
               "application/json": {
                 "schema": {
@@ -1412,7 +1423,7 @@
             }
           },
           "400": {
-            "description": "Empty text",
+            "description": "Empty text, or a missing or blank Idempotency-Key",
             "content": {
               "application/json": {
                 "schema": {
@@ -1442,7 +1453,7 @@
             }
           },
           "409": {
-            "description": "Runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`)",
+            "description": "This Idempotency-Key was used for a different message (code `conflict`); runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`)",
             "content": {
               "application/json": {
                 "schema": {

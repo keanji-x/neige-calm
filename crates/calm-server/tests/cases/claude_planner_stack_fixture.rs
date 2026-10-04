@@ -240,10 +240,34 @@ impl Stack {
     }
 
     pub async fn send(&self, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-        let builder = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("x-calm-actor", "user");
+        self.send_with(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("x-calm-actor", "user"),
+            body,
+        )
+        .await
+    }
+
+    /// `POST /planner/input` as one new send: a fresh `Idempotency-Key`.
+    pub async fn send_input(&self, card_id: &str, body: Value) -> (StatusCode, Value) {
+        self.send_with(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{card_id}/planner/input"))
+                .header("x-calm-actor", "user")
+                .header("idempotency-key", calm_server::model::new_id()),
+            Some(body),
+        )
+        .await
+    }
+
+    async fn send_with(
+        &self,
+        builder: axum::http::request::Builder,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let request = match body {
             Some(body) => builder
                 .header("content-type", "application/json")
@@ -321,12 +345,7 @@ impl Stack {
     }
 
     pub async fn post_input(&self, card_id: &str, text: &str) -> (StatusCode, Value) {
-        self.send(
-            "POST",
-            &format!("/api/cards/{card_id}/planner/input"),
-            Some(json!({"text": text})),
-        )
-        .await
+        self.send_input(card_id, json!({"text": text})).await
     }
 
     /// Every stored `turn/completed` of the card, oldest first.

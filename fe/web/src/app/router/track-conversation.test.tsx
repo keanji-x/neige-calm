@@ -3,6 +3,7 @@
 // session registry may remember about one, driven through the real store.
 
 import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
+import { SEND_RETRIES } from '../../../../core/domain/conversation-delivery.ts';
 import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
@@ -23,6 +24,12 @@ import { DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+
+/* A send's automatic retries wait no real time here; how long they back off is not under test. */
+vi.mock('../../../../core/domain/recovery/access.ts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../../core/domain/recovery/access.ts')>(),
+  recoveryDelay: () => 0,
+}));
 
 /** Text in the drawer outside its desktop header, which paints the conversation's name (often its first message). */
 const TRANSCRIPT_TEXT = { ignore: 'script, style, [data-nc-drawer] > header *' };
@@ -710,7 +717,8 @@ describe('track conversations', () => {
       expect(within(drawerElement()).getByText(text, TRANSCRIPT_TEXT)).toBeTruthy();
       expect(document.querySelector('[data-nc-queued]')).toBeNull();
       expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
-      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+      expect(requests.filter((request) => request.path.endsWith('/planner/input')))
+        .toHaveLength(outcome === 'unknown' ? SEND_RETRIES + 1 : 1);
       fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
       fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
       expect(within(drawerElement()).getByText(text, TRANSCRIPT_TEXT)).toBeTruthy();
@@ -738,41 +746,6 @@ describe('track conversations', () => {
     expect(messageField().getAttribute('contenteditable')).toBe('true');
   });
 
-  it('[F5] keeps an uncertain attempt distinct from an acknowledged queued echo and matching history', async () => {
-    const text = 'Repeat after queue';
-    let attempts = 0;
-    let rows: ReturnType<typeof harnessMessage>[] = [];
-    const { client, requests } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
-      if (request.path.includes(HISTORY_PATH)) return ok(rows);
-      if (request.path.endsWith('/planner/input')) {
-        attempts += 1;
-        if (attempts === 2) throw new Error('response dropped');
-        return inputAccepted();
-      }
-      return undefined;
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    await screen.findByRole('button', { name: 'Stop' });
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      await typeInto(messageField(), text);
-      await submit();
-      await waitFor(() => expect(attempts).toBe(attempt));
-      if (attempt === 1) await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-    }
-    await screen.findByRole('alert');
-    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
-    expect(document.querySelectorAll('[data-nc-queued]')).toHaveLength(1);
-    rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
-    await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
-    await screen.findByText('A matching message is visible. Delivery is still unconfirmed.');
-    expect(messageField().getAttribute('contenteditable')).toBe('false');
-    expect(document.querySelectorAll('[data-nc-queued]')).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: 'I’ve checked' }));
-    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(2);
-  });
-
   it('[F4] edits a rejected message without replaying it before an explicit send', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/input')
       ? failure(429, 'rate_limited', 'Wait a moment') : undefined);
@@ -792,55 +765,41 @@ describe('track conversations', () => {
   });
 
   it.each(['transport', '503', 'decode'] as const)(
-    '[F5] replaces the %s failure with matching-message review until acknowledged', async (mode) => {
+    '[F5] retries a %s failure under its key, then offers Try again without asking', async (mode) => {
       const text = 'repeat the same request';
-      const first = harnessMessage(1, 'userMessage', { content: [{ text }] });
-      let rows = [first];
-      const { client, requests } = setup((request) => {
-        if (request.path.includes(HISTORY_PATH)) return ok(rows);
+      let failing = true;
+      const { requests } = setup((request) => {
         if (request.path.endsWith('/planner/input')) {
+          if (!failing) return inputAccepted();
           if (mode === 'transport') throw new Error('response dropped');
           return mode === '503' ? failure(503, 'unavailable', 'upstream unavailable') : ok({});
         }
         return undefined;
       });
+      const inputs = () => requests.filter((request) => request.path.endsWith('/planner/input'));
       fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
       await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
       await write(text);
-      await screen.findByRole('alert');
-      expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
-      expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
-      fireEvent.click(screen.getByRole('button', { name: 'Check delivery' }));
-      await waitFor(() => expect(requests.filter((request) => request.path.includes(HISTORY_PATH)).length).toBeGreaterThan(1));
-      expect(screen.getByRole('alert').textContent).toContain('Delivery is unconfirmed');
-      rows = [first, harnessMessage(2, 'userMessage', { content: [{ text: `${text}\nwith different instructions` }] })];
-      await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
-      expect(screen.getByRole('alert').textContent).toContain('Delivery is unconfirmed');
-
-      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
-      fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-      fireEvent.click(await screen.findByRole('button', { name: /Conversation repeat the same request/ }));
-      expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
-      rows = [first, harnessMessage(3, 'userMessage', { content: [{ text }] }),
-        harnessMessage(4, 'agentMessage', { text: 'Received once' })];
-      await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
-      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-      expect((await screen.findByText('A matching message is visible. Delivery is still unconfirmed.')).closest('[role="status"]')?.textContent).toContain('Delivery is still unconfirmed');
-      expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
-      expect(screen.getByText('Received once')).toBeTruthy();
+      expect((await screen.findByRole('alert')).textContent).toContain('Delivery is unconfirmed');
+      expect(inputs()).toHaveLength(SEND_RETRIES + 1);
+      const key = inputs()[0]?.headers?.['Idempotency-Key'];
+      expect(key).toBeTruthy();
+      expect(inputs().every((request) => request.headers?.['Idempotency-Key'] === key)).toBe(true);
+      /* An edited message would be a new send under a new key while the first may have arrived. */
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
       expect(messageField().getAttribute('contenteditable')).toBe('false');
-      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
-      fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-      fireEvent.click(await screen.findByRole('button', { name: /Conversation repeat the same request/ }));
-      expect((await screen.findByText('A matching message is visible. Delivery is still unconfirmed.')).closest('[role="status"]')?.textContent).toContain('Delivery is still unconfirmed');
-      fireEvent.click(screen.getByRole('button', { name: 'I’ve checked' }));
-      await waitFor(() => expect(screen.queryByText(/A matching message is visible/)).toBeNull());
-      expect(messageField().getAttribute('contenteditable')).toBe('true');
-      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+
+      failing = false;
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(inputs()).toHaveLength(SEND_RETRIES + 2);
+      expect(inputs().at(-1)?.headers?.['Idempotency-Key']).toBe(key);
+      expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
     },
   );
 
-  it('[F4] requires an explicit duplicate-risk confirmation before an ambiguous resend', async () => {
+  it('[F4] sends a dropped answer again under its key, with no question and one message', async () => {
     let attempts = 0;
     const text = 'Keep the dropped request';
     const { requests } = setup((request) => {
@@ -852,19 +811,28 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     await write(text);
-    await screen.findByRole('alert');
-    fireEvent.click(screen.getByRole('button', { name: 'Send again…' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Send this message again?' });
-    expect(within(dialog).getByText(/may already have arrived/)).toBeTruthy();
-    expect(attempts).toBe(1);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    expect(attempts).toBe(1);
-    expect(within(drawerElement()).getByText(text, TRANSCRIPT_TEXT)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Send again…' }));
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Send again' }));
     await waitFor(() => expect(attempts).toBe(2));
-    expect(requests.filter((request) => request.path.endsWith('/planner/input')).map((request) => request.body))
-      .toEqual([{ text }, { text }]);
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    const inputs = requests.filter((request) => request.path.endsWith('/planner/input'));
+    expect(inputs.map((request) => request.body)).toEqual([{ text }, { text }]);
+    expect(inputs[0]?.headers?.['Idempotency-Key']).toBeTruthy();
+    expect(inputs[1]?.headers?.['Idempotency-Key']).toBe(inputs[0]?.headers?.['Idempotency-Key']);
+    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
+  });
+
+  it('[F4] refuses a send pressed while offline, sends nothing and keeps the words', async () => {
+    vi.stubGlobal('__NC_BUNDLED__', true);
+    const access = new RecoveryAccess(); access.change('connected');
+    const { requests } = setup(undefined, undefined, access);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    act(() => { access.change('offline'); });
+    await write('Not while offline');
+    await waitFor(() => expect(messageField().textContent).toBe('Not while offline'));
+    expect((await screen.findByRole('alert')).textContent).toContain('离线操作不会自动发送');
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(0);
   });
 
   /* A retry must carry the images the failed message was shown with; the defect
@@ -2514,20 +2482,13 @@ it.each(['429', 'transport'])('[F5] does not retire a %s failure when a stale re
   // Its server timestamp is 2, earlier than this request's Date.now().
   rows = [first, oldEqual, harnessMessage(3, 'agentMessage', { text: 'Previously completed response' })];
   await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
-  expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+  const sent = mode === '429' ? 1 : SEND_RETRIES + 1;
+  expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(sent);
   await screen.findByText('Previously completed response');
-  if (mode === '429') {
-    expect(screen.getByRole('alert').textContent).toContain('Not sent');
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
-    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
-  } else {
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByText('A matching message is visible. Delivery is still unconfirmed.').closest('[role="status"]')?.textContent).toContain('Delivery is still unconfirmed');
-    expect(screen.getByRole('button', { name: 'I’ve checked' })).toBeTruthy();
-    expect(messageField().getAttribute('contenteditable')).toBe('false');
-    expect(within(drawerElement()).getByText(text, TRANSCRIPT_TEXT)).toBeTruthy();
-  }
-  expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+  expect(screen.getByRole('alert').textContent).toContain(mode === '429' ? 'Not sent' : 'Delivery is unconfirmed');
+  expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
+  expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(sent);
 });
 
 

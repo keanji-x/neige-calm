@@ -104,7 +104,8 @@ pub struct RouteState {
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
     /// Per-card lock for lazy planner harness recovery. Lock order:
-    /// `conversation_first_message_locks` → `planner_recovery_locks`, never the reverse.
+    /// `conversation_first_message_locks` → `planner_input_key_locks` → `planner_recovery_locks`,
+    /// never the reverse.
     pub(crate) planner_recovery_locks: crate::per_card_lock::PerCardLocks,
     /// Per-card claim for the Today bootstrap's first-message send. A SEPARATE map from
     /// `planner_recovery_locks`: the claim is held across a call that takes that lock and
@@ -117,6 +118,10 @@ pub struct RouteState {
     pub(crate) track_delete_locks: crate::per_card_lock::KeyedLocks,
     /// One planner attachment upload per card at a time. Takes no other lock.
     pub(crate) planner_attachment_locks: crate::per_card_lock::PerCardLocks,
+    /// One `POST /planner/input` per (card, `Idempotency-Key`) at a time, from the replay check
+    /// through the enqueue, so a concurrent duplicate replays instead of queueing twice (#2043).
+    /// Self-cleaning like every `KeyedLocks`; the binding's UNIQUE constraint is the backstop.
+    pub(crate) planner_input_key_locks: crate::per_card_lock::KeyedLocks,
     /// The server's one deletion-seal registry, built by the shared Codex daemon; the deletion
     /// routes seal and unseal through it and recovery skips what it holds.
     pub(crate) thread_seals: Arc<ThreadSeals>,
@@ -218,6 +223,7 @@ impl BootState {
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
             track_create_mint_rendezvous: None,
             planner_attachment_locks: crate::per_card_lock::new_per_card_locks(),
+            planner_input_key_locks: crate::per_card_lock::new_keyed_locks(),
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
             thread_seals: self.shared_codex_appserver.thread_seals().clone(),
             area_delete_locks: crate::per_card_lock::new_keyed_locks(),

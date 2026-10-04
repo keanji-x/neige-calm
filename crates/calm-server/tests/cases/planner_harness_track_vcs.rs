@@ -219,7 +219,11 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     .unwrap();
     // User text goes through the durable route, the only one that mints a queue id; `observe` refuses a `UserMessage` outright.
     harness
-        .observe_user_message_durable("hello without vcs".into(), Vec::new())
+        .observe_user_message_durable(
+            "hello without vcs".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -348,7 +352,11 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
     });
     // User text goes through the durable route, the only one that mints a queue id.
     harness
-        .observe_user_message_durable("what changed?".into(), Vec::new())
+        .observe_user_message_durable(
+            "what changed?".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     wait_for_turn_count(&boot.daemon, 1).await;
@@ -1256,7 +1264,11 @@ async fn mixed_batch_with_a_user_message_has_no_channel_line() {
     add_report_card_event(&boot).await;
 
     boot.harness
-        .observe_user_message_durable("what changed?".into(), Vec::new())
+        .observe_user_message_durable(
+            "what changed?".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     boot.harness.observe(report_edit_with_diff(&boot)).unwrap();
@@ -1334,7 +1346,11 @@ async fn user_message_turn_still_carries_the_unified_report_patch() {
     add_report_card_event(&boot).await;
 
     boot.harness
-        .observe_user_message_durable("what changed?".into(), Vec::new())
+        .observe_user_message_durable(
+            "what changed?".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     wait_for_turn_count(&boot.daemon, 2).await;
@@ -1858,7 +1874,11 @@ async fn a_rewound_turn_gives_its_track_changes_back_to_the_next_turn() {
     let before = complete_first_turn_and_stamp(&boot).await;
     add_report_card_event(&boot).await;
     boot.harness
-        .observe_user_message_durable("what changed?".into(), Vec::new())
+        .observe_user_message_durable(
+            "what changed?".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     wait_for_turn_count(&boot.daemon, 2).await;
@@ -1888,7 +1908,11 @@ async fn a_rewound_turn_gives_its_track_changes_back_to_the_next_turn() {
     );
 
     boot.harness
-        .observe_user_message_durable("what changed, again?".into(), Vec::new())
+        .observe_user_message_durable(
+            "what changed, again?".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     wait_for_turn_count(&boot.daemon, 3).await;

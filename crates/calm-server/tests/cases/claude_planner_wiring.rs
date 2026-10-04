@@ -80,10 +80,9 @@ async fn a_claude_track_runs_through_the_real_routes() {
     // Image message; the fake shakes hands with the kernel's MCP socket using its own token.
     let attachment = upload_png(&stack, &card_id).await;
     let (status, body) = stack
-        .send(
-            "POST",
-            &format!("/api/cards/{card_id}/planner/input"),
-            Some(json!({"text": "look at this", "attachments": [attachment]})),
+        .send_input(
+            &card_id,
+            json!({"text": "look at this", "attachments": [attachment]}),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");

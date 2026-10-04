@@ -13,8 +13,7 @@ use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
 use crate::routes::cards::{
     CreateCardBody, GetPlannerRunResponse, HarnessItemsQuery, InterruptPlannerCardResponse,
-    PlannerRunTokenUsage, ResetPlannerCardResponse, SendPlannerInputRequest,
-    SendPlannerInputResponse, ViaToolCall,
+    PlannerRunTokenUsage, ResetPlannerCardResponse, ViaToolCall,
 };
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
@@ -30,6 +29,7 @@ use crate::routes::planner_input::{
     PlannerInputStaleBody, PlannerSteerConflictBody, PlannerSteerRefusedBody, PlannerSteerResponse,
     SteerPlannerInputBody,
 };
+use crate::routes::planner_input_send::{SendPlannerInputRequest, SendPlannerInputResponse};
 use crate::routes::plugins::{
     InstallBody, InstallSource, PluginDetail, PluginListItem, ToolCallBody, ViewCatalogEntry,
     ViewSizeWire,
@@ -134,7 +134,7 @@ use utoipa::OpenApi;
         crate::routes::cards::update_card,
         crate::routes::cards::get_harness_items,
         crate::routes::harness_live::get_harness_live,
-        crate::routes::cards::send_planner_input,
+        crate::routes::planner_input_send::send_planner_input,
         crate::routes::cards::ratify_card,
         crate::routes::cards::interrupt_planner_card,
         crate::routes::planner_rewind::rewind_planner_card,

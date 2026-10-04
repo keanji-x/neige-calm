@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from planner_claude_ux_metrics import *  # noqa: F401,F403
 
@@ -67,8 +68,8 @@ class Api:
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect())
 
-    def call(self, method, path, body=None):
-        headers = {"Content-Type": "application/json", "X-Calm-Actor": "user"}
+    def call(self, method, path, body=None, extra_headers=None):
+        headers = {"Content-Type": "application/json", "X-Calm-Actor": "user", **(extra_headers or {})}
         if self.cookie:
             headers["Cookie"] = self.cookie
         request = urllib.request.Request(self.url + path, method=method, headers=headers,
@@ -344,7 +345,8 @@ class Round:
 
     def send(self, name, goal):
         self.current = []
-        response = require_object(self.api.call("POST", f"/api/cards/{self.card}/planner/input", {"text": goal}), "Planner input response")
+        response = require_object(self.api.call("POST", f"/api/cards/{self.card}/planner/input", {"text": goal},
+                                                {"Idempotency-Key": str(uuid.uuid4())}), "Planner input response")
         if response.get("worker_session_id") != self.session:
             raise EvidenceError("Planner input was accepted by another session")
         return self.wait_turn(name, self.session)

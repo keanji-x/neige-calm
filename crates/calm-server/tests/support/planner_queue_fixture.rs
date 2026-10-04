@@ -347,21 +347,46 @@ pub async fn send_json(
     (status, parsed)
 }
 
-/// `POST /planner/input` with attachments, as the human actor.
+/// `POST /planner/input` with attachments, as the human actor, as one new send.
 pub async fn post_input_with_attachments(
     app: axum::Router,
     card_id: &str,
     text: &str,
     attachments: &[String],
 ) -> (StatusCode, Value) {
-    send_json(
+    post_input_keyed(
         app,
-        "POST",
-        format!("/api/cards/{card_id}/planner/input"),
-        "user",
+        card_id,
         json!({"text": text, "attachments": attachments}),
+        &calm_server::model::new_id(),
     )
     .await
+}
+
+/// `POST /planner/input` as the human actor under the given `Idempotency-Key`.
+pub async fn post_input_keyed(
+    app: axum::Router,
+    card_id: &str,
+    body: Value,
+    key: &str,
+) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{card_id}/planner/input"))
+                .header("content-type", "application/json")
+                .header("x-calm-actor", "user")
+                .header("idempotency-key", key)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
 }
 
 /// Upload one attachment through the real endpoint and return its id.
@@ -385,21 +410,13 @@ pub async fn upload_png(app: axum::Router, card_id: &str, payload: &[u8]) -> (St
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
+/// `POST /planner/input` as the human actor, as one new send.
 pub async fn post_input(app: axum::Router, card_id: &str, text: &str) -> (StatusCode, Value) {
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/cards/{card_id}/planner/input"))
-                .header("content-type", "application/json")
-                .header("x-calm-actor", "user")
-                .body(Body::from(json!({"text": text}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, body)
+    post_input_keyed(
+        app,
+        card_id,
+        json!({"text": text}),
+        &calm_server::model::new_id(),
+    )
+    .await
 }

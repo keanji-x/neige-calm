@@ -56,6 +56,8 @@ mod planner_harness_reset_clears_items;
 mod planner_harness_token_usage;
 #[path = "cases/planner_harness_track_vcs.rs"]
 mod planner_harness_track_vcs;
+#[path = "cases/planner_input_idempotency.rs"]
+mod planner_input_idempotency;
 #[path = "cases/planner_model_selection.rs"]
 mod planner_model_selection;
 #[path = "cases/planner_pending_queue.rs"]

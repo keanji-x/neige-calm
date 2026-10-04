@@ -374,10 +374,15 @@ async fn the_codex_config_read_names_the_track_worktree() {
         .shared_codex_appserver
         .set_config_read_for_test(Default::default());
     let (status, body) = b
-        .as_user(
-            "POST",
-            &format!("/api/cards/{card_id}/planner/input"),
-            json!({"text": "which model?"}),
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{card_id}/planner/input"))
+                .header("content-type", "application/json")
+                .header("x-calm-actor", "user")
+                .header("idempotency-key", calm_server::model::new_id())
+                .body(Body::from(json!({"text": "which model?"}).to_string()))
+                .unwrap(),
         )
         .await;
     assert!(status.is_success(), "{status} {body}");

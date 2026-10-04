@@ -563,7 +563,8 @@ describe('delete mutation wiring', () => {
       wrapper: mutationWrapper(client),
     });
 
-    await expect(result.current.send('accepted by the server')).resolves.toMatchObject({ card_id: 'card-1' });
+    await expect(result.current.send('accepted by the server', [], 'send-key', transport))
+      .resolves.toMatchObject({ card_id: 'card-1' });
     expect(invalidate).toHaveBeenCalledTimes(2);
   });
 });

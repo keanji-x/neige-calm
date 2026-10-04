@@ -128,8 +128,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "19",
-        "#1967: weekly calendar schedules and listed occurrences require the current contract"
+        "20",
+        "#2043: a planner send requires an Idempotency-Key"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -142,12 +142,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 38);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 39);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 38);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 39);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

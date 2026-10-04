@@ -93,7 +93,7 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
     let uri = format!("/api/cards/{}/planner/input", card.id);
     let app = boot.app.clone();
     let mut recovery = tokio::spawn(async move {
-        post_json(
+        post_planner_input(
             app,
             &uri,
             json!({"text":"resume without losing the completion"}),

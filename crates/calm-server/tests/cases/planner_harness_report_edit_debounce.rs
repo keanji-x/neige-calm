@@ -284,7 +284,11 @@ async fn a_user_message_during_the_wait_issues_at_once() {
     );
 
     harness
-        .observe_user_message_durable("are you there?".into(), Vec::new())
+        .observe_user_message_durable(
+            "are you there?".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .unwrap();
     wait_for_turn_start(&daemon, "a user message is hard-fire and must not wait").await;

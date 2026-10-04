@@ -73,6 +73,7 @@ case_run() {
 
   body="$(node -e 'process.stdout.write(JSON.stringify({text:"wake dormant planner"}))')"
   api POST "/api/cards/$planner_card_id/planner/input" "$body" \
+    "Idempotency-Key: $(node -e 'process.stdout.write(require("crypto").randomUUID())')" \
     || fail "curl failed for POST /api/cards/$planner_card_id/planner/input"
   status="$API_STATUS"
   code="$(planner_dormant_json_string_or_empty "$API_BODY" code)"

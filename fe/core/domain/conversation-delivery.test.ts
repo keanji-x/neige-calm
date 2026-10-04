@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from './conversation-delivery.js';
+import {
+  failedConversationDelivery, isUnknownSendFailure, retryUnknownSend, SEND_RETRIES,
+} from './conversation-delivery.js';
 
 describe('failed conversation delivery', () => {
   it.each([400, 403, 404, 413, 422, 429])('permits an explicit %s rejection to be retried', (status) => {
@@ -16,46 +18,50 @@ describe('failed conversation delivery', () => {
     expect(failedConversationDelivery({ kind: 'decode', message: 'malformed' })).toBe('unknown');
     expect(failedConversationDelivery(null)).toBe('unknown');
   });
+});
 
-  it('identifies newly observed matching text only as evidence for review', () => {
-    const echo = { id: 'echo-1', author: 'you' as const, text: 'do this', atMs: 0, serverHighWaterBefore: 5, queued: false, entryId: null };
-    expect(hasUnseenMatchingConversationMessage([{ id: '6:0', author: 'you', text: 'do this', atMs: 1 }], echo)).toBe(true);
-    expect(hasUnseenMatchingConversationMessage([{ id: '6', author: 'agent', text: 'do this', atMs: 1 }], echo)).toBe(false);
-    expect(hasUnseenMatchingConversationMessage([{ id: '5', author: 'you', text: 'do this', atMs: 1 }], echo)).toBe(false);
-    expect(hasUnseenMatchingConversationMessage([{ id: '6', author: 'you', text: 'do this\nand that', atMs: 1 }], echo)).toBe(false);
-    expect(hasUnseenMatchingConversationMessage([{ id: '6', author: 'you', text: '', atMs: 1 }], { ...echo, text: '' })).toBe(false);
+describe('an unknown send outcome', () => {
+  it('is what a lost answer, a server error or no answer at all leaves', () => {
+    expect(isUnknownSendFailure({ kind: 'transport', message: 'dropped' })).toBe(true);
+    expect(isUnknownSendFailure({ kind: 'http', status: 503, code: 'service_unavailable', message: 'full' })).toBe(true);
+    expect(isUnknownSendFailure(null)).toBe(true);
   });
 
-  describe('an image with no words', () => {
-    const image = (id: string) => ({
-      id, contentType: 'image/png', size: 3, url: `/api/cards/c/planner/attachments/${id}`,
-    });
-    const echo = {
-      id: 'echo-1', author: 'you' as const, text: '', atMs: 0,
-      serverHighWaterBefore: 5, queued: false, entryId: null,
-      attachments: [image('a.png')],
-    };
+  it('is not a refusal or a rejection, which the server answered', () => {
+    expect(isUnknownSendFailure({ kind: 'http', status: 409, code: 'planner_harness_dormant', message: 'reset' })).toBe(false);
+    expect(isUnknownSendFailure({ kind: 'http', status: 400, code: 'bad_request', message: 'empty' })).toBe(false);
+    expect(isUnknownSendFailure({ kind: 'unauthorized', status: 401, code: 'session_expired', message: 'expired' })).toBe(false);
+  });
+});
 
-    it('matches the persisted row that carries the same image', () => {
-      expect(hasUnseenMatchingConversationMessage(
-        [{ id: '6', author: 'you', text: '', atMs: 1, attachments: [image('a.png')] }], echo,
-      )).toBe(true);
-    });
+describe('retrying an unknown send', () => {
+  const unknown = new Error('unknown');
+  const answered = new Error('answered');
+  const isUnknown = (error: unknown) => error === unknown;
 
-    it('does not match a row carrying a different image, or one below the high-water', () => {
-      expect(hasUnseenMatchingConversationMessage(
-        [{ id: '6', author: 'you', text: '', atMs: 1, attachments: [image('b.png')] }], echo,
-      )).toBe(false);
-      expect(hasUnseenMatchingConversationMessage(
-        [{ id: '5', author: 'you', text: '', atMs: 1, attachments: [image('a.png')] }], echo,
-      )).toBe(false);
-    });
+  it('sends again until an answer arrives', async () => {
+    const attempts: number[] = [];
+    const pauses: number[] = [];
+    const result = await retryUnknownSend((index) => {
+      attempts.push(index);
+      return index < 2 ? Promise.reject(unknown) : Promise.resolve('sent');
+    }, isUnknown, (retry) => { pauses.push(retry); return Promise.resolve(); });
+    expect(result).toBe('sent');
+    expect(attempts).toEqual([0, 1, 2]);
+    expect(pauses).toEqual([0, 1]);
+  });
 
-    it('still refuses an echo that carries neither words nor images', () => {
-      expect(hasUnseenMatchingConversationMessage(
-        [{ id: '6', author: 'you', text: '', atMs: 1, attachments: [image('a.png')] }],
-        { ...echo, attachments: [] },
-      )).toBe(false);
-    });
+  it('stops at once on an answered failure', async () => {
+    let attempts = 0;
+    await expect(retryUnknownSend(() => { attempts += 1; return Promise.reject(answered); }, isUnknown, () => Promise.resolve()))
+      .rejects.toBe(answered);
+    expect(attempts).toBe(1);
+  });
+
+  it('gives up after the retries are spent', async () => {
+    let attempts = 0;
+    await expect(retryUnknownSend(() => { attempts += 1; return Promise.reject(unknown); }, isUnknown, () => Promise.resolve()))
+      .rejects.toBe(unknown);
+    expect(attempts).toBe(SEND_RETRIES + 1);
   });
 });

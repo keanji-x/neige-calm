@@ -24,8 +24,11 @@ test('copies Markdown and explicitly regenerates while preserving a separate dra
       ] });
     });
     const sent: unknown[] = [];
+    const keys: (string | undefined)[] = [];
     await page.route('**/api/cards/*/planner/input', async (route) => {
-      sent.push(route.request().postDataJSON()); await route.continue();
+      sent.push(route.request().postDataJSON());
+      keys.push(route.request().headers()['idempotency-key']);
+      await route.continue();
     });
     await page.goto(`/next/track/${track.id}`);
     await page.getByRole('button', { name: 'Conversation Planner' }).click();
@@ -37,6 +40,8 @@ test('copies Markdown and explicitly regenerates while preserving a separate dra
     await composer.fill('Keep this separate draft');
     await page.getByRole('button', { name: 'Regenerate response', exact: true }).click();
     await expect.poll(() => sent).toEqual([{ text: 'Original prompt' }]);
+    /* A Regenerate is a new send, under a key of its own. */
+    expect(keys[0]).toBeTruthy();
     await expect(composer).toHaveText('Keep this separate draft');
     await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toBeVisible();
     expect(sent).toHaveLength(1);

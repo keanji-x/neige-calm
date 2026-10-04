@@ -679,11 +679,26 @@ impl Boot {
 
     /// `POST /api/cards/{id}/planner/input` — the production send path, whose enqueue is persisted before the response.
     async fn send_planner_input(&self, card_id: &str, text: &str) -> (StatusCode, Value) {
-        self.post_json(
-            &format!("/api/cards/{card_id}/planner/input"),
-            &json!({ "text": text }).to_string(),
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/cards/{card_id}/planner/input"))
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", calm_server::model::new_id())
+                    .body(Body::from(json!({ "text": text }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
-        .await
     }
 
     async fn get_json(&self, uri: &str) -> (StatusCode, Value) {
@@ -3123,7 +3138,11 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
         .get(&runtime)
         .expect("the retired handle must stay registered");
     let refused = handle
-        .observe_user_message_durable("cannot be made durable here".into(), Vec::new())
+        .observe_user_message_durable(
+            "cannot be made durable here".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await;
     assert!(
         refused.is_err(),
@@ -3349,7 +3368,11 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
 
     // A send while the runtime is still the carrier: accepted, and on the row.
     handle
-        .observe_user_message_durable("before the retirement".into(), Vec::new())
+        .observe_user_message_durable(
+            "before the retirement".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .expect("premise: a live carrier accepts a durable send");
     assert_eq!(
@@ -3366,7 +3389,11 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
     for attempt in 0..20 {
         let text = format!("after the retirement #{attempt}");
         match handle
-            .observe_user_message_durable(text.clone(), Vec::new())
+            .observe_user_message_durable(
+                text.clone(),
+                Vec::new(),
+                calm_server::harness::SendKey::unique_for_test(),
+            )
             .await
         {
             Ok(_ack) => {

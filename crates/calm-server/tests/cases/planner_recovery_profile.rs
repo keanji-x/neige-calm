@@ -44,7 +44,7 @@ async fn assert_cold_profile(role: CardRole, marker: &str, expects_mcp: bool) {
         .to_string(),
     )
     .unwrap();
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"continue plain chat"}),
@@ -341,7 +341,7 @@ async fn a_failed_planner_bound_to_claude_is_not_resumed_on_codex() {
     .execute(boot.repo.pool())
     .await
     .unwrap();
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"must not resume on codex"}),

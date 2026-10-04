@@ -5,7 +5,7 @@
 
 use axum::{
     Json, Router,
-    extract::{FromRef, Path, State},
+    extract::{FromRef, State},
     http::{HeaderMap, HeaderValue},
     routing::post,
 };
@@ -25,10 +25,9 @@ use crate::operation::planner_harness_start_adapter::{
 };
 use crate::per_card_lock::lock_card;
 use crate::prompts::render_named;
-use crate::routes::cards::{
-    SendPlannerInputRequest, run_planner_card_operation, send_planner_input,
-};
+use crate::routes::cards::run_planner_card_operation;
 use crate::routes::conversations_shared::user_message_enqueued_on_active_runtime;
+use crate::routes::planner_input_send::{SendPlannerInputRequest, send_planner_input_keyed};
 use crate::routes::today::ensure_today_launchpad;
 use crate::routes::track_conversations::{
     NewTrackConversationBody, create_track_conversation_inner,
@@ -298,17 +297,20 @@ async fn send_summary(
     card_id: &str,
     text: String,
 ) -> Result<()> {
+    // One key for this summary, kept across the dormant retry below: both attempts are one intent.
+    let idempotency_key = crate::model::new_id();
     let send = |text: String| {
-        send_planner_input(
-            State(s.clone()),
-            State(w.clone()),
-            State(cs.clone()),
+        send_planner_input_keyed(
+            s,
+            w,
+            cs,
             synthetic_actor(),
-            Path(card_id.to_string()),
-            Json(SendPlannerInputRequest {
+            card_id.to_string(),
+            SendPlannerInputRequest {
                 text,
                 attachments: Vec::new(),
-            }),
+            },
+            idempotency_key.clone(),
         )
     };
     match send(text.clone()).await {

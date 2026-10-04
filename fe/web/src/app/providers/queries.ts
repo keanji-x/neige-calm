@@ -263,7 +263,9 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     return result;
   };
   return {
-    send: (text: string, attachments: readonly string[] = []) => runOperation(transport, sendPlannerInputOperation(cardId, text, attachments), unauthorized).then(refreshAfter),
+    /* `admitted` is the caller's: a keyed send is admitted at the press, and each retry is admitted again. */
+    send: (text: string, attachments: readonly string[], idempotencyKey: string, admitted: ApiTransportPort) =>
+      runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
     /* A refusal changed nothing, so only an accepted rewind refreshes. Not awaited: the Edit already hides the
      * removed turn until a read without it lands, and a send waiting on the rewind goes on its 200. */

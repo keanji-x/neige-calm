@@ -95,50 +95,45 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
   }
 });
 
-test('keeps a lost acknowledgement uncertain and asks before resending', async ({ page, request }, testInfo) => {
-  const area = await createArea(request, `Uncertain recovery ${Date.now()}`);
+test('sends a lost acknowledgement again under its key and keeps one message', async ({ page, request }, testInfo) => {
+  const area = await createArea(request, `Lost acknowledgement ${Date.now()}`);
   try {
     const track = await createTrack(request, area.id);
-    let attempts = 0;
-    let accepted = false;
+    const keys: (string | undefined)[] = [];
+    const answers: number[] = [];
     await page.route('**/api/cards/*/planner/input', async (route) => {
-      attempts += 1;
+      keys.push(route.request().headers()['idempotency-key']);
       const response = await route.fetch();
-      accepted = response.ok();
-      await route.abort('connectionreset');
+      answers.push(response.status());
+      /* The kernel stored the first request; only its answer is lost on the way back. */
+      if (keys.length === 1) await route.abort('connectionreset');
+      else await route.fulfill({ response });
     });
     await page.goto(`/next/track/${track.id}`);
     await page.getByRole('button', { name: 'Conversation Planner' }).click();
     const composer = page.getByRole('combobox', { name: 'Message' });
     await expect(composer).toHaveAttribute('contenteditable', 'true');
-    await composer.fill('Keep this uncertain message');
+    const message = 'Deliver this message once';
+    await composer.fill(message);
     await composer.press('Enter');
-    /* The kernel accepted the input and wrote it to the transcript as it drained the queue; the browser
-     * lost the answer. A matching row is a review hint, never a delivery receipt, so the attempt stays uncertain. */
-    await expect(page.getByRole('status').filter({ hasText: 'Delivery is still unconfirmed' })).toBeVisible();
-    await expect(page.getByText('A matching message is visible.', { exact: false })).toBeVisible();
-    expect(accepted).toBe(true);
-    expect(attempts).toBe(1);
+    /* Retried on its own, under the same key, and the kernel answers it from the first request. */
+    await expect.poll(() => keys.length).toBe(2);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+    expect(answers).toEqual([200, 200]);
     const transcript = page.locator('[data-nc-thread]');
-    await expect(transcript.getByText('Keep this uncertain message', { exact: true })).toBeVisible();
+    await expect(transcript.getByText(message, { exact: true })).toHaveCount(1);
     await expect(page.getByRole('alert')).toHaveCount(0);
-    await expect(page.getByText('Transport request failed', { exact: false })).toHaveCount(0);
-    await expect(composer).toHaveAttribute('contenteditable', 'false');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('lost-acknowledgement-desktop.png'), fullPage: true, animations: 'disabled' });
+    /* What the server holds, with nothing optimistic left: one message. */
+    await page.reload();
+    /* The open conversation is restored by the reload, now named after its message. */
+    await expect(page.getByRole('complementary', { name: message })).toBeVisible();
+    await expect(transcript.getByText(message, { exact: true })).toHaveCount(1);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: testInfo.outputPath('uncertain-mobile.png'), fullPage: true, animations: 'disabled' });
-    // Resending is offered, and it asks first: the kernel may already hold it.
-    await page.getByRole('button', { name: 'Send again…' }).click();
-    const confirmation = page.getByRole('dialog', { name: 'Send this message again?' });
-    await expect(confirmation).toContainText('may already have arrived');
-    await confirmation.getByRole('button', { name: 'Cancel' }).click();
-    expect(attempts).toBe(1);
-    await page.setViewportSize({ width: 1440, height: 960 });
-    await page.screenshot({ path: testInfo.outputPath('matching-review-desktop.png'), fullPage: true, animations: 'disabled' });
-    // The reader looked. That, and nothing the server said, clears the review.
-    await page.getByRole('button', { name: 'I’ve checked' }).click();
-    await expect(page.getByText('A matching message is visible.', { exact: false })).toHaveCount(0);
-    await expect(composer).toHaveAttribute('contenteditable', 'true');
-    expect(attempts).toBe(1);
+    await page.screenshot({ path: testInfo.outputPath('lost-acknowledgement-mobile.png'), fullPage: true, animations: 'disabled' });
+    expect(keys).toHaveLength(2);
   } finally {
     await request.delete(`/api/areas/${area.id}`);
   }

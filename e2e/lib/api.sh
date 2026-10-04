@@ -28,10 +28,12 @@ dotenv_get() {
   printf '%s\n' "$value"
 }
 
+# An optional fourth argument is one extra request header, e.g. `Idempotency-Key: <key>`.
 api() {
-  local method=$1 path=$2 body=$3 response
+  local method=$1 path=$2 body=$3 header=${4:-} response
   local -a args=(-sS -o - -w $'\n__NEIGE_HTTP_STATUS__:%{http_code}' -X "$method")
   [[ -z "$COOKIE_HEADER" ]] || args+=(-H "Cookie: $COOKIE_HEADER")
+  [[ -z "$header" ]] || args+=(-H "$header")
   [[ "$body" == "-" ]] || args+=(-H 'content-type: application/json' --data-binary "$body")
   response="$(curl "${args[@]}" "$(api_url "$path")")" || return 1
   API_STATUS="${response##*__NEIGE_HTTP_STATUS__:}"

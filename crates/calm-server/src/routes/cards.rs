@@ -9,9 +9,7 @@ use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope, RatifyDecision};
 use crate::git_candidate::delivery::AttemptOutcome;
-use crate::harness::{
-    HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage, is_harness_snapshot_value,
-};
+use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Track, new_id};
 use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
@@ -21,14 +19,14 @@ use crate::operation::planner_harness_start_adapter::{
 };
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::per_card_lock::{PerCardLockGuard, lock_card};
+use crate::per_card_lock::lock_card;
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::ratify_state::ratify_request_pending_tx;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::session_projection_lookup::{
     card_is_shared_planner, project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
-use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
+use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::reject_client_supplied_server_owned_keys;
@@ -40,8 +38,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use calm_types::planner_attachment::{AttachmentId, PlannerAttachment};
-use calm_types::worker::WorkerSessionId;
+use calm_types::planner_attachment::PlannerAttachment;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::{IntoParams, ToSchema};
@@ -170,7 +167,10 @@ pub fn router() -> Router<AppState> {
             "/api/cards/{id}/harness/live",
             get(crate::routes::harness_live::get_harness_live),
         )
-        .route("/api/cards/{id}/planner/input", post(send_planner_input))
+        .route(
+            "/api/cards/{id}/planner/input",
+            post(crate::routes::planner_input_send::send_planner_input),
+        )
         // Mounted here because this router owns `/api/cards/{id}/**`; a second router on the same prefix is how two mounts start disagreeing about a middleware.
         .route(
             "/api/cards/{id}/planner/input/{entry_id}",
@@ -624,15 +624,6 @@ pub struct ResetPlannerCardResponse {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct SendPlannerInputRequest {
-    pub text: String,
-    /// Ids returned by `POST /api/cards/{id}/planner/attachments`. Naming an attachment here is what BINDS it: the bytes move out of the sweepable staging area before this request writes anything to the queue.
-    /// An id belonging to another card is a 400, as is naming the same one twice or naming more than eight.
-    #[serde(default)]
-    pub attachments: Vec<AttachmentId>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RatifyCardRequest {
     pub decision: RatifyCardDecision,
@@ -662,15 +653,6 @@ pub struct RatifyCardResponse {
     #[schema(value_type = String)]
     pub track_id: TrackId,
     pub decision: RatifyCardDecision,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SendPlannerInputResponse {
-    #[schema(value_type = String)]
-    pub card_id: CardId,
-    pub worker_session_id: String,
-    /// Stable id of the queue entry this text landed in, so the client can match its optimistic echo. Null only when the text folded into a pre-id queue entry.
-    pub entry_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -831,146 +813,6 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
         )));
     }
     Ok(char_count)
-}
-
-fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
-    match actor.to_actor_id() {
-        ActorId::AiCodex(c) if c.as_str().is_empty() => ActorId::AiCodex(card_id.clone()),
-        // Middleware currently only admits `ai:codex`; the other branches are ready for more AI kinds.
-        ActorId::AiClaude(c) if c.as_str().is_empty() => ActorId::AiClaude(card_id.clone()),
-        ActorId::AiPlanner(c) if c.as_str().is_empty() => ActorId::AiPlanner(card_id.clone()),
-        other => other,
-    }
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/cards/{id}/planner/input",
-    tag = "cards",
-    params(("id" = String, Path, description = "Planner card id")),
-    request_body = SendPlannerInputRequest,
-    responses(
-        (status = 200, description = "User text queued for next harness turn", body = SendPlannerInputResponse),
-        (status = 400, description = "Empty text", body = ErrorBody),
-        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
-        (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "Runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`)", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-        (status = 503, description = "Observation queue saturated, shared codex app-server not running, or a planner-harness start is still in flight — retry shortly", body = ErrorBody),
-    ),
-)]
-#[allow(deprecated)]
-pub(crate) async fn send_planner_input(
-    State(s): State<RouteState>,
-    State(w): State<WorkerState>,
-    State(cs): State<CodexShellState>,
-    actor: Actor,
-    Path(id): Path<String>,
-    Json(body): Json<SendPlannerInputRequest>,
-) -> Result<Json<SendPlannerInputResponse>> {
-    let SendPlannerInputRequest { text, attachments } = body;
-    let (s, w, cs, id) = (s, w, cs, id);
-    let char_count = validate_planner_input(&text, !attachments.is_empty())?;
-
-    let card = s
-        .repo
-        .card_get(&id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    let role = s
-        .write
-        .verify_role(&card.id)
-        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if !card_runs_headless_harness(&card, role) {
-        return Err(CalmError::Forbidden(format!(
-            "card {id} is not a planner codex card",
-        )));
-    }
-
-    // `_recovery_guard` holds the per-card recovery lock until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
-    let (runtime, harness, _recovery_guard) =
-        ensure_live_planner_harness(&s, &w, &cs, &card.id, actor.as_str() == "user").await?;
-    let track = s
-        .repo
-        .track_get(card.track_id.as_str())
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("track {} for card {id}", card.track_id)))?;
-    let scope = EventScope::Card {
-        card: card.id.clone(),
-        track: track.id.clone(),
-        area: track.area_id.clone(),
-    };
-    // Bind BEFORE the entry exists: the bytes leave the sweepable staging directory first, so a queued message never names a file the orphan sweep may remove (codex answers an unreadable image with placeholder text and no error). A bind followed by a failed enqueue leaks bytes in `bound/`, which is the better failure direction.
-    // `attachment_root` refuses an attached workspace, so such a card gets a 400 here only when it actually names an attachment.
-    let attachments = if attachments.is_empty() {
-        Vec::new()
-    } else {
-        let root =
-            crate::planner_attachments::attachment_root(&track.workspace, &s.workspace_root)?;
-        crate::planner_attachments::bind::bind_attachments(
-            &root,
-            &card.id,
-            &attachments,
-            &s.planner_attachment_locks,
-        )
-        .await?
-    };
-    // Migrate ONLY the AI-header path (empty placeholder card) to the live planner session actor; the human path MUST stay unchanged so the audit log keeps distinguishing human input from agent actions.
-    let audit_actor = match actor.to_actor_id() {
-        ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiPlanner(c)
-            if c.as_str().is_empty() && runtime.status.is_active_authority() =>
-        {
-            ActorId::AiPlannerSession(WorkerSessionId::from(runtime.id.clone()))
-        }
-        _ => planner_input_audit_actor(&actor, &card.id),
-    };
-
-    let attachment_count = attachments.len();
-    let ack = harness
-        .observe_user_message_durable(text, attachments)
-        .await?;
-
-    tracing::info!(
-        actor = %actor.as_str(),
-        card_id = %card.id,
-        runtime_id = %runtime.id,
-        char_count,
-        attachment_count,
-        "planner harness user message enqueued"
-    );
-
-    if let Err(error) = s
-        .repo
-        .log_pure_event(
-            audit_actor,
-            scope,
-            None,
-            &s.events,
-            s.write.role_cache(),
-            s.write.area_cache(),
-            Event::HarnessUserMessageEnqueued {
-                worker_session_id: runtime.id.clone(),
-                card_id: card.id.clone(),
-                track_id: card.track_id.clone(),
-                char_count: char_count as u32,
-            },
-        )
-        .await
-    {
-        // The user message is already durably accepted; a 500 here would invite a retry that executes the same intent twice.
-        tracing::error!(
-            card_id = %card.id,
-            runtime_id = %runtime.id,
-            error = %error,
-            "planner input was accepted but its audit event failed"
-        );
-    }
-
-    Ok(Json(SendPlannerInputResponse {
-        card_id: card.id,
-        worker_session_id: runtime.id.clone(),
-        entry_id: ack.entry_id.map(|id| id.as_str().to_string()),
-    }))
 }
 
 #[utoipa::path(
@@ -1259,103 +1101,6 @@ pub(crate) async fn get_planner_run(
         pending_overflow,
         running_turn: running_turn.map(PlannerRunningTurn::from),
     }))
-}
-
-/// Resolve a live [`PlannerHarness`] handle for a planner card. Fast path: active runtime row + registry hit. Registry miss with an active row: lazily re-spawn via `spawn_recovered_harness` (no Codex RPC). A human send can also recover a `failed` carrier through `planner_recovery`.
-/// No eligible row, or an unrecoverable one (no thread anywhere, or a corrupt snapshot) → typed 409 `PlannerHarnessDormant` so the client steers the user to `/planner/reset`.
-/// Takes the per-card lock and re-fetches under it so racing Sends can't double-spawn; `/planner/reset` takes the SAME lock, and the guard is RETURNED so the caller holds it through enqueue/audit. Row-intrinsic dormancy (409) is checked before daemon liveness (503).
-#[allow(deprecated)]
-async fn ensure_live_planner_harness(
-    s: &RouteState,
-    w: &WorkerState,
-    cs: &CodexShellState,
-    card_id: &CardId,
-    human_send: bool,
-) -> Result<(
-    WorkerSessionProjection,
-    crate::harness::PlannerHarness,
-    Option<PerCardLockGuard>,
-)> {
-    let dormant = || {
-        CalmError::PlannerHarnessDormant(format!(
-            "no recoverable planner harness session for card {card_id}; reset to start a session",
-        ))
-    };
-    // Unlocked fast path only: its reads can straddle a racing Send's recovery commit, so a miss
-    // here is not dormancy (#1820); only the locked re-check below answers 409.
-    if let Some(runtime) = super::planner_recovery::candidate(s, card_id, human_send).await?
-        && runtime.status != WorkerSessionState::Failed
-        && let Some(harness) = s.harness.get(&runtime.id)
-    {
-        return Ok((runtime, harness, None));
-    }
-
-    let guard = lock_card(&s.planner_recovery_locks, card_id.as_str()).await;
-    // Re-fetch under the lock and use only this row: `/planner/reset` or a racing Send may have moved it.
-    let runtime = super::planner_recovery::candidate(s, card_id, human_send)
-        .await?
-        .ok_or_else(dormant)?;
-    let runtime = if runtime.status == WorkerSessionState::Failed {
-        super::planner_recovery::recover(s, w, cs, runtime).await?
-    } else {
-        runtime
-    };
-    if let Some(harness) = s.harness.get(&runtime.id) {
-        return Ok((runtime, harness, Some(guard)));
-    }
-    // A `starting` row means `planner-harness-start` is still in flight: the adapter writes the row BEFORE the harness is registered, so recovering here would spawn a harness the start op then shuts down, dropping any queued input. 503 so the client retries.
-    if runtime.status == WorkerSessionState::Starting {
-        return Err(CalmError::ServiceUnavailable(
-            "planner harness is starting; retry shortly".into(),
-        ));
-    }
-    // Row-intrinsic dormancy runs BEFORE the daemon liveness probe, so an unrecoverable row 409s (Reset) even when the daemon is down. Pre-validate the snapshot: the strict deserializer inside recovery panics on unknown shapes.
-    let snapshot_value = match runtime.handle_state_json.as_ref() {
-        Some(value) if is_harness_snapshot_value(value) => value,
-        _ => return Err(dormant()),
-    };
-    // A half-failed start can leave an active row without a thread; mirror boot recovery's fallback to the snapshot's `last_thread_id`, and only when BOTH are absent is the row unrecoverable.
-    let has_thread = |t: Option<&str>| t.map(str::trim).is_some_and(|trimmed| !trimmed.is_empty());
-    if !has_thread(runtime.thread_id.as_deref())
-        && !has_thread(snapshot_value.get("last_thread_id").and_then(Value::as_str))
-    {
-        return Err(dormant());
-    }
-    // A recovered harness can't issue turns without its backend; surface that instead of spawning a silently-wedged task.
-    // A Claude Planner needs its config and its pinned binary, not the shared app-server (#1791 §4.1 row 11).
-    if runtime.kind == crate::session_projection_repo::WorkerSessionKind::SharedPlanner
-        && runtime.agent_provider == Some(crate::session_projection_repo::AgentProvider::Claude)
-    {
-        s.claude_planner.check_ready().await?;
-    } else if !cs.shared_codex_appserver.is_running() {
-        return Err(CalmError::ServiceUnavailable(
-            cs.shared_codex_appserver.not_running_message(),
-        ));
-    }
-    let runtime_id = runtime.id.clone();
-    let harness = crate::harness::spawn_recovered_harness(
-        w.repo.clone(),
-        s.events.clone(),
-        s.write.role_cache().clone(),
-        s.write.area_cache().clone(),
-        cs.shared_codex_appserver.clone(),
-        s.thread_seals.clone(),
-        &s.claude_planner_wiring(),
-        &s.harness,
-        &s.track_delete_locks,
-        runtime.clone(),
-        crate::harness::ClaimMode::Replace,
-    )
-    .await?
-    .installed()
-    .ok_or_else(dormant)?;
-    tracing::info!(
-        card_id = %card_id,
-        runtime_id = %runtime_id,
-        "planner harness lazily recovered on /planner/input registry miss"
-    );
-    // Return the guard so the caller keeps the per-card lock alive through `harness.observe` and the audit event.
-    Ok((runtime, harness, Some(guard)))
 }
 
 #[utoipa::path(

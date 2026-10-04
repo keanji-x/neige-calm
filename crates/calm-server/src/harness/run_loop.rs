@@ -313,6 +313,7 @@ enum HarnessObservationCommand {
     Delivery(HarnessObservationDelivery),
     Durable {
         deliveries: Vec<HarnessObservationDelivery>,
+        key: SendKey,
         persisted: oneshot::Sender<Result<DurableAck>>,
     },
     /// A human edit or delete against one queue entry. Rides the same mpsc as every other command,
@@ -421,6 +422,25 @@ pub struct DurableAck {
     pub entry_id: Option<QueueEntryId>,
 }
 
+/// The `Idempotency-Key` a durable send is accepted under (#2043). Its binding commits in the
+/// snapshot transaction that stores the message, and only when that transaction stored it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendKey {
+    pub idempotency_key: String,
+    pub payload_hash: String,
+}
+
+#[cfg(feature = "fixtures")]
+impl SendKey {
+    /// A key no other send uses, for tests that drive the harness below the route.
+    pub fn unique_for_test() -> Self {
+        Self {
+            idempotency_key: crate::model::new_id(),
+            payload_hash: "test".into(),
+        }
+    }
+}
+
 /// Result of offering one entry to the pending queue.
 enum EnqueueOutcome {
     /// The queue was full of hard-fire entries and nothing could be evicted.
@@ -523,12 +543,17 @@ impl PlannerHarness {
         &self,
         text: String,
         attachments: Vec<BoundAttachment>,
+        key: SendKey,
     ) -> Result<DurableAck> {
-        self.observe_durable_entries(vec![QueueEntry::user_message(text, None, attachments)])
+        self.observe_durable_entries(vec![QueueEntry::user_message(text, None, attachments)], key)
             .await
     }
 
-    async fn observe_durable_entries(&self, entries: Vec<QueueEntry>) -> Result<DurableAck> {
+    async fn observe_durable_entries(
+        &self,
+        entries: Vec<QueueEntry>,
+        key: SendKey,
+    ) -> Result<DurableAck> {
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
@@ -545,6 +570,7 @@ impl PlannerHarness {
                 sender
                     .try_send(HarnessObservationCommand::Durable {
                         deliveries,
+                        key,
                         persisted,
                     })
                     .map_err(map_observation_send_error)?;
@@ -574,7 +600,10 @@ impl PlannerHarness {
                         }
                     }
                 }
-                if let Err(error) = persist_snapshot_for_durable_send(&self.inner).await {
+                if let Err(error) =
+                    persist_snapshot_for_durable_send(&self.inner, &key, ack.entry_id.as_ref())
+                        .await
+                {
                     restore_durable_user_message(&self.inner, checkpoint).await;
                     return Err(error);
                 }
@@ -1193,7 +1222,7 @@ async fn run_loop(
                             tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                         }
                     }
-                    HarnessObservationCommand::Durable { deliveries, persisted } => {
+                    HarnessObservationCommand::Durable { deliveries, key, persisted } => {
                         let checkpoint = checkpoint_durable_user_message(&inner).await;
                         let mut accepted = true;
                         let mut ack = DurableAck { entry_id: None };
@@ -1212,7 +1241,7 @@ async fn run_loop(
                             }
                         }
                         let result = if accepted {
-                            match persist_snapshot_for_durable_send(&inner).await {
+                            match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref()).await {
                                 Ok(()) => Ok(ack),
                                 Err(error) => {
                                     restore_durable_user_message(&inner, checkpoint).await;
@@ -3717,14 +3746,27 @@ async fn persist_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> 
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
-    persist_snapshot_inner(inner, None).await.map(|_| ())
+    persist_snapshot_inner(inner, None, None).await.map(|_| ())
 }
 
 /// Persist a durable user send, and REFUSE it if the row was not written: the writer matches
 /// nothing once the row leaves the active set.
 /// `shutting_down` is not reachable from here — `shutdown_inner` takes `durable_observation` first.
-async fn persist_snapshot_for_durable_send(inner: &Arc<Inner>) -> Result<()> {
-    if persist_snapshot_inner(inner, None).await? {
+async fn persist_snapshot_for_durable_send(
+    inner: &Arc<Inner>,
+    key: &SendKey,
+    entry_id: Option<&QueueEntryId>,
+) -> Result<()> {
+    let binding = crate::db::sqlite::PlannerInputBinding {
+        payload_hash: key.payload_hash.clone(),
+        worker_session_id: inner.worker_session_id.clone(),
+        entry_id: entry_id.map(|id| id.as_str().to_string()),
+    };
+    let bind = DurableSendBinding {
+        idempotency_key: key.idempotency_key.clone(),
+        binding,
+    };
+    if persist_snapshot_inner(inner, None, Some(bind)).await? {
         return Ok(());
     }
     Err(CalmError::PlannerHarnessRuntimeSuperseded(
@@ -3734,7 +3776,7 @@ async fn persist_snapshot_for_durable_send(inner: &Arc<Inner>) -> Result<()> {
 
 async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()> {
     let issued_head = inner.issued_turn_head.lock().await.clone();
-    let _written = persist_snapshot_inner(inner, issued_head.clone()).await?;
+    let _written = persist_snapshot_inner(inner, issued_head.clone(), None).await?;
     if issued_head.is_some() {
         *inner.last_seen_head.lock().await = issued_head;
     }
@@ -3742,12 +3784,20 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
     Ok(())
 }
 
+/// A durable send's key binding, written by the same transaction as the snapshot that holds it.
+struct DurableSendBinding {
+    idempotency_key: String,
+    binding: crate::db::sqlite::PlannerInputBinding,
+}
+
 /// Returns whether the runtime's own row was written. `false` means the write
 /// matched no row — the runtime is shutting down, or its row has left the
 /// active set — and a caller that promised durability must not report success.
+/// `send` is bound only when the row was written, in the same transaction.
 async fn persist_snapshot_inner(
     inner: &Arc<Inner>,
     last_seen_head_override: Option<track_vcs::CommitHash>,
+    send: Option<DurableSendBinding>,
 ) -> Result<bool> {
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(false);
@@ -3777,6 +3827,7 @@ async fn persist_snapshot_inner(
     let event_track_id = inner.track_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let repo = Arc::clone(&inner.repo);
+    let bound_card_id = inner.card_id.to_string();
 
     let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
@@ -3786,6 +3837,15 @@ async fn persist_snapshot_inner(
                 Some(snapshot_value),
             )
             .await?;
+            if written && let Some(send) = &send {
+                crate::db::sqlite::planner_input_bind_tx(
+                    tx,
+                    &bound_card_id,
+                    &send.idempotency_key,
+                    &send.binding,
+                )
+                .await?;
+            }
             crate::db::sqlite::session_set_harness_observation_runtime_tx(
                 tx,
                 &runtime_id,

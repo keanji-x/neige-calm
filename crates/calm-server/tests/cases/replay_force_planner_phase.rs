@@ -494,12 +494,26 @@ async fn forced_harness_planner_input_enqueues_without_issuing_turns() {
     .await
     .expect("force to idle");
 
-    let (status, body, text) = post(
-        boot.app.clone(),
-        &format!("/api/cards/{planner_card_id}/planner/input"),
-        json!({ "text": "hello from the dev-forced harness" }),
-    )
-    .await;
+    let resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{planner_card_id}/planner/input"))
+                .header("content-type", "application/json")
+                .header("idempotency-key", calm_server::model::new_id())
+                .body(Body::from(
+                    json!({ "text": "hello from the dev-forced harness" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     assert!(
         status.is_success(),
         "/planner/input must stay functional on a forced harness: status={status} body={text}"

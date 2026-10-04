@@ -443,8 +443,8 @@ export function setPlannerModelOperation(
 }
 
 /**
- * What became of one send. `unresolved` covers every rejection whose effect on the text is not
- * known; `POST /planner/input` carries no `Idempotency-Key`, so re-sending can deliver twice.
+ * What became of one send. `unresolved`: its answer stayed unknown through every automatic retry;
+ * the failed send keeps its words and its `Idempotency-Key`, so Try again cannot deliver twice.
  */
 export type SendOutcome = 'delivered' | 'refused' | 'unresolved' | 'not-sent' | 'abandoned';
 
@@ -464,14 +464,19 @@ export type SentPlannerInput = Readonly<{
   entry_id: string | null;
 }>;
 
+/**
+ * One send, keyed: the same `idempotencyKey` on a retry is answered with the first request's answer
+ * and queues nothing, so a send whose answer was lost can be sent again safely.
+ */
 export function sendPlannerInputOperation(
-  cardId: string, text: string, attachments: readonly string[] = [],
+  cardId: string, text: string, attachments: readonly string[], idempotencyKey: string,
 ): ApiOperation<SentPlannerInput> {
   return {
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`,
     /* The key is omitted when empty: the field is `#[serde(default)]` on the server, and an empty
        array would change the bytes of every text-only send. */
     body: attachments.length === 0 ? { text } : { text, attachments },
+    headers: { 'Idempotency-Key': idempotencyKey },
     responseSchema: z.object({
       card_id: z.string(),
       worker_session_id: z.string(),

@@ -414,22 +414,38 @@ async fn post_json(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Va
     (status, body)
 }
 
-async fn post_json_with_actor(
+/// `POST /planner/input` as one new send: a fresh `Idempotency-Key`, as a composer press mints.
+async fn post_planner_input(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
+    post_planner_input_keyed(app, uri, body, None, &calm_server::model::new_id()).await
+}
+
+async fn post_planner_input_with_actor(
     app: axum::Router,
     uri: &str,
     body: Value,
     actor: &str,
 ) -> (StatusCode, Value) {
+    post_planner_input_keyed(app, uri, body, Some(actor), &calm_server::model::new_id()).await
+}
+
+/// `POST /planner/input` under the given `Idempotency-Key`; `actor` `None` sends no actor header.
+async fn post_planner_input_keyed(
+    app: axum::Router,
+    uri: &str,
+    body: Value,
+    actor: Option<&str>,
+    key: &str,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("idempotency-key", key);
+    if let Some(actor) = actor {
+        request = request.header("X-Calm-Actor", actor);
+    }
     let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("X-Calm-Actor", actor)
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
         .await
         .unwrap();
     let status = resp.status();
@@ -712,7 +728,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
 async fn planner_input_accepts_plain_chat_but_rejects_unmarked_pty_codex() {
     let boot = boot().await;
     let pty = seed_codex_card_with_role(&boot, CardRole::Worker).await;
-    let (status, _) = post_json(
+    let (status, _) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", pty.id),
         json!({"text": "must fail closed"}),
@@ -721,7 +737,7 @@ async fn planner_input_accepts_plain_chat_but_rejects_unmarked_pty_codex() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     let (chat, runtime_id, harness) = seed_live_plain_chat_harness(&boot).await;
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", chat.id),
         json!({"text": "hello chat"}),
@@ -819,7 +835,7 @@ async fn send_planner_input_happy() {
     let text = "look into Korean refiners";
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": text }),
@@ -920,7 +936,7 @@ async fn send_planner_input_reports_backpressure_when_the_persisted_queue_reject
         )
         .await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "y" }),
@@ -938,7 +954,7 @@ async fn send_planner_input_emits_audit_event() {
     let text = "audit me";
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
-    let (status, _body) = post_json(
+    let (status, _body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": text }),
@@ -1003,7 +1019,7 @@ async fn send_planner_input_with_ai_codex_actor_emits_planner_session_audit_even
     let boot = boot().await;
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
-    let (status, body) = post_json_with_actor(
+    let (status, body) = post_planner_input_with_actor(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "from codex" }),
@@ -1064,7 +1080,7 @@ async fn send_planner_input_track_missing_returns_404() {
     drop(conn);
     card.track_id = TrackId::from(missing_track_id);
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "track gone" }),
@@ -1098,7 +1114,7 @@ async fn send_planner_input_audit_char_count_counts_chars_not_bytes() {
     let text: String = "字".repeat(200);
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
-    let (status, _body) = post_json(
+    let (status, _body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": text }),
@@ -1129,7 +1145,7 @@ async fn send_planner_input_accepts_max_chars() {
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
     let text: String = "a".repeat(32_768);
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": text }),
@@ -1147,7 +1163,7 @@ async fn send_planner_input_accepts_max_cjk_chars() {
 
     // 32_768 CJK chars is about 98_304 bytes.
     let text: String = "字".repeat(32_768);
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": text }),
@@ -1164,7 +1180,7 @@ async fn send_planner_input_rejects_over_max_chars() {
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
     let text: String = "a".repeat(32_769);
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": text }),
@@ -1187,7 +1203,7 @@ async fn send_planner_input_rejects_over_max_cjk_chars() {
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
     let text: String = "字".repeat(32_769);
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": text }),
@@ -1203,7 +1219,7 @@ async fn send_planner_input_empty_400() {
     let boot = boot().await;
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "   " }),
@@ -1242,7 +1258,7 @@ async fn send_planner_input_after_shutdown_returns_409() {
         }
     }
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "racing" }),
@@ -1265,7 +1281,7 @@ async fn send_planner_input_non_planner_card_403() {
     let boot = boot().await;
     let card = seed_codex_card_with_role(&boot, CardRole::Worker).await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "hello planner" }),
@@ -1287,7 +1303,7 @@ async fn send_planner_input_no_active_runtime_409_dormant() {
     let card = seed_codex_card_with_role(&boot, CardRole::Planner).await;
     seed_inactive_planner_runtime(&boot, &card).await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "wake up" }),
@@ -1404,7 +1420,7 @@ async fn send_planner_input_registry_miss_recovers_harness_and_enqueues() {
     );
 
     let text = "recovered follow-up";
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": text }),
@@ -1447,7 +1463,7 @@ async fn send_planner_input_active_runtime_null_thread_409_dormant() {
     )
     .await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "wake up" }),
@@ -1480,7 +1496,7 @@ async fn send_planner_input_starting_runtime_503_no_recovery() {
     )
     .await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "racing the in-flight start" }),
@@ -1503,7 +1519,7 @@ async fn send_planner_input_null_thread_snapshot_fallback_recovers() {
         seed_active_planner_runtime_row(&boot, &card, None, Some(idle_snapshot_value(&thread_id)))
             .await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "snapshot-thread follow-up" }),
@@ -1535,7 +1551,7 @@ async fn send_planner_input_blank_thread_snapshot_fallback_recovers() {
     )
     .await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "blank-thread follow-up" }),
@@ -1572,7 +1588,7 @@ async fn send_planner_input_dormant_row_daemon_down_409_not_503() {
     )
     .await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "wake up" }),
@@ -1604,7 +1620,7 @@ async fn send_planner_input_corrupt_snapshot_409_dormant() {
     )
     .await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "wake up" }),
@@ -1636,7 +1652,7 @@ async fn send_planner_input_registry_miss_daemon_down_503() {
     )
     .await;
 
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({ "text": "wake up" }),
@@ -2290,7 +2306,11 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     );
     // `observe_user_message_durable`, not `observe_envelope`: the `QueueEntry::system` guard refuses a `UserMessage` on the dispatcher path.
     harness
-        .observe_user_message_durable(SENTENCE_BEFORE_THE_RESET.into(), Vec::new())
+        .observe_user_message_durable(
+            SENTENCE_BEFORE_THE_RESET.into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
         .await
         .expect("the durable send must be persisted");
     tokio::time::timeout(Duration::from_secs(10), drain_entered.notified())

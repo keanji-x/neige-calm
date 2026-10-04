@@ -58,7 +58,7 @@ async fn human_send_recovers_failed_conversation_without_reset_after_restart() {
     boot.state.shared_codex_appserver.fail_turn_start_for_test();
     let (card, runtime, thread, entry) = failed_conversation(&boot).await;
     let before = conversation_rows(&boot, &card).await;
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"continue here"}),
@@ -201,7 +201,7 @@ async fn failed_conversation_resume_failure_preserves_every_durable_field() {
     let before = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
         .await
         .unwrap();
-    let (status, _) = post_json(
+    let (status, _) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"must not be accepted"}),
@@ -230,8 +230,8 @@ async fn concurrent_human_sends_recover_the_original_conversation_once() {
     let (card, runtime, thread, _) = failed_conversation(&boot).await;
     let uri = format!("/api/cards/{}/planner/input", card.id);
     let (a, b) = tokio::join!(
-        post_json(boot.app.clone(), &uri, json!({"text":"first"})),
-        post_json(boot.app.clone(), &uri, json!({"text":"second"}))
+        post_planner_input(boot.app.clone(), &uri, json!({"text":"first"})),
+        post_planner_input(boot.app.clone(), &uri, json!({"text":"second"}))
     );
     assert_eq!(a.0, StatusCode::OK, "{:?}", a.1);
     assert_eq!(b.0, StatusCode::OK, "{:?}", b.1);
@@ -281,7 +281,7 @@ async fn a_live_failed_loop_is_replaced_without_interrupting_or_resetting_its_th
         snapshot: HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()),
     });
     boot.state.harness.insert(runtime.clone(), old.clone());
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"resume"}),
@@ -339,7 +339,7 @@ async fn recovery_refuses_every_retired_or_untrusted_carrier() {
                 .fetch_one(boot.repo.pool())
                 .await
                 .unwrap();
-        let (status, body) = post_json(
+        let (status, body) = post_planner_input(
             boot.app.clone(),
             &format!("/api/cards/{}/planner/input", card.id),
             json!({"text":"do not revive"}),
@@ -368,7 +368,7 @@ async fn machine_authored_input_cannot_resume_a_failed_conversation() {
     for actor in ["ai:codex", "ai:planner", "ai:claude"] {
         let boot = boot_fake_running().await;
         let (card, runtime, _, _) = failed_conversation(&boot).await;
-        let (status, body) = post_json_with_actor(
+        let (status, body) = post_planner_input_with_actor(
             boot.app.clone(),
             &format!("/api/cards/{}/planner/input", card.id),
             json!({"text":"machine retry"}),
@@ -423,7 +423,7 @@ async fn preserving_recovery_uses_exact_thread_resume_wire_for_hot_and_cold_thre
             .to_string(),
         )
         .unwrap();
-        let (status, body) = post_json(
+        let (status, body) = post_planner_input(
             boot.app.clone(),
             &format!("/api/cards/{}/planner/input", card.id),
             json!({"text":"continue"}),
@@ -526,7 +526,7 @@ async fn recovery_never_interrupts_a_provider_turn_that_is_still_active() {
     let before = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
         .await
         .unwrap();
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"wait for settlement"}),
@@ -616,7 +616,7 @@ async fn cold_daemon_replacement_leaves_failed_threads_for_credentialed_human_re
         json!({"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}).to_string(),
     )
     .unwrap();
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"resume with tools intact"}),
@@ -686,7 +686,7 @@ async fn recovery_backfills_the_matching_error_when_quiescence_precedes_completi
         json!({"thread":{"id":thread,"status":{"type":"idle"}}}).to_string(),
     )
     .unwrap();
-    let (status, body) = post_json(
+    let (status, body) = post_planner_input(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"continue after quota replenishment"}),
@@ -737,7 +737,7 @@ async fn a_successor_committed_during_provider_resume_cannot_be_overwritten() {
     let app = boot.app.clone();
     let uri = format!("/api/cards/{}/planner/input", card.id);
     let pending = tokio::spawn(async move {
-        post_json(
+        post_planner_input(
             app,
             &uri,
             json!({"text":"must not reach a different session"}),

@@ -100,6 +100,8 @@ function moveDraft(slots: DraftSlots, move: DraftMove): DraftSlots {
  * It is recovery work, never a confirmed transcript or conversation title. */
 export type FailedConversationSend = Readonly<{
   echo: OptimisticConversationTurn;
+  /** The `Idempotency-Key` it was sent under; Try again sends it again, so a stored first attempt is not queued twice. */
+  key: string;
   message: string;
   delivery: 'rejected' | 'unknown' | 'refused';
   /** Whether its images came from the composer, which a delivered retry then clears (a Regenerate's never did). */
