@@ -265,9 +265,15 @@ in one sentence.
 
 ### 4.2 Grammar (DECIDED)
 
+#2053 extends actions to underscore-separated lowercase words for
+`neige.task.report_success` / `neige.task.report_failure`. Objects remain one
+word and names retain exactly three segments. The existing flat CLI currently
+spells these `task-report-success` and `task-report-failure`; the global
+hierarchical CLI work is separate.
+
 ```
-kernel tool  := "neige." object "." action        object, action ∈ [a-z]+   (one word each)
-CLI command  := "neige" SP object SP action        (the same two words)
+kernel tool  := "neige." object "." action        object ∈ [a-z]+; action ∈ [a-z]+(_[a-z]+)*
+CLI command  := "neige" SP object SP action        (action "_" → "-")
 CLI option   := "--" key with "_" → "-"            (the schema key, mechanically)
 plugin tool  := "plugin." <plugin-id> "_" <tool>   (unchanged; plugin-owned identity, §4.6)
 ```
@@ -275,8 +281,9 @@ plugin tool  := "plugin." <plugin-id> "_" <tool>   (unchanged; plugin-owned iden
 - The object is the thing acted on (track, report, task, plan, terminal, …). The action is the
   operation or view, as the tool already names it. Imperative verbs stay as they are.
 - Past-tense CLI forms disappear because the CLI is derived from the tool name.
-- Each segment is one word, so sanitizing (`.`→`_`) is **injective and reversible** for kernel
-  tools. The longest name is `neige.preview.unregister` (24 B), well under the 116 B that Codex
+- Objects contain no underscores, so sanitizing (`.`→`_`) remains **injective and reversible**
+  for kernel tools: the first two underscores delimit the prefix and object; the remainder
+  is the action. The longest name is `neige.task.report_failure` (25 B), well under the 116 B that Codex
   allows under `mcp__neige`. Codex therefore never hashes a kernel tool, and the Codex and Claude
   callable ids are both `neige_<object>_<action>`. A test pins this (S6).
 - Rejected alternative (one line): dropping the tool prefix (raw `task.complete` under server
@@ -286,7 +293,8 @@ plugin tool  := "plugin." <plugin-id> "_" <tool>   (unchanged; plugin-owned iden
 ### 4.3 Rename table (old → new), every tool
 
 Renames beyond the brand happen **only** where the old name breaks the structure: a third
-segment, `_` inside a segment, or no object.
+segment, `_` inside an object, or no object. #2053 separately changes the outcome verbs
+to explicit report actions.
 
 | Old | New | CLI (derived) |
 |---|---|---|
@@ -306,8 +314,8 @@ segment, `_` inside a segment, or no object.
 | calm.report.write_markdown | neige.report.write | — |
 | calm.review.round | removed upstream by #2017 | — |
 | calm.source.capture / list | neige.source.capture / list | — |
-| calm.task.complete | neige.task.complete | `neige task complete --attempt-id … [--result …] [--artifacts …]` |
-| calm.task.fail | neige.task.fail | `neige task fail --attempt-id … --reason …` |
+| calm.task.complete | neige.task.report_success | `neige task report-success --attempt-id … [--result …] [--artifacts …]` |
+| calm.task.fail | neige.task.report_failure | `neige task report-failure --attempt-id … --reason …` |
 | calm.task.verdict | neige.task.verdict | — |
 | calm.terminal.control / input / observe / open / resolve | neige.terminal.* | — |
 | calm.track.cat | neige.track.cat | `neige track cat <path> [--blocks] [--sections]` |
@@ -324,7 +332,7 @@ segment, `_` inside a segment, or no object.
 | MCP server key `calm` | `neige` | Codex sees `mcp__neige`; Claude sees `mcp__neige__neige_…` |
 | `neige tools names|describe` | `neige tool list|describe` | CLI-only meta command, like `help` |
 
-The result is 38 tools (39 minus `calm.review.round`, which #2017 removed), all of the form `neige.[a-z]+.[a-z]+`, plus the plugin manifest tools.
+The result is 38 tools (39 minus `calm.review.round`, which #2017 removed), all of the form `neige.[a-z]+.[a-z]+(_[a-z]+)*`, plus the plugin manifest tools.
 
 ### 4.4 What the CLI is for, and what MCP is for
 
@@ -391,7 +399,7 @@ Every slice has these common gates:
 | S2a | Brand and grammar: `terminal.*` | tools/terminal.rs (+schema_tests), wiring.rs:53 approvals, prompts/tools/calm.terminal.*.md → `git mv` neige.terminal.*.md, prompts/guides/terminal.md, terminal test cases (≈180 lines), goldens | `tools/list` (Planner) shows `neige.terminal.*`. Approvals still skip prompts for open, control and input. | The stale-name sweep invariant (S2d) goes red if one prompt, observation or refusal keeps `calm.terminal.open`. Verify by reverting one line in `prompts/guides/terminal.md`. |
 | S2b | `report.*` and `area.*` (write_markdown→write, blocks.kinds→kinds, links.backlinks→backlinks) | track_report*.rs, report_links.rs, area_reports.rs, report_tag.rs, refusal texts (track_report_blocks.rs:113, anchors.rs:61, sections.rs:46), cli/help.rs:83-90, prompts/tools + guides/report.md, report.rs, report_read_ledger.rs docs, fe/core/keys/mcp-tools.ts (report constants), tests | The anchor contract (§4.1) is unchanged. The refusals name `neige.report.read`. | `a_cat_read_anchors_no_commit` stays green. The refusal-text assertions in mcp_track_report.rs go red if the message keeps `calm.report.read`. |
 | S2c | `track.*` (cat_at→show) | track_file.rs, track_history.rs, track_state.rs, track_rename.rs, dev/publish.rs, calm-truth track_fs_view/mod.rs:1442, cli/render/listing.rs, prompts, fe TRACK_* constants, the §6.3 migration + its test, tests | Planner and Worker view tools are renamed. CLI rows point at the new tools (the old CLI spelling stays until S4). | `track_history_drill_ins_are_hidden_but_registered` (registry.rs:675) uses the constants and stays green. A migration test seeds `"tool":"calm.track.cat_at"` and `calm.user.notify` transcript rows and asserts they read back as `neige.track.show` / `neige.user.notify`; it goes red if the migration's rename table drops a row. |
-| S2d | task, plan, source, admin (track_gc→gc), calendar, preview, ratify, review, user. Add the grammar invariant and the stale-name sweep invariant (below). | emit.rs, plan.rs, source.rs, admin.rs, calendar/tools.rs:55, preview.rs, review.rs, dev/review.rs, user_notify.rs, worker/head-{cli,mcp}.md, observation/task-acceptance.md, builtin instructions and templates, plugins/git-forge/manifest.json:7, plugins/paper-trading/spy-recipe.md, fe constants, tests, goldens | No `calm\.` token is left in prompts, registry or fe constants. | New `kernel_tool_names_follow_the_grammar` (tools/mod.rs): every non-`plugin.` registry name matches `^neige\.[a-z]+\.[a-z]+$`. Mutation: rename one constant back to `calm.track.cat_at` → red: this test, the golden, the stale-name sweep and every direct-call test using that literal (list them by name before mutating). |
+| S2d | task, plan, source, admin (track_gc→gc), calendar, preview, ratify, review, user. Add the grammar invariant and the stale-name sweep invariant (below). | emit.rs, plan.rs, source.rs, admin.rs, calendar/tools.rs:55, preview.rs, review.rs, dev/review.rs, user_notify.rs, worker/head-{cli,mcp}.md, observation/task-acceptance.md, builtin instructions and templates, plugins/git-forge/manifest.json:7, plugins/paper-trading/spy-recipe.md, fe constants, tests, goldens | No `calm\.` token is left in prompts, registry or fe constants. | New `kernel_tool_names_follow_the_grammar` (tools/mod.rs): every non-`plugin.` registry name matches `^neige\.[a-z]+\.[a-z]+(?:_[a-z]+)*$`. Mutation: rename one constant back to `calm.track.cat_at` → red: this test, the golden, the stale-name sweep and every direct-call test using that literal (list them by name before mutating). |
 | S3 | MCP server key `calm` → `neige` | shared_codex_home.rs:17,321 (+tests/cases/shared_codex_home.rs), wiring.rs:53, claude_planner/{spawn.rs:37-76, translate.rs:28,442, driver.rs:139, catalog_fetch.rs}, neige-mcp-stdio-shim (2 refs), claude_planner tests + 14 ndjson fixtures, fe tests `server:'calm'` | On boot, an existing `[mcp_servers.calm]` is removed (`sanitize_unexpected_mcp_servers`, state.rs:1071) and `[mcp_servers.neige]` is written (state.rs:1134). The Claude Planner connects to `neige`. | New `boot_replaces_a_stale_calm_server_key` (tests/cases/shared_codex_home.rs): seed a home with `[mcp_servers.calm]`, boot, assert only `neige` remains. Mutation: leave `calm` in `EXPECTED_MCP_SERVERS` → red. |
 | S4 | Mechanical CLI: two-word commands, `--key` options, positional keys also accepted as options, error choices, `tool list|describe` with `{name, cli, listed}` | cli/commands.rs (drop `name`, derive it, two-token parse), cli/help.rs (root, object and command help), cli/catalog.rs (rows + CLI-covered tools), cli/render.rs (keyed by tool, unchanged), prompts `neige <cmd>` (≈150 lines), worker/head-cli.md, goldens worker_prompt_cli.txt and the planner and assistant goldens, cli/commands/tests.rs, tests/cases/neige_cli_*.rs | `neige track cat report.md` works. `neige cat` → usage error listing the objects. `neige tool list --all` as a Planner shows `neige.track.cat` with `cli: "neige track cat"` and `listed: false`. | New `every_option_is_its_schema_key` (commands/tests.rs): every non-View `Opt.flag == "--" + key.replace('_','-')` and every key exists in the tool's `input_schema`. Mutation: restore `--artifact` → red. New `tool_list_includes_cli_covered_hidden_tools`. |
 | S5 | Living docs and e2e scripts | docs/using-neige-calm.md, docs/architecture/1801-kernel-served-cli.md (pointer note only), e2e/{test_,}planner_claude_ux*.py, docker/Dockerfile.server:9 | `git grep -nE 'calm\.(track\|report\|task)\|neige (ls\|cat\|state)\b' -- docs/using-neige-calm.md e2e` is empty. | — (text only; ratchet gates) |

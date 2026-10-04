@@ -69,7 +69,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
 /// Denied tools that only a **Worker** token gets past, so the Planner control does not assert
 /// something false about them.
 const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] =
-    &["neige.task.complete", "neige.task.fail"];
+    &["neige.task.report_success", "neige.task.report_failure"];
 
 fn assistant_denied_tools() -> Vec<&'static str> {
     ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE

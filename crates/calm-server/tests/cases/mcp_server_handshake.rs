@@ -540,7 +540,7 @@ async fn tools_call_before_initialize_is_rejected() {
         &mut wr,
         tools_call_frame(
             3,
-            "neige.task.complete",
+            "neige.task.report_success",
             "pre-init-thread",
             json!({"attempt_id": "x"}),
         ),
@@ -702,7 +702,7 @@ async fn planner_role_cannot_call_task_complete_or_fail() {
         &mut wr,
         tools_call_frame(
             12,
-            "neige.task.complete",
+            "neige.task.report_success",
             &b.thread_id,
             json!({"attempt_id": "tc-planner-refused", "result": "ok"}),
         ),
@@ -718,7 +718,7 @@ async fn planner_role_cannot_call_task_complete_or_fail() {
         &mut wr,
         tools_call_frame(
             13,
-            "neige.task.fail",
+            "neige.task.report_failure",
             &b.thread_id,
             json!({"attempt_id": "tf-planner-refused", "reason": "nope"}),
         ),

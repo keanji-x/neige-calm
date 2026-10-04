@@ -541,7 +541,7 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
     );
 }
 
-/// A worker card with a `failed` current attempt (`neige.task.fail` at
+/// A worker card with a `failed` current attempt (`neige.task.report_failure` at
 /// `at_ms`) whose session is still `running`. Returns `(card, session)`.
 async fn failed_attempt(
     f: &Fx,
@@ -885,7 +885,7 @@ async fn e2_user_notify_completed_row_is_the_activity_instant() {
             "call-other",
             "item/completed",
             json!({"item": {"id": "call-other", "type": "mcpToolCall", "server": "neige",
-                            "tool": "neige.task.complete", "status": "completed"}}),
+                            "tool": "neige.task.report_success", "status": "completed"}}),
         ),
     ];
     for (i, (uuid, method, params)) in twins.into_iter().enumerate() {

@@ -1,4 +1,4 @@
-//! Integration tests for the emit tools (`neige.task.complete`, `neige.task.fail`) over the real MCP
+//! Integration tests for the emit tools (`neige.task.report_success`, `neige.task.report_failure`) over the real MCP
 //! server transport.
 
 #![cfg(unix)]
@@ -38,7 +38,7 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
         &mut wr,
         tools_call_frame(
             20,
-            "neige.task.complete",
+            "neige.task.report_success",
             &b.thread_id,
             json!({"attempt_id": "tc-1", "result": {"ok": true}}),
         ),
@@ -46,6 +46,10 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+    assert_eq!(
+        resp["result"]["structuredContent"],
+        json!({"status":"report_received"})
+    );
 
     let env = wait_for_kind(&mut rx, "task.completed").await;
     match &env.actor {
@@ -72,7 +76,7 @@ async fn consumer_summary_authenticated_completion_preserves_entire_result() {
         &mut wr,
         tools_call_frame(
             20,
-            "neige.task.complete",
+            "neige.task.report_success",
             &b.thread_id,
             json!({"attempt_id":"consumer-attempt", "result":result}),
         ),
@@ -118,7 +122,7 @@ async fn task_completed_from_claude_worker_persists_claude_session_actor() {
         &mut wr,
         tools_call_frame_no_thread(
             23,
-            "neige.task.complete",
+            "neige.task.report_success",
             json!({"attempt_id": "tc-claude", "result": {"ok": true}}),
         ),
     )
@@ -161,7 +165,7 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
         &mut wr,
         tools_call_frame(
             30,
-            "neige.task.fail",
+            "neige.task.report_failure",
             &b.thread_id,
             json!({"attempt_id": "tf-1", "reason": "stub failure"}),
         ),
@@ -169,6 +173,10 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
+    assert_eq!(
+        resp["result"]["structuredContent"],
+        json!({"status":"report_received"})
+    );
 
     let env = wait_for_kind(&mut rx, "task.failed").await;
     match &env.actor {
@@ -190,7 +198,7 @@ async fn task_failed_event_count(b: &CardBoot) -> i64 {
         .expect("count task.failed events")
 }
 
-/// #1801 F5: the tool is the one source for the blank-reason rule; MCP and `neige task-failed` both meet it.
+/// #1801 F5: the tool is the one source for the blank-reason rule; MCP and `neige task-report-failure` both meet it.
 #[tokio::test]
 async fn task_fail_rejects_blank_reason() {
     let b = boot_with_role(CardRole::Worker).await;
@@ -201,7 +209,7 @@ async fn task_fail_rejects_blank_reason() {
             &mut wr,
             tools_call_frame_no_thread(
                 id,
-                "neige.task.fail",
+                "neige.task.report_failure",
                 json!({"attempt_id": "tf-blank", "reason": reason}),
             ),
         )
@@ -214,7 +222,7 @@ async fn task_fail_rejects_blank_reason() {
         );
         assert_eq!(
             resp["error"]["message"],
-            json!("task_fail: missing `reason` (non-empty)"),
+            json!("task_report_failure: missing `reason` (non-empty)"),
             "{reason:?}"
         );
     }
@@ -222,7 +230,13 @@ async fn task_fail_rejects_blank_reason() {
     let resp = neige_cli_via_socket(
         &b.socket_path,
         &b.raw_token,
-        &["task-failed", "--attempt-id", "tf-blank", "--reason", "  "],
+        &[
+            "task-report-failure",
+            "--attempt-id",
+            "tf-blank",
+            "--reason",
+            "  ",
+        ],
     )
     .await;
     let (stdout, stderr, exit) = cli_output(&resp);
@@ -230,7 +244,7 @@ async fn task_fail_rejects_blank_reason() {
     assert_eq!(stdout, "");
     assert_eq!(
         stderr,
-        "neige: neige.task.fail: task_fail: missing `reason` (non-empty) (code -32602)\n"
+        "neige: neige.task.report_failure: task_report_failure: missing `reason` (non-empty) (code -32602)\n"
     );
     assert_eq!(
         task_failed_event_count(&b).await,
@@ -252,7 +266,7 @@ async fn smuggled_card_id_in_args_is_ignored() {
         &mut wr,
         tools_call_frame(
             40,
-            "neige.task.complete",
+            "neige.task.report_success",
             &b.thread_id,
             json!({
                 "attempt_id": "tc-smuggle",

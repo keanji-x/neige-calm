@@ -1078,11 +1078,11 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
 
     let cases = [
         (
-            "neige.task.complete",
+            "neige.task.report_success",
             json!({ "attempt_id": "report-completed" }),
         ),
         (
-            "neige.task.fail",
+            "neige.task.report_failure",
             json!({
                 "attempt_id": "report-failed",
                 "reason": "should not run"

@@ -186,8 +186,8 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Tags,
     },
     Command {
-        name: "task-completed",
-        tool: emit::TOOL_TASK_COMPLETE,
+        name: "task-report-success",
+        tool: emit::TOOL_TASK_REPORT_SUCCESS,
         positionals: &[],
         too_many: None,
         options: &[
@@ -199,8 +199,8 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Raw,
     },
     Command {
-        name: "task-failed",
-        tool: emit::TOOL_TASK_FAIL,
+        name: "task-report-failure",
+        tool: emit::TOOL_TASK_REPORT_FAILURE,
         positionals: &[],
         too_many: None,
         options: &[

@@ -15,7 +15,7 @@ pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = concat!(
     include_str!("../prompts/worker/tail.md")
 );
 
-/// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `neige.task.complete` / `neige.task.fail` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
+/// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `neige.task.report_success` / `neige.task.report_failure` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
 pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
     include_str!("../prompts/worker/head-mcp.md"),
     include_str!("../prompts/tool-discovery.md"),
@@ -127,7 +127,7 @@ pub(crate) enum SeededCardRole {
     Planner,
     /// Worker card for a **claude** provider: completion is reported through the `neige` shell CLI.
     Worker,
-    /// Worker card for a **codex** provider: completion is reported through the native `neige.task.complete` / `neige.task.fail` MCP tools.
+    /// Worker card for a **codex** provider: completion is reported through the native `neige.task.report_success` / `neige.task.report_failure` MCP tools.
     WorkerCodex,
 }
 
@@ -651,7 +651,7 @@ mod tests {
         }
     }
 
-    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `neige.task.complete` / `neige.task.fail` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task-completed` and is exempt.
+    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `neige.task.report_success` / `neige.task.report_failure` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task-report-success` and is exempt.
     #[test]
     fn worker_prompts_name_only_tools_the_worker_role_can_see() {
         // `min_named` guards against an empty scanner only: the CLI prompt names exactly the one forbidden tool; the codex prompt adds the two visible completion tools.

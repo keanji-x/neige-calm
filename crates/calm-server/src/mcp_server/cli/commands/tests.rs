@@ -260,7 +260,7 @@ fn log_maps_path_limit_and_include_empty() {
 }
 
 /// H4: range and non-empty rules belong to the tool (log clamps 0 to 1, an empty `to`/`path` is none,
-/// a blank reason is refused by `neige.task.fail`).
+/// a blank reason is refused by `neige.task.report_failure`).
 #[test]
 fn values_reach_the_tool_unchecked() {
     assert_eq!(tool_args(&["log", "--limit", "0"]), json!({ "limit": 0 }));
@@ -269,7 +269,7 @@ fn values_reach_the_tool_unchecked() {
         json!({ "from": "a", "to": "", "path": "" })
     );
     assert_eq!(
-        tool_args(&["task-failed", "--attempt-id", "", "--reason", " "]),
+        tool_args(&["task-report-failure", "--attempt-id", "", "--reason", " "]),
         json!({ "attempt_id": "", "reason": " " })
     );
     assert_eq!(
@@ -331,7 +331,7 @@ fn vacuum_requires_force() {
 #[test]
 fn task_completed_parses_json_result_and_artifacts() {
     let parsed = parse_args(&[
-        "task-completed",
+        "task-report-success",
         "--attempt-id",
         "k1",
         "--result",
@@ -354,7 +354,7 @@ fn task_completed_parses_json_result_and_artifacts() {
 fn task_completed_keeps_plain_text_result_as_a_string() {
     assert_eq!(
         tool_args(&[
-            "task-completed",
+            "task-report-success",
             "--attempt-id",
             "k1",
             "--result",
@@ -363,16 +363,16 @@ fn task_completed_keeps_plain_text_result_as_a_string() {
         json!({ "attempt_id": "k1", "result": "plain text" })
     );
     assert_eq!(
-        refusal(&["task-completed"]),
-        "task-completed requires --attempt-id"
+        refusal(&["task-report-success"]),
+        "task-report-success requires --attempt-id"
     );
 }
 
 #[test]
 fn task_failed_requires_reason() {
     assert_eq!(
-        refusal(&["task-failed", "--attempt-id", "k1"]),
-        "task-failed requires --reason"
+        refusal(&["task-report-failure", "--attempt-id", "k1"]),
+        "task-report-failure requires --reason"
     );
 }
 

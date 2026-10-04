@@ -93,6 +93,8 @@ fn removed_aliases_and_retired_shims_are_not_registered() {
         "calm.task_failed",      // retired-name: rejection input
         "calm.dispatch_request", // retired-name: rejection input
         "calm.plan.upsert",      // retired-name: rejection input
+        "neige.task.complete",
+        "neige.task.fail",
     ] {
         assert!(
             registry.lookup(removed).is_none(),
@@ -109,6 +111,8 @@ async fn unknown_tool_error_lists_the_sessions_tools() {
     for (role, stale) in [
         (CardRole::Planner, "calm.update_task_meta"), // retired-name: rejection input
         (CardRole::Worker, "calm.task_completed"),    // retired-name: rejection input
+        (CardRole::Worker, "neige.task.complete"),
+        (CardRole::Worker, "neige.task.fail"),
     ] {
         let boot = boot_with_role(role).await;
         let (mut rd, mut wr) = connect(&boot.socket_path).await;
@@ -191,7 +195,7 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
     let names = tools_list_names_for_role(CardRole::Worker).await;
     assert_eq!(
         names,
-        vec!["neige.task.complete", "neige.task.fail"],
+        vec!["neige.task.report_failure", "neige.task.report_success"],
         "worker tools/list must contain exactly the two completion tools",
     );
 }

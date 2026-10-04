@@ -281,9 +281,15 @@ async fn cli_state_marks_stored_readers_without_live_workers() {
     assert_eq!(json_text, format!("{state}\n"));
 }
 
-/// The worker's own `neige task-completed`: the production report path that ends its task.
+/// The worker's own `neige task-report-success`: the production report path that ends its task.
 async fn report_completed(boot: &CardBoot, worker_token: &str, task_id: &str) {
-    let argv = ["task-completed", "--attempt-id", task_id, "--result", "{}"];
+    let argv = [
+        "task-report-success",
+        "--attempt-id",
+        task_id,
+        "--result",
+        "{}",
+    ];
     let (_, stderr, exit) =
         cli_output(&neige_cli_via_socket(&boot.socket_path, worker_token, &argv).await);
     assert_eq!((exit, stderr.as_str()), (0, ""), "{task_id}");
@@ -569,8 +575,8 @@ async fn cli_authorization_equals_direct_call() {
     let planner = boot_with_role(CardRole::Planner).await;
     assert_same_refusal(
         &planner,
-        &["task-completed", "--attempt-id", "k"],
-        "neige.task.complete",
+        &["task-report-success", "--attempt-id", "k"],
+        "neige.task.report_success",
         json!({ "attempt_id": "k" }),
     )
     .await;
@@ -665,6 +671,25 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
                 calm_server::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP
             ))
     );
+
+    for command in ["task-report-success", "task-report-failure"] {
+        let text = help::render(HelpRequest::Command(command)).unwrap();
+        assert!(text.contains("report_received"), "{text}");
+        assert_eq!(
+            cli(&boot, &[command, "--help"]).await,
+            (text, String::new(), 0)
+        );
+    }
+    for retired in ["task-completed", "task-failed"] {
+        assert!(help::render(HelpRequest::Command(retired)).is_none());
+        let (stdout, stderr, exit) = cli(&boot, &[retired, "--attempt-id", "retired"]).await;
+        assert_eq!(exit, 1, "{retired}: {stderr}");
+        assert!(stdout.is_empty());
+        assert_eq!(
+            stderr,
+            format!("neige: {}\n", help::unknown_command_message(retired))
+        );
+    }
 
     let unknown = format!("neige: {}\n", help::unknown_command_message("snow"));
     for argv in [

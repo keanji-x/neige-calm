@@ -502,7 +502,7 @@ impl Fx {
     pub(super) async fn complete(&self, worker: &ToolCallIdentity, task_id: &str) {
         call_tool(
             &self.boot,
-            "neige.task.complete",
+            "neige.task.report_success",
             worker.clone(),
             json!({"attempt_id": task_id, "result": {"ok": true}}),
         )
@@ -511,7 +511,7 @@ impl Fx {
     }
 
     /// The report transaction alone — no forge submission — the state a kernel that died right
-    /// after `neige.task.complete`'s transaction leaves behind (no crash seam: 5.1.16).
+    /// after `neige.task.report_success`'s transaction leaves behind (no crash seam: 5.1.16).
     pub(super) async fn report_only(&self, worker: &ToolCallIdentity, task_id: &str) {
         CardDecisionSink::from_app_context(&self.boot.ctx)
             .commit_worker_task_report(

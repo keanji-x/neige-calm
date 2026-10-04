@@ -222,7 +222,7 @@ impl Started {
     pub(super) async fn fail(&self, fx: &Fx, reason: &str) {
         call_tool(
             &fx.boot,
-            "neige.task.fail",
+            "neige.task.report_failure",
             self.identity.clone(),
             json!({"attempt_id": self.task.id, "reason": reason}),
         )

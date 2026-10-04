@@ -340,7 +340,7 @@ pub async fn complete(repo: &SqlxRepo, socket: &Path, started: &Started) -> Stri
         &started.token,
         &started.thread,
         91,
-        "neige.task.complete",
+        "neige.task.report_success",
         json!({"attempt_id":started.attempt}),
     )
     .await;

@@ -69,9 +69,9 @@ pub(crate) enum DeliverySettled {
 /// that ends the attempt writes it on the row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AttemptOutcome {
-    /// `neige.task.complete`.
+    /// `neige.task.report_success`.
     Completed,
-    /// `neige.task.fail`, a dead worker, or a liveness timeout.
+    /// `neige.task.report_failure`, a dead worker, or a liveness timeout.
     Failed,
     /// `neige.plan.cancel` of a running worker.
     Canceled,

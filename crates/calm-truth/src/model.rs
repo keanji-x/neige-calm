@@ -280,6 +280,8 @@ pub enum TaskStatus {
     Dispatched,
     Running,
     Verifying,
+    /// Execution success (Worker self-report when ungated, gate pass otherwise).
+    /// Delivery settlement and Planner acceptance are separate facts.
     Done,
     Failed,
     Canceled,

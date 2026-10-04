@@ -1,1 +1,0 @@
-Report that a worker card has completed its task. `attempt_id` echoes the attempt_id you were handed. For a worker running in a kernel-provisioned git worktree, the kernel commits that worktree after this call and pins the result as a candidate; do not commit or switch branches yourself.

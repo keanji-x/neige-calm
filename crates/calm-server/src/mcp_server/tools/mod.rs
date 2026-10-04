@@ -304,12 +304,13 @@ mod tests {
         );
     }
 
-    /// #2003: every kernel tool is `neige.<object>.<action>`, one lowercase word per segment, so
+    /// #2003: every kernel tool is `neige.<object>.<action>`, a lowercase object and an underscore-separated action, so
     /// the CLI spelling and the client callable ids derive from the name mechanically. Plugin
     /// manifest tools keep their plugin-owned `plugin.<id>_<tool>` identity.
     #[test]
     fn kernel_tool_names_follow_the_grammar() {
-        let grammar = regex::Regex::new(r"^neige\.[a-z]+\.[a-z]+$").expect("grammar regex");
+        let grammar =
+            regex::Regex::new(r"^neige\.[a-z]+\.[a-z]+(?:_[a-z]+)*$").expect("grammar regex");
         let kernel: Vec<String> = build_default_registry()
             .descriptors()
             .into_iter()

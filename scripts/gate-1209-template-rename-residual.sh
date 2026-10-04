@@ -55,6 +55,8 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 1   crates/calm-server/tests/fixtures/claude_planner_stream/pB_emptycfg.ndjson
 1   crates/calm-server/tests/fixtures/claude_planner_stream/pB_safe.ndjson
 2   crates/calm-server/tests/fixtures/claude_planner_stream/pG.ndjson
+# #2053 uses the English plural for processes that require accepted inputs, not a retired API key.
+1   docs/architecture/2053-worker-outcome-reports.md
 EOF
 
 # This script names the pattern and quotes allowlisted paths in its own reasons, so it is excluded from its own scan.

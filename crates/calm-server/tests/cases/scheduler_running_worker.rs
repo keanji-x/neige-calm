@@ -674,7 +674,7 @@ async fn cancel_first_then_late_worker_report_is_rejected_without_delivery() {
     .expect("cancel wins");
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": {} }),
     )
@@ -701,7 +701,7 @@ async fn report_first_then_cancel_is_refused_with_the_current_status() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": {} }),
     )

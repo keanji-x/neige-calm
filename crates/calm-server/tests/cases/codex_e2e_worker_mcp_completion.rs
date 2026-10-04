@@ -1,6 +1,6 @@
 //! Proves against the real codex binary that a codex worker's completion report reaches the kernel through the
-//! native `neige.task.complete` MCP tool (channel 2) with channel 3 (`shell_environment_policy` carrying
-//! `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN`) stripped, so the `neige task-completed` CLI cannot be the path.
+//! native `neige.task.report_success` MCP tool (channel 2) with channel 3 (`shell_environment_policy` carrying
+//! `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN`) stripped, so the `neige task-report-success` CLI cannot be the path.
 //! `#[ignore]`-gated + `feature = "codex-e2e"`; flip `WORKER_CODEX` to `false` to re-capture the CLI baseline.
 
 #![cfg(all(unix, feature = "codex-e2e"))]

@@ -111,6 +111,7 @@ pub enum CheckoutWait {
 ///
 /// Every admitted task is offered and its claim transaction re-runs this rule against the
 /// occupancy apart from itself, so one claim that fails does not hold the others.
+/// Dependencies order executions; `done` does not prove artifact delivery or Planner acceptance.
 pub fn checkout_admission(
     tasks: &[Task],
     occupancy: CheckoutOccupancy,

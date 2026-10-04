@@ -78,7 +78,7 @@ async fn neige_task_completed_emits_task_completed_event() {
     let out = run_neige(
         &boot,
         &[
-            "task-completed",
+            "task-report-success",
             "--attempt-id",
             "cli-completed-1",
             "--result",
@@ -90,6 +90,11 @@ async fn neige_task_completed_emits_task_completed_event() {
         out.status.success(),
         "stderr = {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap(),
+        json!({"status":"report_received"})
     );
 
     let env = wait_for_kind(&mut rx, "task.completed").await;
@@ -123,7 +128,7 @@ async fn neige_task_failed_emits_task_failed_event() {
     let out = run_neige(
         &boot,
         &[
-            "task-failed",
+            "task-report-failure",
             "--attempt-id",
             "cli-failed-1",
             "--reason",
@@ -135,6 +140,11 @@ async fn neige_task_failed_emits_task_failed_event() {
         out.status.success(),
         "stderr = {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap(),
+        json!({"status":"report_received"})
     );
 
     let env = wait_for_kind(&mut rx, "task.failed").await;

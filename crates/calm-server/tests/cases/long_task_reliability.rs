@@ -51,7 +51,7 @@ async fn long_task_late_success_cannot_contradict_spawn_failure() {
     .await;
     let result = call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({"attempt_id": task_id, "result": {"late": true}}),
     )
@@ -84,7 +84,7 @@ async fn long_task_scheduled_worker_cannot_report_under_card_id() {
     .await;
     let result = call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({"attempt_id": boot.worker_card_id, "result": {}}),
     )
@@ -229,9 +229,9 @@ async fn long_task_terminal_report_ownership_and_outcome_matrix() {
         let task_id = task.id.clone();
         seed_task(&boot, task).await;
         let tool = if success {
-            TOOL_TASK_COMPLETE
+            TOOL_TASK_REPORT_SUCCESS
         } else {
-            TOOL_TASK_FAIL
+            TOOL_TASK_REPORT_FAILURE
         };
         let result = call_tool(
             &boot,
@@ -258,7 +258,7 @@ async fn long_task_bound_worker_without_op_cannot_report_card_id() {
     seed_task(&boot, task).await;
     let result = call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({"attempt_id": boot.worker_card_id, "result": {}}),
     )

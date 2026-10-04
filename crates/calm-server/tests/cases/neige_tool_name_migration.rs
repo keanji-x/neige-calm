@@ -245,3 +245,110 @@ async fn stored_tool_names_and_recipes_read_back_under_neige() {
         "a recipe without a retired name is not touched"
     );
 }
+
+/// #2053: active instructions move to report verbs; recorded calls and lookalike
+/// identifiers remain historical data. Re-applying the migration is a no-op.
+#[tokio::test]
+async fn worker_report_recipe_migration_preserves_history_and_revision_anchors() {
+    let f = fx().await;
+    let t = f.track("report-names").await;
+    let planner = f
+        .card(&t, "report-planner", "planner", CardRole::Planner)
+        .await;
+    let ws = f
+        .session(
+            &planner,
+            "report-session",
+            WorkerSessionKind::SharedPlanner,
+            WorkerSessionState::Idle,
+            Some("report-thread"),
+            Some(Fx::harness_snapshot()),
+            1_000,
+        )
+        .await;
+    let params = json!({"item":{"id":"report-call", "type":"mcpToolCall",
+        "server":"neige", "tool":"neige.task.complete", "status":"completed",
+        "arguments":{"attempt_id":"report-attempt", "text":"neige.task.fail"}}});
+    let call = f
+        .transcript_item(
+            &ws,
+            &planner,
+            &t,
+            "report-call",
+            "mcpToolCall",
+            "item/completed",
+            params.clone(),
+        )
+        .await;
+    let old = "Success：`neige.task.complete(attempt_id)`；Failure：neige.task.fail。\n\
+               CLI: neige task-completed --attempt-id a; neige task-failed --reason 'why'\n\
+               Other: neige.task.completed neige.task.failure plugin.neige.task.complete task-failed-extra\nSentence: neige.task.complete. neige.task.fail...\nFinal: neige.task.fail";
+    let recipe = f
+        .repo_dyn
+        .track_recipe_create(NewTrackRecipe {
+            title: "report".into(),
+            body: old.into(),
+        })
+        .await
+        .unwrap();
+    let untouched = f
+        .repo_dyn
+        .track_recipe_create(NewTrackRecipe {
+            title: "unchanged".into(),
+            body: "neige.task.report_success; neige.task.report_failure; neige.task.completed"
+                .into(),
+        })
+        .await
+        .unwrap();
+    let migration = calm_truth::MIGRATOR
+        .iter()
+        .find(|m| m.description == "worker report recipe names")
+        .expect("#2053 recipe migration is embedded");
+    sqlx::raw_sql(&migration.sql)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let migrated = f
+        .repo_dyn
+        .track_recipe_get(&recipe.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        migrated.body,
+        "Success：`neige.task.report_success(attempt_id)`；Failure：neige.task.report_failure。\n\
+         CLI: neige task-report-success --attempt-id a; neige task-report-failure --reason 'why'\n\
+         Other: neige.task.completed neige.task.failure plugin.neige.task.complete task-failed-extra\nSentence: neige.task.report_success. neige.task.report_failure...\nFinal: neige.task.report_failure"
+    );
+    assert_eq!(migrated.revision, recipe.revision + 1);
+    assert!(migrated.updated_at > recipe.updated_at);
+    assert_eq!(
+        tool_of(&f, call).await,
+        params,
+        "recorded calls are not executable instructions"
+    );
+    sqlx::raw_sql(&migration.sql)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let repeated = f
+        .repo_dyn
+        .track_recipe_get(&recipe.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (repeated.body, repeated.revision, repeated.updated_at),
+        (migrated.body, migrated.revision, migrated.updated_at)
+    );
+    let kept = f
+        .repo_dyn
+        .track_recipe_get(&untouched.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (kept.body, kept.revision, kept.updated_at),
+        (untouched.body, untouched.revision, untouched.updated_at)
+    );
+}

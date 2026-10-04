@@ -116,7 +116,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     std::fs::write(dir.path().join("audit.json"), result.to_string()).unwrap();
     call_tool(
         &boot,
-        "neige.task.complete",
+        "neige.task.report_success",
         worker_identity(&boot),
         json!({"attempt_id":a.id, "result":result}),
     )
@@ -265,7 +265,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         "source_attempt_id":worker_payload["context"]["source_attempt_id"]});
     call_tool(
         &boot,
-        "neige.task.complete",
+        "neige.task.report_success",
         b_identity,
         json!({"attempt_id":b.id,"result":recommendation}),
     )

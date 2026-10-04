@@ -385,7 +385,7 @@
   },
   {
     "name": "neige.plan.list",
-    "description_sha256": "78f8781055cc42dd565a1a288296bacd709c9f7f2b06264df0a320df4bd15bf4",
+    "description_sha256": "05b77f9e2e16b68335c719dd90611e6041f710f97a93456f35cfdc1fd6b6f5d4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -872,36 +872,8 @@
     ]
   },
   {
-    "name": "neige.task.complete",
-    "description_sha256": "13068d1235821e07f686153dde9f293b44944f9c5fd4f4f261a31bee72645062",
-    "input_schema": {
-      "properties": {
-        "artifacts": {
-          "type": "array"
-        },
-        "attempt_id": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "result": {}
-      },
-      "required": [
-        "attempt_id"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "worker"
-    ]
-  },
-  {
-    "name": "neige.task.fail",
-    "description_sha256": "ef955eed54a6a34e0cf7ab684bc3a5f327c50f4298360fbfd925ff0c54ae5711",
+    "name": "neige.task.report_failure",
+    "description_sha256": "c4c54e75b8e898f1b0206e530fd2bd739d0f06b7b9918a92ec3a97c82f787a3d",
     "input_schema": {
       "properties": {
         "attempt_id": {
@@ -928,8 +900,36 @@
     ]
   },
   {
+    "name": "neige.task.report_success",
+    "description_sha256": "e91d54b4498724ccf4c720a1928a2b3342f01472491849c497f5a1a563315d7c",
+    "input_schema": {
+      "properties": {
+        "artifacts": {
+          "type": "array"
+        },
+        "attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "result": {}
+      },
+      "required": [
+        "attempt_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "worker"
+    ]
+  },
+  {
     "name": "neige.task.verdict",
-    "description_sha256": "f44bfcff959712bcfe328853fd0cce501821c17f199874c5c8b60bf5670881d6",
+    "description_sha256": "98f296a0ec91a3ba6933db42b210a0a0aa51f818ca018c617e17c51f01faa612",
     "input_schema": {
       "properties": {
         "attempt_id": {

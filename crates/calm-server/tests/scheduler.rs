@@ -21,7 +21,7 @@ use calm_server::error::Result as CalmResult;
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
+use calm_server::mcp_server::tools::emit::{TOOL_TASK_REPORT_FAILURE, TOOL_TASK_REPORT_SUCCESS};
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::track_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -1150,7 +1150,7 @@ impl ProviderAdapter for BootstrapAdapter {
     }
 }
 
-/// Fast-worker-report fixture: the spawn side effect itself reports `neige.task.complete` BEFORE the scheduler's
+/// Fast-worker-report fixture: the spawn side effect itself reports `neige.task.report_success` BEFORE the scheduler's
 /// `wait()` returns; the card-shaped `prepare_tx` output is stamped as the op target first, like a real fast worker.
 struct FastReportAdapter {
     kind: &'static str,
@@ -1341,7 +1341,7 @@ async fn plan_to_done_end_to_end() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": t1.id, "result": { "ok": true } }),
     )
@@ -1527,7 +1527,7 @@ async fn fast_worker_report_beats_running_stamp() {
     bind_worker_card_payload(&boot, &task_id).await;
     let handler = boot
         .registry
-        .lookup(TOOL_TASK_COMPLETE)
+        .lookup(TOOL_TASK_REPORT_SUCCESS)
         .expect("task complete tool");
     let (_runtime, scheduler) = build_scheduler(
         &boot,
@@ -1696,7 +1696,7 @@ async fn worker_report_flips_row_inside_emit_tx() {
 
     call_tool(
         &boot,
-        TOOL_TASK_FAIL,
+        TOOL_TASK_REPORT_FAILURE,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "reason": "could not finish" }),
     )
@@ -1736,7 +1736,7 @@ async fn claude_worker_op_target_proves_unstamped_ownership() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -1769,7 +1769,7 @@ async fn duplicate_report_is_idempotent() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": {} }),
     )
@@ -1780,7 +1780,7 @@ async fn duplicate_report_is_idempotent() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": {} }),
     )
@@ -1788,7 +1788,7 @@ async fn duplicate_report_is_idempotent() {
     .expect("repeat success");
     let conflict = call_tool(
         &boot,
-        TOOL_TASK_FAIL,
+        TOOL_TASK_REPORT_FAILURE,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "reason": "retry confusion" }),
     )
@@ -1823,7 +1823,7 @@ async fn gated_success_report_flips_to_verifying() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": {} }),
     )
@@ -1840,7 +1840,7 @@ async fn gated_success_report_flips_to_verifying() {
     // A worker `task.fail` against the now-`verifying` row is moot — the verify pipeline owns it.
     call_tool(
         &boot,
-        TOOL_TASK_FAIL,
+        TOOL_TASK_REPORT_FAILURE,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "reason": "boom" }),
     )
@@ -2966,7 +2966,7 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
 
 #[tokio::test]
 async fn codex_task_pty_exit_does_not_complete_task() {
-    // A codex PTY exiting says nothing about the task outcome — only `neige.task.complete` may finish it.
+    // A codex PTY exiting says nothing about the task outcome — only `neige.task.report_success` may finish it.
     let boot = boot().await;
     let mut task = plan_task(&boot.track_id, "cx", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
@@ -6176,7 +6176,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
     // Sibling completes "someone else's" task → the whole report is refused: error back, NO event.
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         sibling_identity.clone(),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -6200,7 +6200,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
 
     call_tool(
         &boot,
-        TOOL_TASK_FAIL,
+        TOOL_TASK_REPORT_FAILURE,
         sibling_identity,
         json!({ "attempt_id": task_id, "reason": "not mine" }),
     )
@@ -6211,7 +6211,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -6348,7 +6348,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": row.id, "result": { "ok": true } }),
     )
@@ -6380,7 +6380,7 @@ async fn dependent_task_is_claimed_by_its_own_worker() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": t1.id, "result": { "ok": true } }),
     )
@@ -6433,7 +6433,7 @@ async fn dependent_task_is_claimed_by_its_own_worker() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         second_identity,
         json!({ "attempt_id": t2.id, "result": { "ok": true } }),
     )
@@ -6877,7 +6877,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         sibling_identity.clone(),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -6893,7 +6893,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
 
     call_tool(
         &boot,
-        TOOL_TASK_FAIL,
+        TOOL_TASK_REPORT_FAILURE,
         sibling_identity,
         json!({ "attempt_id": task_id, "reason": "not mine" }),
     )
@@ -6916,7 +6916,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
     .await;
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -6980,7 +6980,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         sibling_identity.clone(),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -6996,7 +6996,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
 
     call_tool(
         &boot,
-        TOOL_TASK_FAIL,
+        TOOL_TASK_REPORT_FAILURE,
         sibling_identity,
         json!({ "attempt_id": task_id, "reason": "forged" }),
     )
@@ -7010,7 +7010,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -7084,7 +7084,7 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -7100,7 +7100,7 @@ async fn legacy_actor_op_does_not_prove_unstamped_ownership() {
 
     call_tool(
         &boot,
-        TOOL_TASK_FAIL,
+        TOOL_TASK_REPORT_FAILURE,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "reason": "not the scheduler's worker" }),
     )
@@ -7120,7 +7120,7 @@ async fn legacy_report_without_task_row_still_emits() {
     // payload carries no binding — the legacy dispatch shape.
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": "legacy-dispatch-key", "result": { "ok": true } }),
     )
@@ -7141,7 +7141,7 @@ async fn legacy_report_with_pending_task_row_is_rejected() {
 
     call_tool(
         &boot,
-        TOOL_TASK_COMPLETE,
+        TOOL_TASK_REPORT_SUCCESS,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": { "ok": true } }),
     )
@@ -7155,7 +7155,7 @@ async fn legacy_report_with_pending_task_row_is_rejected() {
 
     call_tool(
         &boot,
-        TOOL_TASK_FAIL,
+        TOOL_TASK_REPORT_FAILURE,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "reason": "legacy retry" }),
     )

@@ -187,7 +187,7 @@ Acceptance: `FORGE_E2E.md` exists at the repository root with exactly that conte
 pub fn forge_delivery_goal() -> String {
     r#"Goal: In your leased git worktree, create FORGE_E2E.md with exactly the single line forge-e2e-ok.
 Call plugin.dev.neige.git-forge_git.commit with {"message":"forge-e2e worker commit","idem":"forge-e2e-worker-commit"}.
-Then call neige.task.complete with your attempt_id, reporting the commit and branch.
+Then call neige.task.report_success with your attempt_id, reporting the commit and branch.
 Use MCP for git. Do not push, open or merge a PR, or close an issue.
 Acceptance: the file is committed and the task reports its delivery."#.to_string()
 }
