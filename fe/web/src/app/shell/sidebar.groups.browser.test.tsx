@@ -127,6 +127,25 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   await page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track Build frontend/ }).click();
   expect(onGo).toHaveBeenCalledWith({ name: 'track', trackId: 'running' });
   expect(document.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+  // Pointer recovery remains usable even after inspecting and closing the full hidden list.
+  const recoverable = ['Pinned', 'Waiting on you', 'Unread', 'Running', 'Areas'];
+  for (const title of recoverable) {
+    await page.getByRole('button', { name: `Group actions for ${title}` }).click();
+    await page.getByRole('menuitem', { name: 'Hide group', exact: true }).click();
+  }
+  await options.click();
+  await page.getByRole('menuitem', { name: 'Hidden groups' }).click();
+  for (const title of recoverable) await expect.element(page.getByRole('menuitem', { name: `Show ${title}`, exact: true })).toBeVisible();
+  await userEvent.keyboard('{Escape}');
+  await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toHaveAttribute('aria-expanded', 'false');
+  await userEvent.keyboard('{Escape}');
+  await expect.element(options).toHaveAttribute('aria-expanded', 'false');
+  for (const title of recoverable) {
+    await options.click();
+    await page.getByRole('menuitem', { name: 'Hidden groups' }).click();
+    await page.getByRole('menuitem', { name: `Show ${title}`, exact: true }).click();
+    await expect.element(page.getByRole('group', { name: title, exact: true })).toBeVisible();
+  }
   act(() => { preferences.markRead('track', 'review', 10); preferences.markRead('track', 'running', 10); });
   await expect.element(page.getByRole('group', { name: 'Unread', exact: true })).not.toBeInTheDocument();
   await expect.element(page.getByRole('group', { name: 'Waiting on you', exact: true })).toBeVisible();

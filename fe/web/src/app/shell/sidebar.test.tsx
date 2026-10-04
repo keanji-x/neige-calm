@@ -681,13 +681,14 @@ it('keeps Show recovery for every built-in group after all groups are hidden', a
   }
   expect(screen.queryAllByRole('heading')).toHaveLength(0);
   await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
-  await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
+  await userEvent.keyboard('{ArrowDown}{ArrowRight}');
+  await screen.findByRole('menuitem', { name: 'Show Waiting on you' });
   for (const title of titles) expect(screen.getByRole('menuitem', { name: `Show ${title}` })).toBeTruthy();
   await userEvent.keyboard('{Escape}{Escape}');
   for (const title of titles) {
     await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: `Show ${title}` }));
+    await userEvent.keyboard('{ArrowDown}{ArrowRight}');
+    await userEvent.click(await screen.findByRole('menuitem', { name: `Show ${title}` }));
   }
   expect(screen.getAllByRole('heading').map(node => node.textContent)).toEqual(titles);
   expect(screen.getAllByRole('button', { name: /^Track Recoverable/ })).toHaveLength(5);
