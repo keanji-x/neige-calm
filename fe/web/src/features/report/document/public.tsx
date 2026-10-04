@@ -16,7 +16,7 @@ import {
 } from '../../../../../core/domain/report-file.ts';
 import type { SeriesResolution } from '../../../../../core/domain/report-series.ts';
 import { parseReportSourceLink, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
-import { Icon } from '../../../ui/icon/public.tsx';
+import { ReportDetails } from './details.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
@@ -146,17 +146,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
   const tasksByBlock = new Map(tasks.map((task) => [task.blockId, task]));
   return (
     <div className={styles.row}>
-      <details className={styles.reference} data-nc-report-reference="">
-        <summary className={styles.referenceSummary}>
-          {/* `<summary>` takes phrasing content or one heading element, so the h2 wraps the chevron and the count. */}
-          <h2 className={styles.referenceHead}>
-            <span className={styles.referenceMarker}><Icon name="chevron-right" size="sm" /></span>
-            <span className={styles.referenceTitle}>Reference</span>
-            <span className={styles.referenceCount}>
-              {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
-            </span>
-          </h2>
-        </summary>
+      <ReportDetails title="Reference" meta={`${blocks.length} ${blocks.length === 1 ? 'task' : 'tasks'}`} layout="grid" reference>
         {/* Not `BlockSlot`: a slot is `display: contents` over the article's grid, and this `<details>` is not that grid. */}
         {blocks.map((block) => {
           const backlinks = backlinkCounts?.get(block.id) ?? 0;
@@ -174,7 +164,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
             </div>
           );
         })}
-      </details>
+      </ReportDetails>
     </div>
   );
 }

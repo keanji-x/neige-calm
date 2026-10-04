@@ -259,13 +259,17 @@
     transition: rotate var(--motion-snappy) ease-out;
   }
 
-  .reference[open] .referenceMarker {
-    rotate: 90deg;
+  .detailEntry > .referenceSummary .referenceMarker {
+    margin-inline: 0;
   }
 
   .doc:has(nav ol:hover) .referenceMarker,
   .doc:has(nav ol:focus-within) .referenceMarker {
     opacity: 0;
+  }
+
+  .reference[open] > .referenceSummary > .referenceHead > .referenceMarker {
+    rotate: 90deg;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -297,6 +301,35 @@
     letter-spacing: normal;
     color: var(--text-3);
     font-variant-numeric: tabular-nums;
+  }
+
+  .appendix {
+    margin-inline-start: var(--document-start, 0px);
+    inline-size: var(--document-measure, var(--measure-prose));
+    min-inline-size: 0;
+  }
+
+  .detailEntry {
+    --document-start: 0px;
+    --document-measure: 100%;
+    margin-block-start: var(--space-8);
+  }
+
+  .detailEntry > .referenceSummary > .referenceHead {
+    margin-block-start: 0;
+    gap: var(--space-3);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    letter-spacing: normal;
+  }
+
+  .detailEntry > .referenceSummary .referenceTitle { overflow-wrap: anywhere; }
+
+  .detailEntry > .referenceSummary .referenceCount {
+    flex: 0 1 auto;
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+    text-align: end;
   }
 
   .referenceItem {

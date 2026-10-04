@@ -22,6 +22,7 @@ const reportEditsSchema = z.object({
   }) })), next_cursor: z.number().nullable(),
 });
 export type ReportEditsPage = z.infer<typeof reportEditsSchema>;
+export type ReportEditEntry = ReportEditsPage['edits'][number];
 
 export function dailyTrackOperation(date?: string): ApiOperation<DailyTrack | null> {
   return { method: 'GET', path: `/api/today/daily${date === undefined ? '' : `?date=${encodeURIComponent(date)}`}`, responseSchema: dailyTrackSchema.nullable() };

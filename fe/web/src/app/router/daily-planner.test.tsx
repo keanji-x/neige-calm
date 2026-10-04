@@ -27,17 +27,22 @@ it('uses the real Planner and opens cited reports from the daily homepage withou
 
 it('reads yesterday’s report changes and individual edits with the server snapshot cursor', async () => {
   const { requests } = renderDailyFixture();
-  await userEvent.click(await screen.findByText('Report changes · 2026-10-03'));
-  await screen.findByText('2 report edits');
+  await userEvent.click(await screen.findByText('Report changes'));
+  const source = await screen.findByRole('heading', { name: /Project evidence.*2 report edits/ });
+  expect(requests.some((request) => request.path.startsWith('/api/today/report-edits'))).toBe(false);
+  await userEvent.click(source);
+  expect((screen.getByText('Body changes').closest('details') as HTMLDetailsElement).open).toBe(false);
+  await screen.findByText('Previous summary');
   await userEvent.click(screen.getByText('Individual edits'));
-  await userEvent.click(await screen.findByText('Report edit · 09:00:00'));
+  await userEvent.click(await screen.findByRole('heading', { name: /Report edit.*09:00:00/ }));
+  await userEvent.click(screen.getByText('After', { exact: true }));
   await screen.findByRole('heading', { name: 'After release' });
   expect(requests.some((request) => request.path === '/api/today/report-edits?date=2026-10-03&track_id=project&through_event_id=42')).toBe(true);
 });
 
 it('keeps report history failures distinct from no changes', async () => {
   renderDailyFixture({ failChanges: true });
-  await userEvent.click(await screen.findByText('Report changes · 2026-10-03'));
+  await userEvent.click(await screen.findByText('Report changes'));
   await screen.findByText('Report history unavailable');
   expect(screen.queryByText('No report changes recorded for visible Tracks on this day.')).toBeNull();
 });

@@ -10,7 +10,7 @@ The existing System Area ensure and Track structure factory remain authoritative
 
 Generic authorization consumes those declarations. It never recognizes an application or template name. The report-planning profile permits report reads and maintenance of its own report; it refuses worker, terminal, lifecycle and plugin mutation tools at both registered and dynamic-plugin entry points. The report persistence boundary also refuses task block changes, preventing report writes from scheduling workers. Agents cannot write a closed daily report; a human can explicitly correct it without reopening the Track.
 
-The template declares `user_creatable = false`. Template admission and the picker use that metadata, so selecting a template cannot imply a workspace read grant. The immutable creation identity is exposed through `calm.track.state`; renaming the display title does not change the day.
+The template declares `user_creatable = false`. Template admission and the picker use that metadata, so selecting a template cannot imply a workspace read grant. The immutable creation identity is exposed through `neige.track.state`; renaming the display title does not change the day.
 
 ## Reports and history
 
@@ -18,7 +18,7 @@ Granted Planners enumerate and read the current reports of user-visible Areas, i
 
 The shared history projection reads existing `track.report_edited` events in a half-open Asia/Shanghai day window. It groups edits per visible Track in event-id order and returns first-before / last-after patches plus paged individual edits. Snapshot cursors keep later edits out of continuation pages. Net reverts retain their edit count and full intermediate evidence. A truncated patch is declared, with full edits available separately. Deleted or hidden resources are not exposed, and failures are not presented as an empty day. Code/Git diffs are outside this feature.
 
-The desktop homepage renders the ordinary Track report layout with a single date title and its existing Planner control. There is no additional daily toolbar, time-zone label or duplicate Planner launcher. Report changes follow the document as collapsed evidence, using the same document column. Historical dates remain addressable by the `day` query. Mobile work is deferred by the owner; existing phone navigation is preserved.
+The desktop homepage renders the ordinary Track report layout with a single date title and its existing Planner control. There is no additional daily toolbar, time-zone label or duplicate Planner launcher. Report changes follow the document as an appendix, sharing the exact disclosure renderer and typography with the report’s Reference section. Each source report, body diff and individual edit is folded separately; summary changes use labeled fields. Historical dates remain addressable by the `day` query. Mobile work is deferred by the owner; existing phone navigation is preserved.
 
 ## Acceptance
 

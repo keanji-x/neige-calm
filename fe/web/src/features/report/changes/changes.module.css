@@ -1,0 +1,8 @@
+@layer features {
+  .content { padding-inline-start: calc(var(--glyph-sm) + var(--space-3)); }
+  .fields { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-3) var(--space-6); margin-block: var(--space-6); font-size: var(--text-sm); }
+  .fields dt { color: var(--text-3); }
+  .fields dd { margin: 0; min-inline-size: 0; overflow-wrap: anywhere; }
+  .patch { overflow: auto; padding: var(--space-6); background: var(--surface-code); font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--leading-base); white-space: pre; }
+  .note { color: var(--text-2); font-size: var(--text-sm); margin-block: var(--space-6); }
+}
