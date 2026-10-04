@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 
 import type { ConversationTurnOutcome, SendOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { editedTurnRefill, isLatestTurn, isRewindRefusal, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
+import { editedTurnRefill, isLatestTurn, REWIND_FAILURES, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
+import { classifyFailure } from '../../../../core/domain/failure-class.ts';
 import { ApiError } from '../providers/queries.ts';
 import { useConversationRegistry } from './public.tsx';
 
@@ -54,7 +55,7 @@ export function useConversationEdit({ conversationId, transcript, historyReady, 
       return outcome === 'not-sent' ? 'refused' : outcome;
     }, (error: unknown): SendOutcome => {
       finishReplace(pressedIn, {
-        removed: false, refused: isRewindRefusal(error instanceof ApiError ? error.failure : null),
+        removed: false, refused: classifyFailure(error instanceof ApiError ? error.failure : null, REWIND_FAILURES) === 'refused',
         message: error instanceof Error && error.message.trim() !== '' ? error.message : 'Could not replace the message.',
       });
       return 'refused';

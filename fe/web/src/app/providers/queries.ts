@@ -211,13 +211,6 @@ export function plannerRunQueryOptions(transport: ApiTransportPort, cardId: stri
   };
 }
 
-/** The sentence a queue write shows when the server did not explain itself. */
-function queueWriteMessage(error: unknown, fallback: string): string {
-  return error instanceof ApiError && error.failure.kind === 'http' && error.failure.message !== ''
-    ? error.failure.message
-    : fallback;
-}
-
 /** No `staleTime` of its own: codex keeps a 300 s disk cache behind this. */
 export function modelCatalogQueryOptions(transport: ApiTransportPort, scope: ModelCatalogScope, unauthorized: UnauthorizedChannel) {
   return {
@@ -271,8 +264,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
       runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
         .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
         .catch((error: unknown) => plannerQueueWriteFailure(
-          error instanceof ApiError ? error.failure : null,
-          queueWriteMessage(error, 'Could not remove the queued message.'),
+          error instanceof ApiError ? error.failure : null, 'Could not remove the queued message.',
         ))
         .then(refreshAfter),
     /* Same classification as the delete, plus the steer's own 409s (`not_running`, `unanswered`); on a
@@ -281,8 +273,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
       runOperation(transport, steerPlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
         .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
         .catch((error: unknown) => plannerQueueWriteFailure(
-          error instanceof ApiError ? error.failure : null,
-          queueWriteMessage(error, 'Could not send the queued message now.'),
+          error instanceof ApiError ? error.failure : null, 'Could not send the queued message now.',
         ))
         .then(refreshAfter),
     /* The stored selection is read back from `planner-run`; the catalog goes with it because the default

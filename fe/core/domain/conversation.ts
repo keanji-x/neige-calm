@@ -9,6 +9,7 @@ import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
   TASK_VERDICT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
+import { classifyFailure, type FailureTable } from './failure-class.js';
 import { sha256Hex } from './sha256.js';
 
 /** A frozen discussion source; does not name a provider session. */
@@ -448,14 +449,6 @@ export function setPlannerModelOperation(
  */
 export type SendOutcome = 'delivered' | 'refused' | 'unresolved' | 'not-sent' | 'abandoned';
 
-/**
- * Whether an `ErrorBody.code` names a refusal decided before any write, so the text is unspent.
- * The generic `conflict` is deliberately out: the write may already have been persisted.
- */
-export function isSendRefusalCode(code: string | null): boolean {
-  return code === 'planner_harness_runtime_superseded' || code === 'planner_harness_dormant';
-}
-
 /** What a `POST /planner/input` answers, including where the text landed. */
 export type SentPlannerInput = Readonly<{
   card_id: string;
@@ -575,43 +568,7 @@ export function steerPlannerInputOperation(
   };
 }
 
-/** The server's side of a lost compare-and-swap (the text and revision the entry actually holds), or `null`. */
-export type PlannerInputStale = Readonly<{ entry_id: string; text: string; rev: number }>;
-
-const plannerInputStaleSchema = z.object({
-  code: z.literal('planner_input_stale'),
-  entry_id: z.string(),
-  text: z.string(),
-  rev: z.number(),
-});
-
-export function plannerInputStaleFrom(failure: ApiFailure | null): PlannerInputStale | null {
-  if (failure === null || failure.kind !== 'http' || failure.status !== 409) return null;
-  const parsed = plannerInputStaleSchema.safeParse(failure.body);
-  return parsed.success
-    ? { entry_id: parsed.data.entry_id, text: parsed.data.text, rev: parsed.data.rev }
-    : null;
-}
-
-/** A 404 here means the queue drained or somebody else deleted the entry: beyond editing. */
-export function isPlannerInputGoneFailure(failure: ApiFailure | null): boolean {
-  return failure !== null && failure.kind === 'http' && failure.status === 404;
-}
-
-const plannerSteerRefusedSchema = z.object({ code: z.literal('planner_steer_no_running_turn') });
-const plannerSteerUnansweredSchema = z.object({ code: z.literal('planner_steer_unknown_outcome') });
-
-/** The steer's own 409: no turn took the message, and it is still queued unchanged. */
-export function isPlannerSteerNotRunningFailure(failure: ApiFailure | null): boolean {
-  return failure !== null && failure.kind === 'http' && failure.status === 409
-    && plannerSteerRefusedSchema.safeParse(failure.body).success;
-}
-
-/** The steer's other 409: codex never answered, so "nothing happened" cannot be claimed. */
-export function isPlannerSteerUnansweredFailure(failure: ApiFailure | null): boolean {
-  return failure !== null && failure.kind === 'http' && failure.status === 409
-    && plannerSteerUnansweredSchema.safeParse(failure.body).success;
-}
+const plannerInputStaleSchema = z.object({ text: z.string(), rev: z.number(), entry_id: z.string() });
 
 /**
  * What one write to the pending queue turned into. `stale` and `gone` call for opposite next
@@ -625,16 +582,38 @@ export type PlannerQueueWriteOutcome =
   | Readonly<{ kind: 'unanswered' }>
   | Readonly<{ kind: 'failed'; message: string }>;
 
-/** Classifies a rejected queue write. Never called for a success. */
+/**
+ * What a failed delete or steer of a queued message means. `stale`: a lost compare-and-swap, whose
+ * body quotes the text and revision the entry actually holds. `gone`: the queue drained or somebody
+ * else deleted the entry, beyond editing. The steer's own 409s: `not_running`, no turn took the
+ * message and it is still queued unchanged; `unanswered`, codex never answered, so "nothing
+ * happened" cannot be claimed.
+ */
+export const PLANNER_QUEUE_WRITE_FAILURES: FailureTable<Exclude<PlannerQueueWriteOutcome['kind'], 'done'>> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([409]), code: 'planner_input_stale', is: 'stale' as const }),
+    Object.freeze({ status: Object.freeze([404]), is: 'gone' as const }),
+    Object.freeze({ status: Object.freeze([409]), code: 'planner_steer_no_running_turn', is: 'not_running' as const }),
+    Object.freeze({ status: Object.freeze([409]), code: 'planner_steer_unknown_outcome', is: 'unanswered' as const }),
+  ]),
+  unauthorized: 'failed',
+  otherwise: 'failed',
+});
+
+/**
+ * Classifies a rejected queue write. Never called for a success. `failed` shows the server's own
+ * sentence when it gave one, else `fallback`; a `stale` whose body is unreadable is `failed` too.
+ */
 export function plannerQueueWriteFailure(
-  failure: ApiFailure | null, message: string,
+  failure: ApiFailure | null, fallback: string,
 ): PlannerQueueWriteOutcome {
-  const stale = plannerInputStaleFrom(failure);
-  if (stale !== null) return { kind: 'stale', text: stale.text, rev: stale.rev };
-  if (isPlannerInputGoneFailure(failure)) return { kind: 'gone' };
-  if (isPlannerSteerNotRunningFailure(failure)) return { kind: 'not_running' };
-  if (isPlannerSteerUnansweredFailure(failure)) return { kind: 'unanswered' };
-  return { kind: 'failed', message };
+  const kind = classifyFailure(failure, PLANNER_QUEUE_WRITE_FAILURES);
+  const stale = kind === 'stale' && failure?.kind === 'http' ? plannerInputStaleSchema.safeParse(failure.body) : null;
+  if (stale?.success === true) return { kind: 'stale', text: stale.data.text, rev: stale.data.rev };
+  if (kind === 'failed' || kind === 'stale') {
+    return { kind: 'failed', message: failure?.kind === 'http' && failure.message !== '' ? failure.message : fallback };
+  }
+  return { kind };
 }
 
 export function interruptPlannerOperation(cardId: string): ApiOperation<{ stopped: boolean }> {
@@ -758,24 +737,26 @@ export type ConversationCreateFailure = Readonly<
   }
 >;
 
-const DIFFERENT_PAYLOAD = 'already used with different payload';
+/**
+ * What a failed create means for the draft; a 409 is told apart by its `code`, and the payload
+ * conflict only by its wording. A lost or unreadable answer may have been served, so it is `retry`.
+ */
+export const CONVERSATION_CREATE_FAILURES: FailureTable<ConversationCreateFailure['kind']> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ code: 'idempotency_key_exhausted', is: 'exhausted' as const }),
+    Object.freeze({ status: Object.freeze([404]), is: 'gone' as const }),
+    /* Its own kind for its own sentence, but not its own resolution. */
+    Object.freeze({ status: Object.freeze([503]), is: 'unavailable' as const }),
+    Object.freeze({ status: Object.freeze([400]), is: 'blocked' as const }),
+    Object.freeze({ status: Object.freeze([409]), message: 'already used with different payload', is: 'stale-payload' as const }),
+    Object.freeze({ status: Object.freeze([409]), is: 'exists' as const }),
+  ]),
+  unauthorized: 'retry',
+  otherwise: 'retry',
+});
 
 export function conversationCreateFailure(failure: ApiFailure): ConversationCreateFailure {
-  if (failure.kind === 'transport' || failure.kind === 'decode') {
-    // The request may have been served and the answer lost on the way back.
-    return { kind: 'retry', message: failure.message };
-  }
-  const { message } = failure;
-  if (failure.code === 'idempotency_key_exhausted') return { kind: 'exhausted', message };
-  if (failure.status === 404) return { kind: 'gone', message };
-  /* Its own kind for its own sentence, but not its own resolution. */
-  if (failure.status === 503) return { kind: 'unavailable', message };
-  if (failure.status === 400) return { kind: 'blocked', message };
-  if (failure.status === 409) {
-    if (message.includes(DIFFERENT_PAYLOAD)) return { kind: 'stale-payload', message };
-    return { kind: 'exists', message };
-  }
-  return { kind: 'retry', message };
+  return { kind: classifyFailure(failure, CONVERSATION_CREATE_FAILURES), message: failure.message };
 }
 
 const DIFF_PREFIX = '## Track state changes since your last turn';

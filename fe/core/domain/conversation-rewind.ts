@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
 import type { HarnessInputSegment, PlannerAttachment } from '../api/generated/wire.js';
-import type { ApiFailure, ApiOperation } from '../api/types.js';
+import type { ApiOperation } from '../api/types.js';
+import type { FailureTable } from './failure-class.js';
 import { harnessInputSegmentSchema, type ConversationTurn, type TranscriptEntry } from './conversation.js';
 
 /** What `POST …/planner/rewind` answers: the removed turn's input, prompt then accepted steers. The composer is filled from the transcript when Edit is clicked, not from this. */
@@ -34,10 +35,12 @@ export function isComposerEmpty(content: ComposerContent): boolean {
   return content.text.trim() === '' && content.attachments.length === 0;
 }
 
-/** A failed rewind the server answered: the request was refused and nothing changed. Any other failure may have removed the turn. */
-export function isRewindRefusal(failure: ApiFailure | null): boolean {
-  return failure !== null && (failure.kind === 'unauthorized' || (failure.kind === 'http' && failure.status >= 400 && failure.status < 500));
-}
+/** A failed rewind the server answered with a 4xx: refused, nothing changed. Any other failure may have removed the turn. */
+export const REWIND_FAILURES: FailureTable<'refused' | 'unknown'> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze({ from: 400, to: 499 }), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
 
 /** The same words and the same images, in order. */
 export function isSameComposer(left: ComposerContent, right: ComposerContent): boolean {

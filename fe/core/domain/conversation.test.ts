@@ -1025,8 +1025,8 @@ describe('plannerQueueWriteFailure', () => {
   });
 
   it('falls back to a plain failure when a 409 body is unreadable', () => {
-    expect(stale({ code: 'planner_input_stale' })).toEqual({ kind: 'failed', message: 'fallback' });
-    expect(stale('not an object')).toEqual({ kind: 'failed', message: 'fallback' });
+    expect(stale({ code: 'planner_input_stale' })).toEqual({ kind: 'failed', message: 'stale' });
+    expect(stale('not an object')).toEqual({ kind: 'failed', message: 'stale' });
   });
 
   it('reads a 404 as the entry having left the queue', () => {
@@ -1043,7 +1043,7 @@ describe('plannerQueueWriteFailure', () => {
     expect(plannerQueueWriteFailure({
       kind: 'http', status: 409, code: 'conflict', message: 'shutting down',
       body: { error: 'shutting down', code: 'conflict' },
-    }, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
+    }, 'fallback')).toEqual({ kind: 'failed', message: 'shutting down' });
   });
 
   it('reads a timed-out steer as unanswered, distinct from the entry still waiting', () => {
@@ -1057,13 +1057,21 @@ describe('plannerQueueWriteFailure', () => {
     expect(plannerQueueWriteFailure({
       kind: 'http', status: 500, code: 'planner_steer_unknown_outcome', message: 'boom',
       body: { error: 'boom', code: 'planner_steer_unknown_outcome' },
-    }, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
+    }, 'fallback')).toEqual({ kind: 'failed', message: 'boom' });
   });
 
-  it('reports anything else as an unexplained failure', () => {
+  it('reports anything else as a failure in the server\'s words, or the fallback when it gave none', () => {
     expect(plannerQueueWriteFailure(
       { kind: 'http', status: 500, code: 'internal', message: 'boom', body: null }, 'fallback',
+    )).toEqual({ kind: 'failed', message: 'boom' });
+    expect(plannerQueueWriteFailure(
+      { kind: 'http', status: 500, code: 'internal', message: '', body: null }, 'fallback',
     )).toEqual({ kind: 'failed', message: 'fallback' });
+    expect(plannerQueueWriteFailure(
+      { kind: 'unauthorized', status: 401, code: 'unauthorized', message: 'signed out' }, 'fallback',
+    )).toEqual({ kind: 'failed', message: 'fallback' });
+    expect(plannerQueueWriteFailure({ kind: 'transport', message: 'dropped' }, 'fallback'))
+      .toEqual({ kind: 'failed', message: 'fallback' });
     expect(plannerQueueWriteFailure(null, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
   });
 });

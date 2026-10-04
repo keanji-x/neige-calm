@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import type { HarnessInputSegment } from '../api/generated/wire.js';
 import { buildTranscript, type TranscriptEntry } from './conversation.js';
 import {
-  editedTurnMessageIds, editedTurnRefill, isLatestTurn, isRewindRefusal, isSameComposer, rewindPlannerTurnOperation,
+  editedTurnMessageIds, editedTurnRefill, isLatestTurn, isSameComposer, rewindPlannerTurnOperation,
   withoutEditedTurn, withRefill,
 } from './conversation-rewind.js';
 
@@ -89,15 +89,6 @@ it('posts only the turn id and decodes the removed input', () => {
   expect(operation.responseSchema.parse({ card_id: 'card/1', turn_id: 'turn-9',
     input: [{ presentation: 'user', text: 'User says:\nx', attachments: [] }] }).input).toHaveLength(1);
   expect(operation.responseSchema.safeParse({ card_id: 'card/1', turn_id: 'turn-9' }).success).toBe(false);
-});
-
-it('reads only an answered 4xx as a refusal that changed nothing', () => {
-  expect(isRewindRefusal({ kind: 'http', status: 409, code: 'conflict', message: 'No.' })).toBe(true);
-  expect(isRewindRefusal({ kind: 'unauthorized', status: 401, code: 'unauthorized', message: 'No.' })).toBe(true);
-  expect(isRewindRefusal({ kind: 'http', status: 502, code: 'bad_gateway', message: 'Down.' })).toBe(false);
-  expect(isRewindRefusal({ kind: 'transport', message: 'Lost.' })).toBe(false);
-  expect(isRewindRefusal({ kind: 'decode', message: 'Odd.' })).toBe(false);
-  expect(isRewindRefusal(null)).toBe(false);
 });
 
 it('tells an untouched refill from a changed one by its words and image ids in order', () => {

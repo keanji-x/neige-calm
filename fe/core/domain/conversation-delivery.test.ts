@@ -1,43 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ApiFailure } from '../api/types.js';
 import {
-  failedConversationDelivery, KeyedSendFailure, retryUnknownSend, SEND_RETRIES, sendFailureKind,
-  type SendFailureKind,
+  KeyedSendFailure, retryUnknownSend, SEND_RETRIES, type SendFailureKind,
 } from './conversation-delivery.js';
 
-describe('failed conversation delivery', () => {
-  it.each([400, 403, 404, 413, 422, 429])('permits an explicit %s rejection to be retried', (status) => {
-    expect(failedConversationDelivery({ kind: 'http', status, code: 'rejected', message: 'rejected' })).toBe('rejected');
-  });
-
-  it.each([408, 409, 500, 502, 503, 504])('keeps HTTP %s acceptance uncertain', (status) => {
-    expect(failedConversationDelivery({ kind: 'http', status, code: 'unavailable', message: 'unavailable' })).toBe('unknown');
-  });
-
-  it('keeps transport and decode failures uncertain', () => {
-    expect(failedConversationDelivery({ kind: 'transport', message: 'dropped' })).toBe('unknown');
-    expect(failedConversationDelivery({ kind: 'decode', message: 'malformed' })).toBe('unknown');
-    expect(failedConversationDelivery(null)).toBe('unknown');
-  });
-});
-
-describe('what a failed attempt says about delivery', () => {
-  it('is unknown after a lost answer, a server error or no answer at all', () => {
-    expect(sendFailureKind({ kind: 'transport', message: 'dropped' })).toBe('unknown');
-    expect(sendFailureKind({ kind: 'http', status: 503, code: 'service_unavailable', message: 'full' })).toBe('unknown');
-    expect(sendFailureKind(null)).toBe('unknown');
-  });
-
-  it('is a refusal for the codes the server gives only before a binding exists', () => {
-    expect(sendFailureKind({ kind: 'http', status: 409, code: 'planner_harness_dormant', message: 'reset' })).toBe('refused');
-    expect(sendFailureKind({ kind: 'http', status: 409, code: 'planner_harness_runtime_superseded', message: 'again' })).toBe('refused');
-  });
-
-  it('is a rejection for an answer given before the request was handled', () => {
-    expect(sendFailureKind({ kind: 'http', status: 400, code: 'bad_request', message: 'empty' })).toBe('rejected');
-    expect(sendFailureKind({ kind: 'unauthorized', status: 401, code: 'session_expired', message: 'expired' })).toBe('rejected');
-  });
-});
+/** One failure the send table reads as each kind. */
+const FAILURE_OF: Readonly<Record<SendFailureKind, ApiFailure>> = {
+  unknown: { kind: 'transport', message: 'dropped' },
+  refused: { kind: 'http', status: 409, code: 'planner_harness_dormant', message: 'reset' },
+  rejected: { kind: 'http', status: 400, code: 'bad_request', message: 'empty' },
+};
 
 describe('retrying an unknown send', () => {
   const failures = (kinds: readonly SendFailureKind[], unknown = false) => {
@@ -45,7 +18,7 @@ describe('retrying an unknown send', () => {
     let attempts = 0;
     const run = retryUnknownSend(
       (index) => { attempts += 1; return Promise.reject(errors[Math.min(index, errors.length - 1)]); },
-      (error) => (error as Error).message as SendFailureKind,
+      (error) => FAILURE_OF[(error as Error).message as SendFailureKind],
       () => Promise.resolve(),
       unknown,
     );
@@ -58,7 +31,7 @@ describe('retrying an unknown send', () => {
     const result = await retryUnknownSend((index) => {
       attempts.push(index);
       return index < 2 ? Promise.reject(new Error('unknown')) : Promise.resolve('sent');
-    }, () => 'unknown', (retry) => { pauses.push(retry); return Promise.resolve(); }, false);
+    }, () => null, (retry) => { pauses.push(retry); return Promise.resolve(); }, false);
     expect(result).toEqual({ sent: 'sent', everUnknown: true });
     expect(attempts).toEqual([0, 1, 2]);
     expect(pauses).toEqual([0, 1]);
@@ -87,7 +60,7 @@ describe('retrying an unknown send', () => {
   });
 
   it('tells a first-time answer from one that came after an unknown outcome', async () => {
-    const answer = (unknown: boolean) => retryUnknownSend(() => Promise.resolve('sent'), () => 'unknown', () => Promise.resolve(), unknown);
+    const answer = (unknown: boolean) => retryUnknownSend(() => Promise.resolve('sent'), () => null, () => Promise.resolve(), unknown);
     expect(await answer(false)).toEqual({ sent: 'sent', everUnknown: false });
     expect(await answer(true)).toEqual({ sent: 'sent', everUnknown: true });
   });

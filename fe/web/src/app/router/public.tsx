@@ -30,7 +30,7 @@ import {
   NO_UPLOAD, type AttachmentStore, type UploadAttachment, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
 import {
-  KeyedSendFailure, retryUnknownSend, sendFailureKind,
+  KeyedSendFailure, retryUnknownSend,
 } from '../../../../core/domain/conversation-delivery.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import {
@@ -581,7 +581,7 @@ export function useConversationStore(
         return admitted === null ? Promise.reject(new OfflineSubmissionError())
           : mutations.send(text, attachmentIds, key, admitted);
       },
-      (error) => sendFailureKind(error instanceof ApiError ? error.failure : null),
+      (error) => (error instanceof ApiError ? error.failure : null),
       (retry) => new Promise<void>((resolve) => { setTimeout(resolve, recoveryDelay(retry, Math.random())); }),
       unknown,
     ).then(({ sent, everUnknown }) => {

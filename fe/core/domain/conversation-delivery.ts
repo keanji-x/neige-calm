@@ -1,27 +1,27 @@
 import type { ApiFailure } from '../api/types.js';
-import { isSendRefusalCode } from './conversation.js';
-
-/** These explicit request rejections happen before dispatch; every other outcome requires checking delivery. */
-export function failedConversationDelivery(failure: ApiFailure | null): 'rejected' | 'unknown' {
-  return failure !== null && (failure.kind === 'unauthorized'
-    || (failure.kind === 'http' && [400, 403, 404, 413, 422, 429].includes(failure.status)))
-    ? 'rejected' : 'unknown';
-}
+import { classifyFailure, type FailureTable } from './failure-class.js';
 
 /** What one failed attempt of a keyed send says about whether its message was stored. */
 export type SendFailureKind = 'unknown' | 'refused' | 'rejected';
 
 /**
- * What one failed attempt says, taken alone. `null` is a failure with no answer at all, such as a
- * connection that is not ready. `planner_harness_dormant` and `planner_harness_runtime_superseded`
- * are a refusal only for an op with no unknown attempt yet: once one was unknown, a write of it may
- * still be queued and commit later while those codes come back, so {@link retryUnknownSend} keeps
- * such an op unknown.
+ * What one failed attempt of `POST /planner/input` says, taken alone. `rejected`: answered before
+ * the request was handled. `refused`: a refusal decided before any write, so the text is unspent;
+ * the generic `conflict` is deliberately not one, the write may already have been persisted.
+ * Anything else, `null` included (a connection that is not ready), is `unknown`.
+ * `planner_harness_dormant` and `planner_harness_runtime_superseded` are a refusal only for an op
+ * with no unknown attempt yet: once one was unknown, a write of it may still be queued and commit
+ * later while those codes come back, so {@link retryUnknownSend} keeps such an op unknown.
  */
-export function sendFailureKind(failure: ApiFailure | null): SendFailureKind {
-  if (isSendRefusalCode(failure?.kind === 'http' ? failure.code : null)) return 'refused';
-  return failedConversationDelivery(failure) === 'rejected' ? 'rejected' : 'unknown';
-}
+export const SEND_FAILURES: FailureTable<SendFailureKind> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ code: 'planner_harness_runtime_superseded', is: 'refused' as const }),
+    Object.freeze({ code: 'planner_harness_dormant', is: 'refused' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 404, 413, 422, 429]), is: 'rejected' as const }),
+  ]),
+  unauthorized: 'rejected',
+  otherwise: 'unknown',
+});
 
 /** Automatic retries of one keyed send after its first attempt; an attempt that cannot go out counts too. */
 export const SEND_RETRIES = 5;
@@ -46,14 +46,15 @@ export type KeyedSendAnswer<T> = Readonly<{ sent: T; everUnknown: boolean }>;
 /**
  * Run `attempt` until it answers, fails for a reason other than an unknown outcome, or the retries
  * are spent; rejects with a {@link KeyedSendFailure}. Every attempt must reuse one
- * `Idempotency-Key`; `pause` waits before retry `retry`. `unknown` is the op's state from earlier
- * runs: a resumed op that was unknown ends unknown on anything but a 200. A 200 after an unknown
- * outcome may replay a message that has since been deleted, rewound or reset, so `everUnknown`
- * tells the caller not to trust its entry for display.
+ * `Idempotency-Key`. `failureOf` reads an attempt's error as the {@link ApiFailure} it carries, or
+ * `null`, which {@link SEND_FAILURES} classifies; `pause` waits before retry `retry`. `unknown` is
+ * the op's state from earlier runs: a resumed op that was unknown ends unknown on anything but a
+ * 200. A 200 after an unknown outcome may replay a message that has since been deleted, rewound
+ * or reset, so `everUnknown` tells the caller not to trust its entry for display.
  */
 export async function retryUnknownSend<T>(
   attempt: (index: number) => Promise<T>,
-  classify: (error: unknown) => SendFailureKind,
+  failureOf: (error: unknown) => ApiFailure | null,
   pause: (retry: number) => Promise<void>,
   unknown: boolean,
 ): Promise<KeyedSendAnswer<T>> {
@@ -62,7 +63,7 @@ export async function retryUnknownSend<T>(
     try {
       return { sent: await attempt(index), everUnknown: unknownSoFar };
     } catch (error) {
-      const kind = classify(error);
+      const kind = classifyFailure(failureOf(error), SEND_FAILURES);
       if (kind === 'unknown') {
         unknownSoFar = true;
         if (index < SEND_RETRIES) {
