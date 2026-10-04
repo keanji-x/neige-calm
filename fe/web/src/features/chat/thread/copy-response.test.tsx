@@ -74,7 +74,7 @@ const editTurns = (first: 'you' | 'system' = 'you') => [
   first === 'you' ? { id: 'u', author: 'you' as const, text: 'Prompt', atMs: 1 }
     : { id: 'wake', author: 'system' as const, label: 'Wake', text: 'Automatic turn', atMs: 1 },
   { id: 'a', author: 'agent' as const, text: 'Answer', atMs: 2 },
-  { id: 'end', author: 'turn' as const, turnId: 'turn-7', status: 'completed' as const, atMs: 3 },
+  { id: 'end', author: 'turn' as const, turnId: 'turn-7', status: 'completed' as const, atMs: 3, elapsedMs: null },
 ];
 
 it('edits the current turn once under repeated clicks and shows a refusal in the action itself', async () => {

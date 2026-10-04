@@ -874,7 +874,7 @@ describe('track conversations', () => {
       if (request.path.endsWith('/planner/run')) {
         return ok({
           card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle',
-          attachments_supported: true,
+          attachments_supported: true, running_turn: null,
         });
       }
       if (request.path.endsWith('/planner/attachments')) {
@@ -967,7 +967,7 @@ describe('track conversations', () => {
     const held = new Promise<ApiTransportResponse>((done) => { resolve = done; });
     const { requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok([user, reply, terminal]);
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', attachments_supported: true });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', attachments_supported: true, running_turn: null });
       if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: draftImageId, contentType: 'image/png', size: 4,
         url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/${draftImageId}` });
       if (request.path.endsWith('/planner/input')) return held;
@@ -1016,7 +1016,7 @@ describe('track conversations', () => {
       if (answered !== undefined) return answered;
       if (request.path.includes(HISTORY_PATH)) return ok(pathCardId(request.path) === ASSISTANT_CARD.id ? rows() : []);
       if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r',
-        phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, attachments_supported: true });
+        phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null });
       if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: DRAFT_IMAGE_ID, contentType: 'image/png', size: 4,
         url: `/api/cards/${pathCardId(request.path)}/planner/attachments/${DRAFT_IMAGE_ID}` });
       return undefined;
@@ -1043,7 +1043,7 @@ describe('track conversations', () => {
       }
       if (request.path.endsWith('/planner/run')) {
         return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null,
-          reasoning_effort: null, blocked_reason: null, attachments_supported: true, ...run });
+          reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null, ...run });
       }
       if (request.path.endsWith('/planner/attachments')) {
         await uploadGate();
@@ -1349,7 +1349,7 @@ describe('track conversations', () => {
         return failReads ? failure(503, 'unavailable', 'Transcript unavailable') : ok(earlier);
       }
       if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r',
-        phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, attachments_supported: true });
+        phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null });
       if (request.path.endsWith('/planner/rewind')) {
         removed = true;
         return ok({ card_id: ASSISTANT_CARD.id, turn_id: 'turn',
