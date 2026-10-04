@@ -146,6 +146,10 @@ export type ConversationRegistry = Readonly<{
   composerOf: (conversationId: string) => ComposerContent;
   /** Change one conversation's composer, whichever conversation is shown. */
   editComposer: (conversationId: string, next: (current: ComposerContent) => ComposerContent) => void;
+  /** Each Track's unsent words for a conversation not created yet, kept across closing, `+` and remounts.
+   * Not `ConversationDraft.text`, which holds the words after the composer clears on send. */
+  newConversationComposerOf: (scopeId: string) => string;
+  editNewConversationComposer: (scopeId: string, next: (current: string) => string) => void;
   /** An Edit's rewind is out for this conversation (#1923). */
   isEditing: (conversationId: string) => boolean;
   /** One rewind per conversation at a time; false while one is out. */
@@ -225,6 +229,19 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     });
   }, []);
   const composerOf = useCallback((conversationId: string) => composers[conversationId] ?? EMPTY_COMPOSER, [composers]);
+  const [newConversationComposers, setNewConversationComposers] = useState<Readonly<Record<string, string>>>({});
+  const editNewConversationComposer = useCallback((scopeId: string, next: (current: string) => string) => {
+    setNewConversationComposers((current) => {
+      const before = current[scopeId] ?? '';
+      const after = next(before);
+      if (after === before) return current;
+      const updated = { ...current };
+      /* Empty is no entry, as for an existing conversation's composer. */
+      if (after === '') delete updated[scopeId]; else updated[scopeId] = after;
+      return updated;
+    });
+  }, []);
+  const newConversationComposerOf = useCallback((scopeId: string) => newConversationComposers[scopeId] ?? '', [newConversationComposers]);
   const editingRef = useRef<ReadonlySet<string>>(new Set());
   const [editing, setEditing] = useState<ReadonlySet<string>>(() => new Set());
   const tryBeginEdit = useCallback((conversationId: string) => {
@@ -333,10 +350,11 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       pendingSendIds, failedSends, tryBeginSend, finishSend, clearFailedSend,
-      composerOf, editComposer, isEditing, tryBeginEdit, finishEdit, removedTurnOf, forgetRemovedTurn, uploadOf, editUpload,
+      composerOf, editComposer, newConversationComposerOf, editNewConversationComposer,
+      isEditing, tryBeginEdit, finishEdit, removedTurnOf, forgetRemovedTurn, uploadOf, editUpload,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editUpload, finishDraftAdoption, forgetRemovedTurn, finishEdit, isEditing, removedTurnOf, uploadOf, finishSend, pendingSendIds,
+      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, forgetRemovedTurn, finishEdit, isEditing, removedTurnOf, uploadOf, finishSend, pendingSendIds,
       remember, requestOpen, failedSends, clearFailedSend,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginEdit, tryBeginSend, turnsOf,
       updateExisting],

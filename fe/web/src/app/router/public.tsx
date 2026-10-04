@@ -930,7 +930,6 @@ function useConversationPanel(
        dropped when the drawer closes. */
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
   const [resendConfirmation, setResendConfirmation] = useState<string | null>(null);
-  const [composerDraft, setComposerDraft] = useState('');
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
   /* A track conversation runs on Codex; Claude is a Planner-only backend (#1791). */
   const draftCatalog = useQuery({ ...modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized),
@@ -1014,6 +1013,12 @@ function useConversationPanel(
   const adoptedDraftId = registry.adoptedDraftIdOf(sourceScopeId);
   const creating = draft?.creating ?? false;
   const discardUnsentDraft = registry.discardUnsentDraft;
+  /* The new conversation's composer lives in the registry per Track, so closing, `+` and leaving keep its words. */
+  const newConversationText = registry.newConversationComposerOf(sourceScopeId);
+  const { editNewConversationComposer } = registry;
+  const setNewConversationText = useCallback<Dispatch<SetStateAction<string>>>((action) => {
+    editNewConversationComposer(sourceScopeId, (current) => typeof action === 'function' ? action(current) : action);
+  }, [editNewConversationComposer, sourceScopeId]);
 
   /* Preserve only a draft whose request actually left the browser; an untouched or
        locally refused draft has no server identity. */
@@ -1094,7 +1099,6 @@ function useConversationPanel(
   /* The `+` opens a draft scoped to one concrete Track; Today materialises the
        launchpad before calling this, so the scope id is never empty. */
   const start = () => {
-    setComposerDraft('');
     /* A draft that was sent and failed is still open business: reopened with the
            same key, so the next attempt is a retry and not a second conversation. */
     if (draft !== null && draft.sentText !== null) {
@@ -1335,7 +1339,6 @@ function useConversationPanel(
        was sent and failed keeps its key and words so the next attempt is a retry. */
   const closeDrawer = () => {
     setOpenTarget(null);
-    setComposerDraft('');
     if (draft !== null && draft.sentText === null) registry.discardDraft(draft);
   };
 
@@ -1389,7 +1392,7 @@ function useConversationPanel(
             )}
             <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother}
               mentionTrigger={mentionTrigger}
-              draft={{ text: composerDraft, onChange: setComposerDraft }}
+              draft={{ text: newConversationText, onChange: setNewConversationText }}
               /* A track conversation is not a Planner create: no availability gate here (#1817). */
               footerActions={<ModelPill groups={[{ provider: 'codex', catalog: draftCatalog.data ?? null, availability: null }]} provider="codex" selection={draft.model}
                 onChange={model => withDraft(draft, current => current.creating || current.sentText !== null
