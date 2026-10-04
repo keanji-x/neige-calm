@@ -1,6 +1,6 @@
 # #2003 — One public naming system for the agent-facing CLI and MCP tools
 
-Status: design, implementation approved by the owner (2026-10-04). Issue: #2003.
+Status: implemented (2026-10-04): #2015 (S1+S6), #2036 (S2+S3+0134), #2073 (S4), PR-4 (S5). Issue: #2003.
 Related: #1801 (kernel-served CLI), #1668 / #1686 (Codex sanitized names), #1877 / #1883 (report
 read anchors), #1893 (Planner tool byte budget).
 
@@ -660,3 +660,8 @@ The S-slices are review units. They land as four PRs, so the brand is never mixe
   After the merge the Planner surface is 29,458 B (cap 30,000) and the guides 7,489 B (cap 7,500).
 - Left as is: the `track_report_gate_guard` classifier inputs (any literal `neige` executable is
   flagged, whatever its arguments), and the `fe` conversation tests' sample shell strings.
+
+## 12. PR-4 implementation record
+
+- S5 renames the remaining living text: `e2e/planner_claude_ux*.py` and their test (whose metrics read `neige.terminal.*` again), `e2e/PLANNER_CLAUDE_UX.md`, `.env.example`, `docker/Dockerfile.server`, `docs/events-retention.md`, `docs/report-live-views.md` and the two oracle YAML files. The oracle files describe current behavior and nothing machine-reads them.
+- Design records (`docs/architecture/*`, `docs/design-*`, `docs/_*`, `docs/archive/`) keep the names of their time.

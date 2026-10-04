@@ -103,8 +103,8 @@ def requests_observation(call):
     """True when a completed call returns an observation: observe and open always do (#1677: an open's
     wait arguments run as its final observation), control/input with an observe=true readback."""
     args = call.get("arguments", {})
-    return call["tool"] in ("calm.terminal.open", "calm.terminal.observe") or (
-        call["tool"] in ("calm.terminal.control", "calm.terminal.input") and args.get("observe") is True)
+    return call["tool"] in ("neige.terminal.open", "neige.terminal.observe") or (
+        call["tool"] in ("neige.terminal.control", "neige.terminal.input") and args.get("observe") is True)
 
 
 def signal_metrics(terminal):
@@ -132,9 +132,9 @@ def signal_metrics(terminal):
             continue
         args, tool = call.get("arguments", {}), call["tool"]
         action = args.get("action")
-        if tool == "calm.terminal.input" and isinstance(action, dict) and action.get("type") == "submit":
+        if tool == "neige.terminal.input" and isinstance(action, dict) and action.get("type") == "submit":
             counts["submit_actions"] += 1
-        if tool == "calm.terminal.open" and args.get("claim") is True:
+        if tool == "neige.terminal.open" and args.get("claim") is True:
             counts["open_with_claim"] += 1
         signal_wait = requests_observation(call) and args.get("wait_for") == "signal"
         if signal_wait:
@@ -187,7 +187,7 @@ def round_trip_metrics(terminal):
         text_wait = requests_observation(call) and args.get("wait_for") == "text"
         if text_wait:
             counts["text_wait_requests"] += 1
-        if tool == "calm.terminal.input":
+        if tool == "neige.terminal.input":
             action = args.get("action")
             if isinstance(action, dict) and action.get("type") == "sequence":
                 counts["sequence_actions"] += 1
@@ -225,13 +225,13 @@ def open_summary_metrics(terminal):
         if not call.get("completed"):
             continue
         args, tool = call.get("arguments", {}), call["tool"]
-        open_wait = tool == "calm.terminal.open" and any(key in args for key in WAIT_ARGUMENT_KEYS)
+        open_wait = tool == "neige.terminal.open" and any(key in args for key in WAIT_ARGUMENT_KEYS)
         if open_wait:
             counts["open_with_wait"] += 1
         if tool_failed(call):
             continue
         data = metadata(call)
-        if tool in ("calm.terminal.control", "calm.terminal.input") and isinstance(data.get("summary"), dict):
+        if tool in ("neige.terminal.control", "neige.terminal.input") and isinstance(data.get("summary"), dict):
             counts["summary_present"] += 1
         if open_wait:
             wait = wait_outcome(data)
@@ -324,7 +324,7 @@ def wait_metrics(terminal):
             continue
         args = call.get("arguments", {})
         tool = call["tool"]
-        if tool == "calm.terminal.input":
+        if tool == "neige.terminal.input":
             if args.get("allow_output_since_observation") is True:
                 counts["drift_allowed_inputs"] += 1
             if "observation_id" not in args:
@@ -338,7 +338,7 @@ def wait_metrics(terminal):
         if tool_failed(call):
             continue
         data = metadata(call)
-        if tool == "calm.terminal.input" and data.get("output_since_observation") is True:
+        if tool == "neige.terminal.input" and data.get("output_since_observation") is True:
             counts["drift_observed_inputs"] += 1
         state = observed_state(call, data)
         if state is None:
@@ -355,7 +355,7 @@ def wait_metrics(terminal):
 
 
 def action_readback(call, data):
-    if call["tool"] not in ("calm.terminal.control", "calm.terminal.input") or "observation" not in data:
+    if call["tool"] not in ("neige.terminal.control", "neige.terminal.input") or "observation" not in data:
         return None
     readback = require_object(data["observation"], "action observation")
     if readback.get("status") == "available":
@@ -367,7 +367,7 @@ def action_readback(call, data):
 
 
 def observed_state(call, data):
-    if call["tool"] in ("calm.terminal.open", "calm.terminal.observe"):
+    if call["tool"] in ("neige.terminal.open", "neige.terminal.observe"):
         return data
     readback = action_readback(call, data)
     return readback["state"] if readback is not None and readback["status"] == "available" else None

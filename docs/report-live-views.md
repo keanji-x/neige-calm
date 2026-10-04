@@ -55,7 +55,7 @@ The frontend has its own4 MiB decoded JSON budget plus bounded shape. It does no
 estimate Rust float spellings or pretty JSON size, and cannot decide exact write
 admission. Rejected writes remain the kernel's decision.
 
-`calm.report.read` emits source, version, resolved_at and
+`neige.report.read` emits source, version, resolved_at and
 `validation: "presentation"`. `ok` certifies bounded structure/version, not truth
 of publisher facts or financial/account authority. Full adds `data`; none skips
 hydration. Missing overlays are pending; malformed data, storage errors and

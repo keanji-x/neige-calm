@@ -119,7 +119,7 @@ The pruner never VACUUMs. Freed pages are reused by new appends, so the file
 size plateaus rather than shrinking. To actually shrink the file:
 
 1. Back up the DB file.
-2. Run `neige vacuum --force`.
+2. Run `neige admin vacuum --force`.
 
 **Warning:** VACUUM takes a full-database lock for its duration — run it
 off-peak, never during active use.

@@ -12,7 +12,7 @@ from unittest.mock import patch
 import planner_claude_ux as ux
 
 
-def row(identifier, tool="calm.terminal.observe", *, text=("3141",), terminal="t1"):
+def row(identifier, tool="neige.terminal.observe", *, text=("3141",), terminal="t1"):
     return {"id": identifier, "method": "item/completed", "worker_session_id": "planner1",
             "params": {"item": {"id": f"call-{identifier}", "type": "mcpToolCall",
                                 "tool": tool, "status": "completed", "arguments": {"terminal_id": terminal},
@@ -27,7 +27,7 @@ class CollectorTests(unittest.TestCase):
         calls = []
         for identifier, observation in ((1, {"status": "available", "state": state}),
                                          (2, {"status": "unavailable", "reason": "readback timeout"})):
-            call = row(identifier, "calm.terminal.input")
+            call = row(identifier, "neige.terminal.input")
             call["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
             call["params"]["item"]["result"] = {"structuredContent": {
                 "terminal_id": "t1", "request_id": f"request-{identifier}", "outcome": "written",
@@ -45,7 +45,7 @@ class CollectorTests(unittest.TestCase):
                                              {"type": "key", "key": "Backspace", "repeat": 2},
                                              {"type": "key", "key": "Enter"},
                                              {"type": "key", "key": "Left", "repeat": 4}), start=1):
-            call = row(identifier, "calm.terminal.input")
+            call = row(identifier, "neige.terminal.input")
             call["params"]["item"]["arguments"]["action"] = action
             calls.append(call)
         result = ux.metrics(calls)
@@ -55,7 +55,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_invalid_repeat_on_failed_call_is_preserved_and_unmeasured(self):
         for repeat in (None, "4", 2.5, True, 0, 33):
-            call = row(1, "calm.terminal.input")
+            call = row(1, "neige.terminal.input")
             item = call["params"]["item"]
             item["arguments"]["action"] = {"type": "key", "key": "Left", "repeat": repeat}
             item["status"], item["error"] = "failed", {"message": "invalid repeat"}
@@ -72,10 +72,10 @@ class CollectorTests(unittest.TestCase):
         state = row(1)["params"]["item"]["result"]["structuredContent"]
         state.update({"observation_id": "fresh-observation", "control_id": "owner1", "role": "owner"})
         for tool, action, receipt in (
-                ("calm.terminal.control", "claim", {"terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}),
-                ("calm.terminal.input", {"type": "key", "key": "Enter"},
+                ("neige.terminal.control", "claim", {"terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}),
+                ("neige.terminal.input", {"type": "key", "key": "Enter"},
                  {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified"}),
-                ("calm.terminal.input", {"type": "key", "key": "Enter"},
+                ("neige.terminal.input", {"type": "key", "key": "Enter"},
                  {"terminal_id": "t1", "request_id": "r1", "outcome": "unknown", "repeat_input": False})):
             observed = row(1, tool)
             item = observed["params"]["item"]
@@ -90,7 +90,7 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(ux.metrics([observed])["image_count"], 0)
 
     def test_unavailable_readback_preserves_written_receipt_without_inventing_view(self):
-        written = row(2, "calm.terminal.input")
+        written = row(2, "neige.terminal.input")
         written["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
         receipt = {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified",
                    "observation": {"status": "unavailable", "reason": "connection lost after write"}}
@@ -105,7 +105,7 @@ class CollectorTests(unittest.TestCase):
             ux.terminal_evidence([written])
 
     def test_receipt_text_without_available_readback_is_not_observation(self):
-        receipt = row(1, "calm.terminal.input")
+        receipt = row(1, "neige.terminal.input")
         receipt["params"]["item"]["result"]["structuredContent"]["outcome"] = "written"
         with self.assertRaisesRegex(ux.EvidenceError, "no successful terminal observations"):
             ux.terminal_evidence([receipt])
@@ -116,7 +116,7 @@ class CollectorTests(unittest.TestCase):
         for observation in (None, {"status": "available", "state": []}, {"status": "unavailable"},
                             {"status": "unavailable", "reason": 123}, {"status": "unknown", "state": state},
                             {"status": "available", "state": {**state, "terminal_session_id": "replacement"}}):
-            call = row(2, "calm.terminal.input")
+            call = row(2, "neige.terminal.input")
             call["params"]["item"]["result"] = {"structuredContent": {"outcome": "written", "observation": observation}}
             with self.subTest(observation=observation), self.assertRaises(ux.EvidenceError):
                 ux.terminal_evidence([call], binding)
@@ -168,7 +168,7 @@ class CollectorTests(unittest.TestCase):
                                ("detach", {"detached": True}),
                                ("detach", {"detached": True, "had_client": True, "terminal_id": "t1",
                                            "connection_id": "c1", "terminal_session_id": "pty1"})):
-            control = row(2, "calm.terminal.control")
+            control = row(2, "neige.terminal.control")
             control["params"]["item"]["arguments"]["action"] = action
             control["params"]["item"]["result"] = {"structuredContent": result}
             with self.subTest(action=action):
@@ -188,7 +188,7 @@ class CollectorTests(unittest.TestCase):
             call["params"]["item"]["result"]["structuredContent"].update(wait(outcome, settled))
             calls.append(call)
         state = {**row(4)["params"]["item"]["result"]["structuredContent"], **wait("exited")}
-        readback = row(4, "calm.terminal.input")
+        readback = row(4, "neige.terminal.input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
                                                          "observe": True, "wait_for": "change"})
         readback["params"]["item"]["result"] = {"structuredContent": {
@@ -200,7 +200,7 @@ class CollectorTests(unittest.TestCase):
         refused["params"]["item"]["arguments"]["wait_for"] = "change"
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_ms out of range"}
         calls.append(refused)
-        unavailable = row(6, "calm.terminal.input")
+        unavailable = row(6, "neige.terminal.input")
         unavailable["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
                                                             "observe": True, "wait_for": "change"})
         unavailable["params"]["item"]["result"] = {"structuredContent": {
@@ -221,7 +221,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["observation_refusals"], 0)
 
     def test_change_wait_only_counts_calls_that_produce_an_observation(self):
-        control = row(1, "calm.terminal.control")
+        control = row(1, "neige.terminal.control")
         control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "change"})
         control["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}}
@@ -253,7 +253,7 @@ class CollectorTests(unittest.TestCase):
         requested = row(2)
         requested["params"]["item"]["arguments"]["wait_for"] = "change"
         state = row(3)["params"]["item"]["result"]["structuredContent"]
-        readback = row(3, "calm.terminal.input")
+        readback = row(3, "neige.terminal.input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"}, "observe": True})
         readback["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
@@ -279,13 +279,13 @@ class CollectorTests(unittest.TestCase):
         state.update({"observation_id": "obs-2", "wait": {"mode": "change", "outcome": "changed",
                                                           "waited_ms": 40, "settled": True},
                       "changed_since_previous_observation": True})
-        explicit = row(1, "calm.terminal.input")
+        explicit = row(1, "neige.terminal.input")
         explicit["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
                                                         "observation_id": "obs-1", "request_id": "r1"})
         explicit["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified",
             "observation_id_used": "obs-1", "output_since_observation": False}}
-        implicit = row(2, "calm.terminal.input")
+        implicit = row(2, "neige.terminal.input")
         implicit["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
                                                         "request_id": "r2", "observe": True})
         implicit["params"]["item"]["result"] = {"structuredContent": {
@@ -305,7 +305,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_drift_allowed_and_drift_observed_inputs_are_counted_from_arguments_and_receipts(self):
         def input_call(identifier, allow, receipt, failed=False):
-            call = row(identifier, "calm.terminal.input")
+            call = row(identifier, "neige.terminal.input")
             item = call["params"]["item"]
             item["arguments"].update({"action": {"type": "key", "key": "Escape"}, "observation_id": "obs-1",
                                       "request_id": f"r{identifier}"})
@@ -373,7 +373,7 @@ class CollectorTests(unittest.TestCase):
         unmatched = row(2)
         unmatched["params"]["item"]["arguments"].update({"wait_for": "text", "wait_text": ["x"], "wait_ms": 300})
         unmatched["params"]["item"]["result"]["structuredContent"] = text_state("unmatched")
-        readback = row(3, "calm.terminal.input")
+        readback = row(3, "neige.terminal.input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "claude"},
                                                          "observe": True, "wait_for": "text", "wait_text": ["❯"]})
         readback["params"]["item"]["result"] = {"structuredContent": {
@@ -382,7 +382,7 @@ class CollectorTests(unittest.TestCase):
         refused = row(4)
         refused["params"]["item"]["arguments"].update({"wait_for": "text"})
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_for=text requires wait_text"}
-        control = row(5, "calm.terminal.control")
+        control = row(5, "neige.terminal.control")
         control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "text", "wait_text": ["x"]})
         control["params"]["item"]["result"] = {"structuredContent": {"terminal_id": "t1", "connection_id": "c1", "control_id": "o1"}}
         change = row(6)
@@ -406,7 +406,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_sequence_claim_and_release_counters_are_read_from_arguments_and_receipts(self):
         def input_call(identifier, arguments, receipt=None, failed=False):
-            call = row(identifier, "calm.terminal.input")
+            call = row(identifier, "neige.terminal.input")
             item = call["params"]["item"]
             item["arguments"].update({"request_id": f"r{identifier}", **arguments})
             item["result"] = {"structuredContent": {"terminal_id": "t1", "request_id": f"r{identifier}",
@@ -446,7 +446,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(calls, original)
 
     def test_sequence_correction_step_satisfies_the_edit_scenario_check(self):
-        edited = row(1, "calm.terminal.input", text=("7219",))
+        edited = row(1, "neige.terminal.input", text=("7219",))
         edited["params"]["item"]["arguments"].update({
             "action": {"type": "sequence", "steps": [{"type": "key", "key": "Left", "repeat": 5},
                                                      {"type": "key", "key": "Backspace"}, {"type": "text", "text": "9"}]},
@@ -466,24 +466,24 @@ class CollectorTests(unittest.TestCase):
         def wait(mode, outcome):
             return {"wait": {"mode": mode, "outcome": outcome, "waited_ms": 812, "settled": outcome != "unmatched"},
                     "changed_since_previous_observation": outcome == "changed"}
-        text = row(1, "calm.terminal.open")
+        text = row(1, "neige.terminal.open")
         text["params"]["item"]["arguments"] = {"request_id": "o1", "program": "claude", "claim": True,
                                                "wait_for": "text", "wait_text": ["trust this folder"]}
         text["params"]["item"]["result"]["structuredContent"].update(
             {**wait("text", "matched"), "claim": {"status": "claimed", "control_id": "c1"}})
-        change = row(2, "calm.terminal.open")
+        change = row(2, "neige.terminal.open")
         change["params"]["item"]["arguments"] = {"request_id": "o2", "wait_for": "change", "wait_ms": 300}
         change["params"]["item"]["result"]["structuredContent"].update(wait("change", "unchanged"))
-        elapsed = row(3, "calm.terminal.open")
+        elapsed = row(3, "neige.terminal.open")
         elapsed["params"]["item"]["arguments"] = {"request_id": "o3", "wait_ms": 500}
         elapsed["params"]["item"]["result"]["structuredContent"].update(wait("elapsed", "elapsed"))
-        plain = row(4, "calm.terminal.open")
+        plain = row(4, "neige.terminal.open")
         plain["params"]["item"]["arguments"] = {"request_id": "o4", "claim": True}
         plain["params"]["item"]["result"]["structuredContent"].update(wait("elapsed", "elapsed"))
-        refused = row(5, "calm.terminal.open")
+        refused = row(5, "neige.terminal.open")
         refused["params"]["item"]["arguments"] = {"request_id": "o5", "wait_for": "text"}
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_for=text requires wait_text"}
-        older = row(6, "calm.terminal.open")
+        older = row(6, "neige.terminal.open")
         older["params"]["item"]["arguments"] = {"request_id": "o6", "wait_for": "text", "wait_text": ["x"]}
         calls = [text, change, elapsed, plain, refused, older]
         original = copy.deepcopy(calls)
@@ -502,7 +502,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_summaries_are_counted_from_control_and_input_results(self):
         def input_call(identifier, action, receipt=None, failed=False, **arguments):
-            call = row(identifier, "calm.terminal.input")
+            call = row(identifier, "neige.terminal.input")
             item = call["params"]["item"]
             item["arguments"].update({"request_id": f"r{identifier}", "action": action, **arguments})
             item["result"] = {"structuredContent": {"terminal_id": "t1", "request_id": f"r{identifier}",
@@ -514,13 +514,13 @@ class CollectorTests(unittest.TestCase):
         summary = {"action": "written", "readback": "available", "screen": "changed", "settled": True,
                    "signal": None, "repaint": None, "matched": None, "role": "owner", "control_id": "c1",
                    "exited": False, "claim": None, "release": None}
-        control = row(6, "calm.terminal.control")
+        control = row(6, "neige.terminal.control")
         control["params"]["item"]["arguments"].update({"action": "claim"})
         control["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "connection_id": "n1", "control_id": "c1",
             "summary": {**summary, "action": "claim", "readback": "none", "screen": None, "settled": None,
                         "role": None, "control_id": None, "exited": None}}}
-        detach = row(7, "calm.terminal.control")
+        detach = row(7, "neige.terminal.control")
         detach["params"]["item"]["arguments"].update({"action": "detach"})
         detach["params"]["item"]["result"] = {"structuredContent": {"detached": True, "had_client": True, "terminal_id": "t1"}}
         calls = [
@@ -553,7 +553,7 @@ class CollectorTests(unittest.TestCase):
             state["wait"] = wait
             return state
         def readback(identifier, arguments, state):
-            call = row(identifier, "calm.terminal.input")
+            call = row(identifier, "neige.terminal.input")
             call["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "hi"}, "observe": True,
                                                          "wait_for": "signal", **arguments})
             call["params"]["item"]["result"] = {"structuredContent": {
@@ -581,7 +581,7 @@ class CollectorTests(unittest.TestCase):
             "wait": {"mode": "text", "outcome": "matched", "waited_ms": 12, "settled": True, "text": None,
                      "conditions": {"present": None, "absent": True}}})
         calls.append(text)
-        opened = row(10, "calm.terminal.open")
+        opened = row(10, "neige.terminal.open")
         opened["params"]["item"]["arguments"] = {"request_id": "o1", "wait_for": "signal", "wait_text_absent": ["busy"]}
         opened["params"]["item"]["result"]["structuredContent"] = signal_state("settled", {"present": None, "absent": True})
         calls.append(opened)
@@ -661,7 +661,7 @@ class CollectorTests(unittest.TestCase):
         budget = row(2)
         budget["params"]["item"]["arguments"].update({"wait_for": "signal", "wait_ms": 5000})
         budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("no_signal")
-        readback = row(3, "calm.terminal.input")
+        readback = row(3, "neige.terminal.input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "3100 + 41"},
                                                          "observe": True, "wait_for": "signal"})
         readback["params"]["item"]["result"] = {"structuredContent": {
@@ -670,7 +670,7 @@ class CollectorTests(unittest.TestCase):
         refused = row(4)
         refused["params"]["item"]["arguments"]["wait_for"] = "signal"
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "unsupported"}
-        control = row(5, "calm.terminal.control")
+        control = row(5, "neige.terminal.control")
         control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "signal"})
         control["params"]["item"]["result"] = {"structuredContent": {"terminal_id": "t1", "connection_id": "c1", "control_id": "o1"}}
         change = row(6)
@@ -709,10 +709,10 @@ class CollectorTests(unittest.TestCase):
                                              {"type": "text", "text": "/rewind"},
                                              {"type": "key", "key": "Enter"},
                                              {"type": "submit", "text": "again"}), start=1):
-            call = row(identifier, "calm.terminal.input")
+            call = row(identifier, "neige.terminal.input")
             call["params"]["item"]["arguments"]["action"] = action
             calls.append(call)
-        failed = row(5, "calm.terminal.input")
+        failed = row(5, "neige.terminal.input")
         failed["params"]["item"]["arguments"]["action"] = {"type": "submit", "text": "refused"}
         failed["params"]["item"]["status"], failed["params"]["item"]["error"] = "failed", {"message": "no observation on this connection; observe first"}
         calls.append(failed)
@@ -720,16 +720,16 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["submit_actions"], 3)
         self.assertEqual(result["repeated_identical_input_actions"], 0)
         self.assertEqual(result["observation_refusals"], 1)
-        self.assertEqual(ux.metrics([row(1), row(2, "calm.terminal.input")])["submit_actions"], 0)
+        self.assertEqual(ux.metrics([row(1), row(2, "neige.terminal.input")])["submit_actions"], 0)
 
     def test_open_with_claim_counts_only_true_claim_arguments(self):
         calls = []
         for identifier, arguments in enumerate(({"claim": True}, {"claim": False}, {}, {"claim": "true"}), start=1):
-            opened = row(identifier, "calm.terminal.open")
+            opened = row(identifier, "neige.terminal.open")
             opened["params"]["item"]["arguments"] = {"command": "claude", **arguments}
             opened["params"]["item"]["result"]["structuredContent"].update({"control_id": "o1", "role": "owner"})
             calls.append(opened)
-        unavailable = row(5, "calm.terminal.open")
+        unavailable = row(5, "neige.terminal.open")
         unavailable["params"]["item"]["arguments"] = {"command": "claude", "claim": True}
         unavailable["params"]["item"]["result"]["structuredContent"]["claim"] = {"status": "unavailable", "reason": "owned by a human"}
         calls.append(unavailable)
@@ -745,15 +745,15 @@ class CollectorTests(unittest.TestCase):
         silent["params"]["item"]["result"]["structuredContent"]["signals"] = self.signals(False)
         state = row(3)["params"]["item"]["result"]["structuredContent"]
         state["signals"] = self.signals(True, ("Notification",))
-        readback = row(3, "calm.terminal.input")
+        readback = row(3, "neige.terminal.input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "hi"}, "observe": True})
         readback["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": state}}}
         older = row(4)
-        opened = row(5, "calm.terminal.open")
+        opened = row(5, "neige.terminal.open")
         opened["params"]["item"]["result"]["structuredContent"]["signals"] = self.signals(True, ("Stop",))
-        unavailable = row(6, "calm.terminal.input")
+        unavailable = row(6, "neige.terminal.input")
         unavailable["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"}, "observe": True})
         unavailable["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "r6", "outcome": "written", "application_result": "unverified",
@@ -797,7 +797,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual([view["text"] for view in observations], ["松果 9123"])
         self.assertEqual(errors, [])
         self.assertEqual(signalled, original)
-        submit = row(2, "calm.terminal.input")
+        submit = row(2, "neige.terminal.input")
         submit["params"]["item"]["arguments"]["action"] = {"type": "submit", "text": "/rewind"}
         _, evidence = ux.check_scenario("rewind", [signalled, submit], None)
         self.assertEqual(evidence["status"], "review_required")
@@ -806,21 +806,21 @@ class CollectorTests(unittest.TestCase):
     def test_submit_action_satisfies_scenario_input_checks_like_text_plus_enter(self):
         for name, text in (("short", "请只回答 3100 + 41 的结果。"), ("edit", "请只回答 7200 + 19 的结果。"), ("rewind", "/rewind ")):
             answer = {"short": "3141", "edit": "7219", "rewind": "9123"}[name]
-            submit = row(2, "calm.terminal.input")
+            submit = row(2, "neige.terminal.input")
             submit["params"]["item"]["arguments"]["action"] = {"type": "submit", "text": text}
-            correction = row(3, "calm.terminal.input")
+            correction = row(3, "neige.terminal.input")
             correction["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Backspace"}
             with self.subTest(name=name):
                 _, evidence = ux.check_scenario(name, [row(1, text=[answer]), submit, correction], None)
                 self.assertEqual(evidence["status"], "review_required")
         for action in ({"type": "submit", "text": "/help"}, {"type": "submit"}):
-            other = row(2, "calm.terminal.input")
+            other = row(2, "neige.terminal.input")
             other["params"]["item"]["arguments"]["action"] = action
             with self.subTest(action=action), self.assertRaisesRegex(ux.EvidenceError, "actual /rewind input absent"):
                 ux.check_scenario("rewind", [row(1, text=["9123"]), other], None)
 
     def test_changed_since_observation_production_refusal_is_counted(self):
-        bad = row(1, "calm.terminal.input")
+        bad = row(1, "neige.terminal.input")
         bad["params"]["item"]["status"] = "failed"
         bad["params"]["item"]["error"] = {"message": "terminal changed since observation; observe again"}
         self.assertEqual(ux.metrics([bad])["observation_refusals"], 1)
@@ -832,7 +832,7 @@ class CollectorTests(unittest.TestCase):
                         "terminal surface changed since observation (size, input modes or alternate screen); observe again",
                         "no observation on this connection; observe first"):
             for envelope in ("error", "result", "both"):
-                failed = row(1, "calm.terminal.input")
+                failed = row(1, "neige.terminal.input")
                 item = failed["params"]["item"]
                 if envelope in ("error", "both"):
                     item["status"] = "failed"
@@ -843,11 +843,11 @@ class CollectorTests(unittest.TestCase):
                     self.assertEqual(ux.metrics([failed])["observation_refusals"], 1)
 
     def test_refusal_metric_ignores_unrelated_errors_and_success_output(self):
-        unrelated = row(1, "calm.terminal.input")
+        unrelated = row(1, "neige.terminal.input")
         unrelated["params"]["item"]["error"] = {"message": "observation renderer changed resolution"}
-        other_tool = row(2, "calm.track.cat")
+        other_tool = row(2, "neige.track.cat")
         other_tool["params"]["item"]["error"] = {"message": "observation expired; observe again"}
-        success = row(3, "calm.terminal.input")
+        success = row(3, "neige.terminal.input")
         data = {"terminal_id": "t1", "outcome": "written", "next": "terminal changed since observation; observe again"}
         success["params"]["item"]["result"] = {"isError": False, "structuredContent": data, "content": [
             {"type": "text", "text": json.dumps(data)}]}
@@ -860,7 +860,7 @@ class CollectorTests(unittest.TestCase):
                              ("result", ["malformed"]), ("result", []),
                              ("result", {"content": [{"type": "image", "data": "invalid"}]}),
                              ("result", {"content": [{"type": "image", "data": []}]})):
-            bad = row(1, "calm.terminal.input")
+            bad = row(1, "neige.terminal.input")
             bad["params"]["item"][field] = value
             final = {"id": 2, "worker_session_id": "planner1", "method": "item/completed",
                      "params": {"item": {"id": "final", "type": "agentMessage",
@@ -896,7 +896,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(observed, original)
 
     def test_no_terminal_calls_does_not_turn_prose_into_success(self):
-        for rows in ([], [row(1, "calm.track.cat")]):
+        for rows in ([], [row(1, "neige.track.cat")]):
             with self.subTest(rows=rows), self.assertRaisesRegex(ux.EvidenceError, "no actual Planner"):
                 ux.terminal_evidence(rows)
 
@@ -928,7 +928,7 @@ class CollectorTests(unittest.TestCase):
                 ux.terminal_evidence([changed], binding)
 
     def test_started_arguments_survive_completed_frame(self):
-        started = row(1, "calm.terminal.input")
+        started = row(1, "neige.terminal.input")
         started["method"] = "item/started"
         started["params"]["item"].pop("result")
         finished = copy.deepcopy(started)
@@ -961,7 +961,7 @@ class CollectorTests(unittest.TestCase):
                 ("no observation on this connection; observe first", 1),
                 ("terminal control changed; observe before input", 0),
                 ("observe first", 0)):
-            failed = row(1, "calm.terminal.input")
+            failed = row(1, "neige.terminal.input")
             failed["params"]["item"]["status"] = "failed"
             failed["params"]["item"]["error"] = {"message": f"MCP error: -32403: {message}"}
             with self.subTest(message=message):
@@ -972,7 +972,7 @@ class CollectorTests(unittest.TestCase):
         state.update({"observation_id": "fresh", "previous_observation_revision": "41",
                       "wait": {"mode": "elapsed", "outcome": "elapsed", "waited_ms": 0, "settled": False,
                                "baseline_revision": "41"}})
-        stale = row(2, "calm.terminal.input")
+        stale = row(2, "neige.terminal.input")
         stale["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
         stale["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "enter", "outcome": "stale_observation",
@@ -991,17 +991,17 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual([view["row_id"] for view in observations], [2])
         self.assertEqual(errors, [])
         self.assertEqual(stale, original)
-        failed = row(3, "calm.terminal.input")
+        failed = row(3, "neige.terminal.input")
         failed["params"]["item"]["status"] = "failed"
         failed["params"]["item"]["error"] = {"message": "terminal changed since observation; observe again"}
-        written = row(4, "calm.terminal.input")
+        written = row(4, "neige.terminal.input")
         written["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "request_id": "enter", "outcome": "written", "application_result": "unverified"}}
         self.assertEqual(ux.metrics([stale, failed, written])["observation_refusals"], 2)
 
     def test_stale_observation_outcome_is_not_counted_on_failed_or_started_calls(self):
         for status, completed in (("failed", True), ("completed", False)):
-            call = row(1, "calm.terminal.input")
+            call = row(1, "neige.terminal.input")
             item = call["params"]["item"]
             item["result"] = {"structuredContent": {"terminal_id": "t1", "outcome": "stale_observation"}}
             if status == "failed":
@@ -1011,7 +1011,7 @@ class CollectorTests(unittest.TestCase):
                 call["method"] = "item/started"
             with self.subTest(status=status, completed=completed):
                 self.assertEqual(ux.metrics([call])["observation_refusals"], 0)
-        other = row(2, "calm.terminal.control")
+        other = row(2, "neige.terminal.control")
         other["params"]["item"]["arguments"]["action"] = "claim"
         other["params"]["item"]["result"] = {"structuredContent": {"terminal_id": "t1", "outcome": "stale_observation"}}
         self.assertEqual(ux.metrics([other])["observation_refusals"], 0)
@@ -1020,7 +1020,7 @@ class CollectorTests(unittest.TestCase):
         state = row(1)["params"]["item"]["result"]["structuredContent"]
         del state["text"]
         state.update({"observation_id": "o2", "text_omitted": "unchanged since previous observation o1"})
-        released = row(2, "calm.terminal.control")
+        released = row(2, "neige.terminal.control")
         released["params"]["item"]["arguments"]["action"] = "release"
         released["params"]["item"]["result"] = {"structuredContent": {
             "terminal_id": "t1", "connection_id": "c1", "control_id": None,
@@ -1045,7 +1045,7 @@ class CollectorTests(unittest.TestCase):
             ux.terminal_evidence([released])
 
     def test_tool_errors_retained_as_review_findings(self):
-        bad = row(2, "calm.terminal.input")
+        bad = row(2, "neige.terminal.input")
         bad["params"]["item"]["status"] = "failed"
         bad["params"]["item"]["error"] = {"message": "observation expired; observe again"}
         _, evidence = ux.check_scenario("short", [row(1), bad], None)
@@ -1064,7 +1064,7 @@ class CollectorTests(unittest.TestCase):
             ux.check_scenario("rewind", [row(1, text=["松果 9123"])], None)
 
     def test_actual_rewind_action_still_requires_review(self):
-        action = row(2, "calm.terminal.input")
+        action = row(2, "neige.terminal.input")
         action["params"]["item"]["arguments"]["action"] = {"type": "text", "text": "/rewind"}
         _, evidence = ux.check_scenario("rewind", [row(1, text=["松果 9123"]), action], None)
         self.assertEqual(evidence["status"], "review_required")

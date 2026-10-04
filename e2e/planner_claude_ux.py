@@ -123,11 +123,11 @@ def completed_calls(rows):
     for call in calls.values():
         if call.get("result") is not None:
             require_object(call["result"], "MCP result")
-        if str(call.get("tool", "")).startswith("calm.terminal."):
+        if str(call.get("tool", "")).startswith("neige.terminal."):
             arguments = require_object(call.get("arguments", {}), "terminal arguments")
-            if call["tool"] == "calm.terminal.control" and arguments.get("action") not in ("claim", "release", "detach"):
+            if call["tool"] == "neige.terminal.control" and arguments.get("action") not in ("claim", "release", "detach"):
                 raise EvidenceError("terminal control action must be claim, release or detach")
-            if call["tool"] == "calm.terminal.input" and "action" in arguments:
+            if call["tool"] == "neige.terminal.input" and "action" in arguments:
                 action = require_object(arguments["action"], "terminal action")
                 for field in ("type", "key", "text"):
                     if field in action and not isinstance(action[field], str):
@@ -150,7 +150,7 @@ def stale_observation_result(call):
     is a successful tool result carrying a fresh observation, not an RPC error;
     it still counts as an observation refusal because nothing was written.
     """
-    if call.get("tool") != "calm.terminal.input" or not call.get("completed") or tool_failed(call):
+    if call.get("tool") != "neige.terminal.input" or not call.get("completed") or tool_failed(call):
         return False
     result = call.get("result")
     if not isinstance(result, dict) or not isinstance(result.get("structuredContent"), dict):
@@ -159,7 +159,7 @@ def stale_observation_result(call):
 
 
 def observation_refused(call):
-    if call.get("tool") != "calm.terminal.input":
+    if call.get("tool") != "neige.terminal.input":
         return False
     if stale_observation_result(call):
         return True
@@ -187,7 +187,7 @@ def observation_refused(call):
 
 def metrics(rows):
     calls = completed_calls(rows)
-    terminal = [call for call in calls if str(call.get("tool", "")).startswith("calm.terminal.")]
+    terminal = [call for call in calls if str(call.get("tool", "")).startswith("neige.terminal.")]
     images = []
 
     def walk(value):
@@ -207,18 +207,18 @@ def metrics(rows):
     for call in calls:
         walk(call.get("result"))
     actions = [json.dumps(call.get("arguments", {}).get("action"), sort_keys=True)
-               for call in terminal if call.get("tool") == "calm.terminal.input"]
+               for call in terminal if call.get("tool") == "neige.terminal.input"]
     readbacks = collections.Counter()
     requested_presses = extra_presses = unmeasured_requests = 0
     for call in terminal:
         if not call.get("completed"):
             continue
-        if call["tool"] in ("calm.terminal.control", "calm.terminal.input") and not tool_failed(call):
+        if call["tool"] in ("neige.terminal.control", "neige.terminal.input") and not tool_failed(call):
             readback = action_readback(call, metadata(call))
             if readback is not None:
                 readbacks[readback["status"]] += 1
         action = call.get("arguments", {}).get("action", {})
-        if call["tool"] == "calm.terminal.input" and action.get("type") == "key":
+        if call["tool"] == "neige.terminal.input" and action.get("type") == "key":
             repeat = action.get("repeat", 1)
             if type(repeat) is int and 1 <= repeat <= 32:
                 requested_presses += repeat
@@ -242,7 +242,7 @@ def metrics(rows):
 
 def terminal_evidence(rows, binding=None):
     calls = [call for call in completed_calls(rows)
-             if str(call.get("tool", "")).startswith("calm.terminal.")]
+             if str(call.get("tool", "")).startswith("neige.terminal.")]
     if not calls:
         raise EvidenceError("no actual Planner terminal MCP calls; prose is not evidence")
     observations, errors = [], []
@@ -284,7 +284,7 @@ def terminal_evidence(rows, binding=None):
 def check_scenario(name, rows, binding):
     binding, observations, calls, errors = terminal_evidence(rows, binding)
     actions = [call.get("arguments", {}).get("action", {}) for call in calls
-               if call["tool"] == "calm.terminal.input"]
+               if call["tool"] == "neige.terminal.input"]
     # These answers are deliberately absent from the supplied TUI prompts.
     answer = {"short": "3141", "edit": "7219", "rewind": "9123"}[name]
     if not any(re.search(rf"(?<!\d){answer}(?!\d)", view["text"]) for view in observations):
