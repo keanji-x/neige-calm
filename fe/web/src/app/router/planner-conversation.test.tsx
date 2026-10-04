@@ -241,8 +241,8 @@ describe('planner conversation regressions', () => {
     expect([...names].sort()).toEqual([
       'Attach an image', 'Close conversation', 'Model: Default', 'Send',
     ]);
-    /* The shell hands the route's conversation drawer its resize contract. */
-    expect(within(drawer).getAllByRole('separator').map((edge) => edge.getAttribute('aria-label'))).toEqual(['Resize conversation']);
+    /* One shell contract and one shared host edge serve the conversation layout. */
+    expect(screen.getAllByRole('separator').map((edge) => edge.getAttribute('aria-label'))).toEqual(['Resize conversation']);
     expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
   });
 
