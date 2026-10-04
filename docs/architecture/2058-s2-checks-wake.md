@@ -52,20 +52,25 @@ Verified at fd26e2267 by reading the code, or by the command shown (gh 2.74.2, 2
 **Answers to the brief.** The checks call already runs as a parked operation (F3) but makes the
 MCP call wait (F1, F4). The observer is the adapter's child wait plus the 300 s sweep, with a
 900 s parked deadline and boot re-attach (F6-F9). The "already-known state" wake is F12; it
-disappears with this change, because the receipt replaces the inline result and the wake becomes
-the only delivery (no separate fix). A parked call returns a handle, not a blocked turn (F4).
+disappears with this change for every call that parks, because the receipt replaces the inline
+result and the wake becomes the only delivery (no separate fix). One race remains: if the first
+read settles before `transport.rs:940` looks up the op, that call returns the terminal result
+inline and the event still wakes once (KNOWN GAP). A parked call returns a handle, not a blocked
+turn (F4).
 
 ## 3. Decision
 
 - **D1 Result fields.** `PR_CHECKS_JQ` reads `--json headRefOid,mergeable,statusCheckRollup` and
   prints `{conclusion, mergeable, head_sha}`. `conclusion`: `failure` if any check failed, else
   `pending` if any is unfinished, else `no_checks` for an empty or null rollup, else `success`
-  (the per-check rules of F2 are unchanged). `mergeable`: gh's value lowercased (`mergeable`,
+  (the per-check rules of F2 are unchanged). `failure` outranks unfinished checks on purpose:
+  one failed check means this head cannot go green, so the call fails fast. `mergeable`: gh's value lowercased (`mergeable`,
   `conflicting`, `unknown`). `head_sha` is the name `forge.pr.opened` and `gh.pr.diff` already use.
   The event field map extracts all three; `forge.pr.checks` persists only `conclusion` (F14, F15).
 - **D2 The wait.** The action argv becomes `sh -c PR_CHECKS_WAIT_SCRIPT sh <pr> <repo> <secs> <jq>`.
   The script reads once (the D1 command), records the first `head_sha`, and exits 0 printing
-  that read's JSON as soon as `conclusion` is `success` or `failure`, or `mergeable` is
+  that read's JSON as soon as `conclusion` is `success` or `failure` (so as soon as any check
+  fails, even while others still run), or `mergeable` is
   `conflicting`, or `head_sha` differs from the first one. Otherwise, or when `gh` fails, it
   sleeps `<secs>` and reads again. `<secs>` is `PR_CHECKS_POLL_SECS = 15` in the lowering (one
   GraphQL call per 15 s per waiting call). It is written as short `concat!` pieces like
@@ -88,10 +93,12 @@ the only delivery (no separate fix). A parked call returns a handle, not a block
   - Wake (`observation.rs:438`): `Forge checks for PR #N read <conclusion>. Repeat the same
     gh.pr.checks call to read its head_sha and mergeable.`
   - Manifest description: "Wait for a pull request's checks on its current head. Returns a pending
-    receipt; the kernel wakes you with forge.pr.checks when the checks finish, the PR is
-    conflicting, the head moves, or after 15 minutes. Use a new attempt for each wait."
+    receipt; the kernel wakes you with forge.pr.checks when every check has finished or as soon
+    as any check fails, when the PR is conflicting, when the head moves, or after about 15-20
+    minutes. Use a new attempt for each wait."
   - Template `:82`: gh.pr.checks waits for the head's CI and wakes you; do not declare tasks to
-    watch CI. A `conflicting` PR runs no CI until it is synced with its base.
+    watch CI. A `conflicting` PR gets no `pull_request` workflow run until it is synced with its
+    base.
 
 ## 4. Oracle traces
 
@@ -126,7 +133,7 @@ says landed, the output probe reads `{pending, …}`, the op succeeds and the wa
 - A subscription or webhook system: the parked operation already waits and wakes (issue).
 - Keep the read synchronous with a longer wait: CI takes 9-12 min (F18); the MCP call is bounded at 300 s (F6).
 - Calendar or worker tasks as timers: extra turns and tasks, the observed waste.
-- `head_sha`/`mergeable` on `Event::ForgePrChecks`: needs `Option` or a 4140 backfill (F15); open question 1.
+- `head_sha`/`mergeable` on `Event::ForgePrChecks`: needs `Option` or a 4140 backfill (F15); decision 1.
 - A separate mergeability tool: mergeability decides whether checks will ever run, so it belongs in the same answer.
 - A script budget shorter than the deadline: a second clock; F8 already ends the wait with a snapshot.
 - A per-tool deadline field: new knob; 900 s covers the observed CI.
@@ -137,10 +144,10 @@ Introduced by this change:
 
 - **I1 A failed wait wakes no one** (F10); before, the failure came back inline. The script never
   exits on a `gh` failure (D2), so only a GitHub or auth outage that also fails the probe at the
-  deadline loses the wake. Mechanism: none beyond D2; KNOWN GAP, follow-up issue (open question 2).
+  deadline loses the wake. Mechanism: none beyond D2; KNOWN GAP, follow-up issue (decision 2).
 - **I2 Delete fence.** A waiting call blocks track and area deletion with 409 for up to about
   20 min (F16; the old 300 s bound was never reached by a seconds-long read). Accepted: bounded,
-  and the 409 says to retry (open question 3).
+  and the 409 says to retry (decision 3).
 - **I3 Hash change.** The new probe argv in the hash means a pre-deploy `(repo, pr, attempt)` call
   repeated afterwards gets `idempotency_payload_conflict`; a new `attempt` works (F13).
 - **I4 Worker callers** get the receipt; the event wakes the Planner, not the worker.
@@ -153,7 +160,7 @@ gh lowerings run `gh` in the track worktree with the full forge env (#1830 KNOWN
 ## 7. Slice (one PR) — review tier L1
 
 L1: no migration, no event or wire change, no new authority, credential env or operation phase;
-it reuses the forge-action contract. Raise to L2 if open question 1 goes to the event.
+it reuses the forge-action contract (decision 1 keeps the event unchanged).
 
 Change list: `dev/git_actions.rs` (jq, wait script, lowering, `parked: true`);
 `plugins/git-forge/manifest.json` (description); `calm-types/src/observation.rs` (D6);
@@ -167,14 +174,19 @@ receipt has the same shape; `scripts/local-ratchet-gates.sh` green.
 
 | Test | Pins | Mutation (production only) |
 |---|---|---|
-| T1 `gh_pr_checks_reports_no_checks_and_mergeability`: the F2 table plus empty and null rollups, through the lowered output probe argv | D1 | M1: `length == 0` maps to `pending` |
+| T1 `gh_pr_checks_reports_no_checks_and_mergeability`: the F2 table (including the mixed `failed-run` row, `forge_pr_checks.rs:83`) plus empty and null rollups, through the lowered output probe argv | D1 | M1: `length == 0` maps to `pending` |
 | T2 `a_conflicting_pr_returns_at_once`: empty rollup, `CONFLICTING`; receipt, then the event `no_checks` within 10 s (under one interval); the repeated call shows `conflicting` | D4 | M2: drop the `conflicting` exit |
-| T3 `a_checks_wait_parks_until_ci_fails`: pending rollup; receipt with `completion_event`; after the shim logs a read, the op is parked and no event exists; reseed a failure; event `failure` | D2, D5 | M3: the settle test also accepts `pending` |
-| T4 `a_moved_head_ends_the_wait`: pending; commit to the PR branch; event with the new `head_sha` | D2 | M4: drop the head comparison |
-| T5 `a_wait_past_its_deadline_wakes_with_the_current_state`: `NEIGE_FORGE_DEADLINE_SECS=1` under the env lock; pending; the op is parked; after 2 s `sweep_parked()`; op succeeded and event `pending` | D3 | M5: the payload carries no probe |
+| T3 `a_checks_wait_parks_until_ci_fails`: pending rollup; receipt with `completion_event`; wait until the shim log shows the first read, then 2 s more (under one interval): the op is parked and no event exists; reseed `[COMPLETED FAILURE]`; event `failure` | D2, D5 | M3: the settle test also accepts `pending` |
+| T4 `a_moved_head_ends_the_wait`: default deadline (900 s); pending; wait for the first read in the shim log, then 2 s more: parked, no event; only then commit to the PR branch; the event must arrive within 35 s (two intervals, far below deadline recovery); the repeated call's `result.event.head_sha` is the new commit (the persisted event has no `head_sha`, `event.rs:721`) | D2 | M4: drop the head comparison |
+| T5 `a_wait_past_its_deadline_wakes_with_the_current_state`: `NEIGE_FORGE_DEADLINE_SECS=1` under the env lock; pending; wait for the first read, sleep 2 s; the op is still parked and no event exists **before** `sweep_parked()` runs; after it, op succeeded and event `pending` | D3 | M5: the payload carries no probe |
+| T6 `a_failed_check_ends_the_wait_while_others_run`: the mixed rollup of `forge_pr_checks.rs:83` (`shard` IN_PROGRESS, `test` COMPLETED FAILURE); receipt, then the event `failure` within 10 s | D1, D2 | M6: the jq fold tests `pending` before `failure` |
 
-Predicted red: M1 → T1, T2 (T2 then reads `pending`). M2 → T2. M3 → T3, T4, T5 (each sees a
-pending event before its trigger). M4 → T4. M5 → T5. Ordinary tests: the wake text, the
+Predicted red: M1 → T1, T2 (T2 reads `pending`). M2 → T2 (no event within 10 s). M3 → T3, T4,
+T5 (each op completes right after its first read, so the pre-trigger "parked, no event" assertion
+fails). M4 → T4 (no completion within 35 s; deadline recovery cannot run before 900 s). M5 → T5
+(past the deadline with no probe the op fails and appends no event). M6 → T1 (`failed-run` reads
+`pending`), T6 (first read is `pending`, so no event within 10 s). T3's reseed has no unfinished
+check, so M6 leaves it green. Ordinary tests: the wake text, the
 `gh` failure retry, the lowering's argv.
 
 Source-invariant gates checked: `gate-prose-ratchet.sh` (the script in short literals),
@@ -192,17 +204,19 @@ and `gate-web-compat-version-lockstep.sh` (not triggered: no event change),
 - A PR closed while the call waits is reported at the deadline.
 - CI longer than about 15 min costs one extra wake and call per deadline.
 - Repeated calls with new attempts run concurrent waits and wake once each.
+- A failure wakes the Planner while other checks may still be running; the next call shows them.
+- If the first read settles before the transport looks up the op, the result comes back inline
+  and the event still wakes once.
 
-## 9. Open questions (owner)
+## 9. Decisions (owner, review round 1)
 
-1. **Where head and mergeability travel.** Recommended: in `result.event` only (F14, the publish
-   `url` precedent), with the wake telling the Planner to repeat the call. The alternative puts
-   them on `Event::ForgePrChecks`, which needs `Option` fields or a backfill of the 4140 rows (F15)
-   and makes the change L2.
-2. **Silent failures of parked forge ops** (I1 and pre-existing): recommended as one follow-up
-   issue covering all of them, not this PR.
-3. **Delete fence** (I2): recommended to accept; exempting reads would need a typed side-effect
-   flag on forge payloads.
+1. **Head and mergeability travel in `result.event` only** (F14, the publish `url` precedent); the
+   wake tells the Planner to repeat the call. `Event::ForgePrChecks` is unchanged, so the slice
+   stays L1.
+2. **Silent failures of parked forge ops** (I1 and the pre-existing class): one follow-up issue,
+   filed by the orchestrator; not in this PR.
+3. **Delete fence** (I2): accepted as is.
+4. **Fail-fast on `failure`** is intended (D1, D2, T6).
 
 ## 10. TO-VERIFY (orchestrator, 4140)
 
