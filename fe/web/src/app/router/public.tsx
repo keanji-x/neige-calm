@@ -6,7 +6,8 @@ import { transcriptRowToTurnOutcome } from '../../../../core/domain/conversation
 import { useConversationStop } from '../conversations/stop.ts';
 import { useLiveReplies, useTranscriptReads } from '../conversations/live-replies.ts';
 import { useConversationEdit } from '../conversations/edit.ts';
-import { useCardEchoes } from '../conversations/echoes.ts';
+import { useConversationOutbox, useRunReads } from '../conversations/outbox.ts';
+import type { FailedSendOp } from '../../../../core/domain/conversation-outbox.ts';
 import { EMPTY_COMPOSER, isComposerEmpty, withRefill, withoutEditedTurn, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
@@ -29,10 +30,6 @@ import {
   ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer,
   NO_UPLOAD, type AttachmentStore, type UploadAttachment, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
-import {
-  KeyedSendFailure, retryUnknownSend,
-} from '../../../../core/domain/conversation-delivery.ts';
-import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import {
   trackOverlayPayload, plannerProviderOf, toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackActivity, type TrackDetailWire,
@@ -82,7 +79,7 @@ import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
   isConversationMessage, kernelQueuesInput,
-  mergeTranscript, reconcileOptimisticConversationTurns, serverItemHighWater,
+  serverItemHighWater,
   trackConversationCardId,
   FOLLOW_INSTALLATION_DEFAULT,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
@@ -121,7 +118,7 @@ import { TrackSelector } from '../shell/track-selector.tsx';
 import { AppShell, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost, useMobileTrackChoices } from '../shell/public.tsx';
 import {
   ConversationProvider, useConversationRegistry,
-  type ConversationDraft, type ConversationDraftId, type FailedConversationSend, type KeyedSendOp,
+  type ConversationDraft, type ConversationDraftId,
 } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
@@ -164,8 +161,12 @@ type ConversationStore = Readonly<{
   loadingEarlier: boolean;
   historyError: string | null;
   actionError: string | null;
-  failedSend: FailedConversationSend | null;
-  retrySend: (echoId: string) => void;
+  /** The send that gave up, held by this conversation's outbox until its Try again, Edit or Dismiss. */
+  failedSend: FailedSendOp | null;
+  /** Resume the failed send under its key. */
+  retrySend: (key: string) => void;
+  /** Edit or Dismiss: the failed send leaves the outbox; the caller puts its words back for Edit only. */
+  discardFailedSend: (key: string) => void;
   /**
    * What became of the send. `attachments` are ids already uploaded; naming one here is what makes it permanent.
    * `fromComposer`: they are the composer's own, so a delivery clears them (and the upload refusal) there.
@@ -223,9 +224,6 @@ function tombstoneHides(wroteAt: number | undefined, rev: number): boolean {
 /* A stable identity for "no queue page", so the memo below is not recomputed on
    every render by a fresh array literal. */
 const EMPTY_PENDING_QUEUE: readonly PendingQueueEntry[] = Object.freeze([]);
-
-/** Beside Try again for a keyed send that could not leave the browser. */
-const OFFLINE_RETRY = 'Try again when you’re back online.';
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
@@ -311,13 +309,18 @@ export function useConversationStore(
   const ownedCardIds = routeIntent.ownedCardIds;
   const sourceCardId = serverRows.find((row) => row.id === cardId)?.sourceCardId;
   /* Held across renders: the live replies read and re-read this query by its key, and number its reads. */
-  const transcriptReads = useTranscriptReads();
+  const transcriptReads = useTranscriptReads(registry.nextRead);
   const transcriptQuery = useMemo(
     () => transcriptReads.track(harnessItemsQueryOptions(transport, cardId, unauthorized)),
     [transcriptReads, transport, cardId, unauthorized],
   );
   const history = useInfiniteQuery({ ...transcriptQuery, enabled: scope !== null });
-  const run = useQuery({ ...plannerRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
+  /* Numbered as the transcript's are: a send answered after an unknown attempt waits for reads started after it. */
+  const runReads = useRunReads(registry.nextRead);
+  const runQuery = useMemo(
+    () => runReads.track(plannerRunQueryOptions(transport, cardId, unauthorized)), [runReads, transport, cardId, unauthorized],
+  );
+  const run = useQuery({ ...runQuery, enabled: scope !== null });
   /* The catalog rides alongside the run query: the trigger has to render the chosen
        model's name, and `planner-run` gives only its slug. */
   const modelCatalog = useQuery({
@@ -368,17 +371,8 @@ export function useConversationStore(
     () => new Set(pendingQueue.map((entry) => entry.entry_id)), [pendingQueue],
   );
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
-  const [echoes, setEchoes, forgetEchoes] = useCardEchoes(cardId);
-  /** The echo whose `POST /planner/input` is unanswered. One id, not a set: a second unanswered echo would make `confirmedEchoes` report the first as confirmed. */
-  const [unconfirmedEchoId, setUnconfirmedEchoId] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const sendingRef = useRef(false);
-  /** The card shown now; a send's own `cardId` is the one it was pressed in. */
-  const shownCardId = useRef(cardId);
-  shownCardId.current = cardId;
-  /** The send whose settling may still speak for this store; a request that is no longer this one says nothing about `sending` or `actionError`. */
-  const activeSend = useRef<{ cardId: string; echoId: string } | null>(null);
+  /** What went wrong with an action of the card it names; another card's is never this one's. */
+  const [actionError, setActionError] = useState<Readonly<{ cardId: string; message: string }> | null>(null);
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
   /* A remembered transcript is the reopen fallback while the first page is unknown;
        once any query data exists the server wins, even when empty. */
@@ -396,74 +390,11 @@ export function useConversationStore(
       : [...items].sort((left, right) => left.id - right.id).flatMap(harnessItemToTurns),
     [history.data, items, serverEntries],
   );
-  const failedSend = registry.failedSends[cardId] ?? null;
-  useEffect(() => {
-    forgetEchoes();
-    setUnconfirmedEchoId(null);
-    setActionError(null);
-    /* The send in flight belongs to the conversation being left; its own answer is still delivered. */
-    activeSend.current = null;
-    sendingRef.current = false;
-    setSending(false);
-  }, [cardId, forgetEchoes]);
-  /* A send can settle through an older store after this card is already open in
-     a new one. Merge its confirmed optimistic turn from the provider, then give
-     every newer server row to the oldest eligible echo exactly once. */
-  useEffect(() => {
-    const remembered = registry.turnsOf(cardId).filter(isOptimisticConversationTurn);
-    setEchoes((current) => {
-      const present = new Set(current.map((turn) => turn.id));
-      const additions = remembered.filter((turn) => !present.has(turn.id));
-      const merged = additions.length === 0
-        ? current
-        : [...current, ...additions].toSorted((left, right) => left.atMs - right.atMs);
-      const next = reconcileOptimisticConversationTurns(serverTurns, merged);
-      return next.length === current.length && next.every((turn, index) => turn === current[index])
-        ? current
-        : next;
-    });
-  }, [cardId, registry, serverTurns, setEchoes]);
-
-  const turns = useMemo(
-    () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
-    [echoes, serverTurns],
-  );
-  /* The same turns, minus the one nobody has agreed to yet. */
-  const confirmedEchoes = useMemo(
-    () => unconfirmedEchoId === null
-      ? echoes
-      : echoes.filter((turn) => turn.id !== unconfirmedEchoId),
-    [echoes, unconfirmedEchoId],
-  );
-  const confirmedTurns = useMemo(
-    () => [...serverTurns, ...confirmedEchoes].sort((left, right) => left.atMs - right.atMs),
-    [confirmedEchoes, serverTurns],
-  );
+  useEffect(() => { setActionError(null); }, [cardId]);
   /* The running turn's streamed replies: drawn at the tail, never remembered, never counted. */
   const liveReplies = useLiveReplies({
     transport, unauthorized, cardId, enabled: scope !== null, phase, transcriptKey: transcriptQuery.queryKey, transcriptReads, items,
   });
-  /* An echo belongs after everything the server has confirmed; a completed action
-       keeps the started row's place. */
-  const transcript = useMemo(
-    () => {
-      // A phase snapshot predicts queueing; only this POST's acknowledgement
-      // licenses the queued caption. A wedged queue cannot promise delivery.
-      const displayedEchoes = echoes
-        /* An echo that has claimed an entry id the queue region is listing is drawn
-                   there, not here; reversible the moment the entry drains. */
-        .filter((turn) => turn.entryId === null || !pendingQueueIds.has(turn.entryId))
-        .map((turn) => stalled || turn.id === unconfirmedEchoId
-          ? { ...turn, queued: false } : turn);
-      /* KNOWN GAP (#1923): a steer sent while a reply streams draws its echo below the live reply,
-         then its stored row above it: a one-time reorder that converges. */
-      return mergeTranscript(mergeTranscript(serverEntries, liveReplies), displayedEchoes);
-    },
-    [echoes, liveReplies, pendingQueueIds, serverEntries, stalled, unconfirmedEchoId],
-  );
-  const confirmedTranscript = useMemo(
-    () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
-  );
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stop = useConversationStop({
     cardId, canStop: working && !stalled,
@@ -475,6 +406,26 @@ export function useConversationStore(
     requestStop: mutations.interrupt,
     failureText: (error) => errorMessage(error, 'Could not confirm the stop request.'),
   });
+  const landedTranscript = transcriptReads.startOf(history.data);
+  const landedRun = runReads.startOf(run.data);
+  const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
+  const outbox = useConversationOutbox({
+    cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntryIds: pendingQueueIds,
+    stalled, landed, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
+    pressed: () => { setActionError(null); stop.clearFeedback(); },
+    refusedAtPress: (error) => {
+      setActionError({ cardId, message: errorMessage(error, 'Connection is not ready. Try again after reconnecting.') });
+    },
+  });
+  const { view } = outbox;
+  /* What the reader is looking at, and what the tab may remember: a message is the conversation's only once the
+     server has answered it, and only until a read shows it in its place. */
+  const turns = useMemo(
+    () => [...serverTurns, ...view.shown].sort((left, right) => left.atMs - right.atMs), [serverTurns, view.shown],
+  );
+  const confirmedTurns = useMemo(
+    () => [...serverTurns, ...view.confirmed].sort((left, right) => left.atMs - right.atMs), [serverTurns, view.confirmed],
+  );
   const stopping = !stalled && (phase === 'issuing_interrupt' || (working && stop.pending));
   const stopFeedback: ConversationStopFeedback | null = stalled ? null
     : phase === 'issuing_interrupt' ? { kind: 'stopping' }
@@ -500,9 +451,9 @@ export function useConversationStore(
     if (durableConversation === null) return;
     /* Server rows enter the registry only under the Track that supplied them. */
     if (durableConversation.trackId !== rememberOn) return;
-    /* The confirmed transcript: a message that may still fail is not part of what this conversation is. */
-    registry.remember(durableConversation, confirmedTranscript);
-  }, [confirmedTranscript, durableConversation, registry, rememberOn]);
+    /* What the reads showed; the registry adds this conversation's confirmed sends back from its outbox. */
+    registry.remember(durableConversation, serverEntries);
+  }, [serverEntries, durableConversation, registry, rememberOn]);
   useEffect(() => {
     /* A `'rows'` route remembers every row it lists; `rememberOn` is compared against
          each row so another Track's row cannot write into this scope. */
@@ -536,170 +487,17 @@ export function useConversationStore(
     ? listedConversations
     : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
-  /**
-   * One run of a keyed send. A press starts a new op (`opAt` mints its key and echo); Try again
-   * resumes the failed op as it was — same key, same echo and high water, and an outcome that once
-   * was unknown stays unknown — so the run is a continuation, not a second message.
-   * `refusedAtPress` answers a run whose press admission refused it.
-   */
-  const send = async (
-    _conversationId: string, opAt: () => KeyedSendOp, refusedAtPress: (error: unknown) => SendOutcome,
-  ): Promise<SendOutcome> => {
-    /* Not shown any more (it waited out an Edit's rewind): it still goes to its own conversation, and nothing on screen here speaks for it. */
-    const shown = shownCardId.current === cardId;
-    if (_conversationId !== cardId || stalled || (shown && sendingRef.current)) return 'not-sent';
-    /* Admitted at the press. Where the transport carries a recovery admission (the bundled build),
-       a run that cannot leave the browser is refused here and sends nothing; the web build admits
-       every press, and a send that cannot leave fails as a transport error — unknown, retried. */
-    let pressed: ApiTransportPort;
-    try { pressed = admitTransport(transport); } catch (error) { return refusedAtPress(error); }
-    if (!registry.tryBeginSend(cardId)) return 'not-sent';
-    if (shown) { sendingRef.current = true; setSending(true); setActionError(null); stop.clearFeedback(); }
-    const { key, echo, fromComposer, unknown } = opAt();
-    const { text } = echo;
-    const attachments = echo.attachments ?? [];
-    const sentTo = cardId;
-    if (shown) activeSend.current = { cardId: sentTo, echoId: echo.id };
-    /* Still ours to answer for. False from the moment the reader moved to
-       another conversation (the `cardId` effect) or started a later send. */
-    const stillActive = () => activeSend.current?.echoId === echo.id;
-    let sendFailure: FailedConversationSend | null = null;
-    /* Decided where the fact is known and read once at the end; `sendFailure` is
-           set before the `stillActive()` guard so cannot stand in for it. */
-    let settled: SendOutcome = 'delivered';
-    /* Set inside `finally`, where `stillActive()` is asked before it is
-       cleared. */
-    let answeredHere = false;
-    if (shown) { setEchoes((current) => [...current, echo]); setUnconfirmedEchoId(echo.id); }
-    const attachmentIds = attachments.map((attachment) => attachment.id);
-    /* An unknown answer is sent again under the same key, so the server queues the message at most once. Each
-       retry is admitted again; one that cannot go out counts as an attempt. */
-    const admitRetry = (): ApiTransportPort | null => { try { return admitTransport(transport); } catch { return null; } };
-    return retryUnknownSend(
-      (attempt) => {
-        const admitted = attempt === 0 ? pressed : admitRetry();
-        return admitted === null ? Promise.reject(new OfflineSubmissionError())
-          : mutations.send(text, attachmentIds, key, admitted);
-      },
-      (error) => (error instanceof ApiError ? error.failure : null),
-      (retry) => new Promise<void>((resolve) => { setTimeout(resolve, recoveryDelay(retry, Math.random())); }),
-      unknown,
-    ).then(({ sent, everUnknown }) => {
-      /* A composer send's delivered images leave the composer they were sent from, whichever conversation is shown by now. */
-      if (fromComposer) {
-        const sentIds = new Set(attachments.map((attachment) => attachment.id));
-        registry.editComposer(sentTo, (current) => current.attachments.some((image) => sentIds.has(image.id))
-          ? { ...current, attachments: current.attachments.filter((image) => !sentIds.has(image.id)) } : current);
-        registry.editUpload(sentTo, (current) => current.refusal === null ? current : { ...current, refusal: null });
-      }
-      if (everUnknown) {
-        /* Not reconciled optimistically: the answer may replay an entry deleted, rewound or reset since,
-           which no read would ever confirm. The echo goes from both copies and the reads `mutations.send`
-           refreshes are the authority — the message shows once, queued or drained, or not at all. */
-        const isOpEcho = (turn: TranscriptEntry) => isOptimisticConversationTurn(turn) && turn.id === echo.id;
-        setEchoes((current) => current.filter((turn) => !isOpEcho(turn)));
-        registry.updateExisting(sentTo, ({ conversation: known, turns: knownTurns }) => ({
-          conversation: known, turns: knownTurns.filter((turn) => !isOpEcho(turn)),
-        }));
-        setUnconfirmedEchoId((current) => current === echo.id ? null : current);
-        return;
-      }
-      setUnconfirmedEchoId((current) => current === echo.id ? null : current);
-      /* The claim decides only who draws this message; written wherever the echo
-               still lives, the registry unconditionally. */
-      const claimedEntryId = sent.entry_id;
-      if (claimedEntryId !== null && stillActive()) {
-        setEchoes((current) => current.map((turn) =>
-          turn.id === echo.id ? { ...turn, entryId: claimedEntryId } : turn));
-      }
-      /* The answer can outlive the drawer: with `scope` null the effects above stop
-               writing, so the confirmation is written straight through for the
-               conversation it was sent to. Through `updateExisting`, not `remember`: a
-               background refresh may already have put newer data in this entry. */
-      registry.updateExisting(sentTo, ({ conversation: known, turns: knownTurns }) => {
-        /* The refresh may already have brought this message back; reconcile all
-                   optimistic turns together, oldest first, so one server row confirms one echo. */
-        const claimed = { ...echo, entryId: claimedEntryId };
-        const remembered = knownTurns
-          .filter(isOptimisticConversationTurn)
-          .map((turn) => turn.id === echo.id ? claimed : turn);
-        const optimistic = remembered.some((turn) => turn.id === echo.id)
-          ? remembered
-          : [...remembered, claimed].toSorted((left, right) => left.atMs - right.atMs);
-        const serverMessages = knownTurns.filter((turn): turn is ConversationMessage =>
-          isConversationMessage(turn) && !isOptimisticConversationTurn(turn));
-        const unresolved = reconcileOptimisticConversationTurns(serverMessages, optimistic);
-        const unresolvedIds = new Set(unresolved.map((turn) => turn.id));
-        const recorded = !unresolvedIds.has(echo.id);
-        const nextTurns = knownTurns
-          .filter((turn) => !isOptimisticConversationTurn(turn) || unresolvedIds.has(turn.id))
-          /* The remembered copy may predate the claim; the claim is the only
-             difference and it is this write's whole point. */
-          .map((turn) => turn.id === echo.id ? claimed : turn);
-        if (!recorded && !nextTurns.some((turn) => turn.id === echo.id)) nextTurns.push(claimed);
-        return {
-          conversation: {
-            ...known,
-            title: known.title ?? conversationNameFrom(text),
-            updatedAt: Math.max(known.updatedAt, echo.atMs),
-            turns: nextTurns.filter(isConversationMessage).length,
-          },
-          turns: nextTurns,
-        };
-      });
-    }).catch((error: unknown) => {
-      const failed = error instanceof KeyedSendFailure ? error : new KeyedSendFailure(error, 'unknown');
-      settled = failed.delivery === 'refused' ? 'refused' : 'unresolved';
-      sendFailure = {
-        echo, key, delivery: failed.delivery, fromComposer,
-        /* The admission's own words ("nothing was sent", "will not send automatically") would contradict Try again. */
-        message: failed.cause instanceof OfflineSubmissionError
-          ? OFFLINE_RETRY : errorMessage(failed.cause, 'Could not send the message.'),
-      };
-      /* A failure belongs to the conversation that failed; the provider still records
-               it for a remount of the owning card. */
-      if (!stillActive()) return;
-      setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
-    }).finally(() => {
-      setUnconfirmedEchoId((current) => current === echo.id ? null : current);
-      registry.finishSend(sentTo, sendFailure);
-      /* Re-opening the composer is a statement about the send in flight now; made
-               unconditionally, a stale request could clear an unanswered send's flag. */
-      if (!stillActive()) return;
-      answeredHere = true;
-      activeSend.current = null;
-      sendingRef.current = false;
-      setSending(false);
-    }).then((): SendOutcome => answeredHere ? settled : 'abandoned');
-  };
-
-
-  const sendingAcrossMounts = cardId !== '' && registry.pendingSendIds.has(cardId);
-  /**
-   * Take one message out of the transcript for good: a deleted queue entry never
-   * becomes a transcript row, so reconciliation can never retire its echo. Both
-   * copies, since the registry's outlives this mount.
-   */
-  const retireQueuedEcho = (entryId: string): void => {
-    const isRetired = (turn: TranscriptEntry) =>
-      isOptimisticConversationTurn(turn) && turn.entryId === entryId;
-    setEchoes((current) => current.filter((turn) => !isRetired(turn)));
-    registry.updateExisting(cardId, ({ conversation: known, turns: knownTurns }) => ({
-      conversation: known,
-      turns: knownTurns.filter((turn) => !isRetired(turn)),
-    }));
-  };
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
     mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
       /* `gone` is not a retirement: the entry drained and its transcript row is on its way. */
       if (outcome.kind === 'done') {
-        retireQueuedEcho(entry.entry_id);
+        outbox.forgetQueuedEntry(entry.entry_id);
         forgetQueuedEntry(entry);
       }
       return outcome;
     });
-  /* On a steer's `done` the entry is forgotten but its echo is NOT retired: a steer
-       delivers the sentence, and the kernel's transcript row reconciles the echo. */
+  /* On a steer's `done` the entry is forgotten but its send is NOT: a steer delivers the sentence, and the
+       kernel's transcript row shows it. */
   const steerQueuedEntry = phase === 'turn_running'
     ? (entry: PendingQueueEntry) =>
       mutations.steerQueued(entry.entry_id, entry.rev).then((outcome) => {
@@ -708,27 +506,16 @@ export function useConversationStore(
       })
     : undefined;
 
-  /* A queued echo cannot be waited on: the pending queue writes no transcript row
-       until the turn ends, so counting it would kill the composer for a whole turn.
-       This is not the duplicate-submit guard; that is `sending` above. */
-  const awaitsReconciliation = (turn: TranscriptEntry) =>
-    isOptimisticConversationTurn(turn) && !turn.queued;
-  const hasUnreconciledSend = echoes.some(awaitsReconciliation)
-    || registry.turnsOf(cardId).some(awaitsReconciliation);
-  const sendBlocked = stalled || (failedSend !== null && failedSend.delivery !== 'refused') || sending || sendingAcrossMounts || hasUnreconciledSend;
-  const displayedFailure = failedSend === null ? null : { ...failedSend.echo, queued: false };
   return {
     conversations,
-    turnsOf: (conversationId) => conversation?.id === conversationId
-      ? displayedFailure === null ? transcript : mergeTranscript(transcript, [displayedFailure])
-      : registry.turnsOf(conversationId),
-    pending: pendingConversationIds(conversation, working, !stalled && (sending || sendingAcrossMounts)),
+    turnsOf: (conversationId) => conversation?.id === conversationId ? view.transcript : registry.turnsOf(conversationId),
+    pending: pendingConversationIds(conversation, working, !stalled && view.sending),
     working,
     stalled,
     stopping,
     stopFeedback,
-    sending: sending || sendingAcrossMounts,
-    sendBlocked,
+    sending: view.sending,
+    sendBlocked: view.blocked,
     pendingQueue,
     pendingQueueOverflow,
     deleteQueuedEntry,
@@ -738,47 +525,11 @@ export function useConversationStore(
     hasEarlier: history.hasNextPage,
     loadingEarlier: history.isFetchingNextPage,
     historyError: history.error instanceof Error ? history.error.message : null,
-    actionError,
-    failedSend,
-    retrySend: (echoId) => {
-      /* Resumes the failed op, it does not press again: the echo (images included — an image-only
-             message re-sent as `{ text: "" }` is refused, and its ids are still bound), the key, the high water
-             and the unknown-ness all carry over, so a first attempt that was stored after all is answered
-             again, reconciles this echo, and is never queued twice. */
-      if (failedSend?.echo.id === echoId) {
-        const { key, echo, fromComposer, delivery } = failedSend;
-        void send(cardId, () => ({ key, echo, fromComposer, unknown: delivery === 'unknown' }), () => {
-          /* The op keeps its standing; only the line beside Try again changes, never to the admission's own
-             words ("will not send automatically"), which would contradict it. */
-          if (registry.tryBeginSend(cardId)) registry.finishSend(cardId, { ...failedSend, message: OFFLINE_RETRY });
-          return 'refused';
-        });
-      }
-    },
-    send: (conversationId, text, attachments, fromComposer) => failedSend === null || failedSend.delivery === 'refused'
-      ? send(conversationId, () => ({
-        key: mintIdempotencyKey(), fromComposer, unknown: false,
-        echo: {
-          id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
-          /* The echo carries the images: an image-only message has no text to reconcile
-                   on, so the ids are the second criterion. */
-          attachments,
-          /* The op's, not the run's: a resumed op's first attempt may already be in the transcript, above any
-             high water read later, and only this one lets that row reconcile the echo. */
-          serverHighWaterBefore: serverItemHighWater(items),
-          /* Read at the press from the last `GET /planner/run` snapshot, against the
-                   kernel's whitelist (`can_issue_turn()`), not `working`: a front-end notion of
-                   "busy" is not the kernel's notion of "can start a turn". Never recomputed
-                   from the live phase later. */
-          queued: kernelQueuesInput(phase),
-          /* Not knowable yet — the POST below is what answers it. Claimed in the
-             `then`, and left `null` forever if the server has none to give. */
-          entryId: null,
-        },
-      }), (error) => {
-        if (shownCardId.current === cardId) setActionError(errorMessage(error, 'Connection is not ready. Try again after reconnecting.'));
-        return 'refused';
-      }) : Promise.resolve('not-sent'),
+    actionError: actionError?.cardId === cardId ? actionError.message : null,
+    failedSend: view.failed,
+    retrySend: outbox.retrySend,
+    discardFailedSend: outbox.discardFailedSend,
+    send: outbox.send,
     attachmentsSupported: run.data?.attachments_supported ?? false,
     contextUsage: run.data?.token_usage ?? null,
     runningAnchor: nextRunningAnchor,
@@ -795,26 +546,25 @@ export function useConversationStore(
       : { model: run.data.model, reasoning_effort: run.data.reasoning_effort },
     modelCatalog: modelCatalog.data ?? null,
     setModel: (selection) => {
+      const setFor = cardId;
       setActionError(null);
+      const fail = (message: string) => { setActionError({ cardId: setFor, message }); };
       void mutations.setModel(selection)
         .then((result) => {
           /* Both flags are reported: the write succeeded, but the value stored is not
                        quite the value asked for. */
           if (result.effort_adjusted) {
-            setActionError(
-              `That reasoning effort is not available on this model; it now uses ${result.reasoning_effort ?? 'the default'}.`,
-            );
+            fail(`That reasoning effort is not available on this model; it now uses ${result.reasoning_effort ?? 'the default'}.`);
           } else if (result.unknown_model) {
-            setActionError('codex does not list that model for this account. It is saved; turns may fail.');
+            fail('codex does not list that model for this account. It is saved; turns may fail.');
           }
         })
         .catch((error: unknown) => {
-          setActionError(errorMessage(error, 'Could not change the model.'));
+          fail(errorMessage(error, 'Could not change the model.'));
         });
     },
   };
 }
-
 /**
  * The one conversation whose transcript is being read. `id` is the Track the card
  * hangs off; `state` is the row's server state as the baseline, and only the open
@@ -1560,28 +1310,32 @@ function useConversationPane(
               <ChatFooterNotice>
                 <ChatFooterError message={store.failedSend.delivery === 'unknown'
                   ? `Delivery is unconfirmed. ${store.failedSend.message}` : `Not sent. ${store.failedSend.message}`} />
-                {store.failedSend.delivery === 'unknown' ? (
-                  /* Safe without asking: the retry reuses the send's key, so a message that did arrive is not queued twice.
-                     No Edit here — an edited message is a new send under a new key, and the first may have arrived. */
+                {store.failedSend.delivery === 'unknown' ? <>
+                  {/* Safe without asking: the retry reuses the send's key, so a message that did arrive is not queued twice.
+                     No Edit here — an edited message is a new send under a new key, and the first may have arrived. */}
                   <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
-                    onClick={() => { if (store.failedSend !== null) store.retrySend(store.failedSend.echo.id); }}>
+                    onClick={() => { if (store.failedSend !== null) store.retrySend(store.failedSend.key); }}>
                     Try again
                   </ChatFooterRemedy>
-                ) : (store.failedSend.delivery !== 'refused' || composer.text === '') && <>
+                  {/* The words stay out of the composer: they may already be delivered, and a read then shows them. */}
+                  <ChatFooterRemedy onClick={() => { if (store.failedSend !== null) store.discardFailedSend(store.failedSend.key); }}>
+                    Dismiss
+                  </ChatFooterRemedy>
+                </> : (store.failedSend.delivery !== 'refused' || composer.text === '') && <>
                   <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
                     onClick={() => {
                       if (store.failedSend === null) return;
                       setComposerText('');
-                      store.retrySend(store.failedSend.echo.id);
+                      store.retrySend(store.failedSend.key);
                     }}>
                     Try again
                   </ChatFooterRemedy>
                   <ChatFooterRemedy onClick={() => {
                     if (store.failedSend === null) return;
-                    const { echo } = store.failedSend;
+                    const { echo, key } = store.failedSend;
                     /* The failed message's words and images go back together; nothing already there is lost. */
                     editComposer(open.id, (current) => withRefill(current, { text: echo.text, attachments: echo.attachments ?? [] }));
-                    registry.clearFailedSend(open.id, store.failedSend.echo.id);
+                    store.discardFailedSend(key);
                   }}>Edit</ChatFooterRemedy>
                 </>}
               </ChatFooterNotice>
@@ -1622,6 +1376,8 @@ function useConversationPane(
               drawer={(
                 <>
                   <PendingQueue
+                    /* Its write lock and refusal are the shown conversation's, never carried into the next one. */
+                    key={open.id}
                     entries={store.pendingQueue}
                     overflow={store.pendingQueueOverflow}
                     busy={store.sending}

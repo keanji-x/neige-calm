@@ -10,7 +10,7 @@ import { RouterProvider } from '@tanstack/react-router';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -953,6 +953,100 @@ describe('track conversations', () => {
     expect(messageField().getAttribute('contenteditable')).toBe('true');
   });
 
+  it('[#2068] dismisses a spent unknown send without putting its words back; a read then shows it if it was stored', async () => {
+    const text = 'Dismissed, maybe delivered';
+    let rows: ReturnType<typeof harnessMessage>[] = [];
+    const { client, requests } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok(rows);
+      if (request.path.endsWith('/planner/input')) throw new Error('response dropped');
+      return undefined;
+    });
+    const inputs = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+    await sendUntilSpent(text);
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(within(drawerElement()).queryAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(0);
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+    expect(messageField().textContent).toBe('');
+    expect(inputs()).toHaveLength(SEND_RETRIES + 1);
+    /* It had been stored after all: the next read shows it, once. */
+    rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
+    await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
+    await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
+    expect(inputs()).toHaveLength(SEND_RETRIES + 1);
+  });
+
+  it('[#2068] draws a spent unknown send once when its message drains, and its Try again leaves one', async () => {
+    const text = 'Drained while unconfirmed';
+    let rows: ReturnType<typeof harnessMessage>[] = [];
+    let accept = false;
+    const { client } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok(rows);
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      if (!accept) throw new Error('response dropped');
+      return inputAccepted();
+    });
+    await sendUntilSpent(text);
+    rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
+    await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
+    await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
+    expect(screen.getByRole('alert').textContent).toContain('Delivery is unconfirmed');
+    accept = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
+  });
+
+  it('[#2068] keeps a send answered after an unknown attempt shown until a read started after its answer lands', async () => {
+    const text = 'Answered on the second attempt';
+    let attempts = 0;
+    let rows: ReturnType<typeof harnessMessage>[] = [];
+    /* Reads and the second attempt are answered by hand, so which read started before the 200 is decided here. */
+    const held: { input?: () => void; history?: () => void } = {};
+    let holdHistory = false;
+    const { client } = setup(async (request) => {
+      if (request.path.includes(HISTORY_PATH)) {
+        /* What the server holds when the read starts. */
+        const read = rows;
+        if (holdHistory) await new Promise<void>((release) => { held.history = release; });
+        return ok(read);
+      }
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      attempts += 1;
+      if (attempts === 1) throw new Error('response dropped');
+      await new Promise<void>((release) => { held.input = release; });
+      rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
+      return inputAccepted();
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write(text);
+    await waitFor(() => expect(held.input).toBeDefined());
+    /* A transcript read that starts before the answer and lands after it, with the message not yet in it. */
+    holdHistory = true;
+    const historyKey = cachedHistoryKey(client, ASSISTANT_CARD.id);
+    void client.invalidateQueries({ queryKey: historyKey });
+    await waitFor(() => expect(held.history).toBeDefined());
+    const early = held.history;
+    /* Closed, so the query layer neither cancels that read nor starts a new one when the answer refreshes. */
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    await act(async () => { held.input?.(); await Promise.resolve(); });
+    held.history = undefined;
+    await act(async () => { early?.(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(client.getQueryState(historyKey)?.status).toBe('success');
+    /* Reopened while its own read is still out: the early read cannot stand for the answer, so the message stays. */
+    fireEvent.click(await screen.findByRole('button', { name: /^Conversation (Assistant|Answered on)/ }));
+    await waitFor(() => expect(held.history).toBeDefined());
+    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    holdHistory = false;
+    await act(async () => { held.history?.(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
+  });
+
   it('[F5] keeps one English line when Try again is pressed offline in the bundled build', async () => {
     vi.stubGlobal('__NC_BUNDLED__', true);
     const access = new RecoveryAccess(); access.change('connected');
@@ -1630,6 +1724,34 @@ describe('track conversations', () => {
     await pickAssistant();
     await pickPlanner();
     await waitFor(() => expect(messageField().textContent).toBe('Second words'));
+    await act(async () => { answer(); await answered; });
+  });
+
+  it('[#2041] leaves the next conversation’s queue free while the last one’s delete is out', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((done) => { answer = done; });
+    setup(async (request) => {
+      const card = pathCardId(request.path);
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ card_id: card, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null,
+          running_turn: null, pending: [{ entry_id: `entry-${card}`, text: `queued in ${card}`, rev: 1, queued_at_ms: 5 }], pending_overflow: 0 });
+      }
+      if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
+        await answered;
+        return ok({ card_id: card, entry_id: `entry-${card}`, rev: 2, text: null });
+      }
+      return undefined;
+    });
+    const entryOf = (card: string) => Array.from(document.querySelectorAll<HTMLElement>('[data-nc-pending-entry]'))
+      .find((entry) => entry.dataset.ncPendingEntry === `entry-${card}`);
+    const deleteIn = (card: string) => within(entryOf(card)!).getByRole('button', { name: 'Delete this message' });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
+    fireEvent.click(deleteIn(ASSISTANT_CARD.id));
+    await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).hasAttribute('disabled')).toBe(true));
+    await pickPlanner();
+    await waitFor(() => expect(entryOf(PLANNER_CARD.id)).toBeDefined());
+    expect(deleteIn(PLANNER_CARD.id).hasAttribute('disabled')).toBe(false);
     await act(async () => { answer(); await answered; });
   });
 
@@ -2453,6 +2575,47 @@ describe('registry write-through', () => {
     };
   }
 
+  /* Recorded per commit (a layout effect), since `act` would flush the render a switch leaks before any assertion. */
+  it('[#2041] shows the next conversation no part of the last one’s send or error, not for one commit', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((done) => { answer = done; });
+    const transport: ApiTransportPort = {
+      async send(request) {
+        if (request.path.endsWith('/planner/input')) { await answered; return inputAccepted(); }
+        if (request.path.endsWith('/planner/model')) return failure(500, 'internal', 'model store unavailable');
+        if (request.path.endsWith('/planner/run')) return ok({ ...runIdle().body as object, card_id: pathCardId(request.path) });
+        return ok([]);
+      },
+    };
+    const PLANNER_SCOPE = { ...SCOPE, cardId: PLANNER_CARD.id };
+    type Commit = Readonly<{ cardId: string; sending: boolean; blocked: boolean; pending: number; error: string | null }>;
+    const commits: Commit[] = [];
+    let latest: ReturnType<typeof useConversationStore> | null = null;
+    function StoreProbe({ scope }: { scope: typeof SCOPE }) {
+      const store = useConversationStore(transport, unauthorized, scope, { rows: ROWS, rememberOn: 'w1' });
+      latest = store;
+      useLayoutEffect(() => {
+        commits.push({ cardId: scope.cardId, sending: store.sending, blocked: store.sendBlocked, pending: store.pending.size, error: store.actionError });
+      });
+      return null;
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
+    const view = (scope: typeof SCOPE) => (
+      <QueryClientProvider client={client}><ConversationProvider><StoreProbe scope={scope} /></ConversationProvider></QueryClientProvider>
+    );
+    const { rerender } = render(view(SCOPE));
+    await act(async () => { void latest?.send(ASSISTANT_CARD.id, 'still out', [], true); await Promise.resolve(); });
+    await act(async () => { latest?.setModel({ model: 'gpt-x', reasoning_effort: null }); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(commits.at(-1)).toMatchObject({ cardId: ASSISTANT_CARD.id, sending: true, error: 'model store unavailable' });
+    const before = commits.length;
+    await act(async () => { rerender(view(PLANNER_SCOPE)); await Promise.resolve(); });
+    const shown = commits.slice(before);
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.every((commit) => commit.cardId === PLANNER_CARD.id)).toBe(true);
+    expect(shown.filter((commit) => commit.sending || commit.blocked || commit.pending > 0 || commit.error !== null)).toEqual([]);
+    await act(async () => { answer(); await answered; });
+  });
+
   /* The server's row is `title: null` for the life of an assistant conversation;
    * the only name is the one the drawer derives, and the batch remember must carry it. */
   it('[G5] keeps the name it derived from the first message after the drawer closes', async () => {
@@ -2682,7 +2845,9 @@ it.each(['429', 'transport'])('[F5] does not retire a %s failure when a stale re
   await screen.findByText('Previously completed response');
   expect(screen.getByRole('alert').textContent).toContain(mode === '429' ? 'Not sent' : 'Delivery is unconfirmed');
   expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
-  expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
+  /* A rejected send was not stored, so it is drawn beside the equal row. A spent unknown one may have been: the row
+     is drawn once in its place (#2068 item 7), and the send keeps its Try again, which only replays its key. */
+  expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(mode === '429' ? 2 : 1);
   expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(sent);
 });
 

@@ -1348,27 +1348,6 @@ export function serverItemHighWater(items: readonly Readonly<{ id: number }>[]):
   return items.reduce((highest, item) => Math.max(highest, item.id), 0);
 }
 
-/**
- * Reconcile each echo only against server rows that did not exist before that send; one-to-one
- * across the whole remembered set.
- */
-export function reconcileOptimisticConversationTurns(
-  serverTurns: readonly ConversationMessage[],
-  echoes: readonly OptimisticConversationTurn[],
-): readonly OptimisticConversationTurn[] {
-  const available = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you');
-  return echoes.filter((echo) => {
-    const match = available.findIndex((turn) => {
-      const sequence = Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
-      return sequence > echo.serverHighWaterBefore
-        && reconcileUserEchoes([turn], [echo]).length === 0;
-    });
-    if (match < 0) return true;
-    available.splice(match, 1);
-    return false;
-  });
-}
-
 /** An exchange opens at a turn authored by you whose predecessor was not. */
 export function opensExchange(turns: readonly TranscriptEntry[], index: number): boolean {
   const turn = turns[index];

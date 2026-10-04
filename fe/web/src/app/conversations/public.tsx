@@ -3,7 +3,8 @@ import {
 } from 'react';
 
 import type { SideConversation } from '../../../../core/domain/conversation.ts';
-import type { ModelSelection, Conversation, OptimisticConversationTurn, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import { isOptimisticConversationTurn, type ModelSelection, type Conversation, type TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import { beginSendOp, withConfirmedSends, type SendOp } from '../../../../core/domain/conversation-outbox.ts';
 import { EMPTY_COMPOSER, isSameComposer, withRefill, type ComposerContent } from '../../../../core/domain/conversation-rewind.ts';
 import { NO_UPLOAD, type UploadState } from '../../features/planner/attachments.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
@@ -96,29 +97,6 @@ function moveDraft(slots: DraftSlots, move: DraftMove): DraftSlots {
   }
 }
 
-/** One keyed send as an op: what its press and every Try again share. Each run is admitted, begun and
- * finished on its own; the op is what a run resumes. */
-export type KeyedSendOp = Readonly<{
-  key: string;
-  /** The message as first shown: its id, place (`atMs`) and `serverHighWaterBefore` are the op's. */
-  echo: OptimisticConversationTurn;
-  fromComposer: boolean;
-  /** Whether an earlier attempt's outcome was unknown. Once true, only a 200 settles the op. */
-  unknown: boolean;
-}>;
-
-/** A failed request keeps its words and delivery witness across drawer remounts.
- * It is recovery work, never a confirmed transcript or conversation title. */
-export type FailedConversationSend = Readonly<{
-  echo: OptimisticConversationTurn;
-  /** The `Idempotency-Key` it was sent under; Try again sends it again, so a stored first attempt is not queued twice. */
-  key: string;
-  message: string;
-  delivery: 'rejected' | 'unknown' | 'refused';
-  /** Whether its images came from the composer, which a delivered retry then clears (a Regenerate's never did). */
-  fromComposer: boolean;
-}>;
-
 /**
  * An Edit of a conversation's latest turn (#1923). `editing`: its message is in the composer and Send replaces it;
  * `replacing`: that Send's rewind is out; `replaced`: the turn is gone and stays hidden until a read no longer shows it.
@@ -177,13 +155,14 @@ export type ConversationRegistry = Readonly<{
   discardUnsentDraft: (scopeId: string) => void;
   adoptedDraftIdOf: (scopeId: string) => string | null;
   finishDraftAdoption: (scopeId: string, conversationId: string) => void;
-  /** One in-flight send per conversation across route/store remounts. */
-  pendingSendIds: ReadonlySet<string>;
-  /** Failed attempts keyed by the conversation that owns their recovery. */
-  failedSends: Readonly<Record<string, FailedConversationSend>>;
-  tryBeginSend: (conversationId: string) => boolean;
-  finishSend: (conversationId: string, failure: FailedConversationSend | null) => void;
-  clearFailedSend: (conversationId: string, echoId: string) => void;
+  /** Each conversation's keyed sends not yet shown by the server, above every route remount. */
+  outboxOf: (conversationId: string) => readonly SendOp[];
+  /** Start a send there (`beginSendOp`): false while that conversation cannot take it. Clears its Edit notice. */
+  beginSend: (conversationId: string, op: SendOp) => boolean;
+  /** Change one conversation's outbox, whichever is shown; returns it as written. */
+  editOutbox: (conversationId: string, next: (current: readonly SendOp[]) => readonly SendOp[]) => readonly SendOp[];
+  /** The next number in the tab's one read order: a read numbered later started later, whichever view started it. */
+  nextRead: () => number;
   /** Each existing conversation's unsent words and images, kept across closing, switching and remounts. */
   composerOf: (conversationId: string) => ComposerContent;
   /** Change one conversation's composer, whichever conversation is shown. */
@@ -216,6 +195,9 @@ export type ConversationRegistry = Readonly<{
 
 const ConversationContext = createContext<ConversationRegistry | null>(null);
 
+const NO_SENDS: readonly SendOp[] = Object.freeze([]);
+const NO_TURNS: readonly TranscriptEntry[] = Object.freeze([]);
+
 function equalRecord(left: Readonly<Record<string, unknown>>, right: Readonly<Record<string, unknown>>): boolean {
   const keys = Object.keys(left);
   return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
@@ -236,9 +218,9 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const [openRequest, setOpenRequest] = useState<
     { id: string; focusComposer: boolean } | null
   >(null);
-  const pendingSendIdsRef = useRef<ReadonlySet<string>>(new Set());
-  const [pendingSendIds, setPendingSendIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [failedSends, setFailedSends] = useState<Readonly<Record<string, FailedConversationSend>>>({});
+  const outboxesRef = useRef<Readonly<Record<string, readonly SendOp[]>>>({});
+  const [outboxes, setOutboxes] = useState(outboxesRef.current);
+  const readsStarted = useRef(0);
   const [editNotices, setEditNotices] = useState<Readonly<Record<string, EditNotice>>>({});
   const clearEditNotice = useCallback((conversationId: string) => {
     setEditNotices((current) => {
@@ -248,31 +230,26 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       return next;
     });
   }, []);
-  const tryBeginSend = useCallback((conversationId: string) => {
-    if (pendingSendIdsRef.current.has(conversationId)) return false;
-    const next = new Set(pendingSendIdsRef.current);
-    next.add(conversationId);
-    pendingSendIdsRef.current = next;
-    setPendingSendIds(next);
-    setFailedSends((current) => {
-      if (!(conversationId in current)) return current;
-      const withoutPrevious = { ...current };
-      delete withoutPrevious[conversationId];
-      return withoutPrevious;
-    });
+  /* Written through the ref first, so two presses in one tick see each other. */
+  const editOutbox = useCallback((conversationId: string, next: (current: readonly SendOp[]) => readonly SendOp[]) => {
+    const before = outboxesRef.current[conversationId] ?? NO_SENDS;
+    const after = next(before);
+    if (after === before) return before;
+    const updated = { ...outboxesRef.current };
+    if (after.length === 0) delete updated[conversationId]; else updated[conversationId] = after;
+    outboxesRef.current = updated;
+    setOutboxes(updated);
+    return after;
+  }, []);
+  const beginSend = useCallback((conversationId: string, op: SendOp) => {
+    const begun = beginSendOp(outboxesRef.current[conversationId] ?? NO_SENDS, op);
+    if (begun === null) return false;
+    editOutbox(conversationId, () => begun);
     clearEditNotice(conversationId);
     return true;
-  }, [clearEditNotice]);
-  const finishSend = useCallback((conversationId: string, failure: FailedConversationSend | null) => {
-    if (!pendingSendIdsRef.current.has(conversationId)) return;
-    const next = new Set(pendingSendIdsRef.current);
-    next.delete(conversationId);
-    pendingSendIdsRef.current = next;
-    setPendingSendIds(next);
-    if (failure !== null) {
-      setFailedSends((current) => ({ ...current, [conversationId]: failure }));
-    }
-  }, []);
+  }, [clearEditNotice, editOutbox]);
+  const outboxOf = useCallback((conversationId: string) => outboxes[conversationId] ?? NO_SENDS, [outboxes]);
+  const nextRead = useCallback(() => { readsStarted.current += 1; return readsStarted.current; }, []);
   const [composers, setComposers] = useState<Readonly<Record<string, ComposerContent>>>({});
   const editComposer = useCallback((conversationId: string, next: (current: ComposerContent) => ComposerContent) => {
     setComposers((current) => {
@@ -364,15 +341,9 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   }, [writeEdit]);
   const editOf = useCallback((conversationId: string) => edits[conversationId] ?? null, [edits]);
   const editNoticeOf = useCallback((conversationId: string) => editNotices[conversationId] ?? null, [editNotices]);
-  const clearFailedSend = useCallback((conversationId: string, echoId: string) => {
-    setFailedSends((current) => {
-      if (current[conversationId]?.echo.id !== echoId) return current;
-      const next = { ...current };
-      delete next[conversationId];
-      return next;
-    });
-  }, []);
-  const remember = useCallback((conversation: Conversation, turns: readonly TranscriptEntry[]) => {
+  const remember = useCallback((conversation: Conversation, given: readonly TranscriptEntry[]) => {
+    /* What a read showed: a message still in an outbox is the outbox's, and `turnsOf` adds it back. */
+    const turns = given.some(isOptimisticConversationTurn) ? given.filter((turn) => !isOptimisticConversationTurn(turn)) : given;
     setEntries((current) => equalEntry(current[conversation.id], conversation, turns)
       ? current
       : { ...current, [conversation.id]: { conversation, turns } });
@@ -426,21 +397,24 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const requestedOpenId = openRequest?.id ?? null;
   const requestedOpenFocusesComposer = openRequest?.focusComposer ?? false;
   const conversations = useMemo(() => Object.values(entries).map(({ conversation }) => conversation), [entries]);
-  const turnsOf = useCallback((conversationId: string) => entries[conversationId]?.turns ?? [], [entries]);
+  const turnsOf = useCallback(
+    (conversationId: string) => withConfirmedSends(entries[conversationId]?.turns ?? NO_TURNS, outboxes[conversationId] ?? NO_SENDS),
+    [entries, outboxes],
+  );
   const value = useMemo<ConversationRegistry>(
     () => ({
       conversations, turnsOf, remember, updateExisting,
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
-      pendingSendIds, failedSends, tryBeginSend, finishSend, clearFailedSend,
+      outboxOf, beginSend, editOutbox, nextRead,
       composerOf, editComposer, newConversationComposerOf, editNewConversationComposer,
       editOf, beginEdit, cancelEdit, beginReplace, finishReplace, leaveEdit, forgetEdit, editNoticeOf, uploadOf, editUpload,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, forgetEdit, editOf, beginEdit, cancelEdit, beginReplace, finishReplace, leaveEdit, editNoticeOf, uploadOf, finishSend, pendingSendIds,
-      remember, requestOpen, failedSends, clearFailedSend,
-      requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginSend, turnsOf,
+      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, forgetEdit, editOf, beginEdit, cancelEdit, beginReplace, finishReplace, leaveEdit, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, nextRead,
+      remember, requestOpen,
+      requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf,
       updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;

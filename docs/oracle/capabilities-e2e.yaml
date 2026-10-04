@@ -92,7 +92,7 @@
   statement: >
     A message typed during a healthy running or stopping turn must still be posted. After its
     POST is acknowledged, `kernelQueuesInput` classifies its queued echo without letting
-    `hasUnreconciledSend` lock the composer. Pending, rejected, or uncertain submissions must not
+    `outboxView` lock the composer. Pending, rejected, or uncertain submissions must not
     claim to be queued. A known wedged harness blocks new submissions and offers recovery while
     retaining existing words; queued entries must no longer promise delivery from that harness.
   why: >
@@ -113,14 +113,15 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:443-459,537-567,710-720,758-777
+  source: fe/web/src/app/router/public.tsx:330,410-416,513-518; fe/core/domain/conversation-outbox.ts:121-158;
+    fe/web/src/app/conversations/outbox.ts:194-198
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
   # tabulated a second time at the platform-independent tier
   # (`fe/core/domain/conversation.test.ts`, `describe('kernelQueuesInput')`), which is not cited
   # here because a row declares one `test_tier` and that suite is not jsdom.
   authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:1041-1092;
-    fe/web/src/app/router/track-conversation.test.tsx:701-747,1898-1939
+    fe/web/src/app/router/track-conversation.test.tsx:701-747,2020-2061
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
@@ -391,7 +392,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:22,33-38,81-95,115-137;
-    fe/web/src/app/router/new-track-route.tsx:73; fe/web/src/app/router/public.tsx:1533,2082-2088;
+    fe/web/src/app/router/new-track-route.tsx:73; fe/web/src/app/router/public.tsx:1283,1838-1844;
     fe/web/src/features/chat/thread/public.tsx:488,506,533,538-563
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose

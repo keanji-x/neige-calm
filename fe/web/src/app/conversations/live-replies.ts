@@ -24,32 +24,32 @@ type TranscriptQueryOptions = Readonly<{ queryFn: (context: { pageParam: number 
 
 /**
  * The order the transcript's reads started in (#1923 S2, rule b). Each page read is numbered as it
- * starts, and a result carries the number of the read its newest page came from. A result this
- * view did not read carries 0, which no copy retires by.
+ * starts, from the tab's one read order, and a result carries the number of the read its newest page
+ * came from. A result this view did not read carries 0, which no copy retires by.
  */
 export type TranscriptReads = Readonly<{
   /** The transcript query, with its page reads numbered and its results stamped. */
   track: <Options extends TranscriptQueryOptions>(options: Options) => Options & {
     structuralSharing: (previous: unknown, next: unknown) => unknown;
   };
-  startOf: (result: TranscriptResult | undefined) => number;
+  startOf: (result: Readonly<{ pages: readonly TranscriptPage[] }> | undefined) => number;
   /** The number of the latest read started so far. */
   latest: () => number;
 }>;
 
-/** The transcript reads of one conversation view, held for its lifetime. */
-export function useTranscriptReads(): TranscriptReads {
-  const [reads] = useState(createTranscriptReads);
+/** The transcript reads of one conversation view, held for its lifetime; `nextRead` numbers each as it starts. */
+export function useTranscriptReads(nextRead: () => number): TranscriptReads {
+  const [reads] = useState(() => createTranscriptReads(nextRead));
   return reads;
 }
 
-function createTranscriptReads(): TranscriptReads {
+function createTranscriptReads(nextRead: () => number): TranscriptReads {
   let started = 0;
   /* Keyed by a result's newest page. Load earlier keeps that page, and so its number. Structural
      sharing stores a page other than the one read (the stored one when nothing changed, a copy
      otherwise), so each result stamps the page it keeps with its newest page's number. */
   const pageStarts = new WeakMap<TranscriptPage, number>();
-  const startOf = (result: TranscriptResult | undefined) => {
+  const startOf = (result: Readonly<{ pages: readonly TranscriptPage[] }> | undefined) => {
     const newest = result?.pages[0];
     return newest === undefined ? 0 : pageStarts.get(newest) ?? 0;
   };
@@ -57,8 +57,8 @@ function createTranscriptReads(): TranscriptReads {
     track: (options) => ({
       ...options,
       queryFn: async (context) => {
-        started += 1;
-        const start = started;
+        const start = nextRead();
+        started = start;
         const page = await options.queryFn(context);
         pageStarts.set(page, start);
         return page;

@@ -13,7 +13,7 @@ import {
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
   mergeTranscript, plannerQueueWriteFailure, readableCommand,
-  reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
+  reconcileUserEchoes, serverItemHighWater,
   toTrackConversation, trackConversationCardId,
   trackConversationsOperation, transcriptRowToTurnOutcome,
   type Conversation, type ConversationKind, type ConversationTurn, type OptimisticConversationTurn,
@@ -97,19 +97,6 @@ describe('optimistic conversation provenance', () => {
   it('takes the highest persisted item id as the pre-send boundary', () => {
     expect(serverItemHighWater([{ id: 4 }, { id: 9 }, { id: 2 }])).toBe(9);
     expect(serverItemHighWater([])).toBe(0);
-  });
-
-  it('does not let an identical older row confirm a newer echo', () => {
-    expect(reconcileOptimisticConversationTurns([serverTurn('4')], [echo('echo-1', 4, false)]))
-      .toHaveLength(1);
-    expect(reconcileOptimisticConversationTurns([serverTurn('5')], [echo('echo-1', 4, false)]))
-      .toHaveLength(0);
-  });
-
-  it('lets one new server row confirm only one of two identical echoes', () => {
-    expect(reconcileOptimisticConversationTurns(
-      [serverTurn('5')], [echo('echo-1', 4, false), echo('echo-2', 4, false)],
-    ).map((turn) => turn.id)).toEqual(['echo-2']);
   });
 
   it('recognises only finite user turns carrying provenance', () => {

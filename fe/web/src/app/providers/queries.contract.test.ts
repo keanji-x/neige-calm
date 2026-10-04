@@ -554,8 +554,9 @@ describe('delete mutation wiring', () => {
 
   it('does not turn an acknowledged planner send into a send failure when refresh fails', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const order: string[] = [];
     const invalidate = vi.spyOn(client, 'invalidateQueries')
-      .mockRejectedValue(new Error('history refresh failed'));
+      .mockImplementation(() => { order.push('refresh'); return Promise.reject(new Error('history refresh failed')); });
     const transport: ApiTransportPort = {
       send: () => Promise.resolve(ok({ card_id: 'card-1', worker_session_id: 'runtime-1' })),
     };
@@ -563,9 +564,11 @@ describe('delete mutation wiring', () => {
       wrapper: mutationWrapper(client),
     });
 
-    await expect(result.current.send('accepted by the server', [], 'send-key', transport))
+    await expect(result.current.send('accepted by the server', [], 'send-key', transport, () => { order.push('answered'); }))
       .resolves.toMatchObject({ card_id: 'card-1' });
     expect(invalidate).toHaveBeenCalledTimes(2);
+    /* The answer is noted before any refresh read starts: a read started after it can stand for it. */
+    expect(order).toEqual(['answered', 'refresh', 'refresh']);
   });
 });
 
