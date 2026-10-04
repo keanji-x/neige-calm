@@ -43,6 +43,12 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     if (request.path === '/api/areas') return ok([...(options.longLists ? Array.from({ length: 18 }, (_, index) => ({ ...AREA, id: `extra${index}`, name: `Area ${index}`, sort: index - 18 })) : []), { ...AREA, name: areaName }, { ...AREA, id: 'c2', name: 'Frontend' }]);
     if (request.path === '/api/areas/c1/tracks') return ok([...(track.area_id === 'c1' ? [track] : []), { ...track, area_id: 'c1', id: 'w2', title: 'Another track' }, ...(options.longLists ? Array.from({ length: 25 }, (_, index) => ({ ...track, id: `long${index}`, title: `Long track ${index}` })) : [])]);
     if (request.path === '/api/areas/c2/tracks') return ok([{ ...track, area_id: 'c2', id: 'w3', title: 'Frontend track' }]);
+    if (request.path === '/api/today/daily') return ok({ date: '2026-10-04', time_zone: 'Asia/Shanghai', track_id: 'daily' });
+    if (request.path === '/api/tracks/daily') return ok({
+      track: { ...track, id: 'daily', area_id: 'system-area', title: '2026-10-04' },
+      cards: [{ ...report, id: 'daily-report', track_id: 'daily' }, { ...planner, id: 'daily-planner', track_id: 'daily' }],
+      overlays: [], can_reopen: false, can_close: false,
+    });
     if (request.path === '/api/tracks/w1') return ok({ track, cards: [report, planner, { ...planner, id: 'terminal', title: 'Terminal', kind: 'terminal', payload: {} }], overlays: [], can_reopen: false, can_close: true });
     if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Another track' }, cards: [], overlays: [], can_reopen: false, can_close: true });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [] });
