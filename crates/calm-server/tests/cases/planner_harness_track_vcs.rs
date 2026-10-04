@@ -649,7 +649,7 @@ async fn complete_first_turn_and_stamp(boot: &Boot) -> String {
         "first turn must not include a diff block: {text}"
     );
     complete_latest_turn(boot).await;
-    wait_for_in_mem_last_seen_head(boot).await
+    wait_for_last_seen_head_ne(boot, None).await
 }
 
 async fn wait_for_turn_count(daemon: &SharedCodexAppServer, count: usize) {
@@ -686,18 +686,51 @@ async fn wait_for_state(
 
 // Waits on the harness's IN-MEMORY `last_seen_head`, not the persisted snapshot: the turn-completion path persists
 // the snapshot one await-point BEFORE stamping the in-memory value, and a later in-memory stamp would clobber a test's `set_last_seen_head_raw` override.
-async fn wait_for_in_mem_last_seen_head(boot: &Boot) -> String {
+async fn wait_for_last_seen_head_ne(boot: &Boot, previous: Option<&str>) -> String {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        if let Some(actual) = boot.harness.last_seen_head_for_test().await {
-            return actual;
+        let actual = boot.harness.last_seen_head_for_test().await;
+        if let Some(head) = actual.as_ref()
+            && Some(head.as_str()) != previous
+        {
+            return head.clone();
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for in-memory last_seen_head"
+            "timed out waiting for in-memory last_seen_head != {previous:?}; last={actual:?}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+#[tokio::test]
+async fn watermark_wait_does_not_accept_previous_turn_head() {
+    let boot = boot().await;
+    boot.harness.shutdown().await.unwrap();
+    boot.harness
+        .set_last_seen_head_for_test(Some("previous-head".into()))
+        .await;
+
+    let wait = wait_for_last_seen_head_ne(&boot, Some("previous-head"));
+    tokio::pin!(wait);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut wait)
+            .await
+            .is_err(),
+        "the previous turn's watermark must not satisfy the wait"
+    );
+
+    boot.harness.set_last_seen_head_for_test(None).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut wait)
+            .await
+            .is_err(),
+        "a missing watermark must not satisfy the wait"
+    );
+    boot.harness
+        .set_last_seen_head_for_test(Some("completed-head".into()))
+        .await;
+    assert_eq!(wait.await, "completed-head");
 }
 
 async fn wait_for_last_seen_head_eq(boot: &Boot, expected: &str) {
@@ -1892,7 +1925,7 @@ async fn a_rewound_turn_gives_its_track_changes_back_to_the_next_turn() {
         .active_turn_for_test(&boot.thread_id)
         .expect("active turn");
     complete_latest_turn(&boot).await;
-    let advanced = wait_for_in_mem_last_seen_head(&boot).await;
+    let advanced = wait_for_last_seen_head_ne(&boot, Some(&before)).await;
     assert_ne!(
         advanced, before,
         "premise: the completion advanced the watermark"
