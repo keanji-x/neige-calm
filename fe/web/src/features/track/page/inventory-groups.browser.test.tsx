@@ -18,7 +18,7 @@ const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['
 const derive = (input: { cards: readonly CardWire[]; tasks: readonly ReportTaskRow[] }) =>
   deriveTrackPageView({ ...input, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(input.cards, input.tasks) });
 
-it('clips long status tokens before the worker-type column while keeping their full explanation', async () => {
+it('clips long state labels after the worker-type column while keeping their full explanation', async () => {
   await page.viewport(1200, 900);
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}),
     derive({ cards: [card({ id: 'pending-card', title: 'Long card title', kind: 'codex',
@@ -34,7 +34,7 @@ it('clips long status tokens before the worker-type column while keeping their f
     expect(style.textOverflow).toBe('ellipsis');
     expect(status.title).not.toBe('');
     const kind = status.closest('[data-nc-row]')!.querySelector('[data-nc-field="kind"]')!;
-    expect(status.getBoundingClientRect().right).toBeLessThanOrEqual(kind.getBoundingClientRect().left);
+    expect(kind.getBoundingClientRect().right).toBeLessThanOrEqual(status.getBoundingClientRect().left);
   }
 });
 
@@ -60,7 +60,7 @@ it('aligns module titles, status groups and row names, with stable secondary col
   for (const count of document.querySelectorAll<HTMLElement>('summary > span:nth-child(2)')) {
     expect(count.getBoundingClientRect().right).toBeCloseTo(total.getBoundingClientRect().right, 0);
   }
-  const statuses = [...tasks.querySelectorAll<HTMLElement>('details[open] [data-nc-status]')];
+  const statuses = [...tasks.querySelectorAll<HTMLElement>('details[open] [data-nc-inventory-state]')];
   expect(statuses).toHaveLength(2);
   expect(statuses[0].getBoundingClientRect().right).toBeCloseTo(statuses[1].getBoundingClientRect().right, 0);
   const kinds = [...tasks.querySelectorAll<HTMLElement>('details[open] [data-nc-field="kind"]')];
@@ -150,14 +150,42 @@ it.each([false, true])('aligns state columns across Cards and Tasks with deletab
   expect(center(cardRow.querySelector('[data-nc-activity="working"]')!))
     .toBeCloseTo(center(taskRow.querySelector('[data-nc-activity="working"]')!), 0);
   const columns = [
-    [cardRow.querySelector('[data-nc-status]')!, taskRow.querySelector('[data-nc-status]')!],
+    [cardRow.querySelector('[data-nc-inventory-state]')!, taskRow.querySelector('[data-nc-inventory-state]')!],
     [cardRow.querySelector('[data-nc-field="kind"]')!, taskRow.querySelector('[data-nc-field="kind"]')!],
   ];
   for (const [cardColumn, taskColumn] of columns) {
     expect(cardColumn.getBoundingClientRect().right).toBeCloseTo(taskColumn.getBoundingClientRect().right, 0);
   }
+  const kinds = [cardRow.querySelector('[data-nc-field="kind"]')!, taskRow.querySelector('[data-nc-field="kind"]')!];
+  for (const kind of kinds) {
+    const range = document.createRange();
+    range.selectNodeContents(kind);
+    const style = getComputedStyle(kind);
+    const contentRight = kind.getBoundingClientRect().right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
+    expect(range.getBoundingClientRect().right).toBeCloseTo(contentRight, 0);
+  }
+  expect(cardRow.querySelector('[data-nc-field="kind"]')!.getBoundingClientRect().right)
+    .toBeLessThanOrEqual(cardRow.querySelector('[data-nc-inventory-state]')!.getBoundingClientRect().left);
   const cardIndicator = cardRow.querySelector('[data-nc-activity="working"]')!.getBoundingClientRect();
   const taskIndicator = taskRow.querySelector('[data-nc-activity="working"]')!.getBoundingClientRect();
   expect(cardIndicator.top + cardIndicator.height / 2 - cardRow.getBoundingClientRect().top)
     .toBeCloseTo(taskIndicator.top + taskIndicator.height / 2 - taskRow.getBoundingClientRect().top, 0);
+});
+
+
+it.each([true, false])('lets the running group carry the label with live activity=%s', async (live) => {
+  await page.viewport(1200, 900);
+  const worker = card({ id: 'worker', title: 'Worker', kind: 'codex',
+    runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
+  const view = deriveTrackPageView({ cards: [worker],
+    tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'worker' }],
+    activity: { cards: live ? { worker: 'working' } : {} }, openableCards: new Set(['worker']) });
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), view)}</PanelCard></div>);
+  const running = document.querySelectorAll<HTMLElement>('[data-nc-status="running"]');
+  expect(running).toHaveLength(2);
+  for (const label of running) {
+    expect(label.textContent).toBe('running');
+    expect(label.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+  }
+  expect(document.querySelectorAll('[data-nc-activity="working"]')).toHaveLength(live ? 2 : 0);
 });

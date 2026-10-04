@@ -70,7 +70,7 @@ function tooltipAt(x: number, y: number): string | null {
 }
 
 describe('a compact desktop TASKS row', () => {
-  it('keeps status before the worker kind and reserves the shared action gutter', async () => {
+  it('puts the worker kind before the rightmost state slot with a shared action gutter', async () => {
     await browserPage.viewport(1200, 800);
     const row = renderTasks([assigned]);
     const status = row.querySelector<HTMLElement>('[data-nc-task-status-text]')!;
@@ -80,12 +80,14 @@ describe('a compact desktop TASKS row', () => {
     const kindBox = kind.getBoundingClientRect();
 
     expect(rowBox.width).toBeGreaterThan(100);
-    expect(status.innerText).toBe('running');
+    expect(status.textContent).toBe('running');
+    expect(status.getBoundingClientRect().width).toBeLessThanOrEqual(1);
     expect(status.getAttribute('data-nc-status')).toBe('running');
     expect(statusBox.width).toBeGreaterThan(0);
-    expect(statusBox.right).toBeLessThanOrEqual(kindBox.left);
+    const stateBox = row.querySelector<HTMLElement>('[data-nc-inventory-state]')!.getBoundingClientRect();
+    expect(kindBox.right).toBeLessThanOrEqual(stateBox.left);
     expect(row.querySelector('[role="img"][data-nc-status]')).toBeNull();
-    expect(rowBox.right - kindBox.right).toBeCloseTo(32, 0);
+    expect(rowBox.right - stateBox.right).toBeCloseTo(32, 0);
   });
 
   it('keeps a pending reason out of the row copy and exposes it on hover', async () => {
@@ -119,7 +121,7 @@ describe('a compact desktop TASKS row', () => {
     const onOpenTask = vi.fn();
     const row = renderTasks([assigned], onOpenCard, onOpenTask);
     const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
-    const status = row.querySelector<HTMLElement>('[data-nc-task-status-text]')!;
+    const status = row.querySelector<HTMLElement>('[data-nc-inventory-state]')!;
     const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
     const statusBox = status.getBoundingClientRect();
     const kindBox = kind.getBoundingClientRect();

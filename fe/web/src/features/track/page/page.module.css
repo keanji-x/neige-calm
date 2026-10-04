@@ -661,7 +661,7 @@
   /* Shared metadata measures keep both inventories on the same column lines. */
   .cardRow,
   .taskRow {
-    --nc-inventory-status-w: 7ch;
+    --nc-inventory-status-w: 10ch;
     --nc-inventory-kind-w: 7ch;
     font-size: var(--text-xs);
   }
@@ -738,11 +738,22 @@
     min-block-size: var(--row-h);
   }
 
+  .runState {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    grid-column: 3;
+    grid-row: 1;
+    min-inline-size: 0;
+    min-block-size: var(--row-h);
+    position: relative;
+  }
+
   .activitySlot {
     display: grid;
     place-items: center;
-    grid-column: 2;
-    grid-row: 1;
+    flex: none;
     inline-size: var(--glyph-meta);
     min-block-size: var(--row-h);
   }
@@ -811,7 +822,7 @@
   .taskRow {
     position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--nc-inventory-kind-w) var(--control-h-sm);
+    grid-template-columns: minmax(0, 1fr) var(--nc-inventory-kind-w) var(--nc-inventory-status-w) var(--control-h-sm);
     align-items: start;
     /*
      * `--space-4`, not `--space-2`, on the *trailing* cluster only.
@@ -865,7 +876,9 @@
    */
   .taskReveal {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--glyph-meta) var(--nc-inventory-status-w);
+    grid-column: 1;
+    grid-row: 1;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: var(--row-h);
     align-items: center;
     column-gap: var(--space-4);
@@ -874,6 +887,14 @@
     color: inherit;
     cursor: pointer;
     text-align: start;
+  }
+
+  /* State remains inside the reveal control while the worker keeps its own grid cell. */
+  .taskReveal > .runState {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-end: calc(var(--control-h-sm) + var(--space-4) + var(--space-2));
+    inline-size: var(--nc-inventory-status-w);
   }
 
   .taskBadges {
@@ -1002,16 +1023,24 @@
 
   .cardMeta {
     display: grid;
-    grid-template-columns: var(--glyph-meta) var(--nc-inventory-status-w) var(--nc-inventory-kind-w);
+    grid-template-columns: var(--nc-inventory-kind-w) var(--nc-inventory-status-w);
     grid-template-rows: var(--row-h);
     align-items: center;
     column-gap: var(--space-4);
     row-gap: var(--space-0);
   }
 
-  .cardMeta > .activitySlot { grid-column: 1; }
-  .cardStatus { grid-column: 2; grid-row: 1; }
-  .cardKindTag { grid-column: 3; grid-row: 1; text-align: end; overflow: hidden; white-space: nowrap; }
+  .cardMeta > .runState { grid-column: 2; }
+  .cardKindTag {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    grid-column: 1;
+    grid-row: 1;
+    text-align: end;
+    overflow: hidden;
+    white-space: nowrap;
+  }
 
   .cardBadges {
     display: flex;
@@ -1028,8 +1057,9 @@
      `kernel-owned`: it is a fact about the row, not the row's subject. */
   .cardStatus,
   .taskStatusText {
-    inline-size: var(--nc-inventory-status-w);
-    flex: none;
+    min-inline-size: 0;
+    max-inline-size: var(--nc-inventory-status-w);
+    flex: 0 1 auto;
     text-align: end;
     overflow: hidden;
     white-space: nowrap;

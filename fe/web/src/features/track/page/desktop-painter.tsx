@@ -3,6 +3,7 @@
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { Fragment, type ReactNode } from 'react';
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
 import { inventorySections, panelRowGroup, type InventoryGroupKey } from '../../../../../core/view/panel-groups.ts';
 import { InventoryGroups } from './inventory-groups.tsx';
@@ -82,6 +83,26 @@ function cardBadge(badge: RowBadge): ReactNode {
   );
 }
 
+/** The group carries generic running state; the row keeps the kernel's live indicator and specific phases. */
+function runState(row: PanelRow, moduleKey: RowModuleView['key']): ReactNode {
+  const status = row.status;
+  const attributes = status === null ? {} : {
+    ...mark(MARKER.status, status.token),
+    title: status.phrase,
+    ...(moduleKey === 'tasks' ? { 'aria-hidden': true, 'data-nc-task-status-text': '' } : {}),
+  };
+  return <span className={styles.runState} data-nc-inventory-state=""
+    title={status?.phrase ?? (row.activity === null ? undefined : activityLabelOf(row.activity) ?? undefined)}>
+    {row.activity !== null && <span className={styles.activitySlot}>
+      <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />
+    </span>}
+    {status !== null && (status.token === 'running'
+      ? <VisuallyHidden {...attributes}>{status.token}</VisuallyHidden>
+      : <ListText tone="secondary" className={moduleKey === 'cards' ? styles.cardStatus : styles.taskStatusText}
+        {...attributes}>{status.token}</ListText>)}
+  </span>;
+}
+
 /** A Cards row. The delete is a sibling of the row button, never a child: a `<button>` inside a `<button>` is dropped by every HTML parser. */
 function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const open = control(row, 'open-card');
@@ -98,11 +119,7 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
           <ListText tone="primary" className={styles.cardKind} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
         </span>
         <span className={styles.cardMeta}>
-          <span className={styles.activitySlot}>
-            {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
-          </span>
-          {row.status !== null && <ListText tone="secondary" className={styles.cardStatus}
-            {...mark(MARKER.status, row.status.token)} title={row.status.phrase}>{row.status.token}</ListText>}
+          {runState(row, 'cards')}
           {row.kind !== null && (
             <ListText tone="secondary" className={styles.cardKindTag} title={row.kind} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
           )}
@@ -148,19 +165,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
           >{badge.text}</ListText>
         ))}
       </span>}
-      {/* Spoken: the status word below is `aria-hidden` and names the run, not the verdict. */}
-      <span className={styles.activitySlot}>
-        {row.activity !== null && <ActivityIndicator state={row.activity} spoken={activityLabelOf(row.activity)} />}
-      </span>
-      {row.status !== null && (
-        <ListText tone="secondary"
-          className={styles.taskStatusText}
-          data-nc-task-status-text=""
-          {...mark(MARKER.status, row.status.token)}
-          aria-hidden="true"
-          title={row.status.phrase}
-        >{row.status.token}</ListText>
-      )}
+      {runState(row, 'tasks')}
     </button>
   );
   return (
