@@ -37,7 +37,7 @@ async fn granted_planner_reads_foreign_reports_without_write_authority() {
     assert_ne!(track.area_id, next.area_id);
     let id = identity(&route, &next).await;
     let state_tool = crate::mcp_server::build_default_registry()
-        .lookup("calm.track.state")
+        .lookup("neige.track.state")
         .unwrap();
     let state = state_tool(route.mcp_context.clone(), id.clone(), json!({}))
         .await
@@ -45,7 +45,7 @@ async fn granted_planner_reads_foreign_reports_without_write_authority() {
         .into_structured();
     assert_eq!(state["creation_identity"]["identity"], "2026-10-04");
     let registry = crate::mcp_server::build_default_registry();
-    let read = registry.lookup("calm.workspace.reports.read").unwrap();
+    let read = registry.lookup("neige.workspace.report").unwrap();
     let result = read(
         route.mcp_context.clone(),
         id.clone(),
@@ -56,7 +56,7 @@ async fn granted_planner_reads_foreign_reports_without_write_authority() {
     .into_structured();
     assert_eq!(result["track_id"], track.id.as_str());
     assert!(result["body"].as_str().unwrap().contains("概要"));
-    let list = registry.lookup("calm.workspace.reports.list").unwrap();
+    let list = registry.lookup("neige.workspace.reports").unwrap();
     assert_eq!(
         list(route.mcp_context.clone(), id.clone(), json!({}))
             .await
@@ -68,7 +68,7 @@ async fn granted_planner_reads_foreign_reports_without_write_authority() {
         1
     );
     // The ordinary write tool still resolves only the bound Track and requires its own marker read.
-    let write = registry.lookup("calm.report.write_markdown").unwrap();
+    let write = registry.lookup("neige.report.write").unwrap();
     let result = write(
         route.mcp_context.clone(),
         id,
@@ -112,14 +112,11 @@ async fn ungranted_planner_cannot_read_workspace_reports() {
         .await
         .unwrap();
     for (tool, args) in [
-        ("calm.workspace.reports.list", json!({})),
-        ("calm.workspace.reports.read", json!({"track_id":track.id})),
+        ("neige.workspace.reports", json!({})),
+        ("neige.workspace.report", json!({"track_id":track.id})),
+        ("neige.workspace.changes", json!({"date":"2026-10-03"})),
         (
-            "calm.workspace.reports.changes",
-            json!({"date":"2026-10-03"}),
-        ),
-        (
-            "calm.workspace.reports.edits",
+            "neige.workspace.edits",
             json!({"date":"2026-10-03","track_id":track.id,"through_event_id":0}),
         ),
     ] {
@@ -147,7 +144,7 @@ async fn workers_assistants_and_forged_bindings_are_refused() {
                 route.mcp_context.clone(),
                 ToolCallIdentity { role, ..id.clone() },
                 json!({}),
-                "calm.workspace.reports.list"
+                "neige.workspace.reports"
             )
             .await
             .is_err()
@@ -161,7 +158,7 @@ async fn workers_assistants_and_forged_bindings_are_refused() {
                 ..id
             },
             json!({}),
-            "calm.workspace.reports.list"
+            "neige.workspace.reports"
         )
         .await
         .is_err()
@@ -177,9 +174,9 @@ async fn report_planning_profile_refuses_worker_terminal_lifecycle_and_plugin_wr
         .unwrap();
     let id = identity(&route, &track).await;
     for tool in [
-        "calm.track.close",
-        "calm.task.verdict",
-        "calm.terminal.open",
+        "neige.track.close",
+        "neige.task.verdict",
+        "neige.terminal.open",
         "external-plugin.mutate",
     ] {
         let result =
@@ -187,9 +184,9 @@ async fn report_planning_profile_refuses_worker_terminal_lifecycle_and_plugin_wr
         assert_eq!(result.unwrap_err().code, -32403, "{tool}");
     }
     for tool in [
-        "calm.report.read",
-        "calm.report.commit",
-        "calm.workspace.reports.changes",
+        "neige.report.read",
+        "neige.report.commit",
+        "neige.workspace.changes",
     ] {
         assert!(
             crate::managed_track::require_tool_allowed(&route.mcp_context, &id, tool)
@@ -198,7 +195,7 @@ async fn report_planning_profile_refuses_worker_terminal_lifecycle_and_plugin_wr
         );
     }
     let close = crate::mcp_server::build_default_registry()
-        .lookup("calm.track.close")
+        .lookup("neige.track.close")
         .unwrap();
     assert_eq!(
         close(route.mcp_context.clone(), id, json!({"message":"done"}))

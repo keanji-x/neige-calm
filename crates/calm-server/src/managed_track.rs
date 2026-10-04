@@ -173,23 +173,24 @@ pub(crate) async fn refuse_track_delete(
 pub(crate) fn report_planning_tool(name: &str) -> bool {
     use crate::mcp_server::tools::{
         track_file, track_history, track_report, track_report_blocks, track_state,
+        workspace_reports,
     };
     matches!(
         name,
         track_report::TOOL_REPORT_READ
             | track_report_blocks::TOOL_REPORT_COMMIT
-            | track_report_blocks::TOOL_REPORT_WRITE_MARKDOWN
-            | track_report_blocks::TOOL_REPORT_BLOCKS_KINDS
+            | track_report_blocks::TOOL_REPORT_WRITE
+            | track_report_blocks::TOOL_REPORT_KINDS
             | track_state::TOOL_TRACK_STATE
             | track_file::TOOL_TRACK_LS
             | track_file::TOOL_TRACK_CAT
             | track_history::TOOL_TRACK_LOG
             | track_history::TOOL_TRACK_DIFF
-            | track_history::TOOL_TRACK_CAT_AT
-            | "calm.workspace.reports.list"
-            | "calm.workspace.reports.read"
-            | "calm.workspace.reports.changes"
-            | "calm.workspace.reports.edits"
+            | track_history::TOOL_TRACK_SHOW
+            | workspace_reports::TOOL_WORKSPACE_REPORTS
+            | workspace_reports::TOOL_WORKSPACE_REPORT
+            | workspace_reports::TOOL_WORKSPACE_CHANGES
+            | workspace_reports::TOOL_WORKSPACE_EDITS
     )
 }
 

@@ -33,10 +33,10 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige.track.close",
         "neige.track.rename",
         "neige.user.notify",
-        "calm.workspace.reports.changes",
-        "calm.workspace.reports.edits",
-        "calm.workspace.reports.list",
-        "calm.workspace.reports.read",
+        "neige.workspace.changes",
+        "neige.workspace.edits",
+        "neige.workspace.report",
+        "neige.workspace.reports",
     ]
 }
 

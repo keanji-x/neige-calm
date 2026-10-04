@@ -1647,7 +1647,7 @@
   },
   {
     "name": "neige.track.state",
-    "description_sha256": "8754f715ae8d7253abfa190d8c464926ee7455b08d7b9a29e54beeebef42622f",
+    "description_sha256": "f99468da0e9a8dde0a1df448b7983546caa62a4659a80c777aa16676c87428fa",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -1685,8 +1685,8 @@
     ]
   },
   {
-    "name": "calm.workspace.reports.changes",
-    "description_sha256": "22ae9496888d3578a8db69532411aa377d09a07446d0d38168c438409090da25",
+    "name": "neige.workspace.changes",
+    "description_sha256": "8c475ae64b6718e4d63c09e93fa762de3d4fbd6df90fdbb9db6ad594d696eaba",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1714,7 +1714,7 @@
     ]
   },
   {
-    "name": "calm.workspace.reports.edits",
+    "name": "neige.workspace.edits",
     "description_sha256": "41005a595003a875605f96c5ce9f08f9d160ea74732322a67ca964138b6fef4e",
     "input_schema": {
       "additionalProperties": false,
@@ -1749,26 +1749,7 @@
     ]
   },
   {
-    "name": "calm.workspace.reports.list",
-    "description_sha256": "d774221a35af8aa4064ddf15aebf920efc63dbf199547e4bcc3fd7d6d72cd3e7",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "after": {
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
-    "name": "calm.workspace.reports.read",
+    "name": "neige.workspace.report",
     "description_sha256": "a5de00367acbce4f6b50a78507412b4d7a7707ed930ce34570ac76a0fce85c8e",
     "input_schema": {
       "additionalProperties": false,
@@ -1780,6 +1761,25 @@
       "required": [
         "track_id"
       ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige.workspace.reports",
+    "description_sha256": "d774221a35af8aa4064ddf15aebf920efc63dbf199547e4bcc3fd7d6d72cd3e7",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "annotations": {
