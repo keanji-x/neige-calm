@@ -60,8 +60,8 @@ def cells(state):
     return {kind: valid(unit)['cell'] for kind, unit in published.items()}
 
 
-def simulated(r, cash, prices):
-    account = SimulatedAccount(cash, prices, lambda: r.clock())
+def simulated(r, cash, prices, split=False):
+    account = SimulatedAccount(cash, prices, lambda: r.clock(), split)
     r.broker = account
     r.restart()
     return account
@@ -201,3 +201,50 @@ def test_a_decision_that_traded_nothing_is_not_shown_as_success(rig):
     [record] = cells(state)['portfolio.decision_log']['datasets'][0]['items']
     badge = record['badges'][0]
     assert badge['tone'] != 'positive' and '未成交' in badge['value']
+
+
+def test_weights_apportion_cents_across_entries(rig):
+    """Three 0.334 holdings and no cash: per-entry rounding would publish 0.99 of a 1.00 equity."""
+    r = rig
+    prices = {'AAA.US': '0.334', 'BBB.US': '0.334', 'CCC.US': '0.334'}
+    opening_account(r, '0', prices, {s: 1 for s in prices})
+    state = r.step()
+    assert state['error'] is None
+    slices = [exact(s['value']) for s in cells(state)['portfolio.weights']['slices']]
+    assert sum(slices) == Decimal('1.00') and sorted(slices) == [0, Decimal('0.33'), Decimal('0.33'), Decimal('0.34')]
+
+
+def test_decision_amounts_use_every_fill(rig):
+    """More fills than the fill log shows: amounts, ranking and 其他 still use the complete ledger."""
+    r = rig
+    prices = {'S00.US': 1} | {f'S{i:02d}.US': 10 + i for i in range(1, 21)}
+    r.configure(max_held=21, max_watched=1)
+    account = simulated(r, '10000', prices, split=True)
+    r.watch(*('US:' + s.split('.')[0] for s in prices))
+    r.decide({'US:S00': 600} | {f'US:S{i:02d}': 10 + i for i in range(1, 21)})
+    r.request()
+    for _ in range(25):
+        state = r.step()
+        if state['decisions'][0]['state'] == 'done':
+            break
+    assert state['decisions'][0]['state'] == 'done' and len(account.fills) == 620
+    published = cells(state)
+    assert len(published['portfolio.fill_log']['table']['rows']) == 500
+    [record] = published['portfolio.decision_log']['datasets'][0]['items']
+    first, *middle, other = record['disclosures']
+    assert 'US:S00' in first['label'] and '已成交 600 股 · 成交金额 $600.00' in first['body']
+    assert [d['label'].split(' ')[1] for d in middle] == [f'US:S{i:02d}' for i in range(20, 2, -1)]
+    assert other['id'] == 'other' and other['body'] == '成交金额合计 $23.00'  # S01 + S02: 11 + 12
+
+
+def test_sample_date_never_moves_backwards(rig):
+    r = rig
+    monday = datetime(2026, 10, 5, 15, tzinfo=timezone.utc)
+    r.clock = lambda: monday + timedelta(minutes=1)
+    r.quote('US:AAA', '100', at=monday)
+    r.watch('US:AAA')
+    # The newest quote is now older than the last sample (a halted or re-read symbol).
+    r.quote('US:AAA', '99', at=datetime(2026, 10, 2, 19, 55, tzinfo=timezone.utc))
+    state = r.step()
+    assert [s['date'] for s in state['valuations']] == ['2026-10-05']
+    assert state['snapshot']['date'] == '2026-10-05'

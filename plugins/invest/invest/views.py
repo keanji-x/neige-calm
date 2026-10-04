@@ -191,9 +191,8 @@ def holdings(snapshot, previous, targets):
         'rows': rows, 'caption': caption}}
 
 
-def leg_disclosure(order, fills):
-    owned = [f for f in fills if order['broker_id'] and f['order_id'] == order['broker_id']]
-    amount = sum((f['quantity'] * Decimal(f['price']) for f in owned), Decimal(0))
+def leg_disclosure(order):
+    amount = Decimal(order['filled_amount_usd'])  # every fill of the leg, not the fill log's window
     request, state = order['request'], order['state']
     body = (f"委托 {request['quantity']} 股 · 已成交 {order['filled_quantity']} 股 · 成交金额 {money_text(amount)}"
             f" · 委托编号 {order['broker_id'] or '—'}" + (f" · 需关注：{order['error']}" if order['error'] else ''))
@@ -201,13 +200,13 @@ def leg_disclosure(order, fills):
             'body': bounded(body, 8000), 'note': FILL_NOTE, 'tone': TONES.get(state, 'neutral')}, amount
 
 
-def decision_record(decision, fills):
+def decision_record(decision):
     body, state, orders = decision['body'], decision['state'], decision['orders']
     top, rest = ranked(body['weights'], FACTS)
     facts = [{'label': s, 'value': percent(bps)} for s, bps in top]
     if rest:
         facts.append({'label': f'{OTHER} · {len(rest)} 个标的', 'value': percent(sum(b for _, b in rest))})
-    legs = {order['id']: leg_disclosure(order, fills) for order in orders}
+    legs = {order['id']: leg_disclosure(order) for order in orders}
     shown, hidden = ranked({key: amount for key, (_, amount) in legs.items()}, DISCLOSURES)
     disclosures = [legs[key][0] for key, _ in shown]
     if hidden:
@@ -234,8 +233,8 @@ def decision_record(decision, fills):
                   disclosures=disclosures)
 
 
-def decision_log(decisions, fills):
-    items = [decision_record(d, fills) for d in reversed(decisions[-DECISIONS:])]
+def decision_log(decisions):
+    items = [decision_record(d) for d in reversed(decisions[-DECISIONS:])]
     return records('decisions', '', 'Planner 保存目标权重后，调仓决策会显示在这里。', items, label='调仓决策',
                    description=f'最近 {DECISIONS} 项决策，最新在前；每项按成交金额列出委托，其余合并为{OTHER}。'
                                '收到委托编号表示券商已受理；成交状态以对账为准。')
@@ -286,6 +285,6 @@ def units(state):
     cells = {'portfolio.nav': nav(snapshot, previous), 'portfolio.nav_history': nav_history(samples),
              'portfolio.weights': weights(snapshot), 'portfolio.weight_history': weight_history(samples, snapshot),
              'portfolio.holdings': holdings(snapshot, previous, state['targets']),
-             'portfolio.decision_log': decision_log(state['decisions'], state['fills']),
+             'portfolio.decision_log': decision_log(state['decisions']),
              'portfolio.fill_log': fill_log(state['fills']), 'portfolio.account': account(state)}
     return {kind: unit(state, cell) for kind, cell in cells.items()}

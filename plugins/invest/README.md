@@ -50,8 +50,13 @@ symbol and decision, each ≤ `max_order_bps` of account value with a 1% price r
 committed before the broker write; an uncertain submission is never resubmitted and is recovered
 only by its exact remark; unowned active orders and holdings that the owned executions do not
 explain block execution and roll back the observation. Active orders are read account-wide every
-snapshot and before every submit: today's, and US orders from earlier days (GTC/GTD) placed within
-the last 90 days, a deliberate bound because SDK 5.2.0 documents no lifetime limit for them.
+snapshot and before every submit: all of today's orders (any non-terminal status, `Unknown`
+included, blocks), and US orders from earlier days (GTC/GTD) placed within the last 400 days. SDK
+5.2.0 documents neither a server default nor a range limit for `history_orders`' `start_at`
+(`openapi.pyi:7555,7566`), so the window is explicit. **Residual:** an active order placed before the
+window is invisible until it fills; its fill then breaks the per-symbol holdings equality, and
+reconciliation refuses execution (fail closed on fill). Decision and order amounts are summed over
+every persisted fill; only the fill table shows the latest 500.
 
 New: at most one leg in flight; sells before buys; buys use settled cash only, so a buy waits for
 settled proceeds and ends without an order if still unfunded at `valid_until`. Each leg carries

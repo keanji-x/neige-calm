@@ -22,12 +22,16 @@ from invest.symbols import from_sdk  # noqa: E402
 ACCESS_POINTS = {'global': 'longbridge.com', 'cn': 'longbridge.cn'}
 NY = ZoneInfo('America/New_York')
 TERMINAL = ('Filled', 'Canceled', 'Rejected', 'Expired', 'PartialWithdrawal')
-# Every SDK 5.2.0 `OrderStatus` that can still trade (`Unknown` is neither; it fails closed).
+# Every SDK 5.2.0 `OrderStatus` that can still trade; the filter of the earlier-days query only.
 ACTIVE = ('NotReported', 'ReplacedNotReported', 'ProtectedNotReported', 'VarietiesNotReported', 'WaitToNew', 'New',
           'WaitToReplace', 'PendingReplace', 'Replaced', 'PartialFilled', 'WaitToCancel', 'PendingCancel')
-# How far back an order placed outside invest is searched for: GTC and GTD orders outlive their day,
-# and SDK 5.2.0 documents no lifetime bound for them, so the window is a deliberate bound.
-ACTIVE_LOOKBACK = timedelta(days=90)
+# How far back orders from earlier days (GTC/GTD) are searched. In SDK 5.2.0 `history_orders` takes
+# an optional `start_at` documented only as "Start time" (openapi.pyi:7555,7566): no server default
+# and no range limit are documented (the stub's one "0 = last 90 days" default, :8068, belongs to
+# `us_query_orders`), so omitting it proves nothing and the window is explicit. Residual: an active
+# order placed before the window is invisible here until it fills; its fill then breaks the
+# per-symbol holdings equality in reconciliation, which refuses execution (fail closed on fill).
+ACTIVE_LOOKBACK = timedelta(days=400)
 MAX_SYMBOLS = 512
 
 
@@ -159,12 +163,13 @@ def market(quote, symbols, now=None):
 
 
 def active_orders(trade, now):
-    """Every order that can still trade, account-wide and independent of invest's own legs: today's,
-    and US orders from earlier days (GTC/GTD) within the bounded window. The server's status filter
-    is not trusted; any status that is not terminal counts as active."""
+    """Every order that can still trade, account-wide and independent of invest's own legs: all of
+    today's orders, unfiltered, and US orders from earlier days (GTC/GTD) within ACTIVE_LOOKBACK.
+    Any status that is not terminal counts as active, so `Unknown` (or a status this code does not
+    know) blocks instead of passing."""
     from longbridge.openapi import Market, OrderStatus
     statuses = [getattr(OrderStatus, name) for name in ACTIVE]
-    rows = trade.today_orders(status=statuses) + trade.history_orders(
+    rows = trade.today_orders() + trade.history_orders(
         status=statuses, market=Market.US, start_at=now - ACTIVE_LOOKBACK, end_at=now)
     return [o for o in rows if enum(o.status) not in TERMINAL]
 

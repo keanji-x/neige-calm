@@ -5,8 +5,8 @@ from decimal import Decimal
 
 
 class SimulatedAccount:
-    def __init__(self, cash, prices, clock):
-        self.cash = Decimal(cash)
+    def __init__(self, cash, prices, clock, split=False):
+        self.cash, self.split = Decimal(cash), split  # split: one fill per share
         self.prices = {symbol: Decimal(price) for symbol, price in prices.items()}
         self.positions, self.orders, self.fills, self.clock = {}, [], [], clock
 
@@ -32,6 +32,8 @@ class SimulatedAccount:
                                                           'time_in_force', 'outside_rth')}
                            | {'order_id': order_id, 'quantity': str(quantity),
                               'executed_quantity': str(quantity), 'status': 'Filled'})
-        self.fills.append({'trade_id': f'{order_id}-fill', 'order_id': order_id, 'symbol': symbol,
-                           'quantity': str(quantity), 'price': str(price), 'time': self.clock().isoformat()})
+        lots = [1] * quantity if self.split else [quantity]
+        self.fills += [{'trade_id': f'{order_id}-fill-{k}', 'order_id': order_id, 'symbol': symbol,
+                        'quantity': str(lot), 'price': str(price), 'time': self.clock().isoformat()}
+                       for k, lot in enumerate(lots)]
         return order_id

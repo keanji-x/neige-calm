@@ -209,6 +209,7 @@ def test_snapshot_discovers_active_orders_from_earlier_days(sdk):
     [query] = sdk.state.history_queries
     assert query['market'] == 'US' and {bridge.enum(s) for s in query['status']} == set(bridge.ACTIVE)
     assert query['end_at'] == NOW and query['start_at'] == NOW - bridge.ACTIVE_LOOKBACK
+    assert bridge.ACTIVE_LOOKBACK >= timedelta(days=400)
 
 
 def test_preflight_refuses_beside_an_active_order_from_an_earlier_day(sdk):
@@ -242,3 +243,10 @@ def test_historical_active_order_blocks_reconciliation_and_submit(sdk, rig):
     sdk.state.history = [gtc(status='Canceled')]
     state = rig.step()
     assert state['error'] is None and [c['symbol'] for c in sdk.calls] == ['CCC.US']
+
+
+def test_unknown_order_status_today_blocks_preflight(sdk):
+    sdk.state.orders = [gtc(status='Unknown', days_ago=0)]
+    with pytest.raises(bridge.OrderNotSubmitted):
+        submit(sdk)
+    assert sdk.calls == []

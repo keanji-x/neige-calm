@@ -162,6 +162,11 @@ class Portfolio:
         instruments.verify(self.ledger, db, snapshot)
         # One sample per trading session (the newest quote's New York date); the latest read wins.
         # Without any quote there is no session to value, so no sample.
+        # A session date never moves backwards (a halted symbol's quote can be the newest one left).
+        latest = db.execute('SELECT max(date) FROM valuations').fetchone()[0]
+        if snapshot['date'] is not None and latest is not None:
+            snapshot['date'] = max(snapshot['date'], latest)
+            self.ledger.set_meta(db, 'snapshot', snapshot)
         if snapshot['date'] is not None:
             sample = {'date': snapshot['date'], 'at': snapshot['at'],
                       'equity_usd': snapshot['equity_usd'], 'cash_usd': snapshot['cash_usd'],
@@ -175,9 +180,9 @@ class Portfolio:
         decisions = self.ledger.decisions(db)
         legs = self.ledger.orders(db)
         fills = sorted(self.ledger.fills(db), key=lambda f: timestamp(f['time']))
+        filled = self.ledger.filled(db)
         for d in decisions:
-            d['orders'] = [o | {'filled_quantity': sum(f['quantity'] for f in fills
-                                                       if o['broker_id'] and f['order_id'] == o['broker_id'])}
+            d['orders'] = [o | filled.get(o['broker_id'], {'filled_quantity': 0, 'filled_amount_usd': '0'})
                            for o in legs if o['decision_id'] == d['id']]
         targets = decisions[-1]['body']['weights'] if decisions else {}
         held = {s for s, bps in targets.items() if bps} | set(self.positions(db))

@@ -6,6 +6,7 @@ extend `instruments` in a later slice.
 """
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
 import fcntl
 import hashlib
 import json
@@ -118,6 +119,20 @@ class Ledger:
     @staticmethod
     def fills(db):
         return [json.loads(row[0]) for row in db.execute("SELECT body FROM fills ORDER BY id")]
+
+    @staticmethod
+    def filled(db):
+        """`{broker order id: {filled_quantity, filled_amount_usd}}` over every persisted fill, so
+        totals never depend on how many fills a view lists. Quantities sum in SQL; amounts sum as
+        exact decimals (an SQL REAL sum would round)."""
+        totals = {}
+        for order_id, quantity, price in db.execute(
+                "SELECT json_extract(body,'$.order_id'), json_extract(body,'$.quantity'), "
+                "json_extract(body,'$.price') FROM fills"):
+            total = totals.setdefault(order_id, [0, Decimal(0)])
+            total[0] += quantity
+            total[1] += quantity * Decimal(price)
+        return {k: {'filled_quantity': q, 'filled_amount_usd': str(a)} for k, (q, a) in totals.items()}
 
     def decide(self, db, key, state, error=None):
         row = self.decision(db, key)
