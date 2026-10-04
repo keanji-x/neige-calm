@@ -8,9 +8,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use super::{
-    DurableAck, EnqueueOutcome, Inner, SendKey, checkpoint_durable_user_message,
-    clear_interruption_intent, harness_event_scope, on_observation, restore_durable_user_message,
-    snapshot_for,
+    DurableAck, DurableSendBinding, HarnessObservationDelivery, Inner, SendKey,
+    clear_interruption_intent, harness_event_scope, restore_durable_user_message, snapshot_for,
+    stage_durable_entries,
 };
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, Result};
@@ -106,16 +106,8 @@ pub(super) async fn handle_replace(
             other => other,
         })?;
 
-    let checkpoint = checkpoint_durable_user_message(inner).await;
-    let entry_id = match on_observation(inner, entry).await {
-        EnqueueOutcome::Accepted { entry_id } => entry_id,
-        EnqueueOutcome::Rejected => {
-            restore_durable_user_message(inner, checkpoint).await;
-            return Err(CalmError::ServiceUnavailable(
-                "planner harness pending queue full, retry shortly".into(),
-            ));
-        }
-    };
+    let (ack, checkpoint) =
+        stage_durable_entries(inner, vec![HarnessObservationDelivery { entry }]).await?;
 
     let state = match &plan.previous_turn_id {
         Some(previous) => HarnessState::TurnCompleted {
@@ -160,8 +152,7 @@ pub(super) async fn handle_replace(
                     planned_rows: plan.row_count,
                     snapshot_value,
                     status: run_status_for(&state),
-                    key: key.clone(),
-                    entry_id: entry_id.as_ref().map(|id| id.as_str().to_string()),
+                    send: DurableSendBinding::new(inner, key, ack.entry_id.as_ref()),
                 },
             )
             .await
@@ -193,7 +184,7 @@ pub(super) async fn handle_replace(
             "planner harness replaced a turn but could not persist the snapshot after it"
         );
     }
-    Ok(DurableAck { entry_id })
+    Ok(ack)
 }
 
 /// What the one transaction writes.
@@ -205,8 +196,7 @@ struct Commit {
     planned_rows: i64,
     snapshot_value: serde_json::Value,
     status: crate::session_projection_repo::WorkerSessionState,
-    key: SendKey,
-    entry_id: Option<String>,
+    send: DurableSendBinding,
 }
 
 /// The turn's rows go, the snapshot holding the cut and the message is written, and the key is
@@ -222,8 +212,7 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
         planned_rows,
         snapshot_value,
         status,
-        key,
-        entry_id,
+        send,
     } = commit;
     let worker_session_id = inner.worker_session_id.clone();
     let card_id = inner.card_id.clone();
@@ -235,11 +224,6 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
             *refusal.lock().expect("refusal slot") = Some(reason);
             refused(reason)
         }
-    };
-    let binding = crate::db::sqlite::PlannerInputBinding {
-        payload_hash: key.payload_hash,
-        worker_session_id: worker_session_id.clone(),
-        entry_id,
     };
     write_with_event_typed(
         inner.repo.as_ref(),
@@ -290,8 +274,8 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
                 crate::db::sqlite::planner_input_bind_tx(
                     tx,
                     card_id.as_str(),
-                    &key.idempotency_key,
-                    &binding,
+                    &send.idempotency_key,
+                    &send.binding,
                 )
                 .await?;
                 Ok((

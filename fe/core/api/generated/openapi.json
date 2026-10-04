@@ -1379,7 +1379,7 @@
           "cards"
         ],
         "summary": "Queue one message for the card's harness, under a required `Idempotency-Key`.",
-        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\nactor) answers 200 with the first request's body and queues nothing, whatever happened to the\nmessage since. The same key with a different body is 409 `conflict`. A refusal stores and\nbinds nothing, so its key can be sent again. A binding lasts as long as its card.\n\nWith `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing\nqueued: it is removed and this message queued in the transaction that binds the key, and the\nprovider drops the turn when the next one starts. There is no lazy recovery on this path.",
+        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\n`replaces_turn`, actor) answers 200 with the first request's body and queues nothing, whatever\nhappened to the message since. The same key with a different body is 409 `conflict`. A refusal stores and\nbinds nothing, so its key can be sent again. A binding lasts as long as its card.\n\nWith `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing\nqueued: it is removed and this message queued in the transaction that binds the key, and the\nprovider drops the turn when the next one starts. There is no lazy recovery on this path.",
         "operationId": "send_planner_input",
         "parameters": [
           {
@@ -1423,7 +1423,7 @@
             }
           },
           "400": {
-            "description": "Empty text, or a missing or blank Idempotency-Key",
+            "description": "Empty text, a blank `replaces_turn`, or a missing or blank Idempotency-Key",
             "content": {
               "application/json": {
                 "schema": {
@@ -1453,7 +1453,7 @@
             }
           },
           "409": {
-            "description": "This Idempotency-Key was used for a different message (code `conflict`); runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`); or the turn named by `replaces_turn` cannot be replaced now and nothing changed (code `planner_turn_not_replaceable`, with the reason)",
+            "description": "This Idempotency-Key was used for a different message (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); on a plain send, the runtime is shutting down (code `conflict`) or is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`); on a send with `replaces_turn`, the turn cannot be replaced now — not the latest, still running, messages waiting, the runtime shutting down or no longer the card's, or the provider refusing the cut — and nothing changed (code `planner_turn_not_replaceable`, with the reason), or the conversation stopped before answering and the replace may have landed (code `conflict`)",
             "content": {
               "application/json": {
                 "schema": {

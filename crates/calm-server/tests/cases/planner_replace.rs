@@ -694,9 +694,9 @@ async fn a_conversation_with_no_live_harness_is_dormant() {
 }
 
 /// Replacing a turn deletes the person's own message: an agent actor is refused before the card is
-/// even read, and nothing changes or is bound.
+/// even read, a blank turn is no turn (400, not a "not the latest" refusal), and nothing changes.
 #[tokio::test]
-async fn an_agent_actor_cannot_replace_a_turn() {
+async fn an_agent_actor_or_a_blank_turn_replaces_nothing() {
     let boot = two_turns().await;
     let rows_before = rows(&boot).await;
     let snapshot_before = stored_snapshot(&boot).await;
@@ -712,6 +712,11 @@ async fn an_agent_actor_cannot_replace_a_turn() {
                 .contains("X-Calm-Actor: user"),
             "{actor}: {body}"
         );
+    }
+    for blank in ["", "  "] {
+        let (status, body) = replace(&boot, blank, "edited").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{blank:?}: body={body}");
+        assert_eq!(body["code"], json!("bad_request"), "{body}");
     }
     assert_eq!(rows(&boot).await, rows_before);
     assert_eq!(stored_snapshot(&boot).await, snapshot_before);

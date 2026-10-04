@@ -411,6 +411,34 @@ async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMess
     *inner.debounce.lock().await = checkpoint.debounce;
 }
 
+/// Offer a durable send's entries to the in-memory queue, behind a checkpoint the caller restores
+/// if storing them then fails. A rejected entry restores it here and is a 503. The ack names the
+/// last user-authored entry, as [`DurableAck`] says.
+async fn stage_durable_entries(
+    inner: &Arc<Inner>,
+    deliveries: Vec<HarnessObservationDelivery>,
+) -> Result<(DurableAck, DurableUserMessageCheckpoint)> {
+    let checkpoint = checkpoint_durable_user_message(inner).await;
+    let mut ack = DurableAck { entry_id: None };
+    for delivery in deliveries {
+        let user_authored = delivery.entry.is_user_authored();
+        match on_observation(inner, delivery.entry).await {
+            EnqueueOutcome::Accepted { entry_id } => {
+                if user_authored {
+                    ack.entry_id = entry_id;
+                }
+            }
+            EnqueueOutcome::Rejected => {
+                restore_durable_user_message(inner, checkpoint).await;
+                return Err(CalmError::ServiceUnavailable(
+                    "planner harness pending queue full, retry shortly".into(),
+                ));
+            }
+        }
+    }
+    Ok((ack, checkpoint))
+}
+
 /// What a durable enqueue tells the caller. `entry_id` is `None` in exactly one accepted case —
 /// the message folded into a `LegacyUser` tail. The LAST user-authored delivery wins, `None` included.
 #[derive(Debug, Clone, PartialEq)]
@@ -578,24 +606,7 @@ impl PlannerHarness {
             }
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
-                let checkpoint = checkpoint_durable_user_message(&self.inner).await;
-                let mut ack = DurableAck { entry_id: None };
-                for delivery in deliveries {
-                    let user_authored = delivery.entry.is_user_authored();
-                    match on_observation(&self.inner, delivery.entry).await {
-                        EnqueueOutcome::Accepted { entry_id } => {
-                            if user_authored {
-                                ack.entry_id = entry_id;
-                            }
-                        }
-                        EnqueueOutcome::Rejected => {
-                            restore_durable_user_message(&self.inner, checkpoint).await;
-                            return Err(CalmError::ServiceUnavailable(
-                                "planner harness pending queue full, retry shortly".into(),
-                            ));
-                        }
-                    }
-                }
+                let (ack, checkpoint) = stage_durable_entries(&self.inner, deliveries).await?;
                 if let Err(error) =
                     persist_snapshot_for_durable_send(&self.inner, &key, ack.entry_id.as_ref())
                         .await
@@ -1236,36 +1247,17 @@ async fn run_loop(
                         }
                     }
                     HarnessObservationCommand::Durable { deliveries, key, persisted } => {
-                        let checkpoint = checkpoint_durable_user_message(&inner).await;
-                        let mut accepted = true;
-                        let mut ack = DurableAck { entry_id: None };
-                        for delivery in deliveries {
-                            let user_authored = delivery.entry.is_user_authored();
-                            match on_observation(&inner, delivery.entry).await {
-                                EnqueueOutcome::Accepted { entry_id } => {
-                                    if user_authored {
-                                        ack.entry_id = entry_id;
+                        let result = match stage_durable_entries(&inner, deliveries).await {
+                            Ok((ack, checkpoint)) => {
+                                match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref()).await {
+                                    Ok(()) => Ok(ack),
+                                    Err(error) => {
+                                        restore_durable_user_message(&inner, checkpoint).await;
+                                        Err(error)
                                     }
                                 }
-                                EnqueueOutcome::Rejected => {
-                                    accepted = false;
-                                    break;
-                                }
                             }
-                        }
-                        let result = if accepted {
-                            match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref()).await {
-                                Ok(()) => Ok(ack),
-                                Err(error) => {
-                                    restore_durable_user_message(&inner, checkpoint).await;
-                                    Err(error)
-                                }
-                            }
-                        } else {
-                            restore_durable_user_message(&inner, checkpoint).await;
-                            Err(CalmError::ServiceUnavailable(
-                                "planner harness pending queue full, retry shortly".into(),
-                            ))
+                            Err(error) => Err(error),
                         };
                         let _ = persisted.send(result);
                     }
@@ -3771,15 +3763,7 @@ async fn persist_snapshot_for_durable_send(
     key: &SendKey,
     entry_id: Option<&QueueEntryId>,
 ) -> Result<()> {
-    let binding = crate::db::sqlite::PlannerInputBinding {
-        payload_hash: key.payload_hash.clone(),
-        worker_session_id: inner.worker_session_id.clone(),
-        entry_id: entry_id.map(|id| id.as_str().to_string()),
-    };
-    let bind = DurableSendBinding {
-        idempotency_key: key.idempotency_key.clone(),
-        binding,
-    };
+    let bind = DurableSendBinding::new(inner, key, entry_id);
     if persist_snapshot_inner(inner, None, Some(bind)).await? {
         return Ok(());
     }
@@ -3802,6 +3786,20 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
 struct DurableSendBinding {
     idempotency_key: String,
     binding: crate::db::sqlite::PlannerInputBinding,
+}
+
+impl DurableSendBinding {
+    /// `key` bound to the answer this runtime gives: its session and the entry the message is in.
+    fn new(inner: &Inner, key: &SendKey, entry_id: Option<&QueueEntryId>) -> Self {
+        Self {
+            idempotency_key: key.idempotency_key.clone(),
+            binding: crate::db::sqlite::PlannerInputBinding {
+                payload_hash: key.payload_hash.clone(),
+                worker_session_id: inner.worker_session_id.clone(),
+                entry_id: entry_id.map(|id| id.as_str().to_string()),
+            },
+        }
+    }
 }
 
 /// Returns whether the runtime's own row was written. `false` means the write

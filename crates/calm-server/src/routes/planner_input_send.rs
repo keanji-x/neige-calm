@@ -69,8 +69,8 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
 ///
 /// The first request under a key that the server stores binds the key to that message, in the
 /// transaction that stores it. A retry with the same key and the same body (text, attachments,
-/// actor) answers 200 with the first request's body and queues nothing, whatever happened to the
-/// message since. The same key with a different body is 409 `conflict`. A refusal stores and
+/// `replaces_turn`, actor) answers 200 with the first request's body and queues nothing, whatever
+/// happened to the message since. The same key with a different body is 409 `conflict`. A refusal stores and
 /// binds nothing, so its key can be sent again. A binding lasts as long as its card.
 ///
 /// With `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing
@@ -87,10 +87,10 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     request_body = SendPlannerInputRequest,
     responses(
         (status = 200, description = "User text queued for next harness turn, or the answer of the earlier request under this Idempotency-Key", body = SendPlannerInputResponse),
-        (status = 400, description = "Empty text, or a missing or blank Idempotency-Key", body = ErrorBody),
+        (status = 400, description = "Empty text, a blank `replaces_turn`, or a missing or blank Idempotency-Key", body = ErrorBody),
         (status = 403, description = "Card is not a planner codex card, or `replaces_turn` from an actor other than `X-Calm-Actor: user`", body = ErrorBody),
         (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "This Idempotency-Key was used for a different message (code `conflict`); runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`); or the turn named by `replaces_turn` cannot be replaced now and nothing changed (code `planner_turn_not_replaceable`, with the reason)", body = ErrorBody),
+        (status = 409, description = "This Idempotency-Key was used for a different message (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); on a plain send, the runtime is shutting down (code `conflict`) or is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`); on a send with `replaces_turn`, the turn cannot be replaced now — not the latest, still running, messages waiting, the runtime shutting down or no longer the card's, or the provider refusing the cut — and nothing changed (code `planner_turn_not_replaceable`, with the reason), or the conversation stopped before answering and the replace may have landed (code `conflict`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Observation queue saturated, shared codex app-server not running, a planner-harness start is still in flight, or the provider did not check a replace in time — retry shortly", body = ErrorBody),
     ),
@@ -132,8 +132,13 @@ pub(crate) async fn send_planner_input_keyed(
         attachments,
         replaces_turn,
     } = body;
-    if replaces_turn.is_some() {
+    if let Some(turn_id) = &replaces_turn {
         require_rest_user_actor_for(&actor, REPLACE_SUBJECT, REPLACE_REDIRECT)?;
+        if turn_id.trim().is_empty() {
+            return Err(CalmError::BadRequest(
+                "replaces_turn names no turn; omit it to send a new message".into(),
+            ));
+        }
     }
     let char_count = validate_planner_input(&text, !attachments.is_empty())?;
 
