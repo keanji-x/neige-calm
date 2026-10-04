@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useEffect, useRef, type ReactNode } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Drawer } from './public.tsx';
+import { Drawer, type DrawerResize } from './public.tsx';
 import { Dialog } from '../dialog/public.tsx';
 import { useState } from '../state/public.ts';
 
@@ -329,5 +329,76 @@ describe('Drawer', () => {
     view.rerender(drawerAt(false, <p>the transcript</p>));
     expect(document.activeElement).toBe(opener);
     column.remove(); pageTitle.remove();
+  });
+});
+
+/* jsdom lays nothing out and has no pointer capture: the card reports a fixed 480px and capture is a no-op, so these pin the drag's lifetime, not its geometry (that is `app/shell/drawer-seam.browser.test.tsx`). */
+describe('a held drag that is interrupted', () => {
+  const restore: (() => void)[] = [];
+  function stub<K extends keyof HTMLElement>(key: K, value: HTMLElement[K]) {
+    const had = Object.getOwnPropertyDescriptor(HTMLElement.prototype, key);
+    Object.defineProperty(HTMLElement.prototype, key, { configurable: true, value });
+    restore.push(() => { if (had === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>)[key]; else Object.defineProperty(HTMLElement.prototype, key, had); });
+  }
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] });
+    stub('getBoundingClientRect', () => DOMRect.fromRect({ x: 0, y: 0, width: 480, height: 600 }));
+    stub('setPointerCapture', () => {});
+  });
+  afterEach(() => { vi.useRealTimers(); for (const undo of restore.splice(0).reverse()) undo(); });
+
+  const drawer = (resize: DrawerResize | undefined, open = true) => (
+    <Drawer open={open} title="Chat" onClose={vi.fn()} resize={resize}><p>body</p></Drawer>
+  );
+  /** Press the edge and move it 80px toward the page, one frame laid out, a second move left pending. */
+  function holdDrag() {
+    const edge = screen.getByRole('separator', { name: 'Resize conversation' });
+    fireEvent.pointerDown(edge, { pointerId: 1, button: 0, clientX: 500 });
+    fireEvent.pointerMove(edge, { pointerId: 1, clientX: 420 });
+    vi.advanceTimersToNextFrame();
+    fireEvent.pointerMove(edge, { pointerId: 1, clientX: 400 });
+  }
+
+  it.each([
+    ['closing the drawer', (rerender: (ui: ReactNode) => void, resize: DrawerResize) => { rerender(drawer(resize, false)); }],
+    ['losing the resize contract, as a compact viewport does', (rerender: (ui: ReactNode) => void) => { rerender(drawer(undefined)); }],
+  ])('keeps the width last laid out when %s ends it, drops the pending frame, and lets the next press drag', (_, interrupt) => {
+    const resize = { onPreview: vi.fn(), onCommit: vi.fn() };
+    const { rerender } = render(drawer(resize));
+    holdDrag();
+    expect(resize.onPreview).toHaveBeenLastCalledWith(35);
+    expect(resize.onCommit).not.toHaveBeenCalled();
+
+    interrupt(rerender, resize);
+    expect(screen.queryByRole('separator')).toBeNull();
+    expect(resize.onCommit).toHaveBeenCalledExactlyOnceWith(30);
+    vi.advanceTimersToNextFrame();
+    expect(resize.onPreview).toHaveBeenCalledOnce();
+
+    rerender(drawer(resize));
+    holdDrag();
+    expect(resize.onPreview).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the width last laid out when the drawer unmounts mid-drag', () => {
+    const resize = { onPreview: vi.fn(), onCommit: vi.fn() };
+    const { unmount } = render(drawer(resize));
+    holdDrag();
+    unmount();
+    expect(resize.onCommit).toHaveBeenCalledExactlyOnceWith(30);
+    vi.advanceTimersToNextFrame();
+    expect(resize.onPreview).toHaveBeenCalledOnce();
+  });
+
+  it('commits nothing when a press ends without a move', () => {
+    const resize = { onPreview: vi.fn(), onCommit: vi.fn() };
+    const { rerender } = render(drawer(resize));
+    const edge = screen.getByRole('separator', { name: 'Resize conversation' });
+    fireEvent.pointerDown(edge, { pointerId: 1, button: 0, clientX: 500 });
+    fireEvent.pointerUp(edge, { pointerId: 1, clientX: 500 });
+    fireEvent.pointerDown(edge, { pointerId: 2, button: 0, clientX: 500 });
+    rerender(drawer(resize, false));
+    expect(resize.onPreview).not.toHaveBeenCalled();
+    expect(resize.onCommit).not.toHaveBeenCalled();
   });
 });

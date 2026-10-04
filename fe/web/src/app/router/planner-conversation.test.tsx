@@ -246,6 +246,35 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
   });
 
+  /* The production wiring, end to end: the router's drawer, the shell's contract and `.main`'s property — written directly mid-drag, then from the stored width once it settles; what is stored is `ui-preferences.test.tsx`. jsdom lays nothing out and has no pointer capture, so the card reports a fixed 480px (30rem) and capture is a no-op; the geometry is `app/shell/drawer-seam.browser.test.tsx`. */
+  it('previews a drag on the main region, keeps the settled width there, and clears it on reset', async () => {
+    setupWithTurns();
+    await openConversationWithTurns();
+    const measured = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue(DOMRect.fromRect({ x: 0, y: 0, width: 480, height: 600 }));
+    const capture = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'setPointerCapture');
+    Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', { configurable: true, value: () => {} });
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] });
+    try {
+      const main = document.querySelector('main')!;
+      const edge = screen.getByRole('separator', { name: 'Resize conversation' });
+      expect(main.style.getPropertyValue('--nc-drawer-width')).toBe('');
+      fireEvent.pointerDown(edge, { pointerId: 1, button: 0, clientX: 500 });
+      fireEvent.pointerMove(edge, { pointerId: 1, clientX: 420 });
+      vi.advanceTimersToNextFrame();
+      expect(main.style.getPropertyValue('--nc-drawer-width')).toBe('35rem');
+      fireEvent.pointerUp(edge, { pointerId: 1, clientX: 420 });
+      expect(main.style.getPropertyValue('--nc-drawer-width')).toBe('30rem');
+      fireEvent.keyDown(edge, { key: 'Home' });
+      expect(main.style.getPropertyValue('--nc-drawer-width')).toBe('');
+    } finally {
+      vi.useRealTimers();
+      measured.mockRestore();
+      if (capture === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
+      else Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', capture);
+    }
+  });
+
   /* The server still serves `POST /planner/reset`; this pins that the front end has no path to it. */
   it('never posts to the planner reset endpoint, however the drawer is driven', async () => {
     const { requests, router } = setupWithTurns();

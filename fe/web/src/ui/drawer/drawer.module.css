@@ -321,7 +321,7 @@
   }
 
   .handle:focus-visible::after,
-  .drawer[data-nc-drawer-resizing] .handle::after {
+  .handle[data-nc-resizing]::after {
     background: var(--accent);
   }
 
