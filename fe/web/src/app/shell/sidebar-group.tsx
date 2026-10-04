@@ -1,5 +1,7 @@
 // Shared disclosure and Track list for every desktop sidebar group.
 import { useEffect, useRef, type ReactNode } from 'react';
+import { DropdownMenu, DropdownMenuItem, DropdownMenuDivider } from '@astryxdesign/core/DropdownMenu';
+import type { SidebarMove } from '../../../../core/view/sidebar-layout.ts';
 import { useCollapsible } from '@astryxdesign/core/Collapsible';
 
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
@@ -20,6 +22,14 @@ export type RowProps = Readonly<{
   onDelete: (trackId: string) => void;
 }>;
 
+export type GroupManagement = Readonly<{
+  menuLabel: string;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (direction: SidebarMove) => void;
+  onHide: () => void;
+}>;
+
 type GroupProps = Readonly<{
   title: string;
   /** Distinguishes an Area disclosure from a workspace-wide group. */
@@ -27,12 +37,14 @@ type GroupProps = Readonly<{
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
   level: 'section' | 'area';
+  management: GroupManagement;
+  extraMenuItems?: ReactNode;
   actions?: ReactNode;
   disclosureRef?: (element: HTMLButtonElement | null) => void;
 }>;
 
 /** Group geometry, disclosure and action slots; hosts supply membership and actions. */
-export function SidebarGroup({ title, label, expanded, onToggle, level, actions, disclosureRef, children }: GroupProps & {
+export function SidebarGroup({ title, label, expanded, onToggle, level, management, extraMenuItems, actions, disclosureRef, children }: GroupProps & {
   children: ReactNode;
 }) {
   const disclosure = useCollapsible({ isCollapsible: { isOpen: expanded, onOpenChange: onToggle } });
@@ -40,7 +52,7 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, actions,
     ref={disclosureRef}
     type="button"
     data-nc-role="row"
-    className={`${styles.areaRow} ${actions === undefined ? styles.groupWithoutActions : ''}`}
+    className={`${styles.areaRow} ${actions === undefined ? styles.groupSingleAction : ''}`}
     aria-expanded={disclosure.isOpen}
     aria-label={`${disclosure.isOpen ? 'Collapse' : 'Expand'} ${label}`}
     onClick={disclosure.toggle}
@@ -53,6 +65,17 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, actions,
   return <div role="group" aria-label={label} className={level === 'section' ? styles.section : styles.areaGroup}>
     <div className={styles.areaRowWrap}>
       {level === 'section' ? <ListText as="h2" tone="section" className={styles.groupHeading}>{button}</ListText> : button}
+      <span className={`${styles.areaActions} ${actions === undefined ? styles.groupMenuTrailing : ''}`}>
+        <DropdownMenu placement="below" button={{
+          label: management.menuLabel, icon: <Icon name="more" size="sm" />,
+          isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.areaActionsButton,
+        }}>
+          <DropdownMenuItem label="Move up" isDisabled={!management.canMoveUp} onClick={() => management.onMove('up')} />
+          <DropdownMenuItem label="Move down" isDisabled={!management.canMoveDown} onClick={() => management.onMove('down')} />
+          <DropdownMenuItem label="Hide group" onClick={management.onHide} />
+          {extraMenuItems !== undefined && <><DropdownMenuDivider />{extraMenuItems}</>}
+        </DropdownMenu>
+      </span>
       {actions}
     </div>
     {disclosure.isOpen && children}

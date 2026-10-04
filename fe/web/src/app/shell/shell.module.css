@@ -470,8 +470,12 @@
     translate: 0 -50%;
   }
 
-  .groupWithoutActions {
-    padding-inline-end: var(--space-3);
+  .groupSingleAction {
+    padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
+  }
+
+  .areaActions.groupMenuTrailing {
+    inset-inline-end: var(--space-2);
   }
 
   .areaRow:hover {

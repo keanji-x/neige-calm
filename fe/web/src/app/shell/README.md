@@ -127,15 +127,23 @@ real shell composition, Area routing, modal focus boundaries and panel history.
 
 ## Persistence
 
-The top-row view menu, between Today and sidebar collapse, offers plain Show/Hide actions for
-Unread and Running (both off by default). Each action closes the menu and changes
-its label to the opposite action for the next visit. Unread uses the existing completion
-receipt, not rename time or attention; reading removes it, while newer completion
-evidence brings it back. Running uses the kernel working verdict even if the
-Track also needs input. The groups are projections: Tracks remain in their Areas
-and may appear in several groups. Empty shortcut groups are omitted. Their
-visibility and workspace-group disclosure choices are stored per browser, origin
-and user and survive a server restart. Waiting on you remains enabled.
+Every sidebar group has the same Move up, Move down and Hide group actions.
+Movement swaps visible siblings at the same level; boundary actions are disabled.
+Area editing, closed-Track display and deletion remain Area-owned menu entries.
+The top-row menu provides Hidden groups with Show actions, including Unread and
+Running (initially off). Restoring an Area also reveals and expands its Areas
+parent. Area entries say `Show area <name>` to distinguish same-named workspace
+groups. Hiding a group returns focus to the top-row menu and never navigates,
+marks work read or changes running work.
+
+The full registered order retains hidden slots, removes stale/duplicate IDs and
+appends newly created Areas. Layout is a browser-local per-origin/per-user choice
+that survives server restarts; it never writes the shared Area sort value. Hidden
+Area choices also apply to the collapsed strip. Shortcut membership still uses
+all user-visible Areas, so hiding an Area's tree does not hide its work from Pinned,
+Unread or Running. Unread uses completion receipts; Running independently reads
+the kernel working verdict. Empty shortcut groups remain omitted. Waiting on you,
+Pinned and Areas start visible and can also be hidden or moved.
 
 Area disclosure, each Area's `Show closed` choice (`area-closed:<id>`, off by
 default) and the manual sidebar width choice are browser-local display
@@ -181,7 +189,7 @@ line, watch the named test go red) before landing.
 
 ## Deliberate gaps
 
-- Area drag-reorder is not in the rail. Edit from the row actions menu opens one
+- Area drag-reorder is not in the rail; per-group menus provide personal sibling movement. Edit from the row actions menu opens one
   Dialog for name, default template, and default folder. Delete lives in the
   same menu and still uses typed confirmation.
 - The AppShell Area-editor flow is the sole consumer of `AREA_PALETTE`; it picks

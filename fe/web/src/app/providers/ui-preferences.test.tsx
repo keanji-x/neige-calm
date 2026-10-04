@@ -347,3 +347,30 @@ it('keeps sidebar display choices across server boots and scopes them to the use
   expect(restored.sidebarGroupVisible('running')).toBe(false);
   expect(restored.sidebarGroupExpanded('pinned')).toBe(true);
 });
+
+
+it('keeps order and visibility per user across boots, with an in-memory fallback', () => {
+  const storage = memoryStorage();
+  const scope = (user: string, boot: string) => JSON.stringify(['https://server.test', user, boot]);
+  const first = createUiPreferences(storage);
+  first.setRecoveryScope(scope('owner', 'one'));
+  first.setSidebarOrder('sections', ['areas', 'pinned', 'waiting']);
+  first.setSidebarOrder('areas', ['b', 'a']);
+  first.setSidebarGroupVisible('waiting', false);
+  first.setSidebarGroupVisible('area:a', false);
+  const restored = createUiPreferences(storage);
+  restored.setRecoveryScope(scope('owner', 'two'));
+  expect(restored.sidebarOrder('sections', ['waiting', 'pinned', 'areas'])).toEqual(['areas', 'pinned', 'waiting']);
+  expect(restored.sidebarOrder('areas', ['a', 'b', 'new'])).toEqual(['b', 'a', 'new']);
+  expect(restored.sidebarGroupVisible('waiting')).toBe(false);
+  expect(restored.sidebarGroupVisible('area:a')).toBe(false);
+  restored.setRecoveryScope(scope('other', 'two'));
+  expect(restored.sidebarOrder('areas', ['a', 'b'])).toEqual(['a', 'b']);
+  expect(restored.sidebarGroupVisible('waiting')).toBe(true);
+  expect(restored.sidebarGroupVisible('area:a')).toBe(true);
+  const memory = createUiPreferences({ getItem() { throw new Error('denied'); }, setItem() { throw new Error('quota'); } });
+  memory.setSidebarOrder('areas', ['b', 'a']);
+  memory.setSidebarGroupVisible('area:a', false);
+  expect(memory.sidebarOrder('areas', ['a', 'b'])).toEqual(['b', 'a']);
+  expect(memory.sidebarGroupVisible('area:a')).toBe(false);
+});

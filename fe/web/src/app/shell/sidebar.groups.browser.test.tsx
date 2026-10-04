@@ -18,6 +18,7 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   preferences.setReadScope('db', 1);
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
+  const reading: Area = { ...area, id: 'reading', name: 'Reading', sort: 2 };
   const tracks: Track[] = [
     { id: 'review', title: 'Review result', attention: 'input' as const, working: false },
     { id: 'running', title: 'Build frontend', attention: 'none' as const, working: true },
@@ -29,7 +30,7 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   render(<UiPreferencesProvider preferences={preferences}>
     <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
       <div className={`${styles.shell} ${styles.shellExpanded}`} style={{ blockSize: '100dvh' }}>
-        <Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])} tracks={tracks}
+        <Sidebar areas={[area, reading]} tracksByArea={new Map([[area.id, tracks], [reading.id, []]])} tracks={tracks}
           currentPath="/track/running" onGo={onGo} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}
           onDeleteArea={vi.fn()} onNewTrack={vi.fn()} onSetPinned={onSetPinned} onDeleteTrack={vi.fn()}
           onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()}
@@ -51,13 +52,19 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   expect(newAreaBox.width).toBeCloseTo(28, 0);
   expect(newAreaBox.height).toBeCloseTo(28, 0);
   await options.click();
-  await expect.element(page.getByRole('menuitem', { name: 'Show unread' })).toBeVisible();
-  await userEvent.keyboard('{ArrowDown}{Enter}');
+  await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toBeVisible();
+  await userEvent.keyboard('{ArrowDown}');
+  await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toHaveFocus();
+  await userEvent.keyboard('{ArrowRight}');
+  await expect.element(page.getByRole('menuitem', { name: 'Show Unread' })).toHaveFocus();
+  await userEvent.keyboard('{Enter}');
   await expect.element(page.getByRole('menu')).not.toBeInTheDocument();
   await expect.element(options).toHaveFocus();
   await userEvent.keyboard('{Enter}');
-  await expect.element(page.getByRole('menuitem', { name: 'Hide unread' })).toBeVisible();
-  await userEvent.keyboard('{ArrowDown}{Space}');
+  await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toHaveFocus();
+  await userEvent.keyboard('{ArrowRight}');
+  await expect.element(page.getByRole('menuitem', { name: 'Show Running' })).toHaveFocus();
+  await userEvent.keyboard(' ');
   await expect.element(page.getByRole('menu')).not.toBeInTheDocument();
   await expect.element(options).toHaveFocus();
 
@@ -68,8 +75,32 @@ it('places view options before collapse and shares group disclosure, keyboard ac
     await expect.element(page.getByRole('button', { name: `Expand ${title}`, exact: true })).toHaveAttribute('aria-expanded', 'false');
     await page.getByRole('button', { name: `Expand ${title}`, exact: true }).click();
   }
+  await page.getByRole('button', { name: 'Group actions for Pinned' }).click();
+  await page.getByRole('menuitem', { name: 'Move up' }).click();
+  expect(document.querySelector('nav h2')?.textContent).toBe('Pinned');
+  await expect.element(page.getByRole('button', { name: 'Group actions for Pinned' })).toHaveFocus();
+  await page.getByRole('button', { name: 'Group actions for Pinned' }).click();
+  await page.getByRole('menuitem', { name: 'Hide group' }).click();
+  await expect.element(options).toHaveFocus();
+  await expect.element(page.getByRole('group', { name: 'Pinned', exact: true })).not.toBeInTheDocument();
   await options.click();
-  await expect.element(page.getByRole('menuitem', { name: 'Hide running' })).toBeVisible();
+  await page.getByRole('menuitem', { name: 'Hidden groups' }).click();
+  await page.getByRole('menuitem', { name: 'Show Pinned' }).click();
+  expect(document.querySelector('nav h2')?.textContent).toBe('Pinned');
+
+  await page.getByRole('button', { name: 'Area actions for Work' }).click();
+  await page.getByRole('menuitem', { name: 'Move down' }).click();
+  expect(page.getByRole('button', { name: /^Collapse area / }).elements().map(node => node.textContent)).toEqual(['Reading', 'Work']);
+  await page.getByRole('button', { name: 'Area actions for Work' }).click();
+  await page.getByRole('menuitem', { name: 'Hide group' }).click();
+  await expect.element(options).toHaveFocus();
+  await options.click();
+  await page.getByRole('menuitem', { name: 'Hidden groups' }).click();
+  await page.getByRole('menuitem', { name: 'Show area Work' }).click();
+  expect(page.getByRole('button', { name: /^Collapse area / }).elements().map(node => node.textContent)).toEqual(['Reading', 'Work']);
+  expect(onGo).not.toHaveBeenCalled();
+  await options.click();
+  await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toHaveAttribute('aria-disabled', 'true');
   await userEvent.keyboard('{Escape}');
   await today.hover();
   const pinNext = page.getByRole('button', { name: 'Pin Next task' });

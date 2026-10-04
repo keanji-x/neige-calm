@@ -1,7 +1,7 @@
 // The workspace rail: shared groups with owner-defined membership and actions.
 
 import { useEffect, useRef } from 'react';
-import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
+import { DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu } from '@astryxdesign/core/DropdownMenu';
 
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import { hasFailed, isWorking, needsUserAttention, sortAreaTracksByRecent, userVisibleTracks, type Track } from '../../../../core/domain/track.ts';
@@ -17,8 +17,9 @@ import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
+import { SIDEBAR_SECTION_IDS, moveSidebarGroup, type SidebarGroupId, type SidebarMove, type SidebarSectionId } from '../../../../core/view/sidebar-layout.ts';
 import { AreaGroup } from './area-group.tsx';
-import { SidebarGroup, SidebarTrackGroup } from './sidebar-group.tsx';
+import { SidebarGroup, SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
 
 export type SidebarProps = Readonly<{
@@ -73,6 +74,7 @@ export function Sidebar({
   const railRef = useRef<HTMLElement | null>(null);
   const areaDisclosureRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingAreaFocusRef = useRef<string | null>(null);
+  const pendingOptionsFocusRef = useRef(false);
   const trackConfirm = useDeleteConfirm(onDeleteTrack);
   const areaConfirm = useDeleteConfirm(onDeleteArea, () => onGo({ name: 'today' }));
   const writeFeedback = useOperationFeedback();
@@ -85,12 +87,51 @@ export function Sidebar({
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
 
   const isUnread = (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0);
-  const groups = [
-    { id: 'waiting', title: 'Waiting on you', tracks: waiting, visible: true },
-    { id: 'pinned', title: 'Pinned', tracks: pinned, visible: true },
-    { id: 'unread', title: 'Unread', tracks: sortAreaTracksByRecent(userTracks.filter(isUnread)), visible: preferences.sidebarGroupVisible('unread') },
-    { id: 'running', title: 'Running', tracks: sortAreaTracksByRecent(userTracks.filter(isWorking)), visible: preferences.sidebarGroupVisible('running') },
+  const groups: ReadonlyArray<{ id: SidebarSectionId; title: string; tracks: readonly Track[] }> = [
+    { id: 'waiting', title: 'Waiting on you', tracks: waiting },
+    { id: 'pinned', title: 'Pinned', tracks: pinned },
+    { id: 'unread', title: 'Unread', tracks: sortAreaTracksByRecent(userTracks.filter(isUnread)) },
+    { id: 'running', title: 'Running', tracks: sortAreaTracksByRecent(userTracks.filter(isWorking)) },
   ];
+
+  const sectionOrder = preferences.sidebarOrder('sections', SIDEBAR_SECTION_IDS);
+  const sectionVisible = (id: SidebarSectionId) => preferences.sidebarGroupVisible(id)
+    && (id === 'areas' || groups.find((group) => group.id === id)!.tracks.length > 0);
+  const shownSections = sectionOrder.filter(sectionVisible);
+  const areaOrder = preferences.sidebarOrder('areas', userAreas.map((area) => area.id));
+  const orderedAreas = areaOrder.map((id) => userAreas.find((area) => area.id === id)!);
+  const shownAreas = orderedAreas.filter((area) => preferences.sidebarGroupVisible(`area:${area.id}`));
+  const hiddenGroups = [
+    ...sectionOrder.filter((id) => !preferences.sidebarGroupVisible(id)).map((id) => ({
+      id, title: id === 'areas' ? 'Areas' : groups.find((group) => group.id === id)!.title,
+      restore: () => preferences.setSidebarGroupVisible(id, true),
+    })),
+    ...orderedAreas.filter((area) => !preferences.sidebarGroupVisible(`area:${area.id}`)).map((area) => ({
+      id: `area:${area.id}` as SidebarGroupId, title: `area ${area.name}`,
+      restore: () => {
+        preferences.setSidebarGroupVisible('areas', true);
+        preferences.setSidebarGroupExpanded('areas', true);
+        preferences.setSidebarGroupVisible(`area:${area.id}`, true);
+      },
+    })),
+  ];
+  const management = (id: SidebarGroupId, menuLabel: string): GroupManagement => {
+    const isArea = id.startsWith('area:');
+    const key = isArea ? id.slice('area:'.length) : id;
+    const shown: readonly string[] = isArea ? shownAreas.map((area) => area.id) : shownSections;
+    const order = isArea ? areaOrder : sectionOrder;
+    const index = shown.indexOf(key);
+    return {
+      menuLabel, canMoveUp: index > 0, canMoveDown: index >= 0 && index < shown.length - 1,
+      onMove: (direction: SidebarMove) => preferences.setSidebarOrder(isArea ? 'areas' : 'sections', moveSidebarGroup<string>(order, shown, key, direction)),
+      onHide: () => { pendingOptionsFocusRef.current = true; preferences.setSidebarGroupVisible(id, false); },
+    };
+  };
+  useEffect(() => {
+    if (!pendingOptionsFocusRef.current) return;
+    pendingOptionsFocusRef.current = false;
+    railRef.current?.querySelector<HTMLButtonElement>('[aria-label="Sidebar view options"]')?.focus({ preventScroll: true });
+  });
 
   const activeTrackId = routeParamFromPath(currentPath, '/track/') ?? null;
 
@@ -167,10 +208,9 @@ export function Sidebar({
               label: 'Sidebar view options', icon: <Icon name="more" />,
               isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.iconButton,
             }}>
-              <DropdownMenuItem label={preferences.sidebarGroupVisible('unread') ? 'Hide unread' : 'Show unread'}
-                onClick={() => preferences.setSidebarGroupVisible('unread', !preferences.sidebarGroupVisible('unread'))} />
-              <DropdownMenuItem label={preferences.sidebarGroupVisible('running') ? 'Hide running' : 'Show running'}
-                onClick={() => preferences.setSidebarGroupVisible('running', !preferences.sidebarGroupVisible('running'))} />
+              <DropdownMenuSubMenu label="Hidden groups" isDisabled={hiddenGroups.length === 0}>
+                {hiddenGroups.map((group) => <DropdownMenuItem key={group.id} label={`Show ${group.title}`} onClick={group.restore} />)}
+              </DropdownMenuSubMenu>
             </DropdownMenu>
             <button
               type="button"
@@ -194,14 +234,14 @@ export function Sidebar({
         <>
           {/* The rail's colours belong only to the indicator vocabulary and the current
                         location; titles never carry a state colour. */}
-          {waiting.length > 0 && (
+          {preferences.sidebarGroupVisible('waiting') && waiting.length > 0 && (
             <div className={styles.stripWaiting} aria-label={`${waiting.length} waiting on you`}>
               {waiting.length}
             </div>
           )}
           {/* An initial, not a colour chip: a letter says which area without spending the
                         channel the indicator vocabulary reserves for state. */}
-          {userAreas.map((area) => (
+          {(preferences.sidebarGroupVisible('areas') ? shownAreas : []).map((area) => (
             <button
               key={area.id}
               type="button"
@@ -222,14 +262,17 @@ export function Sidebar({
         </>
       ) : (
         <>
-          {groups.filter((group) => group.visible && group.tracks.length > 0).map((group) => (
-            <SidebarTrackGroup key={group.id} title={group.title} label={group.title} level="section"
-              tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
-              expanded={preferences.sidebarGroupExpanded(group.id)}
-              onToggle={(value) => preferences.setSidebarGroupExpanded(group.id, value)} {...rowProps} />
-          ))}
-
-          <SidebarGroup title="Areas" label="Areas" level="section"
+          {shownSections.map((id) => {
+            if (id !== 'areas') {
+              const group = groups.find((group) => group.id === id)!;
+              return <SidebarTrackGroup key={id} title={group.title} label={group.title} level="section"
+                management={management(id, `Group actions for ${group.title}`)}
+                tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
+                expanded={preferences.sidebarGroupExpanded(id)}
+                onToggle={(value) => preferences.setSidebarGroupExpanded(id, value)} {...rowProps} />;
+            }
+            return <SidebarGroup key={id} title="Areas" label="Areas" level="section"
+            management={management(id, 'Group actions for Areas')}
             expanded={areasExpanded}
             onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}
             actions={<button type="button" data-nc-role="icon" className={`${styles.iconButton} ${styles.groupAction}`}
@@ -245,12 +288,13 @@ export function Sidebar({
               </button>
             )}
 
-            {userAreas.length > 0 && (
+            {shownAreas.length > 0 && (
               <div className={styles.areaGroups}>
-                {userAreas.map((area) => (
+                {shownAreas.map((area) => (
                   <AreaGroup
                     key={area.id}
                     area={area}
+                    management={management(`area:${area.id}`, `Area actions for ${area.name}`)}
                     areaTracks={tracksByArea.get(area.id) ?? []}
                     activeTrackId={activeTrackId}
                     expanded={preferences.areaExpanded(area.id)}
@@ -269,7 +313,8 @@ export function Sidebar({
                 ))}
               </div>
             )}
-          </SidebarGroup>
+          </SidebarGroup>;
+          })}
 
         </>
       )}

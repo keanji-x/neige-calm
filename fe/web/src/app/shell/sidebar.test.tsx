@@ -500,12 +500,14 @@ describe('shared sidebar groups', () => {
     expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Areas']);
     await openOptions();
     expect(screen.queryByRole('menuitemcheckbox')).toBeNull();
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Show unread' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Show Unread' }));
     expect(screen.queryByRole('menu')).toBeNull();
     expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Areas']);
     await openOptions();
-    expect(screen.getByRole('menuitem', { name: 'Hide unread' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Show running' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
+    expect(screen.queryByRole('menuitem', { name: 'Show Unread' })).toBeNull();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Show Running' }));
     expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']);
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sidebar view options' }));
@@ -514,9 +516,8 @@ describe('shared sidebar groups', () => {
     restored.setReadScope('db', 1);
     renderSidebar(props, restored);
     expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']);
-    await openOptions();
-    expect(screen.getByRole('menuitem', { name: 'Hide running' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Hide unread' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Unread' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
     expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Running', 'Areas']);
   });
 
@@ -573,4 +574,93 @@ describe('shared sidebar groups', () => {
     expect(headings()).toEqual(['Areas']);
     expect(screen.queryByRole('button', { name: /^Track / })).toBeNull();
   });
+});
+
+
+describe('sidebar group management', () => {
+  const headings = () => screen.getAllByRole('heading').map((node) => node.textContent);
+  async function action(menu: string, item: string) {
+    await userEvent.click(screen.getByRole('button', { name: menu }));
+    await userEvent.click(screen.getByRole('menuitem', { name: item }));
+  }
+  async function restore(title: string, isArea = false) {
+    await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: `Show ${isArea ? 'area ' : ''}${title}` }));
+  }
+
+  it('moves visible top-level siblings, disables boundaries and restores hidden groups in their saved slots', async () => {
+    const preferences = createUiPreferences();
+    preferences.setSidebarGroupVisible('unread', true);
+    preferences.setSidebarGroupVisible('running', true);
+    preferences.setReadScope('db', 1);
+    renderSidebar({ tracks: [track({ pinnedAt: 5, attention: 'input', working: true, activityAt: 10 })] }, preferences);
+    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Waiting on you' }));
+    expect(screen.getByRole('menuitem', { name: 'Move up' }).getAttribute('aria-disabled')).toBe('true');
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
+    expect(headings()).toEqual(['Pinned', 'Waiting on you', 'Unread', 'Running', 'Areas']);
+    await action('Group actions for Waiting on you', 'Hide group');
+    expect(headings()).toEqual(['Pinned', 'Unread', 'Running', 'Areas']);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sidebar view options' }));
+    await restore('Waiting on you');
+    expect(headings()).toEqual(['Pinned', 'Waiting on you', 'Unread', 'Running', 'Areas']);
+    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Areas' }));
+    expect(screen.getByRole('menuitem', { name: 'Move down' }).getAttribute('aria-disabled')).toBe('true');
+    await userEvent.keyboard('{Escape}');
+  });
+
+  it('keeps Area movement personal, restores a hidden Area even when its parent is hidden, and remembers layout', async () => {
+    const storage = memoryStorage();
+    const preferences = createUiPreferences(storage);
+    const areas = [area(), area({ id: 'c2', name: 'Reading', sort: 2 })];
+    const props = { areas, tracksByArea: new Map([['c1', []], ['c2', []]]) };
+    const view = renderSidebar(props, preferences);
+    await action('Area actions for Work', 'Move down');
+    expect(screen.getAllByRole('button', { name: /^Collapse area / }).map((node) => node.textContent)).toEqual(['Reading', 'Work']);
+    expect(areas.map((row) => [row.id, row.sort])).toEqual([['c1', 1], ['c2', 2]]);
+    await action('Area actions for Work', 'Hide group');
+    expect(screen.queryByRole('button', { name: 'Collapse area Work' })).toBeNull();
+    await action('Group actions for Areas', 'Hide group');
+    expect(screen.queryByRole('heading', { name: 'Areas' })).toBeNull();
+    await restore('Work', true);
+    expect(screen.getAllByRole('button', { name: /^Collapse area / }).map((node) => node.textContent)).toEqual(['Reading', 'Work']);
+    await action('Area actions for Reading', 'Hide group');
+    view.unmount();
+    renderSidebar(props, createUiPreferences(storage));
+    expect(screen.queryByRole('button', { name: 'Collapse area Reading' })).toBeNull();
+    await restore('Reading', true);
+    expect(screen.getAllByRole('button', { name: /^Collapse area / }).map((node) => node.textContent)).toEqual(['Reading', 'Work']);
+  });
+
+  it('appends new Areas, forgets deleted ones and never restores a system Area from saved preferences', () => {
+    const preferences = createUiPreferences();
+    preferences.setSidebarOrder('areas', ['deleted', 'sys', 'c2', 'c2', 'c1']);
+    preferences.setSidebarGroupVisible('area:sys', false);
+    const areas = [area(), area({ id: 'c2', name: 'Reading' }), area({ id: 'new', name: 'New' }), area({ id: 'sys', name: 'System', kind: 'system' })];
+    renderSidebar({ areas }, preferences);
+    expect(screen.getAllByRole('button', { name: /^Collapse area / }).map((node) => node.textContent)).toEqual(['Reading', 'Work', 'New']);
+    expect(screen.queryByRole('button', { name: 'Area actions for System' })).toBeNull();
+  });
+
+  it('hiding the current Area changes only sidebar display and applies to the collapsed strip', async () => {
+    const preferences = createUiPreferences();
+    const onGo = vi.fn();
+    const props = { tracks: [track({ title: 'Current', working: true })], currentPath: '/track/w1', onGo };
+    const { update } = renderSidebar(props, preferences);
+    await action('Area actions for Work', 'Hide group');
+    expect(onGo).not.toHaveBeenCalled();
+    update({ ...props, collapsed: true });
+    expect(screen.queryByRole('button', { name: 'Show area Work' })).toBeNull();
+  });
+});
+
+
+it('distinguishes hidden Areas from workspace groups with the same title', async () => {
+  renderSidebar({ areas: [area({ name: 'Unread' })] });
+  await userEvent.click(screen.getByRole('button', { name: 'Area actions for Unread' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
+  expect(screen.getByRole('menuitem', { name: 'Show Unread' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Show area Unread' })).toBeTruthy();
 });

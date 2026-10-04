@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 
 import { createStorageKey, DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
+import { sidebarOrder, type SidebarGroupId, type SidebarOrderScope } from '../../../../core/view/sidebar-layout.ts';
 import { useState } from '../../ui/state/public.ts';
 
 type Preference = boolean | string | null;
@@ -131,10 +132,17 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return read(`browser:sidebar-group:${id}`) !== false;
     },
     setSidebarGroupExpanded: (id: string, value: boolean) => write(`browser:sidebar-group:${id}`, value, true),
-    sidebarGroupVisible(id: 'unread' | 'running'): boolean {
-      return read(`browser:sidebar-visible:${id}`) === true;
+    sidebarGroupVisible(id: SidebarGroupId): boolean {
+      const value = read(`browser:sidebar-visible:${id}`);
+      return typeof value === 'boolean' ? value : id !== 'unread' && id !== 'running';
     },
-    setSidebarGroupVisible: (id: 'unread' | 'running', value: boolean) => write(`browser:sidebar-visible:${id}`, value, true),
+    setSidebarGroupVisible: (id: SidebarGroupId, value: boolean) => write(`browser:sidebar-visible:${id}`, value, true),
+    sidebarOrder<T extends string>(scope: SidebarOrderScope, ids: readonly T[]): T[] {
+      let saved: unknown = null;
+      try { saved = JSON.parse(String(read(`browser:sidebar-order:${scope}`))); } catch { /* use registered order */ }
+      return sidebarOrder(ids, saved);
+    },
+    setSidebarOrder: (scope: SidebarOrderScope, ids: readonly string[]) => write(`browser:sidebar-order:${scope}`, JSON.stringify(ids), true),
     conversation(id: string): string | null {
       const value = read(`conversation:${id}`);
       return typeof value === 'string' ? value : null;
