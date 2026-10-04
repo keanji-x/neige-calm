@@ -1057,8 +1057,8 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
-    gap: 6px;
-    margin: 4px 0 0;
+    gap: var(--space-3);
+    margin: var(--space-2) 0 0;
     padding: 0;
     list-style: none;
   }

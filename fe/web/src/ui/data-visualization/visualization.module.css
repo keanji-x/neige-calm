@@ -53,7 +53,7 @@
   .toolbarControls { display: flex; gap: var(--space-3); align-items: center; min-inline-size: 0; max-inline-size: 100%; }
   .unit { font-size: var(--text-xs); color: var(--text-3); overflow-wrap: anywhere; }
   .toolbar select { border: 1px solid var(--hairline); background: var(--surface-card); color: var(--text-2); border-radius: var(--radius-sm); min-block-size: var(--control-h); max-inline-size: 100%; min-inline-size: 0; padding-inline: var(--space-3); font: inherit; font-size: var(--text-xs); }
-  .tabs { display: flex; flex-wrap: wrap; border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 2px; background: var(--surface-card); min-inline-size: 0; }
+  .tabs { display: flex; flex-wrap: wrap; border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: var(--space-1); background: var(--surface-card); min-inline-size: 0; }
   .tabs button { border: 0; border-radius: 2px; padding: var(--space-1) var(--space-3); background: transparent; color: var(--text-2); font-size: var(--text-xs); min-inline-size: 0; overflow-wrap: anywhere; }
   .tabs button[aria-pressed="true"] { background: var(--text); color: var(--bg); }
   .empty { color: var(--text-3); font-size: var(--text-base); padding-block: var(--space-5); }
