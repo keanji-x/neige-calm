@@ -153,8 +153,8 @@ pub(crate) async fn send_planner_input_keyed(
     }
 
     // Decided before anything with an effect: a retry's attachments are already bound, and a lazy
-    // restart would recover a runtime this request no longer needs.
-    // A plain send hashes exactly as before `replaces_turn` existed, so its stored keys still match.
+    // restart would recover a runtime this request no longer needs. A plain send hashes exactly as
+    // before `replaces_turn` existed, so its stored keys still match.
     let mut hashed = json!({
         "actor": actor.as_str(),
         "text": &text,

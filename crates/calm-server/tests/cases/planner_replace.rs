@@ -43,11 +43,11 @@ async fn replace(boot: &Boot, turn_id: &str, text: &str) -> (StatusCode, Value) 
     replace_keyed_as(boot, "user", turn_id, text, &calm_server::model::new_id()).await
 }
 
-/// `(payload_hash, entry_id)` of every key bound on the card.
-async fn bindings(boot: &Boot) -> Vec<(String, String, Option<String>)> {
+/// `(idempotency_key, entry_id)` of every key bound on the card.
+async fn bindings(boot: &Boot) -> Vec<(String, Option<String>)> {
     sqlx::query_as(
-        "SELECT idempotency_key, payload_hash, entry_id FROM planner_input_idempotency \
-         WHERE card_id = ?1 ORDER BY created_at_ms, idempotency_key",
+        "SELECT idempotency_key, entry_id FROM planner_input_idempotency WHERE card_id = ?1 \
+         ORDER BY created_at_ms, idempotency_key",
     )
     .bind(boot.planner_card.id.as_str())
     .fetch_all(boot.repo.pool())
@@ -218,7 +218,7 @@ fn turns_of(rows: &[(i64, Option<String>, Option<String>, String)]) -> Vec<Optio
     rows.iter().map(|(_, turn, _, _)| turn.clone()).collect()
 }
 
-/// Whether `GET /planner/run` and the started turns carry `text` as the next turn's input.
+/// Whether the `index`th `turn/start` carried `text`.
 fn started_with(boot: &Boot, index: usize, text: &str) -> bool {
     boot.daemon
         .started_turns_for_test()
@@ -333,23 +333,12 @@ async fn the_cut_the_message_and_the_key_commit_together() {
     assert_eq!(pending_ids(&boot).await, vec![entry.clone()]);
     let bound = bindings(&boot).await;
     assert_eq!(bound.len(), 3, "two plain sends and the replace: {bound:?}");
-    assert!(
-        bound.contains(&(key.clone(), bound_hash(&bound, &key), Some(entry))),
-        "{bound:?}"
-    );
+    assert!(bound.contains(&(key.clone(), Some(entry))), "{bound:?}");
     assert!(!turns_of(&rows(&boot).await).contains(&Some(TURN_B.into())));
     assert!(
         boot.daemon.reverted_threads_for_test().is_empty(),
         "applied at the next start only"
     );
-}
-
-fn bound_hash(bound: &[(String, String, Option<String>)], key: &str) -> String {
-    bound
-        .iter()
-        .find(|(bound_key, _, _)| bound_key == key)
-        .map(|(_, hash, _)| hash.clone())
-        .unwrap_or_default()
 }
 
 /// A lost answer: the same key again replays the first answer, with no second removal and no
@@ -457,6 +446,9 @@ async fn every_refusal_changes_nothing_and_binds_nothing() {
     run_turn(&boot, "first").await;
     let (turn_b, client_b) = start_turn(&boot, "second", &[]).await;
     assert_refused_unchanged(&boot, &turn_b, "still running").await;
+    let spared = calm_server::model::new_id();
+    let (status, _) = replace_keyed_as(&boot, "user", &turn_b, "edited", &spared).await;
+    assert_eq!(status, StatusCode::CONFLICT);
     finish_turn(&boot, &turn_b, &client_b, "second").await;
 
     boot.daemon
@@ -492,7 +484,7 @@ async fn every_refusal_changes_nothing_and_binds_nothing() {
         bindings(&boot)
             .await
             .iter()
-            .all(|(bound, _, _)| *bound != key.idempotency_key)
+            .all(|(bound, _)| *bound != key.idempotency_key)
     );
     assert_eq!(
         boot.harness.snapshot().await.pending_len(),
@@ -510,9 +502,9 @@ async fn every_refusal_changes_nothing_and_binds_nothing() {
         .await
         .unwrap();
 
-    // Last: with issuance paused the replacement waits in the queue.
+    // Last: with issuance paused the replacement waits in the queue. A refused key is not spent.
     boot.harness.pause_issuance_for_dev();
-    let (status, body) = replace(&boot, TURN_B, "edited").await;
+    let (status, body) = replace_keyed_as(&boot, "user", TURN_B, "edited", &spared).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let entry = body["entry_id"].as_str().unwrap().to_string();
     assert_refused_unchanged(&boot, TURN_A, "still waiting to be sent").await;
@@ -530,20 +522,6 @@ async fn every_refusal_changes_nothing_and_binds_nothing() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_refused_unchanged(&boot, TURN_A, "send a message first").await;
-}
-
-/// A refused key is not spent: once the turn can be replaced, the same key does it.
-#[tokio::test]
-async fn a_refused_key_replaces_the_turn_once_it_can() {
-    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
-    run_turn(&boot, "first").await;
-    let (turn_b, client_b) = start_turn(&boot, "second", &[]).await;
-    let key = calm_server::model::new_id();
-    let (status, body) = replace_keyed_as(&boot, "user", &turn_b, "edited", &key).await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    finish_turn(&boot, &turn_b, &client_b, "second").await;
-    let (status, body) = replace_keyed_as(&boot, "user", &turn_b, "edited", &key).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
 /// A turn the kernel started for a system update carries a non-user segment.
