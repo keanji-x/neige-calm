@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import AccountConfig, exact, identifier
+from .config import exact, identifier
 
 
 @dataclass(frozen=True)
@@ -14,7 +14,6 @@ class AllocationConfig:
     sdk_python_path: str
     access_region: str = "global"
     max_order_bps: int = 1000
-    cli_path: str = "/usr/local/bin/longbridge"
     poll_seconds: int = 60
     cash_buffer_bps: int = 200
     drift_bps: int = 100
@@ -25,14 +24,17 @@ class AllocationConfig:
     def parse(cls, values):
         required = {'profile', 'account_no', 'broker_home', 'owner_track_id',
                     'oauth_client_id', 'sdk_python_path'}
-        optional = {'cli_path', 'poll_seconds', 'cash_buffer_bps', 'drift_bps', 'quote_max_age_seconds', 'max_order_bps', 'access_region',
+        optional = {'poll_seconds', 'cash_buffer_bps', 'drift_bps', 'quote_max_age_seconds', 'max_order_bps', 'access_region',
                     'opening_shares'}
         exact(values, required, optional)
         if values['profile'] != 'spy_cash':
             raise ValueError('SPY allocation requires explicit spy_cash profile')
         obj = cls(**{k: v for k, v in values.items() if k != 'profile'})
-        AccountConfig.parse({'account_no': obj.account_no, 'broker_home': obj.broker_home,
-                             'poll_seconds': obj.poll_seconds, 'cli_path': obj.cli_path})
+        identifier(obj.account_no)
+        if not isinstance(obj.broker_home, str) or '\0' in obj.broker_home or not Path(obj.broker_home).is_absolute():
+            raise ValueError('broker_home must be an absolute path')
+        if type(obj.poll_seconds) is not int or not 5 <= obj.poll_seconds <= 3600:
+            raise ValueError('invalid poll_seconds')
         if not isinstance(obj.owner_track_id, str) or not obj.owner_track_id.strip() or len(obj.owner_track_id) > 256:
             raise ValueError('owner_track_id is required')
         identifier(obj.oauth_client_id)

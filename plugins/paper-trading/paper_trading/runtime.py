@@ -1,8 +1,7 @@
 """Polling and publication continue without an active agent conversation."""
 import threading
 
-from .report import tables
-from .allocation_report import tables as allocation_tables
+from .allocation_report import tables
 
 
 class Runtime:
@@ -18,7 +17,7 @@ class Runtime:
             self.wake.clear()
             try:
                 for track, state in self.portfolio.process_once():
-                    for kind, payload in (allocation_tables(state) if state.get('profile') == 'spy_cash' else tables(state)).items():
+                    for kind, payload in tables(state).items():
                         if self.closed.is_set():
                             return
                         self.publish(track, kind, payload)

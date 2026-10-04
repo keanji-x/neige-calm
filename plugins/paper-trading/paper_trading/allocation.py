@@ -6,7 +6,7 @@ import json
 import re
 from zoneinfo import ZoneInfo
 
-from .config import broker_money, exact, identifier, integer, money, timestamp
+from .config import exact, identifier, money, timestamp
 from .ledger import Ledger, digest, encoded
 from .allocation_reconcile import reconcile, validate_snapshot
 from .allocation_broker import OrderNotSubmitted
@@ -29,10 +29,7 @@ class Allocation:
     def __init__(self, root, account, broker, clock=None):
         self.account, self.broker = account, broker
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        root = Path(root)
-        if (root / 'ledger.sqlite3').exists() or (root / 'strategy.sqlite3').exists():
-            raise ValueError('SPY profile cannot reuse supervised portfolio data; resolve its orders first')
-        self.ledger = Ledger(root / 'spy-cash', account)
+        self.ledger = Ledger(Path(root) / 'spy-cash', account)
         with self.ledger.session() as db:
             db.execute('CREATE TABLE IF NOT EXISTS order_requests (id TEXT PRIMARY KEY, body TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS valuations (date TEXT PRIMARY KEY, body TEXT NOT NULL)')

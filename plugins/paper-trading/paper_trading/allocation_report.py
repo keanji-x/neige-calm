@@ -1,6 +1,6 @@
 """Every SPY/cash Track overlay: the live overview plus detail tables of targets and broker outcomes."""
 from .allocation_views import SIDES, STATES, overview, percent
-from .report import table
+from .report_views import table
 
 
 def tables(state):

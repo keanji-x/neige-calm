@@ -10,6 +10,7 @@ import pytest
 from paper_trading.allocation import Allocation
 from paper_trading.allocation_broker import AllocationBroker
 from paper_trading.allocation_config import AllocationConfig
+from .host import Host
 
 NOW = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)
 ROOT = Path(__file__).parents[1]
@@ -310,12 +311,10 @@ def wait_for(host, predicate, caller=WORKER):
 
 
 def test_spy_production_stdio_entrypoint_and_overlays(allocation_rig):
-    from types import SimpleNamespace
-    from .test_process import Host
     r = allocation_rig
     now = datetime.now(timezone.utc)
     state = r.read(); state['snapshot']['quote']['at'] = now.isoformat(); r.write(state)
-    host = Host(SimpleNamespace(home=r.home, data=r.root), config=r.values | {'cli_path': '/usr/local/bin/longbridge'})
+    host = Host(r.home, r.root, r.values)
     try:
         names = {t['name'] for t in host.request('tools/list', {})['tools']}
         assert names == {'spy.plan', 'spy.execute', 'spy.status', 'spy.refresh'}
@@ -505,3 +504,15 @@ def test_spy_ledger_reconciled_before_opening_shares_started_from_zero(allocatio
 def test_spy_opening_shares_config_is_a_non_negative_integer(allocation_rig, value):
     with pytest.raises(ValueError, match='opening_shares'):
         AllocationConfig.parse(allocation_rig.values | {'opening_shares': value})
+
+
+def test_spy_config_requires_a_profile(allocation_rig):
+    values = {k: v for k, v in allocation_rig.values.items() if k != 'profile'}
+    with pytest.raises(ValueError, match='missing or unknown fields'):
+        AllocationConfig.parse(values)
+
+
+@pytest.mark.parametrize('profile', ['spy-cash', 'SPY_CASH', '', None])
+def test_spy_config_refuses_any_profile_but_spy_cash(allocation_rig, profile):
+    with pytest.raises(ValueError, match='spy_cash profile'):
+        AllocationConfig.parse(allocation_rig.values | {'profile': profile})

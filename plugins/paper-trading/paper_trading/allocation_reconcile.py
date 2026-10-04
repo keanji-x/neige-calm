@@ -4,7 +4,10 @@ from decimal import Decimal
 
 from .config import broker_money, integer, timestamp
 from .ledger import encoded
-from .portfolio import BROKER_ACTIVE, BROKER_TERMINAL
+
+BROKER_TERMINAL = {"Filled", "Canceled", "Rejected", "Expired", "PartialWithdrawal"}
+BROKER_ACTIVE = {"NotReported", "New", "WaitToNew", "PartialFilled", "WaitToReplace",
+                 "PendingReplace", "Replaced", "WaitToCancel", "PendingCancel"}
 
 
 def validate_snapshot(raw, config, now):
