@@ -192,4 +192,39 @@
   .crumbSep {
     color: var(--text-4);
   }
+  /* Desktop chrome shares a primary band; secondary rows extend below it. */
+  @media (width >= 60rem) {
+    :where(*):has(> .header) {
+      --header-band: 0px;
+      --header-h: var(--header-primary-h);
+    }
+    :where(*):has(> .header[data-nc-header-rows='2']) {
+      --header-h: calc(var(--header-primary-h) + var(--row-h-sm) + var(--space-3));
+    }
+    :where(*):has(> .header[data-nc-header-rows='3']) {
+      --header-h: calc(var(--header-primary-h) + var(--row-h-sm) * 2 + var(--space-3) * 2);
+    }
+    .header {
+      flex-shrink: 0;
+      padding-block-start: 0;
+      margin-inline: calc(var(--space-10) * -1);
+      padding-inline: var(--space-10);
+      border-block-end-color: var(--hairline);
+    }
+    .header[data-nc-align='document'] {
+      padding-inline-start: calc(var(--space-10) + var(--document-start, 0px));
+    }
+    .titleRow {
+      flex-shrink: 0;
+      block-size: calc(var(--header-primary-h) - 1px);
+      min-block-size: calc(var(--header-primary-h) - 1px);
+    }
+    .title {
+      min-inline-size: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+  }
+
 }

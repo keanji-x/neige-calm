@@ -99,7 +99,7 @@ export type TrackPageProps = Readonly<{
   conversationOpen?: boolean;
   /** Any active foreground drawer makes the painted mobile panel inaccessible. */
   mobilePanelObscured: boolean;
-  /** Starts Chat from the mobile Report's dedicated floating action. */
+  /** Starts Chat from the desktop header or the mobile Report action. */
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
@@ -370,14 +370,16 @@ export function TrackPage({
         }
         actions={(
           <span className={styles.headerActions}>
-            {!boardOpen && onReply !== undefined && (
+            {!boardOpen && (onReply !== undefined || onStartConversation !== undefined) && (
               <AstryxButton
-                className={styles.plannerAction}
-                label="Planner"
+                className={styles.desktopChatAction}
+                label={onReply === undefined ? 'Chat' : 'Planner'}
+                tooltip={onReply === undefined ? 'Chat' : 'Planner'}
+                isIconOnly
                 variant="ghost"
                 size="sm"
                 icon={<Icon name="chat" />}
-                onClick={onReply}
+                onClick={onReply ?? onStartConversation}
               />
             )}
             <span className={styles.trackActions}>

@@ -20,13 +20,13 @@ export function PageHeader({ breadcrumb, title, meta, actions, identity, align =
       data-nc-header-rows={String(rows) as '1' | '2' | '3'}
       data-nc-align={align}
     >
-      {breadcrumb !== undefined && <div className={styles.crumbRow}>{breadcrumb}</div>}
       <div className={styles.titleRow}>
         {title}
         {meta}
         <span className={styles.spring} />
         {actions}
       </div>
+      {breadcrumb !== undefined && <div className={styles.crumbRow}>{breadcrumb}</div>}
       {identity !== undefined && <div className={styles.identityRow}>{identity}</div>}
     </header>
   );

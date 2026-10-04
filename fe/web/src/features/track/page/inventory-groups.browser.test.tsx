@@ -53,8 +53,10 @@ it('aligns module titles, status groups and row names, with stable secondary col
   }
   const tasks = document.querySelector('[data-nc-module="tasks"]')!;
   const total = tasks.querySelector<HTMLElement>('h2 + span')!;
+  expect(total.getBoundingClientRect().right).toBeCloseTo(tasks.getBoundingClientRect().right - 12, 0);
+  // Group counts reserve the 20px disclosure lane; the header total uses the outer edge.
   for (const count of document.querySelectorAll<HTMLElement>('summary > span:nth-child(2)')) {
-    expect(count.getBoundingClientRect().right).toBeCloseTo(total.getBoundingClientRect().right, 0);
+    expect(total.getBoundingClientRect().right - count.getBoundingClientRect().right).toBeCloseTo(20, 0);
   }
   const kinds = [...tasks.querySelectorAll<HTMLElement>('details[open] [data-nc-field="kind"]')];
   expect(kinds).toHaveLength(2);

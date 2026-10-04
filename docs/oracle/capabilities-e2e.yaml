@@ -39,7 +39,7 @@
     a11y-axe.spec.ts:72-83 — ThemeProvider mirrors `resolved` into that dataset attribute and
     `[data-theme="dark"]` selectors in calm.css consume it; the effect only re-fires on React state change, so
     a direct write is not clobbered mid-scan.
-  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/web/src/styles/tokens.css:1-562 ;
+  source: fe/web/src/app/theme/public.tsx:1-69 ; fe/web/src/styles/tokens.css:1-556 ;
     fe/web/src/styles/base.css:1-311
   authoritative_test: fe/web/src/app/theme/theme.browser.test.tsx:1
   owner_slice: app/theme

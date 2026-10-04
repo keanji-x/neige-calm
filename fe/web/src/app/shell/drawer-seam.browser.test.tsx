@@ -15,6 +15,7 @@ import type { Conversation, TranscriptEntry } from '../../../../core/domain/conv
 import type { ReportOutlineItem } from '../../../../core/domain/report.ts';
 import { ChatThread } from '../../features/chat/thread/public.tsx';
 import reportDocument from '../../features/report/document/document.module.css';
+import { PageHeader } from '../../ui/page-header/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
 import trackPage from '../../features/track/page/page.module.css';
 import { Drawer } from '../../ui/drawer/public.tsx';
@@ -123,7 +124,7 @@ function TrackGeometryPage({ open = true, withOutline = true }: { open?: boolean
       <div aria-hidden="true" />
       <main className={shell.main}>
         <section className={trackPage.page}>
-          <header />
+          <PageHeader title="Track" />
           <div className={trackPage.workspace}>
             <div className={trackPage.content}>
               <div className={trackPage.doc}>
@@ -335,7 +336,7 @@ describe('the drawer against a real rendering engine', () => {
 
   /* The card's geometry, read off the painted boxes relative to `.main`, the
    * containing block the `position: absolute` resolves against. */
-  it('insets the card from the main region by the amounts the stylesheet claims', async () => {
+  it('reserves the fixed primary header and keeps the card bottom and trailing insets', async () => {
     await page.viewport(1400, 900);
     render(<Page />);
     await click(opener());
@@ -349,7 +350,7 @@ describe('the drawer against a real rendering engine', () => {
            spacing token stops meaning what the stylesheet claims. */
     const laid = getComputedStyle(card);
     expect(laid.position).toBe('absolute');
-    expect(laid.insetBlockStart).toBe('20px');
+    expect(laid.insetBlockStart).toBe('64px');
     expect(laid.insetBlockEnd).toBe('28px');
     expect(laid.insetInlineEnd).toBe('24px');
     await untilGone.call(null).catch(() => undefined);
@@ -779,4 +780,17 @@ describe('dragged conversation width', () => {
       await expect.element(page.getByRole('button', { name: 'Back to previous page' })).toBeInTheDocument();
     } finally { await page.viewport(1400, 900); }
   });
+});
+
+it('keeps the desktop conversation and its seam below the fixed primary header', async () => {
+  await page.viewport(1440, 900);
+  render(<TrackGeometryPage />);
+  const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
+  const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+  const seam = document.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
+  expect(header.getBoundingClientRect().height).toBe(56);
+  expect(drawer.getBoundingClientRect().top).toBeGreaterThanOrEqual(header.getBoundingClientRect().bottom + 8);
+  expect(seam.getBoundingClientRect().top).toBeCloseTo(drawer.getBoundingClientRect().top, 0);
+  const box = header.getBoundingClientRect();
+  expect(document.elementFromPoint(box.right - 12, box.top + box.height / 2)?.closest('header')).toBe(header);
 });

@@ -1,5 +1,5 @@
 import { page as browserPage, userEvent } from 'vitest/browser';
-import { render } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../../styles/entry.css';
@@ -149,6 +149,7 @@ describe('the track closed status in the page header', () => {
 
     await userEvent.click(open);
     expect(onReply).toHaveBeenCalledOnce();
+    expect(start).not.toHaveBeenCalled();
     await userEvent.click(dismiss);
     expect(onDismiss).toHaveBeenCalledWith('ask:ratify:1');
     expect(onReply).toHaveBeenCalledOnce();
@@ -334,15 +335,17 @@ describe('the track closed status in the page header', () => {
   });
 });
 
-
 describe('the report-to-Planner entry', () => {
   it('stays visible beside a long title and focuses the supplied Planner', async () => {
     await browserPage.viewport(1200, 800);
     const onReply = vi.fn();
-    renderPage({ track: track({ title: 'A long-running report '.repeat(20) }), onReply });
+    const start = vi.fn();
+    renderPage({ track: track({ title: 'A long-running report '.repeat(20) }), onReply, onStartConversation: start });
     const button = browserPage.getByRole('button', { name: 'Planner', exact: true }).element();
     const box = button.getBoundingClientRect();
-    expect(box.width).toBeGreaterThan(40);
+    expect(box.width).toBe(28);
+    expect(button.querySelector('svg')).not.toBeNull();
+    expect(browserPage.getByRole('button', { name: 'Chat', exact: true }).query()).toBeNull();
     expect(box.right).toBeLessThanOrEqual(window.innerWidth);
     await userEvent.click(button);
     expect(onReply).toHaveBeenCalledOnce();
@@ -361,5 +364,32 @@ describe('the report-to-Planner entry', () => {
     expect(metadata.getBoundingClientRect().width).toBeLessThanOrEqual(1);
     expect(group.querySelector<HTMLElement>('[data-nc-field="kind"]')!.getBoundingClientRect().right)
       .toBeLessThanOrEqual(group.getBoundingClientRect().right);
+  });
+});
+
+describe('the Track conversation entry', () => {
+  it('offers one visible Chat action on desktop and phone using the same callback', async () => {
+    const start = vi.fn();
+    await browserPage.viewport(1200, 800);
+    renderPage({ onStartConversation: start });
+    const chat = browserPage.getByRole('button', { name: 'Chat', exact: true });
+    await expect.element(chat).toBeVisible();
+    for (const theme of ['light', 'dark']) {
+      document.documentElement.dataset.theme = theme;
+      const button = [...document.querySelectorAll('button')].find((element) =>
+        element.getAttribute('aria-label') === 'Chat' && element.getBoundingClientRect().width > 0);
+      if (button === undefined) throw new Error('the desktop Chat action is missing');
+      await waitFor(() => {
+        const style = getComputedStyle(button);
+        expect(contrast(paintedRgb(style.color), paintedRgb(getComputedStyle(button.closest('header')!).backgroundColor))).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+    await userEvent.click(chat);
+    expect(start).toHaveBeenCalledTimes(1);
+
+    await browserPage.viewport(390, 844);
+    await expect.element(chat).toBeVisible();
+    await userEvent.click(chat);
+    expect(start).toHaveBeenCalledTimes(2);
   });
 });

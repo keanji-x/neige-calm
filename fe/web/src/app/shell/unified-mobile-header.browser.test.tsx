@@ -1,7 +1,7 @@
 import '../../styles/entry.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 import { page, userEvent, commands } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -17,12 +17,12 @@ declare module 'vitest/internal/browser' {
 afterEach(cleanup);
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
-function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, title = 'Responsive mobile UI', options: Readonly<{ trackAreaId?: string; failTracks?: boolean; failAreas?: boolean; longLists?: boolean }> = {}) {
+function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, title = 'Responsive mobile UI', options: Readonly<{ trackAreaId?: string; failTracks?: boolean; failAreas?: boolean; longLists?: boolean; longReport?: boolean; viewportRoot?: boolean }> = {}) {
   const track = { id: 'w1', area_id: options.trackAreaId ?? 'c1', title, sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const report = { id: 'report', track_id: 'w1', title: 'Report', kind: 'track-report', sort: 0,
     deletable: false, created_at: 1, updated_at: 1, payload: { schemaVersion: 3, docRev: 1, summary: '', body: '',
-      blocks: [{ id: 'prose', kind: 'prose', rev: 1, payload: { markdown: '## Findings\n\n[Source detail](neige://source/src_2c9e0a1b)' } }] } };
+      blocks: [{ id: 'prose', kind: 'prose', rev: 1, payload: { markdown: options.longReport ? '# Findings\n\n' + Array.from({ length: 60 }, (_, index) => `Paragraph ${index + 1}: report content remains below the fixed workspace header.`).join('\n\n') : '## Findings\n\n[Source detail](neige://source/src_2c9e0a1b)' } }] } };
   const planner = { id: 'planner', track_id: 'w1', title: 'Design review', kind: 'codex', sort: 1,
     deletable: false, created_at: 1, updated_at: 1, payload: { planner_harness: true } };
   const source = { source_id: 'src_2c9e0a1b', provenance: 'manual', title: 'Source detail with a deliberately long title that must remain inside the shared mobile header',
@@ -55,9 +55,10 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
   const router = createAppRouter({ transport, unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }),
     client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
-  render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+  const view = render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
+  if (options.viewportRoot) view.container.id = 'root';
   return router;
 }
 const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -545,4 +546,43 @@ it.each(['outside', 'blur'])('does not reclaim title focus after it has moved %s
   await settlePaint();
   expect(document.activeElement).toBe(destination === 'outside' ? source : document.body);
   await page.viewport(1280, 720);
+});
+
+
+describe('shared desktop primary header', () => {
+  it('aligns header centres in a 56px band and keeps both headers fixed during scrolling', async () => {
+    await page.viewport(1440, 600);
+    setup('/track/w1', AREA.name, () => undefined, 'Responsive mobile UI', { longLists: true, longReport: true, viewportRoot: true });
+    await page.getByRole('button', { name: 'Rename track', exact: true }).findElement();
+    const rail = document.querySelector<HTMLElement>('nav[aria-label="Workspace"]')!;
+    const today = rail.querySelector<HTMLElement>('[aria-label="Go to Today"]')!;
+    const collapse = rail.querySelector<HTMLElement>('[aria-label="Collapse sidebar"]')!;
+    const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
+    const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
+    const centre = (element: HTMLElement) => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; };
+    expect(centre(today)).toBeCloseTo(centre(title), 0);
+    expect(centre(collapse)).toBeCloseTo(centre(title), 0);
+    expect(header.getBoundingClientRect().height).toBe(56);
+    expect(today.parentElement!.getBoundingClientRect().height).toBe(56);
+    const scroller = document.querySelector<HTMLElement>('[data-nc-track-page]')!;
+    expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
+    expect(rail.scrollHeight).toBeGreaterThan(rail.clientHeight);
+    const initial = { header: header.getBoundingClientRect().top, today: today.getBoundingClientRect().top };
+    scroller.scrollTop = 600;
+    rail.scrollTop = 300;
+    await settlePaint();
+    expect(scroller.scrollTop).toBeGreaterThan(0);
+    expect(rail.scrollTop).toBeGreaterThan(0);
+    expect(header.getBoundingClientRect().top).toBeCloseTo(initial.header, 0);
+    expect(today.getBoundingClientRect().top).toBeCloseTo(initial.today, 0);
+    expect(centre(collapse)).toBeCloseTo(centre(title), 0);
+  });
+
+  it('uses the same 56px primary header on Today', async () => {
+    await page.viewport(1440, 900);
+    setup('/', AREA.name, () => undefined, 'Responsive mobile UI', { viewportRoot: true });
+    await waitFor(() => expect(document.querySelector('[data-nc-header-rows]')).not.toBeNull());
+    const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
+    expect(header.getBoundingClientRect().height).toBe(56);
+  });
 });

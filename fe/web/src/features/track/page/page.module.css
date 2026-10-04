@@ -542,12 +542,6 @@
     color: var(--text-2);
   }
 
-  .plannerAction {
-    min-block-size: var(--control-h);
-    padding-inline: var(--space-4);
-    font-size: var(--text-base);
-  }
-
   .trackActions button {
     inline-size: var(--control-h) !important;
     min-inline-size: var(--control-h) !important;
@@ -1212,4 +1206,46 @@
 
 
   }
+  /* Desktop controls stay separate from the compact Report action. */
+  @media (width >= 60rem) {
+    .desktopChatAction {
+      inline-size: var(--control-h) !important;
+      min-inline-size: var(--control-h) !important;
+      block-size: var(--control-h) !important;
+      padding: 0 !important;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: transparent !important;
+      color: var(--text-2) !important;
+      box-shadow: none !important;
+    }
+
+    .desktopChatAction:hover,
+    .desktopChatAction:focus-visible {
+      background: var(--overlay-hover) !important;
+      color: var(--text) !important;
+    }
+
+    .desktopPanelSurface {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+
+    .desktopPanelSurface [data-nc-module] {
+      padding-block: var(--space-2);
+    }
+
+    .taskSummary {
+      margin-inline-end: 0;
+      text-align: end;
+    }
+  }
+
+  @media (width < 60rem) {
+    .desktopChatAction {
+      display: none !important;
+    }
+  }
+
 }

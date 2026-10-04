@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Breadcrumb } from './public.tsx';
+import { Breadcrumb, PageHeader } from './public.tsx';
 
 afterEach(cleanup);
 
@@ -13,4 +13,10 @@ describe('Breadcrumb', () => {
     expect(back.querySelector('svg')?.querySelector('path')?.getAttribute('d')).toBe('M13 8H3.5');
     expect(back.textContent).not.toContain('←');
   });
+});
+
+it('renders the primary title row before optional secondary rows', () => {
+  const view = render(<PageHeader title={<h1>Primary title</h1>} breadcrumb="Breadcrumb" identity="Identity" />);
+  const header = view.container.querySelector('header')!;
+  expect([...header.children].map((row) => row.textContent)).toEqual(['Primary title', 'Breadcrumb', 'Identity']);
 });
