@@ -26,7 +26,5 @@ fixture 方法论有固有边界：同源产物互比（两侧可能一起陈旧
 
 ## 设计系统与 token
 
-遵循 [前端设计系统使用规范](../docs/frontend-design-system.md)。保留现有色系、圆角和
-通过底色区分区域的方式；已有色差足以表达边界时不叠加外框。颜色、字号、间距
-等使用现有语义 token，优先复用 Astryx 和本仓库 UI 原语。token 化应保持当前
-视觉值；新增、删改 token 走 styles owner、类型清单、主题和对比度契约。
+遵循 [前端设计系统](../docs/frontend-design-system.md)，使用现有语义 token，
+优先复用 Astryx 和本仓库 UI 原语。等值 token 替换保持现有视觉。
