@@ -16,11 +16,12 @@ export function useConversationEdit({ conversationId, rewind, focusComposer }: {
   const run = async (turnId: string) => {
     if (conversationId === null || !tryBeginEdit(conversationId)) return;
     const target = conversationId;
-    let refill: ComposerContent | null = null;
+    let removed: Readonly<{ turnId: string; refill: ComposerContent }> | null = null;
     try {
-      refill = composerRefillFrom((await rewind(turnId)).input);
+      const rewound = await rewind(turnId);
+      removed = { turnId: rewound.turn_id, refill: composerRefillFrom(rewound.input) };
     } finally {
-      finishEdit(target, refill);
+      finishEdit(target, removed);
     }
     focusComposer(target);
   };

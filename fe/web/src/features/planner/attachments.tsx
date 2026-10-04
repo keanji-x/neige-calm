@@ -11,7 +11,6 @@ import { Thumbnail } from '@astryxdesign/core/Thumbnail';
 import { VStack } from '@astryxdesign/core/VStack';
 
 import { Icon } from '../../ui/icon/public.tsx';
-import { useState } from '../../ui/state/public.ts';
 
 import type {
   PlannerAttachment, UploadAttachmentResponse,
@@ -33,14 +32,23 @@ export type AttachmentSupport = Readonly<{ available: boolean; reason?: string }
 export const ATTACHED_WORKSPACE_REASON =
   'This track works in a folder you own, and neige never writes into one. Images can be attached on tracks with a managed workspace.';
 
+/** One card's uploads: how many are in flight, and the last refusal to show beside its strip. */
+export type UploadState = Readonly<{ inFlight: number; refusal: string | null }>;
+
+export const NO_UPLOAD: UploadState = Object.freeze({ inFlight: 0, refusal: null });
+
 /**
- * Where each card's picked images live: the caller's per-conversation composer, so the strip
- * survives closing and switching. `update` names the card, so an upload lands where it started.
+ * Where each card's picked images and uploads live: the caller's per-conversation store, so the
+ * strip and an upload in flight survive closing, switching and remounts. Writes name the card, so
+ * an upload lands where it started.
  */
 export type AttachmentStore = Readonly<{
   /** The images of the open card's composer. */
   items: readonly PlannerAttachment[];
   update: (cardId: string, next: (items: readonly PlannerAttachment[]) => readonly PlannerAttachment[]) => void;
+  /** The open card's uploads. */
+  upload: UploadState;
+  editUpload: (cardId: string, next: (current: UploadState) => UploadState) => void;
 }>;
 
 export type PlannerAttachments = Readonly<{
@@ -67,9 +75,7 @@ export function usePlannerAttachments(
   cardId: string,
   store: AttachmentStore,
 ): PlannerAttachments {
-  const { items, update } = store;
-  const [uploading, setUploading] = useState<ReadonlySet<string>>(() => new Set());
-  const [refusal, setRefusal] = useState<Readonly<{ cardId: string; message: string }> | null>(null);
+  const { items, update, editUpload } = store;
   /* Read inside `attach`: closing over a render's `items` would let two quick picks both see an empty list and both pass the cap. */
   const live = useRef<readonly PlannerAttachment[]>(items);
   live.current = items;
@@ -77,14 +83,14 @@ export function usePlannerAttachments(
   const attach = useCallback(async (file: File) => {
     /* A picked image's bytes live under its card's directory and the server refuses it anywhere else, so its answer belongs to this card even if the reader has moved on. */
     const target = cardId;
+    const refuse = (refusal: string) => editUpload(target, (current) => ({ ...current, refusal }));
     const refused = refusalFor(file.type);
-    if (refused !== null) { setRefusal({ cardId: target, message: refused }); return; }
+    if (refused !== null) { refuse(refused); return; }
     if (live.current.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
-      setRefusal({ cardId: target, message: `A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.` });
+      refuse(`A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.`);
       return;
     }
-    setUploading((current) => new Set([...current, target]));
-    setRefusal(null);
+    editUpload(target, (current) => ({ inFlight: current.inFlight + 1, refusal: null }));
     try {
       const consume = await upload(async () => new Uint8Array(await file.arrayBuffer()), file.type);
       const uploaded = consume();
@@ -93,12 +99,11 @@ export function usePlannerAttachments(
         size: uploaded.size, url: uploaded.url,
       }]);
     } catch (cause) {
-      setRefusal({ cardId: target, message: cause instanceof Error && cause.message !== ''
-        ? cause.message : 'The image could not be uploaded.' });
+      refuse(cause instanceof Error && cause.message !== '' ? cause.message : 'The image could not be uploaded.');
     } finally {
-      setUploading((current) => new Set([...current].filter((id) => id !== target)));
+      editUpload(target, (current) => ({ ...current, inFlight: Math.max(0, current.inFlight - 1) }));
     }
-  }, [cardId, update, upload]);
+  }, [cardId, editUpload, update, upload]);
 
   /* Removing one before sending is a local forget; the server reclaims orphans after their TTL. */
   const remove = useCallback((id: string) => {
@@ -110,8 +115,8 @@ export function usePlannerAttachments(
     ids: items.map((item) => item.id),
     attach,
     remove,
-    busy: uploading.has(cardId),
-    error: refusal?.cardId === cardId ? refusal.message : null,
+    busy: store.upload.inFlight > 0,
+    error: store.upload.refusal,
     atCapacity: items.length >= MAX_ATTACHMENTS_PER_MESSAGE,
   };
 }

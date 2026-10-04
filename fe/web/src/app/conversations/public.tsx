@@ -4,6 +4,7 @@ import {
 
 import type { ModelSelection, Conversation, OptimisticConversationTurn, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { EMPTY_COMPOSER, withRefill, type ComposerContent } from '../../../../core/domain/conversation-rewind.ts';
+import { NO_UPLOAD, type UploadState } from '../../features/planner/attachments.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 
 /**
@@ -147,8 +148,13 @@ export type ConversationRegistry = Readonly<{
   isEditing: (conversationId: string) => boolean;
   /** One rewind per conversation at a time; false while one is out. */
   tryBeginEdit: (conversationId: string) => boolean;
-  /** The rewind settled; a removed message, if any, is added to that conversation's composer. */
-  finishEdit: (conversationId: string, refill: ComposerContent | null) => void;
+  /** The rewind settled; a removed turn's message, if any, is added to that conversation's composer. */
+  finishEdit: (conversationId: string, removed: Readonly<{ turnId: string; refill: ComposerContent }> | null) => void;
+  /** The latest turn an Edit removed here: actions on it stay withheld while a cached transcript still shows it. */
+  removedTurnOf: (conversationId: string) => string | null;
+  /** One card's image uploads, held here so a remount or another route sees an upload still in flight. */
+  uploadOf: (cardId: string) => UploadState;
+  editUpload: (cardId: string, next: (current: UploadState) => UploadState) => void;
   /* Deliberately no "open the planner conversation of track W" slot: the track being left is still
        mounted when a create states it, so that intent travels in the history entry instead. */
 }>;
@@ -223,13 +229,28 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     setEditing(editingRef.current);
     return true;
   }, []);
-  const finishEdit = useCallback((conversationId: string, refill: ComposerContent | null) => {
+  const [removedTurns, setRemovedTurns] = useState<Readonly<Record<string, string>>>({});
+  const finishEdit = useCallback((conversationId: string, removed: Readonly<{ turnId: string; refill: ComposerContent }> | null) => {
     if (!editingRef.current.has(conversationId)) return;
-    if (refill !== null) editComposer(conversationId, (current) => withRefill(current, refill));
+    if (removed !== null) {
+      editComposer(conversationId, (current) => withRefill(current, removed.refill));
+      setRemovedTurns((current) => ({ ...current, [conversationId]: removed.turnId }));
+    }
     editingRef.current = new Set([...editingRef.current].filter((id) => id !== conversationId));
     setEditing(editingRef.current);
   }, [editComposer]);
   const isEditing = useCallback((conversationId: string) => editing.has(conversationId), [editing]);
+  const removedTurnOf = useCallback((conversationId: string) => removedTurns[conversationId] ?? null, [removedTurns]);
+  const [uploads, setUploads] = useState<Readonly<Record<string, UploadState>>>({});
+  const editUpload = useCallback((cardId: string, next: (current: UploadState) => UploadState) => {
+    setUploads((current) => {
+      const after = next(current[cardId] ?? NO_UPLOAD);
+      const updated = { ...current };
+      if (after.inFlight === 0 && after.refusal === null) delete updated[cardId]; else updated[cardId] = after;
+      return updated;
+    });
+  }, []);
+  const uploadOf = useCallback((cardId: string) => uploads[cardId] ?? NO_UPLOAD, [uploads]);
   const clearFailedSend = useCallback((conversationId: string, echoId: string) => {
     setFailedSends((current) => {
       if (current[conversationId]?.echo.id !== echoId) return current;
@@ -300,10 +321,10 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       pendingSendIds, failedSends, tryBeginSend, finishSend, clearFailedSend,
-      composerOf, editComposer, isEditing, tryBeginEdit, finishEdit,
+      composerOf, editComposer, isEditing, tryBeginEdit, finishEdit, removedTurnOf, uploadOf, editUpload,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, finishDraftAdoption, finishEdit, isEditing, finishSend, pendingSendIds,
+      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editUpload, finishDraftAdoption, finishEdit, isEditing, removedTurnOf, uploadOf, finishSend, pendingSendIds,
       remember, requestOpen, failedSends, clearFailedSend,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginEdit, tryBeginSend, turnsOf,
       updateExisting],

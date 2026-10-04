@@ -7,7 +7,7 @@ import type { PlannerAttachment, UploadAttachmentResponse } from '../../../../co
 import { useState } from '../../ui/state/public.ts';
 import {
   ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer, usePlannerAttachments,
-  type AttachmentStore, type PlannerAttachments, type UploadAttachment,
+  NO_UPLOAD, type AttachmentStore, type PlannerAttachments, type UploadAttachment, type UploadState,
 } from './attachments.tsx';
 
 afterEach(cleanup);
@@ -29,11 +29,15 @@ let latest: PlannerAttachments | null = null;
 /** Every card's images, as the caller holds them; read by the cases that switch cards. */
 let held: Readonly<Record<string, readonly PlannerAttachment[]>> = {};
 
-/** The caller's per-card composer images, as the router keeps them in the conversation registry. */
+/** The caller's per-card composer images and uploads, as the router keeps them in the conversation registry. */
 function useCardImages(cardId: string): AttachmentStore {
   const [byCard, setByCard] = useState<Readonly<Record<string, readonly PlannerAttachment[]>>>({});
   held = byCard;
-  return { items: byCard[cardId] ?? [], update: (card, next) => setByCard((current) => ({ ...current, [card]: next(current[card] ?? []) })) };
+  const [uploads, setUploads] = useState<Readonly<Record<string, UploadState>>>({});
+  return {
+    items: byCard[cardId] ?? [], update: (card, next) => setByCard((current) => ({ ...current, [card]: next(current[card] ?? []) })),
+    upload: uploads[cardId] ?? NO_UPLOAD, editUpload: (card, next) => setUploads((current) => ({ ...current, [card]: next(current[card] ?? NO_UPLOAD) })),
+  };
 }
 
 function Harness({ upload, supported = true, card = 'card-1' }: {

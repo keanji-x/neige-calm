@@ -1277,6 +1277,104 @@ describe('track conversations', () => {
     await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_SUFFIX))).toBe(true));
   });
 
+  it('keeps the images of a rejected send for the footer’s Edit', async () => {
+    const { requests } = editSetup(rewindAccepted, {}, undefined, () => failure(400, 'bad_request', 'Not this time'));
+    await editIntoComposer(requests);
+    await submit();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    expect(composerImages()).toEqual([REWIND_IMAGE.url]);
+  });
+
+  it('keeps the images of a refused send in the composer', async () => {
+    const { requests } = editSetup(rewindAccepted, {}, undefined,
+      () => failure(409, 'planner_harness_dormant', 'No live session.'));
+    await editIntoComposer(requests);
+    await submit();
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    expect(composerImages()).toEqual([REWIND_IMAGE.url]);
+  });
+
+  it('clears a delivered message’s images from the conversation it was sent from, not the one shown', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((done) => { answer = done; });
+    const { requests } = editSetup(rewindAccepted, {}, undefined, async () => { await answered; return undefined; });
+    await editIntoComposer(requests);
+    await submit();
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
+    await pickPlanner();
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await attachAnImage();
+    await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_SUFFIX))).toBe(true));
+    await act(async () => { answer(); await answered; });
+    await act(async () => { await Promise.resolve(); });
+    expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_SUFFIX))).toBe(true);
+    await pickAssistant();
+    await act(async () => { await Promise.resolve(); });
+    expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull();
+  });
+
+  it('withholds every action on a removed turn until a transcript read without it lands', async () => {
+    let removed = false;
+    let failReads = true;
+    const turnRows = (turnId: string, first: number, prompt: string, answer: string) => [
+      { ...harnessMessage(first, 'userMessage', { content: [{ text: prompt }] }), turn_id: turnId,
+        input_segments: [{ presentation: 'user', text: `User says:\n${prompt}`, attachments: [] }] },
+      { ...harnessMessage(first + 1, 'agentMessage', { text: answer }), turn_id: turnId },
+      { ...harnessMessage(first + 2, '', {}), item_type: null, turn_id: turnId, method: 'turn/completed',
+        params: JSON.stringify({ id: turnId, status: 'completed', error: null }) },
+    ];
+    const earlier = turnRows('turn-0', 81, 'Earlier prompt', 'Earlier answer');
+    const { requests } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH) && pathCardId(request.path) === ASSISTANT_CARD.id) {
+        if (!removed) return ok([...earlier, ...turnRows('turn', 91, 'Original prompt', 'Original answer')]);
+        return failReads ? failure(503, 'unavailable', 'Transcript unavailable') : ok(earlier);
+      }
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r',
+        phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, attachments_supported: true });
+      if (request.path.endsWith('/planner/rewind')) {
+        removed = true;
+        return ok({ card_id: ASSISTANT_CARD.id, turn_id: 'turn',
+          input: [{ presentation: 'user', text: 'User says:\nOriginal prompt', attachments: [] }] });
+      }
+      return undefined;
+    });
+    await openEditableAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    /* The re-read failed: the cached transcript still ends with the removed turn. */
+    expect(screen.getByText('Original answer', { exact: true })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Regenerate response' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy response' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Regenerate response/ }));
+    await act(async () => { await Promise.resolve(); });
+    expect(inputBodies(requests)).toEqual([]);
+    failReads = false;
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByText('Original answer', { exact: true })).toBeNull());
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate response' }));
+    await waitFor(() => expect(inputBodies(requests)).toEqual([{ text: 'Earlier prompt' }]));
+  });
+
+  it('keeps an upload in flight busy across a remount, offering no Edit until it lands', async () => {
+    let finish!: () => void;
+    const finished = new Promise<void>((done) => { finish = done; });
+    const { router } = editSetup(rewindAccepted, {}, undefined, undefined, () => finished);
+    await openEditableAssistant();
+    await attachAnImage();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit message (not available now)' })).toBeTruthy());
+    await act(() => router.navigate({ to: '/track/w2' }));
+    await act(() => router.navigate({ to: '/track/w1' }));
+    await screen.findByRole('complementary', { name: /^(Assistant|Original prompt)$/ });
+    await screen.findByText('Original answer', { exact: true });
+    await act(async () => { await new Promise((done) => setTimeout(done, 20)); });
+    expect(screen.getByRole('button', { name: 'Edit message (not available now)' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+    await act(async () => { finish(); await finished; });
+    await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_SUFFIX))).toBe(true));
+  });
+
   it('retires the edited message once it is delivered', async () => {
     const { requests } = editSetup(rewindAccepted);
     await editIntoComposer(requests);
