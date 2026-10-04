@@ -130,7 +130,9 @@ def holdings(snapshot, previous):
         rows = [{'name': f'SPY · {shares} 股', 'price': f'{price:,.2f}', 'value': f'{shares * price:,.2f}',
                  'change': f"{change(price, Decimal(previous['price'])):+.2f}%" if previous else '—'},
                 {'name': '现金', 'price': '—', 'value': f'{cash:,.2f}', 'change': '—'}]
-    caption = (f"行情时间 {new_york(snapshot['quote_at'])} · 本日涨跌相对上一交易日估值中的 SPY 价格 · "
+    # The exact reconciled ratio; the distribution's slices are whole dollars.
+    caption = (f"实际 SPY 比例 {percent(snapshot['actual_spy_bps'])}（按市值 / 总资产）· "
+               f"行情时间 {new_york(snapshot['quote_at'])} · 本日涨跌相对上一交易日估值中的 SPY 价格 · "
                '以券商记录为准；整数股与成交价格可能使实际比例偏离目标。' if snapshot else PENDING)
     return {'kind': 'table', 'id': 'holdings', 'title': '持仓明细', 'table': {
         'columns': [{'key': key, 'label': label, 'align': align} for key, label, align in [
@@ -169,10 +171,11 @@ def decision_log(decisions, fills):
 
 
 def fill_log(fills):
+    listed = f'最近 {len(fills)} 笔成交，最新在前' if fills else '尚无成交记录'
     return {'kind': 'table', 'id': 'fills', 'title': '', 'table': table(
         [('trade_id', '成交编号'), ('order_id', '委托编号'), ('quantity', '股数'),
          ('price', '成交价 / 美元'), ('time', '成交时间')], [f | {'time': new_york(f['time'])} for f in reversed(fills)],
-        f'最近 {len(fills)} 笔成交，最新在前；以券商成交记录为准，包括未匹配到决策的成交；本版本不计算费用和净收益。')}
+        f'{listed}；以券商成交记录为准，包括未匹配到决策的成交；本版本不计算费用和净收益。')}
 
 
 def policy(key, label, bps, detail):

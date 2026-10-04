@@ -1,10 +1,10 @@
 # Report template composition: the template places, the plugin publishes data units
 
 Baseline: `origin/main` 54b79918c. Every `file:line` below was read on that tree.
-Status: design, revision 6 (review rounds 1-3 and owner decisions folded in, §7). No code
-changes in this PR. Owner decisions (2026-10-04, final): no kernel guard for template
-views; live `table` and `chart.series` stay single-block references; the supervised
-paper profile is deleted (slice S0). No owner question remains open.
+Status: design, revision 7 (review rounds 1-3, owner decisions and S3 corrections folded
+in, §7). No code changes in this PR. Owner decisions (2026-10-04, final): no kernel guard
+for template views; live `table` and `chart.series` stay single-block references; the
+supervised paper profile is deleted (slice S0). No owner question remains open.
 
 ## 1. Problem, goals, non-goals
 
@@ -378,11 +378,23 @@ Historical `overlay.set` and `track.report_edited` events are not rewritten.
 | `spy.fill_log` | table | every fill in `state['fills']`, the same newest 200 fills `spy.fills` shows today (`allocation.py:230`, `allocation_report.py:31-33`), including fills that match no decision |
 | `spy.account` | metrics | reconciliation time or error (negative tone), quote time, max order step, cash reserve, available cash (`allocation_report.py:19-26`, `allocation_views.py:157-159`) |
 
-`spy.portfolio`, `spy.decisions` and `spy.fills` are deleted (`allocation_report.py:17-33`);
-every fact they showed is in `spy.account`, `spy.holdings`, `spy.weights`,
-`spy.decision_log` or `spy.fill_log`. The account-mode wording ("长桥官方模拟账户 · SPY／现金",
-`allocation_report.py:18`) is recipe context, not data: it stays in the recipe's 来源与边界
-prose, so units never claim a broker and the example marker rule (§3.4) still holds.
+`spy.portfolio`, `spy.decisions` and `spy.fills` are deleted (`allocation_report.py:17-33`).
+Not every fact they showed reappears unchanged in the units (corrected in S3):
+
+- Decisions: `spy.decisions` listed every decision in `spy.status` (the newest 200);
+  `spy.decision_log` shows the newest 50. Decisions 51-200 remain only in `spy.status`,
+  and their fills only in `spy.fill_log` while they are among the newest 200 fills.
+- Fill time: `spy.fills` showed the raw broker ISO timestamp; `spy.fill_log` shows New
+  York time to the minute, newest first.
+- Account mode: the wording "长桥官方模拟账户 · SPY／现金" (`allocation_report.py:18`) is
+  recipe context, not data. It moves to the recipe's 来源与边界 guidance, so units never
+  claim a broker and the example marker rule (§3.4) still holds.
+- Actual SPY ratio: `spy.portfolio`'s 实际 SPY 比例 (two decimals from `actual_spy_bps`) is
+  the first fact of the `spy.holdings` caption; the `spy.weights` slices are whole
+  dollars, so its legend is not the exact figure.
+- Placement: following §4's order, 调仓决策 sits after 组合表现 (with its new 对账与规则
+  row) and 资金投向, so at 1440×1000 the decisions start below the first viewport, where the
+  old overview showed them in its third row.
 
 ### 3.3 Supervised profile: deleted (owner decision, slice S0)
 
@@ -805,7 +817,8 @@ golden).
 
 - Between the S3 deploy and the 4140 rewrite the old `view.live` keeps showing the last
   `spy.overview` row (stale, with its own `observedAt`). Keep it to minutes by running the
-  runbook right after the plugin restarts, inside the allowed windows.
+  runbook right after the plugin restarts, in a permitted deploy slot: outside the SPY
+  Calendar windows, under the §3.1 step-1 conditions.
 - A full `write_markdown` by the Planner can still delete template views
   (`track_report.rs:681-684`); recoverable from the recipe, not automatically.
 - `resolve: full` on one view returns at most 18 units (6 rows × 3) of ≤4 MiB each; the
@@ -831,7 +844,8 @@ Revision 2 (review round 1, nothing blocking):
 - Types: `LiveSlot` + `RowCell` with a dispatching deserializer; `DataUnit.cell: Component`
   forbids nesting by type; slot field `cell` renamed `expects`; unit-local cell ids.
 - Dropped the per-view aggregate budget and publish-on-change (#1995 follow-up).
-- Added the transition fence, the `spy.fill_log` unit (fills are no longer lost; former
+- Added the transition fence (superseded in revision 4: no nesting by construction, no
+  fence), the `spy.fill_log` unit (fills are no longer lost; former
   Q2 removed), empty-title accessibility as new S1 behavior, generator export of
   `DataUnit`, the DB-copy precondition scan and the rewrite runbook with the Planner
   wake, per-language mutation plans with red sets, the complete S4 removal list.
@@ -859,7 +873,8 @@ Revision 4 (review round 2, rebased on 54b79918c; nothing blocking):
 - Restart-timing guard for S0, S3 and every kernel deploy (`submitting` → `unknown` on
   restart).
 - §3.1 runbook: Replace carries the step-2 `summary`; any non-2xx after a delete restores
-  from the saved GET; 更多明细 becomes 执行记录; research `table`/`chart.series` blocks stay
+  from the saved GET (superseded in revision 5: Replace first, then deletes; a failed step
+  changes nothing or leaves only deletes to retry); 更多明细 becomes 执行记录; research `table`/`chart.series` blocks stay
   byte-identical; `engine.py` cite dropped.
 - Validation: the relation rules are written in both languages and pinned by new shared
   fixture entries; slot `source` is a generated schema pattern; the transition fence and
@@ -910,3 +925,11 @@ Revision 6 (review round 3 follow-up; one blocking item):
   deploy. After S4 a stored `view.live` is an unknown kind, so reading or deleting it could
   fail, and the S4 gate must stay "zero hits anywhere". The rev-5 plan (delete before S4)
   stands.
+
+Revision 7 (S3 implementation, #2057):
+
+- §3.2: the claim that every fact of the retired SPY tables reappears in the units is
+  corrected (decision cap, fill time format, account mode, exact SPY ratio, placement).
+- #2028 wording: §6 deploy timing now says outside the SPY Calendar windows, matching
+  §3.1; revision 2's transition fence and revision 4's restore-from-GET are marked
+  superseded.

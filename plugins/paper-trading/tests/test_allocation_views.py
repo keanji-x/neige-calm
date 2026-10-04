@@ -128,6 +128,9 @@ def test_previous_day_pnl_uses_a_strictly_earlier_new_york_date(allocation_rig):
     holdings = published['spy.holdings']['table']['rows']
     assert holdings[0] == {'name': 'SPY · 60 股', 'price': '104.00', 'value': '6,240.00', 'change': '+4.00%'}
     assert [s['value'] for s in published['spy.weights']['slices']] == [6240.0, 4000.0]
+    # The exact reconciled ratio at two decimals: 6240 / 10240, not the whole-dollar slices' rounding.
+    assert state['snapshot']['actual_spy_bps'].startswith('6093.75')
+    assert published['spy.holdings']['table']['caption'].startswith('实际 SPY 比例 60.94%（按市值 / 总资产）· 行情时间')
     assert holdings[1]['name'] == '现金' and holdings[1]['value'] == '4,000.00'
 
 
@@ -183,7 +186,8 @@ def test_decision_records_show_targets_states_and_actual_fills(allocation_rig):
     assert '60 股' in fill['body'] and '$100' in fill['body'] and 'buy-fill' in fill['body']
     empty = cells(state | {'decisions': [], 'fills': []})
     assert empty['spy.decision_log']['datasets'][0]['items'] == [] and empty['spy.decision_log']['emptyText']
-    assert empty['spy.fill_log']['table']['rows'] == [] and empty['spy.fill_log']['table']['caption']
+    assert empty['spy.fill_log']['table']['rows'] == []
+    assert empty['spy.fill_log']['table']['caption'].startswith('尚无成交记录；')
 
 
 def test_history_and_records_stay_bounded(allocation_rig):

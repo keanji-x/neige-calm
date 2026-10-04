@@ -1,6 +1,11 @@
 //! Host-resolved caller identity reaches local plugins; the real paper-trading App fences on it.
 
+use std::collections::BTreeMap;
+
 use super::*;
+
+#[path = "../spy_recipe_slots.rs"]
+mod spy_recipe_slots;
 
 #[tokio::test]
 async fn a_local_plugin_receives_resolved_planner_identity() {
@@ -58,7 +63,7 @@ async fn real_spy_app_admits_planner_plan_and_worker_execution_request() {
     )
     .unwrap();
     let manifest_json: Value =
-        serde_json::from_str(&std::fs::read_to_string(app.join("manifest.json")).unwrap()).unwrap();
+        serde_json::from_str(&spy_recipe_slots::plugin_file("manifest.json")).unwrap();
     let manifest = Manifest::parse(&manifest_json.to_string()).unwrap();
     let id = manifest.id.clone();
     fx.repo
@@ -155,29 +160,41 @@ async fn real_spy_app_admits_planner_plan_and_worker_execution_request() {
         fx.thread_id.strip_prefix("thread-").unwrap()
     );
 
-    // The App's own unit must pass `validate_unit`, the kernel's read-side check of one live
-    // slot; any violation makes that slot unavailable.
+    // Every unit the App publishes must pass `validate_unit` for the slot the shipped recipe
+    // gives it: the kernel's read-side check of one live slot, which degrades only that slot.
+    let slots = spy_recipe_slots::slots();
     let deadline = Instant::now() + Duration::from_secs(30);
-    let decision_log = loop {
-        let published = fx
+    let published: BTreeMap<String, Value> = loop {
+        let published: BTreeMap<String, Value> = fx
             .repo
             .overlays_for("track", fx.track_id.as_str())
             .await
             .unwrap()
             .into_iter()
-            .find(|o| o.plugin_id == id && o.kind == "spy.decision_log")
-            .map(|o| o.payload);
-        if let Some(unit) = published.filter(|v| v.to_string().contains("caller-proof")) {
-            break unit;
+            .filter(|o| o.plugin_id == id)
+            .map(|o| (o.kind, o.payload))
+            .collect();
+        let current = published
+            .get("spy.decision_log")
+            .is_some_and(|unit| unit.to_string().contains("caller-proof"));
+        if current && slots.keys().all(|kind| published.contains_key(kind)) {
+            break published;
         }
         assert!(
             Instant::now() < deadline,
-            "spy.decision_log was not published"
+            "not every slot's unit was published: {:?}",
+            published.keys().collect::<Vec<_>>()
         );
         sleep(Duration::from_millis(100)).await;
     };
-    use calm_types::report_blocks::native_view::{ComponentKind, validate_unit};
-    validate_unit(ComponentKind::Records, &decision_log)
-        .unwrap_or_else(|error| panic!("spy.decision_log is not a valid records unit: {error}"));
+    assert!(
+        published.keys().eq(slots.keys()),
+        "published kinds differ from the recipe's slots: {:?}",
+        published.keys().collect::<Vec<_>>()
+    );
+    for (kind, expects) in &slots {
+        calm_types::report_blocks::native_view::validate_unit(*expects, &published[kind])
+            .unwrap_or_else(|error| panic!("{kind} is not a valid {expects:?} unit: {error}"));
+    }
     fx.plugin_host.stop(&id).await.unwrap();
 }
