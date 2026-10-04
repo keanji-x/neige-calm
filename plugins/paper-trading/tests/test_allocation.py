@@ -668,3 +668,12 @@ def test_spy_fully_invested_account_with_zero_cash_can_sell(allocation_rig):
     assert state['error'] is None and state['snapshot']['cash_usd'] == '0'
     assert state['decisions'][0]['state'] == 'working'
     assert r.order()['side'] == 'Sell' and r.order()['quantity'] > 0
+
+
+def test_spy_zero_broker_price_fails_reconciliation(allocation_rig):
+    r = allocation_rig; r.plan()
+    state = r.read(); state['snapshot']['quote']['price'] = '0'; r.write(state)
+    state = r.execute()
+    # Cash may be zero; a quote price may not. The observation is refused as a whole.
+    assert 'outside supported range' in state['error'] and state['snapshot'] is None
+    assert state['decisions'][0]['state'] == 'requested' and not r.submits()
