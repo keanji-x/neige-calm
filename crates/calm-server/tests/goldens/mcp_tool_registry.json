@@ -576,7 +576,6 @@
                   "app",
                   "task",
                   "preview",
-                  "view.live",
                   "view"
                 ],
                 "type": "string"
@@ -664,7 +663,7 @@
   },
   {
     "name": "neige.report.kinds",
-    "description_sha256": "0c350860895d436723c6b22bafce39d7227ce4d3881654172df4e3261c827286",
+    "description_sha256": "ccf5efd6453f53984f1098f16d44379bcf4b7743f9a90a6b4b29831fe22f5078",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -679,7 +678,7 @@
   },
   {
     "name": "neige.report.read",
-    "description_sha256": "3e9a5c885d482f1b974d1e64e752e849371d7615b9a7effbe5c96fbad73e2afc",
+    "description_sha256": "115ad3a627340fa4d2f1055506e2c760d6da9a6da8ad117b454132a98e0242b3",
     "input_schema": {
       "properties": {
         "resolve": {

@@ -11,6 +11,7 @@ import pytest
 
 from paper_trading.allocation import Allocation
 from paper_trading.allocation_views import units
+from . import recipe
 from .test_allocation import NOW, allocation_rig  # noqa: F401 - pytest fixture
 
 ROOT = Path(__file__).parents[1]
@@ -18,7 +19,7 @@ SCHEMA = json.loads((ROOT.parents[1] / 'crates/calm-types/src/report_blocks/nati
 # The generated contract's own DataUnit definition: the envelope a live slot resolves to.
 UNIT_SCHEMA = {'$schema': SCHEMA['$schema'], '$defs': SCHEMA['$defs'], '$ref': '#/$defs/DataUnit'}
 PLUGIN = json.loads((ROOT / 'manifest.json').read_text())['id']
-MAX_UNIT_BYTES = 4 * 1024 * 1024  # calm-types MAX_LIVE_VIEW_BYTES: the per-unit read cap
+MAX_UNIT_BYTES = 4 * 1024 * 1024  # calm-types MAX_LIVE_UNIT_BYTES: the per-unit read cap
 
 
 class Prescribed:
@@ -255,7 +256,7 @@ def test_spy_recipe_contract_matches_body_and_published_units(allocation_rig):
     assert [s['h1'] for s in contract['sections'] if s.get('omit_if_empty')] == ['待你定']
     # Account mode is recipe context, never unit data (see the example's marker rule).
     assert '长桥官方模拟账户 · SPY／现金' in text
-    views = [json.loads(v) for v in re.findall(r'^```neige-block view\n(.*?)\n```$', body, flags=re.M | re.S)]
+    views = recipe.views(body)
     assert len(views) == 3
     for view in views:
         jsonschema.Draft202012Validator(SCHEMA).validate(view)

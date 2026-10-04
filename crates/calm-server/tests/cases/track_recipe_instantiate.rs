@@ -24,16 +24,16 @@ use tower::ServiceExt;
 use crate::common;
 use crate::support::git_helpers::attached_repo_fixture;
 
-struct Boot {
-    app: axum::Router,
-    area_id: String,
-    repo: Arc<dyn Repo>,
+pub(crate) struct Boot {
+    pub(crate) app: axum::Router,
+    pub(crate) area_id: String,
+    pub(crate) repo: Arc<dyn Repo>,
     /// Un-erased so the provenance tests can probe the cross-column CHECK directly.
     sqlx_repo: Arc<SqlxRepo>,
     _tmp: TempDir,
 }
 
-async fn boot() -> Boot {
+pub(crate) async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -95,7 +95,7 @@ fn theme() -> Value {
     json!({"fg": [216, 219, 226], "bg": [15, 20, 24]})
 }
 
-async fn send(
+pub(crate) async fn send(
     app: axum::Router,
     method: &str,
     uri: &str,
@@ -147,7 +147,7 @@ pub(crate) fn two_task_body() -> String {
     )
 }
 
-async fn create_recipe(app: axum::Router, title: &str, body: &str) -> Value {
+pub(crate) async fn create_recipe(app: axum::Router, title: &str, body: &str) -> Value {
     let (status, created) = send(
         app,
         "POST",
@@ -159,7 +159,7 @@ async fn create_recipe(app: axum::Router, title: &str, body: &str) -> Value {
     created
 }
 
-fn create_track_body(area_id: &str, title: &str, extra: Value) -> Value {
+pub(crate) fn create_track_body(area_id: &str, title: &str, extra: Value) -> Value {
     let mut body = json!({
         "planner_provider": "codex",
         "area_id": area_id,

@@ -1,10 +1,12 @@
 # Report template composition: the template places, the plugin publishes data units
 
 Baseline: `origin/main` 54b79918c. Every `file:line` below was read on that tree.
-Status: design, revision 7 (review rounds 1-3, owner decisions and S3 corrections folded
-in, §7). No code changes in this PR. Owner decisions (2026-10-04, final): no kernel guard
-for template views; live `table` and `chart.series` stay single-block references; the
-supervised paper profile is deleted (slice S0). No owner question remains open.
+Status: design, revision 8 (review rounds 1-3, owner decisions, S3 corrections and the S4
+code slice folded in, §7). The design PR changed no code; S0-S3 are implemented, and the S4
+code slice removes `view.live` but merges only after the §3.1 rewrite of 4140 (§5 S4).
+Owner decisions (2026-10-04, final): no kernel guard for template views; live `table` and
+`chart.series` stay single-block references; the supervised paper profile is deleted
+(slice S0). No owner question remains open.
 
 ## 1. Problem, goals, non-goals
 
@@ -342,8 +344,11 @@ the S4 PR. The H1 更多明细 (`spy-recipe.md:57`) becomes 执行记录.
 5. Failure handling: a failed step 3 changed nothing; re-read and start again at step 2.
    A failed step 4 delete leaves a valid report with the new instructions; re-read the
    revisions and retry only the remaining deletes.
-6. Recipe rows from the scan: `PUT /api/track-recipes/{id}` (user actor only,
-   `track_recipes.rs:121-127`). For `d2a8d568…` the body is the §4 `spy-recipe.md`, which
+6. Recipe rows from the scan: `GET /api/track-recipes/{id}` first and record its `title` and
+   `revision`; then `PUT /api/track-recipes/{id}` (user actor only,
+   `track_recipes.rs:121-127`) with that same `title`, the new `body` and `if_revision` set
+   to the recorded `revision` (`UpdateRecipeBody` requires all three; a stale revision is a
+   409, so re-GET and retry). For `d2a8d568…` the body is the §4 `spy-recipe.md`, which
    recipe ingress normalizes (`track_recipes.rs:33-77,199-200,230-231`). The kernel accepts
    it only from S1 on (live slots), and it matches published units only after S3, so the
    PUT runs in this S4 runbook.
@@ -373,7 +378,7 @@ Historical `overlay.set` and `track.report_edited` events are not rewritten.
 | `spy.nav_history` | time-series | equity and return datasets with SPY benchmark (`:69-92`) |
 | `spy.weights` | distribution | SPY and cash shares (`:97-107`) |
 | `spy.weight_history` | time-series | stacked and line weight history (`:108-117`) |
-| `spy.holdings` | table | holdings with quote-time caption (`:103-105,118-124`) |
+| `spy.holdings` | table | holdings; the caption opens with the exact 实际 SPY 比例, then the quote time (`:103-105,118-124`) |
 | `spy.decision_log` | records | target, state badge, order facts, rationale, sources, fill disclosures (`:128-156`); newest 50 decisions (`:18,154`), at most 20 fill disclosures each (`:147`) |
 | `spy.fill_log` | table | every fill in `state['fills']`, the same newest 200 fills `spy.fills` shows today (`allocation.py:230`, `allocation_report.py:31-33`), including fills that match no decision |
 | `spy.account` | metrics | reconciliation time or error (negative tone), quote time, max order step, cash reserve, available cash (`allocation_report.py:19-26`, `allocation_views.py:157-159`) |
@@ -933,3 +938,31 @@ Revision 7 (S3 implementation, #2057):
 - #2028 wording: §6 deploy timing now says outside the SPY Calendar windows, matching
   §3.1; revision 2's transition fence and revision 4's restore-from-GET are marked
   superseded.
+
+Revision 8 (S4 code slice; the PR merges only after the §3.1 rewrite of 4140 and an empty
+pre-merge scan):
+
+- Removed per §5 S4; `MAX_LIVE_VIEW_BYTES` is now `MAX_LIVE_UNIT_BYTES`;
+  `mcp_track_report_live_view.rs` is `mcp_track_report_live_slots.rs` (its live-table tests
+  stay, renamed `live_table_*`); the records-disclosure checks of the deleted frontend tests
+  moved to the inline `view` tests; `docs/report-live-views.md` describes live slots.
+- Write ends: an old `view.live` fence is an unknown block kind at block upsert (MCP commit
+  and REST create/update), Replace (REST, and the Planner's whole-document write), recipe
+  ingress (create and update) and fork. Tests through those entry points pin the exact error
+  text (`mcp_track_report_retired_kind.rs`, `report_retired_kind.rs`).
+- Read of a stored `view.live` (a block the rewrite missed): it reads as an unknown kind.
+  `neige.report.read` lists it without `resolved` while the rest of the report hydrates, the
+  frontend shows one "unsupported block kind" line, other block writes beside it succeed and
+  a user block DELETE removes it. This corrects revision 6, which expected reading or
+  deleting it could fail; neither does. The revision-5 plan (delete before S4) stands,
+  because that Track's Replace, whole-document write and fork would still be refused.
+- Planner tool surface: 29,370 of 30,000 bytes across 26 tools (the real test), down 70
+  bytes from c3cb03010 (same method over that tree's golden and prompt files); the cap
+  comment records the new number.
+- #2069: `spy_recipe_slots.rs` decodes each fence as `NativeView` and keeps
+  `RowCell::Live`; the Python `UNIT_KINDS` list is derived from the recipe
+  (`tests/recipe.py`, which also replaces the two test copies of the view-fence regex; the
+  example builder keeps its own, compared against it by the example test); the status line,
+  the §3.2 holdings row and §3.1 step 6 (GET first, keep `title`, pass `if_revision`).
+- The regression tests spell the retired kind as two joined parts, so the §5 acceptance
+  grep still matches only the four design documents.

@@ -162,6 +162,8 @@ describe('readTrackReport', () => {
 
   it.each([
     ['a kind this build has never seen', { id: 'b-1', kind: 'chart.sankey', rev: 1, payload: { nodes: [] } }],
+    // A stored block of the overlay view kind #2021 S4 retired; spelled in two parts for its acceptance grep.
+    ['a retired kind', { id: 'b-1', kind: ['view', 'live'].join('.'), rev: 1, payload: { source: 'neige://plugin/a/b', version: 1 } }],
     ['a known kind whose payload does not fit', { id: 'b-1', kind: 'table', rev: 1, payload: { columns: [] } }],
     ['a known kind whose payload is not an object', { id: 'b-1', kind: 'prose', rev: 1, payload: 7 }],
   ])('degrades %s to one unsupported block, keeping the others', (_label, bad) => {

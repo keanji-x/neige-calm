@@ -59,18 +59,35 @@ it.each([1440, 390, 320])('keeps Close visible for an accepted unbroken title at
   expect(document.querySelector('[role="dialog"]')!.scrollWidth).toBeLessThanOrEqual(width);
 });
 
-it.each(['view', 'view.live'] as const)('keeps a %s backlink beside its composition without consuming another row', async kind => {
+it('keeps a view backlink beside its composition without consuming another row', async () => {
   await page.viewport(1440, 1000);
   render(<div style={{ inlineSize: 1100, ['--document-start' as string]: '100px', ['--document-measure' as string]: '600px' }}>
-    <ReportDocument report={{ summary: '', body: '', blocks: [kind === 'view'
-      ? { id: 'native-cited', kind, payload }
-      : { id: 'native-cited', kind, payload: { source: 'neige://plugin/museum/collection', version: 1 } }] }}
-      resolveOverlay={() => payload} backlinkCounts={new Map([['native-cited', 3]])} empty={<p>Empty</p>} />
+    <ReportDocument report={{ summary: '', body: '', blocks: [{ id: 'native-cited', kind: 'view', payload }] }}
+      backlinkCounts={new Map([['native-cited', 3]])} empty={<p>Empty</p>} />
   </div>);
   const block = document.querySelector('#native-cited')!.getBoundingClientRect();
   const note = document.querySelector('[title="3 reports cite this block"]')!.getBoundingClientRect();
   expect(note.top).toBeLessThan(block.top + 40);
   expect(note.left).toBeGreaterThanOrEqual(block.right);
+});
+
+it.each([1440, 390, 320])('keeps long review disclosures intact without overflow at %i', async width => {
+  await page.viewport(width, 1000);
+  const view = structuredClone(payload);
+  const records = view.rows[2].cells[0];
+  if (records.kind !== 'records') throw new Error('Expected records fixture');
+  records.datasets[0].items[0].disclosures = [{ id: 'review', label: 'Full review', body: '字'.repeat(8000), note: 'Publisher note', tone: 'neutral' }];
+  render(<main style={{ maxInlineSize: 1000, padding: 12 }}><NativeReportView payload={view} /></main>);
+  await page.getByRole('button', { name: '查看详情', exact: true }).click();
+  await page.getByRole('button', { name: 'Full review', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Full review', exact: true }).element();
+  expect(panel.querySelector('blockquote')?.textContent).toBe('字'.repeat(8000));
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  await page.getByRole('button', { name: '展开 运营概览' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect.element(dialog.getByRole('region', { name: 'Full review', exact: true })).toBeVisible();
+  await userEvent.keyboard('{Escape}');
+  await expect.element(page.getByRole('button', { name: '展开 运营概览' })).toHaveFocus();
 });
 
 it('uses the template\'s narrow-summary ratio for the App\'s performance units', async () => {

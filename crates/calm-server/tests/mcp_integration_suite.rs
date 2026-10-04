@@ -39,10 +39,12 @@ mod mcp_track_report;
 mod mcp_track_report_blocks;
 #[path = "cases/mcp_track_report_chart_series.rs"]
 mod mcp_track_report_chart_series;
-#[path = "cases/mcp_track_report_live_view.rs"]
-mod mcp_track_report_live_view;
+#[path = "cases/mcp_track_report_live_slots.rs"]
+mod mcp_track_report_live_slots;
 #[path = "cases/mcp_track_report_native_view.rs"]
 mod mcp_track_report_native_view;
+#[path = "cases/mcp_track_report_retired_kind.rs"]
+mod mcp_track_report_retired_kind;
 #[path = "cases/mcp_track_state.rs"]
 mod mcp_track_state;
 #[path = "cases/report_series_checklist.rs"]

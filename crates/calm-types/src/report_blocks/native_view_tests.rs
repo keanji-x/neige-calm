@@ -513,7 +513,7 @@ fn unit_is_capped_by_the_live_byte_limit() {
     let mut table = serde_json::json!({"kind": "table", "id": "big", "title": "",
         "table": {"columns": columns, "rows": vec![Value::Object(row); 500]}});
     let oversized = unit(table.clone());
-    assert!(serde_json::to_vec(&oversized).unwrap().len() > super::MAX_LIVE_VIEW_BYTES);
+    assert!(serde_json::to_vec(&oversized).unwrap().len() > super::MAX_LIVE_UNIT_BYTES);
     let error = validate_unit(ComponentKind::Table, &oversized).unwrap_err();
     assert!(error.contains("byte limit"), "{error}");
     table["table"]["rows"].as_array_mut().unwrap().truncate(400);

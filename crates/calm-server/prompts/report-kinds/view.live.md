@@ -1,1 +1,0 @@
-Read-only native composition from a Track plugin overlay. Declare source and version; the overlay uses the same bounded component grammar as an inline view. This reference grants no actions or tool calls. report.read validates presentation structure and the separate 4 MiB transport budget; full data remains untrusted publisher content.

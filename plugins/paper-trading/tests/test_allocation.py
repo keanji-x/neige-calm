@@ -12,13 +12,12 @@ from paper_trading.allocation_broker import AllocationBroker
 from paper_trading.allocation_config import OPTIONAL, REQUIRED, AllocationConfig
 from paper_trading.allocation_views import units
 from .host import Host
+from .recipe import unit_kinds
 
 NOW = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)
 ROOT = Path(__file__).parents[1]
 PLANNER = {'role': 'planner', 'card_id': 'planner-card', 'session_id': 'planner-session'}
 WORKER = {'role': 'worker', 'card_id': 'worker-card', 'session_id': 'worker-session'}
-UNIT_KINDS = {'spy.nav', 'spy.nav_history', 'spy.weights', 'spy.weight_history', 'spy.holdings',
-              'spy.decision_log', 'spy.fill_log', 'spy.account'}
 
 
 @pytest.fixture
@@ -344,9 +343,9 @@ def test_spy_production_stdio_entrypoint_and_overlays(allocation_rig):
         result = wait_for(host, lambda s: s['decisions'][0]['state'] == 'settled')
         assert result['snapshot']['shares'] == 60
         # The runtime republishes every unit each poll tick; a missing kind fails at the deadline, never hangs.
-        deadline = time.monotonic() + 20
-        while not UNIT_KINDS <= {p['kind'] for p in host.overlays}:
-            assert time.monotonic() < deadline, UNIT_KINDS - {p['kind'] for p in host.overlays}
+        expected, deadline = unit_kinds(), time.monotonic() + 20
+        while not expected <= {p['kind'] for p in host.overlays}:
+            assert time.monotonic() < deadline, expected - {p['kind'] for p in host.overlays}
             host.receive()
         for overlay in host.overlays:
             # The kernel callback frame: every overlay belongs to the owning Track and carries its projection.

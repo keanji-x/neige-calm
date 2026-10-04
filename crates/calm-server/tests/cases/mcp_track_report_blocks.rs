@@ -192,7 +192,6 @@ async fn kinds_returns_all_supported_schemas() {
             "app",
             "task",
             "preview",
-            "view.live",
             "view"
         ]
     );

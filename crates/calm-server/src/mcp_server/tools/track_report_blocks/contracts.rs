@@ -371,7 +371,7 @@ pub(super) fn kinds_table() -> Value {
     kinds["kinds"]
         .as_array_mut()
         .expect("kinds array literal")
-        .extend([preview_kind(), live_view_kind(), native_view_kind()]);
+        .extend([preview_kind(), native_view_kind()]);
     kinds
 }
 
@@ -441,22 +441,6 @@ fn optional_message_schema() -> Value {
         "minLength": 1,
         "description": "Optional human-readable rationale for this write, persisted as \
             agent_message on the emitted event."
-    })
-}
-
-fn live_view_kind() -> Value {
-    json!({
-        "kind": "view.live",
-        "schema": {
-            "type": "object", "required": ["source", "version"],
-            "additionalProperties": false,
-            "properties": {
-                "source": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS,
-                    "pattern": report_blocks::kinds::LIVE_SOURCE_PATTERN },
-                "version": { "type": "integer", "const": 1 }
-            }
-        },
-        "usage": include_str!("../../../../prompts/report-kinds/view.live.md").trim_end()
     })
 }
 

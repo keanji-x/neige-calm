@@ -53,30 +53,6 @@ fn inline_table_overlay_preserves_read_contract_without_relaxing_writes() {
         assert!(validate_inline_table_overlay(&invalid).is_err());
     }
 }
-
-#[test]
-fn live_view_reference_is_explicit_bounded_and_round_trips() {
-    let payload = json!({"source": "neige://plugin/operations/health", "version": 1});
-    validate_payload(KIND_LIVE_VIEW, &payload).unwrap();
-    let fence = crate::report_blocks::render_fence(KIND_LIVE_VIEW, &payload);
-    let parsed = crate::report_blocks::parse_fence(&fence).unwrap();
-    assert_eq!(parsed.kind, KIND_LIVE_VIEW);
-    assert_eq!(parsed.payload, payload);
-    for payload in [
-        json!({"source": "neige://plugin/operations/health", "view": "overview"}),
-        json!({"source": "neige://plugin/operations/health", "version": 2, "view": "overview"}),
-        json!({"source": "neige://plugin/operations/health", "version": 1.5, "view": "overview"}),
-        json!({"source": "https://example.com", "version": 1, "view": "overview"}),
-        json!({"source": "neige://plugin/operations/health", "version": 1, "view": "html"}),
-        json!({"source": "neige://plugin/operations/health", "version": 1, "view": "overview", "script": "x"}),
-        json!({"source": format!("neige://plugin/x/{}", "x".repeat(2048)), "version": 1, "view": "overview"}),
-    ] {
-        assert!(
-            validate_payload(KIND_LIVE_VIEW, &payload).is_err(),
-            "{payload}"
-        );
-    }
-}
 use serde_json::json;
 
 #[test]
@@ -342,7 +318,6 @@ fn unknown_kind_is_an_error() {
             "app",
             "task",
             "preview",
-            "view.live",
             "view"
         ],
         "the closed data-kind set, in blocks.kinds order"

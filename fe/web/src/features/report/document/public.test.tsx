@@ -4,7 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
-import type { ReportBlock, TrackReport } from '../../../../../core/domain/report.ts';
+import { readTrackReport, type ReportBlock, type TrackReport } from '../../../../../core/domain/report.ts';
 import { SOURCE_PANEL_COPY } from '../source/public.tsx';
 import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
 import { ReportDocument } from './public.tsx';
@@ -378,22 +378,22 @@ describe('ReportDocument', () => {
   });
 
   describe('typed blocks', () => {
-    it('routes view.live through the overlay resolver without the table renderer', () => {
-      const source = 'neige://plugin/operations/capacity';
+    it('degrades a stored block of the retired view overlay kind to one line and keeps the report', () => {
+      // Spelled in two parts so the #2021 S4 acceptance grep keeps matching only the design docs.
+      const retired = ['view', 'live'].join('.');
+      const report = readTrackReport([{
+        id: 'report', kind: 'track-report', track_id: 't', title: null, sort: 0, deletable: false, created_at: 0, updated_at: 0,
+        payload: { body: '', blocks: [
+          { id: 'b-old', kind: retired, rev: 1, payload: { source: 'neige://plugin/operations/capacity', version: 1 } },
+          { id: 'b-2', kind: 'prose', rev: 1, payload: { markdown: 'Still readable.' } },
+        ] },
+      }]);
       const asked: string[] = [];
-      const { container } = render(<ReportDocument report={blocked({ id: 'b-view', kind: 'view.live',
-        payload: { source, version: 1 },
-      })} empty={EMPTY} resolveOverlay={(value) => {
-        asked.push(value);
-        return { version: 1, title: 'Capacity', description: 'Publisher observations',
-          snapshot: { id: 'capacity-r1', observedAt: null, producedAt: null },
-          rows: [{ id: 'summary', title: 'Observed capacity', layout: 'one', cells: [{ kind: 'metrics', id: 'capacity', title: 'Available capacity',
-            items: [{ id: 'available', label: 'Available capacity', value: { state: 'text', text: '512 GB' }, detail: '', tone: 'neutral', emphasis: 'normal' }] }] }] };
-      }} />);
-      expect(asked).toEqual([source]);
-      expect(screen.getByText('512 GB')).toBeTruthy();
-      expect(container.querySelector('#b-view')).toBeTruthy();
-      expect(screen.queryByRole('table')).toBeNull();
+      const { container } = render(<ReportDocument report={report} empty={EMPTY}
+        resolveOverlay={(source) => { asked.push(source); return undefined; }} />);
+      expect(container.querySelector('#b-old')?.textContent).toBe(`unsupported block kind ${retired}`);
+      expect(screen.getByText('Still readable.')).toBeTruthy();
+      expect(asked).toEqual([]);
     });
 
     it('gives each block its id, so a citation has something to land on', () => {

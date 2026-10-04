@@ -170,8 +170,8 @@ mod tests {
     /// compact input schema. One-sided caps; a change that shrinks the surface lowers them.
     #[test]
     fn planner_tool_surface_fits_its_byte_budget() {
-        // Measured 29,091 bytes across 26 Planner tools after the report live-slot read guidance
-        // (#2021). Keep the aggregate bound and the unchanged per-description cap.
+        // Measured 29,370 bytes across 26 Planner tools after the overlay view kind was removed
+        // (#2021 S4). Keep the aggregate bound and the unchanged per-description cap.
         const SURFACE_MAX_BYTES: usize = 30_000;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 

@@ -340,11 +340,11 @@ pub fn validate(payload: &Value) -> Result<(), String> {
 /// template's expected kind, then the cell itself.
 pub fn validate_unit(expects: ComponentKind, payload: &Value) -> Result<(), String> {
     let bytes = serde_json::to_vec(payload).map_err(|e| format!("unit: {e}"))?;
-    if bytes.len() > super::kinds::MAX_LIVE_VIEW_BYTES {
+    if bytes.len() > super::kinds::MAX_LIVE_UNIT_BYTES {
         return Err(format!(
             "unit: {} bytes exceeds the {} byte limit",
             bytes.len(),
-            super::kinds::MAX_LIVE_VIEW_BYTES
+            super::kinds::MAX_LIVE_UNIT_BYTES
         ));
     }
     let unit: DataUnit =

@@ -195,3 +195,16 @@ it('shows unknown snapshot timestamps explicitly without inventing epoch dates',
   expect(screen.getByText('pending · 资料截止 未知 · 生成 未知')).toBeTruthy();
   expect(document.body.textContent).not.toContain('1970-01-01');
 });
+
+it('preserves a complete 8000-character review in text disclosures', async () => {
+  const view = structuredClone(payload);
+  const records = view.rows[2].cells[0];
+  if (records.kind !== 'records') throw new Error('Expected records fixture');
+  const body = 'x'.repeat(7983) + '<script></script>';
+  records.datasets[0].items[0].disclosures = [{ id: 'long', label: 'Full review', body, note: 'Publisher note', tone: 'neutral' }];
+  render(<NativeReportView payload={view} />);
+  await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Full review' }));
+  expect(screen.getByRole('region', { name: 'Full review' }).querySelector('blockquote')?.textContent).toBe(body);
+  expect(document.querySelector('script')).toBeNull();
+});

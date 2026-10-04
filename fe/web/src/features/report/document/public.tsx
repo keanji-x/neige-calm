@@ -24,7 +24,6 @@ import { ReportPreviewBlock, type PreviewViewportStore } from '../preview/public
 import { ReportSeriesBlock } from '../series/public.tsx';
 import { ReportSourceCitation } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
-import { ReportLiveViewBlock } from '../native/live.tsx';
 import { NativeReportView } from '../native/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
@@ -58,7 +57,7 @@ export type ReportDocumentProps = Readonly<{
   taskRows?: readonly ReportTaskRow[];
   /** App-owned current/history query, scoped to a task. */
   renderTaskExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
-  /** Resolves a Track overlay for `table` or `view.live`; each renderer validates its declared contract. */
+  /** Resolves a Track overlay for a live `table` or a `view` live slot; each renderer validates its declared contract. */
   resolveOverlay?: (source: string) => unknown;
   /** Resolves a `chart.series` block, by id and rev, to the app's query of the kernel's resolved data. Absent ⇒ series blocks say the view carries no such data. */
   resolveSeries?: (blockId: string, rev: number) => SeriesResolution | undefined;
@@ -187,8 +186,8 @@ function BlockSlot({
   previewViewports?: PreviewViewportStore;
 }) {
   return (
-    <div className={(block.kind === 'view' || block.kind === 'view.live') ? `${styles.row} ${styles.nativeRow}` : styles.row}>
-      <div className={(block.kind === 'view' || block.kind === 'view.live') ? `${styles.block} ${styles.nativeBlock}` : styles.block} id={block.id}>
+    <div className={block.kind === 'view' ? `${styles.row} ${styles.nativeRow}` : styles.row}>
+      <div className={block.kind === 'view' ? `${styles.block} ${styles.nativeBlock}` : styles.block} id={block.id}>
         {block.kind === 'prose'
           ? <ProseBlock
               markdown={block.payload.markdown}
@@ -204,7 +203,7 @@ function BlockSlot({
               previewViewports={previewViewports} />}
       </div>
       {backlinks > 0 && (
-        <span className={(block.kind === 'view' || block.kind === 'view.live') ? `${styles.sidenote} ${styles.nativeSidenote}` : styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
+        <span className={block.kind === 'view' ? `${styles.sidenote} ${styles.nativeSidenote}` : styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
           ◂ {backlinks}
         </span>
       )}
@@ -227,8 +226,6 @@ function BlockBody({
   switch (block.kind) {
     case 'table':
       return <ReportTableBlock payload={block.payload} resolveLive={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
-    case 'view.live':
-      return <ReportLiveViewBlock payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
     case 'view': return <NativeReportView payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'chart.series':

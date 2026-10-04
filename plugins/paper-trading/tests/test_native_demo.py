@@ -1,12 +1,12 @@
 """The committed example is the SPY Report template plus the production units of a scripted simulated account."""
 import json
 from pathlib import Path
-import re
 import runpy
 
 import jsonschema
 
 from paper_trading.allocation_views import units
+from . import recipe
 
 EXAMPLES = Path(__file__).parents[1] / 'examples'
 SCHEMA = json.loads((Path(__file__).parents[3] / 'crates/calm-types/src/report_blocks/native_view.schema.json').read_text())
@@ -19,11 +19,6 @@ def committed():
     return json.loads((EXAMPLES / 'native-demo.json').read_text())
 
 
-def recipe_views():
-    text = (EXAMPLES.parent / 'spy-recipe.md').read_text()
-    return [json.loads(v) for v in re.findall(r'^```neige-block view\n(.*?)\n```$', text, flags=re.M | re.S)]
-
-
 def test_example_is_the_production_output_of_the_scripted_run(tmp_path):
     state = BUILDER['simulate'](tmp_path)
     example = committed()
@@ -34,7 +29,7 @@ def test_example_is_the_production_output_of_the_scripted_run(tmp_path):
     for unit in example['overlays'].values():
         jsonschema.Draft202012Validator(UNIT_SCHEMA).validate(unit)
     # The views are the recipe's template views; only their descriptions are replaced.
-    assert [view | {'description': ''} for view in example['views']] == recipe_views()
+    assert [view | {'description': ''} for view in example['views']] == recipe.views()
     for view in example['views']:
         jsonschema.Draft202012Validator(SCHEMA).validate(view)
     json.dumps(example, allow_nan=False)

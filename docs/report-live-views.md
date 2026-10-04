@@ -1,70 +1,121 @@
-# One inert presentation grammar, two delivery mechanisms
+# One inert presentation grammar, composed by the template
 
-Inline `view` stores a bounded NativeView composition in the report. `view.live`
-stores only `{source, version}` and reads the same composition from a Track plugin
-overlay. Both use the same renderer, component vocabulary and structural contract.
+A `view` block stores a bounded NativeView composition in the report. Its cells
+are either inline components or **live slots**: references to one plugin data
+unit each, resolved when the report is read. The template (a Track recipe or a
+builtin template body) owns the headings, rows, layouts and slot order; the
+plugin owns the data, labels, units, tones and empty states of each unit.
 Neither grants execution, order, approval, navigation or scheduling authority.
+
+Live `table` and `chart.series` blocks stay single-block live references; they
+are not live slots. The earlier whole-view overlay kind was removed in #2021 S4
+(see `docs/architecture/2021-report-template-composition.md`).
 
 ## Ownership
 
 `calm-types/src/report_blocks/native_view/model.rs` owns the DTOs and structural
-constraints. The real exporter derives the crate-owned JSON Schema and frontend
-TypeScript declarations from them. `fe/tools/report-view/generate.mjs` emits the
-client structural decoder from that schema. Backend discovery consumes the
-crate-owned schema; it never imports frontend source or tooling.
+constraints: `NativeView`, `RowCell` (`Inline(Component)` or `Live(LiveSlot)`),
+`LiveSlot` and `DataUnit`. The real exporter derives the crate-owned JSON Schema
+(`native_view.schema.json`, which exports `DataUnit` next to `NativeView`) and
+the frontend TypeScript declarations from them. `fe/tools/report-view/generate.mjs`
+emits the client structural decoders from that schema. Backend discovery
+consumes the crate-owned schema; it never imports frontend source or tooling.
 
 Both sides independently check relations the structural schema cannot express:
-unique identities, row width, increasing real UTC dates, series/sample width,
-complete nonnegative stacks, declared table keys and at most one primary metric.
-Client decoding rejects reserved object keys before normalization.
+unique identities (slot ids included), row width over inline cells and slots,
+the snapshot rule, increasing real UTC dates, series/sample width, complete
+nonnegative stacks, declared table keys and at most one primary metric. The
+shared fixture `test-data/native-view-v1.json` pins that both languages reject
+the same invalid views. Client decoding rejects reserved object keys before
+normalization.
 
-## Publish a live composition
+## Place a live slot (template)
 
 ````text
-```neige-block view.live
-{"source":"neige://plugin/operations/capacity","version":1}
+```neige-block view
+{"version":1,"title":"","description":"","snapshot":null,"rows":[
+ {"id":"capacity","title":"","layout":"two","cells":[
+  {"kind":"live","id":"summary","source":"neige://plugin/operations/capacity.summary","expects":"metrics"},
+  {"kind":"live","id":"history","source":"neige://plugin/operations/capacity.history","expects":"time-series"}]}]}
 ```
 ````
 
-The existing overlay scope selects exact Track, plugin and kind. Its value is a
-NativeView root: version, title, description, snapshot and rows. Components are
-metrics, time-series, distribution, table, records, bars and meter. Sources name
-content, not application-specific preset renderers. Reading never invokes a
-plugin tool, changes the report or approves anything.
+- `source` is the two-segment overlay URI `neige://plugin/<plugin_id>/<overlay_kind>`,
+  shape-checked at write time; existence is not checked, because an uninstalled
+  plugin is a normal state.
+- `expects` is the cell kind the template laid out for. A unit of another kind
+  is unavailable in that slot, so a publisher change cannot silently break the
+  layout.
+- The view `snapshot` describes its inline cells: it is null exactly when every
+  cell is a live slot.
+- The slot id keys rendering and inspection state and is unique across the view;
+  a slot has no title of its own (the unit's cell carries the publisher label).
 
-Publishers own values, labels, units, tones, composition and business meaning.
-Generic records carry subtitle, title, summary, labeled badges, facts, sections
-and disclosures. These collections may explicitly be empty. The platform does
-not require a finding/handling workflow or determine whether evidence refutes a
-thesis. Disclosures have publisher labels; dates can be included in those labels
-or facts when appropriate, without imposing evidence-date semantics on records.
+Views with live slots are template-owned. The Planner reads them but does not
+author, move or rewrite their slots.
 
-Snapshot timestamps are required nullable fields: unknown is null, not an
-invented zero. App publications distinguish observed source time from actual
-projection creation time; if the latter is unavailable it remains unknown.
+## Publish a data unit (plugin)
+
+The plugin publishes one overlay per unit on the Track through the unchanged
+`neige.overlay.set` path:
+
+```json
+{"snapshot": {"id": "<content hash>", "observedAt": 1790798340000, "producedAt": null},
+ "cell": {"kind": "metrics", "id": "nav", "title": "", "items": []}}
+```
+
+`cell` is one `Component`, validated like an inline cell; a unit cannot contain
+a live slot. `cell.id` is unit-local. Snapshot timestamps are required nullable
+fields: unknown is null, not an invented zero. App publications distinguish
+observed source time from actual projection creation time. A unit kind never
+reuses a retired overlay kind name; a shape change publishes under a new kind.
+
+Publishers own values, labels, units, tones and business meaning. Generic
+records carry subtitle, title, summary, labeled badges, facts, sections and
+disclosures; these collections may explicitly be empty. The platform does not
+judge staleness: whether data is too old is publisher meaning, expressed as
+tone or text.
+
+## Resolution and degradation
+
+Each slot resolves on its own, in row and cell order:
+
+1. Exact overlay lookup by Track, plugin and kind (never by plugin name alone).
+   None: pending. Storage error: the whole block is unavailable.
+2. Compact UTF-8 size at most `MAX_LIVE_UNIT_BYTES` (4 MiB).
+3. Decode as `DataUnit`, `cell.kind == expects`, then the component's own
+   validation.
+
+A failure degrades only its slot; the row keeps its layout and the slot shows a
+placeholder ("waiting for …", "cannot be displayed: …", or "this view does not
+carry live data" where no resolver is injected). Reading never invokes a plugin
+tool, changes the report or approves anything.
+
+`neige.report.read` gives a view with live slots
+`resolved = {status: ok|partial, validation: "presentation", cells: [{id, source, status, observed_at?, resolved_at?, reason?}]}`.
+`ok` certifies bounded structure, not the truth of publisher facts or any
+financial/account authority. `resolve: {<block id>: "full"}` adds each ok slot's
+unit as `data`; `"none"` skips the overlay query.
 
 ## Separate resource policies
 
-Persisted inline blocks retain the released kernel formatter and exact256 KiB
-canonical write budget. Live overlays retain a4 MiB compact UTF-8 transport cap.
-The same structural validator runs on both, but the persisted canonical budget
-is not applied to overlays. Generic record bodies support8,000 Unicode code points
-and100 items, preserving existing activity and review histories.
+Persisted blocks, templates included, keep the released canonical formatter and
+the 256 KiB canonical write budget. Units keep the 4 MiB compact read cap per
+unit; there is no per-view aggregate budget. The same component validator runs
+on both, but the persisted canonical budget is not applied to units. Generic
+record bodies support 8,000 Unicode code points and 100 items.
 
-The frontend has its own4 MiB decoded JSON budget plus bounded shape. It does not
-estimate Rust float spellings or pretty JSON size, and cannot decide exact write
-admission. Rejected writes remain the kernel's decision.
-
-`neige.report.read` emits source, version, resolved_at and
-`validation: "presentation"`. `ok` certifies bounded structure/version, not truth
-of publisher facts or financial/account authority. Full adds `data`; none skips
-hydration. Missing overlays are pending; malformed data, storage errors and
-oversized transport are unavailable.
+The frontend has its own 4 MiB decoded JSON budget plus bounded shape
+(`fe/core/domain/report-view.ts`, `resolveLiveSlot`). It does not estimate Rust
+float spellings or pretty JSON size, and cannot decide exact write admission.
+Rejected writes remain the kernel's decision.
 
 ## Compatibility
 
-This consolidation changes only new view contracts on unmerged PR #1770. Replace
-experimental preview content and regenerate its Recipe/demo explicitly before
-release. There is no preset adapter, shape sniffing, read-time rewrite or silent
-fallback. Released table, chart, app and preview blocks and database migrations
-are unchanged. Legacy nullable/large table overlays keep their read contract.
+Every write end (block upsert, Replace, whole-document and section writes,
+recipe ingress, track create and fork) rejects the removed whole-view overlay
+kind as an unknown block kind. A report that still stores such a block reads
+without failing: `neige.report.read` lists it without `resolved`, the frontend
+shows one "unsupported block kind" line in its place, and a user block DELETE
+still removes it. There is no preset adapter, shape sniffing, read-time rewrite
+or silent fallback.

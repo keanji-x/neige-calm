@@ -14,9 +14,7 @@ use crate::report_series::{Detail, resolved_at_text};
 use calm_types::report_blocks::kinds::LIVE_SOURCE_PREFIX;
 use calm_types::report_blocks::kinds::validate_inline_table_overlay;
 use calm_types::report_blocks::native_view::{LiveSlot, NativeView, RowCell, validate_unit};
-use calm_types::report_blocks::{
-    KIND_CHART_SERIES, KIND_LIVE_VIEW, KIND_TABLE, KIND_VIEW, MAX_LIVE_VIEW_BYTES, validate_payload,
-};
+use calm_types::report_blocks::{KIND_CHART_SERIES, KIND_TABLE, KIND_VIEW};
 use calm_types::track_report::ReportBlock;
 use serde::Deserialize;
 
@@ -117,8 +115,10 @@ pub(crate) async fn hydrated_block_index(
 
 fn is_overlay_block(block: &ReportBlock) -> bool {
     match block.kind.as_str() {
-        KIND_TABLE | KIND_LIVE_VIEW => block.payload.get("source").is_some_and(Value::is_string),
+        KIND_TABLE => block.payload.get("source").is_some_and(Value::is_string),
         KIND_VIEW => !view_slots(block).is_empty(),
+        // Any other kind, including a retired kind an old report still stores, is listed without
+        // `resolved`; the read never fails on it.
         _ => false,
     }
 }
@@ -178,9 +178,6 @@ fn hydrate_overlay(
         Ok(None) => return json!({ "status": "pending" }),
         Ok(Some(overlay)) => overlay,
     };
-    if block.kind == KIND_LIVE_VIEW {
-        return hydrate_live_view(block, overlay, mode);
-    }
     // A live reference, mixed view/table object, or malformed row is not an inline table.
     if validate_inline_table_overlay(&overlay.payload).is_err() {
         return json!({ "status": "unavailable", "reason": "overlay payload is not an inline table",
@@ -206,34 +203,6 @@ fn hydrate_overlay(
     }
     if mode == ResolveMode::Full {
         out["table"] = overlay.payload.clone();
-    }
-    out
-}
-
-/// Live and persisted reports share the same inert presentation grammar.
-fn hydrate_live_view(
-    block: &ReportBlock,
-    overlay: &crate::model::Overlay,
-    mode: ResolveMode,
-) -> Value {
-    let mut out = json!({
-        "source": block.payload["source"], "version": block.payload["version"],
-        "resolved_at": resolved_at_text(overlay.updated_at),
-        "validation": "presentation",
-    });
-    let valid = validate_payload(KIND_LIVE_VIEW, &block.payload).is_ok()
-        && overlay.payload.get("version").and_then(Value::as_f64) == Some(1.0)
-        && serde_json::to_vec(&overlay.payload)
-            .is_ok_and(|bytes| bytes.len() <= MAX_LIVE_VIEW_BYTES)
-        && calm_types::report_blocks::native_view::validate(&overlay.payload).is_ok();
-    if !valid {
-        out["status"] = json!("unavailable");
-        out["reason"] = json!("invalid presentation or payload exceeds 4 MiB");
-        return out;
-    }
-    out["status"] = json!("ok");
-    if mode == ResolveMode::Full {
-        out["data"] = overlay.payload.clone();
     }
     out
 }
