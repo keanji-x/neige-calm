@@ -189,6 +189,12 @@ fails). M4 → T4 (no completion within 35 s; deadline recovery cannot run befor
 check, so M6 leaves it green. Ordinary tests: the wake text, the
 `gh` failure retry, the lowering's argv.
 
+Receipt race in tests: a read that settles at once (T2, T6 and the existing happy paths in
+`forge_template_e2e.rs`) can finish before `transport.rs:940` looks the op up, so those tests
+accept either the receipt or the recorded result (`assert_receipt_or_settled`) and assert the
+delivery through the event. T3, T4 and T5 seed an unfinished rollup, so their first read cannot
+settle and they assert the receipt exactly.
+
 Source-invariant gates checked: `gate-prose-ratchet.sh` (the script in short literals),
 `gate-1316-terminology-ratchet.sh` (template and docs prose), `gate-sync-event-version-lockstep.sh`
 and `gate-web-compat-version-lockstep.sh` (not triggered: no event change),
@@ -204,7 +210,8 @@ and `gate-web-compat-version-lockstep.sh` (not triggered: no event change),
 - A PR closed while the call waits is reported at the deadline.
 - CI longer than about 15 min costs one extra wake and call per deadline.
 - Repeated calls with new attempts run concurrent waits and wake once each.
-- A failure wakes the Planner while other checks may still be running; the next call shows them.
+- A failure wakes the Planner while other checks may still be running; a new attempt reads the
+  current state; repeating the same attempt returns the recorded result.
 - If the first read settles before the transport looks up the op, the result comes back inline
   and the event still wakes once.
 

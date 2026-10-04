@@ -614,14 +614,9 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         json!({ "repo": repo_arg, "pr": pr_number }),
     )
     .await;
-    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
-    let checks_result = &checks_resp["result"]["structuredContent"];
-    assert_eq!(checks_result["parked"], false, "{checks_resp}");
-    assert_eq!(
-        checks_result["result"]["event"]["conclusion"], "success",
-        "{checks_resp}"
-    );
-    let checks_rows = event_rows(&fx.repo, "forge.pr.checks").await;
+    // #2058: the call parks and the event delivers the conclusion.
+    pr_checks::assert_receipt_or_settled(&checks_resp);
+    let checks_rows = wait_for_event_count(&fx.repo, "forge.pr.checks", 1).await;
     assert_eq!(
         checks_rows.len(),
         1,
@@ -2138,8 +2133,8 @@ async fn drive_pr_to_diff(
     }
 }
 
-/// Run `gh.pr.checks` and return its event row. The tool waits for the op to land, and an
-/// un-awaited checks op would keep the track-global teardown fence armed.
+/// Run `gh.pr.checks` and return its event row. The call parks and the event lands with the
+/// op's completion; an unsettled checks op would keep the track-global teardown fence armed.
 async fn run_pr_checks(fx: &Fixture, id: i64, repo_arg: &str, pr_number: u64) -> EventRow {
     let checks_resp = call_tool(
         fx,
@@ -2148,7 +2143,7 @@ async fn run_pr_checks(fx: &Fixture, id: i64, repo_arg: &str, pr_number: u64) ->
         json!({ "repo": repo_arg, "pr": pr_number }),
     )
     .await;
-    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
+    pr_checks::assert_receipt_or_settled(&checks_resp);
     wait_for_event_matching(&fx.repo, "forge.pr.checks", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["pr_number"] == json!(pr_number)

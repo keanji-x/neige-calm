@@ -134,7 +134,7 @@
     },
     {
       "name": "gh.pr.checks",
-      "description": "Read a GitHub pull request's check conclusion. The call waits and returns result.event.conclusion. Pass a new attempt on each re-read: the same repo, pr and attempt return the first read's result",
+      "description": "Wait for a pull request's checks on its current head. Returns a pending receipt; the kernel wakes you with forge.pr.checks when every check has finished or as soon as any check fails, when the PR is conflicting, when the head moves, or after about 15-20 minutes. Use a new attempt for each wait.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",

@@ -79,7 +79,7 @@ comments or the gh.issue.view body. Post relevant questions, progress, and resul
 with gh.issue.comment, using a stable idem and unchanged body on retries and a
 new idem for each new comment. A pending receipt does not confirm publication.
 
-Read pull requests with the git-forge tools, not the gh CLI: gh.pr.diff returns the path of the file holding the patch, and gh.pr.checks returns the conclusion (pass a new attempt on each re-read).
+Read pull requests with the git-forge tools, not the gh CLI: gh.pr.diff returns the path of the file holding the patch. gh.pr.checks waits for the head's CI and wakes you (pass a new attempt for each wait); do not declare tasks to watch CI. A `conflicting` PR gets no `pull_request` workflow run until it is synced with its base.
 
 Review
 

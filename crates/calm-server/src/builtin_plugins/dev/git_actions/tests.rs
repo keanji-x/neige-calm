@@ -340,30 +340,27 @@ fn lowers_gh_pr_checks() {
         }),
     )
     .expect("lower gh pr checks with attempt");
-    // tests/cases/forge_pr_checks.rs runs the filter through the gh shim; here the read and its
-    // output probe must carry the same one.
-    let jq = payload["argv"][9]
-        .as_str()
-        .expect("gh.pr.checks --jq filter");
+    // tests/cases/forge_pr_checks.rs runs the fold and the wait through the gh shim; here the
+    // wait and its one-read output probe must carry the same fold.
     let expected_payload = |idem_key: &str| {
         json!({
             "argv": [
-                "gh",
-                "pr",
-                "view",
+                "sh",
+                "-c",
+                PR_CHECKS_WAIT_SCRIPT,
+                "sh",
                 "42",
-                "--repo",
                 "owner/repo",
-                "--json",
-                "statusCheckRollup",
-                "--jq",
-                jq
+                "15",
+                PR_CHECKS_JQ
             ],
             "idem_key": idem_key,
             "event_spec": {
                 "event_kind": "forge.pr.checks",
                 "fields": {
-                    "conclusion": { "json_field": { "path": "/conclusion" } }
+                    "conclusion": { "json_field": { "path": "/conclusion" } },
+                    "head_sha": { "json_field": { "path": "/head_sha" } },
+                    "mergeable": { "json_field": { "path": "/mergeable" } }
                 }
             },
             "subject": null,
@@ -387,12 +384,12 @@ fn lowers_gh_pr_checks() {
                     "--repo",
                     "owner/repo",
                     "--json",
-                    "statusCheckRollup",
+                    "headRefOid,mergeable,statusCheckRollup",
                     "--jq",
-                    jq
+                    PR_CHECKS_JQ
                 ]
             },
-            "parked": false
+            "parked": true
         })
     };
     assert_eq!(payload, expected_payload("gh.pr.checks:owner/repo:42"));
@@ -400,10 +397,70 @@ fn lowers_gh_pr_checks() {
         attempt_payload,
         expected_payload("gh.pr.checks:owner/repo:42:7")
     );
+    assert!(
+        PR_CHECKS_WAIT_SCRIPT.contains("--json headRefOid,mergeable,statusCheckRollup --jq"),
+        "the wait reads what the output probe reads"
+    );
     assert_no_reserved_context(&payload, &["track_id"]);
     assert_no_reserved_context(&attempt_payload, &["track_id"]);
     assert_supported_event_kind(&payload);
     assert_supported_event_kind(&attempt_payload);
+}
+
+/// A failed `gh` read does not end the wait (it would wake no one); the next read does.
+#[test]
+#[cfg(unix)]
+fn gh_pr_checks_wait_retries_a_failed_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let gh_path = temp_dir.path().join("gh");
+    let calls = temp_dir.path().join("calls");
+    std::fs::write(
+        &gh_path,
+        concat!(
+            "#!/bin/sh\n",
+            "printf '%s\\n' \"$*\" >> \"$GH_FAKE_CALLS\"\n",
+            "[ \"$(wc -l < \"$GH_FAKE_CALLS\")\" -gt 1 ] || exit 1\n",
+            "printf '%s\\n' \"$GH_FAKE_JSON\"\n",
+        ),
+    )
+    .expect("write fake gh");
+    let mut permissions = std::fs::metadata(&gh_path)
+        .expect("fake gh metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&gh_path, permissions).expect("chmod fake gh");
+    let path = format!(
+        "{}:{}",
+        temp_dir.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let settled = r#"{"conclusion":"success","mergeable":"mergeable","head_sha":"abc"}"#;
+
+    let output = std::process::Command::new("sh")
+        .args([
+            "-c",
+            PR_CHECKS_WAIT_SCRIPT,
+            "sh",
+            "42",
+            "owner/repo",
+            "0",
+            PR_CHECKS_JQ,
+        ])
+        .env("PATH", &path)
+        .env("GH_FAKE_CALLS", &calls)
+        .env("GH_FAKE_JSON", settled)
+        .output()
+        .expect("run the checks wait");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("{settled}\n")
+    );
+    let calls = std::fs::read_to_string(&calls).expect("fake gh calls");
+    assert_eq!(calls.lines().count(), 2, "{calls}");
 }
 
 #[test]

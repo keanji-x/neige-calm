@@ -220,10 +220,18 @@ fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
     )
 }
 
-/// Folds gh's `statusCheckRollup` export into one conclusion. A CheckRun is pending until its
+/// The fields both checks reads export; a macro so the wait script can splice it in at compile time.
+macro_rules! pr_checks_fields {
+    () => {
+        "headRefOid,mergeable,statusCheckRollup"
+    };
+}
+
+/// Folds gh's export into `{conclusion, mergeable, head_sha}`. A CheckRun is pending until its
 /// `status` is COMPLETED (an unfinished run exports `conclusion: ""`), then green only for
 /// SUCCESS, NEUTRAL or SKIPPED; a StatusContext has only `state`, pending while PENDING or
-/// EXPECTED. Any other finished value is a failure, which outranks pending; no checks is pending.
+/// EXPECTED. Any other finished value is a failure, which outranks pending: one failed check
+/// means this head cannot go green. An empty or null rollup is `no_checks`.
 const PR_CHECKS_JQ: &str = concat!(
     "{conclusion: ([(.statusCheckRollup // [])[] | ",
     "if .__typename == \"CheckRun\" then ",
@@ -234,8 +242,35 @@ const PR_CHECKS_JQ: &str = concat!(
     "elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" ",
     "else \"failure\" end] | ",
     "if any(. == \"failure\") then \"failure\" ",
-    "elif length == 0 or any(. == \"pending\") then \"pending\" ",
-    "else \"success\" end)}",
+    "elif any(. == \"pending\") then \"pending\" ",
+    "elif length == 0 then \"no_checks\" ",
+    "else \"success\" end), ",
+    "mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid}",
+);
+
+/// Seconds between the wait's reads: one GraphQL call per interval per waiting call.
+const PR_CHECKS_POLL_SECS: u64 = 15;
+
+/// `$1` PR, `$2` repo, `$3` poll seconds, `$4` the fold. Prints the first read that settles the
+/// checks, shows a conflict, or shows a head other than the first read's; a failed read is
+/// retried. The parked deadline ends any other wait with the output probe's snapshot.
+const PR_CHECKS_WAIT_SCRIPT: &str = concat!(
+    "first=\n",
+    "while :; do\n",
+    "  if out=$(gh pr view \"$1\" --repo \"$2\" --json ",
+    pr_checks_fields!(),
+    " --jq \"$4\"); then\n",
+    "    head=$(printf '%s' \"$out\" | sed -n 's/.*\"head_sha\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+    "    [ -n \"$first\" ] || first=$head\n",
+    "    case $out in\n",
+    "      *'\"conclusion\":\"success\"'* | *'\"conclusion\":\"failure\"'*)\n",
+    "        printf '%s\\n' \"$out\"; exit 0 ;;\n",
+    "      *'\"mergeable\":\"conflicting\"'*) printf '%s\\n' \"$out\"; exit 0 ;;\n",
+    "    esac\n",
+    "    if [ \"$head\" != \"$first\" ]; then printf '%s\\n' \"$out\"; exit 0; fi\n",
+    "  fi\n",
+    "  sleep \"$3\"\n",
+    "done\n",
 );
 
 fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
@@ -247,29 +282,40 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         Some(attempt) => format!("gh.pr.checks:{repo}:{pr}:{attempt}"),
         None => format!("gh.pr.checks:{repo}:{pr}"),
     };
-    let argv = vec![
-        "gh".into(),
+    let wait = vec![
+        "sh".into(),
+        "-c".into(),
+        PR_CHECKS_WAIT_SCRIPT.into(),
+        "sh".into(),
+        pr.to_string(),
+        repo.clone(),
+        PR_CHECKS_POLL_SECS.to_string(),
+        PR_CHECKS_JQ.into(),
+    ];
+    // The deadline snapshot reads once; it is never the waiting script.
+    let read = vec![
+        "gh".to_string(),
         "pr".into(),
         "view".into(),
         pr.to_string(),
         "--repo".into(),
         repo.clone(),
         "--json".into(),
-        "statusCheckRollup".into(),
+        pr_checks_fields!().into(),
         "--jq".into(),
         PR_CHECKS_JQ.into(),
     ];
+    let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
     forge_payload(
-        argv.clone(),
+        wait,
         idem_key,
         Some(event_spec(
             "forge.pr.checks",
-            [(
-                "conclusion",
-                FieldSource::JsonField {
-                    path: "/conclusion".into(),
-                },
-            )],
+            [
+                ("conclusion", json_field("/conclusion")),
+                ("mergeable", json_field("/mergeable")),
+                ("head_sha", json_field("/head_sha")),
+            ],
         )),
         json!({ "pr_number": pr }),
         Some(json!({
@@ -283,9 +329,9 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
                 "--json",
                 "state"
             ],
-            "output_probe_argv": argv
+            "output_probe_argv": read
         })),
-        false,
+        true,
     )
 }
 
