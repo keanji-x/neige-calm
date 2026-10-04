@@ -307,7 +307,7 @@ async fn publish_refuses_without_a_worktree_or_an_upstream() {
 
 /// #2112 — the push target and the PR base are the track branch's own upstream, recorded when the
 /// track worktree was made: the primary checkout moving to another branch, without an upstream
-/// and then with one of its own, changes neither.
+/// and then with one of its own, changes neither, and neither does the track worktree's HEAD.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn publish_ignores_the_branch_the_primary_checkout_moved_to() {
     let _env = publish_env(None).await;
@@ -328,6 +328,15 @@ async fn publish_ignores_the_branch_the_primary_checkout_moved_to() {
     let log = gh_log(fx);
     assert!(log.contains(" --base main "), "{log}");
     assert!(!log.contains(" --base side "), "{log}");
+
+    // The track worktree itself on another branch that tracks `side`: the upstream is still the
+    // track branch's own, read by its name.
+    git(
+        &fx.worktree,
+        &["switch", "-q", "-c", "elsewhere", "--track", "origin/side"],
+    );
+    let third = publish(fx, "p3").await.unwrap();
+    assert_eq!(third["base"], json!("main"), "{third}");
 }
 
 /// A second done candidate is pushed fast-forward and reuses the open PR.
