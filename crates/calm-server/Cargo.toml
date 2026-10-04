@@ -278,6 +278,7 @@ automerge = "0.9"
 # #679 PR1 — vocabulary + execution-contract layers. calm-server re-exports
 # the moved types (`pub use calm_types::…`) so external paths are unchanged.
 calm-types = { path = "../calm-types" }
+calm-report = { path = "../calm-report" }
 calm-exec = { path = "../calm-exec" }
 calm-truth = { path = "../calm-truth" }
 calm-provider = { path = "../calm-provider" }

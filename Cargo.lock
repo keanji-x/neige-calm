@@ -449,6 +449,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "calm-report"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "automerge",
+ "calm-types",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "calm-server"
 version = "0.1.0"
 dependencies = [
@@ -462,6 +473,7 @@ dependencies = [
  "calm-exec",
  "calm-proc-supervisor",
  "calm-provider",
+ "calm-report",
  "calm-server",
  "calm-session",
  "calm-tailnet-control",

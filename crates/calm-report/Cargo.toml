@@ -1,0 +1,12 @@
+[package]
+name = "calm-report"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+# Preserve the existing CRDT version and persisted format from calm-server.
+automerge = "0.9"
+calm-types = { path = "../calm-types" }
+serde_json = "1"
+sha2 = "0.10"
