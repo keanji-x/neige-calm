@@ -74,6 +74,12 @@ it('runs /side through the production router and shows two independent desktop c
   await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
   const main = page.getByRole('complementary', { name: 'Main discussion' });
   await expect.element(main.getByText('The main conversation keeps working while a separate discussion explores this design.')).toBeVisible();
+  const initialBox = (await main.findElement()).getBoundingClientRect();
+  const headerBottom = document.querySelector('[data-nc-header-rows]')!.getBoundingClientRect().bottom;
+  expect(initialBox.top).toBeGreaterThanOrEqual(headerBottom);
+  expect(initialBox.bottom).toBeLessThanOrEqual(window.innerHeight);
+  const host = document.querySelector<HTMLElement>('[data-nc-drawer-stack]')!;
+  await expect.poll(async () => (await main.findElement()).getBoundingClientRect().top).toBe(host.getBoundingClientRect().top);
   const field = main.getByRole('combobox', { name: 'Message' });
   await field.fill('/side Explain the tradeoff');
   await userEvent.keyboard('{Enter}');
@@ -88,8 +94,13 @@ it('runs /side through the production router and shows two independent desktop c
   const mobileChat = document.querySelector<HTMLElement>('[data-nc-mobile-report-chat]');
   expect(mobileChat).toBeNull();
   expect(sideBox.top).toBeGreaterThan(mainBox.bottom);
+  expect(sideBox.bottom).toBeLessThanOrEqual(window.innerHeight);
+  await expect.poll(async () => (await side.findElement()).getBoundingClientRect().bottom).toBe(host.getBoundingClientRect().bottom);
+  expect(mainBox.left).toBe(sideBox.left);
+  expect(mainBox.width).toBe(sideBox.width);
   const handles = document.querySelectorAll<HTMLElement>('[role=separator][aria-label="Resize conversation"]');
   expect(handles).toHaveLength(1);
+  expect(handles[0].getBoundingClientRect().top).toBeGreaterThanOrEqual(headerBottom);
   await expect.poll(() => handles[0]?.getAttribute('aria-valuenow')).not.toBe(null);
   const initialShare = Number(handles[0].getAttribute('aria-valuenow'));
   expect(initialShare).toBeGreaterThan(0);

@@ -213,7 +213,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   );
   if (companion === undefined && !stacked) return card;
   return (
-    <div ref={hostRef} className={styles.stack}>
+    <div ref={hostRef} className={styles.stack} data-nc-drawer-stack="">
       <div className={styles.cell}>{card}</div>
       <div className={styles.cell} hidden={companion === undefined}>{companion?.(ownResizeGroup)}</div>
       {open && width !== undefined && parentResizeGroup === null
