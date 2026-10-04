@@ -1,12 +1,13 @@
 # Report template composition: the template places, the plugin publishes data units
 
 Baseline: `origin/main` 54b79918c. Every `file:line` below was read on that tree.
-Status: design, revision 8 (review rounds 1-3, owner decisions, S3 corrections and the S4
-code slice folded in, §7). The design PR changed no code; S0-S3 are implemented, and the S4
-code slice removes `view.live` but merges only after the §3.1 rewrite of 4140 (§5 S4).
+Status: design, revision 9 (review rounds 1-3, owner decisions, S3 corrections, the S4
+code slice and the executed 4140 rewrite folded in, §7). The design PR changed no code;
+S0-S4 are implemented. S4 (#2078) was merged and deployed directly, and the §3.1 rewrite
+ran on 4140 on the S4 build, deletes first (2026-10-04).
 Owner decisions (2026-10-04, final): no kernel guard for template views; live `table` and
 `chart.series` stay single-block references; the supervised paper profile is deleted
-(slice S0). No owner question remains open.
+(slice S0); S4 merges and deploys directly. No owner question remains open.
 
 ## 1. Problem, goals, non-goals
 
@@ -273,46 +274,39 @@ units' details and captions, as they already do (`allocation_views.py:63-66,91`)
 - **Why in place:** the SPY Track cannot be recreated: the ledger stores an immutable
   account/Track binding (`paper_trading/ledger.py:43-46`) and every SPY call and execution
   is refused for any other Track (`allocation.py:47`).
-- **Why before S4:** a leftover `view.live` block makes that Track's Replace fail
-  (`validate_body_fences` at `track_report.rs:648`, after which the stomp guard at `:649`
-  could not drop it either), its full `write_markdown` fail (`:684`), and a fork fail
-  (`routes/tracks.rs:1832`); the frontend shows it as `unsupported`
-  (`fe/core/domain/report.ts:259-262`). Section replaces of other sections still work,
-  because `sections.rs:113` validates only the replaced section.
+- **Why the deletes go first:** on a build without `view.live` (S4), a stored `view.live`
+  block reads as an unknown kind and a user block DELETE removes it (§7 revision 8), but
+  that Track's Replace, full `write_markdown` and fork are refused
+  (`validate_body_fences` at `track_report.rs:648`, `:684`, `routes/tracks.rs:1832`).
+  Replace before the deletes is refused by the stomp guard (`track_report_guard.rs:52-73`),
+  which requires every existing non-prose block byte-identical, so the retired blocks are
+  deleted first; the #2078 reviewer verified this against the real 4140 report bytes. The
+  frontend shows a leftover block as `unsupported` (`fe/core/domain/report.ts:259-262`).
+  Section replaces of other sections still work, because `sections.rs:113` validates only
+  the replaced section.
 
-**Precondition scan.** A read-only query over a **copy** of the 4140 database, so hidden
-area-chat Tracks and Tracks outside visible areas are covered too:
+**Scan.** A read-only query over a **copy** of the 4140 database, so hidden area-chat
+Tracks and Tracks outside visible areas are covered too:
 
 ```sql
 SELECT track_id, id FROM cards WHERE kind = 'track-report' AND payload LIKE '%view.live%';
 SELECT id, title FROM track_recipes WHERE body LIKE '%view.live%';
 ```
 
-Result on the current 4140 copy: three Tracks, each with one `view.live` and three live
-tables (`spy.portfolio`, `spy.decisions`, `spy.fills`): the live SPY Track
+Result before the rewrite: three Tracks, each with one `view.live` and three live tables
+(`spy.portfolio`, `spy.decisions`, `spy.fills`): the live SPY Track
 `7c0dd087ed9c4f7895ce4c6bb574c327` and the closed Tracks `2800396680…` and `1144b00f…`;
 and one recipe, `d2a8d568…` "SPY 与现金 · 每日例程" (the `spy-recipe.md` body: one
 `view.live` and three live tables).
-Run it again immediately before deploying S4; S4 deploys only on two empty results.
 
-**Disposition.**
+**Executed on 4140 (2026-10-04).** The owner decided to merge S4 (#2078) and deploy it
+directly. 4140 was upgraded from 9dd793a9b to 60796fd78 by a preserving restart; the
+paper-trading plugin was switched to the S3+ source first, so the kernel restart loaded
+the new manifest (the stale-manifest hazard of §3.3). Once the eight §3.2 units were
+published, the procedure below ran on the S4 build.
 
-- Live SPY Track: the rewrite runbook below.
-- Closed Tracks: S4 deletes their `view.live` block only (block DELETE, `ifBlockRev`), no
-  rewrite. Their live tables stay valid `table` blocks and show "nothing pushed" once the
-  retired overlays are gone. The source path has no closed-Track refusal: the REST block
-  write goes `routes/track_report_blocks.rs:121-147` → `ReportEditTarget::resolve`
-  (`track_report.rs:956-963`) → `rest_user_block_op`, and `closed_at` appears nowhere in
-  `track_report.rs`, `track_report/` or `routes/track_report_blocks.rs`. S4 confirms this
-  first on an isolated instance with a closed fixture Track. If the API refuses, S4 stops
-  and the alternative (reopen, delete, close again through the user `PATCH`) goes to the
-  owner as a question; no bypass is added. The delete wakes that Track's Planner like
-  any user edit; its old block 0 still says "Keep the live views" (`spy-recipe.md:26`),
-  so the operator checks the timeline for a re-added block, and the pre-S4 scan catches
-  one.
-
-**Rewrite runbook (live SPY Track, after S3 is deployed).** Script and transcript go in
-the S4 PR. The H1 更多明细 (`spy-recipe.md:57`) becomes 执行记录.
+**Procedure (delete-first, on a build with S3 and S4).** To repeat it on another install,
+run the scan there and use its ids.
 
 1. Timing: outside the SPY Calendar windows (New York time Mon-Fri 08:45-11:00 and
    16:30-17:30, Sat 10:00-11:00, `spy-recipe.md:6-9`), with the Planner idle and no
@@ -329,44 +323,62 @@ the S4 PR. The H1 更多明细 (`spy-recipe.md:57`) becomes 执行记录.
    ```
 
    (ledger path: `allocation.py:35`, `ledger.py:59`). It must return no row.
-2. `GET /api/tracks/{id}/report`; record `summary`, `docRev` and each block's `rev`.
-3. `POST /api/tracks/{id}/report` (Replace) with `ifDocRev` and the step-2 `summary`
-   (required, `routes/tracks.rs:3235-3246`). The body: new contract header and Planner
-   comment in block 0, new H1s and template views, research prose unchanged, and **every
-   existing non-prose block byte-identical, in its original relative order**: the old
-   `view.live` (kept right under 组合表现 for now), the three live tables and the task
-   blocks (under 执行记录), and the research `table` and `chart.series` blocks (关键数据).
-   The stomp guard accepts exactly this (`track_report_guard.rs:52-73`). Replace goes
-   first so that every later wake reads the new block 0, not the old "Keep the live
-   views" (`spy-recipe.md:26`).
-4. `DELETE /api/tracks/{id}/report/blocks/{block}` with `ifBlockRev` for the `view.live`
-   and each retired live table, back to back.
-5. Failure handling: a failed step 3 changed nothing; re-read and start again at step 2.
-   A failed step 4 delete leaves a valid report with the new instructions; re-read the
-   revisions and retry only the remaining deletes.
-6. Recipe rows from the scan: `GET /api/track-recipes/{id}` first and record its `title` and
+2. Deploy: switch the plugin to the S3+ source, then restart the kernel on the S4 build,
+   and wait until the live Track has all eight §3.2 unit overlays.
+3. Live Track deletes: `GET /api/tracks/{id}/report` and record each block's `rev`; then
+   `DELETE /api/tracks/{id}/report/blocks/{block}` with `ifBlockRev` for the `view.live`
+   block and each retired live table, back to back. On 4140: `b_ec8d` and the three live
+   tables on `7c0dd087…`.
+4. Replace: `GET` again and record `summary` and `docRev`; then `POST
+   /api/tracks/{id}/report` with `ifDocRev`, that `summary` (required,
+   `routes/tracks.rs:3235-3246`) and the §4 `spy-recipe.md` report body (更多明细 becomes
+   执行记录). Any non-prose block still on the Track (task blocks, research `table` and
+   `chart.series` blocks) goes in byte-identical, in its original relative order, or the
+   stomp guard refuses the write.
+5. Recipe rows from the scan: `GET /api/track-recipes/{id}` first and record its `title` and
    `revision`; then `PUT /api/track-recipes/{id}` (user actor only,
    `track_recipes.rs:121-127`) with that same `title`, the new `body` and `if_revision` set
    to the recorded `revision` (`UpdateRecipeBody` requires all three; a stale revision is a
    409, so re-GET and retry). For `d2a8d568…` the body is the §4 `spy-recipe.md`, which
-   recipe ingress normalizes (`track_recipes.rs:33-77,199-200,230-231`). The kernel accepts
-   it only from S1 on (live slots), and it matches published units only after S3, so the
-   PUT runs in this S4 runbook.
-7. Retired overlay rows (`spy.overview`, `spy.portfolio`, `spy.decisions`, `spy.fills`, on
-   every Track the scan names) deleted with `POST /api/overlays/delete`
-   (`routes/overlays.rs:151-195`). Short of uninstalling the plugin
-   (`overlays_clear_by_plugin`, `db/mod.rs:776`, called at `plugin_host/lifecycle.rs:218`),
-   nothing else removes them; entity deletes sweep by entity
-   (`calm-truth/src/db/sqlite/overlay.rs:55-68`).
+   recipe ingress normalizes (`track_recipes.rs:33-77,199-200,230-231`); on 4140 the
+   title was kept and `if_revision` was 4, because migrations 0134 and 0135 had bumped it.
+6. Retired overlay rows (`spy.overview`, `spy.portfolio`, `spy.decisions`, `spy.fills`)
+   deleted with `POST /api/overlays/delete` (`routes/overlays.rs:151-195`). Short of
+   uninstalling the plugin (`overlays_clear_by_plugin`, `db/mod.rs:776`, called at
+   `plugin_host/lifecycle.rs:218`), nothing else removes them; entity deletes sweep by
+   entity (`calm-truth/src/db/sqlite/overlay.rs:55-68`).
+7. Closed Tracks: `DELETE` of the `view.live` block only, with `ifBlockRev`, no rewrite.
+   Their live tables stay valid `table` blocks and show "nothing pushed" once the retired
+   overlays are gone. The REST block write has no closed-Track refusal
+   (`routes/track_report_blocks.rs:121-147` → `ReportEditTarget::resolve`,
+   `track_report.rs:956-963` → `rest_user_block_op`); on 4140 it removed the block on
+   both closed Tracks.
+8. Scan again; both queries must return no row, and no retired overlay may reappear.
+   Also scan Planner cards for `template_context` copies that still name `view.live`
+   (#2098).
+
+Failure handling: a refused delete, Replace or recipe PUT changed nothing; re-read the
+revisions and retry that step. A Track whose deletes succeeded but whose Replace has not
+yet run is a valid report with the old instructions in block 0.
+
+**Result on 4140.** The second scan found 0 recipes and 0 report blocks containing
+`view.live`, and the retired overlays were not republished. The remaining hits were
+Planner `template_context` copies (#2098); the SPY Planner card's copy was fixed by an
+owner-approved one-off DB edit before a Planner reset. A read-only Planner probe then
+confirmed that `spy.status` and `neige.report.read` succeed and all eight slots resolve
+`ok`.
 
 **The Planner wake this causes.** User edits wake the Planner
-(`PLANNER_WAKE_AUTHORS`, `dispatcher/mod.rs:51-52,128`); steps 3-4 deliver
+(`PLANNER_WAKE_AUTHORS`, `dispatcher/mod.rs:51-52,128`); steps 3, 4 and 7 deliver
 `track.report_edited` observations rendered as "information, not an instruction to
-re-read" (`calm-types/src/observation.rs:285-288`). From step 3 on, block 0 holds the new
-instructions, which run steps only for a Calendar wake or an explicit user request
-(`spy-recipe.md:11`), so the expected turns are no-ops. The new recipe adds one sentence
-to make that explicit: "A user edit of this Report requests no step." The operator
-checks the Track timeline afterwards: no report write, no `spy.*` write tool call.
+re-read" (`calm-types/src/observation.rs:285-288`). The step-3 wakes still read the old
+block 0 ("Keep the live views", `spy-recipe.md:26`), but on the S4 build no write end
+accepts a `view.live` fence (§7 revision 8), so a wake cannot re-add it; run step 4 right
+after step 3. From step 4 on, block 0 holds the new instructions, which run steps only
+for a Calendar wake or an explicit user request (`spy-recipe.md:11`), so the expected
+turns are no-ops. The new recipe adds one sentence to make that explicit: "A user edit of
+this Report requests no step." The operator checks the Track timeline afterwards: no
+report write, no `spy.*` write tool call.
 
 Historical `overlay.set` and `track.report_edited` events are not rewritten.
 
@@ -422,8 +434,8 @@ the user recipe `d3c0273e…` "Longbridge paper portfolio" (six `paper.*` live t
 used by no Track. S0 deletes it with `DELETE /api/track-recipes/{id}` (user actor,
 `routes/track_recipes.rs:27-29,254-262`). Any further hit at deploy time is deleted the
 same way (recipes; blocks with the block DELETE of §3.1; overlays with
-`POST /api/overlays/delete`), so the S4 gate cannot block on an unplanned recipe; a
-supervised ledger file stops S0 for an owner decision.
+`POST /api/overlays/delete`), so no unplanned recipe stays behind; a supervised ledger
+file stops S0 for an owner decision.
 
 **Delete** (supervised-only modules and files):
 
@@ -792,8 +804,9 @@ golden).
 
 **S4: 4140 rewrite and `view.live` removal.**
 
-- Run §3.1 (scan, live-Track runbook, closed-Track deletes, scan again) on 4140 after S3
-  is deployed; production restarts follow the machine runbook.
+- §3.1 (scan, live-Track deletes and Replace, recipe, overlays, closed-Track deletes, scan
+  again) ran on 4140 on the S4 build right after the S3+S4 deploy (owner decision: merge
+  and deploy S4 directly); production restarts follow the machine runbook.
 - Rename `MAX_LIVE_VIEW_BYTES` to `MAX_LIVE_UNIT_BYTES` (`kinds.rs:31-32`) and its users.
 - Remove: `KIND_LIVE_VIEW`, its `DATA_KINDS` entry, dispatch and `validate_live_view`
   (`kinds.rs:13,42,83,510-524`) and its re-exports (`report_blocks/mod.rs:23-25`);
@@ -825,10 +838,10 @@ golden).
 
 **Risks.**
 
-- Between the S3 deploy and the 4140 rewrite the old `view.live` keeps showing the last
-  `spy.overview` row (stale, with its own `observedAt`). Keep it to minutes by running the
-  runbook right after the plugin restarts, in a permitted deploy slot: outside the SPY
-  Calendar windows, under the §3.1 step-1 conditions.
+- Between the S4 deploy and the §3.1 rewrite a stored `view.live` shows as one
+  "unsupported block kind" line. Keep it to minutes by running §3.1 right after the
+  restart, in a permitted deploy slot: outside the SPY Calendar windows, under the §3.1
+  step-1 conditions.
 - A full `write_markdown` by the Planner can still delete template views
   (`track_report.rs:681-684`); recoverable from the recipe, not automatically.
 - `resolve: full` on one view returns at most 18 units (6 rows × 3) of ≤4 MiB each; the
@@ -842,6 +855,8 @@ golden).
 2. The supervised paper profile is deleted (§3.3, S0).
 3. Live `table` and `chart.series` stay single-block live references; they are not folded
    into live slots (§1 goal 2).
+4. S4 merges and deploys directly; the 4140 rewrite runs on the S4 build, deletes first
+   (§3.1).
 
 ## 7. Revision log
 
@@ -909,7 +924,8 @@ Revision 5 (review round 3; nothing blocking):
   Decimal, non-leak and configuration cases; the CLI module docstring goes with
   `broker.py`.
 - Runbook: Replace first (old blocks byte-identical), then deletes; failure handling is
-  "nothing changed" or "retry the remaining deletes".
+  "nothing changed" or "retry the remaining deletes" (superseded in revision 9: deletes
+  first, on the S4 build).
 - Subtracted `DataUnit.version` (new kinds are the one evolution mechanism) and the S1
   rename of the size cap (renamed in S4).
 - S3 adds the stdio overlay test to its sweep and red set and states the example test
@@ -934,7 +950,8 @@ Revision 6 (review round 3 follow-up; one blocking item):
 - Considered and rejected: deleting the closed Tracks' `view.live` blocks after the S4
   deploy. After S4 a stored `view.live` is an unknown kind, so reading or deleting it could
   fail, and the S4 gate must stay "zero hits anywhere". The rev-5 plan (delete before S4)
-  stands.
+  stands. (Superseded in revision 9: S4 was deployed first and the deletes ran on the S4
+  build.)
 
 Revision 7 (S3 implementation, #2057):
 
@@ -945,7 +962,7 @@ Revision 7 (S3 implementation, #2057):
   superseded.
 
 Revision 8 (S4 code slice; the PR merges only after the §3.1 rewrite of 4140 and an empty
-pre-merge scan):
+pre-merge scan; that merge gate is superseded in revision 9):
 
 - Removed per §5 S4; `MAX_LIVE_VIEW_BYTES` is now `MAX_LIVE_UNIT_BYTES`;
   `mcp_track_report_live_view.rs` is `mcp_track_report_live_slots.rs` (its live-table tests
@@ -961,6 +978,7 @@ pre-merge scan):
   a user block DELETE removes it. This corrects revision 6, which expected reading or
   deleting it could fail; neither does. The revision-5 plan (delete before S4) stands,
   because that Track's Replace, whole-document write and fork would still be refused.
+  (Superseded in revision 9: the deletes ran on the S4 build, before the Replace.)
 - Planner tool surface: 29,909 of 30,000 bytes across 30 tools (the real test, on
   origin/main 5263e7159), down 70 bytes from that base's 29,979 (same method over its golden
   and prompt files); the cap comment records the new number.
@@ -968,4 +986,19 @@ pre-merge scan):
   `RowCell::Live`; the Python `UNIT_KINDS` list is derived from the recipe
   (`tests/recipe.py`, which also replaces the two test copies of the view-fence regex; the
   example builder keeps its own, compared against it by the example test); the status line,
-  the §3.2 holdings row and §3.1 step 6 (GET first, keep `title`, pass `if_revision`).
+  the §3.2 holdings row and §3.1 step 6 (GET first, keep `title`, pass `if_revision`;
+  step 5 since revision 9).
+
+Revision 9 (executed 4140 rewrite, #2099):
+
+- The owner decided on 2026-10-04 to merge S4 (#2078) and deploy it directly, so the
+  merge gate of revision 8 and the "delete before S4" plan of revisions 5, 6 and 8 no
+  longer hold.
+- §3.1: the Replace-first runbook is replaced by the delete-first procedure that ran on
+  4140 on the S4 build (60796fd78): live-Track block deletes, Replace, recipe PUT,
+  overlay delete, closed-Track deletes. Replace before the deletes is refused by the stomp
+  guard; the #2078 reviewer verified this against the real 4140 report bytes.
+- §3.1 records the result: no recipe or report block contains `view.live`, the retired
+  overlays were not republished, the Planner `template_context` copies are #2098, and a
+  Planner probe resolved all eight slots `ok`.
+- Status line, §3.3, §5 S4, §6 risk and owner decision 4 updated to match.
