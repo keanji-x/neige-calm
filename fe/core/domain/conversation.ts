@@ -459,16 +459,22 @@ export type SentPlannerInput = Readonly<{
 
 /**
  * One send, keyed: the same `idempotencyKey` on a retry is answered with the first request's answer
- * and queues nothing, so a send whose answer was lost can be sent again safely.
+ * and queues nothing, so a send whose answer was lost can be sent again safely. `replacesTurn` is the
+ * latest turn an Edit replaces (#2043): the server removes it and queues this message in one commit,
+ * or answers 409 `planner_turn_not_replaceable` and changes nothing; `null` for an ordinary send.
  */
 export function sendPlannerInputOperation(
-  cardId: string, text: string, attachments: readonly string[], idempotencyKey: string,
+  cardId: string, text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
 ): ApiOperation<SentPlannerInput> {
   return {
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`,
-    /* The key is omitted when empty: the field is `#[serde(default)]` on the server, and an empty
-       array would change the bytes of every text-only send. */
-    body: attachments.length === 0 ? { text } : { text, attachments },
+    /* Each field is omitted when empty: both are `#[serde(default)]` on the server, and an empty
+       array or a null would change the bytes of every ordinary text-only send. */
+    body: {
+      text,
+      ...(attachments.length === 0 ? {} : { attachments }),
+      ...(replacesTurn === null ? {} : { replaces_turn: replacesTurn }),
+    },
     headers: { 'Idempotency-Key': idempotencyKey },
     responseSchema: z.object({
       card_id: z.string(),

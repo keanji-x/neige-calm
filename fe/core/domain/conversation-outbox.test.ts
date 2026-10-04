@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { ConversationTurn, TranscriptEntry } from './conversation.js';
 import {
-  beginSendOp, matchSendOps, outboxView, settleSendOp, withConfirmedSends, withoutQueuedEntry,
+  beginSendOp, matchSendOps, outboxView, replacingTurn, settleSendOp, withConfirmedSends, withoutQueuedEntry,
   type SendOp, type SendOpPhase,
 } from './conversation-outbox.js';
 
 const row = (id: string, text = 'same'): ConversationTurn => ({ id, author: 'you', text, atMs: 1 });
 
 const op = (key: string, phase: SendOpPhase, { before = 4, text = 'same', queued = false, entryId = null as string | null, atMs = 2 } = {}): SendOp => ({
-  key, fromComposer: true,
+  key, fromComposer: true, replaces: null,
   echo: { id: `echo-${key}`, author: 'you', text, atMs, serverHighWaterBefore: before, queued, entryId },
   ...phase,
 });
@@ -132,5 +132,55 @@ describe('outbox transitions', () => {
     const ops = [op('a', CONFIRMED, { before: 0 }), op('b', CONFIRMED, { before: 5 }), op('c', SENDING)];
     expect(texts(withConfirmedSends([row('5')], ops))).toEqual(['same', 'same']);
     expect(withConfirmedSends([row('5')], [])).toEqual([row('5')]);
+  });
+});
+
+/* #2043: an Edit's Send is one op naming the turn it replaces; whether the server removes it only the server knows. */
+describe('a send that replaces a turn', () => {
+  const outcome = (id: string, turnId: string): TranscriptEntry =>
+    ({ id, author: 'turn', turnId, status: 'completed', elapsedMs: null, atMs: 1 });
+  const agent = (id: string, text: string): TranscriptEntry => ({ id, author: 'agent', text, atMs: 1 });
+  /* The earlier turn, then the edited one: its prompt (row 3), reply and outcome. */
+  const server: readonly TranscriptEntry[] = [
+    row('1', 'Earlier'), agent('2', 'Earlier answer'), outcome('o-early', 'turn-0'),
+    row('3', 'Original'), agent('4', 'Original answer'), outcome('o-edit', 'turn-1'),
+  ];
+  const replace = (phase: SendOpPhase): SendOp => ({
+    ...op('r', phase, { text: 'Revised', before: 4 }), replaces: { turnId: 'turn-1', outcomeId: 'o-edit' },
+  });
+  const viewOf = (ops: readonly SendOp[], entries: readonly TranscriptEntry[] = server) => outboxView({
+    serverEntries: entries, serverTurns: entries.filter((entry): entry is ConversationTurn => entry.author === 'you'),
+    liveReplies: [], queuedEntryIds: new Set(), stalled: false, ops, landed: NOTHING_READ,
+  });
+
+  it('while out draws nothing and leaves the turn, which the caller marks', () => {
+    const shown = viewOf([replace(SENDING)]);
+    expect(texts(shown.transcript)).toEqual(texts(server));
+    expect(shown.shown).toEqual([]);
+    expect(shown.sending).toBe(true);
+    expect(shown.blocked).toBe(true);
+    expect(replacingTurn([replace(SENDING)])).toEqual({ turnId: 'turn-1', outcomeId: 'o-edit' });
+    expect(replacingTurn([replace(CONFIRMED)])).toBeNull();
+    expect(replacingTurn([op('plain', SENDING)])).toBeNull();
+  });
+
+  it.each([['confirmed', CONFIRMED], ['replayed', { phase: 'replayed', afterRead: 1 } as const]] as const)(
+    'once answered (%s) hides the turn a stale read still shows, and draws its message', (_, phase) => {
+      const shown = viewOf([replace(phase)]);
+      expect(texts(shown.transcript)).toEqual(['Earlier', 'Earlier answer', 'o-early', 'Revised']);
+      /* A read without the turn is drawn as it is. */
+      expect(texts(viewOf([replace(phase)], server.slice(0, 3)).transcript)).toEqual(['Earlier', 'Earlier answer', 'o-early', 'Revised']);
+    });
+
+  it('leaves the turn as the server has it when the replace failed', () => {
+    for (const delivery of ['unknown', 'refused', 'rejected'] as const) {
+      const shown = viewOf([replace({ phase: 'failed', delivery, message: 'no' })]);
+      expect(texts(shown.transcript).slice(0, 6)).toEqual(texts(server));
+    }
+  });
+
+  it('hides the replaced turn from the remembered entries while its confirmed message waits for a read', () => {
+    expect(texts(withConfirmedSends(server, [replace(CONFIRMED)]))).toEqual(['Earlier', 'Earlier answer', 'o-early', 'Revised']);
+    expect(withConfirmedSends(server, [replace(SENDING)])).toBe(server);
   });
 });

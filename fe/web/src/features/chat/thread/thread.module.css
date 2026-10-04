@@ -651,7 +651,7 @@
 
   /*
    * Send under another name: "Sending…" while a replacing message waits for
-   * its rewind, "Replace message" in edit mode. Astryx's own `Button`
+   * its answer, "Replace message" in edit mode. Astryx's own `Button`
    * standing in for `ChatSendButton`, which has neither a busy state nor a
    * label of ours; round like the button it replaces, whose radius is
    * StyleX-only.

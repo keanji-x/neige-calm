@@ -9,7 +9,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  outboxView, settleSendOp, withConfirmedSends, withoutQueuedEntry, type LandedReads, type SendOp,
+  outboxView, settleSendOp, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
 } from '../../../../core/domain/conversation-outbox.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, OfflineSubmissionError } from '../providers/queries.ts';
@@ -87,7 +87,8 @@ export function useConversationOutbox({
   cardId: string;
   transport: ApiTransportPort;
   /** `POST …/planner/input` for this card; `answered` runs when its 200 is in hand, before its refresh reads start. */
-  send: (text: string, attachments: readonly string[], key: string, admitted: ApiTransportPort, answered: () => void) => Promise<SentPlannerInput>;
+  send: (text: string, attachments: readonly string[], key: string, replacesTurn: string | null, admitted: ApiTransportPort,
+    answered: () => void) => Promise<SentPlannerInput>;
   serverEntries: readonly TranscriptEntry[];
   serverTurns: readonly ConversationMessage[];
   liveReplies: readonly ConversationTurn[];
@@ -138,7 +139,7 @@ export function useConversationOutbox({
   /** One run of a begun op: its attempts under one key, settled into the outbox of the card it was pressed in. */
   const run = (op: SendOp & { phase: 'sending' }, admittedAtPress: ApiTransportPort): Promise<SendOutcome> => {
     const sentTo = cardId;
-    const { key, echo, fromComposer } = op;
+    const { key, echo, fromComposer, replaces } = op;
     const attachments: readonly PlannerAttachment[] = echo.attachments ?? [];
     const settle = (next: SendOp) => editOutbox(sentTo, (current) => settleSendOp(current, key, next));
     let answeredRead = 0;
@@ -149,7 +150,8 @@ export function useConversationOutbox({
       (attempt) => {
         const admitted = attempt === 0 ? admittedAtPress : admitRetry();
         return admitted === null ? Promise.reject(new OfflineSubmissionError())
-          : send(echo.text, attachments.map((attachment) => attachment.id), key, admitted, () => { answeredRead = nextRead(); });
+          : send(echo.text, attachments.map((attachment) => attachment.id), key, replaces?.turnId ?? null, admitted,
+            () => { answeredRead = nextRead(); });
       },
       (error) => (error instanceof ApiError ? error.failure : null),
       (retry) => new Promise<void>((resolve) => { setTimeout(resolve, recoveryDelay(retry, Math.random())); }),
@@ -158,8 +160,8 @@ export function useConversationOutbox({
       if (fromComposer) releaseComposerImages(sentTo, attachments);
       /* Not claimed: the answer may replay an entry deleted, rewound or reset since, which no read would ever
          show. The echo stays until reads started after this answer land, and they alone then show the message. */
-      if (everUnknown) { settle({ key, echo, fromComposer, phase: 'replayed', afterRead: answeredRead }); return 'delivered'; }
-      const confirmed = settle({ key, echo: { ...echo, entryId: sent.entry_id }, fromComposer, phase: 'confirmed' });
+      if (everUnknown) { settle({ key, echo, fromComposer, replaces, phase: 'replayed', afterRead: answeredRead }); return 'delivered'; }
+      const confirmed = settle({ key, echo: { ...echo, entryId: sent.entry_id }, fromComposer, replaces, phase: 'confirmed' });
       /* The answer can outlive the drawer: the row is written straight through for the conversation it was sent
          to, through `updateExisting` because a background refresh may already have put newer data there. */
       updateExisting(sentTo, (entry) => rememberSent(entry, confirmed, echo.text, echo.atMs));
@@ -167,7 +169,7 @@ export function useConversationOutbox({
     }, (error: unknown): SendOutcome => {
       const failed = error instanceof KeyedSendFailure ? error : new KeyedSendFailure(error, 'unknown');
       settle({
-        key, echo, fromComposer, phase: 'failed', delivery: failed.delivery,
+        key, echo, fromComposer, replaces, phase: 'failed', delivery: failed.delivery,
         /* The admission's own words ("nothing was sent", "will not send automatically") would contradict Try again. */
         message: failed.cause instanceof OfflineSubmissionError ? OFFLINE_RETRY
           : failed.cause instanceof Error && failed.cause.message !== '' ? failed.cause.message : 'Could not send the message.',
@@ -191,8 +193,10 @@ export function useConversationOutbox({
     /**
      * A press: a new op under a new key. `attachments` are ids already uploaded; naming one here is what makes it
      * permanent. `fromComposer`: they are the composer's own, so a delivery clears them (and the upload refusal) there.
+     * `replaces`: the turn an Edit's Send replaces, in the same request (#2043); beginning the op ends that Edit.
      */
-    send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean): Promise<SendOutcome> => {
+    send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean,
+      replaces: ReplacedTurn | null): Promise<SendOutcome> => {
       if (conversationId !== cardId || stalled || (view.failed !== null && view.failed.delivery !== 'refused')) {
         return Promise.resolve('not-sent');
       }
@@ -202,7 +206,7 @@ export function useConversationOutbox({
       let admitted: ApiTransportPort;
       try { admitted = admitTransport(transport); } catch (error) { refusedAtPress(error); return Promise.resolve('refused'); }
       const op = {
-        key: mintIdempotencyKey(), fromComposer, phase: 'sending', unknown: false,
+        key: mintIdempotencyKey(), fromComposer, replaces, phase: 'sending', unknown: false,
         echo: {
           id: `echo-${mintIdempotencyKey()}`, author: 'you', text, atMs: Date.now(),
           /* The echo carries the images: an image-only message has no text to match on, so the ids are the second criterion. */
@@ -238,7 +242,10 @@ export function useConversationOutbox({
           : current);
         return;
       }
-      const op = { key, echo: failed.echo, fromComposer: failed.fromComposer, phase: 'sending', unknown: failed.delivery === 'unknown' } as const;
+      const op = {
+        key, echo: failed.echo, fromComposer: failed.fromComposer, replaces: failed.replaces, phase: 'sending',
+        unknown: failed.delivery === 'unknown',
+      } as const;
       if (!beginSend(cardId, op)) return;
       pressed();
       void run(op, admitted);

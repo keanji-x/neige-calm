@@ -224,12 +224,22 @@ describe('track conversations', () => {
   });
 
   it('sends a planner message under the key its retries reuse', () => {
-    const operation = sendPlannerInputOperation('card 1', 'hello', ['image.png'], 'key-a');
+    const operation = sendPlannerInputOperation('card 1', 'hello', ['image.png'], 'key-a', null);
     expect(operation.method).toBe('POST');
     expect(operation.path).toBe('/api/cards/card%201/planner/input');
-    expect(operation.body).toEqual({ text: 'hello', attachments: ['image.png'] });
+    expect(operation.body).toStrictEqual({ text: 'hello', attachments: ['image.png'] });
     expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-a' });
-    expect(sendPlannerInputOperation('card 1', 'hello', [], 'key-a').body).toEqual({ text: 'hello' });
+    expect(sendPlannerInputOperation('card 1', 'hello', [], 'key-a', null).body).toStrictEqual({ text: 'hello' });
+  });
+
+  /* #2043: Edit is this one request, the turn it replaces beside the message, under one key. */
+  it('names the turn an Edit replaces in the same keyed send', () => {
+    const operation = sendPlannerInputOperation('card 1', 'hello', ['image.png'], 'key-a', 'turn-7');
+    expect(operation.path).toBe('/api/cards/card%201/planner/input');
+    expect(operation.body).toStrictEqual({ text: 'hello', attachments: ['image.png'], replaces_turn: 'turn-7' });
+    expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-a' });
+    expect(sendPlannerInputOperation('card 1', 'hello', [], 'key-a', 'turn-7').body)
+      .toStrictEqual({ text: 'hello', replaces_turn: 'turn-7' });
   });
 
   /* A golden: the value is copied from the server's own test of `conversation_keys.rs`. */

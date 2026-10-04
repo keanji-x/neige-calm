@@ -9,7 +9,7 @@ import styles from './meta.module.css';
 export type CopyResponseAction = Readonly<{ id: string; text: string; run: () => Promise<void> }>;
 /** `id` names the response it acts on; a rejection's message is the reader's feedback. */
 export type ResponseAction = Readonly<{ id: string; run: () => Promise<void> }>;
-/** Edit answers at once (the message moves to the composer); its rewind and any failure are the caller's. */
+/** Edit answers at once (the message moves to the composer); its replace and any failure are the caller's. */
 export type EditAction = Readonly<{ id: string; run: () => void }>;
 
 type ActionView = { readonly key: string; active: boolean };

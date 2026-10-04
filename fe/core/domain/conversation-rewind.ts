@@ -1,30 +1,5 @@
-import { z } from 'zod';
-
-import type { HarnessInputSegment, PlannerAttachment } from '../api/generated/wire.js';
-import type { ApiOperation } from '../api/types.js';
-import type { FailureTable } from './failure-class.js';
-import { harnessInputSegmentSchema, type ConversationTurn, type TranscriptEntry } from './conversation.js';
-
-/** What `POST …/planner/rewind` answers: the removed turn's input, prompt then accepted steers. The composer is filled from the transcript when Edit is clicked, not from this. */
-export type PlannerRewind = Readonly<{
-  card_id: string;
-  turn_id: string;
-  input: readonly HarnessInputSegment[];
-}>;
-
-/**
- * Remove the conversation's latest turn (#1923). Every refusal is a 409 with a readable reason and
- * nothing changed; `planner_harness_dormant` when no session is live.
- */
-export function rewindPlannerTurnOperation(cardId: string, turnId: string): ApiOperation<PlannerRewind> {
-  return {
-    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/rewind`,
-    body: { turn_id: turnId },
-    responseSchema: z.object({
-      card_id: z.string(), turn_id: z.string(), input: z.array(harnessInputSegmentSchema),
-    }),
-  };
-}
+import type { PlannerAttachment } from '../api/generated/wire.js';
+import type { ConversationTurn, TranscriptEntry } from './conversation.js';
 
 /** What one conversation's composer holds: its words and the images already uploaded for it. */
 export type ComposerContent = Readonly<{ text: string; attachments: readonly PlannerAttachment[] }>;
@@ -35,13 +10,6 @@ export function isComposerEmpty(content: ComposerContent): boolean {
   return content.text.trim() === '' && content.attachments.length === 0;
 }
 
-/** A failed rewind the server answered with a 4xx: refused, nothing changed. Any other failure may have removed the turn. */
-export const REWIND_FAILURES: FailureTable<'refused' | 'unknown'> = Object.freeze({
-  rules: Object.freeze([Object.freeze({ status: Object.freeze({ from: 400, to: 499 }), is: 'refused' as const })]),
-  unauthorized: 'refused',
-  otherwise: 'unknown',
-});
-
 /** The same words and the same images, in order. */
 export function isSameComposer(left: ComposerContent, right: ComposerContent): boolean {
   return left.text === right.text && left.attachments.length === right.attachments.length
@@ -50,7 +18,7 @@ export function isSameComposer(left: ComposerContent, right: ComposerContent): b
 
 /**
  * The turn that ends at outcome `outcomeId`, as the transcript shows it: from its first message of yours after
- * the previous outcome through that outcome, where the server's rewind starts deleting (the turn's first input row).
+ * the previous outcome through that outcome, where the server's replace starts deleting (the turn's first input row).
  * `null` when the transcript has no such outcome or the turn holds no message of yours.
  */
 function editedTurnSpan(entries: readonly TranscriptEntry[], outcomeId: string): Readonly<{ start: number; end: number }> | null {
@@ -64,7 +32,7 @@ function editedTurnSpan(entries: readonly TranscriptEntry[], outcomeId: string):
 
 /**
  * What an Edit of that turn puts in the composer: its messages of yours a blank line apart, each image once in order.
- * The same message the rewind answers in `input` (prompt and accepted steers, read as the transcript shows them).
+ * Prompt and accepted steers, read as the transcript shows them.
  */
 export function editedTurnRefill(entries: readonly TranscriptEntry[], outcomeId: string): ComposerContent | null {
   const span = editedTurnSpan(entries, outcomeId);

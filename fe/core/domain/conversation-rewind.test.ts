@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import type { HarnessInputSegment } from '../api/generated/wire.js';
 import { buildTranscript, type TranscriptEntry } from './conversation.js';
 import {
-  editedTurnMessageIds, editedTurnRefill, isLatestTurn, isSameComposer, rewindPlannerTurnOperation,
+  editedTurnMessageIds, editedTurnRefill, isLatestTurn, isSameComposer,
   withoutEditedTurn, withRefill,
 } from './conversation-rewind.js';
 
@@ -25,7 +25,7 @@ const answer = (id: number, turnId: string, text: string) =>
 const ended = (id: number, turnId: string) =>
   row(id, turnId, null, 'turn/completed', { id: turnId, status: 'completed', error: null });
 
-it('refills from the transcript the same message the rewind answers: prompt and steers, lead dropped, each image once', () => {
+it('refills from the transcript what the turn said: prompt and steers, lead dropped, each image once', () => {
   const prompt = { presentation: 'user' as const, text: 'User says:\n  Original prompt\n', attachments: [image('a.png')] };
   const steer = { presentation: 'user' as const, text: 'User says:\nA steer', attachments: [image('a.png'), image('b.png')] };
   const picture = { presentation: 'user' as const, text: 'User says:\n', attachments: [image('c.png')] };
@@ -35,12 +35,9 @@ it('refills from the transcript the same message the rewind answers: prompt and 
     said(11, 'turn-1', [prompt]), said(12, 'turn-1', [steer]), said(13, 'turn-1', [picture]),
     answer(14, 'turn-1', 'Answer'), ended(15, 'turn-1'),
   ]);
-  /* What `rewind::plan` answers for turn-1: its user segments in row order, an image a steer re-sent named once. */
-  const answered: readonly HarnessInputSegment[] = [prompt, { ...steer, attachments: [image('b.png')] }, picture];
   expect(editedTurnRefill(entries, 'outcome-15')).toEqual({
     text: 'Original prompt\n\nA steer', attachments: [image('a.png'), image('b.png'), image('c.png')],
   });
-  expect(answered.flatMap((segment) => segment.attachments)).toEqual(editedTurnRefill(entries, 'outcome-15')?.attachments);
   expect(withoutEditedTurn(entries, 'outcome-15')).toEqual(entries.slice(0, 3));
 });
 
@@ -81,14 +78,6 @@ it('finds nothing to edit or hide for an outcome the transcript no longer shows,
   expect(withoutEditedTurn(entries, 'gone')).toBe(entries);
   expect(editedTurnRefill(entries, 'o1')).toBeNull();
   expect(withoutEditedTurn(entries, 'o1')).toBe(entries);
-});
-
-it('posts only the turn id and decodes the removed input', () => {
-  const operation = rewindPlannerTurnOperation('card/1', 'turn-9');
-  expect(operation).toMatchObject({ method: 'POST', path: '/api/cards/card%2F1/planner/rewind', body: { turn_id: 'turn-9' } });
-  expect(operation.responseSchema.parse({ card_id: 'card/1', turn_id: 'turn-9',
-    input: [{ presentation: 'user', text: 'User says:\nx', attachments: [] }] }).input).toHaveLength(1);
-  expect(operation.responseSchema.safeParse({ card_id: 'card/1', turn_id: 'turn-9' }).success).toBe(false);
 });
 
 it('tells an untouched refill from a changed one by its words and image ids in order', () => {

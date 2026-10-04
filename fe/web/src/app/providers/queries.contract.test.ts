@@ -565,7 +565,7 @@ describe('delete mutation wiring', () => {
       wrapper: mutationWrapper(client),
     });
 
-    await expect(result.current.send('accepted by the server', [], 'send-key', transport, () => { order.push('answered'); }))
+    await expect(result.current.send('accepted by the server', [], 'send-key', null, transport, () => { order.push('answered'); }))
       .resolves.toMatchObject({ card_id: 'card-1' });
     await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2));
     /* The answer is noted before any refresh read starts, and a read still out from before it is cancelled first. */

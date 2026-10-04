@@ -77,7 +77,7 @@ const editTurns = (first: 'you' | 'system' = 'you') => [
   { id: 'end', author: 'turn' as const, turnId: 'turn-7', status: 'completed' as const, atMs: 3, elapsedMs: null },
 ];
 
-it('hands the current turn’s outcome to Edit at the click; the caller owns the rewind', () => {
+it('hands the current turn’s outcome to Edit at the click; the caller owns the replace', () => {
   const edit = vi.fn();
   render(<ChatThread conversation={EDIT_CONVERSATION} cards={{}} stalled={false} canContinue={false}
     editMessage={edit} turns={editTurns()} />);

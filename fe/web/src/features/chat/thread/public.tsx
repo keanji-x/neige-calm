@@ -502,7 +502,7 @@ export function ChatComposer({
   /** Hide this command on surfaces that cannot open a second card. */
   showSideCommand?: boolean;
   disabled?: boolean;
-  /** A send was taken and waits to go (an Edit's rewind is still out): Send turns into a spinner that takes no press. */
+  /** A send was taken and waits for its answer (an Edit's replace is still out): Send turns into a spinner that takes no press. */
   sendWaiting?: boolean;
   /** Edit mode: a bar names the message being replaced, ✕ or Esc leaves the mode, and Send is "Replace message". */
   editing?: Readonly<{ preview: string; onCancel: () => void }>;

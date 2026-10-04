@@ -62,7 +62,6 @@ import {
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
-import { rewindPlannerTurnOperation } from '../../../../core/domain/conversation-rewind.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
@@ -261,14 +260,11 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   return {
     /* `admitted` is the caller's: a keyed send is admitted at the press, and each retry is admitted again.
        `answered` runs when the 200 is in hand, before the refresh starts its reads. */
-    send: (text: string, attachments: readonly string[], idempotencyKey: string, admitted: ApiTransportPort, answered: () => void) =>
-      runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey), unauthorized)
+    send: (text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
+      admitted: ApiTransportPort, answered: () => void) =>
+      runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
         .then((sent) => { answered(); return refreshAfterSend(sent); }),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
-    /* A refusal changed nothing, so only an accepted rewind refreshes. Not awaited: the Edit already hides the
-     * removed turn until a read without it lands, and a send waiting on the rewind goes on its 200. */
-    rewind: (turnId: string) => runOperation(transport, rewindPlannerTurnOperation(cardId, turnId), unauthorized)
-      .then(refreshAfter),
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>

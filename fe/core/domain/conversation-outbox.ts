@@ -3,6 +3,10 @@ import {
   type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry,
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
+import { withoutEditedTurn } from './conversation-rewind.js';
+
+/** The latest turn an Edit's send replaces (#2043): the turn id the server removes, and its outcome row here. */
+export type ReplacedTurn = Readonly<{ turnId: string; outcomeId: string }>;
 
 /**
  * Where one keyed send is. `sending`: attempts are out, `unknown` once any was. `confirmed`: answered
@@ -28,6 +32,8 @@ export type SendOp = Readonly<{
   echo: OptimisticConversationTurn;
   /** Whether its images came from the composer, which a delivered attempt then clears (a Regenerate's never did). */
   fromComposer: boolean;
+  /** The turn this send replaces (an Edit), or `null` for a message added to the conversation. */
+  replaces: ReplacedTurn | null;
 }> & SendOpPhase;
 
 export type FailedSendOp = Extract<SendOp, { phase: 'failed' }>;
@@ -88,6 +94,26 @@ export function matchSendOps(
   return matched;
 }
 
+/**
+ * An Edit's replace is a precondition only the server knows, so it is shown only as the server answers it: while
+ * it is out its message is not drawn and the turn stays (marked by the caller); once answered 200 the turn is
+ * hidden until a read no longer shows it. A failed one leaves the turn as the server has it.
+ */
+function drawsEcho(op: SendOp): boolean {
+  return op.replaces === null || op.phase !== 'sending';
+}
+
+/** `entries` without every turn an answered replace removed; unchanged once no read shows them. */
+function withoutReplacedTurns(entries: readonly TranscriptEntry[], ops: readonly SendOp[]): readonly TranscriptEntry[] {
+  return ops.reduce((shown, op) => op.replaces !== null && (op.phase === 'confirmed' || op.phase === 'replayed')
+    ? withoutEditedTurn(shown, op.replaces.outcomeId) : shown, entries);
+}
+
+/** The turn a replace still out is about to remove, which stays on screen, marked, until it is answered. */
+export function replacingTurn(ops: readonly SendOp[]): ReplacedTurn | null {
+  return ops.find((op) => op.phase === 'sending' && op.replaces !== null)?.replaces ?? null;
+}
+
 /** The read numbers of the data now held: which transcript and run reads it came from. */
 export type LandedReads = Readonly<{ transcript: number; run: number }>;
 
@@ -139,6 +165,7 @@ export function outboxView({ serverEntries, serverTurns, liveReplies, queuedEntr
   /* A spent unknown send whose message a read shows is drawn once, by the server; it keeps its Try again. */
   const failedShown = failed !== null && !(failed.delivery === 'unknown' && matched.has(failed.key));
   const drawn = [...live, ...(failedShown && failed !== null ? [failed] : [])]
+    .filter(drawsEcho)
     .filter((op) => op.phase !== 'confirmed' || op.echo.entryId === null || !queuedEntryIds.has(op.echo.entryId))
     /* Only a confirmed op licenses the queued caption, and a wedged queue cannot promise delivery. */
     .map((op) => op.phase === 'confirmed' && !stalled ? op.echo : { ...op.echo, queued: false })
@@ -146,8 +173,8 @@ export function outboxView({ serverEntries, serverTurns, liveReplies, queuedEntr
   return {
     /* KNOWN GAP (#1923): a steer sent while a reply streams draws its echo below the live reply,
        then its stored row above it: a one-time reorder that converges. */
-    transcript: mergeTranscript(mergeTranscript(serverEntries, liveReplies), drawn),
-    shown: live.map((op) => op.echo),
+    transcript: mergeTranscript(mergeTranscript(withoutReplacedTurns(serverEntries, ops), liveReplies), drawn),
+    shown: live.filter(drawsEcho).map((op) => op.echo),
     confirmed: live.filter((op) => op.phase === 'confirmed').map((op) => op.echo),
     retire: retiredOps(ops, matched, landed),
     sending: ops.some((op) => op.phase === 'sending'),
@@ -166,5 +193,5 @@ export function withConfirmedSends(
   const confirmed = ops.filter((op) => op.phase === 'confirmed');
   if (confirmed.length === 0) return entries;
   const matched = matchSendOps(entries.filter(isConversationMessage), confirmed);
-  return mergeTranscript(entries, confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo));
+  return mergeTranscript(withoutReplacedTurns(entries, confirmed), confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo));
 }

@@ -50,7 +50,7 @@ test('copies Markdown and explicitly regenerates while preserving a separate dra
   } finally { await request.delete(`/api/areas/${area.id}`); }
 });
 
-test('edits the latest message in the composer and replaces it on Send, after the rewind', async ({ page, request }) => {
+test('edits the latest message in the composer and replaces it on Send, in one keyed request', async ({ page, request }) => {
   const area = await createArea(request, `Message edit ${Date.now()}`);
   try {
     const track = await createTrack(request, area.id);
@@ -58,8 +58,9 @@ test('edits the latest message in the composer and replaces it on Send, after th
     let removed = false;
     const rewinds: unknown[] = [];
     const sent: unknown[] = [];
-    let releaseRewind!: () => void;
-    const rewindHeld = new Promise<void>((done) => { releaseRewind = done; });
+    const keys: (string | undefined)[] = [];
+    let releaseReplace!: () => void;
+    const replaceHeld = new Promise<void>((done) => { releaseReplace = done; });
     const input = (cardId: string) => [{ presentation: 'user', text: 'User says:\nOriginal prompt',
       attachments: [{ id: imageId, contentType: 'image/png', size: 68, url: `/api/cards/${cardId}/planner/attachments/${imageId}` }] }];
     await page.route('**/api/cards/*/harness/items?**', async (route) => {
@@ -78,19 +79,20 @@ test('edits the latest message in the composer and replaces it on Send, after th
     });
     await page.route(`**/planner/attachments/${imageId}`, (route) => route.fulfill({ contentType: 'image/png',
       body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64') }));
-    /* Held, as a Claude rewind's dry run holds it: the spinner is seen before it answers. */
+    /* The route the replace replaced: nothing may call it. */
     await page.route('**/api/cards/*/planner/rewind', async (route) => {
       rewinds.push(route.request().postDataJSON());
-      await rewindHeld;
-      removed = true;
-      const cardId = new URL(route.request().url()).pathname.split('/')[3];
-      await route.fulfill({ json: { card_id: cardId, turn_id: 'turn', input: input(cardId) } });
+      await route.fulfill({ status: 404, json: { code: 'not_found', error: 'gone' } });
     });
-    /* The fixture image was never uploaded, so the send is answered here rather than refused by the server. */
+    /* The fixture image and turn exist only in this page, so the send is answered here; held, as a Claude
+       replace's dry run holds it, so the spinner is seen before it answers. */
     await page.route('**/api/cards/*/planner/input', async (route) => {
       sent.push(route.request().postDataJSON());
+      keys.push(route.request().headers()['idempotency-key']);
+      await replaceHeld;
+      removed = true;
       const cardId = new URL(route.request().url()).pathname.split('/')[3];
-      await route.fulfill({ json: { card_id: cardId, worker_session_id: 'fixture' } });
+      await route.fulfill({ json: { card_id: cardId, worker_session_id: 'fixture', entry_id: 'entry-1' } });
     });
     await page.goto(`/next/track/${track.id}`);
     await page.getByRole('button', { name: 'Conversation Planner' }).click();
@@ -103,19 +105,22 @@ test('edits the latest message in the composer and replaces it on Send, after th
     await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toBeVisible();
     await expect(page.locator('[data-nc-thread] [data-nc-turn="you"][data-nc-editing]')).toHaveText('Original prompt');
     await expect(page.locator('[data-nc-thread] [data-nc-turn-attachments][data-nc-editing] img')).toHaveCount(1);
-    expect(rewinds).toEqual([]);
+    expect(sent).toEqual([]);
     await composer.press('End');
     await composer.pressSequentially(' Keep it short.');
     await page.getByRole('button', { name: 'Replace message' }).click();
     await expect(page.getByRole('button', { name: 'Sending…' })).toBeVisible();
-    await expect.poll(() => rewinds).toEqual([{ turn_id: 'turn' }]);
-    expect(sent).toEqual([]);
-    releaseRewind();
-    await expect.poll(() => sent).toEqual([{ text: 'Original prompt Keep it short.', attachments: [imageId] }]);
-    await expect(page.getByRole('button', { name: 'Sending…' })).toHaveCount(0);
+    await expect.poll(() => sent).toEqual([{ text: 'Original prompt Keep it short.', attachments: [imageId], replaces_turn: 'turn' }]);
+    expect(keys[0]).toBeTruthy();
+    /* Until the answer the turn stays, marked, and there is no ✕ to drop the words. */
+    await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toBeVisible();
+    await expect(page.locator('[data-nc-thread] [data-nc-turn="you"][data-nc-editing]')).toHaveText('Original prompt');
     await expect(page.locator('[data-nc-edit-bar]')).toHaveCount(0);
+    releaseReplace();
+    await expect(page.getByRole('button', { name: 'Sending…' })).toHaveCount(0);
     await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toHaveCount(0);
-    expect(rewinds).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+    expect(rewinds).toEqual([]);
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toHaveCount(0);
   } finally { await request.delete(`/api/areas/${area.id}`); }

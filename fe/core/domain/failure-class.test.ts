@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import type { ApiFailure } from '../api/types.js';
 import { CONVERSATION_CREATE_FAILURES, PLANNER_QUEUE_WRITE_FAILURES } from './conversation.js';
 import { SEND_FAILURES } from './conversation-delivery.js';
-import { REWIND_FAILURES } from './conversation-rewind.js';
 import { classifyFailure, type FailureTable } from './failure-class.js';
 
 const http = (status: number, code = 'http_error', message = 'answered'): ApiFailure =>
@@ -18,16 +17,12 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(400), 'rejected'], [http(403), 'rejected'], [http(404), 'rejected'], [http(413), 'rejected'],
     [http(422), 'rejected'], [http(429), 'rejected'], [unauthorized, 'rejected'],
     [http(409, 'planner_harness_dormant'), 'refused'], [http(409, 'planner_harness_runtime_superseded'), 'refused'],
+    /* An Edit's replace refused before any write (#2043): final, the server's reason is shown. */
+    [http(409, 'planner_turn_not_replaceable'), 'refused'],
     /* The code decides before the status: an answer naming one of these never wrote. */
     [http(400, 'planner_harness_dormant'), 'refused'],
     [http(409, 'conflict'), 'unknown'], [http(408), 'unknown'], [http(500), 'unknown'], [http(502), 'unknown'],
     [http(503, 'service_unavailable'), 'unknown'], [http(504), 'unknown'],
-    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
-  ]],
-  ['POST /planner/rewind', REWIND_FAILURES, [
-    [http(400), 'refused'], [http(404), 'refused'], [http(409, 'conflict'), 'refused'],
-    [http(409, 'planner_harness_dormant'), 'refused'], [http(499), 'refused'], [unauthorized, 'refused'],
-    [http(399), 'unknown'], [http(500), 'unknown'], [http(502, 'bad_gateway'), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   ['DELETE / POST …/steer on a queued entry', PLANNER_QUEUE_WRITE_FAILURES, [

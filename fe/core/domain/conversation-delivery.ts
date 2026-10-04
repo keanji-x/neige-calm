@@ -9,14 +9,17 @@ export type SendFailureKind = 'unknown' | 'refused' | 'rejected';
  * the request was handled. `refused`: a refusal decided before any write, so the text is unspent;
  * the generic `conflict` is deliberately not one, the write may already have been persisted.
  * Anything else, `null` included (a connection that is not ready), is `unknown`.
- * `planner_harness_dormant` and `planner_harness_runtime_superseded` are a refusal only for an op
- * with no unknown attempt yet: once one was unknown, a write of it may still be queued and commit
- * later while those codes come back, so {@link retryUnknownSend} keeps such an op unknown.
+ * `planner_turn_not_replaceable` is an Edit's replace refused before anything was written (#2043).
+ * `planner_harness_dormant`, `planner_harness_runtime_superseded` and `planner_turn_not_replaceable`
+ * are a refusal only for an op with no unknown attempt yet: once one was unknown, a write of it may
+ * still be queued and commit later while those codes come back, so {@link retryUnknownSend} keeps
+ * such an op unknown.
  */
 export const SEND_FAILURES: FailureTable<SendFailureKind> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ code: 'planner_harness_runtime_superseded', is: 'refused' as const }),
     Object.freeze({ code: 'planner_harness_dormant', is: 'refused' as const }),
+    Object.freeze({ code: 'planner_turn_not_replaceable', is: 'refused' as const }),
     Object.freeze({ status: Object.freeze([400, 403, 404, 413, 422, 429]), is: 'rejected' as const }),
   ]),
   unauthorized: 'rejected',

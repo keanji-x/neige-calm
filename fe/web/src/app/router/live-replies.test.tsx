@@ -30,8 +30,8 @@ function ok(body: unknown): ApiTransportResponse {
 type Row = Parameters<typeof buildTranscript>[0][number];
 /** With `earlier` rows, the newest page is full, so Load earlier has a page to read; with `itemsFail`, every transcript read fails. */
 type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[]; itemsFail?: boolean;
-  /** What `POST …/planner/rewind` does to this card and answers (#1923 Edit); with one, a send is accepted. */
-  rewind?: () => ApiTransportResponse };
+  /** What a send that replaces a turn (#1923 Edit, #2043) does to this card and answers; with one, a send is accepted. */
+  replace?: () => ApiTransportResponse };
 
 function row(id: number, method: string, itemType: string | null, params: unknown, extra: Partial<Row> = {}): Row {
   return {
@@ -78,8 +78,10 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
         return ok(rows);
       }
       if (server !== undefined && request.path.endsWith('/harness/live')) return ok(server.live);
-      if (server?.rewind !== undefined && request.path.endsWith('/planner/rewind')) return server.rewind();
-      if (server?.rewind !== undefined && request.path.endsWith('/planner/input')) return ok({ card_id: card, worker_session_id: 'runtime' });
+      if (server?.replace !== undefined && request.path.endsWith('/planner/input')) {
+        return (request.body as { replaces_turn?: string }).replaces_turn === undefined
+          ? ok({ card_id: card, worker_session_id: 'runtime' }) : server.replace();
+      }
       if (server !== undefined && request.path.endsWith('/planner/run')) return ok({
         card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
       });
@@ -214,11 +216,11 @@ describe('a streamed reply in the Planner conversation', () => {
   it('offers Edit only once an abandoned live reply has retired, and replacing the turn brings back no live text', async () => {
     const gate: Gate = { hold: false, waiting: [] };
     const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
-    server.rewind = () => {
-      /* The kernel deletes the turn's rows and discards its live text before it answers. */
+    server.replace = () => {
+      /* The kernel deletes the turn's rows, discards its live text and queues the message before it answers. */
       server.rows = [];
       server.live = streaming(null, {});
-      return ok({ card_id: CARD.id, turn_id: 'T1', input: [{ presentation: 'user', text: 'User says:\nquestion', attachments: [] }] });
+      return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: 'entry-1' });
     };
     const { client, requests } = setup({ [CARD.id]: server }, gate);
     await open('Planner chat');
@@ -237,16 +239,17 @@ describe('a streamed reply in the Planner conversation', () => {
     await waitFor(() => expect(screen.queryByText('Abandoned')).toBeNull());
     fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }));
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Message' }).textContent).toBe('question'));
-    expect(requests.filter((request) => request.path.endsWith('/planner/rewind'))).toEqual([]);
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toEqual([]);
     const polls = requests.filter((request) => request.path.endsWith('/harness/live')).length;
-    /* Send in edit mode replaces the turn: the rewind, then the message again. */
+    /* Send in edit mode replaces the turn: one send that names it. */
     act(() => { fireEvent.keyDown(screen.getByRole('combobox', { name: 'Message' }), { key: 'Enter' }); });
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 700); }); });
     expect(screen.queryByText('Abandoned')).toBeNull();
     expect(threadLines()).toEqual(['question']);
     expect(requests.filter((request) => request.path.endsWith('/harness/live')).length).toBe(polls);
-    expect(requests.filter((request) => request.path.endsWith('/planner/rewind')).map((request) => request.body))
-      .toEqual([{ turn_id: 'T1' }]);
+    expect(requests.filter((request) => request.path.endsWith('/planner/input')).map((request) => request.body))
+      .toEqual([{ text: 'question', replaces_turn: 'T1' }]);
+    expect(requests.filter((request) => request.path.endsWith('/planner/rewind'))).toEqual([]);
   });
 
   it('does not let a read that started before the turn ended retire the copy, however late it lands', async () => {

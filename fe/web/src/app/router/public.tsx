@@ -7,8 +7,8 @@ import { useConversationStop } from '../conversations/stop.ts';
 import { useLiveReplies, useTranscriptReads } from '../conversations/live-replies.ts';
 import { useConversationEdit } from '../conversations/edit.ts';
 import { useConversationOutbox, useRunReads } from '../conversations/outbox.ts';
-import type { FailedSendOp } from '../../../../core/domain/conversation-outbox.ts';
-import { EMPTY_COMPOSER, isComposerEmpty, withRefill, withoutEditedTurn, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
+import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
+import { EMPTY_COMPOSER, isComposerEmpty, withRefill } from '../../../../core/domain/conversation-rewind.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -172,8 +172,10 @@ type ConversationStore = Readonly<{
   /**
    * What became of the send. `attachments` are ids already uploaded; naming one here is what makes it permanent.
    * `fromComposer`: they are the composer's own, so a delivery clears them (and the upload refusal) there.
+   * `replaces`: the turn an Edit's Send replaces in the same request, or `null` for a new message.
    */
-  send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean) => Promise<SendOutcome>;
+  send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean,
+    replaces: ReplacedTurn | null) => Promise<SendOutcome>;
   /** Whether this card's track can take image attachments at all. */
   attachmentsSupported: boolean;
   /** How full this conversation's context is; `null` when the harness has never said. */
@@ -182,8 +184,6 @@ type ConversationStore = Readonly<{
   runningAnchor: RunningTurnAnchor | null;
   uploadAttachment: UploadAttachment;
   interrupt: () => void;
-  /** Remove this card's latest turn and hand back its input (#1923). */
-  rewind: (turnId: string) => Promise<PlannerRewind>;
   retryHistory: () => void;
   loadEarlier: () => void;
   /** Why the queue is not draining, when the reader has to act; a standing condition of the conversation, unlike `actionError`. */
@@ -538,7 +538,6 @@ export function useConversationStore(
     runningAnchor: nextRunningAnchor,
     uploadAttachment: mutations.uploadAttachment,
     interrupt: stop.interrupt,
-    rewind: mutations.rewind,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
     blockedReason: run.data?.blocked_reason ?? null,
@@ -883,14 +882,14 @@ function useConversationPane(
     if (shownComposer.current === conversationId) setComposerFocusRequest((count) => count + 1);
   }, []);
   const edit = useConversationEdit({ conversationId: composerId, transcript: composerId === null ? [] : store.turnsOf(composerId),
-    historyReady: store.historyReady, rewind: store.rewind, focusComposer });
+    historyReady: store.historyReady, focusComposer });
   /* The one readiness every response action and the continue guidance share. */
   const canContinue = store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
-  /* While an Edit is held (editing, replacing, or its replaced turn not yet read away) nothing else acts on the conversation. */
+  /* While an Edit is held nothing else acts on the conversation; its replace, once sent, blocks as any send does. */
   const respondable = canContinue && edit.held === null;
   const preferences = useUiPreferences();
   const drawerResize = useConversationDrawerResize();
@@ -1309,7 +1308,7 @@ function useConversationPane(
                 </ChatFooterRemedy>
               </ChatFooterNotice>
             )}
-            {store.failedSend !== null && (
+            {store.failedSend !== null && !edit.refusedReplace && (
               <ChatFooterNotice>
                 <ChatFooterError message={store.failedSend.delivery === 'unknown'
                   ? `Delivery is unconfirmed. ${store.failedSend.message}` : `Not sent. ${store.failedSend.message}`} />
@@ -1372,7 +1371,7 @@ function useConversationPane(
               showSideCommand={options?.showSideCommand}
               onSideConversation={options?.onSide === undefined || !store.historyReady ? undefined
                 : (question) => options.onSide?.(open, store.turnsOf(open.id), question)}
-              onSend={(text) => edit.send(open.id, () => store.send(open.id, text, attachments.items, true))}
+              onSend={(text) => store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id))}
               allowEmptyText={attachments.items.length > 0}
               /* The queue lives inside the composer, above the field: these messages have
                                not reached the model, so they are not part of the conversation behind it. */
@@ -1460,14 +1459,14 @@ function useConversationPane(
                 key={open.id}
                 conversation={open}
                 imageFiles={imageFiles}
-                turns={withoutEditedTurn(store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
-                  || composer.text === '' || turn.id !== store.failedSend.echo.id), edit.hidden)} editing={edit.marked}
+                turns={store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
+                  || composer.text === '' || turn.id !== store.failedSend.echo.id)} editing={edit.marked}
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
                 stalled={store.stalled}
                 copyText={edit.held === null ? writeClipboardText : undefined}
                 regenerateMessage={respondable
-                  ? async (message) => { await store.send(open.id, message.text, message.attachments ?? [], false); }
+                  ? async (message) => { await store.send(open.id, message.text, message.attachments ?? [], false, null); }
                   : undefined}
                 editMessage={respondable && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0
                   && isComposerEmpty(composer) && !attachments.busy ? edit.start : undefined}
