@@ -23,7 +23,7 @@ const CARD_SAME_TRACK = { ...CARD, id: 'card-other', title: 'Other chat' };
 /* `model` and `reasoning_effort` are required in the response schema; `null` in
    both is a conversation following the installation default. */
 const PLANNER_RUN_IDLE = {
-  card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null,
+  card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
 };
 
 function ok(body: unknown): ApiTransportResponse {
@@ -1005,7 +1005,7 @@ describe('planner conversation regressions', () => {
     'phase %s applies %s policy to markers, composer state and subsequent sends',
     async (phase, policy) => {
       const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
-        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null })
+        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null })
         /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
                    own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
@@ -1017,7 +1017,7 @@ describe('planner conversation regressions', () => {
              would look queued for the wrong reason. */
       await act(async () => {
         client.setQueryData(queryKeys.plannerRun(CARD.id),
-          { card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null });
+          { card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
         await Promise.resolve();
       });
       const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
@@ -1068,6 +1068,43 @@ describe('planner conversation regressions', () => {
     });
   });
 
+  /* The run response's `running_turn` is anchored where it arrived and ticks in the meta row; a
+     refetch whose delay would move that anchor later does not turn the clock back. */
+  it('ticks the meta row from the run response\'s running turn', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    try {
+      vi.setSystemTime(1_000_000);
+      let elapsed = 18_000;
+      const { client } = setupWithTurns((request) => {
+        if (request.path.endsWith('/planner/run')) {
+          return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', running_turn: { turn_id: 'turn-1', elapsed_ms: elapsed } });
+        }
+        return request.path === '/api/tracks/w1'
+          ? ok({ track: TRACK, can_reopen: false, can_close: true, cards: [CARD],
+              overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] })
+          : undefined;
+      });
+      await openConversationWithTurns();
+      const meta = () => screen.getByRole('status', { name: 'Current response status' });
+      const duration = () => meta().querySelector('[data-nc-meta-duration]')?.textContent ?? null;
+      await waitFor(() => expect(duration()).toBe('· 18s'));
+      expect(meta().textContent).toContain('Running');
+      act(() => { vi.advanceTimersByTime(2_000); });
+      expect(duration()).toBe('· 20s');
+      /* Only one more second on the server's clock: the earlier anchor stands. */
+      elapsed = 19_000;
+      /* The refetched data reaches the store through TanStack's `setTimeout(0)` notify, which this clock does not fake. */
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: queryKeys.plannerRun(CARD.id) });
+        await new Promise((resolve) => { setTimeout(resolve, 0); });
+      });
+      act(() => { vi.advanceTimersByTime(1_000); });
+      expect(duration()).toBe('· 21s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('invalidates history and phase after a successful send', async () => {
     const { requests } = setup();
     await openConversation();
@@ -1093,7 +1130,7 @@ describe('planner conversation regressions', () => {
       if (request.path.endsWith('/planner/run')) {
         return ok({
           card_id: CARD.id, worker_session_id: 'runtime', phase: 'turn_running',
-          model: null, reasoning_effort: null, blocked_reason: null,
+          model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
         });
       }
       return request.path.endsWith('/planner/interrupt') ? pendingInterrupt : undefined;

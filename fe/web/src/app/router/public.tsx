@@ -5,6 +5,7 @@ import { useLiveReplies, useTranscriptReads } from '../conversations/live-replie
 import { useConversationEdit } from '../conversations/edit.ts';
 import { EMPTY_COMPOSER, isComposerEmpty, withRefill, type PlannerRewind } from '../../../../core/domain/conversation-rewind.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
+import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 // Code-based TanStack Router setup, built inside a factory so a test can inject the
 // transport and QueryClient; also the composition point for route-owned surfaces.
@@ -167,6 +168,8 @@ type ConversationStore = Readonly<{
   attachmentsSupported: boolean;
   /** How full this conversation's context is; `null` when the harness has never said. */
   contextUsage: PlannerRunTokenUsage | null;
+  /** Where the running turn's clock starts, anchored when the run response arrived; `null` when no turn is running. */
+  runningAnchor: RunningTurnAnchor | null;
   uploadAttachment: UploadAttachment;
   interrupt: () => void;
   /** Remove this card's latest turn and hand back its input (#1923). */
@@ -306,6 +309,10 @@ export function useConversationStore(
   });
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
+  /* Anchored on the response's arrival (`dataUpdatedAt`); the fold keeps the earlier anchor for one turn. */
+  const [runningAnchor, setRunningAnchor] = useState<RunningTurnAnchor | null>(null);
+  const nextRunningAnchor = anchorRunningTurn(runningAnchor, run.data?.running_turn ?? null, run.dataUpdatedAt);
+  if (nextRunningAnchor !== runningAnchor) setRunningAnchor(nextRunningAnchor);
   /* `pendingQueueIds` is the visibility judgement for the echoes below: an entry the
        queue region is drawing must not also be drawn in the transcript. */
   /* Tombstones for entries this client has had a `done` DELETE or steer for, until the
@@ -706,6 +713,7 @@ export function useConversationStore(
       ? send(conversationId, text, attachments, fromComposer) : Promise.resolve('not-sent'),
     attachmentsSupported: run.data?.attachments_supported ?? false,
     contextUsage: run.data?.token_usage ?? null,
+    runningAnchor: nextRunningAnchor,
     uploadAttachment: mutations.uploadAttachment,
     interrupt: stop.interrupt,
     rewind: mutations.rewind,
@@ -1567,6 +1575,7 @@ function useConversationPanel(
                 canContinue={canContinue}
                 stalledReason={store.blockedReason}
                 stopFeedback={store.stopFeedback}
+                runningAnchor={store.runningAnchor}
               />
             )}
           </>

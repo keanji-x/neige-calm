@@ -41,7 +41,7 @@ function reportEdited(author: ReportEditAuthor | null = 'user'): ConversationSys
 }
 
 function outcome(id: string, status: ConversationTurnOutcome['status']): ConversationTurnOutcome {
-  return { id, author: 'turn', turnId: 'turn-1', status, atMs: NOW };
+  return { id, author: 'turn', elapsedMs: null, turnId: 'turn-1', status, atMs: NOW };
 }
 
 function you(id: string, text: string): ConversationTurn {

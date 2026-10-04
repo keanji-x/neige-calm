@@ -63,7 +63,7 @@ function wrote(id: string, overrides: Partial<ConversationActivity> = {}): Conve
 }
 
 function outcome(id: string, status: ConversationTurnOutcome['status'] = 'completed'): ConversationTurnOutcome {
-  return { id, author: 'turn', turnId: 'turn-1', status, atMs: NOW };
+  return { id, author: 'turn', elapsedMs: null, turnId: 'turn-1', status, atMs: NOW };
 }
 
 function ids(block: TranscriptBlock): string | readonly string[] {

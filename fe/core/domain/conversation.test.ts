@@ -817,10 +817,10 @@ describe('buildTranscript', () => {
     ]);
     expect(entries.map((entry) => entry.author)).toEqual(['you', 'agent', 'turn', 'you', 'turn']);
     expect(entries[2]).toEqual({
-      id: 'outcome-3', author: 'turn', turnId: 'turn-3', status: 'completed', atMs: 1003,
+      id: 'outcome-3', author: 'turn', elapsedMs: 12, turnId: 'turn-3', status: 'completed', atMs: 1003,
     });
     expect(entries[4]).toEqual({
-      id: 'outcome-5', author: 'turn', turnId: 'turn-5', status: 'failed',
+      id: 'outcome-5', author: 'turn', elapsedMs: null, turnId: 'turn-5', status: 'failed',
       message: 'Context window exceeded', text: 'Context window exceeded', code: 'contextWindowExceeded', atMs: 1005,
     });
   });
@@ -863,14 +863,14 @@ describe('transcriptRowToTurnOutcome', () => {
       ...outcome({ id: 'turn-9', status: 'failed', error: { message: raw } }),
       turn_error_text: '400: Upgrade Codex.',
     })).toEqual({
-      id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', atMs: 5000,
+      id: 'outcome-9', author: 'turn', elapsedMs: null, turnId: 'turn-9', status: 'failed', atMs: 5000,
       message: raw, text: '400: Upgrade Codex.',
     });
   });
 
   it.each(['completed', 'interrupted', 'failed'] as const)('parses a %s turn', (status) => {
     expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status }))).toEqual({
-      id: 'outcome-9', author: 'turn', turnId: 'turn-9', status, atMs: 5000,
+      id: 'outcome-9', author: 'turn', elapsedMs: null, turnId: 'turn-9', status, atMs: 5000,
     });
   });
 
@@ -890,8 +890,27 @@ describe('transcriptRowToTurnOutcome', () => {
 
   it('surfaces an unknown status as failed with the raw status, never dropping it', () => {
     expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'inProgress' }))).toEqual({
-      id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', rawStatus: 'inProgress', atMs: 5000,
+      id: 'outcome-9', author: 'turn', elapsedMs: null, turnId: 'turn-9', status: 'failed', rawStatus: 'inProgress', atMs: 5000,
     });
+  });
+
+  it('carries the row\'s own durationMs as the elapsed time, for every outcome', () => {
+    for (const status of ['completed', 'interrupted', 'failed'] as const) {
+      expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status, durationMs: 133017 }))?.elapsedMs).toBe(133017);
+    }
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'completed', durationMs: 0 }))?.elapsedMs).toBe(0);
+  });
+
+  it.each([
+    ['missing', {}],
+    ['negative', { durationMs: -1 }],
+    ['not an integer', { durationMs: 1.5 }],
+    ['a string', { durationMs: '27000' }],
+    ['null', { durationMs: null }],
+  ])('reads a %s durationMs as unknown, never as 0', (_label, timing) => {
+    const parsed = transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'completed', ...timing }));
+    expect(parsed?.status).toBe('completed');
+    expect(parsed?.elapsedMs).toBeNull();
   });
 
   it('takes the turn id from the row column before the params', () => {
@@ -912,23 +931,23 @@ describe('transcriptRowToTurnOutcome', () => {
     it('error without a message: the code survives, no message', () => {
       expect(transcriptRowToTurnOutcome(outcome({
         id: 'turn-9', status: 'failed', error: { codexErrorInfo: 'x' },
-      }))).toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', code: 'x', atMs: 5000 });
+      }))).toEqual({ id: 'outcome-9', author: 'turn', elapsedMs: null, turnId: 'turn-9', status: 'failed', code: 'x', atMs: 5000 });
     });
 
     it('codexErrorInfo of an unknown shape: only the code is dropped', () => {
       expect(transcriptRowToTurnOutcome(outcome({
         id: 'turn-9', status: 'failed', error: { message: 'boom', codexErrorInfo: 5 },
-      }))).toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', message: 'boom', atMs: 5000 });
+      }))).toEqual({ id: 'outcome-9', author: 'turn', elapsedMs: null, turnId: 'turn-9', status: 'failed', message: 'boom', atMs: 5000 });
     });
 
     it('error that is not an object at all: the line survives bare', () => {
       expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'failed', error: 'boom' })))
-        .toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', atMs: 5000 });
+        .toEqual({ id: 'outcome-9', author: 'turn', elapsedMs: null, turnId: 'turn-9', status: 'failed', atMs: 5000 });
     });
 
     it('a status that is not a string is an unknown status, shown as failed with what the wire said', () => {
       expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 7 }))).toEqual({
-        id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', rawStatus: '7', atMs: 5000,
+        id: 'outcome-9', author: 'turn', elapsedMs: null, turnId: 'turn-9', status: 'failed', rawStatus: '7', atMs: 5000,
       });
     });
 

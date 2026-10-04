@@ -80,7 +80,7 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
       if (server !== undefined && request.path.endsWith('/harness/live')) return ok(server.live);
       if (server?.rewind !== undefined && request.path.endsWith('/planner/rewind')) return server.rewind();
       if (server !== undefined && request.path.endsWith('/planner/run')) return ok({
-        card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, blocked_reason: null,
+        card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
       });
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);

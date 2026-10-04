@@ -4,7 +4,7 @@ import type { OptimisticConversationTurn } from './conversation.js';
 
 it('copies verbatim Markdown from the current response only', () => {
   const reply = { id: 'reply', author: 'agent' as const, text: 'Answer\n\n```ts\nx()\n```', atMs: 2 };
-  const end = { id: 'end', author: 'turn' as const, turnId: 'turn', status: 'completed' as const, atMs: 3 };
+  const end = { id: 'end', author: 'turn' as const, elapsedMs: null, turnId: 'turn', status: 'completed' as const, atMs: 3 };
   expect(currentResponseMessage([reply, end], true)).toBe(reply);
   expect(currentResponseMessage([reply, end], false)).toBeNull();
   expect(currentResponseMessage([reply, { id: 'new', author: 'you', text: 'New prompt', atMs: 4 }], false)).toBeNull();
@@ -22,7 +22,7 @@ it('keeps queued messages out of current-response copy and delivered-message edi
 
 it('does not regenerate a previous prompt across a system or turn boundary', () => {
   const user = { id: 'u', author: 'you' as const, text: 'Older prompt', atMs: 1 };
-  const end = { id: 'end', author: 'turn' as const, turnId: 't', status: 'completed' as const, atMs: 2 };
+  const end = { id: 'end', author: 'turn' as const, elapsedMs: null, turnId: 't', status: 'completed' as const, atMs: 2 };
   expect(latestUserMessage([user, end], true)).toBe(user);
   expect(latestUserMessage([user, end], false)).toBeNull();
   expect(latestUserMessage([user, { id: 'wake', author: 'system', label: 'Wake', text: 'Automatic turn', atMs: 3 },

@@ -29,7 +29,7 @@ function activity(id: string, state: ConversationActivity['state'] = 'done'): Co
     state, durationMs: null, detail: null, atMs: 1 };
 }
 function outcome(status: ConversationTurnOutcome['status']): ConversationTurnOutcome {
-  return { id: 'outcome', author: 'turn', turnId: 't1', status, atMs: 3 };
+  return { id: 'outcome', author: 'turn', elapsedMs: null, turnId: 't1', status, atMs: 3 };
 }
 
 describe('tool groups alongside quiet syncs and turn outcomes', () => {

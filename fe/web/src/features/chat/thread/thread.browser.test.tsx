@@ -499,13 +499,13 @@ describe('a failed turn in a real engine', () => {
   it('wraps the current failure and replaces it with one completed row', async () => {
     const you: ConversationTurn = { id: 'you-1', author: 'you', text: 'Summarise everything.', atMs: 0 };
     const failed: ConversationTurnOutcome = {
-      id: 'outcome-1', author: 'turn', turnId: 'turn-1', status: 'failed',
+      id: 'outcome-1', author: 'turn', elapsedMs: null, turnId: 'turn-1', status: 'failed',
       message: 'The conversation exceeded the model\'s context window and the request was rejected before any output was produced.',
       text: 'The conversation exceeded the model\'s context window and the request was rejected before any output was produced.',
       code: 'contextWindowExceeded', atMs: 0,
     };
     const completed: ConversationTurnOutcome = {
-      id: 'outcome-2', author: 'turn', turnId: 'turn-2', status: 'completed', atMs: 0,
+      id: 'outcome-2', author: 'turn', elapsedMs: null, turnId: 'turn-2', status: 'completed', atMs: 0,
     };
     const { rerender } = render(<RailPane turns={[you, failed]} />);
     await frame();

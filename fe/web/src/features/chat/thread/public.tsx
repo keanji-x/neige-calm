@@ -36,6 +36,7 @@ import styles from './thread.module.css';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
 import { CurrentStatusNotice } from './outcome-notice.tsx';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
+import type { RunningTurnAnchor } from '../../../../../core/domain/conversation-meta.ts';
 import {
   ToolCallGroup, toolCallGroupShowsRunning, untouchedToolCallGroup, useToolCallFocus, withDetailOpen,
   type ToolCallGroupUi,
@@ -63,9 +64,11 @@ export type ChatThreadProps = Readonly<{
   regenerateMessage?: (message: ConversationTurn) => Promise<void>;
   /** Rewind the turn `turnId` and give its message back to the composer; rejects with the reason nothing changed. */
   editMessage?: (turnId: string) => Promise<void>;
+  /** Where the running turn's clock starts, from the run response; `null` draws `Running` with no number. */
+  runningAnchor?: RunningTurnAnchor | null;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, runningAnchor = null }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -81,7 +84,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     || currentOutcome.turnId === '' ? null
     : { id: `${conversation.id}:${currentOutcome.turnId}`, run: () => editMessage(currentOutcome.turnId) };
   const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue} live={live}
-    stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} />;
+    stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);

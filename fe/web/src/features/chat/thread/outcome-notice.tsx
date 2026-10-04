@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react';
 import type { ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
-import type { ConversationMetaClock } from '../../../../../core/domain/conversation-meta.ts';
+import type { ConversationMetaClock, RunningTurnAnchor } from '../../../../../core/domain/conversation-meta.ts';
 import { ThreadStatusNotice, type CopyResponseAction, type ResponseAction } from './status-notice.tsx';
+import { useRunningElapsedMs } from './running-clock.ts';
 import styles from './thread.module.css';
 
 /** One plain sentence for the `codexErrorInfo` values a reader can act on; every other code is shown as the token codex sent. */
@@ -14,7 +15,7 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** One stable row across live, request, pause and terminal transitions. */
-export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction }: {
+export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction, runningAnchor }: {
   outcome: ConversationTurnOutcome | null;
   canContinue: boolean;
   live: boolean;
@@ -24,7 +25,10 @@ export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stall
   copyAction: CopyResponseAction | null;
   editAction: ResponseAction | null;
   regenerateAction: ResponseAction | null;
+  /** Where the running turn's clock starts; `null` shows `Running` with no number. */
+  runningAnchor: RunningTurnAnchor | null;
 }) {
+  const runningElapsedMs = useRunningElapsedMs(!stalled && feedback === null && live ? runningAnchor?.startMs ?? null : null);
   let heading: string;
   let tone: 'neutral' | 'warning' | 'error' = 'neutral';
   let details: ReactNode;
@@ -42,12 +46,15 @@ export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stall
       : feedback.kind === 'stopping' ? 'Waiting for the response to end.'
       : 'The response may still be starting or may already have ended.';
     details = <p className={styles.outcomeReason}>{reason}</p>;
-  } else if (live) heading = 'Running';
+  } else if (live) {
+    heading = 'Running';
+    clock = { elapsedMs: runningElapsedMs, timestamp: null };
+  }
   else if (outcome !== null) {
     terminal = outcome.status;
     heading = terminal === 'completed' ? 'Completed' : terminal === 'interrupted' ? 'Interrupted' : 'Failed';
     tone = terminal === 'completed' ? 'neutral' : terminal === 'interrupted' ? 'warning' : 'error';
-    clock = { elapsedMs: null, timestamp: { kind: 'finished', atMs: outcome.atMs } };
+    clock = { elapsedMs: outcome.elapsedMs, timestamp: { kind: 'finished', atMs: outcome.atMs } };
     if (terminal !== 'completed') {
       const hasReason = outcome.text !== undefined && outcome.text.trim() !== '';
       const hint = terminal === 'failed' ? outcomeHintText(outcome.code, outcome.rawStatus) : null;

@@ -226,7 +226,20 @@ export type PlannerRun = Readonly<{
   attachments_supported: boolean;
   /** How full the model's context is, or `null` when the harness has never reported it. */
   token_usage: PlannerRunTokenUsage | null;
+  /** The turn the harness is running; non-null exactly when `phase` is `turn_running`. */
+  running_turn: PlannerRunningTurn | null;
 }>;
+
+/**
+ * How long the harness has run its current turn, by its own monotonic clock since it accepted the
+ * turn's start. Not a wall-clock time: anchor it to when the response arrived (`anchorRunningTurn`).
+ */
+export type PlannerRunningTurn = Readonly<{ turn_id: string; elapsed_ms: number }>;
+
+const plannerRunningTurnSchema: z.ZodType<PlannerRunningTurn> = z.object({
+  turn_id: z.string(),
+  elapsed_ms: z.number(),
+});
 
 /**
  * The context-occupancy reading, exactly as the server ships it. `percent` is the server's
@@ -277,6 +290,7 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
       attachments_supported: z.boolean().optional().default(false),
       /* Absent on older servers and whenever the harness has never reported a usage frame; `null` draws no meter. */
       token_usage: plannerRunTokenUsageSchema.nullable().optional().default(null),
+      running_turn: plannerRunningTurnSchema.nullable(),
     }),
   };
 }
@@ -940,6 +954,8 @@ export type ConversationTurnOutcome = Readonly<{
    * rather than dropped.
    */
   rawStatus?: string;
+  /** The row's own `durationMs`; `null` when it carries none, meaning unknown — never derived from message or tool times. */
+  elapsedMs: number | null;
   atMs: number;
 }>;
 
@@ -1130,7 +1146,13 @@ const turnOutcomeParamsSchema = z.object({
     message: z.string().optional().catch(undefined),
     codexErrorInfo: z.union([z.string(), z.record(z.string(), z.unknown())]).nullish().catch(undefined),
   }).nullish().catch(undefined),
+  durationMs: z.unknown().optional(),
 });
+
+/** A recorded duration only when it is a finite, non-negative integer; anything else is unknown, not 0. */
+function recordedDurationMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+}
 
 function codexErrorCode(info: string | Readonly<Record<string, unknown>> | null | undefined): string | undefined {
   if (info === null || info === undefined) return undefined;
@@ -1150,7 +1172,7 @@ export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnO
   try { parsed = JSON.parse(item.params); } catch { return null; }
   const result = turnOutcomeParamsSchema.safeParse(parsed);
   if (!result.success) return null;
-  const { status: wireStatus, error } = result.data;
+  const { status: wireStatus, error, durationMs } = result.data;
   if (wireStatus === undefined) return null;
   const turnId = item.turn_id ?? result.data.id;
   if (turnId === undefined) return null;
@@ -1158,6 +1180,7 @@ export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnO
   const code = codexErrorCode(error?.codexErrorInfo);
   const base = {
     id: `outcome-${item.id}`, author: 'turn' as const, turnId, atMs: item.created_at_ms,
+    elapsedMs: recordedDurationMs(durationMs),
     ...(message === undefined ? {} : { message }),
     ...(item.turn_error_text === null ? {} : { text: item.turn_error_text }),
     ...(code === undefined ? {} : { code }),

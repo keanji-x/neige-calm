@@ -45,7 +45,7 @@ function mount(path: string, storedText: string | null = null, pluginDescription
     if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER_CARD], overlays: [] }));
     if (request.path === '/api/tracks/w1/conversations') return Promise.resolve(ok([ASSISTANT_ROW]));
     if (request.path.endsWith('/planner/run')) {
-      return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null }));
+      return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null }));
     }
     if (request.path.endsWith('/planner/input')) {
       storedText = (request.body as { text: string }).text;

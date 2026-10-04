@@ -15,7 +15,7 @@ function conversation(): Conversation {
 }
 
 function outcome(status: 'interrupted' | 'failed', text: string | undefined): ConversationTurnOutcome {
-  return { id: `outcome-${status}`, author: 'turn', turnId: `turn-${status}`, status, atMs: 1, text };
+  return { id: `outcome-${status}`, author: 'turn', elapsedMs: null, turnId: `turn-${status}`, status, atMs: 1, text };
 }
 
 it.each(['interrupted', 'failed'] as const)('keeps one native disclosure and normal type for %s', async (status) => {

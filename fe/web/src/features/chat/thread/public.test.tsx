@@ -52,7 +52,7 @@ function systemEntry(
 function turnOutcome(
   overrides: Partial<ConversationTurnOutcome> = {},
 ): ConversationTurnOutcome {
-  return { id: 'o1', author: 'turn', turnId: 'turn-1', status: 'failed', atMs: NOW, ...overrides };
+  return { id: 'o1', author: 'turn', elapsedMs: null, turnId: 'turn-1', status: 'failed', atMs: NOW, ...overrides };
 }
 
 const PANE_SCROLL_HEIGHT = 1_000;
@@ -216,6 +216,8 @@ describe('ChatThread', () => {
     expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Interrupted');
     expect(screen.getByText('Interrupted', { exact: true })).toBeTruthy();
     expect(screen.getByText('Send a message to continue.')).toBeTruthy();
+    // The row records no `durationMs`: unknown, so no number.
+    expect(container.querySelector('[data-nc-meta-duration]')).toBeNull();
   });
 
   it('shows a provider timeout delivered by the production transcript wire', () => {
