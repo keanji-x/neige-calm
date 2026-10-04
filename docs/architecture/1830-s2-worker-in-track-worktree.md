@@ -125,7 +125,7 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
     that is `NotLoaded` (as after a daemon restart) or whose last turn ended counts as stopped
     (Ok). A daemon that is not Running (`!is_running_per_readiness()`,
     `shared_codex_appserver.rs:1734`) also counts as stopped, by the codebase's own death rule
-    ("daemon down — brain gone, no turn can run", `calm-provider/src/provider/codex.rs:139-141`).
+    ("daemon down — brain gone, no turn can run", `provider/src/worker/codex.rs:139-141`).
     Only a transport failure while the daemon is Running, or a thread still active, returns Err.
     Each Err therefore needs a live daemon that cannot answer, so the loop ends when the daemon
     either answers or goes down.

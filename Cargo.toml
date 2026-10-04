@@ -8,7 +8,7 @@ members = [
     "crates/calm-exec",
     "crates/calm-truth",
     "crates/calm-truth-test-harness",
-    "crates/calm-provider",
+    "crates/provider",
     "crates/calm-server",
     "crates/calm-proc-supervisor",
     "crates/calm-terminal-runtime",

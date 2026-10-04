@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use calm_exec::WorkerProvider;
-use calm_provider::{ClaudeProvider, CodexDaemonProbe, CodexProvider, TerminalProvider};
 use calm_types::worker::WorkerProviderKind;
+use provider::{ClaudeProvider, CodexDaemonProbe, CodexProvider, TerminalProvider};
 
 use crate::shared_codex_appserver::SharedCodexAppServer;
 

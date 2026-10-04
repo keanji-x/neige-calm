@@ -12,7 +12,7 @@ use calm_types::worker::{
 use super::supervisor::probe_terminal_liveness;
 use super::terminal::failed_reason;
 
-/// calm-provider-local mirror of the wire `ThreadStatus`; the arbiter only ever asks "is it `Active`?".
+/// provider-local mirror of the wire `ThreadStatus`; the arbiter only ever asks "is it `Active`?".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadStatusLite {
     NotLoaded,
@@ -25,7 +25,7 @@ pub enum ThreadStatusLite {
     },
 }
 
-/// calm-provider-local mirror of the wire `TurnStatus` (a required field of upstream `Turn`).
+/// provider-local mirror of the wire `TurnStatus` (a required field of upstream `Turn`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStatusLite {
     Completed,

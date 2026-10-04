@@ -435,20 +435,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calm-provider"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "calm-exec",
- "calm-session",
- "calm-truth-test-harness",
- "calm-types",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "calm-report"
 version = "0.1.0"
 dependencies = [
@@ -472,7 +458,6 @@ dependencies = [
  "blake3",
  "calm-exec",
  "calm-proc-supervisor",
- "calm-provider",
  "calm-report",
  "calm-server",
  "calm-session",
@@ -497,6 +482,7 @@ dependencies = [
  "libc",
  "nix 0.29.0",
  "nucleo-matcher",
+ "provider",
  "pulldown-cmark",
  "qrcode",
  "quote",
@@ -2277,6 +2263,25 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "provider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "calm-exec",
+ "calm-session",
+ "calm-types",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

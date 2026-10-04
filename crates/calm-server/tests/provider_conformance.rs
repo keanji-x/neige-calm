@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(unix)]
-use calm_provider::{ClaudeProvider, TerminalProvider};
+use provider::{ClaudeProvider, TerminalProvider};
 #[cfg(all(unix, feature = "codex-e2e"))]
-use calm_provider::{CodexDaemonProbe, CodexProvider};
+use provider::{CodexDaemonProbe, CodexProvider};
 
 #[cfg(unix)]
 #[tokio::test]
@@ -92,10 +92,7 @@ impl CodexDaemonProbe for StaticCodexDaemonProbe {
         0
     }
 
-    async fn read_liveness_facts(
-        &self,
-        _thread_id: &str,
-    ) -> Option<calm_provider::CodexLivenessFacts> {
+    async fn read_liveness_facts(&self, _thread_id: &str) -> Option<provider::CodexLivenessFacts> {
         None
     }
 }

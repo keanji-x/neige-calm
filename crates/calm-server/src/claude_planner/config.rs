@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use super::spawn::instructions_dir;
 use super::stop::MarkerInstance;
-use super::translate::CalmToolNames;
+use super::translate::ToolNames;
 use crate::error::{CalmError, Result};
 use crate::harness::backend::TurnStartFailure;
 use crate::model::CardRole;
@@ -131,7 +131,7 @@ pub struct ClaudePlannerHost {
     pub instructions_dir: PathBuf,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
-    pub calm_tools: CalmToolNames,
+    pub calm_tools: ToolNames,
     /// Owns the data dir of [`Self::unconfigured_scratch`].
     _scratch: Option<tempfile::TempDir>,
 }
@@ -143,7 +143,8 @@ impl ClaudePlannerHost {
         mcp_shim: PathBuf,
         mcp_socket: PathBuf,
     ) -> Result<Self> {
-        let calm_tools = CalmToolNames::new(
+        let calm_tools = ToolNames::new(
+            crate::mcp_server::wiring::MCP_SERVER_KEY,
             crate::mcp_server::build_default_registry()
                 .descriptors_for_role(CardRole::Planner)
                 .into_iter()

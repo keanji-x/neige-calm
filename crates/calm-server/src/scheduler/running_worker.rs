@@ -6,10 +6,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_provider::provider::{
-    CodexDaemonProbe, CodexLivenessFacts, ThreadStatusLite, TurnStatusLite,
-};
 use dashmap::DashMap;
+use provider::worker::{CodexDaemonProbe, CodexLivenessFacts, ThreadStatusLite, TurnStatusLite};
 
 use super::{InflightGuard, Scheduler, duration_ms_i64, is_race_lost, race_lost_err};
 use crate::db::sqlite::{TaskReporter, task_fail_from_worker_tx};
@@ -409,7 +407,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_provider::provider::LastTurnFacts;
+    use provider::worker::LastTurnFacts;
 
     fn facts(status: ThreadStatusLite, last_turn: Option<LastTurnFacts>) -> CodexLivenessFacts {
         CodexLivenessFacts {

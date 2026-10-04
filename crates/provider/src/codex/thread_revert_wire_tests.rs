@@ -56,6 +56,6 @@ async fn turn_not_found_is_an_applied_revert_and_other_refusals_stay_errors() {
         .thread_revert("thread-1", "turn-2")
         .await
         .expect_err("only `turn not found` means applied");
-    assert!(matches!(error, CalmError::CodexRefused(_)), "{error}");
+    assert!(matches!(error, Error::Refused(_)), "{error}");
     answer.await.unwrap();
 }

@@ -89,6 +89,9 @@ in the pull request so reviewers can assess the boundary and maintenance cost.
 
 ## Contracts and code
 
+- Name new crates after their responsibility without a `calm-` prefix. The
+  unified agent provider package is named `provider`; keep unrelated existing
+  package names until an explicitly scoped rename.
 - Model required fields as required types. Do not hide missing values with
   `Option`, defaults, or test-helper backfills. When changing an API, event,
   database field, or configuration, sweep every caller, fixture, script, and

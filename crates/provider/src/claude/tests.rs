@@ -23,14 +23,34 @@ use super::protocol::{
     ControlResponseOutBody, ErrorSubtype, ProtocolError, Record, UserLine, UserLineContent,
     client_line_uuid, decode,
 };
-use super::translate::{CalmToolNames, TurnContext, TurnOutcome, TurnTranslator};
-use crate::codex_appserver::InputItem;
-use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
+use super::translate::{ToolNames, TurnContext, TurnOutcome, TurnTranslator};
+use crate::InputItem;
+use crate::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 const FIXTURE_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/claude_planner_stream"
 );
+
+#[test]
+fn tool_translation_uses_the_registered_server_key() {
+    let tools = ToolNames::new("workspace", ["project.read".to_string()]);
+    let mut translator = TurnTranslator::new(context("0".repeat(32), Vec::new()), tools).unwrap();
+    let record = Record::Assistant {
+        message_id: "message-1".into(),
+        blocks: vec![super::protocol::AssistantBlock::ToolUse {
+            id: "tool-1".into(),
+            name: "mcp__workspace__project_read".into(),
+            input: json!({"path": "README.md"}),
+        }],
+    };
+    let events = translator.translate(&record, 1_000);
+    let calls = of_type(&items(&events, "item/started"), "mcpToolCall");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["server"], "workspace");
+    assert_eq!(calls[0]["tool"], "project.read");
+    assert_eq!(calls[0]["arguments"], json!({"path": "README.md"}));
+}
 
 pub(super) fn fixture_lines(name: &str) -> Vec<String> {
     let path = format!("{FIXTURE_DIR}/{name}");
@@ -68,8 +88,9 @@ pub(super) fn context(client_id: String, input: Vec<InputItem>) -> TurnContext {
     }
 }
 
-pub(super) fn visible_tools() -> CalmToolNames {
-    CalmToolNames::new(
+pub(super) fn visible_tools() -> ToolNames {
+    ToolNames::new(
+        "neige",
         [
             "neige.report.write",
             "neige.report.read",
@@ -242,9 +263,11 @@ fn an_unknown_or_ambiguous_calm_tool_keeps_the_claude_name() {
     let records = decode_fixture("pB_baseline.ndjson");
     let client_id = first_replay_client_id(&records);
     // `neige.report.write` and `neige_report.write` both spell `neige_report_write`.
-    let ambiguous =
-        CalmToolNames::new(["neige.report.write", "neige_report.write"].map(String::from));
-    for tools in [CalmToolNames::new(Vec::new()), ambiguous] {
+    let ambiguous = ToolNames::new(
+        "neige",
+        ["neige.report.write", "neige_report.write"].map(String::from),
+    );
+    for tools in [ToolNames::new("neige", Vec::new()), ambiguous] {
         let mut translator =
             TurnTranslator::new(context(client_id.clone(), Vec::new()), tools).unwrap();
         let notifications: Vec<_> = records

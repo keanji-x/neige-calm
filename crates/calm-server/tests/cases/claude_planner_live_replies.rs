@@ -13,7 +13,7 @@ use super::claude_planner_wiring::wait_file;
 
 const STREAM: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/claude_planner_stream/p1923_stream.ndjson"
+    "/../provider/tests/fixtures/claude_planner_stream/p1923_stream.ndjson"
 );
 /// The second message's text block, the reply the tests cut.
 const REPLY: &str = "msg_REDACTED0028:1";

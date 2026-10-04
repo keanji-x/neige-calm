@@ -1,4 +1,4 @@
-use super::{CalmError, Pending, Result};
+use super::{Error, Pending, Result};
 use std::os::fd::AsFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,7 +18,7 @@ impl TransportAbort {
     }
     pub(super) fn check(&self) -> Result<()> {
         if self.poisoned.load(Ordering::Acquire) {
-            return Err(CalmError::CodexAppServer(
+            return Err(Error::Transport(
                 "transport aborted after incomplete write; outcome unknown".into(),
             ));
         }

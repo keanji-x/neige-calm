@@ -51,10 +51,10 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 # --- 14. GitHub Actions' `workflow_dispatch` event name is a platform-owned key, not the retired vocabulary.
 3   .github/workflows/ci.yml
 # --- 15. Recorded Claude Code stream-json output (#1791): third-party skill/plugin/tool names in byte-exact recordings.
-1   crates/calm-server/tests/fixtures/claude_planner_stream/pB_baseline.ndjson
-1   crates/calm-server/tests/fixtures/claude_planner_stream/pB_emptycfg.ndjson
-1   crates/calm-server/tests/fixtures/claude_planner_stream/pB_safe.ndjson
-2   crates/calm-server/tests/fixtures/claude_planner_stream/pG.ndjson
+1   crates/provider/tests/fixtures/claude_planner_stream/pB_baseline.ndjson
+1   crates/provider/tests/fixtures/claude_planner_stream/pB_emptycfg.ndjson
+1   crates/provider/tests/fixtures/claude_planner_stream/pB_safe.ndjson
+2   crates/provider/tests/fixtures/claude_planner_stream/pG.ndjson
 # #2053 uses the English plural for processes that require accepted inputs, not a retired API key.
 1   docs/architecture/2053-worker-outcome-reports.md
 EOF

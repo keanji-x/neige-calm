@@ -1247,7 +1247,7 @@ async fn codex_interrupt_settled(
     thread_id: &str,
     interrupted: Result<()>,
 ) -> Result<()> {
-    use calm_provider::provider::{CodexDaemonProbe, ThreadStatusLite, TurnStatusLite};
+    use provider::worker::{CodexDaemonProbe, ThreadStatusLite, TurnStatusLite};
     let Err(error) = interrupted else {
         return Ok(());
     };

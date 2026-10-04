@@ -35,7 +35,3 @@ mod rewind_tests;
 mod spawn_tests;
 #[cfg(test)]
 mod stop_tests;
-#[cfg(test)]
-mod stream_tests;
-#[cfg(test)]
-mod tests;

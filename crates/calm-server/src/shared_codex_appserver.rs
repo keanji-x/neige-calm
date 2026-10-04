@@ -25,6 +25,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
 
+pub use provider::codex::{other_thread_id, thread_id_from_started};
+
 use crate::codex_appserver::{
     AccountRead, ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem, Notification,
     ThreadStartParams, redact_thread_start_config,
@@ -1452,7 +1454,7 @@ impl SharedCodexAppServer {
                 .clone());
         }
         let client = self.connected_client().await?;
-        client.account_read(deadline).await
+        client.account_read(deadline).await.map_err(Into::into)
     }
 
     /// `config/read` — the layer-merged effective config, narrowed to the model defaults;
@@ -1660,7 +1662,7 @@ impl SharedCodexAppServer {
         #[cfg(not(feature = "fixtures"))]
         let fake_answer: Option<Result<serde_json::Value>> = None;
         match fake_answer {
-            Some(answer) => crate::codex_appserver::thread_revert_outcome(answer)?,
+            Some(answer) => crate::codex_appserver::thread_revert_outcome(Ok(answer?))?,
             None => {
                 self.connected_client()
                     .await?
@@ -1690,7 +1692,10 @@ impl SharedCodexAppServer {
             return Ok(());
         }
         let client = self.connected_client().await?;
-        client.turn_interrupt(thread_id, turn_id).await
+        client
+            .turn_interrupt(thread_id, turn_id)
+            .await
+            .map_err(Into::into)
     }
 
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
@@ -4205,17 +4210,6 @@ fn thread_started_id(notification: &Notification) -> Option<&str> {
     }
 }
 
-pub fn thread_id_from_started(params: &serde_json::Value) -> Option<&str> {
-    if let Some(id) = params
-        .get("thread")
-        .and_then(|thread| thread.get("id"))
-        .and_then(serde_json::Value::as_str)
-    {
-        return Some(id);
-    }
-    params.get("threadId").and_then(serde_json::Value::as_str)
-}
-
 fn turn_completed_thread_id(notification: &Notification) -> Option<&str> {
     match notification {
         Notification::TurnCompleted { thread_id, .. } => Some(thread_id),
@@ -4233,10 +4227,6 @@ pub(crate) fn other_turn_id(params: &serde_json::Value) -> Option<&str> {
         .get("turn")
         .and_then(turn_id)
         .or_else(|| params.get("turnId").and_then(serde_json::Value::as_str))
-}
-
-pub fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
-    params.get("threadId").and_then(serde_json::Value::as_str)
 }
 
 fn track_active_turn(
@@ -4530,7 +4520,7 @@ impl Drop for SpawnedChildGuard {
 // signals the shared codex daemon; it is left running for the next boot's takeover.
 
 #[async_trait::async_trait]
-impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
+impl provider::worker::CodexDaemonProbe for SharedCodexAppServer {
     fn is_running(&self) -> bool {
         SharedCodexAppServer::is_running(self)
     }
@@ -4553,7 +4543,7 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
     async fn read_liveness_facts(
         &self,
         thread_id: &str,
-    ) -> Option<calm_provider::provider::CodexLivenessFacts> {
+    ) -> Option<provider::worker::CodexLivenessFacts> {
         let client = self.connected_client().await.ok()?;
         let read = client.thread_read(thread_id, true).await.ok()?;
         // Secondary `loaded` signal; a failed list shouldn't sink the pull.
@@ -4572,11 +4562,9 @@ impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
 fn liveness_facts_from_read(
     read: crate::codex_appserver::ThreadReadResponse,
     loaded: bool,
-) -> calm_provider::provider::CodexLivenessFacts {
+) -> provider::worker::CodexLivenessFacts {
     use crate::codex_appserver::{ThreadActiveFlag, ThreadStatus, TurnStatus};
-    use calm_provider::provider::{
-        CodexLivenessFacts, LastTurnFacts, ThreadStatusLite, TurnStatusLite,
-    };
+    use provider::worker::{CodexLivenessFacts, LastTurnFacts, ThreadStatusLite, TurnStatusLite};
 
     let status = match read.thread.status {
         ThreadStatus::NotLoaded => ThreadStatusLite::NotLoaded,
@@ -4638,7 +4626,7 @@ mod tests {
     /// failed turn on a reloaded (`idle`) thread still reads back as failed. Every wire value.
     #[test]
     fn liveness_facts_carry_the_last_turns_own_status() {
-        use calm_provider::provider::{LastTurnFacts, ThreadStatusLite, TurnStatusLite};
+        use provider::worker::{LastTurnFacts, ThreadStatusLite, TurnStatusLite};
         for (wire, lite) in [
             ("completed", TurnStatusLite::Completed),
             ("interrupted", TurnStatusLite::Interrupted),

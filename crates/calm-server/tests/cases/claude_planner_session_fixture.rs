@@ -15,7 +15,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use calm_server::claude_planner::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
 use calm_server::claude_planner::stop::{MARKER_KEY, sigkill_verified_for_test};
-use calm_server::claude_planner::translate::CalmToolNames;
+use calm_server::claude_planner::translate::ToolNames;
 use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
@@ -39,7 +39,7 @@ const FAKE: &str = concat!(
 );
 pub const P_D_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/claude_planner_stream/pB_emptycfg.ndjson"
+    "/../provider/tests/fixtures/claude_planner_stream/pB_emptycfg.ndjson"
 );
 
 pub struct Rig {
@@ -130,7 +130,10 @@ impl Rig {
             track_id: self.track_id.clone(),
             cwd: self.ws.clone(),
             instructions: self.instructions.clone(),
-            calm_tools: CalmToolNames::new(["neige.report.commit".to_string()]),
+            calm_tools: ToolNames::new(
+                calm_server::mcp_server::wiring::MCP_SERVER_KEY,
+                ["neige.report.commit".to_string()],
+            ),
             proxy: Vec::new(),
             prior_total_tokens: 0,
             repo: self.repo.clone(),

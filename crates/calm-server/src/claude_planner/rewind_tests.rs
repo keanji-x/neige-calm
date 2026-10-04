@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::protocol::decode;
 use super::rewind::{anchor, truncation};
 use super::spawn::{ResumeTruncation, SessionStart, argv, truncation_check_argv};
-use super::translate::{CalmToolNames, TurnContext, TurnOutcome, TurnTranslator};
+use super::translate::{ToolNames, TurnContext, TurnOutcome, TurnTranslator};
 use crate::db::TranscriptRow;
 use crate::harness::planner_event::PlannerEventKind;
 use crate::planner_model::TurnModelSelection;
@@ -38,7 +38,7 @@ fn translator() -> TurnTranslator {
             cwd: "/ws".into(),
             prior_total_tokens: 0,
         },
-        CalmToolNames::new(Vec::new()),
+        ToolNames::new(crate::mcp_server::wiring::MCP_SERVER_KEY, Vec::new()),
     )
     .unwrap()
 }
@@ -100,7 +100,7 @@ fn last_record_uuid_is_the_last_chain_record_including_one_that_makes_no_item() 
 fn a_streamed_turn_anchors_at_its_last_chain_record_not_its_last_stream_frame() {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/claude_planner_stream/p1923_stream.ndjson"
+        "/../provider/tests/fixtures/claude_planner_stream/p1923_stream.ndjson"
     ))
     .unwrap();
     let lines: Vec<String> = text.lines().map(str::to_string).collect();

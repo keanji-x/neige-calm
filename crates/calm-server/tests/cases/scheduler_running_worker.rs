@@ -3,12 +3,12 @@
 
 use super::*;
 
-use calm_provider::provider::{
-    CodexDaemonProbe, CodexLivenessFacts, LastTurnFacts, ThreadStatusLite, TurnStatusLite,
-};
 use calm_server::dispatcher::task_event_pushes_planner_for_test;
 use calm_server::event::BroadcastEnvelope;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_CANCEL;
+use provider::worker::{
+    CodexDaemonProbe, CodexLivenessFacts, LastTurnFacts, ThreadStatusLite, TurnStatusLite,
+};
 
 /// r4 of #1772: the rollout's `turn_aborted` `completed_at` (Unix SECONDS) = 2026-09-23
 /// 18:41:24 +08:00 (10:41:24Z).

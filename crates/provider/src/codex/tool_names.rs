@@ -13,7 +13,7 @@
 //! internals, so it resolves to no tool and the caller gets the explicit unknown-name refusal.
 
 /// codex-mcp's sanitizing: every char outside `[A-Za-z0-9_]` becomes `_`.
-pub(crate) fn codex_sanitized(name: &str) -> String {
+pub fn codex_sanitized(name: &str) -> String {
     name.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {
@@ -26,16 +26,15 @@ pub(crate) fn codex_sanitized(name: &str) -> String {
 }
 
 /// The model reads `mcp__<server>__<sanitized tool>`.
-const CODEX_MCP_PREFIX: &str = "mcp__";
-const CODEX_MCP_DELIMITER: &str = "__";
+pub const CODEX_MCP_PREFIX: &str = "mcp__";
+pub const CODEX_MCP_DELIMITER: &str = "__";
 
 /// The byte cap Codex 0.159.2 applies to `mcp__<server>__<callable>`.
-#[cfg(test)]
-const CODEX_QUALIFIED_NAME_CAP: usize = 128;
+pub const CODEX_QUALIFIED_NAME_CAP: usize = 128;
 
 /// The one key every spelling of a registry tool reduces to. A registry name starts with
 /// `plugin.` or the kernel prefix, never `mcp__`, so stripping cannot mis-read one.
-pub(crate) fn model_tool_key(name: &str) -> String {
+pub fn model_tool_key(name: &str) -> String {
     codex_sanitized(strip_codex_qualifier(name))
 }
 
@@ -72,39 +71,5 @@ mod tests {
         assert_eq!(model_tool_key("mcp__plugin_a_b"), "mcp__plugin_a_b");
         assert_eq!(model_tool_key("mcp____plugin_a_b"), "mcp____plugin_a_b");
         assert_eq!(model_tool_key(TRUSTED), codex_sanitized(TRUSTED));
-    }
-
-    /// Codex hashes a callable that is too long or that collides after sanitizing; a kernel tool
-    /// must be neither, under every server key the shared CODEX_HOME writes. Then the kernel
-    /// tool's callable is exactly its sanitized raw name, and the sanitizing is reversible.
-    #[test]
-    fn kernel_tool_callables_are_injective_and_unhashed() {
-        let registry = crate::mcp_server::build_default_registry();
-        let kernel: Vec<String> = registry
-            .descriptors()
-            .into_iter()
-            .map(|descriptor| descriptor.name)
-            .filter(|name| !name.starts_with("plugin."))
-            .collect();
-        assert!(kernel.len() >= 30, "anti-vacuity: {kernel:?}");
-
-        let mut by_callable = std::collections::BTreeMap::new();
-        for name in &kernel {
-            if let Some(other) = by_callable.insert(codex_sanitized(name), name) {
-                panic!("`{name}` and `{other}` share one Codex callable, so Codex hashes both");
-            }
-        }
-        for server in crate::shared_codex_home::EXPECTED_MCP_SERVERS {
-            for callable in by_callable.keys() {
-                let qualified =
-                    format!("{CODEX_MCP_PREFIX}{server}{CODEX_MCP_DELIMITER}{callable}");
-                assert!(
-                    qualified.len() <= CODEX_QUALIFIED_NAME_CAP,
-                    "`{qualified}` is {} bytes; Codex hashes over {CODEX_QUALIFIED_NAME_CAP}",
-                    qualified.len()
-                );
-                assert_eq!(model_tool_key(&qualified), *callable);
-            }
-        }
     }
 }

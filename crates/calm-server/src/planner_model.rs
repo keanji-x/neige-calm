@@ -3,6 +3,8 @@
 
 use serde_json::Value;
 
+pub use provider::TurnModelSelection;
+
 /// `cards.payload_json` key: the chosen model **slug** (never a preset id), or JSON `null` for "follow the installation default".
 pub const PAYLOAD_MODEL: &str = "model";
 /// `cards.payload_json` key: monotone "a model has been chosen on this card at least once"; nothing clears it.
@@ -164,20 +166,6 @@ impl DefaultsNeededFor {
 pub struct InstallationDefaults {
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
-}
-
-/// What a `turn/start` frame must say about the model. `None` means the key is not put on the frame at all, leaving whatever the thread already carries.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TurnModelSelection {
-    pub model: Option<String>,
-    pub effort: Option<String>,
-}
-
-impl TurnModelSelection {
-    /// Send neither key. Correct only where we have never put a sticky value on the thread.
-    pub fn inherit() -> Self {
-        Self::default()
-    }
 }
 
 /// Which half of the selection could not be determined.

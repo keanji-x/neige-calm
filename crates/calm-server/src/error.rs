@@ -208,6 +208,45 @@ impl IntoResponse for CalmError {
     }
 }
 
+/// Preserve protocol failures at the server's HTTP and retry-classification boundary.
+impl From<provider::codex::error::Error> for CalmError {
+    fn from(error: provider::codex::error::Error) -> Self {
+        match error {
+            provider::codex::error::Error::Transport(message) => Self::CodexAppServer(message),
+            provider::codex::error::Error::Refused(message) => Self::CodexRefused(message),
+            provider::codex::error::Error::Serde(error) => Self::Serde(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod provider_error_tests {
+    use super::*;
+
+    #[test]
+    fn codex_error_bridge_preserves_failure_class_and_http_contract() {
+        let refused: CalmError = provider::codex::error::Error::Refused("no model".into()).into();
+        assert!(matches!(&refused, CalmError::CodexRefused(message) if message == "no model"));
+        assert_eq!(refused.code(), "codex_refused");
+        assert_eq!(refused.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(refused.to_string(), "codex refused: no model");
+
+        let transport: CalmError = provider::codex::error::Error::Transport("closed".into()).into();
+        assert!(matches!(&transport, CalmError::CodexAppServer(message) if message == "closed"));
+        assert_eq!(transport.code(), "codex_app_server");
+        assert_eq!(transport.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(transport.to_string(), "codex app-server: closed");
+
+        let source = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let message = source.to_string();
+        let serde: CalmError = provider::codex::error::Error::Serde(source).into();
+        assert!(matches!(&serde, CalmError::Serde(_)));
+        assert_eq!(serde.code(), "serde_error");
+        assert_eq!(serde.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(serde.to_string(), format!("serde: {message}"));
+    }
+}
+
 /// Bridge from the IO-free `CoreError` into the HTTP-mapped `CalmError`; variant mapping is 1:1.
 impl From<calm_types::error::CoreError> for CalmError {
     fn from(err: calm_types::error::CoreError) -> Self {

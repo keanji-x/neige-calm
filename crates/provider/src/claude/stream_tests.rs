@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use super::protocol::{BlockKind, ProtocolError, Record, StreamEvent, decode};
 use super::tests::{context, decode_fixture, fixture_lines, items, visible_tools};
 use super::translate::TurnTranslator;
-use crate::harness::planner_event::{PlannerEvent, PlannerEventKind};
+use crate::events::{PlannerEvent, PlannerEventKind};
 
 const STREAM: &str = "p1923_stream.ndjson";
 const FIRST: &str = "msg_REDACTED0027";

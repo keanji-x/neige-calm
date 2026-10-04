@@ -45,10 +45,10 @@ impl Dispatch {
                         .send(Message::Text(reply.to_string()))
                         .await
                         .map_err(|error| {
-                            CalmError::CodexAppServer(format!("server reply write: {error}"))
+                            Error::Transport(format!("server reply write: {error}"))
                         })?;
                     sending.complete();
-                    Ok::<_, CalmError>(())
+                    Ok::<_, Error>(())
                 })
                 .await;
                 if !matches!(sent, Ok(Ok(()))) {

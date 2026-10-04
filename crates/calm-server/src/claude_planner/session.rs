@@ -30,7 +30,7 @@ use super::driver::{TurnRun, drive};
 use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
 use super::spawn::{self, InstructionsFile, ResumeTruncation, SessionStart};
 use super::stop::stop;
-use super::translate::{CalmToolNames, TurnContext, TurnTranslator};
+use super::translate::{ToolNames, TurnContext, TurnTranslator};
 use crate::codex_appserver::InputItem;
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
@@ -63,7 +63,7 @@ pub struct ClaudePlannerSessionParams {
     /// The rendered Planner instructions, written to a private file at every spawn.
     pub instructions: String,
     /// The calm tools visible to the card, to restore their dotted names.
-    pub calm_tools: CalmToolNames,
+    pub calm_tools: ToolNames,
     /// `(UPPER, lower, value)` proxy pairs from the server's resolver.
     pub proxy: Vec<(String, String, String)>,
     /// The thread's lifetime token total from the harness snapshot.
