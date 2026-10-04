@@ -65,6 +65,8 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   await expect.element(areasDisclosure).toHaveFocus();
   expect(getComputedStyle(areasMarker).opacity).toBe('1');
   await today.click();
+  expect(onGo).toHaveBeenCalledExactlyOnceWith({ name: 'today' });
+  onGo.mockClear();
 
   const optionsBox = options.element().getBoundingClientRect();
   const collapseBox = collapse.element().getBoundingClientRect();
