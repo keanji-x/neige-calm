@@ -768,9 +768,12 @@ describe('track conversations', () => {
     '[F5] retries a %s failure under its key, then offers Try again without asking', async (mode) => {
       const text = 'repeat the same request';
       let failing = true;
+      let rows: ReturnType<typeof harnessMessage>[] = [];
       const { requests } = setup((request) => {
+        if (request.path.includes(HISTORY_PATH)) return ok(rows);
         if (request.path.endsWith('/planner/input')) {
-          if (!failing) return inputAccepted();
+          /* Stored, and drained into the transcript the refresh after the 200 reads. */
+          if (!failing) { rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })]; return inputAccepted(); }
           if (mode === 'transport') throw new Error('response dropped');
           return mode === '503' ? failure(503, 'unavailable', 'upstream unavailable') : ok({});
         }
@@ -894,7 +897,82 @@ describe('track conversations', () => {
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
   });
 
-  it('[F5] asks for a reconnect, not the admission words, when the retries ran out offline', async () => {
+  /* The server holds the op's entry, or not: what a replayed 200 claims is not trusted for a once-unknown op. */
+  function unknownOpServer(phase: 'turn_running' | 'idle', text: string) {
+    const entry = { entry_id: 'entry-9', text, rev: 0, queued_at_ms: 5 };
+    const state = { queued: true, accept: false };
+    const view = setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null,
+          blocked_reason: null, running_turn: null, pending: state.queued ? [entry] : [], pending_overflow: 0 });
+      }
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      if (!state.accept) throw new Error('response dropped');
+      return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', entry_id: entry.entry_id });
+    });
+    return { ...view, state };
+  }
+
+  async function sendUntilSpent(text: string) {
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write(text);
+    expect((await screen.findByRole('alert')).textContent).toContain('Delivery is unconfirmed');
+  }
+
+  it.each(['turn_running', 'idle'] as const)(
+    '[F5] shows nothing for a resumed send whose stored entry was deleted (%s at the press)', async (phase) => {
+      const text = `Deleted before Try again, ${phase}`;
+      const { client, state } = unknownOpServer(phase, text);
+      await sendUntilSpent(text);
+      /* Another tab deleted the queued entry; the server still replays its id under the key. */
+      state.queued = false;
+      await act(async () => { await client.invalidateQueries(); });
+      state.accept = true;
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      await waitFor(() => expect(within(drawerElement()).queryAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(0));
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+      fireEvent.click(await screen.findByRole('button', { name: /Conversation (Assistant|Deleted before)/ }));
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+      expect(within(drawerElement()).queryAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(0);
+    },
+  );
+
+  it('[F5] shows a resumed send once, from the queue, while its stored entry is still queued', async () => {
+    const text = 'Still queued at Try again';
+    const { state } = unknownOpServer('turn_running', text);
+    await sendUntilSpent(text);
+    state.accept = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain(text));
+    await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+  });
+
+  it('[F5] keeps one English line when Try again is pressed offline in the bundled build', async () => {
+    vi.stubGlobal('__NC_BUNDLED__', true);
+    const access = new RecoveryAccess(); access.change('connected');
+    const { requests } = setup((request) => {
+      if (request.path.endsWith('/planner/input')) throw new Error('response dropped');
+      return undefined;
+    }, undefined, access);
+    const inputs = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+    await sendUntilSpent('Spent online, retried offline');
+    expect(inputs()).toHaveLength(SEND_RETRIES + 1);
+    act(() => { access.change('offline'); });
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toContain('Delivery is unconfirmed. Try again when you’re back online.'));
+    expect(screen.getAllByRole('alert').map((alert) => alert.textContent).join(' ')).not.toMatch(/离线|连接/);
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(inputs()).toHaveLength(SEND_RETRIES + 1);
+  });
+
+  it('[F5] asks for a reconnect, not the admission words, when the retries ran out offline (bundled build)', async () => {
     vi.stubGlobal('__NC_BUNDLED__', true);
     const access = new RecoveryAccess(); access.change('connected');
     const { requests } = setup((request) => {
@@ -915,9 +993,13 @@ describe('track conversations', () => {
   it('[F4] sends a dropped answer again under its key, with no question and one message', async () => {
     let attempts = 0;
     const text = 'Keep the dropped request';
+    let rows: ReturnType<typeof harnessMessage>[] = [];
     const { requests } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok(rows);
       if (!request.path.endsWith('/planner/input')) return undefined;
       attempts += 1;
+      /* The first attempt was stored; only its answer was lost. */
+      rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
       if (attempts === 1) throw new Error('response dropped');
       return inputAccepted();
     });
@@ -935,7 +1017,7 @@ describe('track conversations', () => {
     expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
   });
 
-  it('[F4] refuses a send pressed while offline, sends nothing and keeps the words', async () => {
+  it('[F4] refuses a send pressed while offline in the bundled build, sends nothing and keeps the words', async () => {
     vi.stubGlobal('__NC_BUNDLED__', true);
     const access = new RecoveryAccess(); access.change('connected');
     const { requests } = setup(undefined, undefined, access);

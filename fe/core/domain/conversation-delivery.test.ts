@@ -59,7 +59,7 @@ describe('retrying an unknown send', () => {
       attempts.push(index);
       return index < 2 ? Promise.reject(new Error('unknown')) : Promise.resolve('sent');
     }, () => 'unknown', (retry) => { pauses.push(retry); return Promise.resolve(); }, false);
-    expect(result).toBe('sent');
+    expect(result).toEqual({ sent: 'sent', everUnknown: true });
     expect(attempts).toEqual([0, 1, 2]);
     expect(pauses).toEqual([0, 1]);
   });
@@ -84,6 +84,12 @@ describe('retrying an unknown send', () => {
     const { run, attempts } = failures([kind], true);
     expect((await run.catch((error: unknown) => error) as KeyedSendFailure).delivery).toBe('unknown');
     expect(attempts()).toBe(1);
+  });
+
+  it('tells a first-time answer from one that came after an unknown outcome', async () => {
+    const answer = (unknown: boolean) => retryUnknownSend(() => Promise.resolve('sent'), () => 'unknown', () => Promise.resolve(), unknown);
+    expect(await answer(false)).toEqual({ sent: 'sent', everUnknown: false });
+    expect(await answer(true)).toEqual({ sent: 'sent', everUnknown: true });
   });
 
   it('settles a refusal as refused while nothing was unknown', async () => {

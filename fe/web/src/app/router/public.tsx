@@ -224,6 +224,9 @@ function tombstoneHides(wroteAt: number | undefined, rev: number): boolean {
    every render by a fresh array literal. */
 const EMPTY_PENDING_QUEUE: readonly PendingQueueEntry[] = Object.freeze([]);
 
+/** Beside Try again for a keyed send that could not leave the browser. */
+const OFFLINE_RETRY = 'Try again when you’re back online.';
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
@@ -537,18 +540,19 @@ export function useConversationStore(
    * One run of a keyed send. A press starts a new op (`opAt` mints its key and echo); Try again
    * resumes the failed op as it was — same key, same echo and high water, and an outcome that once
    * was unknown stays unknown — so the run is a continuation, not a second message.
+   * `refusedAtPress` answers a run whose press admission refused it.
    */
-  const send = async (_conversationId: string, opAt: () => KeyedSendOp): Promise<SendOutcome> => {
+  const send = async (
+    _conversationId: string, opAt: () => KeyedSendOp, refusedAtPress: (error: unknown) => SendOutcome,
+  ): Promise<SendOutcome> => {
     /* Not shown any more (it waited out an Edit's rewind): it still goes to its own conversation, and nothing on screen here speaks for it. */
     const shown = shownCardId.current === cardId;
     if (_conversationId !== cardId || stalled || (shown && sendingRef.current)) return 'not-sent';
-    /* Admitted at the press: a send that cannot leave the browser now is refused here and keeps its words; only one
-       that went out is retried. */
+    /* Admitted at the press. Where the transport carries a recovery admission (the bundled build),
+       a run that cannot leave the browser is refused here and sends nothing; the web build admits
+       every press, and a send that cannot leave fails as a transport error — unknown, retried. */
     let pressed: ApiTransportPort;
-    try { pressed = admitTransport(transport); } catch (error) {
-      if (shown) setActionError(errorMessage(error, 'Connection is not ready. Try again after reconnecting.'));
-      return 'refused';
-    }
+    try { pressed = admitTransport(transport); } catch (error) { return refusedAtPress(error); }
     if (!registry.tryBeginSend(cardId)) return 'not-sent';
     if (shown) { sendingRef.current = true; setSending(true); setActionError(null); stop.clearFeedback(); }
     const { key, echo, fromComposer, unknown } = opAt();
@@ -580,10 +584,7 @@ export function useConversationStore(
       (error) => sendFailureKind(error instanceof ApiError ? error.failure : null),
       (retry) => new Promise<void>((resolve) => { setTimeout(resolve, recoveryDelay(retry, Math.random())); }),
       unknown,
-    ).then((sent) => {
-      setUnconfirmedEchoId((current) => current === echo.id ? null : current);
-      /* The claim decides only who draws this message; written wherever the echo
-               still lives, the registry unconditionally. */
+    ).then(({ sent, everUnknown }) => {
       /* A composer send's delivered images leave the composer they were sent from, whichever conversation is shown by now. */
       if (fromComposer) {
         const sentIds = new Set(attachments.map((attachment) => attachment.id));
@@ -591,6 +592,21 @@ export function useConversationStore(
           ? { ...current, attachments: current.attachments.filter((image) => !sentIds.has(image.id)) } : current);
         registry.editUpload(sentTo, (current) => current.refusal === null ? current : { ...current, refusal: null });
       }
+      if (everUnknown) {
+        /* Not reconciled optimistically: the answer may replay an entry deleted, rewound or reset since,
+           which no read would ever confirm. The echo goes from both copies and the reads `mutations.send`
+           refreshes are the authority — the message shows once, queued or drained, or not at all. */
+        const isOpEcho = (turn: TranscriptEntry) => isOptimisticConversationTurn(turn) && turn.id === echo.id;
+        setEchoes((current) => current.filter((turn) => !isOpEcho(turn)));
+        registry.updateExisting(sentTo, ({ conversation: known, turns: knownTurns }) => ({
+          conversation: known, turns: knownTurns.filter((turn) => !isOpEcho(turn)),
+        }));
+        setUnconfirmedEchoId((current) => current === echo.id ? null : current);
+        return;
+      }
+      setUnconfirmedEchoId((current) => current === echo.id ? null : current);
+      /* The claim decides only who draws this message; written wherever the echo
+               still lives, the registry unconditionally. */
       const claimedEntryId = sent.entry_id;
       if (claimedEntryId !== null && stillActive()) {
         setEchoes((current) => current.map((turn) =>
@@ -638,7 +654,7 @@ export function useConversationStore(
         echo, key, delivery: failed.delivery, fromComposer,
         /* The admission's own words ("nothing was sent", "will not send automatically") would contradict Try again. */
         message: failed.cause instanceof OfflineSubmissionError
-          ? 'Try again when you’re back online.' : errorMessage(failed.cause, 'Could not send the message.'),
+          ? OFFLINE_RETRY : errorMessage(failed.cause, 'Could not send the message.'),
       };
       /* A failure belongs to the conversation that failed; the provider still records
                it for a remount of the owning card. */
@@ -731,7 +747,12 @@ export function useConversationStore(
              again, reconciles this echo, and is never queued twice. */
       if (failedSend?.echo.id === echoId) {
         const { key, echo, fromComposer, delivery } = failedSend;
-        void send(cardId, () => ({ key, echo, fromComposer, unknown: delivery === 'unknown' }));
+        void send(cardId, () => ({ key, echo, fromComposer, unknown: delivery === 'unknown' }), () => {
+          /* The op keeps its standing; only the line beside Try again changes, never to the admission's own
+             words ("will not send automatically"), which would contradict it. */
+          if (registry.tryBeginSend(cardId)) registry.finishSend(cardId, { ...failedSend, message: OFFLINE_RETRY });
+          return 'refused';
+        });
       }
     },
     send: (conversationId, text, attachments, fromComposer) => failedSend === null || failedSend.delivery === 'refused'
@@ -754,7 +775,10 @@ export function useConversationStore(
              `then`, and left `null` forever if the server has none to give. */
           entryId: null,
         },
-      })) : Promise.resolve('not-sent'),
+      }), (error) => {
+        if (shownCardId.current === cardId) setActionError(errorMessage(error, 'Connection is not ready. Try again after reconnecting.'));
+        return 'refused';
+      }) : Promise.resolve('not-sent'),
     attachmentsSupported: run.data?.attachments_supported ?? false,
     contextUsage: run.data?.token_usage ?? null,
     runningAnchor: nextRunningAnchor,

@@ -40,22 +40,27 @@ export class KeyedSendFailure extends Error {
   }
 }
 
+/** A keyed send's answer, and whether the op was ever unknown before it came. */
+export type KeyedSendAnswer<T> = Readonly<{ sent: T; everUnknown: boolean }>;
+
 /**
  * Run `attempt` until it answers, fails for a reason other than an unknown outcome, or the retries
  * are spent; rejects with a {@link KeyedSendFailure}. Every attempt must reuse one
  * `Idempotency-Key`; `pause` waits before retry `retry`. `unknown` is the op's state from earlier
- * runs: a resumed op that was unknown ends unknown on anything but a 200.
+ * runs: a resumed op that was unknown ends unknown on anything but a 200. A 200 after an unknown
+ * outcome may replay a message that has since been deleted, rewound or reset, so `everUnknown`
+ * tells the caller not to trust its entry for display.
  */
 export async function retryUnknownSend<T>(
   attempt: (index: number) => Promise<T>,
   classify: (error: unknown) => SendFailureKind,
   pause: (retry: number) => Promise<void>,
   unknown: boolean,
-): Promise<T> {
+): Promise<KeyedSendAnswer<T>> {
   let unknownSoFar = unknown;
   for (let index = 0; ; index += 1) {
     try {
-      return await attempt(index);
+      return { sent: await attempt(index), everUnknown: unknownSoFar };
     } catch (error) {
       const kind = classify(error);
       if (kind === 'unknown') {
