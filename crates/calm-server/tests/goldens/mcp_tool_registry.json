@@ -355,7 +355,7 @@
   },
   {
     "name": "neige.dev.publish",
-    "description_sha256": "9cb79a93fa82d788cd0f93c22b7b4dc954bf2339c52315c9fa3a7876bb1683fa",
+    "description_sha256": "27105a2b21951182cdef73bc9d7a8c24ecc5bdc79e031dfcf32d5f81d1f21199",
     "input_schema": {
       "properties": {
         "body": {
