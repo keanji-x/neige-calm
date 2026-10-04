@@ -95,7 +95,7 @@ function renderToday({ resolve, body, detail = 'seeded', reset }: Case) {
     });
   }
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -292,7 +292,7 @@ describe('#1343 the document’s Reset control', () => {
     };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-    router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+    router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
     render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
       <RouterProvider router={router} />
     </ThemeProvider></QueryClientProvider>);
@@ -358,7 +358,7 @@ describe('#1253 §6 the report-edit refresh chain', () => {
     };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-    router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+    router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
     render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
       <RouterProvider router={router} />
     </ThemeProvider></QueryClientProvider>);
@@ -387,7 +387,7 @@ describe('#1253 §6 the report-edit refresh chain', () => {
     };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-    router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+    router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
     render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
       <RouterProvider router={router} />
     </ThemeProvider></QueryClientProvider>);

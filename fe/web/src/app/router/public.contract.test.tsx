@@ -24,7 +24,7 @@ function recordingTransport(): { transport: ApiTransportPort; paths: string[] } 
       return Promise.resolve({
         status: 200,
         statusText: 'OK',
-        body: request.path === '/api/areas' ? [AREA] : [],
+        body: request.path === '/api/areas' ? [AREA] : request.path === '/api/today/daily' ? null : [],
       });
     },
   };
@@ -79,11 +79,9 @@ describe('route registration', () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByRole('complementary')).toBeTruthy();
-    /* The status counts are in `TodayHeader` and on no other route. */
-    expect(screen.getByText('waiting on you')).toBeTruthy();
-    /* The integrated week calendar remains the deployed Today navigation anchor. */
-    expect(screen.getByRole('button', { name: /Previous week/i })).toBeTruthy();
+    expect(await screen.findByRole('navigation', { name: 'Daily Planner dates' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Today' })).toBeTruthy();
+    expect(await screen.findByText('Preparing today’s Track…')).toBeTruthy();
   });
 
   function registeredPaths(): (string | undefined)[] {
@@ -94,7 +92,7 @@ describe('route registration', () => {
 
   it('registers the product routes', () => {
     expect(registeredPaths()).toEqual([
-      '/', '/area/$areaId/new', '/track/$trackId', '/recipes',
+      '/', '/today/legacy', '/area/$areaId/new', '/track/$trackId', '/recipes',
       '/settings', '/settings/network', '/settings/plugins', '/settings/planners', '/settings/appearance',
       '/settings/about',
     ]);
@@ -105,6 +103,7 @@ describe('route registration', () => {
          a compile error; the union does not exist at runtime. */
     const samples: { [K in NavTarget['name']]: Extract<NavTarget, { name: K }> } = {
       'today': { name: 'today' },
+      'today-legacy': { name: 'today-legacy' },
       'new-track': { name: 'new-track', areaId: 'c1' },
       'track': { name: 'track', trackId: 'w1' },
       'recipes': { name: 'recipes' },

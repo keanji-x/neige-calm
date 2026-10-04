@@ -66,7 +66,7 @@ pub(crate) async fn list_track_templates(
 ) -> Result<Json<Vec<TrackTemplate>>> {
     let roster = s.templates.entries();
     let mut templates = Vec::with_capacity(roster.len());
-    for template in roster {
+    for template in roster.iter().filter(|template| template.user_creatable()) {
         // Same resolver as create-time binding, so a template can never be advertised with a
         // schema the create path would then refuse to validate against.
         let input_schema = resolve_template_binding(&s, template)

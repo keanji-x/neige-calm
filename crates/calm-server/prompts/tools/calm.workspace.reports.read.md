@@ -1,0 +1,1 @@
+Read one user-visible Track report by track_id. Requires a kernel-issued workspace report read grant. Returns summary, body, blocks and revision from a report snapshot; does not register foreign blocks in your report write ledger. Read-only, including closed Tracks.

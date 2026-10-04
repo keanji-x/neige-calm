@@ -18,6 +18,8 @@ pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
 /// A report-only template: no pre-set `task` blocks.
 pub const INVESTMENT_RESEARCH: &str = "investment-research";
+/// Kernel-created daily report planning; hidden from public template creation.
+pub const DAILY_PLANNER: &str = "daily-planner";
 
 /// Key prefix of an operator-provided template (`<dir>/<stem>.md` → `site/<stem>`). A front
 /// matter `id` may not contain `/`, so no builtin file or plugin can claim a `site/…` key.
@@ -25,7 +27,8 @@ pub const SITE_PREFIX: &str = "site/";
 
 /// The builtin template files, in picker order. Parsed at first use; a file that does not
 /// parse is a panic there, deliberately.
-static BUILTIN_SOURCES: [&str; 4] = [
+static BUILTIN_SOURCES: [&str; 5] = [
+    include_str!("../templates/builtin/daily-planner.md"),
     include_str!("../templates/builtin/issue-development.md"),
     include_str!("../templates/builtin/small-change.md"),
     include_str!("../templates/builtin/investigation.md"),
@@ -40,6 +43,7 @@ pub struct Template {
     title: &'static str,
     description: Option<&'static str>,
     instructions: Option<&'static str>,
+    user_creatable: bool,
     /// The report body exactly as the file has it after the closing `+++`
     /// line: `Template::recipe` hands it out uncompiled and unmodified.
     body: &'static str,
@@ -59,6 +63,10 @@ impl Template {
 
     pub fn description(&self) -> Option<&'static str> {
         self.description
+    }
+
+    pub fn user_creatable(&self) -> bool {
+        self.user_creatable
     }
 
     pub fn instructions(&self) -> Option<&'static str> {
@@ -187,6 +195,7 @@ impl TemplateRoster {
                 title: String::leak(front.title),
                 description: front.description.map(|value| &*String::leak(value)),
                 instructions: front.instructions.map(|value| &*String::leak(value)),
+                user_creatable: front.user_creatable,
                 body,
             });
         }
@@ -223,6 +232,7 @@ impl TemplateRoster {
                     title: template.title,
                     description: template.description,
                     instructions: template.instructions,
+                    user_creatable: template.user_creatable,
                     body: template.body,
                 })
                 .collect(),
@@ -297,6 +307,7 @@ impl TemplateRoster {
             title: String::leak(front.title),
             description: front.description.map(|value| &*String::leak(value)),
             instructions: front.instructions.map(|value| &*String::leak(value)),
+            user_creatable: front.user_creatable,
             body,
         };
         let compiled = crate::routes::tracks::compile_template(&template)
@@ -378,6 +389,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                DAILY_PLANNER,
                 ISSUE_DEVELOPMENT,
                 SMALL_CHANGE,
                 INVESTIGATION,

@@ -15,7 +15,7 @@ import { admitTransport } from '../providers/recovery-mutation.ts';
 // transport and QueryClient; also the composition point for route-owned surfaces.
 
 import {
-  createRootRoute, createRoute, createRouter, type AnyRoute,
+  createRootRoute, createRoute, createRouter, useNavigate, useLocation, type AnyRoute,
 } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from 'react';
 import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
@@ -39,7 +39,7 @@ import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
 } from '../../systems/cards/public.js';
 import {
-  cardAddMenuEntries, isAssistantHarnessPayload, isPlannerHarnessPayload, partitionTrackCards,
+  cardAddMenuEntries, isAssistantHarnessPayload, isPlannerHarnessPayload, plannerCardIn, partitionTrackCards,
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import footerStyles from './composer-footer.module.css';
@@ -107,6 +107,7 @@ import {
   trackOverlaysQueryOptions, trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { NewTrackRoute } from './new-track-route.tsx';
+import { DailyTodayRoute } from './daily-planner.tsx';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import {
   RecipesPage, type RecipeDraft, type RecipeWriteOutcome,
@@ -827,7 +828,20 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     path: '/',
     /** The index loader primes only the areas list; awaiting the area → tracks fan-out here would let one slow area block the route commit. */
     loader: () => prefetchAreaList(client, transport, unauthorized),
-    component: () => <TodayRoute transport={transport} unauthorized={unauthorized} />,
+    validateSearch: (search: Record<string, unknown>) => ({ day: typeof search.day === 'string' ? search.day : undefined }),
+    component: function DailyRoute() {
+      const day = new URLSearchParams(useLocation({ select: (location) => location.searchStr })).get('day') ?? undefined;
+      const navigate = useNavigate();
+      const go = useGo();
+      return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
+        onSelectDate={(date) => { void navigate({ to: '/', search: { day: date } }); }}
+        onOpenTrack={(trackId) => go({ name: 'track', trackId })}
+        legacy={<button type="button" onClick={() => { go({ name: 'today-legacy' }); }}>Earlier Today report</button>}
+        renderTrack={(detail) => <TrackRouteBody key={detail.track.id} transport={transport} unauthorized={unauthorized}
+          track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
+          canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
+          cards={detail.cards} overlays={detail.overlays} cardRuntime={cards} recentFiles={recentFiles} />} />;
+    },
   });
 
   const newTrackRoute = createRoute({
@@ -893,8 +907,10 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     component: renderNothing,
   });
 
+  const legacyTodayRoute = createRoute({ getParentRoute: () => rootRoute, path: '/today/legacy',
+    component: () => <TodayRoute transport={transport} unauthorized={unauthorized} /> });
   return rootRoute.addChildren([
-    indexRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
+    indexRoute, legacyTodayRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
     networkRoute, pluginsRoute, plannersRoute, appearanceRoute, aboutRoute,
   ]);
 }
@@ -2125,7 +2141,7 @@ function TrackRouteBody({
   const routeFrom = useRouteFrom() ?? undefined;
   const cardRegistry = cardRuntime.registry;
   // The same predicate the planner entry resolves by, imported rather than copied.
-  const plannerCard = cards.find((card) => card.kind === 'codex' && isPlannerHarnessPayload(card.payload));
+  const plannerCard = plannerCardIn(cards);
   const registry = useConversationRegistry();
   /* The track's assistant conversations; the server's list predicate is
    * `role == Assistant`, so the planner row is injected below. */

@@ -548,6 +548,7 @@ async fn dispatch_plugin_tools_call(
     // Identity FIRST, before any route knowledge, so identity failures are uniform whether or not `name` exists.
     let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
 
+    crate::managed_track::require_tool_allowed(ctx, &identity, name).await?;
     // EVERY existence-shaped rejection below is this one construction, so the error object is byte-identical and cannot be an existence oracle.
     let unknown_tool = || catalog::unknown_tool_error(ctx, registry, &identity, name);
 

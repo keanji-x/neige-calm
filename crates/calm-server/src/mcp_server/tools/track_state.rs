@@ -110,13 +110,20 @@ async fn track_state(
         })
         .collect();
 
-    Ok(json!({
+    let creation = crate::managed_track::creation_identity(&ctx, track.id.as_str())
+        .await
+        .map_err(|e| RpcError::internal(e.to_string()))?;
+    let mut result = json!({
         "track": track,
         "caller_card_id": caller.id,
         "cards": cards_json,
         "report_startup_read_required": report_startup_read_required(&cards),
         "tasks": tasks,
-    }))
+    });
+    if let Some(identity) = creation {
+        result["creation_identity"] = identity;
+    }
+    Ok(result)
 }
 
 /// False only for an unwritten report (the header placeholder, or the frozen pre-header body byte for byte) or when the track has no report card.
@@ -236,6 +243,15 @@ async fn track_close(
     require_role(&identity, CardRole::Planner)?;
     let message = parse_write_args(&args, TOOL_TRACK_CLOSE)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
+    if crate::managed_track::kernel_controls_lifecycle(&ctx, track.id.as_str())
+        .await
+        .map_err(|e| RpcError::internal(e.to_string()))?
+    {
+        return Err(RpcError::custom(
+            -32403,
+            "The kernel controls this Track’s lifecycle.",
+        ));
+    }
     let recorder = CardDecisionSinkRecorderShadowProbe::for_identity(&identity, track.id.clone());
     // A close that finds the track already closed writes nothing: the batch may not be empty, so
     // the closure leaves the stamp here and rolls the transaction back with any error.

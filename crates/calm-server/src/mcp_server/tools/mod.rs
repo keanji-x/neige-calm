@@ -21,6 +21,7 @@ pub mod track_report_blocks;
 pub(crate) mod track_report_hydrate;
 pub mod track_state;
 pub mod user_notify;
+pub mod workspace_reports;
 pub(crate) mod write_args;
 
 /// Register every default tool onto a fresh registry.
@@ -43,6 +44,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     track_history::register_into(registry);
     crate::builtin_plugins::register_native_tools(registry);
     admin::register_into(registry);
+    workspace_reports::register_into(registry);
 }
 
 #[cfg(test)]

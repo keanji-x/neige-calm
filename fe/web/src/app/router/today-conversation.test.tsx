@@ -86,7 +86,7 @@ function renderApp({
   const router = createAppRouter({
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined,
   });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -121,7 +121,7 @@ function renderNoLaunchpad({
   const router = createAppRouter({
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined,
   });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -170,7 +170,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     await screen.findByRole('button', { name: /Conversation Today’s progress/ });
     await router.navigate({ to: '/track/w1' });
     await screen.findByRole('button', { name: 'Conversation Other chat' });
-    await router.navigate({ to: '/' });
+    await router.navigate({ to: '/today/legacy' });
     await screen.findByRole('button', { name: /Conversation Today’s progress/ });
     expect(screen.queryByRole('button', { name: /Conversation Other chat/ })).toBeNull();
   });
@@ -180,7 +180,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Conversation Today’s progress/ }));
     expect(await screen.findByRole('complementary', { name: 'Today’s progress' })).toBeTruthy();
     /* Still on Today: a navigation would have put `/track/lp` here. */
-    expect(router.state.location.pathname).toBe('/');
+    expect(router.state.location.pathname).toBe('/today/legacy');
   });
 
   /* The launchpad is on no workspace track list, so its rows can only read `working`

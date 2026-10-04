@@ -36,7 +36,7 @@ export { createCardHost } from './host.js';
 // `cards-public-entry-only` forbids deep imports, so this is the only door onto `builtins/`.
 export type { BuiltinCardType } from './builtins/register.js';
 export { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './builtins/register.js';
-export { isPlannerHarnessPayload } from './builtins/planner.js';
+export { isPlannerHarnessPayload, plannerCardIn } from './builtins/planner.js';
 export { isAssistantHarnessPayload } from './builtins/assistant.js';
 export type {
   UnknownCardSlot,

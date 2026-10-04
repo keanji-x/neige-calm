@@ -15,7 +15,7 @@ pub(crate) async fn tool_descriptors_for_connection(
                 .await
                 .ok()
             {
-                Some(identity) => tool_descriptors_for_identity(ctx, registry, &identity).await,
+                Some(identity) => tool_descriptors_for_identity(ctx, registry, &identity).await?,
                 None => bootstrap_tool_descriptors(ctx, registry).await,
             },
             // Initial discovery may precede thread attribution. The catalog covers all
@@ -28,7 +28,7 @@ pub(crate) async fn tool_descriptors_for_connection(
                 .ok()
             {
                 Some(identity) if same_bound_session(&identity, bound) => {
-                    tool_descriptors_for_identity(ctx, registry, &identity).await
+                    tool_descriptors_for_identity(ctx, registry, &identity).await?
                 }
                 Some(identity) => {
                     warn_cross_session_reject(tid, &identity, bound);
@@ -42,7 +42,7 @@ pub(crate) async fn tool_descriptors_for_connection(
                 let mut descriptors = registry.descriptors_for_role(bound.role);
                 extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, card.role, &scope)
                     .await;
-                descriptors
+                filter_profile(ctx, bound.card_id.as_str(), descriptors).await?
             }
         },
     };
@@ -55,11 +55,11 @@ async fn tool_descriptors_for_identity(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,
     identity: &ToolCallIdentity,
-) -> Vec<ToolDescriptor> {
+) -> Result<Vec<ToolDescriptor>, RpcError> {
     let scope = plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
     let mut descriptors = registry.descriptors_for_role(identity.role);
     extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, identity.role, &scope).await;
-    descriptors
+    filter_profile(ctx, &identity.card_id, descriptors).await
 }
 
 /// The transport's `-32601` for a `tools/call` name this caller cannot reach. It lists the names
@@ -72,8 +72,11 @@ pub(super) async fn unknown_tool_error(
     identity: &ToolCallIdentity,
     name: &str,
 ) -> RpcError {
-    let mut visible: Vec<String> = tool_descriptors_for_identity(ctx, registry, identity)
-        .await
+    let descriptors = match tool_descriptors_for_identity(ctx, registry, identity).await {
+        Ok(descriptors) => descriptors,
+        Err(error) => return error,
+    };
+    let mut visible: Vec<String> = descriptors
         .into_iter()
         .map(|descriptor| descriptor.name)
         .collect();
@@ -82,4 +85,16 @@ pub(super) async fn unknown_tool_error(
         "tools/call: {name}; tools visible to this session: {}",
         visible.join(", ")
     ))
+}
+
+async fn filter_profile(
+    ctx: &AppContext,
+    card_id: &str,
+    mut descriptors: Vec<ToolDescriptor>,
+) -> Result<Vec<ToolDescriptor>, RpcError> {
+    if crate::managed_track::reports_only_card(ctx, card_id).await? {
+        descriptors
+            .retain(|descriptor| crate::managed_track::report_planning_tool(&descriptor.name));
+    }
+    Ok(descriptors)
 }

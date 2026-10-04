@@ -4462,6 +4462,54 @@
         }
       }
     },
+    "/api/today/daily": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "resolve_daily_track",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "description": "Asia/Shanghai date; omitted means today",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daily Track, or null when the date has no Track",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DailyTrackResolved"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid date",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/today/launchpad": {
       "get": {
         "tags": [
@@ -4600,6 +4648,136 @@
           },
           "500": {
             "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/today/report-changes": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "report_changes",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "description": "YYYY-MM-DD in Asia/Shanghai",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Last Track id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "through_event_id",
+            "in": "query",
+            "description": "Snapshot cursor from the first page",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report changes, including net reverts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportChangesPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid date or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/today/report-edits": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "report_edits",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "description": "YYYY-MM-DD",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "query",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Last event id",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "through_event_id",
+            "in": "query",
+            "description": "Snapshot cursor from report changes",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Individual report edits in event order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportEditsPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid date or cursor",
             "content": {
               "application/json": {
                 "schema": {
@@ -8403,6 +8581,25 @@
         },
         "additionalProperties": false
       },
+      "DailyTrackResolved": {
+        "type": "object",
+        "required": [
+          "date",
+          "time_zone",
+          "track_id"
+        ],
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "time_zone": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
+          }
+        }
+      },
       "DefaultSource": {
         "type": "string",
         "description": "Where [`ModelsResponse::default`] came from.",
@@ -10543,6 +10740,168 @@
           },
           "updatedAt": {
             "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ReportChange": {
+        "type": "object",
+        "required": [
+          "track_id",
+          "track_title",
+          "area_id",
+          "area_name",
+          "edit_count",
+          "first_event_id",
+          "last_event_id",
+          "summary_before",
+          "summary_after",
+          "patch",
+          "patch_truncated"
+        ],
+        "properties": {
+          "area_id": {
+            "type": "string"
+          },
+          "area_name": {
+            "type": "string"
+          },
+          "edit_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "first_event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "patch": {
+            "type": "string"
+          },
+          "patch_truncated": {
+            "type": "boolean"
+          },
+          "summary_after": {
+            "type": "string"
+          },
+          "summary_before": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
+          },
+          "track_title": {
+            "type": "string"
+          }
+        }
+      },
+      "ReportChangesPage": {
+        "type": "object",
+        "required": [
+          "date",
+          "time_zone",
+          "through_event_id",
+          "changes",
+          "next_cursor"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportChange"
+            }
+          },
+          "date": {
+            "type": "string"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "through_event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "time_zone": {
+            "type": "string"
+          }
+        }
+      },
+      "ReportEdit": {
+        "type": "object",
+        "required": [
+          "track_id",
+          "edit_id",
+          "summary_before",
+          "summary_after",
+          "body_before",
+          "body_after"
+        ],
+        "properties": {
+          "body_after": {
+            "type": "string"
+          },
+          "body_before": {
+            "type": "string"
+          },
+          "edit_id": {
+            "type": "string"
+          },
+          "summary_after": {
+            "type": "string"
+          },
+          "summary_before": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ReportEditEntry": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "at",
+          "edit"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "edit": {
+            "$ref": "#/components/schemas/ReportEdit"
+          },
+          "event_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ReportEditsPage": {
+        "type": "object",
+        "required": [
+          "edits",
+          "next_cursor"
+        ],
+        "properties": {
+          "edits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportEditEntry"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           }
         }

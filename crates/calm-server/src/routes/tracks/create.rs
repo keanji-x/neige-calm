@@ -491,7 +491,7 @@ pub(super) async fn create_track_with_first_message(
         first_message_sha256: Some(plan.first_message_sha256.clone()),
     });
     let (track, _created, planner_card_id, report_card_id) =
-        create_track_structure(s.clone(), actor.clone(), p, options).await?;
+        create_track_structure(s.clone(), actor.to_actor_id(), p, options).await?;
     let cwd = track.workspace.agent_cwd().to_string();
     start_planner_harness_with_first_message(
         &s,

@@ -32,7 +32,7 @@ it('requires the shared confirmation before deleting a Today panel track', async
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -91,7 +91,7 @@ it('does not navigate on an area delete success that arrives after cancellation'
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -103,7 +103,7 @@ it('does not navigate on an area delete success that arrives after cancellation'
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
   await new Promise((done) => { setTimeout(done, 10); });
-  expect(router.state.location.pathname).toBe('/');
+  expect(router.state.location.pathname).toBe('/today/legacy');
 });
 
 it('round-trips an encoded track id through useGo, TanStack history, and useRouteParam', async () => {
@@ -124,7 +124,7 @@ it('round-trips an encoded track id through useGo, TanStack history, and useRout
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

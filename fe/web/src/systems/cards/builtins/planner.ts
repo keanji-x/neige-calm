@@ -13,6 +13,14 @@ export function isPlannerHarnessPayload(payload: unknown): boolean {
     && (payload as { planner_harness?: unknown }).planner_harness === true;
 }
 
+function isPlannerKernelCard(card: Readonly<{ kind: string; payload: unknown }>): boolean {
+  return card.kind === 'codex' && isPlannerHarnessPayload(card.payload);
+}
+
+export function plannerCardIn<T extends Readonly<{ kind: string; payload: unknown }>>(cards: readonly T[]): T | undefined {
+  return cards.find(isPlannerKernelCard);
+}
+
 export const PLANNER_CARD_ENTRY = Object.freeze({
   type: 'planner',
   component: () => null,
@@ -22,7 +30,7 @@ export const PLANNER_CARD_ENTRY = Object.freeze({
   accessibleName: () => 'Planner harness',
   create: Object.freeze({ mode: 'kernel-minted-only' } as const),
   fromKernel: (card: KernelCardInput): PlannerCard | null => (
-    card.kind === 'codex' && isPlannerHarnessPayload(card.payload)
+    isPlannerKernelCard(card)
       ? Object.freeze({ type: 'planner', id: card.id } as const)
       : null
   ),

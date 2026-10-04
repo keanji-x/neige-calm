@@ -51,7 +51,7 @@ function renderToday() {
   const uiPreferences = createUiPreferences({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); } });
   uiPreferences.setReadScope('db1', 100);
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined, uiPreferences });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

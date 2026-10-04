@@ -224,9 +224,14 @@ pub(crate) async fn get_or_create_system_area(
     // `Actor` is extracted so the middleware validates `X-Calm-Actor`, but the event is stamped `ActorId::Kernel`: the system area is kernel-owned scaffolding and a `User` actor would be untruthful.
     _actor: Actor,
 ) -> Result<(StatusCode, Json<Area>)> {
+    let (status, area) = ensure_system_area(&s).await?;
+    Ok((status, Json(area)))
+}
+
+pub(crate) async fn ensure_system_area(s: &RouteState) -> Result<(StatusCode, Area)> {
     // Existence check first: the common path avoids opening a write transaction.
     if let Some(existing) = s.repo.area_get_system().await? {
-        return Ok((StatusCode::OK, Json(existing)));
+        return Ok((StatusCode::OK, existing));
     }
     // Mint inside `write_with_event` so the create emits `area.updated` like the regular `POST /api/areas`.
     let mint_result = write_with_event_typed(
@@ -245,11 +250,11 @@ pub(crate) async fn get_or_create_system_area(
     )
     .await;
     match mint_result {
-        Ok((area, _id)) => Ok((StatusCode::CREATED, Json(area))),
+        Ok((area, _id)) => Ok((StatusCode::CREATED, area)),
         // Two cold-boot Today-page loads can both reach the mint; the partial unique index fails the loser's INSERT, so re-read and return 200. Any `Db` error retries the read (sqlx needs an `Any` boundary to downcast); if it was something else the follow-up read returns `None` and propagates.
         Err(e) => match e {
             CalmError::Db(_) => match s.repo.area_get_system().await? {
-                Some(existing) => Ok((StatusCode::OK, Json(existing))),
+                Some(existing) => Ok((StatusCode::OK, existing)),
                 None => Err(e),
             },
             other => Err(other),

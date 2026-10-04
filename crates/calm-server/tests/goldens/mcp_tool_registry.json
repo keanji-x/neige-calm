@@ -1683,5 +1683,110 @@
     "visible_to_roles": [
       "planner"
     ]
+  },
+  {
+    "name": "calm.workspace.reports.changes",
+    "description_sha256": "55ed12c7094e1fcfa14e60f4869dbc83ce8a493f9f20fee760d9dd02b4a6f212",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        },
+        "through_event_id": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "date"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.workspace.reports.edits",
+    "description_sha256": "371904482cab4f45b8500356bae510d2dc63c57eefa42e3982c58a1dda7cbd53",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "date": {
+          "type": "string"
+        },
+        "through_event_id": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "date",
+        "track_id",
+        "through_event_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.workspace.reports.list",
+    "description_sha256": "87195974c0a80c7bd6ca097cac86c7fac584e9b0f56586d896b622bf1e32b078",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.workspace.reports.read",
+    "description_sha256": "05d4c8544dc52294a6f14b89bf828e8cfe1522b6801d482db388fb356e9ef717",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "track_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "track_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
   }
 ]

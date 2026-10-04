@@ -105,6 +105,8 @@ export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
 
 export type ChannelVerdictKind = "approved" | "changes_requested";
 
+export type DailyTrackResolved = { date: string, time_zone: string, track_id: string, };
+
 /**
  * Why a Git delivery produced no candidate. Every value has exactly one producer (D2 code table).
  */
@@ -409,6 +411,16 @@ export type RatifyDecision = "grant" | "deny";
  * A derived, addressable slice of a track report.
  */
 export type ReportBlock = { id: string, kind: string, rev: number, payload: unknown, };
+
+export type ReportChange = { track_id: string, track_title: string, area_id: string, area_name: string, edit_count: number, first_event_id: number, last_event_id: number, summary_before: string, summary_after: string, patch: string, patch_truncated: boolean, };
+
+export type ReportChangesPage = { date: string, time_zone: string, through_event_id: number, changes: Array<ReportChange>, next_cursor: string | null, };
+
+export type ReportEdit = { track_id: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, };
+
+export type ReportEditEntry = { event_id: number, at: number, edit: ReportEdit, };
+
+export type ReportEditsPage = { edits: Array<ReportEditEntry>, next_cursor: number | null, };
 
 /**
  * Logical review subject key for `review.round`.

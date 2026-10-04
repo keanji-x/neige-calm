@@ -732,6 +732,10 @@ pub(crate) async fn get_track_detail(
         .track_detail(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
+    if crate::managed_track::kernel_controls_lifecycle(&s.mcp_context, &id).await? {
+        detail.can_close = false;
+        detail.can_reopen = false;
+    }
     // Mirror `list_overlays` so kernel-owned overlay rows with a `schemaVersion` past what
     // this binary supports never reach the frontend.
     detail.overlays = crate::routes::overlays::filter_unsupported_overlay_versions(detail.overlays);
@@ -952,6 +956,7 @@ pub(crate) async fn create_track(
         // Conditioned on the plan: `Mint` sets it later inside `create_track_with_first_message`;
         // `Legacy` has nothing to bind.
         idempotency_claim: message_less.as_ref().map(create::MessageLessPlan::claim),
+        managed_identity: None,
     };
     // The resuming arms returned above, so `Some` here is always a mint.
     let created = match plan {
@@ -994,6 +999,9 @@ impl TemplateAdmission {
 /// binding is resolved from the admitted roster entry, not from `id`.
 pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateAdmission> {
     let template = s.templates.get(id)?;
+    if !template.user_creatable() {
+        return None;
+    }
     Some(TemplateAdmission {
         template,
         binding: resolve_template_binding(s, template).await,
@@ -1194,6 +1202,7 @@ enum TrackInit {
 }
 
 struct CreateTrackOptions {
+    managed_identity: Option<crate::managed_track::ManagedTrackIdentity>,
     planner_provider: AgentProvider,
     model: Option<String>,
     reasoning_effort: Option<String>,
@@ -1230,7 +1239,7 @@ async fn create_track_with_planner_harness(
         return Err(CalmError::NotFound(format!("area {area_id}")));
     }
     let (track, _, planner_card_id, report_card_id) =
-        create_track_structure(s.clone(), actor.clone(), p, options).await?;
+        create_track_structure(s.clone(), actor.to_actor_id(), p, options).await?;
     start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
@@ -1238,11 +1247,12 @@ async fn create_track_with_planner_harness(
 #[allow(deprecated)]
 async fn create_track_structure(
     s: RouteState,
-    actor: Actor,
+    actor: ActorId,
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<(Track, bool, String, String)> {
     let CreateTrackOptions {
+        managed_identity,
         planner_provider,
         model,
         reasoning_effort,
@@ -1257,8 +1267,7 @@ async fn create_track_structure(
     let templates = s.templates;
     let planner_card_id = new_id();
     let report_card_id = new_id();
-    let actor_id = actor.to_actor_id();
-    let actor_id_for_tx = actor_id.clone();
+    let actor_id_for_tx = actor;
     let write_for_tx = s.write.clone();
     let planner_card_id_for_tx = planner_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
@@ -1267,13 +1276,33 @@ async fn create_track_structure(
     let idempotency_claim_for_tx = idempotency_claim;
     // The fork path deliberately derives no `EditAuthor`: the fork's normalization and
     // guard are author-independent, so nothing here may classify the caller.
-    let ((track, created), _event_ids) = write_with_actor_events_typed(
+    let replay = std::sync::Arc::new(std::sync::OnceLock::<String>::new());
+    let replay_tx = replay.clone();
+    let written = write_with_actor_events_typed(
         s.repo.as_ref(),
         None,
         &s.events,
         &s.write,
         move |tx| {
             Box::pin(async move {
+                if let Some(identity) = &managed_identity {
+                    let existing: Option<(String,String,String,String,String,bool,Option<String>)> = sqlx::query_as(concat!(
+"SELECT ",
+"m.track_id,t.area_id,m.report_read_scope,m.report_time_zone,m.tool_policy,m.kernel_controls_lifecycle,t.template_id",
+" FROM managed_track_identities m JOIN tracks t ON t.id=m.track_id WHERE m.owner=?1 AND ",
+"m.identity=?2",
+))
+                        .bind(&identity.owner).bind(&identity.identity).fetch_optional(&mut **tx).await?;
+                    if let Some((id,area,scope,zone,policy,lifecycle,template)) = existing {
+                        let requested_scope = match identity.report_read_scope { crate::managed_track::ReportReadScope::Area => "area", crate::managed_track::ReportReadScope::Workspace => "workspace" };
+                        if area != p.area_id.as_str() || scope != requested_scope || zone != identity.report_time_zone.name()
+                            || policy != identity.tool_policy.as_str() || lifecycle != identity.kernel_controls_lifecycle || template != p.template_id {
+                            return Err(CalmError::Conflict("managed Track identity belongs to different creation metadata".into()));
+                        }
+                        let _ = replay_tx.set(id);
+                        return Err(CalmError::Conflict("managed Track already exists".into()));
+                    }
+                }
                 // Claim scan + insert, atomic with the track row; must stay first so every branch
                 // either rolls back or leaves the claim table consistent.
                 enforce_folder_claim_tx(
@@ -1315,6 +1344,9 @@ async fn create_track_structure(
                 .await?;
                 let track_id = track.id.clone();
                 let area_id = track.area_id.clone();
+                if let Some(identity) = &managed_identity {
+                    crate::managed_track::bind_tx(tx, identity, track_id.as_str()).await?;
+                }
 
                 // The `Idempotency-Key` → track binding is written in the same transaction that mints
                 // the id; the `operations` row cannot carry it (written after validation on a pooled connection).
@@ -1578,7 +1610,36 @@ async fn create_track_structure(
             })
         },
     )
-    .await?;
+    .await;
+    let (track, created, planner_card_id, report_card_id) = match written {
+        Ok(((track, created), _)) => (track, created, planner_card_id, report_card_id),
+        Err(_) if replay.get().is_some() => {
+            let id = replay.get().expect("replay was set");
+            let track = s
+                .repo
+                .track_get(id)
+                .await?
+                .ok_or_else(|| CalmError::Conflict("managed Track was removed".into()))?;
+            let cards = s.repo.cards_by_track(id).await?;
+            let mut planner = None;
+            let mut report = None;
+            for card in cards {
+                match s.repo.card_role_get(card.id.as_str()).await? {
+                    Some(CardRole::Planner) => planner = Some(card.id.to_string()),
+                    Some(CardRole::ReportCard) => report = Some(card.id.to_string()),
+                    _ => {}
+                }
+            }
+            (
+                track,
+                false,
+                planner
+                    .ok_or_else(|| CalmError::Internal("managed Track has no Planner".into()))?,
+                report.ok_or_else(|| CalmError::Internal("managed Track has no report".into()))?,
+            )
+        }
+        Err(error) => return Err(error),
+    };
 
     // Materialize outside the transaction and before the planner harness starts. A failure
     // here MUST surface as a non-2xx; a 201 would leave a track whose first worker dies
@@ -1611,6 +1672,39 @@ async fn create_track_structure(
         })?;
 
     Ok((track, created, planner_card_id, report_card_id))
+}
+
+/// Trusted callers reuse the ordinary cards, report initialization and workspace materialization.
+/// The identity and grant are committed atomically; creation never sends a model message.
+pub(crate) async fn create_managed_track(
+    s: RouteState,
+    p: NewTrack,
+    identity: crate::managed_track::ManagedTrackIdentity,
+) -> Result<Track> {
+    let _area_guard =
+        crate::per_card_lock::lock_key(&s.area_delete_locks, p.area_id.as_str()).await;
+    let template = p
+        .template_id
+        .as_deref()
+        .and_then(|id| s.templates.get(id))
+        .ok_or_else(|| CalmError::Internal("managed Track template is not registered".into()))?;
+    let options = CreateTrackOptions {
+        managed_identity: Some(identity),
+        planner_provider: AgentProvider::Codex,
+        model: None,
+        reasoning_effort: None,
+        folder_claim: FolderClaim::Skip,
+        body_area_id: p.area_id.to_string(),
+        normalized_cwd: p.cwd.clone(),
+        init: TrackInit::Template {
+            key: template.key(),
+            binding: None,
+        },
+        workspace_plan: TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
+        idempotency_claim: None,
+    };
+    let (track, _, _, _) = create_track_structure(s, ActorId::Kernel, p, options).await?;
+    Ok(track)
 }
 
 /// Start the planner harness for a create that carried no `first_message`. Best-effort:
@@ -2505,6 +2599,13 @@ pub(crate) async fn update_track(
     Path(id): Path<String>,
     Json(p): Json<TrackPatch>,
 ) -> Result<Response> {
+    if p.closed.is_some()
+        && crate::managed_track::kernel_controls_lifecycle(&s.mcp_context, &id).await?
+    {
+        return Err(CalmError::Forbidden(
+            "The kernel controls this Track’s daily lifecycle.".into(),
+        ));
+    }
     // Track rows are immutable wrt their parent area, so reading area_id outside the txn is safe.
     let existing = s
         .repo
@@ -3119,6 +3220,7 @@ pub(crate) async fn delete_track(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
+    crate::managed_track::refuse_track_delete(s.mcp_context.sqlite_pool.clone(), &id).await?;
     // One process owns this track's move + transaction + compensation at a time.
     // Lock order: operation drive → track delete.
     let operation_guard = s.operation_runtime.lock_for_track_delete().await;

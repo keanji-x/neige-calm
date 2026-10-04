@@ -8,7 +8,8 @@ QueryClient are injected so a test can drive a real tree.
 
 | path | state |
 |---|---|
-| `/` | Today, fully wired |
+| `/` | Daily Planner Track and report changes |
+| `/today/legacy` | Earlier singleton Today report |
 | `/area/$areaId/new` | creates a Track inside the selected Area |
 | `/track/$trackId` | registered, renders `PendingRoute` (owner `features/track`) |
 | `/settings` | registered, renders `PendingRoute` (owner `features/settings`) |

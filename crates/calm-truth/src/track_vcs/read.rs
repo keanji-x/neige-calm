@@ -489,7 +489,7 @@ async fn load_optional_text_blob(
         .map_err(|e| CalmError::Internal(format!("track-vcs: text blob is not UTF-8: {e}")))
 }
 
-fn unified_patch(path: &str, old: &str, new: &str, max_lines: usize) -> (String, bool) {
+pub fn unified_patch(path: &str, old: &str, new: &str, max_lines: usize) -> (String, bool) {
     let old_header = format!("a/{path}");
     let new_header = format!("b/{path}");
     let patch = TextDiff::from_lines(old, new)

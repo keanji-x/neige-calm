@@ -49,7 +49,7 @@ afterEach(() => { cleanup(); onlineManager.setOnline(true); vi.restoreAllMocks()
 describe('degraded workspace reads stay usable', () => {
   it.each(['areas', 'tracks', 'activity'] as const)('does not claim empty activity while the %s read is unavailable', async (resource) => {
     let broken = true;
-    renderRoute('/', (request) => {
+    renderRoute('/today/legacy', (request) => {
       if (request.path === '/api/areas') return broken && resource === 'areas' ? fail('Areas temporarily unavailable') : ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return broken && resource === 'tracks' ? fail('Tracks temporarily unavailable') : ok([track]);
       if (request.path.startsWith('/api/overlays?')) return broken && resource === 'activity' ? fail('Activity temporarily unavailable') : ok([]);
@@ -68,7 +68,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it('mounts navigation while an offline startup Areas query is paused', async () => {
     onlineManager.setOnline(false);
-    renderRoute('/', () => ok([]));
+    renderRoute('/today/legacy', () => ok([]));
     const rail = await screen.findByRole('navigation', { name: 'Workspace' });
     expect(within(rail).getByRole('button', { name: 'Go to Today' })).toBeTruthy();
     expect(within(rail).queryByRole('button', { name: 'Create your first area' })).toBeNull();
@@ -78,7 +78,7 @@ describe('degraded workspace reads stay usable', () => {
     const media = window.matchMedia('');
     vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ ...media, matches: query.includes('width'), media: query }));
     let broken = true;
-    renderRoute('/', (request) => {
+    renderRoute('/today/legacy', (request) => {
       if (request.path === '/api/areas') return broken && resource === 'areas' ? fail('Area storage unavailable') : ok(areas);
       if (request.path === '/api/areas/c1/tracks') return broken && resource === 'tracks' ? fail('Tracks temporarily unavailable') : ok([track]);
       return ok([]);
@@ -101,7 +101,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it.each(['unavailable', 'malformed'] as const)('keeps navigation and retries an %s Areas startup read', async (failure) => {
     let broken = true;
-    renderRoute('/', (request) => {
+    renderRoute('/today/legacy', (request) => {
       if (request.path === '/api/areas') return broken
         ? failure === 'unavailable' ? fail('Area storage temporarily unavailable') : ok({})
         : ok(areas);
@@ -120,7 +120,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it('keeps cached Areas while a refresh fails and recovers locally', async () => {
     let broken = false;
-    const { client } = renderRoute('/', (request) => {
+    const { client } = renderRoute('/today/legacy', (request) => {
       if (request.path === '/api/areas') return broken ? fail('Area refresh unavailable') : ok(areas);
       return ok([]);
     });
@@ -137,7 +137,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it('lets an offline Area draft be cancelled without creating it on reconnect', async () => {
     const creates: ApiRequest[] = [];
-    const { client } = renderRoute('/', (request) => {
+    const { client } = renderRoute('/today/legacy', (request) => {
       if (request.path === '/api/areas') {
         if (request.method === 'POST') { creates.push(request); return ok(areas[0]); }
         return ok(areas);
@@ -159,7 +159,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it('keeps an offline Area draft editable and creates it once after an explicit online retry', async () => {
     const creates: ApiRequest[] = [];
-    const { client } = renderRoute('/', (request) => {
+    const { client } = renderRoute('/today/legacy', (request) => {
       if (request.path === '/api/version') return ok({ areaCreateIdempotency: true });
       if (request.path === '/api/areas') {
         if (request.method === 'POST') { creates.push(request); return ok(areas[0]); }
@@ -185,7 +185,7 @@ describe('degraded workspace reads stay usable', () => {
   });
 
   it('warns on Today when activity is unavailable', async () => {
-    renderRoute('/', (request) => {
+    renderRoute('/today/legacy', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path.startsWith('/api/overlays?')) return fail('overlays down');
@@ -321,13 +321,13 @@ describe('degraded workspace reads stay usable', () => {
   });
 
   it('keeps Today content when one area track read fails', async () => {
-    renderRoute('/', (request) => {
+    renderRoute('/today/legacy', (request) => {
       if (request.path === '/api/areas') return ok(areas);
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path === '/api/areas/c2/tracks') return fail('area two down');
       return ok([]);
     });
-    expect((await screen.findAllByText('Reliable')).length).toBeGreaterThan(1);
+    await waitFor(() => expect(screen.getAllByText('Reliable').length).toBeGreaterThan(1));
     expect(within(screen.getByRole('main')).getAllByRole('alert').some((node) => node.textContent?.includes('area two down'))).toBe(true);
     expect(within(screen.getByRole('main')).getByRole('heading', { level: 1 })).toBeTruthy();
   });
@@ -376,7 +376,7 @@ describe('degraded workspace reads stay usable', () => {
 });
 
 it('puts a dismissible delete failure before Today content', async () => {
-  renderRoute('/', (request) => {
+  renderRoute('/today/legacy', (request) => {
     if (request.path === '/api/areas') return ok(areas.slice(0, 1));
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
     if (request.path.startsWith('/api/overlays?')) return ok([]);

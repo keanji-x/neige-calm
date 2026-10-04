@@ -27,6 +27,7 @@ export const PLANNER_OPEN_STATE_KEY = 'ncOpenPlanner';
 
 export type NavTarget =
   | Readonly<{ name: 'today' }>
+  | Readonly<{ name: 'today-legacy' }>
   /** Starting a track is a route, not a dialog; the track row is minted on submit, not on entering the route. */
   | Readonly<{ name: 'new-track'; areaId: string }>
   /** `blockId` rides in the hash; `cardId`/`filePath`/`panel`/`from` become `?card=`/`?file=`/`?panel=`/`?from=`. */
@@ -56,6 +57,7 @@ export type GoOptions = Readonly<{ replace?: boolean }>;
 export function pathFor(target: NavTarget): string {
   switch (target.name) {
     case 'today': return '/';
+    case 'today-legacy': return '/today/legacy';
     case 'new-track': return `/area/${encodeURIComponent(target.areaId)}/new`;
     case 'track': return `/track/${encodeURIComponent(target.trackId)}`;
     case 'recipes': return '/recipes';

@@ -72,6 +72,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Scheduler boot sweep. Must follow operation recovery.
     calm_server::scheduler_sweep_on_boot(&state).await;
+    let daily_state =
+        <calm_server::state::RouteState as axum::extract::FromRef<AppState>>::from_ref(&state);
+    if let Err(error) =
+        calm_server::daily_planner::reconcile(&daily_state, chrono::Utc::now()).await
+    {
+        tracing::warn!(%error, "daily Planner boot reconciliation failed; periodic retry remains enabled");
+    }
+    calm_server::daily_planner::spawn(daily_state);
 
     // When `RECORD_SESSION=<path>` is set, every event on the bus is appended to that file as
     // line-delimited JSON, directly playable by `cargo run --bin replay`.

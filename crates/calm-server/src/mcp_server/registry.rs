@@ -307,8 +307,17 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, descriptor: ToolDescriptor, handler: ToolHandler) {
+        let name = descriptor.name.clone();
+        let guarded: ToolHandler = Arc::new(move |ctx, identity, args| {
+            let handler = handler.clone();
+            let name = name.clone();
+            Box::pin(async move {
+                crate::managed_track::require_tool_allowed(&ctx, &identity, &name).await?;
+                handler(ctx, identity, args).await
+            })
+        });
         self.by_name
-            .insert(descriptor.name.clone(), (descriptor, handler));
+            .insert(descriptor.name.clone(), (descriptor, guarded));
     }
 
     pub fn lookup(&self, name: &str) -> Option<ToolHandler> {

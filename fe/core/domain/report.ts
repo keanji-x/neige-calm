@@ -762,7 +762,12 @@ export function backlinkCountsByBlock(
 
 /* `neige://wave/<id>[#<block id>]` links, resolved here so the renderer never holds a URL. */
 
-const NEIGE_WAVE_LINK = /^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/;
+const TRACK_REPORT_LINK_PREFIX = 'neige://wave/';
+const TRACK_REPORT_LINK_TARGET = /^([^/?#]+)(?:#([^#]+))?$/;
+
+export function trackReportLinkUrl(trackId: string): string {
+  return `${TRACK_REPORT_LINK_PREFIX}${encodeURIComponent(trackId)}`;
+}
 
 /** Block ids the kernel mints. A link whose fragment is not one of these keeps the track and drops the fragment. */
 const BLOCK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -770,7 +775,8 @@ const BLOCK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export type ReportLinkTarget = Readonly<{ trackId: string; blockId: string | null }>;
 
 export function parseReportLink(destination: string): ReportLinkTarget | null {
-  const match = NEIGE_WAVE_LINK.exec(destination);
+  if (!destination.startsWith(TRACK_REPORT_LINK_PREFIX)) return null;
+  const match = TRACK_REPORT_LINK_TARGET.exec(destination.slice(TRACK_REPORT_LINK_PREFIX.length));
   if (match === null) return null;
   const trackId = match[1] ?? '';
   const blockId = match[2];

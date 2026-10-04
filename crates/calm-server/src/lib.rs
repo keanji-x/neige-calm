@@ -597,6 +597,8 @@ pub mod workspace_materialize;
 pub mod workspace_recycle;
 pub mod workspace_repoint;
 pub use calm_types::track_fs_dto;
+pub mod daily_planner;
+pub(crate) mod managed_track;
 pub mod report_backlinks;
 pub mod report_read_ledger;
 pub mod report_sections;
@@ -618,6 +620,7 @@ mod track_report_guard;
 pub mod track_report_origin;
 pub mod track_report_read;
 pub mod track_vcs;
+pub mod workspace_reports;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {
