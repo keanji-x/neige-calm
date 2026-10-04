@@ -18,8 +18,8 @@ use super::publish_scripts::{
 use serde_json::{Value, json};
 
 use crate::builtin_plugins::dev::PLUGIN_ID as GIT_FORGE_PLUGIN_ID;
-use crate::git_candidate::candidate::{TrackCandidate, track_candidates};
 use crate::event::{FieldSource, ForgeEventSpec};
+use crate::git_candidate::candidate::{TrackCandidate, track_candidates};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,

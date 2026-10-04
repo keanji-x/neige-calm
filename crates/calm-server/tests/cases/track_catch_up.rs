@@ -28,7 +28,10 @@ const RESOLVED: &str = "ONE\nTWO\nthree\n";
 async fn catch_up_world() -> (crate::track_worker_cwd::World, String) {
     let w = development_world_with(&[("shared.txt", SHARED)]).await;
     let o0 = git(&w.fx.worktree, &["rev-parse", "HEAD"]);
-    assert_eq!(std::fs::read_to_string(w.fx.worktree.join("shared.txt")).unwrap(), SHARED);
+    assert_eq!(
+        std::fs::read_to_string(w.fx.worktree.join("shared.txt")).unwrap(),
+        SHARED
+    );
     (w, o0)
 }
 
@@ -48,7 +51,15 @@ fn move_upstream(fx: &Fx, content: &str) -> String {
     let parent = fx.track_root.parent().unwrap();
     let clone = parent.join("upstream-clone");
     if !clone.exists() {
-        git(parent, &["clone", "-q", origin(fx).to_str().unwrap(), "upstream-clone"]);
+        git(
+            parent,
+            &[
+                "clone",
+                "-q",
+                origin(fx).to_str().unwrap(),
+                "upstream-clone",
+            ],
+        );
         git(&clone, &["config", "user.email", "upstream@example.test"]);
         git(&clone, &["config", "user.name", "Upstream"]);
     }
@@ -86,7 +97,10 @@ fn head(dir: &Path) -> String {
 }
 
 fn branch_tip(fx: &Fx, branch: &str) -> String {
-    git(&fx.track_root, &["rev-parse", &format!("refs/heads/{branch}")])
+    git(
+        &fx.track_root,
+        &["rev-parse", &format!("refs/heads/{branch}")],
+    )
 }
 
 async fn failed_detail(fx: &Fx, key: &str) -> String {
@@ -154,12 +168,18 @@ async fn a_catch_up_starts_at_the_fetched_upstream_and_delivers_one_linear_commi
         git(&fx.track_root, &["rev-list", "--parents", "-n", "1", &c]),
         format!("{c} {o1}")
     );
-    assert_eq!(git(&fx.track_root, &["show", &format!("{c}:shared.txt")]), RESOLVED.trim());
+    assert_eq!(
+        git(&fx.track_root, &["show", &format!("{c}:shared.txt")]),
+        RESOLVED.trim()
+    );
     let result = publish(fx, "second").await.unwrap();
     assert_eq!(result["head_sha"], json!(c));
     assert_eq!(remote_branch(fx).as_deref(), Some(c.as_str()));
     assert_eq!(
-        git(&fx.track_root, &["log", "--merges", "--format=%H", &format!("{o1}..{c}")]),
+        git(
+            &fx.track_root,
+            &["log", "--merges", "--format=%H", &format!("{o1}..{c}")]
+        ),
         ""
     );
 }
@@ -260,7 +280,10 @@ async fn a_catch_up_without_a_done_attempt_is_refused() {
         detail.starts_with("spawn-failed: refused: track-upstream-unavailable: "),
         "{detail}"
     );
-    assert_eq!(head(&managed), git(&managed, &["rev-parse", "refs/heads/main"]));
+    assert_eq!(
+        head(&managed),
+        git(&managed, &["rev-parse", "refs/heads/main"])
+    );
 }
 
 /// C6 (D6 step 0) — the idle worktree was switched to a clean human branch with an unpublished

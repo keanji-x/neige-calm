@@ -26,9 +26,7 @@ use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_r
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
     release::release_workspace_lease_by_id,
-    worker::{
-        record_catch_up, record_declared_head, verify_recorded_head, verify_worker_checkout,
-    },
+    worker::{record_catch_up, record_declared_head, verify_recorded_head, verify_worker_checkout},
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::planner_model::TurnModelSelection;

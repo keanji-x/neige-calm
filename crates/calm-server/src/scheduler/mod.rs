@@ -1172,8 +1172,9 @@ impl Scheduler {
                 last_error,
                 from_phase,
                 last_error_class,
-            } => {
-                // #2058 D6 2a: a catch-up whose prepare committed has moved the checkout.
+            } if task.start == TaskStart::Upstream => {
+                // #2058 D6 2a: a catch-up whose prepare committed has moved the checkout; its
+                // output names where to.
                 let note = runtime
                     .find_by_kind_and_idempotency(op_kind, &task.id)
                     .await?

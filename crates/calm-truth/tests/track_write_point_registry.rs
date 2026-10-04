@@ -129,6 +129,13 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
          attached cases.",
     ),
     (
+        "crates/calm-server/tests/cases/track_catch_up.rs",
+        "update tracks set workspace_kind = 'managed', workspace_path = ?1, workspace_worktree_path = null where id = ?2",
+        "#2058 S1 C4 — the same re-point as `track_worker_cwd_ends.rs` T6, \
+         after a done attempt, to pin that a managed track's catch-up passes \
+         the branch check and is refused for having no upstream.",
+    ),
+    (
         "crates/calm-truth/src/db/sqlite/track_workspace_migration_tests.rs",
         "update tracks set workspace_frozen_at = null where id = ?1",
         "#1147 S3 — the ONLY un-freeze in the tree, and it is a test fixture. \

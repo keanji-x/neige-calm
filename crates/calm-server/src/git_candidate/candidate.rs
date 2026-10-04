@@ -136,7 +136,10 @@ pub(crate) struct TrackCandidate {
 /// Every candidate of `track_id` with its attempt's status, newest first. The one read of "the
 /// commits the kernel made for this track": publish checks the tip against it and leases against
 /// it (#1830 S3 D3, #2058 D1), and a catch-up replays its newest done commit (#2058 D6).
-pub(crate) async fn track_candidates<'c, E>(executor: E, track_id: &str) -> Result<Vec<TrackCandidate>>
+pub(crate) async fn track_candidates<'c, E>(
+    executor: E,
+    track_id: &str,
+) -> Result<Vec<TrackCandidate>>
 where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
 {

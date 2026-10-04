@@ -230,7 +230,8 @@ async fn prepare_worker_lease_with_tx(
     let catch_up = match start {
         TaskStart::Checkout => None,
         TaskStart::Upstream => {
-            let repo_root = catch_up_repo_root(track_id, kind, &workspace_path, worktree.as_deref())?;
+            let repo_root =
+                catch_up_repo_root(track_id, kind, &workspace_path, worktree.as_deref())?;
             Some(catch_up_tx(tx, track_id, &path, &branch, repo_root.as_deref()).await?)
         }
     };
@@ -379,7 +380,10 @@ const CATCH_UP: &str = "catch_up";
 
 /// #2058 D6 2a: record a catch-up's facts in its prepare's output, for the scheduler to name
 /// them when the spawn fails after the reset.
-pub(crate) fn record_catch_up(data: &mut serde_json::Value, catch_up: Option<&CatchUpFacts>) -> Result<()> {
+pub(crate) fn record_catch_up(
+    data: &mut serde_json::Value,
+    catch_up: Option<&CatchUpFacts>,
+) -> Result<()> {
     if let (Some(catch_up), Some(data)) = (catch_up, data.as_object_mut()) {
         data.insert(CATCH_UP.into(), serde_json::to_value(catch_up)?);
     }
@@ -389,9 +393,11 @@ pub(crate) fn record_catch_up(data: &mut serde_json::Value, catch_up: Option<&Ca
 /// #2058 D6 2a, the scheduler's side: the sentence a failed spawn of a catch-up whose prepare
 /// committed ends with — the checkout is at the upstream now. `None` for any other output.
 pub(crate) fn catch_up_spawn_failure_note(output: &TxOutput) -> Option<String> {
-    let facts: CatchUpFacts =
-        serde_json::from_value(output.data.get(CATCH_UP)?.clone()).ok()?;
-    Some(replay_hint(&format!("upstream {}", facts.upstream), &facts.work))
+    let facts: CatchUpFacts = serde_json::from_value(output.data.get(CATCH_UP)?.clone()).ok()?;
+    Some(replay_hint(
+        &format!("upstream {}", facts.upstream),
+        &facts.work,
+    ))
 }
 
 /// #1933: the track's remote URL for a reader's prompt, or why there is none. Never fails the
