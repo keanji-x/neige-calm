@@ -62,7 +62,7 @@ pub struct ClaudePlannerSessionParams {
     pub cwd: PathBuf,
     /// The rendered Planner instructions, written to a private file at every spawn.
     pub instructions: String,
-    /// The calm tools visible to the card, to restore their dotted names.
+    /// The calm tools visible to the card, to restore their registry names.
     pub calm_tools: ToolNames,
     /// `(UPPER, lower, value)` proxy pairs from the server's resolver.
     pub proxy: Vec<(String, String, String)>,

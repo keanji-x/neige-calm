@@ -32,7 +32,8 @@ const NO_RECORD: &str = "no recorded result for this call in this track \
 /// A `call.tool` no visible plugin exposes is a different fact from a known tool with no entry.
 const UNKNOWN_TOOL_NAME: &str = concat!(
     "unknown tool name: accepted spellings are the registry name (plugin_<id>_<tool>), ",
-    "its sanitized form (plugin_<id>_<tool>) or the Codex-qualified form ",
+    "its Codex-sanitized form (each character of <id> or <tool> outside [A-Za-z0-9_], ",
+    "such as . or -, becomes _) or the Codex-qualified form ",
     "(mcp__<server>__plugin_<id>_<tool>)"
 );
 

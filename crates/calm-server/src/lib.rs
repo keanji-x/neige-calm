@@ -624,7 +624,7 @@ pub mod workspace_reports;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {
-    let daemon_start = state.shared_codex_appserver.start_or_takeover().await;
+    let daemon_start = state.shared_codex_appserver.boot().await;
     recover_harnesses_after_daemon_boot(state, daemon_start).await
 }
 
@@ -641,7 +641,7 @@ pub async fn recover_harnesses_after_daemon_boot(
         Err(e) => {
             tracing::error!(
                 error = %e,
-                "shared codex app-server start/takeover failed; continuing boot"
+                "shared codex app-server boot (start, takeover or replace) failed; continuing boot"
             );
             // Deferred, not skipped forever: the first observed Running triggers a claim-based recovery
             // pass that never stomps a runtime the user resumed in the meantime. Armed first, so the

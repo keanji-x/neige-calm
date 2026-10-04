@@ -234,7 +234,7 @@ fn a_user_text_record_is_not_a_protocol_error_and_renders_nothing() {
 }
 
 #[test]
-fn a_calm_tool_keeps_its_dotted_name_from_the_visible_tool_list() {
+fn a_calm_tool_keeps_its_registry_name_from_the_visible_tool_list() {
     let notifications = translate_fixture("pB_baseline.ndjson", Vec::new());
     for method in ["item/started", "item/completed"] {
         let calls = of_type(&items(&notifications, method), "mcpToolCall");

@@ -1066,6 +1066,16 @@ impl SharedCodexAppServer {
         self.home.path()
     }
 
+    /// The boot entry point: start or take over, then replace an adopted daemon whose env
+    /// signature is stale before any caller resumes threads on it. A thread resumed on such a
+    /// daemon keeps the tool catalog that daemon listed, and only a thread start drains it. The
+    /// replace is a no-op unless the takeover marked a mismatch. A failed replace is returned as
+    /// a boot error, so harness recovery waits for the self-healed daemon.
+    pub async fn boot(self: &Arc<Self>) -> Result<()> {
+        self.start_or_takeover().await?;
+        self.ensure_respawn_for_current_settings().await
+    }
+
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
         // The whole boot sequence is ONE serialized transition: the owned serial is threaded down
         // the `_locked` chain by value and released only after the terminal Running/Failed write.
@@ -1838,7 +1848,7 @@ impl SharedCodexAppServer {
     ) -> String {
         let mut h = Sha256::new();
         // Schema-version salt: the first boot of an upgraded binary mismatches every pre-upgrade
-        // signature, so the takeover path replaces a daemon spawned with the old inherited env.
+        // signature, so `boot` replaces a daemon spawned with the old inherited env.
         // v4: the kernel tool names changed separator (#2087 B0), and a daemon from before would
         // keep offering the dotted names it listed.
         h.update(b"env-schema-v4:2087|");
@@ -2004,9 +2014,10 @@ impl SharedCodexAppServer {
                 return Err(CalmError::CodexAppServer(msg));
             }
         };
-        // Signature mismatch + verified healthy daemon ⇒ ADOPT-AND-DRAIN, never reap-for-respawn:
-        // the v2 salt mismatches on every first boot after an upgrade, and every mint path crosses
-        // the needs_respawn drain boundary; only `turn_start` on an EXISTING thread does not.
+        // Signature mismatch + verified healthy daemon ⇒ adopt and mark needs_respawn; the takeover
+        // itself never reaps. `boot` replaces the adopted daemon right after this, before harness
+        // recovery, because `turn_start` on an EXISTING thread never crosses the drain boundary.
+        // A settings change while running still drains at the next thread start.
         let signature_mismatch =
             record.daemon_env_signature.as_deref() != Some(current_env_signature.as_str());
         if signature_mismatch {
@@ -2017,7 +2028,7 @@ impl SharedCodexAppServer {
                 persisted = ?record.daemon_env_signature,
                 current = %current_env_signature,
                 "shared daemon was spawned with stale env signature; \
-                 adopting and marking for drain at the next thread-start boundary"
+                 adopting and marking it for replacement"
             );
         }
         let Some(sock_path) = &record.sock_path else {

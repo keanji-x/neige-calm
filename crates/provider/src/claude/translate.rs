@@ -32,14 +32,14 @@ pub struct ToolNames {
 }
 
 impl ToolNames {
-    /// `visible` holds the dotted registry names the card's `tools/list` answers with.
+    /// `visible` holds the registry names the card's `tools/list` answers with.
     pub fn new(server_key: impl Into<String>, visible: impl IntoIterator<Item = String>) -> Self {
         let mut by_claude_name: HashMap<String, Vec<String>> = HashMap::new();
-        for dotted in visible {
+        for registry in visible {
             by_claude_name
-                .entry(claude_sanitized(&dotted))
+                .entry(claude_sanitized(&registry))
                 .or_default()
-                .push(dotted);
+                .push(registry);
         }
         Self {
             server_key: server_key.into(),
@@ -47,10 +47,10 @@ impl ToolNames {
         }
     }
 
-    /// The dotted name for Claude's `<sanitized>` spelling, only when exactly one visible tool has it.
+    /// The registry name for Claude's `<sanitized>` spelling, only when exactly one visible tool has it.
     fn restore(&self, sanitized: &str) -> Option<&str> {
         match self.by_claude_name.get(sanitized).map(Vec::as_slice) {
-            Some([dotted]) => Some(dotted.as_str()),
+            Some([registry]) => Some(registry.as_str()),
             _ => None,
         }
     }
@@ -448,7 +448,7 @@ impl TurnTranslator {
         let (kind, item) = if let Some(sanitized) = kernel_tool_suffix(name, &self.tools.server_key)
         {
             let tool = match self.tools.restore(sanitized) {
-                Some(dotted) => dotted.to_string(),
+                Some(registry) => registry.to_string(),
                 None => {
                     tracing::warn!(
                         tool = name,

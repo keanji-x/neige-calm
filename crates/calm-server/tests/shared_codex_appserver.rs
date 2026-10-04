@@ -1096,6 +1096,147 @@ async fn takeover_adopts_on_env_signature_mismatch_and_marks_drain() {
     let _ = child.wait().await;
 }
 
+/// A thread resumed on an adopted stale daemon keeps that daemon's tool catalog, and `turn_start`
+/// never drains it, so `boot` replaces it before recovery and cold-resumes the cached thread with
+/// fresh MCP config on the new daemon.
+#[tokio::test]
+async fn boot_replaces_a_daemon_with_a_stale_env_signature_before_recovery() {
+    let _guard = ENV_LOCK.lock().await;
+
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    let old_capture = root.path().join("old-requests.ndjson");
+    let new_capture = root.path().join("new-requests.ndjson");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &new_capture);
+    }
+    let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .env("FAKE_CODEX_CAPTURE_REQUESTS", &old_capture)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn stale-signature fake app-server for boot");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    let card_id = seed_card(&repo, 1).await;
+    seed_runtime_thread_with_kind(
+        &repo,
+        &card_id,
+        "thread-planner",
+        WorkerSessionKind::SharedPlanner,
+    )
+    .await;
+    persist_running_daemon_with_signature(
+        &repo,
+        &root,
+        old_pid,
+        old_pid,
+        &sock,
+        process_start_time,
+        Some("stale-env-signature".into()),
+    )
+    .await;
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.boot().await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("boot must reap the adopted stale-signature daemon")
+        .expect("wait old fake app-server");
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    let new_pid = snapshot
+        .runtime
+        .as_ref()
+        .map(|runtime| runtime.pid)
+        .unwrap();
+    assert_ne!(new_pid, old_pid);
+    assert!(
+        !daemon.needs_respawn_on_next_thread_start_for_test(),
+        "the boot replace must consume the drain flag"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(record.pid, Some(new_pid));
+    assert_eq!(
+        record.daemon_env_signature,
+        Some(effective_test_env_signature(
+            &cfg(&root).codex_ingest_url_resolved()
+        )),
+        "the replacement must persist the current env signature"
+    );
+
+    let rows = wait_for_requests(&new_capture, 1).await;
+    let cold_resume = rows
+        .iter()
+        .find(|row| {
+            row.get("method").and_then(Value::as_str) == Some("thread/resume")
+                && row.pointer("/params/threadId").and_then(Value::as_str) == Some("thread-planner")
+        })
+        .expect("the new daemon must resume the cached planner thread");
+    assert!(
+        !thread_resume_token(cold_resume).is_empty(),
+        "the cold resume must carry fresh MCP config"
+    );
+}
+
+/// The matching-signature twin: `boot` adopts the healthy daemon and does not replace it.
+#[tokio::test]
+async fn boot_adopts_a_daemon_with_the_current_env_signature() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn current-signature fake app-server for boot");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time).await;
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.boot().await.unwrap();
+
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    assert_eq!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid),
+        "a daemon with the current signature must be adopted, not replaced"
+    );
+    // SAFETY: signal 0 probes liveness without delivering a signal.
+    assert_eq!(unsafe { libc::kill(old_pid, 0) }, 0);
+    assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
+    assert_eq!(
+        repo.shared_daemon_runtime_get().await.unwrap().pid,
+        Some(old_pid)
+    );
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
 #[tokio::test]
 async fn crash_respawn_with_current_settings_clears_pending_drain() {
     let root = tempfile::tempdir().unwrap();

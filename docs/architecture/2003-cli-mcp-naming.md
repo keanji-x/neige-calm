@@ -493,8 +493,9 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
 - **Deploy window:** run the last command in §6.1; it must print 0. The shared Codex
   app-server needs no manual step: its adoption signature hashes `MCP_SERVER_KEY`
   (`compute_env_signature`), so the first boot adopts a pre-rename daemon only to drain it, and
-  the next thread start replaces it. Turns of an already-running thread may finish on the old
-  daemon. A Claude
+  the next thread start replaces it. Until then, existing threads keep the old daemon's tool
+  catalog, not just their in-flight turns; #2087 B0 now replaces such a daemon at boot, before
+  harness recovery. A Claude
   Planner process is spawned per turn with the new `--mcp-config`. Use the standard production
   restart runbook; real Codex E2E is never run on this host.
 - **After deploy:**
@@ -612,6 +613,8 @@ The S-slices are review units. They land as four PRs, so the brand is never mixe
 - Fixed in PR-2: the shared Codex daemon's adoption signature now hashes `MCP_SERVER_KEY`, so a
   daemon adopted from before the rename is drained at boot and replaced at the next thread start
   (`env_signature_replaces_a_daemon_from_before_the_server_key_rename`, mutation-verified).
+  Existing threads kept the old catalog until a thread start; #2087 B0 now replaces such a daemon
+  at boot.
 - Recorded, not applied:
   - The migration test re-applies the embedded SQL after fixture boot rather than upgrading a
     pre-0134 fixture through `MIGRATOR.run`. The real migrator was exercised on the 4140 copy.
