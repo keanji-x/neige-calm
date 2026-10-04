@@ -78,20 +78,20 @@ pub(super) fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str
          `git.commit` (arguments: a commit message and a non-empty idem) and note the branch \
          it reports; the worker must NOT run `git push`, must NOT open a pull request, and \
          must NOT use the shell for git; it must report the branch name in its \
-         calm.task.complete result.\n\
+         neige.task.complete result.\n\
          - open-pr goal: call gh.pr.create with repo `{repo_gitdir}`, head = the implement \
          worker's branch, base `main`, and a non-empty title and body; then call gh.pr.checks \
-         for the created PR; then call calm.task.complete reporting the literal pr_number and \
+         for the created PR; then call neige.task.complete reporting the literal pr_number and \
          head_sha values gh.pr.create returned; the open-pr worker must NOT call gh.pr.diff \
          or gh.pr.list.\n\
          - review-pr goal: call gh.pr.diff with the embedded repo, pr, \
          base_sha and head_sha, review the returned diff against the issue requirements, and \
          report the literal verdict token `approved` or `changes_requested` in \
-         calm.task.complete.\n\
+         neige.task.complete.\n\
          - merge goal: call gh.pr.merge with the embedded repo and pr, and expected_head_sha \
          equal to the head sha the review read with gh.pr.diff; then call gh.issue.close for issue #{issue_number} with the same repo.\n\
          - After the merge task completes and the issue is closed, close the track with \
-         calm.track.close.\n\
+         neige.track.close.\n\
          - If review cannot converge, give up and close the track with the reason; do not \
          request ratification."
     )
