@@ -62,9 +62,10 @@ async fn tool_descriptors_for_identity(
     descriptors
 }
 
-/// The one `-32601` for a `tools/call` name this caller cannot reach. It lists the names its
-/// `tools/list` shows, so the error is the same for an unknown name and an out-of-scope one: it
-/// is not an existence oracle. Hidden tools (callable, not in `tools/list`) are not listed.
+/// The transport's `-32601` for a `tools/call` name this caller cannot reach. It lists the names
+/// its `tools/list` shows, so the error is the same for an unknown name and an out-of-scope one:
+/// it is not an existence oracle. A built-in plugin native refused by `require_bound` keeps its
+/// bare `-32601` (#2003 KNOWN GAP K7). Hidden tools (callable, not in `tools/list`) are not listed.
 pub(super) async fn unknown_tool_error(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,
