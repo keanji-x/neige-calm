@@ -191,7 +191,6 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
         FixtureSpec {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
-            template_input: None,
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
@@ -253,7 +252,6 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         FixtureSpec {
             goal: None,
             template_id: Some("issue-development".into()),
-            template_input: Some(auto_merge_input()),
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
@@ -597,7 +595,6 @@ async fn real_planner_drives_issue_to_close_capstone() {
         FixtureSpec {
             goal: None,
             template_id: Some("issue-development".into()),
-            template_input: Some(auto_merge_input()),
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: Some(FixtureIssue {
                 number: CAPSTONE_ISSUE_NUMBER,
@@ -626,7 +623,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     let overall_deadline = Instant::now() + capstone_budget();
     let st = move || capstone_stage_budget().min(remaining(overall_deadline));
 
-    // S1 — the real planner plans from the bound template.
+    // S1 — the real planner plans.
     let (plan_actor, _plan) = wait_for_plan_updated(
         &fx,
         planner_planning_budget().min(remaining(overall_deadline)),
@@ -807,11 +804,6 @@ async fn real_planner_drives_issue_to_close_capstone() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
-/// These runs steer the Planner to merge without asking, so the bound input says so: an absent merge_policy means hold-for-ratify.
-fn auto_merge_input() -> Value {
-    json!({ "merge_policy": "auto-merge" })
-}
-
 fn remaining(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
@@ -829,7 +821,7 @@ async fn latest_reviewed_head_before_merge(fx: &Fixture, merged_id: i64, pr_numb
         })
 }
 
-/// Capstone track goal: environment facts plus descriptor-legal planning steering; PR coordinates must flow through observations/runs.
+/// Capstone track goal: environment facts plus planning steering; PR coordinates must flow through observations/runs.
 fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String {
     format!(
         "Drive the bound issue-development template END-TO-END for issue #{issue_number}: read \

@@ -19,7 +19,6 @@ async fn real_planner_discovers_builtin_tool_on_first_turn() {
         FixtureSpec {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
-            template_input: None,
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,

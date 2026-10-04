@@ -62,8 +62,6 @@ pub const PLANNER_SESSION_ID: &str = "codex-forge-e2e-planner-session";
 pub struct FixtureSpec {
     pub goal: Option<String>,
     pub template_id: Option<String>,
-    /// Persisted as the track row's `template_input`, verbatim.
-    pub template_input: Option<Value>,
     pub plan_source: PlanSource,
     pub issue_body: Option<FixtureIssue>,
     pub require_task_gates: bool,
@@ -173,7 +171,6 @@ pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixtur
         FixtureSpec {
             goal: Some(forge_goal()),
             template_id: None,
-            template_input: None,
             plan_source: PlanSource::Injected,
             issue_body: None,
             require_task_gates: true,
@@ -253,7 +250,7 @@ pub async fn boot_forge_e2e_fixture(
         .expect("create area");
     let track = repo_dyn
         .track_create(NewTrack {
-            template_input: fixture.template_input.clone(),
+            template_input: None,
             area_id: area.id.clone(),
             title: "codex-forge-e2e".into(),
             sort: None,

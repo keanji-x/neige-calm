@@ -21,7 +21,6 @@ async fn real_planner_creates_calendar_commitment() {
         FixtureSpec {
             goal: Some(goal.clone()),
             template_id: None,
-            template_input: None,
             plan_source: PlanSource::RealPlannerTurn,
             issue_body: None,
             require_task_gates: false,
