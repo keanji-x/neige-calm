@@ -1240,7 +1240,7 @@ pub(crate) async fn get_planner_run(
     let Some(harness) = s.harness.get(&runtime.id) else {
         return Ok(Json(dormant));
     };
-    // One state read for phase, usage and the running turn, so they come from the same instant.
+    // Phase and the running turn come from one state read, so a running turn is never paired with another phase.
     let (snapshot, running_turn) = harness.snapshot_with_running_turn().await;
     let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {

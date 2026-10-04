@@ -141,8 +141,8 @@ pub struct TurnTranslator {
     /// The uuid of the last chain record this turn produced, whether or not it made an item: the
     /// point a later rewind keeps the conversation up to (`--resume-session-at`).
     last_record_uuid: Option<Uuid>,
-    /// The clock at [`Self::turn_started`]; `None` until it runs, and then the outcome has no
-    /// `durationMs`.
+    /// The clock at [`Self::turn_started`]. While it is `None` (the start never ran), the outcome
+    /// carries no `durationMs`.
     started_at_ms: Option<i64>,
 }
 
