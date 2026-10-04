@@ -10,10 +10,7 @@ use serde_json::{Value, json};
 
 use crate::track_recipe_instantiate::{Boot, boot, create_recipe, create_track_body, send};
 
-/// The retired kind, spelled in two parts so the S4 acceptance grep
-/// (`docs/architecture/2021-report-template-composition.md` §5) keeps matching only the design
-/// docs; this test is the one place that still has to name it.
-const RETIRED_KIND: &str = concat!("view", ".live");
+const RETIRED_KIND: &str = "view.live";
 
 /// What every fence-validating write end says about the retired kind.
 fn unknown_kind_text() -> String {
@@ -70,7 +67,8 @@ fn retired_block(report: &Value) -> &Value {
 }
 
 /// A Track whose report was persisted before S4. Seeded directly because no write end accepts
-/// the kind any more, then migrated to the CRDT by one ordinary block write beside it.
+/// the kind any more. The first ordinary block write beside it migrates it into the CRDT; the
+/// second loads that CRDT, the state a 4140 report is in.
 async fn track_with_stored_retired_block(boot: &Boot, title: &str) -> String {
     let (status, created) = send(
         app(boot),
@@ -99,19 +97,33 @@ async fn track_with_stored_retired_block(boot: &Boot, title: &str) -> String {
     })
     .await
     .unwrap();
-    let (status, written) = send(
-        app(boot),
-        "POST",
-        &format!("/api/tracks/{track_id}/report/blocks"),
-        Some(json!({"kind": "prose", "markdown": "# Conclusion\n\nunchanged\n", "ifDocRev": 0})),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "a write beside the stored block: {written}"
-    );
-    retired_block(&report(boot, &track_id).await);
+    for markdown in [
+        "# Conclusion\n\nunchanged\n",
+        "# Review\n\nstill writable\n",
+    ] {
+        let doc_rev = report(boot, &track_id).await["docRev"].clone();
+        let (status, written) = send(
+            app(boot),
+            "POST",
+            &format!("/api/tracks/{track_id}/report/blocks"),
+            Some(json!({"kind": "prose", "markdown": markdown, "ifDocRev": doc_rev})),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a write beside the stored block: {written}"
+        );
+        let has_crdt: bool = sqlx::query_scalar(
+            "SELECT body_crdt IS NOT NULL FROM cards WHERE track_id = ?1 AND kind = 'track-report'",
+        )
+        .bind(&track_id)
+        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+        assert!(has_crdt, "the report is CRDT-backed after the write");
+        retired_block(&report(boot, &track_id).await);
+    }
     track_id
 }
 

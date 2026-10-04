@@ -60,8 +60,10 @@ The plugin publishes one overlay per unit on the Track through the unchanged
 `neige.overlay.set` path:
 
 ```json
-{"snapshot": {"id": "<content hash>", "observedAt": 1790798340000, "producedAt": null},
- "cell": {"kind": "metrics", "id": "nav", "title": "", "items": []}}
+{"snapshot": {"id": "capacity-r1", "observedAt": 1790798340000, "producedAt": null},
+ "cell": {"kind": "metrics", "id": "capacity", "title": "Capacity", "items": [
+  {"id": "free", "label": "Free", "value": {"state": "text", "text": "512 GB"},
+   "detail": "", "tone": "neutral", "emphasis": "normal"}]}}
 ```
 
 `cell` is one `Component`, validated like an inline cell; a unit cannot contain
@@ -112,10 +114,17 @@ Rejected writes remain the kernel's decision.
 
 ## Compatibility
 
-Every write end (block upsert, Replace, whole-document and section writes,
-recipe ingress, track create and fork) rejects the removed whole-view overlay
-kind as an unknown block kind. A report that still stores such a block reads
-without failing: `neige.report.read` lists it without `resolved`, the frontend
-shows one "unsupported block kind" line in its place, and a user block DELETE
-still removes it. There is no preset adapter, shape sniffing, read-time rewrite
-or silent fallback.
+The whole-view overlay kind `view.live` was removed. Every write end refuses an
+old `view.live` fence as an unknown block kind (400 or `-32602`): block upsert,
+Replace, whole-document and section writes, recipe create and update, and fork.
+A body already stored outside those write ends fails closed when it is
+instantiated: a stored recipe row makes track create fail with a 500, and a
+site template file is refused when the template roster loads, so the kernel
+does not boot with it.
+
+A report that still stores a `view.live` block reads without failing:
+`neige.report.read` lists it without `resolved`, the frontend shows one
+"unsupported block kind" line in its place, and a user block DELETE still
+removes it. Search for leftovers with `view.live` (for example in the
+`track-report` card payloads and `track_recipes` bodies). There is no preset
+adapter, shape sniffing, read-time rewrite or silent fallback.

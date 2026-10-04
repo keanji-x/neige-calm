@@ -228,7 +228,7 @@ fence code or test is added.
 
 ### 2.7 Planner
 
-- `calm.report.read` shows the template fence in `text` (about 1 KB per view) and, for a
+- `neige.report.read` shows the template fence in `text` (about 1 KB per view) and, for a
   `view` with live slots, `resolved = {status: ok|partial, validation: "presentation",
   cells: [{id, source, status, observed_at?, resolved_at?, reason?}]}`: `ok` when every
   slot is ok, `partial` otherwise, `unavailable` on storage error. `resolve: {id: "full"}`
@@ -241,8 +241,8 @@ fence code or test is added.
   There is no kernel guard for template views (owner decision): status-quo parity with
   `view.live` and every other non-prose block.
 - Guidance edits: the `view` usage (`prompts/report-kinds/view.md`, returned in the
-  `calm.report.blocks.kinds` result) explains live slots as template-owned references;
-  `prompts/tools/calm.report.read.md` names view live slots. The Planner tool surface is
+  `neige.report.kinds` result) explains live slots as template-owned references;
+  `prompts/tools/neige.report.read.md` names view live slots. The Planner tool surface is
   **28,859 of 30,000 bytes** across 26 Planner-visible tools (computed with the test's
   method, description bytes plus compact input-schema bytes per descriptor,
   `mcp_server/tools/mod.rs:176-194`, from the registry golden's schemas and the prompt
@@ -799,7 +799,7 @@ golden).
   (`kinds.rs:13,42,83,510-524`) and its re-exports (`report_blocks/mod.rs:23-25`);
   `kinds_tests.rs` cases (`:58-76,345`); `live_view_kind` (`contracts.rs:447-461`) and
   `prompts/report-kinds/view.live.md`; the `view.live` wording in
-  `prompts/tools/calm.report.blocks.kinds.md` and `calm.report.read.md`;
+  `prompts/tools/neige.report.kinds.md` and `neige.report.read.md`;
   `hydrate_live_view` (`track_report_hydrate.rs:150-151,183-208`);
   `view.live` cases in `tests/cases/mcp_track_report_live_view.rs` (renamed to
   `mcp_track_report_live_slots.rs`, `tests/mcp_integration_suite.rs:42-43` updated) and
@@ -813,7 +813,12 @@ golden).
   (the lookbehind keeps `resolution.preview.live`, `preview/public.tsx:78`, out)
   matches only the historical design docs `docs/design-native-report-composition.md`,
   `docs/design-paper-report-hierarchy.md`, `docs/design-report-presentation-boundaries.md`
-  and this document; an old `view.live` fence is rejected at each write-end family (block
+  and this document; the regression tests that name the retired kind,
+  `crates/calm-server/tests/cases/mcp_track_report_retired_kind.rs`,
+  `crates/calm-server/tests/cases/report_retired_kind.rs`, `fe/core/domain/report.test.ts`
+  and `fe/web/src/features/report/document/public.test.tsx`; and the Compatibility section of
+  `docs/report-live-views.md`, which names it so operators can grep for it. An old `view.live`
+  fence is rejected at each write-end family (block
   upsert, Replace, recipe, fork); surface budget re-measured.
 
 ## 6. Risks and owner decisions
@@ -956,13 +961,11 @@ pre-merge scan):
   a user block DELETE removes it. This corrects revision 6, which expected reading or
   deleting it could fail; neither does. The revision-5 plan (delete before S4) stands,
   because that Track's Replace, whole-document write and fork would still be refused.
-- Planner tool surface: 29,370 of 30,000 bytes across 26 tools (the real test), down 70
-  bytes from c3cb03010 (same method over that tree's golden and prompt files); the cap
-  comment records the new number.
+- Planner tool surface: 29,884 of 30,000 bytes across 30 tools (the real test, on
+  origin/main 110945dd2), down 70 bytes from that base's 29,954 (same method over its golden
+  and prompt files); the cap comment records the new number.
 - #2069: `spy_recipe_slots.rs` decodes each fence as `NativeView` and keeps
   `RowCell::Live`; the Python `UNIT_KINDS` list is derived from the recipe
   (`tests/recipe.py`, which also replaces the two test copies of the view-fence regex; the
   example builder keeps its own, compared against it by the example test); the status line,
   the §3.2 holdings row and §3.1 step 6 (GET first, keep `title`, pass `if_revision`).
-- The regression tests spell the retired kind as two joined parts, so the §5 acceptance
-  grep still matches only the four design documents.

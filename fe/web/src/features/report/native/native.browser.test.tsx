@@ -90,6 +90,14 @@ it.each([1440, 390, 320])('keeps long review disclosures intact without overflow
   await expect.element(page.getByRole('button', { name: '展开 运营概览' })).toHaveFocus();
 });
 
+it('returns focus to the selected record after closing its detail', async () => {
+  await page.viewport(1440, 1000);
+  render(<ReportDocument report={{ summary: '', body: '', blocks: [{ id: 'inline', kind: 'view', payload }] }} empty={null} />);
+  await page.getByRole('button', { name: '查看详情', exact: true }).click();
+  await page.getByRole('button', { name: '收起详情', exact: true }).click();
+  await expect.element(page.getByRole('button', { name: '查看详情', exact: true })).toHaveFocus();
+});
+
 it('uses the template\'s narrow-summary ratio for the App\'s performance units', async () => {
   await page.viewport(1440, 1000);
   const { container } = render(<main style={{ inlineSize: 1120, padding: 16 }}><NativeReportView payload={performance} resolveOverlay={resolveDemo} /></main>);

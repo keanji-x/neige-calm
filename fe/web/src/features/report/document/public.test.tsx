@@ -379,8 +379,7 @@ describe('ReportDocument', () => {
 
   describe('typed blocks', () => {
     it('degrades a stored block of the retired view overlay kind to one line and keeps the report', () => {
-      // Spelled in two parts so the #2021 S4 acceptance grep keeps matching only the design docs.
-      const retired = ['view', 'live'].join('.');
+      const retired = 'view.live';
       const report = readTrackReport([{
         id: 'report', kind: 'track-report', track_id: 't', title: null, sort: 0, deletable: false, created_at: 0, updated_at: 0,
         payload: { body: '', blocks: [

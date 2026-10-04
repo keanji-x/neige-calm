@@ -9,10 +9,7 @@ use calm_server::track_report::TrackReportPayload;
 use calm_types::report_blocks::render_fence;
 use serde_json::{Value, json};
 
-/// The retired kind, spelled in two parts so the S4 acceptance grep
-/// (`docs/architecture/2021-report-template-composition.md` §5) keeps matching only the design
-/// docs; this test is the one place that still has to name it.
-const RETIRED_KIND: &str = concat!("view", ".live");
+const RETIRED_KIND: &str = "view.live";
 
 fn retired_payload() -> Value {
     json!({"source": "neige://plugin/operations/health", "version": 1})
@@ -25,7 +22,8 @@ async fn read(boot: &Boot, args: Value) -> Value {
 }
 
 /// A report persisted before S4: the old kind sits in the stored row. Seeded directly because no
-/// write end accepts it any more, then migrated to the CRDT by one ordinary block write.
+/// write end accepts it any more. The first ordinary block write migrates it into the CRDT; the
+/// second loads that CRDT, the state a 4140 report is in.
 async fn seed_stored_retired_block(boot: &Boot) -> String {
     let body = format!(
         "# Performance\n\n{}# Execution\n\n{}",
@@ -49,13 +47,25 @@ async fn seed_stored_retired_block(boot: &Boot) -> String {
     })
     .await
     .unwrap();
-    upsert_block(
-        boot,
-        planner_identity(boot),
-        json!({"kind": "prose", "payload": {"markdown": "# Conclusion\n\nunchanged\n"}}),
-    )
-    .await
-    .expect("a block write beside a stored retired block still succeeds");
+    for markdown in [
+        "# Conclusion\n\nunchanged\n",
+        "# Review\n\nstill writable\n",
+    ] {
+        upsert_block(
+            boot,
+            planner_identity(boot),
+            json!({"kind": "prose", "payload": {"markdown": markdown}}),
+        )
+        .await
+        .expect("a block write beside a stored retired block still succeeds");
+        let has_crdt: bool =
+            sqlx::query_scalar("SELECT body_crdt IS NOT NULL FROM cards WHERE id = ?1")
+                .bind(boot.report_card_id.to_string())
+                .fetch_one(&boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        assert!(has_crdt, "the report is CRDT-backed after the write");
+    }
     let report = read(boot, json!({})).await;
     report["blocks"]
         .as_array()
