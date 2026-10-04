@@ -83,11 +83,11 @@ it.each([1440, 390, 320])('keeps long review disclosures intact without overflow
   const panel = page.getByRole('region', { name: 'Full review', exact: true }).element();
   expect(panel.querySelector('blockquote')?.textContent).toBe('字'.repeat(8000));
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
-  await page.getByRole('button', { name: '展开 运营概览' }).click();
+  await page.getByRole('button', { name: '放大查看 运营概览' }).click();
   const dialog = page.getByRole('dialog');
   await expect.element(dialog.getByRole('region', { name: 'Full review', exact: true })).toBeVisible();
   await userEvent.keyboard('{Escape}');
-  await expect.element(page.getByRole('button', { name: '展开 运营概览' })).toHaveFocus();
+  await expect.element(page.getByRole('button', { name: '放大查看 运营概览' })).toHaveFocus();
 });
 
 it('returns focus to the selected record after closing its detail', async () => {
