@@ -651,7 +651,7 @@ mod tests {
         }
     }
 
-    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `neige.task.report_success` / `neige.task.report_failure` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task-report-success` and is exempt.
+    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `neige.task.report_success` / `neige.task.report_failure` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task report-success` and is exempt.
     #[test]
     fn worker_prompts_name_only_tools_the_worker_role_can_see() {
         // `min_named` guards against an empty scanner only: the CLI prompt names exactly the one forbidden tool; the codex prompt adds the two visible completion tools.

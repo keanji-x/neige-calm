@@ -343,7 +343,7 @@ The result is 38 tools (39 minus `calm.review.round`, which #2017 removed), all 
 - **The CLI is an argv front-end** over `call_registered_tool` and the shared renderer. A tool gets
   a CLI command, through a row in `COMMANDS`, only for one of three reasons:
   1. a shell-native view (`track ls/cat/show/diff/log/state`, `report find/tag`);
-  2. a Worker report in CLI mode (`task complete/fail`);
+  2. a Worker report in CLI mode (`task report-success/report-failure`);
   3. lifecycle or maintenance that needs a `--force` confirm (`track close`, `admin gc/vacuum`).
 - **Mechanics (rule 3):**
   - `Command` loses its `name` field. The spelling is computed from `tool`.
@@ -616,3 +616,40 @@ The S-slices are review units. They land as four PRs, so the brand is never mixe
   - Recipe bodies are renamed by prefix without the retired-writer map. That is correct for 4140,
     whose only matching recipe holds 3 live names.
   - `e2e/planner_claude_ux*.py` still matches `calm.terminal.*` until PR-4.
+
+## 11. PR-3 implementation record
+
+- `Command` has no `name`; `neige <object> <action>` is `tool` minus `neige.`. Positionals have
+  only `key` and `required`. Their refusals are generated: `<cmd> requires <key>`, and
+  `unexpected argument …; usage: <usage line>`. Unknown object, action and option errors list the
+  objects, the actions or every accepted flag. `--json` and `--force` are global; `--force` is
+  accepted only by a command with a confirm.
+- Option renames that the mechanics forced: `task report-success --artifacts` (was `--artifact`),
+  `report find --name`/`--tag` (were `-name`/`-tag`). `ls -l` stays the only view flag. `diff`
+  lost its hand-written `--to`/`--path` rows; every positional is now its `--<key>` option.
+- `neige tool list` JSON is `{tools: [{name, cli, listed}], next_cursor}`. `describe` is the MCP
+  declaration plus `cli` and `listed`. The footer "listing is not a grant; the tool's role gate
+  decides" ends the text output only; JSON carries data only.
+- Help: `neige help`, `neige help <object>` (its actions), `neige help <object> <action>`, and the
+  same with `--help`. Help texts are keyed by tool name.
+- H8 (`prompt_neige_mentions_name_served_commands`) now also checks every `-…` token inside a
+  `` `neige <object> <action> …` `` span against the command's accepted flags.
+- Facts this design did not record:
+  - The Planner surface measured 28,870 B at `0841b3ae8` (not 29,984) and is 28,888 B after PR-3.
+  - The guides have their own cap (`every_guide_fits_its_byte_budget`, 7,500 B in total). PR-3
+    reached 7,550 B and trimmed wording to 7,489 B.
+  - `calm-types/src/report/legacy_initial_v4.md` is sha256-frozen and keeps `neige cat`. H8
+    exempts it by name. `initial_body_is_header_line_plus_legacy_v4` now pins the shipped body as
+    header plus the frozen body with that one spelling renamed.
+  - The `Mention` doc comment in `calm-types` reaches `fe/core/api/generated/{openapi.json,wire.ts}`.
+    Those files are regenerated with `npm run gen:api` and carry `OWNERSHIP-CHANGE` trailers.
+- Merged with #2056 (rebased onto `fd26e2267`): its tool names, descriptions, `report_received`
+  result and migration 0135 stand. The Worker commands are now derived like every other one:
+  `neige task report-success --attempt-id … [--result …] [--artifacts …]` and
+  `neige task report-failure --attempt-id … --reason …`. The action's `_` is written `-` in the
+  command; the flat `task-report-success`/`task-report-failure` spellings are old one-word
+  spellings, a usage error listing the objects, and `task complete`/`task fail` are unknown
+  actions.
+  After the merge the Planner surface is 29,458 B (cap 30,000) and the guides 7,489 B (cap 7,500).
+- Left as is: the `track_report_gate_guard` classifier inputs (any literal `neige` executable is
+  flagged, whatever its arguments), and the `fe` conversation tests' sample shell strings.

@@ -476,13 +476,18 @@ mod tests {
         assert_eq!(check_document(&body), Ok(Some(work_brief_header())));
     }
 
+    /// The shipped body is the header line plus the frozen v4 body, with the one CLI spelling the
+    /// #2003 grammar renamed (`neige cat` → `neige track cat`).
     #[test]
     fn initial_body_is_header_line_plus_legacy_v4() {
+        const OLD: &str = "`neige cat report.md`";
+        assert_eq!(LEGACY_INITIAL_V4_BODY.matches(OLD).count(), 1);
         assert_eq!(
             TrackReportPayload::initial().body,
             format!(
-                "{}\n{LEGACY_INITIAL_V4_BODY}",
-                canonical_line(&work_brief_header())
+                "{}\n{}",
+                canonical_line(&work_brief_header()),
+                LEGACY_INITIAL_V4_BODY.replace(OLD, "`neige track cat report.md`")
             )
         );
     }

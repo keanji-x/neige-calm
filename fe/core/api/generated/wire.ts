@@ -596,7 +596,7 @@ export type TrackFsRunVerdictSummary = { at: number, status: string, };
 export type TrackId = string;
 
 /**
- * A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige cat` reads.
+ * A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige track cat` reads.
  */
 export type TrackMention = { 
 /**

@@ -2,9 +2,9 @@
 //! tags, its reports and their blocks, exactly the `area/reports/` view the Planner reads — each with
 //! the text a chosen candidate inserts:
 //!
-//! * tag: ``@`tag:<tag>` `` — the Planner runs `neige find area/reports/ -tag <tag>`;
-//! * report: ``@`area/reports/<name>.md` `` — `neige cat <path>`;
-//! * block: ``@`area/reports/<name>.md#<block_id>` `` — `neige cat <path> --blocks <block_id>`.
+//! * tag: ``@`tag:<tag>` `` — the Planner runs `neige report find area/reports/ --tag <tag>`;
+//! * report: ``@`area/reports/<name>.md` `` — `neige track cat <path>`;
+//! * block: ``@`area/reports/<name>.md#<block_id>` `` — `neige track cat <path> --blocks <block_id>`.
 //!
 //! Every request reads the area afresh (no cache or index), so a new tag or a rename shows on the
 //! next keystroke; matching and ranking run in memory, see [`rank`].

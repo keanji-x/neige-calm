@@ -198,7 +198,7 @@ async fn task_failed_event_count(b: &CardBoot) -> i64 {
         .expect("count task.failed events")
 }
 
-/// #1801 F5: the tool is the one source for the blank-reason rule; MCP and `neige task-report-failure` both meet it.
+/// #1801 F5: the tool is the one source for the blank-reason rule; MCP and `neige task report-failure` both meet it.
 #[tokio::test]
 async fn task_fail_rejects_blank_reason() {
     let b = boot_with_role(CardRole::Worker).await;
@@ -231,7 +231,8 @@ async fn task_fail_rejects_blank_reason() {
         &b.socket_path,
         &b.raw_token,
         &[
-            "task-report-failure",
+            "task",
+            "report-failure",
             "--attempt-id",
             "tf-blank",
             "--reason",

@@ -1226,7 +1226,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
         "developer_instructions must mandate the MCP completion tools: {developer_instructions}"
     );
     assert!(
-        !developer_instructions.contains("neige task-report-success"),
+        !developer_instructions.contains("neige task report-success"),
         "codex worker must NOT mandate the neige completion CLI (#838 Move 2): {developer_instructions}"
     );
 }

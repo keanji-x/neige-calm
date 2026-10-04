@@ -1,5 +1,5 @@
 //! `GET /api/areas/{area_id}/mentions` through the real router: every `insert` resolves through the
-//! `area/reports/` resolver `neige cat` / `neige find` use, only the caller's area is searched,
+//! `area/reports/` resolver `neige track cat` / `neige report find` use, only the caller's area is searched,
 //! matching and ranking follow `rank`'s documented order, and every request reads afresh.
 
 use std::sync::Arc;
@@ -136,7 +136,7 @@ async fn report(
     track.id.as_str().to_string()
 }
 
-/// Tags through the production tag writer, as `neige tag` applies them.
+/// Tags through the production tag writer, as `neige report tag` applies them.
 async fn add_tags(fx: &Fixture, track_id: &str, tags: &[&str]) {
     let add: Vec<String> = tags.iter().map(|tag| tag.to_string()).collect();
     let mut tx = fx.repo.pool().begin().await.unwrap();
@@ -224,7 +224,7 @@ fn code_text(insert: &str) -> String {
     code.into_iter().next().unwrap()
 }
 
-/// The `area/reports/` file a path names, through the classifier `neige cat` routes by.
+/// The `area/reports/` file a path names, through the classifier `neige track cat` routes by.
 fn report_file(path: &str) -> &str {
     match area_reports::classify(path) {
         Some(Ok(AreaPath::Report(file))) => file,

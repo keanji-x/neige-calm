@@ -18,7 +18,7 @@ use crate::mcp_server::transport::call_registered_tool;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CliExit {
     Success,
-    /// argv shape, unknown command or a missing `--force`.
+    /// argv shape, unknown object, action or option, or a missing `--force`.
     Usage,
     /// The tool refused or its result could not be rendered.
     Failed,
@@ -106,17 +106,15 @@ async fn run(
         return match help::render(request) {
             Some(text) => Output::success(text),
             None => Output::usage(
-                help::unknown_command_message(
-                    request.command().expect("only command help can be unknown"),
-                ),
-                argv.iter().any(|arg| arg == "--json"),
+                help::unknown_help_message(request),
+                argv.iter().any(|arg| arg == commands::JSON),
                 None,
             ),
         };
     }
     if argv
         .iter()
-        .find(|name| name.as_str() != "--json")
+        .find(|name| name.as_str() != commands::JSON)
         .is_some_and(|name| name == catalog::COMMAND_NAME)
     {
         return catalog::run(ctx, registry, connection_identity, argv).await;

@@ -17,19 +17,19 @@ mod listing;
 /// How one command prints its tool result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Render {
-    /// `ls`: `long` is `-l`; `reports` when the path is the `area/reports/` directory (#1838).
+    /// `track ls`: `long` is `-l`; `reports` when the path is the `area/reports/` directory (#1838).
     Ls {
         long: bool,
         reports: bool,
     },
-    /// `find`: one `area/reports/` path per line.
+    /// `report find`: one `area/reports/` path per line.
     Find,
-    /// `cat` and `cat-at`: the view content; `--json` changes only the error format.
+    /// `track cat` and `track show`: the view content; `--json` changes only the error format.
     Content,
     State,
     Diff,
     Log,
-    /// `tag`: the current tags space-joined on one line.
+    /// `report tag`: the current tags space-joined on one line.
     Tags,
     /// Maintenance and task reports: the result as compact JSON.
     Raw,

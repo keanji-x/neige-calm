@@ -206,7 +206,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 hex = "0.4"
-# `neige ls -l` pads columns by terminal display width (CJK is 2 columns); already in the lockfile.
+# `neige track ls -l` pads columns by terminal display width (CJK is 2 columns); already in the lockfile.
 unicode-width = "0.2.2"
 # #1881 — fuzzy match + score for the chat `@` mention candidates (tags, reports, blocks).
 nucleo-matcher.workspace = true

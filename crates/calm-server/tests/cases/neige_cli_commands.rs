@@ -61,41 +61,51 @@ async fn cli_output_equals_direct_tool_call() {
 
     // (argv without --json, tool, direct args, render)
     let cases: Vec<(Vec<&str>, &str, Value, Render)> = vec![
-        (vec!["ls"], "neige.track.ls", json!({}), LS),
+        (vec!["track", "ls"], "neige.track.ls", json!({}), LS),
         (
-            vec!["ls", "cards"],
+            vec!["track", "ls", "cards"],
             "neige.track.ls",
             json!({ "path": "cards" }),
             LS,
         ),
-        (vec!["state"], "neige.track.state", json!({}), Render::State),
         (
-            vec!["diff", &c0, &c2],
+            vec!["track", "state"],
+            "neige.track.state",
+            json!({}),
+            Render::State,
+        ),
+        (
+            vec!["track", "diff", &c0, &c2],
             "neige.track.diff",
             json!({ "from": c0, "to": c2 }),
             Render::Diff,
         ),
         (
-            vec!["diff", &c0, "--path", "file-2.txt"],
+            vec!["track", "diff", &c0, "--path", "file-2.txt"],
             "neige.track.diff",
             json!({ "from": c0, "path": "file-2.txt" }),
             Render::Diff,
         ),
-        (vec!["log"], "neige.track.log", json!({}), Render::Log),
         (
-            vec!["log", "--limit", "0", "--include-empty"],
+            vec!["track", "log"],
+            "neige.track.log",
+            json!({}),
+            Render::Log,
+        ),
+        (
+            vec!["track", "log", "--limit", "0", "--include-empty"],
             "neige.track.log",
             json!({ "limit": 0, "include_empty": true }),
             Render::Log,
         ),
         (
-            vec!["cat", "track.json"],
+            vec!["track", "cat", "track.json"],
             "neige.track.cat",
             json!({ "path": "track.json" }),
             Render::Content,
         ),
         (
-            vec!["cat-at", &c2, "file-2.txt"],
+            vec!["track", "show", &c2, "file-2.txt"],
             "neige.track.show",
             json!({ "commit": c2, "path": "file-2.txt" }),
             Render::Content,
@@ -121,19 +131,19 @@ async fn cli_output_equals_direct_tool_call() {
     }
 
     // The rendered shapes themselves, end to end.
-    let (ls, _, _) = cli(&boot, &["ls"]).await;
+    let (ls, _, _) = cli(&boot, &["track", "ls"]).await;
     assert!(
         ls.lines().any(|l| l == "- track.json") && ls.lines().any(|l| l == "d cards/"),
         "{ls}"
     );
-    let (diff, _, _) = cli(&boot, &["diff", &c0, &c2]).await;
+    let (diff, _, _) = cli(&boot, &["track", "diff", &c0, &c2]).await;
     assert!(
         diff.contains("file-0.txt deleted\n") && diff.contains("file-2.txt new\n"),
         "{diff}"
     );
-    let (log, _, _) = cli(&boot, &["log"]).await;
+    let (log, _, _) = cli(&boot, &["track", "log"]).await;
     assert!(log.contains(" event=3 commit 2\n"), "{log}");
-    let (cat, _, _) = cli(&boot, &["cat", "track.json"]).await;
+    let (cat, _, _) = cli(&boot, &["track", "cat", "track.json"]).await;
     assert!(
         cat.starts_with("{\n  \""),
         "track.json is pretty-printed: {cat}"
@@ -153,7 +163,7 @@ async fn cli_state_text_is_one_fact_per_line() {
     .await
     .unwrap();
 
-    let (text, stderr, exit) = cli(&boot, &["state"]).await;
+    let (text, stderr, exit) = cli(&boot, &["track", "state"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
     let fact = |label: &str| -> Vec<&str> {
         text.lines()
@@ -203,7 +213,7 @@ async fn cli_state_text_is_one_fact_per_line() {
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    let (text, _, exit) = cli(&boot, &["state"]).await;
+    let (text, _, exit) = cli(&boot, &["track", "state"]).await;
     assert_eq!(exit, 0, "{text}");
     let live: Vec<&str> = text
         .lines()
@@ -251,7 +261,7 @@ async fn cli_state_marks_stored_readers_without_live_workers() {
         .execute(boot.sqlx.pool())
         .await
         .unwrap();
-    let (text, stderr, exit) = cli(&boot, &["state"]).await;
+    let (text, stderr, exit) = cli(&boot, &["track", "state"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""));
     let rows: Vec<_> = text
         .lines()
@@ -267,7 +277,7 @@ async fn cli_state_marks_stored_readers_without_live_workers() {
         ]
     );
     assert!(!text.contains(&boot.other_card_id), "{text}");
-    let (json_text, stderr, exit) = cli(&boot, &["state", "--json"]).await;
+    let (json_text, stderr, exit) = cli(&boot, &["track", "state", "--json"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""));
     let state: Value = serde_json::from_str(&json_text).unwrap();
     assert_eq!(
@@ -281,10 +291,11 @@ async fn cli_state_marks_stored_readers_without_live_workers() {
     assert_eq!(json_text, format!("{state}\n"));
 }
 
-/// The worker's own `neige task-report-success`: the production report path that ends its task.
+/// The worker's own `neige task report-success`: the production report path that ends its task.
 async fn report_completed(boot: &CardBoot, worker_token: &str, task_id: &str) {
     let argv = [
-        "task-report-success",
+        "task",
+        "report-success",
         "--attempt-id",
         task_id,
         "--result",
@@ -295,7 +306,7 @@ async fn report_completed(boot: &CardBoot, worker_token: &str, task_id: &str) {
     assert_eq!((exit, stderr.as_str()), (0, ""), "{task_id}");
 }
 
-/// The `neige state` live row of `card`; exactly one.
+/// The `neige track state` live row of `card`; exactly one.
 fn live_row<'a>(text: &'a str, card: &str) -> &'a str {
     let rows: Vec<&str> = text
         .lines()
@@ -307,7 +318,7 @@ fn live_row<'a>(text: &'a str, card: &str) -> &'a str {
 }
 
 /// #1932: a worker's report ends its task in the report transaction while its session lives on;
-/// `neige state` names the session's status and the task's apart.
+/// `neige track state` names the session's status and the task's apart.
 #[tokio::test]
 async fn cli_state_shows_a_reported_task_done_beside_its_live_worker_session() {
     let boot = boot_with_role(CardRole::Planner).await;
@@ -335,7 +346,7 @@ async fn cli_state_shows_a_reported_task_done_beside_its_live_worker_session() {
             .unwrap();
     assert_eq!(session, "running");
 
-    let (text, stderr, exit) = cli(&boot, &["state"]).await;
+    let (text, stderr, exit) = cli(&boot, &["track", "state"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
     assert!(
         text.contains("\ntasks      fix-login done\nlive "),
@@ -417,7 +428,7 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
         .unwrap();
     report_completed(&boot, &retry_token.unwrap(), "fix-login-2").await;
 
-    let (text, _, exit) = cli(&boot, &["state"]).await;
+    let (text, _, exit) = cli(&boot, &["track", "state"]).await;
     assert_eq!(exit, 0, "{text}");
     assert!(
         text.contains("\ntasks      fix-login done read_only\nlive "),
@@ -437,7 +448,7 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
             .count(),
         1
     );
-    let (json_text, stderr, exit) = cli(&boot, &["--json", "state"]).await;
+    let (json_text, stderr, exit) = cli(&boot, &["--json", "track", "state"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""));
     let state: Value = serde_json::from_str(&json_text).unwrap();
     assert_eq!(
@@ -448,7 +459,7 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     );
 }
 
-/// #1944: the Planner reads every current task's status from `neige state` alone: a pending key,
+/// #1944: the Planner reads every current task's status from `neige track state` alone: a pending key,
 /// a done key whose worker session lives on, and a done key whose worker session has exited.
 #[tokio::test]
 async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
@@ -500,7 +511,7 @@ async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
     .await
     .unwrap();
 
-    let (text, stderr, exit) = cli(&boot, &["state"]).await;
+    let (text, stderr, exit) = cli(&boot, &["track", "state"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
     let tasks: Vec<&str> = text
         .lines()
@@ -566,7 +577,7 @@ async fn cli_authorization_equals_direct_call() {
     let worker = boot_with_role(CardRole::Worker).await;
     assert_same_refusal(
         &worker,
-        &["vacuum", "--force"],
+        &["admin", "vacuum", "--force"],
         "neige.admin.vacuum",
         json!({}),
     )
@@ -575,7 +586,7 @@ async fn cli_authorization_equals_direct_call() {
     let planner = boot_with_role(CardRole::Planner).await;
     assert_same_refusal(
         &planner,
-        &["task-report-success", "--attempt-id", "k"],
+        &["task", "report-success", "--attempt-id", "k"],
         "neige.task.report_success",
         json!({ "attempt_id": "k" }),
     )
@@ -589,37 +600,45 @@ async fn force_gate_refuses_before_the_tool() {
     let track = boot.track_id.as_str().to_string();
 
     let (stdout, stderr, exit) =
-        cli(&boot, &["track-gc", "--track-id", &track, "--keep", "1"]).await;
+        cli(&boot, &["admin", "gc", "--track-id", &track, "--keep", "1"]).await;
     assert_eq!(
         (exit, stdout.as_str(), stderr.as_str()),
         (
             1,
             "",
-            "neige: track-gc is destructive (prunes VCS history + sweeps objects); re-run with --force to confirm\n"
+            "neige: admin gc is destructive (prunes VCS history + sweeps objects); re-run with --force to confirm\n"
         ),
-        "track-gc without --force"
+        "admin gc without --force"
     );
     assert_eq!(
         commit_count(&boot).await,
         5,
-        "track-gc pruned without --force"
+        "admin gc pruned without --force"
     );
 
-    let (stdout, stderr, exit) = cli(&boot, &["vacuum"]).await;
+    let (stdout, stderr, exit) = cli(&boot, &["admin", "vacuum"]).await;
     assert_eq!(
         (exit, stdout.as_str(), stderr.as_str()),
         (
             1,
             "",
-            "neige: vacuum takes a write lock on the DB and must run in a quiet maintenance window; re-run with --force to confirm\n"
+            "neige: admin vacuum write-locks the DB and must run in a quiet maintenance window; re-run with --force to confirm\n"
         ),
-        "vacuum without --force"
+        "admin vacuum without --force"
     );
 
     // The confirmed forms reach the tool.
     let (stdout, _, exit) = cli(
         &boot,
-        &["track-gc", "--track-id", &track, "--keep", "1", "--dry-run"],
+        &[
+            "admin",
+            "gc",
+            "--track-id",
+            &track,
+            "--keep",
+            "1",
+            "--dry-run",
+        ],
     )
     .await;
     assert_eq!(exit, 0);
@@ -628,7 +647,7 @@ async fn force_gate_refuses_before_the_tool() {
         json!(4)
     );
     assert_eq!(commit_count(&boot).await, 5);
-    let (stdout, _, exit) = cli(&boot, &["vacuum", "--force"]).await;
+    let (stdout, _, exit) = cli(&boot, &["admin", "vacuum", "--force"]).await;
     assert_eq!((exit, stdout.as_str()), (0, "{\"ok\":true}\n"));
 }
 
@@ -644,65 +663,116 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         root.contains("--version  (only argument): print the forwarder version"),
         "{root}"
     );
+    let cat = help::render(HelpRequest::Command("track", "cat")).unwrap();
+    assert!(
+        cat.contains("`track cat` is a view; a report write needs `neige.report.read` first."),
+        "{cat}"
+    );
+    let track = help::render(HelpRequest::Object("track")).unwrap();
+    let gc = help::render(HelpRequest::Command("admin", "gc")).unwrap();
     for (argv, want) in [
         (&["--help"][..], root.clone()),
         (&["-h"][..], root.clone()),
         (&["help"][..], root.clone()),
+        (&["help", "track", "cat"][..], cat.clone()),
+        (&["track", "cat", "--help"][..], cat.clone()),
+        (&["track", "cat", "report.md", "-h"][..], cat.clone()),
+        (&["help", "track"][..], track.clone()),
+        (&["track", "--help"][..], track.clone()),
+        (&["--json", "admin", "gc", "-h"][..], gc.clone()),
         (
-            &["help", "cat"][..],
-            help::render(HelpRequest::Command("cat")).unwrap(),
-        ),
-        (
-            &["cat", "--help"][..],
-            help::render(HelpRequest::Command("cat")).unwrap(),
-        ),
-        (
-            &["--json", "track-gc", "-h"][..],
-            help::render(HelpRequest::Command("track-gc")).unwrap(),
+            &["tool", "list", "--help"][..],
+            help::render(HelpRequest::Object("tool")).unwrap(),
         ),
     ] {
         assert_eq!(cli(&boot, argv).await, (want, String::new(), 0), "{argv:?}");
     }
-    assert!(
-        help::render(HelpRequest::Command("track-gc"))
-            .unwrap()
-            .contains(&format!(
-                "[default: {}]",
-                calm_server::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP
-            ))
-    );
+    assert!(gc.contains(&format!(
+        "[default: {}]",
+        calm_server::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP
+    )));
+    for action in ["ls", "cat", "show", "diff", "log", "state", "close"] {
+        assert!(track.contains(&format!("\n  {action} ")), "{track}");
+    }
 
-    for command in ["task-report-success", "task-report-failure"] {
-        let text = help::render(HelpRequest::Command(command)).unwrap();
+    for action in ["report-success", "report-failure"] {
+        let text = help::render(HelpRequest::Command("task", action)).unwrap();
         assert!(text.contains("report_received"), "{text}");
         assert_eq!(
-            cli(&boot, &[command, "--help"]).await,
+            cli(&boot, &["task", action, "--help"]).await,
             (text, String::new(), 0)
         );
     }
-    for retired in ["task-completed", "task-failed"] {
-        assert!(help::render(HelpRequest::Command(retired)).is_none());
-        let (stdout, stderr, exit) = cli(&boot, &[retired, "--attempt-id", "retired"]).await;
-        assert_eq!(exit, 1, "{retired}: {stderr}");
-        assert!(stdout.is_empty());
+    // A retired outcome action is no alias: the usage error lists the actions.
+    for retired in ["complete", "fail"] {
+        assert!(help::render(HelpRequest::Command("task", retired)).is_none());
+        let (stdout, stderr, exit) =
+            cli(&boot, &["task", retired, "--attempt-id", "retired"]).await;
         assert_eq!(
-            stderr,
-            format!("neige: {}\n", help::unknown_command_message(retired))
+            (stdout.as_str(), stderr, exit),
+            (
+                "",
+                format!("neige: {}\n", help::unknown_action_message("task", retired)),
+                1
+            ),
+            "{retired}"
         );
     }
 
-    let unknown = format!("neige: {}\n", help::unknown_command_message("snow"));
-    for argv in [
-        &["snow"][..],
-        &["snow", "--help"][..],
-        &["help", "snow"][..],
+    // An old one-word spelling is no alias: the usage error lists the objects.
+    for (word, argv) in [
+        ("snow", &["snow"][..]),
+        ("snow", &["snow", "--help"][..]),
+        ("snow", &["help", "snow"][..]),
+        ("cat", &["cat", "report.md"][..]),
+        ("cat", &["cat", "report.md", "--help"][..]),
+        ("cat-at", &["help", "cat-at"][..]),
+        (
+            "task-report-success",
+            &["task-report-success", "--attempt-id", "retired"][..],
+        ),
+        (
+            "task-report-failure",
+            &["task-report-failure", "--attempt-id", "retired"][..],
+        ),
+        (
+            "task-completed",
+            &["task-completed", "--attempt-id", "retired"][..],
+        ),
+        (
+            "task-failed",
+            &["task-failed", "--attempt-id", "retired"][..],
+        ),
     ] {
+        let (stdout, stderr, exit) = cli(&boot, argv).await;
         assert_eq!(
-            cli(&boot, argv).await,
-            (String::new(), unknown.clone(), 1),
+            (stdout.as_str(), stderr.clone(), exit),
+            (
+                "",
+                format!("neige: {}\n", help::unknown_command_message(word)),
+                1
+            ),
             "{argv:?}"
         );
+        assert!(
+            stderr.contains("Objects: track, report, task, admin, tool\n"),
+            "{stderr}"
+        );
     }
+    let (_, stderr, exit) = cli(&boot, &["track", "cat-at", "c", "p"]).await;
+    assert_eq!(
+        (stderr.as_str(), exit),
+        (
+            "neige: unknown action `cat-at` for `neige track`; expected one of: ls, cat, show, diff, log, state, close\n",
+            1
+        )
+    );
+    let (_, stderr, exit) = cli(&boot, &["help", "track", "cat-at"]).await;
+    assert_eq!(exit, 1);
+    assert!(
+        stderr.contains("expected one of: ls, cat, show"),
+        "{stderr}"
+    );
     let (_, stderr, exit) = cli(&boot, &["--json", "snow"]).await;
     assert_eq!(exit, 1);
     let parsed: Value = serde_json::from_str(&stderr).expect("JSON usage error");
@@ -713,12 +783,23 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
     assert_eq!(parsed["error"]["detail"]["kind"], json!("usage"));
     assert_eq!(
         parsed["error"]["detail"]["usage"],
-        json!("neige [--json] <command> [options]")
+        json!("neige [--json] <object> <action> [options]")
+    );
+    let (_, stderr, exit) = cli(&boot, &["--json", "track", "cat"]).await;
+    assert_eq!(exit, 1);
+    let parsed: Value = serde_json::from_str(&stderr).expect("JSON usage error");
+    assert_eq!(
+        parsed["error"]["message"],
+        json!("track cat requires <path>")
+    );
+    assert_eq!(
+        parsed["error"]["detail"]["usage"],
+        json!(help::usage_line(Some("neige.track.cat")))
     );
     let (_, stderr, exit) = cli(&boot, &[]).await;
     assert_eq!(exit, 1);
     assert!(
-        stderr.starts_with("neige: missing command; expected `ls`"),
+        stderr.starts_with("neige: missing command; expected `neige <object> <action>`"),
         "{stderr}"
     );
 }
@@ -738,23 +819,42 @@ async fn add_report_card(boot: &CardBoot) {
         .unwrap();
 }
 
-/// #1838: `neige tag report.md` end to end. The Planner changes tags; only `report.md` takes them.
+/// #1838: `neige report tag report.md` end to end. The Planner changes tags; only `report.md` takes them.
 #[tokio::test]
 async fn cli_tag_round_trips_the_planners_report_tags() {
     let boot = boot_with_role(CardRole::Planner).await;
     add_report_card(&boot).await;
     let steps: [(&[&str], &str); 5] = [
-        (&["tag", "report.md"], "\n"),
+        (&["report", "tag", "report.md"], "\n"),
         (
-            &["tag", "report.md", "--add", "认证", "--add", "架构"],
+            &[
+                "report",
+                "tag",
+                "report.md",
+                "--add",
+                "认证",
+                "--add",
+                "架构",
+            ],
             "认证 架构\n",
         ),
         (
-            &["tag", "report.md", "--add", "排障", "--add", "认证"],
+            &[
+                "report",
+                "tag",
+                "report.md",
+                "--add",
+                "排障",
+                "--add",
+                "认证",
+            ],
             "认证 架构 排障\n",
         ),
-        (&["tag", "report.md", "--remove", "排障"], "认证 架构\n"),
-        (&["tag", "report.md"], "认证 架构\n"),
+        (
+            &["report", "tag", "report.md", "--remove", "排障"],
+            "认证 架构\n",
+        ),
+        (&["report", "tag", "report.md"], "认证 架构\n"),
     ];
     for (argv, want) in steps {
         let (stdout, stderr, exit) = cli(&boot, argv).await;
@@ -764,14 +864,14 @@ async fn cli_tag_round_trips_the_planners_report_tags() {
             "{argv:?}"
         );
     }
-    let (stdout, _, exit) = cli(&boot, &["--json", "tag", "report.md"]).await;
+    let (stdout, _, exit) = cli(&boot, &["--json", "report", "tag", "report.md"]).await;
     assert_eq!(
         (exit, stdout),
         (0, "{\"tags\":[\"认证\",\"架构\"]}\n".to_string())
     );
     assert_same_refusal(
         &boot,
-        &["tag", "track.json", "--add", "x"],
+        &["report", "tag", "track.json", "--add", "x"],
         "neige.report.tag",
         json!({ "path": "track.json", "add": ["x"] }),
     )
@@ -783,22 +883,39 @@ async fn cli_tag_round_trips_the_planners_report_tags() {
 async fn cli_tag_lists_for_a_worker_and_refuses_its_changes() {
     let boot = boot_with_role(CardRole::Worker).await;
     add_report_card(&boot).await;
-    let (stdout, stderr, exit) = cli(&boot, &["tag", "report.md"]).await;
+    let (stdout, stderr, exit) = cli(&boot, &["report", "tag", "report.md"]).await;
     assert_eq!((exit, stderr.as_str(), stdout.as_str()), (0, "", "\n"));
     assert_same_refusal(
         &boot,
-        &["tag", "report.md", "--add", "认证"],
+        &["report", "tag", "report.md", "--add", "认证"],
         "neige.report.tag",
         json!({ "path": "report.md", "add": ["认证"] }),
     )
     .await;
-    let (stdout, _, exit) = cli(&boot, &["tag", "report.md"]).await;
+    let (stdout, _, exit) = cli(&boot, &["report", "tag", "report.md"]).await;
     assert_eq!((exit, stdout.as_str()), (0, "\n"));
 }
 
+/// #2003 §4.5: `neige tool list` rows are this session's `tools/list` set (`listed: true`) plus every
+/// CLI-covered tool (`listed: false` when hidden), each with its derived `cli` command or null.
 #[tokio::test]
-async fn cli_tools_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions() {
+async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions() {
     use support::mcp::{connect, handshake, recv_frame, send_frame, tools_list_frame};
+    const CLI_COVERED: [(&str, &str); 13] = [
+        ("neige.admin.gc", "neige admin gc"),
+        ("neige.admin.vacuum", "neige admin vacuum"),
+        ("neige.report.find", "neige report find"),
+        ("neige.report.tag", "neige report tag"),
+        ("neige.task.report_failure", "neige task report-failure"),
+        ("neige.task.report_success", "neige task report-success"),
+        ("neige.track.cat", "neige track cat"),
+        ("neige.track.close", "neige track close"),
+        ("neige.track.diff", "neige track diff"),
+        ("neige.track.log", "neige track log"),
+        ("neige.track.ls", "neige track ls"),
+        ("neige.track.show", "neige track show"),
+        ("neige.track.state", "neige track state"),
+    ];
     for role in [CardRole::Planner, CardRole::Assistant, CardRole::Worker] {
         let boot = boot_with_role(role).await;
         let (mut read, mut write) = connect(&boot.socket_path).await;
@@ -807,15 +924,31 @@ async fn cli_tools_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions(
         let listed = recv_frame(&mut read).await;
         let declarations = listed["result"]["tools"].as_array().unwrap();
         assert!(!declarations.is_empty());
-        let mut expected: Vec<String> = declarations
+        let visible: Vec<&str> = declarations
             .iter()
-            .map(|tool| tool["name"].as_str().unwrap().into())
+            .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        expected.sort();
-        let mut names = Vec::new();
+        let cli_of = |name: &str| {
+            CLI_COVERED
+                .iter()
+                .find(|(tool, _)| *tool == name)
+                .map(|(_, cli)| *cli)
+        };
+        let mut expected: Vec<Value> = visible
+            .iter()
+            .map(|name| json!({"name": name, "cli": cli_of(name), "listed": true}))
+            .chain(
+                CLI_COVERED
+                    .iter()
+                    .filter(|(tool, _)| !visible.contains(tool))
+                    .map(|(tool, cli)| json!({"name": tool, "cli": cli, "listed": false})),
+            )
+            .collect();
+        expected.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        let mut rows = Vec::new();
         let mut after: Option<String> = None;
         loop {
-            let mut args = vec!["tools", "names", "--all", "--json"];
+            let mut args = vec!["tool", "list", "--all", "--json"];
             if let Some(cursor) = after.as_deref() {
                 args.extend(["--after", cursor]);
             }
@@ -823,9 +956,9 @@ async fn cli_tools_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions(
             assert_eq!((stderr, exit), (String::new(), 0));
             assert!(stdout.len() <= 4097);
             let page: Value = serde_json::from_str(&stdout).unwrap();
-            let batch = page["names"].as_array().unwrap();
+            let batch = page["tools"].as_array().unwrap();
             assert!(batch.len() <= 20);
-            names.extend(batch.iter().map(|name| name.as_str().unwrap().to_string()));
+            rows.extend(batch.iter().cloned());
             match page["next_cursor"].as_str() {
                 Some(cursor) => {
                     assert_ne!(after.as_deref(), Some(cursor));
@@ -834,28 +967,51 @@ async fn cli_tools_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions(
                 None => break,
             }
         }
-        assert_eq!(names, expected);
+        assert_eq!(rows, expected, "{role:?}");
+        let (text, stderr, exit) = cli(&boot, &["tool", "list", "--prefix", "neige.track."]).await;
+        assert_eq!((stderr, exit), (String::new(), 0));
+        assert!(
+            text.ends_with("listing is not a grant; the tool's role gate decides\n"),
+            "{text}"
+        );
         let selected = &declarations[0];
         let name = selected["name"].as_str().unwrap();
         let (stdout, stderr, exit) =
-            cli(&boot, &["tools", "describe", "--name", name, "--json"]).await;
+            cli(&boot, &["tool", "describe", "--name", name, "--json"]).await;
         assert_eq!((stderr, exit), (String::new(), 0));
-        assert_eq!(serde_json::from_str::<Value>(&stdout).unwrap(), *selected);
+        let mut want = selected.clone();
+        want["cli"] = json!(cli_of(name));
+        want["listed"] = json!(true);
+        assert_eq!(serde_json::from_str::<Value>(&stdout).unwrap(), want);
+        let (stdout, stderr, exit) = cli(
+            &boot,
+            &["tool", "describe", "--name", "neige.admin.vacuum", "--json"],
+        )
+        .await;
+        assert_eq!((stderr, exit), (String::new(), 0));
+        let vacuum: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            (&vacuum["cli"], &vacuum["listed"]),
+            (
+                &json!("neige admin vacuum"),
+                &json!(visible.contains(&"neige.admin.vacuum"))
+            )
+        );
         let (stdout, stderr, exit) =
-            cli(&boot, &["tools", "names", "--prefix", name, "--json"]).await;
+            cli(&boot, &["tool", "list", "--prefix", name, "--json"]).await;
         assert_eq!((stderr, exit), (String::new(), 0));
         let prefix: Value = serde_json::from_str(&stdout).unwrap();
         assert!(
-            prefix["names"]
+            prefix["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|value| value.as_str().unwrap().starts_with(name))
+                .all(|row| row["name"].as_str().unwrap().starts_with(name))
         );
         let (stdout, _, exit) = cli(
             &boot,
             &[
-                "tools",
+                "tool",
                 "describe",
                 "--name",
                 "neige.hidden.nonexistent",
@@ -865,14 +1021,14 @@ async fn cli_tools_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions(
         .await;
         assert_eq!(exit, 4);
         assert!(stdout.is_empty());
-        let (_, _, exit) = cli(&boot, &["tools", "names", "--prefix", "neige.*", "--json"]).await;
+        let (_, _, exit) = cli(&boot, &["tool", "list", "--prefix", "neige.*", "--json"]).await;
         assert_eq!(exit, 1);
         sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?")
             .bind(&boot.card_id)
             .execute(boot.sqlx.pool())
             .await
             .unwrap();
-        send_frame(&mut write, json!({"jsonrpc":"2.0","id":91,"method":"neige/cli","params":{"argv":["tools","names","--all","--json"]}})).await;
+        send_frame(&mut write, json!({"jsonrpc":"2.0","id":91,"method":"neige/cli","params":{"argv":["tool","list","--all","--json"]}})).await;
         let rejected = recv_frame(&mut read).await;
         assert_eq!(rejected["result"]["exit"], 4);
         assert_eq!(rejected["result"]["stdout"], "");

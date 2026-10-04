@@ -12633,7 +12633,7 @@
       },
       "TrackMention": {
         "type": "object",
-        "description": "A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige cat` reads.",
+        "description": "A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige track cat` reads.",
         "required": [
           "label",
           "track_id",

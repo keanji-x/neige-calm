@@ -39,7 +39,7 @@ where
     })
 }
 
-/// Served through `neige find`, like the other `neige` views: hidden from every role's `tools/list`.
+/// Served through `neige report find`, like the other `neige` views: hidden from every role's `tools/list`.
 fn find_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_FIND.into(),
@@ -101,7 +101,7 @@ pub(crate) async fn ls(
         ),
         AreaPath::Report(file) => {
             return Err(RpcError::invalid_params(format!(
-                "{REPORTS_DIR}/{file} is a report, not a directory; read it with `neige cat`"
+                "{REPORTS_DIR}/{file} is a report, not a directory; read it with `neige track cat`"
             )));
         }
     };
@@ -137,7 +137,7 @@ pub(crate) async fn cat(
                 REPORTS_DIR
             };
             return Err(RpcError::invalid_params(format!(
-                "`{dir}/` is a directory; list it with `neige ls {dir}/`"
+                "`{dir}/` is a directory; list it with `neige track ls {dir}/`"
             )));
         }
     };

@@ -1,6 +1,6 @@
 # Reading outputs
 
-The track views are read-only: `neige ls [path]` lists, `neige cat <path>` prints. Both compose with `grep`, `jq` and `head`.
+The track views are read-only: `neige track ls [path]` lists, `neige track cat <path>` prints. Both compose with `grep`, `jq` and `head`.
 
 ## Paths
 
@@ -15,13 +15,13 @@ The track views are read-only: `neige ls [path]` lists, `neige cat <path>` print
 
 `area/reports/` holds every report in this area, yours included.
 
-- `neige ls area/reports/` prints one `<title>.md` per report, newest first; `-l` adds update times and tags.
-- `neige find area/reports/ -name '<glob>' -tag <tag>` narrows by name and tag (both means AND).
-- `neige cat area/reports/<name>.md` prints one; `--blocks <id>,<id>` narrows it.
-- Use the exact path `ls` or `find` printed: a shared title gets a `~<id>` suffix, special characters are `%XX`-escaped, and a renamed track's old path stops resolving. `--json` adds `title`, `trackId`, `tags` and `updatedAt`.
+- `neige track ls area/reports/` prints one `<title>.md` per report, newest first; `-l` adds update times and tags.
+- `neige report find area/reports/ --name '<glob>' --tag <tag>` narrows by name and tag (both means AND).
+- `neige track cat area/reports/<name>.md` prints one; `--blocks <id>,<id>` narrows it.
+- Use the exact path a listing printed: a shared title gets a `~<id>` suffix, special characters are `%XX`-escaped, and a renamed track's old path stops resolving. `--json` adds `title`, `trackId`, `tags` and `updatedAt`.
 
 Do not run or re-declare another track's tasks unless this track's request calls for it, and cite what you use.
 
 ## Mentions
 
-A user message may point at reports with `@` and a code span: ``@`tag:<tag>` `` is a tag (`neige find area/reports/ -tag <tag>`), ``@`area/reports/<name>.md` `` a report (`neige cat` it), ``@`area/reports/<name>.md#<id>` `` one block (`--blocks <id>`). If the track was renamed since, `neige ls area/reports/` shows the current name.
+A user message may point at reports with `@` and a code span: ``@`tag:<tag>` `` is a tag (`neige report find area/reports/ --tag <tag>`), ``@`area/reports/<name>.md` `` a report (`neige track cat` it), ``@`area/reports/<name>.md#<id>` `` one block (`--blocks <id>`). After a rename, `neige track ls area/reports/` shows the current name.

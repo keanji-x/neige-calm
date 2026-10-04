@@ -12,7 +12,7 @@ Record data limitations and the events to follow.
 <!-- 报告维护契约（投研报告版）
 
 这段注释在渲染时会被丢弃，用户在页面上看不到它；但它留在 body 源码里，
-任何读源码的主体都读得到（你、worker 的 `neige cat report.md`、REST 读口、
+任何读源码的主体都读得到（你、worker 的 `neige track cat report.md`、REST 读口、
 track 的 VCS diff）。不要把秘密写进来。
 
 这份报告自带的结构就是规则：维护它，不要重写它。

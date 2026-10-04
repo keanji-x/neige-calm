@@ -10,7 +10,7 @@ A `track.report_edited` observation carries a block diff: blocks added, removed 
 
 ## Links
 
-`neige.area.outline` gives every report's block ids and the link syntax; read chosen blocks with `neige cat <report path> --blocks <id>,<id>`. `neige.report.backlinks` lists links to your report.
+`neige.area.outline` gives every report's block ids and the link syntax; read chosen blocks with `neige track cat <report path> --blocks <id>,<id>`. `neige.report.backlinks` lists links to your report.
 
 ## Sources
 
@@ -18,4 +18,4 @@ Capture a source with `neige.source.capture` the first time you read something y
 
 ## Tags
 
-`neige tag report.md` lists this report's tags; `neige tag report.md --add <tag> --remove <tag>` (each repeatable) changes them. Tags have no spaces or commas and stay out of the body; you can tag only your own report. Find tagged reports in the area with `neige find area/reports/ -tag <tag>`.
+`neige report tag report.md` lists this report's tags; `--add <tag>` and `--remove <tag>` (each repeatable) change them. Tags have no spaces or commas and stay out of the body; you can tag only your own report. Find tagged reports in the area with `neige report find area/reports/ --tag <tag>`.

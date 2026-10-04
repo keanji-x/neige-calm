@@ -1,4 +1,4 @@
-//! The Planner's on-demand guides (#1893): every `neige cat guide/<name>.md` the rendered Planner
+//! The Planner's on-demand guides (#1893): every `neige track cat guide/<name>.md` the rendered Planner
 //! prompt names is served by `neige.track.cat` with that file's exact bytes, and `guide/` lists
 //! exactly the named set.
 
@@ -9,9 +9,9 @@ use calm_server::operation::planner_harness_start_adapter::render_planner_develo
 
 use super::*;
 
-/// The `<name>` of every `` `neige cat guide/<name>` `` in `prompt`, in order.
+/// The `<name>` of every `` `neige track cat guide/<name>` `` in `prompt`, in order.
 fn named_guides(prompt: &str) -> Vec<String> {
-    const MARK: &str = "`neige cat guide/";
+    const MARK: &str = "`neige track cat guide/";
     prompt
         .match_indices(MARK)
         .map(|(at, _)| {

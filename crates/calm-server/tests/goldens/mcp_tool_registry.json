@@ -35,7 +35,7 @@
   },
   {
     "name": "neige.area.outline",
-    "description_sha256": "1f919a9d6239d9afb4f3b594740979efa24e25d118183acb57799869e397f63c",
+    "description_sha256": "44f6c2828e6b30ae807ecd0eb2cce9ddad4a5d3334b38c6a7758a086e70b1ad9",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -518,7 +518,7 @@
   },
   {
     "name": "neige.report.commit",
-    "description_sha256": "f27272eb800685441c31be0c43467c68f6bf27c38470a0c9e96aa783d98d4776",
+    "description_sha256": "fa5517f531fc3bb467bbf04ae9211da8ef617dc20bf1dd4bf052f232a1d0e72f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -605,7 +605,7 @@
   },
   {
     "name": "neige.report.find",
-    "description_sha256": "719b7b9150fbb836d94edc905b4425a5540a67e1a038335a943909de33aaa6f0",
+    "description_sha256": "9bd09dad6a05fe739f814aac10e929843a9916d47dfda7d7b573ebc3816e8b8f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -717,7 +717,7 @@
   },
   {
     "name": "neige.report.tag",
-    "description_sha256": "4150ff72f6dbdd2a7933b3244251b1ba38e89771ae65259598ce848dc7025c54",
+    "description_sha256": "dec041eb49eee91f5f031bb1615a9476fbad8b23b525c1da6a5330e68c67f542",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1436,7 +1436,7 @@
   },
   {
     "name": "neige.track.cat",
-    "description_sha256": "aa6c825ed814a967fce2b876d464b027c7bb6232c063212089634ba41a39b2f9",
+    "description_sha256": "17169251bc341e55d3eb6e63b07028d99092bf573b97c56cfca7ea5aa4760b56",
     "input_schema": {
       "properties": {
         "blocks": {
@@ -1471,7 +1471,7 @@
   },
   {
     "name": "neige.track.close",
-    "description_sha256": "07692172fbbbaa80bb1a2d43a66eca5451b073f7e75885478d8fbbc582018181",
+    "description_sha256": "4d6eceaee396234a75c8c654df3bb55e92dc297474422b105bd30098ccaac3bc",
     "input_schema": {
       "properties": {
         "message": {
@@ -1647,7 +1647,7 @@
   },
   {
     "name": "neige.track.state",
-    "description_sha256": "f99468da0e9a8dde0a1df448b7983546caa62a4659a80c777aa16676c87428fa",
+    "description_sha256": "6ef54d8a784c0291c62fabab6e5ba22c37c32334eefa87f379de5660d7f82c2f",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -1659,7 +1659,7 @@
   },
   {
     "name": "neige.user.notify",
-    "description_sha256": "b140ec857270a88719168ee4c653caa8b46352a245269032f4270ef8311600b8",
+    "description_sha256": "b0fddf7dae77ff50bcf539e6087bd0cffb690bf4b2277cc729972835c8754685",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

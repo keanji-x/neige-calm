@@ -28,7 +28,7 @@ pub struct TagMention {
     pub insert: String,
 }
 
-/// A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige cat` reads.
+/// A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige track cat` reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackMention {

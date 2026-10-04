@@ -1,4 +1,4 @@
-//! `ls` and `find` text. A track-view listing prints `d name` / `- name` (with `-l`, each entry's
+//! `track ls` and `report find` text. A track-view listing prints `d name` / `- name` (with `-l`, each entry's
 //! own update time too); an `area/reports/` listing (#1838) prints report names, or with `-l` a
 //! `UPDATED_AT  TAGS  NAME` table; `find` prints one readable `area/reports/` path per line.
 //! Times print as `YYYY-MM-DD HH:MM` in the server's local time; `--json` is the tool result as is.

@@ -1,4 +1,4 @@
-//! The `area/reports/` name codec, path classification and `-name` glob (#1838 S2).
+//! The `area/reports/` name codec, path classification and `--name` glob (#1838 S2).
 
 use super::name::{ParsedName, escape, file_names, parse, unescape};
 use super::{AreaPath, classify, glob};

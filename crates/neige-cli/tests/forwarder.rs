@@ -201,7 +201,7 @@ async fn forwarder_local_failures_are_fixed() {
         "neige: neige/cli: method not found: neige/cli (code -32601)\n"
     );
 
-    // Closed stdout (`neige cat x | head`): nothing more is written, exit 141.
+    // Closed stdout (`neige track cat x | head`): nothing more is written, exit 141.
     let mut child = command(Some(&socket), Some("t"))
         .args(["cat", "x"])
         .spawn()

@@ -80,7 +80,7 @@ impl DiffStatus {
             .find(|status| status.wire_label() == label)
     }
 
-    /// Human-facing label shared by the since-last-turn block and `neige diff`.
+    /// Human-facing label shared by the since-last-turn block and `neige track diff`.
     pub fn observation_label(self) -> &'static str {
         match self {
             Self::Added => "new",

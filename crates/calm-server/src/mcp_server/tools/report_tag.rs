@@ -46,7 +46,7 @@ where
     })
 }
 
-/// Served through `neige tag`, like the other `neige` views: hidden from every role's `tools/list`.
+/// Served through `neige report tag`, like the other `neige` views: hidden from every role's `tools/list`.
 fn descriptor() -> ToolDescriptor {
     let tags = json!({ "type": "array", "items": { "type": "string" } });
     ToolDescriptor {

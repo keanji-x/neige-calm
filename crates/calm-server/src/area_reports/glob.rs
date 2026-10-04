@@ -1,4 +1,4 @@
-//! `find -name` patterns (#1838 S2): `*` matches any run of characters (including none), `?` exactly
+//! `report find --name` patterns (#1838 S2): `*` matches any run of characters (including none), `?` exactly
 //! one character, and every other character itself — `[`, `]` and `\` included, since no glob crate
 //! is a dependency. Matched against the whole listed file name.
 

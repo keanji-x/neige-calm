@@ -1,4 +1,4 @@
-//! `neige.track.cat { blocks }` (#1874, `neige cat <report> --blocks`): chosen blocks of a report,
+//! `neige.track.cat { blocks }` (#1874, `neige track cat <report> --blocks`): chosen blocks of a report,
 //! own (`report.md`) or same-area (`area/reports/<name>.md`), exactly as `neige.report.read`'s
 //! `select.blocks` text. Block ids come from `neige.area.outline`, the Planner's id source.
 
@@ -274,7 +274,7 @@ async fn ambiguous_and_cross_area_names_are_still_refused_with_blocks() {
     }
 }
 
-/// #1877: `sections` (`neige cat <report> --sections`) prints whole H1 sections, byte-equal to
+/// #1877: `sections` (`neige track cat <report> --sections`) prints whole H1 sections, byte-equal to
 /// `neige.report.read { select: { sections } }` on every report path, with one shared refusal.
 #[tokio::test]
 async fn sections_text_equals_calm_report_read_select_on_every_report_path() {

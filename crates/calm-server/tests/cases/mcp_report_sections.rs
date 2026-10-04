@@ -488,7 +488,7 @@ async fn a_section_another_writer_removed_is_a_conflict_until_the_report_is_read
     );
 }
 
-/// #1883: `neige cat` is a view; only `neige.report.read` anchors a write.
+/// #1883: `neige track cat` is a view; only `neige.report.read` anchors a write.
 #[tokio::test]
 async fn a_cat_read_anchors_no_commit() {
     let boot = boot().await;

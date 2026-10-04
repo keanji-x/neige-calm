@@ -279,7 +279,7 @@ impl Selection {
     }
 }
 
-/// `blocks` / `sections` (`neige cat --blocks b_x,b_y`, `--sections A,B`): absent reads the whole file.
+/// `blocks` / `sections` (`neige track cat --blocks b_x,b_y`, `--sections A,B`): absent reads the whole file.
 fn parse_selection_arg(args: &Value) -> Result<Option<Selection>, RpcError> {
     match args.as_object() {
         Some(map) => Selection::parse(map, TOOL_TRACK_CAT),

@@ -1,5 +1,5 @@
 //! `area/reports/` (#1838 S2): the Planner's read-only view of the track reports of its own area,
-//! served by `neige ls`, `neige find` and `neige cat`. This module lists, filters, resolves and reads
+//! served by `neige track ls`, `neige report find` and `neige track cat`. This module lists, filters, resolves and reads
 //! for all three. The area is always the caller's own; a path resolves only against that area's
 //! listing, so no name, ID suffix, duplicate title, rename or traversal reaches another area. A read
 //! returns a report's body or its blocks (#1874), tags and the report card's `updated_at` — never
@@ -64,7 +64,7 @@ pub fn classify(path: &str) -> Option<Result<AreaPath<'_>, String>> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportEntry {
-    /// `area/reports/<name>.md`, readable with `neige cat`.
+    /// `area/reports/<name>.md`, readable with `neige track cat`.
     pub path: String,
     pub title: String,
     pub track_id: String,
@@ -194,12 +194,12 @@ pub async fn list(
         return Err(TrackFsError::PathNotAvailable(if filter.is_search() {
             format!(
                 "{count} reports match, more than the {MAX_REPORTS_PER_LISTING} one listing \
-                 returns; narrow the search with a tighter -name GLOB or a -tag TAG"
+                 returns; narrow the search with a tighter --name GLOB or a --tag TAG"
             )
         } else {
             format!(
                 "{REPORTS_DIR}/ holds {count} reports, more than the {MAX_REPORTS_PER_LISTING} one \
-                 listing returns; narrow it with `neige find {REPORTS_DIR}/ -name GLOB` or `-tag TAG`"
+                 listing returns; narrow it with `neige report find {REPORTS_DIR}/ --name GLOB` or `--tag TAG`"
             )
         }));
     }
@@ -272,7 +272,7 @@ async fn resolve_and_read(
     let parsed = name::parse(file).map_err(TrackFsError::PathNotAvailable)?;
     let not_found = || {
         TrackFsError::PathNotAvailable(format!(
-            "no report at `{path}` in this area; `neige ls {REPORTS_DIR}/` lists the current names"
+            "no report at `{path}` in this area; `neige track ls {REPORTS_DIR}/` lists the current names"
         ))
     };
     let reports = named(pool, area_id).await?;

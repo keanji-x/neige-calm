@@ -135,7 +135,7 @@ async fn old_client_fence_precedes_token_check() {
 async fn neige_cli_on_daemon_trust_connection_is_refused() {
     let boot = boot_shared_daemon_with_planner_thread().await;
     let daemon_token = boot.daemon_token.clone().expect("daemon token");
-    for argv in [&["--help"][..], &["state"][..]] {
+    for argv in [&["--help"][..], &["track", "state"][..]] {
         let (mut rd, mut wr) = connect(&boot.socket_path).await;
         send_line(&mut wr, &forward_initialize_line(&daemon_token)).await;
         let init = recv_frame(&mut rd).await;

@@ -446,7 +446,7 @@ where
                     if !now_canceled {
                         return Err(CalmError::Conflict(format!(
                             "task {key} changed state concurrently; re-check with \
-                             `neige state` and retry"
+                             `neige track state` and retry"
                         )));
                     }
                 }

@@ -167,11 +167,14 @@ must also remain running; registration does not supervise its process.
 terminal. Even `neige --help` needs `NEIGE_MCP_SOCKET` and `NEIGE_MCP_TOKEN`;
 only `neige --version` works without a connection. Use the `neige` binary
 shipped beside the running kernel; old clients are refused with the correct
-path in the error.
+path in the error. A command is `neige <object> <action>`, spelled from the
+tool `neige.<object>.<action>` it calls; each option is the tool's input key
+(`--attempt-id` for `attempt_id`). `neige tool list --all` lists this session's
+tools with their commands.
 
 A Planner can read other reports through the read-only `area/reports/` view,
-inspect selected blocks with `neige cat report.md --blocks <id>`, and query
-report tags with `neige tag report.md`. Report writes use `neige.report.commit`
+inspect selected blocks with `neige track cat report.md --blocks <id>`, and query
+report tags with `neige report tag report.md`. Report writes use `neige.report.commit`
 for targeted edits or `neige.report.write` for whole-document changes.
 Both anchor to this session's prior `neige.report.read`; CLI reads do not establish
 that write anchor.

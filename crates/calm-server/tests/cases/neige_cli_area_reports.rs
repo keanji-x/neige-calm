@@ -169,7 +169,15 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     assert_eq!(
         ok(
             &boot,
-            &["tag", "report.md", "--add", "认证", "--add", "架构"]
+            &[
+                "report",
+                "tag",
+                "report.md",
+                "--add",
+                "认证",
+                "--add",
+                "架构"
+            ]
         )
         .await,
         "认证 架构\n"
@@ -178,13 +186,13 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     set_report_time(&boot, &own_report, local_ms(14, 30)).await;
     set_report_time(&boot, &login_report, local_ms(10, 15)).await;
 
-    assert_eq!(ok(&boot, &["ls", "area/"]).await, "d reports/\n");
+    assert_eq!(ok(&boot, &["track", "ls", "area/"]).await, "d reports/\n");
     assert_eq!(
-        ok(&boot, &["ls", "area/reports/"]).await,
+        ok(&boot, &["track", "ls", "area/reports/"]).await,
         "认证 方案.md\n登录 排查.md\n"
     );
     assert_eq!(
-        ok(&boot, &["ls", "-l", "area/reports/"]).await,
+        ok(&boot, &["track", "ls", "-l", "area/reports/"]).await,
         "UPDATED_AT        TAGS       NAME\n\
          2026-09-28 14:30  认证,架构  认证 方案.md\n\
          2026-09-28 10:15  认证,排障  登录 排查.md\n"
@@ -197,7 +205,8 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
             .to_rfc3339_opts(SecondsFormat::Millis, false)
     };
     let listed: Value =
-        serde_json::from_str(&ok(&boot, &["--json", "ls", "area/reports/"]).await).unwrap();
+        serde_json::from_str(&ok(&boot, &["--json", "track", "ls", "area/reports/"]).await)
+            .unwrap();
     assert_eq!(
         listed,
         json!([
@@ -209,47 +218,74 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     );
 
     assert_eq!(
-        ok(&boot, &["find", "area/reports/", "-name", "*认证*"]).await,
+        ok(
+            &boot,
+            &["report", "find", "area/reports/", "--name", "*认证*"]
+        )
+        .await,
         "area/reports/认证 方案.md\n"
     );
     assert_eq!(
-        ok(&boot, &["find", "area/reports/", "-tag", "认证"]).await,
+        ok(&boot, &["report", "find", "area/reports/", "--tag", "认证"]).await,
         "area/reports/认证 方案.md\narea/reports/登录 排查.md\n"
     );
     assert_eq!(
         ok(
             &boot,
-            &["find", "area/reports/", "-name", "*排查*", "-tag", "认证"]
+            &[
+                "report",
+                "find",
+                "area/reports/",
+                "--name",
+                "*排查*",
+                "--tag",
+                "认证"
+            ]
         )
         .await,
         "area/reports/登录 排查.md\n"
     );
     assert_eq!(
-        ok(&boot, &["find", "area/reports/", "-tag", "不存在"]).await,
+        ok(
+            &boot,
+            &["report", "find", "area/reports/", "--tag", "不存在"]
+        )
+        .await,
         ""
     );
     assert_eq!(
-        ok(&boot, &["--json", "find", "area/reports", "-tag", "不存在"]).await,
+        ok(
+            &boot,
+            &[
+                "--json",
+                "report",
+                "find",
+                "area/reports",
+                "--tag",
+                "不存在"
+            ]
+        )
+        .await,
         "[]\n"
     );
 
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/登录 排查.md"]).await,
+        ok(&boot, &["track", "cat", "area/reports/登录 排查.md"]).await,
         LOGIN_BODY
     );
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/认证 方案.md"]).await,
+        ok(&boot, &["track", "cat", "area/reports/认证 方案.md"]).await,
         AUTH_BODY
     );
     assert_eq!(
-        ok(&boot, &["cat", "report.md"]).await,
+        ok(&boot, &["track", "cat", "report.md"]).await,
         AUTH_BODY,
         "report.md is unchanged"
     );
 
     // A tag change is a report change: the listing's time moves off 14:30.
-    ok(&boot, &["tag", "report.md", "--add", "排障"]).await;
-    let long = ok(&boot, &["ls", "-l", "area/reports/"]).await;
+    ok(&boot, &["report", "tag", "report.md", "--add", "排障"]).await;
+    let long = ok(&boot, &["track", "ls", "-l", "area/reports/"]).await;
     let own_line = long.lines().find(|l| l.ends_with("认证 方案.md")).unwrap();
     assert!(own_line.contains("  认证,架构,排障  "), "{long}");
     assert!(!own_line.starts_with("2026-09-28 14:30"), "{long}");
@@ -257,14 +293,14 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     // A second track with the same title: both list suffixed, the bare name is refused with both.
     let twin = add_track(&boot, &area, "认证 方案").await;
     add_report(&boot, &twin, "# 认证 方案\n\n第二份 结论。\n").await;
-    let names = ok(&boot, &["ls", "area/reports/"]).await;
+    let names = ok(&boot, &["track", "ls", "area/reports/"]).await;
     let suffixed: Vec<String> = names
         .lines()
         .filter(|name| name.starts_with("认证 方案~"))
         .map(|name| format!("area/reports/{name}"))
         .collect();
     assert_eq!(suffixed.len(), 2, "{names}");
-    let (stdout, stderr, exit) = neige(&boot, &["cat", "area/reports/认证 方案.md"]).await;
+    let (stdout, stderr, exit) = neige(&boot, &["track", "cat", "area/reports/认证 方案.md"]).await;
     assert_eq!((exit, stdout.as_str()), (4, ""));
     assert!(
         stderr.starts_with("neige: neige.track.cat: `area/reports/认证 方案.md` names 2 reports in this area; read one of: "),
@@ -279,7 +315,7 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
         .find(|path| path.contains(&twin.as_str()[..8]))
         .unwrap();
     assert_eq!(
-        ok(&boot, &["cat", twin_path]).await,
+        ok(&boot, &["track", "cat", twin_path]).await,
         "# 认证 方案\n\n第二份 结论。\n"
     );
 
@@ -295,11 +331,11 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
         .await
         .unwrap();
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/认证 方案 第二版.md"]).await,
+        ok(&boot, &["track", "cat", "area/reports/认证 方案 第二版.md"]).await,
         "# 认证 方案\n\n第二份 结论。\n"
     );
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/认证 方案.md"]).await,
+        ok(&boot, &["track", "cat", "area/reports/认证 方案.md"]).await,
         AUTH_BODY
     );
 }
@@ -309,9 +345,9 @@ async fn a_worker_is_refused_area_reports_through_neige() {
     let boot = boot_with_role(CardRole::Worker).await;
     add_report(&boot, &boot.track_id, "own\n").await;
     for argv in [
-        &["ls", "area/reports/"][..],
-        &["cat", "area/reports/mcp-test.md"][..],
-        &["find", "area/reports/", "-tag", "x"][..],
+        &["track", "ls", "area/reports/"][..],
+        &["track", "cat", "area/reports/mcp-test.md"][..],
+        &["report", "find", "area/reports/", "--tag", "x"][..],
     ] {
         let (stdout, stderr, exit) = neige(&boot, argv).await;
         assert_eq!((exit, stdout.as_str()), (4, ""), "{argv:?}");
@@ -321,7 +357,7 @@ async fn a_worker_is_refused_area_reports_through_neige() {
             "{argv:?}: {stderr}"
         );
     }
-    assert_eq!(ok(&boot, &["cat", "report.md"]).await, "own\n");
+    assert_eq!(ok(&boot, &["track", "cat", "report.md"]).await, "own\n");
 }
 
 const BLOCKS_BODY: &str =
@@ -354,21 +390,28 @@ async fn planner_reads_chosen_report_blocks_through_neige() {
         "<!-- neige:{} -->\n# Goal\n\nalpha\n\n<!-- neige:{} -->\n# Next\n\ngamma\n",
         ids[1], ids[3]
     );
-    assert_eq!(ok(&boot, &["cat", path, "--blocks", &chosen]).await, want);
     assert_eq!(
-        ok(&boot, &["--json", "cat", "--blocks", &chosen, path]).await,
+        ok(&boot, &["track", "cat", path, "--blocks", &chosen]).await,
         want
     );
-    let (stdout, stderr, exit) = neige(&boot, &["cat", path, "--blocks", "b_nope"]).await;
+    assert_eq!(
+        ok(
+            &boot,
+            &["--json", "track", "cat", "--blocks", &chosen, path]
+        )
+        .await,
+        want
+    );
+    let (stdout, stderr, exit) = neige(&boot, &["track", "cat", path, "--blocks", "b_nope"]).await;
     assert_eq!((exit, stdout.as_str()), (4, ""));
     assert!(stderr.contains("unknown block id `b_nope`"), "{stderr}");
 
     // #1877: --sections names whole H1 sections and prints the same bytes.
     assert_eq!(
-        ok(&boot, &["cat", path, "--sections", "Next,Goal"]).await,
+        ok(&boot, &["track", "cat", path, "--sections", "Next,Goal"]).await,
         want
     );
-    let (stdout, stderr, exit) = neige(&boot, &["cat", path, "--sections", "Nope"]).await;
+    let (stdout, stderr, exit) = neige(&boot, &["track", "cat", path, "--sections", "Nope"]).await;
     assert_eq!((exit, stdout.as_str()), (4, ""));
     assert!(
         stderr.contains("unknown section `Nope`; this report's sections are:\n  # Goal"),

@@ -30,7 +30,7 @@ fn claude_worker_command_line_uses_appended_system_prompt_not_mcp_tools() {
 
     assert!(command.contains("--append-system-prompt"));
     assert!(
-        command.contains("neige task-report-success"),
+        command.contains("neige task report-success"),
         "worker system prompt must instruct neige CLI completion: {command}"
     );
     assert!(!command.contains("--mcp-config"), "{command}");

@@ -600,7 +600,7 @@ pub fn claude_api_error(uuid: &str, cwd: &str, text: &str, error: &str) -> Value
     })
 }
 
-/// `cards/<card_id>/conversation.md` through the production track view the Planner's `neige cat` reads.
+/// `cards/<card_id>/conversation.md` through the production track view the Planner's `neige track cat` reads.
 pub async fn cat_conversation(repo: &SqlxRepo, card: &Card) -> String {
     let track = repo
         .track_get(card.track_id.as_str())
