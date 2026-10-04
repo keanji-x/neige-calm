@@ -819,6 +819,10 @@
       inset-block-start: calc(var(--header-primary-h) + var(--space-4));
     }
 
-    .brand { color: var(--text); }
+    .brand {
+      font-size: var(--text-lg);
+      letter-spacing: var(--tracking-tight);
+      color: var(--text);
+    }
   }
 }
