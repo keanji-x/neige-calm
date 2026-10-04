@@ -12,7 +12,6 @@ import {
 } from '@astryxdesign/core/Chat';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Code } from '@astryxdesign/core/Code';
-import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 import { Button } from '@astryxdesign/core/Button';
 import { useIcon } from '@astryxdesign/core/Icon';
@@ -35,6 +34,7 @@ import {
   type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
+import { Reply, type ReplyImageFiles } from './reply.tsx';
 import styles from './thread.module.css';
 import { sideQuestion } from '../../../../../core/domain/side-conversation.ts';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
@@ -74,9 +74,11 @@ export type ChatThreadProps = Readonly<{
   editing?: string | null;
   /** Where the running turn's clock starts, from the run response; `null` draws `Running` with no number. */
   runningAnchor?: RunningTurnAnchor | null;
+  /** Local reply images use the open conversation's workspace, never the browser's URL base. */
+  imageFiles?: ReplyImageFiles | null;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, runningAnchor = null }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, runningAnchor = null, imageFiles = null }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -320,7 +322,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
           </>
         ) : (
           <div className={styles.reply} data-nc-turn="agent">
-            <Reply text={turn.text} />
+            <Reply text={turn.text} imageFiles={imageFiles} />
             {showLive && last && <ActivityIndicator state="working" motion="thinking" />}
           </div>
         )}
@@ -436,11 +438,6 @@ function jumpToExchange(frame: HTMLElement | null, id: string): boolean {
   if (scroller === null) return false;
   scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   return true;
-}
-
-/** The reply is markdown via Astryx's `Markdown`, streamed or stored alike. `isStreaming` is deliberately not passed: it is a typewriter that withholds text and splits it into spans, and it restarts from nothing when a streamed reply mounts mid-way. `headingLevelStart={3}` because the page owns `<h1>` and its sections `<h2>`. */
-function Reply({ text }: { text: string }) {
-  return <Markdown density="compact" headingLevelStart={3}>{text}</Markdown>;
 }
 
 /** A duration is printed only when the reader felt it; most `item/completed` are a 12ms read. */

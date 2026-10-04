@@ -785,6 +785,8 @@ type ConversationPanelSource = Readonly<{
     cards: Readonly<Record<string, CardActivity>>;
     /** The Track these rows may be sent to. */
     rememberOn: string;
+    /** Known on the Track route; Today resolves the open conversation's Track on demand. */
+    workspaceRoot: string | null;
     scopeOf: (conversationId: string) => PlannerConversationScope | null;
     /** The id the card minted under this key will have, derived before the POST. */
     derivedCardId: (idempotencyKey: string) => string;
@@ -1019,6 +1021,18 @@ function useConversationPane(
   const scope: PlannerConversationScope | null = openRowId !== null
     ? source.scopeOf(openRowId)
     : null;
+  // Shared cache with the Track route, also available for Today and side conversations.
+  const imageTrackId = scope?.id ?? null;
+  const imageTrack = useQuery({
+    ...trackDetailQueryOptions(transport, imageTrackId ?? '', unauthorized),
+    enabled: imageTrackId !== null && source.workspaceRoot === null,
+  });
+  const imageRoot = source.workspaceRoot
+    ?? (imageTrack.data === undefined ? null : toTrack(imageTrack.data.track).agentCwd);
+  const imageFiles = useMemo(() => imageRoot === null || imageTrackId === null ? null : ({
+    root: imageRoot,
+    files: createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId),
+  }), [imageRoot, imageTrackId, transport, unauthorized]);
   const routeIntent: ConversationRouteIntent = {
     rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds,
   };
@@ -1655,6 +1669,7 @@ function useConversationPane(
               <ChatThread
                 key={open.id}
                 conversation={open}
+                imageFiles={imageFiles}
                 turns={withoutEditedTurn(store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
                   || composer.text === '' || turn.id !== store.failedSend.echo.id), edit.hidden)} editing={edit.marked}
                 pending={store.pending.has(open.id)}
@@ -1761,6 +1776,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       /* The launchpad is a real track and these rows are its own; the store checks
              every row against this. */
       rememberOn: conversationTrackId,
+      workspaceRoot: null,
       derivedCardId: (idempotencyKey) => trackConversationCardId(conversationTrackId, idempotencyKey),
       scopeOf: (conversationId) => {
         const row = launchpadRows.find((candidate) => candidate.id === conversationId);
@@ -2194,6 +2210,7 @@ function TrackRouteBody({
       /* These rows are on a track the reader can be sent to, so Today may hold and
                open them; the store checks each row's `trackId` against this. */
       rememberOn: track.id,
+      workspaceRoot: track.agentCwd,
       derivedCardId: (idempotencyKey) => trackConversationCardId(track.id, idempotencyKey),
       scopeOf: (conversationId) => {
         const row = rows.find(candidate => candidate.id === conversationId);

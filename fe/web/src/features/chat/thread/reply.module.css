@@ -1,0 +1,14 @@
+@layer features {
+  .image {
+    display: block;
+    max-inline-size: 100%;
+    block-size: auto;
+    border-radius: var(--radius-sm);
+  }
+
+  .unavailable {
+    display: block;
+    color: var(--text-3);
+    overflow-wrap: anywhere;
+  }
+}
