@@ -82,17 +82,9 @@ Tauri configuration in version control.
 
 ## Verification
 
-The `Android client` workflow runs the profile tests, Chromium connection tests,
-and an ARM64 APK build on an ephemeral GitHub-hosted runner for every `mobile/`
-or `fe/` change. Successful runs provide a debug APK and connection-page
-screenshot as a seven-day artifact. The `Android native` workflow adds one API 35
-emulator job that launches the real activity against a temporary real backend,
-refuses frontend network requests, tests native authority after navigation, and
-drives the direct IP route, Back navigation and remembered sessions; a second job
-drives the minified release APK through adb. Both emulator jobs run for `mobile/`
-pull requests and for every push to `main`. CI builds have no prefilled IP
-connection and cannot enroll without a valid QR. Real Tailnet enrollment needs
-the configured control plane and is verified separately on a phone, not in CI.
+CI does not build or test the Android client. Run the profile and connection-page
+checks locally before changing `mobile/`. Real Tailnet enrollment needs the
+configured control plane and is verified separately on a phone.
 
 ```sh
 npm test
