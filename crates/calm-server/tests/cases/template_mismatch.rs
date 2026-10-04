@@ -23,7 +23,7 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
     let read = call_planner_tool(
         &ctx,
         &registry,
-        "neige.report.read",
+        "neige_report_read",
         identity.clone(),
         json!({}),
     )

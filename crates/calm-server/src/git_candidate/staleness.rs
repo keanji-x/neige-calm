@@ -1,4 +1,4 @@
-//! `neige.plan.list.candidate.upstream` (#1777): how far a bound candidate's
+//! `neige_plan_list.candidate.upstream` (#1777): how far a bound candidate's
 //! base is behind the upstream of the branch the Track's own checkout
 //! (`agent_cwd()`: its track worktree when it has one, #2112) is on *now*, as
 //! last known. Read-only and computed at read time — never

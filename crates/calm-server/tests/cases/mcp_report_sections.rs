@@ -1,6 +1,6 @@
-//! #1877: section-addressed `neige.report.commit` ops anchored by the session's read ledger. A write
+//! #1877: section-addressed `neige_report_commit` ops anchored by the session's read ledger. A write
 //! passes no rev (#1883); the kernel checks it against what this session last read with
-//! `neige.report.read`, inside the persist tx.
+//! `neige_report_read`, inside the persist tx.
 
 #![cfg(unix)]
 
@@ -488,7 +488,7 @@ async fn a_section_another_writer_removed_is_a_conflict_until_the_report_is_read
     );
 }
 
-/// #1883: `neige track cat` is a view; only `neige.report.read` anchors a write.
+/// #1883: `neige track cat` is a view; only `neige_report_read` anchors a write.
 #[tokio::test]
 async fn a_cat_read_anchors_no_commit() {
     let boot = boot().await;

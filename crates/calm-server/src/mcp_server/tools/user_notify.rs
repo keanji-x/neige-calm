@@ -1,4 +1,4 @@
-//! `neige.user.notify`, the planner's one way to speak to the user from a background turn: the front end renders the call as a
+//! `neige_user_notify`, the planner's one way to speak to the user from a background turn: the front end renders the call as a
 //! normal agent bubble outside the fold. The kernel only validates `text` and writes nothing; codex persists the `mcpToolCall` item.
 
 use crate::mcp_server::framing::RpcError;
@@ -10,7 +10,7 @@ use crate::model::CardRole;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_USER_NOTIFY: &str = "neige.user.notify";
+pub const TOOL_USER_NOTIFY: &str = "neige_user_notify";
 
 /// Upper bound on `text`, in characters (not bytes).
 pub const MAX_TEXT_CHARS: usize = 2000;
@@ -37,7 +37,7 @@ where
 fn user_notify_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_USER_NOTIFY.into(),
-        description: include_str!("../../../prompts/tools/neige.user.notify.md")
+        description: include_str!("../../../prompts/tools/neige_user_notify.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

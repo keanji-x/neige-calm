@@ -92,7 +92,7 @@ pub(crate) fn require_rest_user_actor(actor: &Actor) -> Result<()> {
     require_rest_user_actor_for(
         actor,
         "track-report edit",
-        "MCP write paths use `neige.report.*` tools.",
+        "MCP write paths use `neige_report_*` tools.",
     )
 }
 
@@ -278,7 +278,7 @@ mod tests {
             .expect_err("an agent is refused")
             .to_string();
         assert!(report.contains("track-report edit"), "{report}");
-        assert!(report.contains("neige.report.*"), "{report}");
+        assert!(report.contains("neige_report_*"), "{report}");
         assert!(!report.contains("planner input"), "{report}");
 
         let planner = require_rest_user_actor_for(
@@ -290,7 +290,7 @@ mod tests {
         .to_string();
         assert!(planner.contains("planner input edit"), "{planner}");
         assert!(!planner.contains("track-report"), "{planner}");
-        assert!(!planner.contains("neige.report.*"), "{planner}");
+        assert!(!planner.contains("neige_report_*"), "{planner}");
     }
 
     /// `ai:claude` collapses to `ActorId::User` under `Actor::to_actor_id`, so a guard

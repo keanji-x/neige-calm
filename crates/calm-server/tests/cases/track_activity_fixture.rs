@@ -362,7 +362,7 @@ impl Fx {
         assert_eq!(n, 1, "mark_running {key}");
     }
 
-    /// The worker's `neige.task.report_success` flip (`done` + `finished_at_ms`).
+    /// The worker's `neige_task_done` flip (`done` + `finished_at_ms`).
     pub(crate) async fn complete(
         &self,
         track_id: &str,
@@ -387,7 +387,7 @@ impl Fx {
         assert_eq!(n, 1, "complete {key}");
     }
 
-    /// The worker's `neige.task.report_failure` flip (`failed` + `finished_at_ms`).
+    /// The worker's `neige_task_fail` flip (`failed` + `finished_at_ms`).
     pub(crate) async fn fail(&self, track_id: &str, key: &str, worker_card_id: &str, at_ms: i64) {
         let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
         let n = task_fail_from_worker_tx(

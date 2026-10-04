@@ -60,8 +60,8 @@ async fn real_invest_app_admits_planner_decision_and_worker_execution_request() 
     fx.plugin_host.registry_insert(&guard, manifest, Some(app));
     drop(guard);
     fx.plugin_host.spawn(&id).await.unwrap();
-    let add = format!("plugin.{id}_decision_add");
-    let execute = format!("plugin.{id}_execution_add");
+    let add = format!("plugin_{id}_decision_add");
+    let execute = format!("plugin_{id}_execution_add");
     let decision = json!({
         "decision_id": "caller-proof", "weights": [],
         "message": "Fixture evidence supports holding cash.",

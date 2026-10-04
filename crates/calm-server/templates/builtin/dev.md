@@ -74,7 +74,7 @@ configured origin URL, before any url.insteadOf rewrite; owner/name after
 stripping the host and a trailing .git).
 On mismatch do NOT proceed or declare execution tasks.
 Record both observed repositories in 待你定, ask the user to correct or confirm
-the repository with neige.ratify.request and
+the repository with neige_ratify_request and
 `reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"`
 (that exact prefix, then both observed values), and wait for the human decision.
 Without input.repo, inspect the checkout and origin and use the user's request;
@@ -93,7 +93,7 @@ that repository policy requires. If the repository declares no review policy,
 use one independent read-only PR review before merge.
 
 Implement and commit in a worktree, verify with the repository's required gates,
-and publish a PR with neige.dev.publish when the requested delivery calls for it.
+and publish a PR with neige_dev_publish when the requested delivery calls for it.
 Create concrete delegated tasks when needed, not a fixed task list. Give reviewers
 the implementing attempt's gate result and gh.pr.checks as evidence; run additional
 checks only when required by repository policy or to resolve a review hypothesis.
@@ -115,7 +115,7 @@ Merge and approval
   and gh.pr.checks is green. Pass that head_sha as expected_head_sha.
 - merge_policy `auto-merge` allows gh.pr.merge at that point without asking again.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — first calls
-  neige.ratify.request with `reason:"merge_hold: pr #<n> at <head_sha>"`; on
+  neige_ratify_request with `reason:"merge_hold: pr #<n> at <head_sha>"`; on
   ratify.resolved grant, merge that head with gh.pr.merge (expected_head_sha = that
   head_sha). A new head needs the applicable checks and review again before a new ratify.
 -->

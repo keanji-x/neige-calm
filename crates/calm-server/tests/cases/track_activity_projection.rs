@@ -541,7 +541,7 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
     );
 }
 
-/// A worker card with a `failed` current attempt (`neige.task.report_failure` at
+/// A worker card with a `failed` current attempt (`neige_task_fail` at
 /// `at_ms`) whose session is still `running`. Returns `(card, session)`.
 async fn failed_attempt(
     f: &Fx,
@@ -845,7 +845,7 @@ async fn e2_user_notify_completed_row_is_the_activity_instant() {
     let notify = |status: &str, error: Option<&str>| {
         let mut item = json!({
             "id": "call-1", "type": "mcpToolCall", "server": "neige",
-            "tool": "neige.user.notify", "status": status,
+            "tool": "neige_user_notify", "status": status,
             "arguments": {"text": "Which branch should the release go out from?"},
         });
         if let Some(e) = error {
@@ -885,7 +885,7 @@ async fn e2_user_notify_completed_row_is_the_activity_instant() {
             "call-other",
             "item/completed",
             json!({"item": {"id": "call-other", "type": "mcpToolCall", "server": "neige",
-                            "tool": "neige.task.report_success", "status": "completed"}}),
+                            "tool": "neige_task_done", "status": "completed"}}),
         ),
     ];
     for (i, (uuid, method, params)) in twins.into_iter().enumerate() {
@@ -1223,7 +1223,7 @@ async fn activity_payload_passes_the_overlay_registry() {
         .await;
     f.exit_session(&chat_ws, WorkerSessionState::Failed, 6_000)
         .await;
-    // The Planner card: one `neige.user.notify` ask and a failed turn (planner down).
+    // The Planner card: one `neige_user_notify` ask and a failed turn (planner down).
     let planner = f
         .card(&t, "card-planner", "planner", CardRole::Planner)
         .await;
@@ -1246,7 +1246,7 @@ async fn activity_payload_passes_the_overlay_registry() {
         "mcpToolCall",
         "item/completed",
         json!({"item": {"id": "call-notify", "type": "mcpToolCall", "server": "neige",
-                        "tool": "neige.user.notify", "status": "completed",
+                        "tool": "neige_user_notify", "status": "completed",
                         "arguments": {"text": "Ship it?"}}}),
     )
     .await;

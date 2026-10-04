@@ -46,7 +46,7 @@ pub enum Observation {
         #[serde(default)]
         body_before: Option<String>,
         /// The report's `docRev` once this edit had landed, so the turn text can tell the planner whether
-        /// its last `neige.report.read` already contained the edit; best-effort, `None` when unknown.
+        /// its last `neige_report_read` already contained the edit; best-effort, `None` when unknown.
         #[serde(default)]
         doc_rev_after: Option<u64>,
         /// `(id, rev)` of each block of `body`, in document order and position-aligned with the diff's
@@ -280,7 +280,7 @@ impl Observation {
                 if let Some(doc_rev) = doc_rev_after {
                     text.push_str(&format!(
                         "After this edit the report is at docRev {doc_rev}. \
-                         If your last neige.report.read returned docRev >= {doc_rev}, \
+                         If your last neige_report_read returned docRev >= {doc_rev}, \
                          this edit is already in what you read.\n"
                     ));
                 }
@@ -640,7 +640,7 @@ mod tests {
             retained_path: None,
         };
         let text = observation.to_turn_text();
-        assert!(!text.contains("Accept with neige.task.verdict"), "{text}");
+        assert!(!text.contains("Accept with neige_task_verdict"), "{text}");
         assert!(
             text.contains("Review and audit tasks need no verdict of their own"),
             "{text}"
@@ -983,7 +983,7 @@ mod tests {
         assert_eq!(
             lines.next(),
             Some(
-                "After this edit the report is at docRev 8. If your last neige.report.read \
+                "After this edit the report is at docRev 8. If your last neige_report_read \
                  returned docRev >= 8, this edit is already in what you read."
             )
         );

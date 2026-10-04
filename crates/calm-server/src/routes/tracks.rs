@@ -224,7 +224,7 @@ pub struct CreateTrackRequest {
     #[schema(value_type = String)]
     pub area_id: crate::ids::AreaId,
     /// Omitted stores the empty string; the planner agent names the track via
-    /// `neige.track.rename` while the stored title is still blank.
+    /// `neige_track_rename` while the stored title is still blank.
     #[serde(default)]
     #[schema(required = false)]
     pub title: String,
@@ -515,7 +515,7 @@ pub(crate) async fn cat_track_file(
     let path = q
         .path
         .as_deref()
-        .ok_or_else(|| CalmError::BadRequest("neige.track.cat: missing `path` (string)".into()))?;
+        .ok_or_else(|| CalmError::BadRequest("neige_track_cat: missing `path` (string)".into()))?;
     let track = s
         .repo
         .track_get(&id)
@@ -2662,10 +2662,10 @@ pub(crate) async fn update_track(
         ));
     }
 
-    // Only a person closes or reopens here; a Planner closes with `neige.track.close`.
+    // Only a person closes or reopens here; a Planner closes with `neige_track_close`.
     if p.closed.is_some() && !matches!(actor_id, ActorId::User) {
         return Err(CalmError::Forbidden(
-            "closed is user-only; a Planner closes with neige.track.close".into(),
+            "closed is user-only; a Planner closes with neige_track_close".into(),
         ));
     }
     // Asking for the state the track is already in is an idempotent silent success.

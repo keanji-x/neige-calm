@@ -37,8 +37,8 @@ use support::mcp::call_tool_via_socket;
 use support::planner_turn::*;
 use tokio::time::{Instant, sleep};
 
-const PUBLISH_TOOL: &str = "neige.dev.publish";
-const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
+const PUBLISH_TOOL: &str = "neige_dev_publish";
+const PR_CHECKS_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.checks";
 /// The d2 test's source issue. Purely an environment fact: the gh shim keeps
 /// per-repo issue state keyed by number, and any number works.
 const D2_ISSUE_NUMBER: u64 = 840;
@@ -264,7 +264,7 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
-// The only possible emitter of `forge.pr.merged` / `forge.issue.closed` is the real planner's own `tools/call`: scripted setup stops at `neige.dev.publish`/`gh.pr.checks`.
+// The only possible emitter of `forge.pr.merged` / `forge.issue.closed` is the real planner's own `tools/call`: scripted setup stops at `neige_dev_publish`/`gh.pr.checks`.
 // The op idem-key checks pin the caller card only; scripted setup uses the same planner thread, so they cannot discriminate scripted-vs-autonomous.
 #[tokio::test]
 async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descriptor() {

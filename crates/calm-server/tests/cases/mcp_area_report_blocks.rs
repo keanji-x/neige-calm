@@ -1,6 +1,6 @@
-//! `neige.track.cat { blocks }` (#1874, `neige track cat <report> --blocks`): chosen blocks of a report,
-//! own (`report.md`) or same-area (`area/reports/<name>.md`), exactly as `neige.report.read`'s
-//! `select.blocks` text. Block ids come from `neige.area.outline`, the Planner's id source.
+//! `neige_track_cat { blocks }` (#1874, `neige track cat <report> --blocks`): chosen blocks of a report,
+//! own (`report.md`) or same-area (`area/reports/<name>.md`), exactly as `neige_report_read`'s
+//! `select.blocks` text. Block ids come from `neige_area_outline`, the Planner's id source.
 
 use super::*;
 use calm_server::mcp_server::tools::report_links::TOOL_AREA_OUTLINE;
@@ -25,11 +25,11 @@ async fn cat_blocks(
     Ok(value["content"].as_str().expect("content").to_string())
 }
 
-/// `side`'s block ids in document order, as `neige.area.outline` lists them to `reader`.
+/// `side`'s block ids in document order, as `neige_area_outline` lists them to `reader`.
 async fn outline_ids(boot: &Boot, reader: &Side, side: &Side) -> Vec<String> {
     let outline = call(boot, TOOL_AREA_OUTLINE, planner(reader), json!({}))
         .await
-        .expect("neige.area.outline");
+        .expect("neige_area_outline");
     let track = outline["tracks"]
         .as_array()
         .expect("tracks")
@@ -52,7 +52,7 @@ async fn select_text(boot: &Boot, side: &Side, blocks: &[&str]) -> String {
         json!({ "select": { "blocks": blocks } }),
     )
     .await
-    .expect("neige.report.read");
+    .expect("neige_report_read");
     value["text"].as_str().expect("text").to_string()
 }
 
@@ -87,7 +87,7 @@ async fn blocks_of_another_same_area_report_come_back_in_document_order_with_mar
 }
 
 /// One report, one output: the own `report.md`, the same report through `area/reports/` and the
-/// report's own `neige.report.read` select all print the same bytes.
+/// report's own `neige_report_read` select all print the same bytes.
 #[tokio::test]
 async fn blocks_text_equals_calm_report_read_select_on_every_report_path() {
     let boot = boot(&[(0, "认证 方案"), (0, "登录 排查")]).await;
@@ -275,7 +275,7 @@ async fn ambiguous_and_cross_area_names_are_still_refused_with_blocks() {
 }
 
 /// #1877: `sections` (`neige track cat <report> --sections`) prints whole H1 sections, byte-equal to
-/// `neige.report.read { select: { sections } }` on every report path, with one shared refusal.
+/// `neige_report_read { select: { sections } }` on every report path, with one shared refusal.
 #[tokio::test]
 async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
     let boot = boot(&[(0, "认证 方案")]).await;

@@ -132,7 +132,7 @@ impl Rig {
             instructions: self.instructions.clone(),
             calm_tools: ToolNames::new(
                 calm_server::mcp_server::wiring::MCP_SERVER_KEY,
-                ["neige.report.commit".to_string()],
+                ["neige_report_commit".to_string()],
             ),
             proxy: Vec::new(),
             prior_total_tokens: 0,

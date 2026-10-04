@@ -176,9 +176,9 @@ pub struct AppContext {
     /// A running-task cancel pokes the worker reap through it; unbound (fixtures without a
     /// Dispatcher) means the reconcile sweep reaps instead.
     pub scheduler_poke: Arc<tokio::sync::OnceCell<SchedulerPoke>>,
-    /// The `chart.series` background resolver; `neige.report.read` enqueues into it.
+    /// The `chart.series` background resolver; `neige_report_read` enqueues into it.
     pub series_resolver: Arc<crate::report_series::SeriesResolver>,
-    /// Transient ring of Planner plugin results `neige.source.capture` reads.
+    /// Transient ring of Planner plugin results `neige_source_capture` reads.
     pub plugin_results: Arc<crate::plugin_results::PluginResults>,
     /// What each session last read of a report: the anchors of the agent report writes (#1877, #1883).
     pub read_ledger: Arc<crate::report_read_ledger::ReadLedger>,
@@ -484,22 +484,25 @@ mod tests {
     fn descriptors_visible_to_any_role_returns_union_without_hidden_tools() {
         let mut registry = ToolRegistry::new();
         registry.register(
-            fake_descriptor("neige.spec.only", &[CardRole::Planner]),
+            fake_descriptor("neige_planner_only", &[CardRole::Planner]),
             fake_handler("planner"),
         );
         registry.register(
-            fake_descriptor("neige.worker.only", &[CardRole::Worker]),
+            fake_descriptor("neige_worker_only", &[CardRole::Worker]),
             fake_handler("worker"),
         );
         registry.register(
-            fake_descriptor("neige.shared", &[CardRole::Planner, CardRole::Worker]),
+            fake_descriptor("neige_shared_both", &[CardRole::Planner, CardRole::Worker]),
             fake_handler("shared"),
         );
         registry.register(
-            fake_descriptor("neige.report.only", &[CardRole::ReportCard]),
+            fake_descriptor("neige_report_only", &[CardRole::ReportCard]),
             fake_handler("report"),
         );
-        registry.register(fake_descriptor("neige.hidden", &[]), fake_handler("hidden"));
+        registry.register(
+            fake_descriptor("neige_hidden_none", &[]),
+            fake_handler("hidden"),
+        );
 
         let mut names = registry
             .descriptors_visible_to_any_role(&[CardRole::Planner, CardRole::Worker])
@@ -510,7 +513,11 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["neige.shared", "neige.spec.only", "neige.worker.only"]
+            vec![
+                "neige_planner_only",
+                "neige_shared_both",
+                "neige_worker_only"
+            ]
         );
     }
 

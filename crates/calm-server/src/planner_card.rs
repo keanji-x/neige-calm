@@ -15,7 +15,7 @@ pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = concat!(
     include_str!("../prompts/worker/tail.md")
 );
 
-/// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `neige.task.report_success` / `neige.task.report_failure` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
+/// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `neige_task_done` / `neige_task_fail` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
 pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
     include_str!("../prompts/worker/head-mcp.md"),
     include_str!("../prompts/tool-discovery.md"),
@@ -61,13 +61,13 @@ pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
 #[cfg(test)]
 const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "   * Maintain task declarations as report `task` blocks. Read the report (or the section ",
-    "that holds the task) with `neige.report.read`, then create or replace the task block with ",
-    "an `upsert` op of `neige.report.commit`; pass no revisions, the kernel anchors the op to ",
+    "that holds the task) with `neige_report_read`, then create or replace the task block with ",
+    "an `upsert` op of `neige_report_commit`; pass no revisions, the kernel anchors the op to ",
     "your read. To start an authorized Planner task, ",
     "its payload needs a per-track-unique ",
     "`key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, ",
     "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
-    "sibling keys, `priority`, and usually `gate`. Use `neige.plan.cancel` to ",
+    "sibling keys, `priority`, and usually `gate`. Use `neige_plan_cancel` to ",
     "cancel a pending task, or a running codex/claude task whose worker the kernel ",
     "then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. ",
     "A `codex`/`claude` task requires `goal`, a natural-language objective, and ",
@@ -127,7 +127,7 @@ pub(crate) enum SeededCardRole {
     Planner,
     /// Worker card for a **claude** provider: completion is reported through the `neige` shell CLI.
     Worker,
-    /// Worker card for a **codex** provider: completion is reported through the native `neige.task.report_success` / `neige.task.report_failure` MCP tools.
+    /// Worker card for a **codex** provider: completion is reported through the native `neige_task_done` / `neige_task_fail` MCP tools.
     WorkerCodex,
 }
 
@@ -171,7 +171,7 @@ mod tests {
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "acceptance-track");
         let descriptors = crate::mcp_server::build_default_registry()
             .descriptors_for_role(calm_types::model::CardRole::Planner);
-        let descriptions = ["neige.task.verdict"].map(|name| {
+        let descriptions = ["neige_task_verdict"].map(|name| {
             descriptors
                 .iter()
                 .find(|tool| tool.name == name)
@@ -484,13 +484,13 @@ mod tests {
         }
     }
 
-    /// Every `neige.`-prefixed token in `text`: `neige.` not preceded by `[A-Za-z0-9_.]`, extended over `[A-Za-z0-9_.]`, trailing `.`s stripped, wildcard families (`neige.*`) dropped.
-    /// Uppercase is part of the continuation so `neige.plan.listX` stays one unregistered token.
+    /// Every `neige_`-prefixed token in `text`: `neige_` not preceded by `[A-Za-z0-9_.]`, extended over `[A-Za-z0-9_]`, wildcard families (`neige_terminal_*`) dropped.
+    /// Uppercase is part of the continuation so `neige_plan_listX` stays one unregistered token.
     fn kernel_tool_tokens(text: &str) -> Vec<&str> {
         let bytes = text.as_bytes();
         let mut tokens = Vec::new();
         let mut from = 0;
-        while let Some(i) = text[from..].find("neige.") {
+        while let Some(i) = text[from..].find("neige_") {
             let at = from + i;
             let preceded_by_ident = at > 0 && {
                 let b = bytes[at - 1];
@@ -499,13 +499,13 @@ mod tests {
             let end = at
                 + bytes[at..]
                     .iter()
-                    .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'.')
+                    .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
                     .count();
             from = end;
             if preceded_by_ident || bytes.get(end) == Some(&b'*') {
                 continue;
             }
-            tokens.push(text[at..end].trim_end_matches('.'));
+            tokens.push(&text[at..end]);
         }
         tokens
     }
@@ -513,21 +513,21 @@ mod tests {
     #[test]
     fn kernel_tool_tokens_are_whole_tokens() {
         for (text, expected) in [
-            ("see neige.plan.list.", vec!["neige.plan.list"]),
-            ("xneige.plan.list", vec![]),
+            ("see neige_plan_list.", vec!["neige_plan_list"]),
+            ("xneige_plan_list", vec![]),
             ("dev.neige.git-forge", vec![]),
-            ("neige.*", vec![]),
-            ("neige.terminal.*", vec![]),
-            ("neige.plan.list2", vec!["neige.plan.list2"]),
-            ("neige.plan.listX", vec!["neige.plan.listX"]),
+            ("neige.kv.set", vec![]),
+            ("neige_terminal_*", vec![]),
+            ("neige_plan_list2", vec!["neige_plan_list2"]),
+            ("neige_plan_listX", vec!["neige_plan_listX"]),
             ("", vec![]),
-            ("neige.", vec!["neige"]),
+            ("neige_", vec!["neige_"]),
         ] {
             assert_eq!(kernel_tool_tokens(text), expected, "input: {text:?}");
         }
     }
 
-    /// Tokens are whole-token matched, so a misspelling or a stray suffix (`neige.plan.list2`) is red, not a prefix hit; only wildcard families are skipped.
+    /// Tokens are whole-token matched, so a misspelling or a stray suffix (`neige_plan_list2`) is red, not a prefix hit; only wildcard families are skipped.
     #[test]
     fn planner_prompt_names_only_tools_the_planner_role_can_see() {
         use std::collections::BTreeSet;
@@ -556,7 +556,7 @@ mod tests {
         }
     }
 
-    /// Every `neige.*` token in `prompt` checked against the tool registry: each must be a registered name; tokens in neither list must be visible to `role`; `callable_but_hidden` and `named_to_forbid` entries must be registered, NOT visible, and actually named by the prompt.
+    /// Every `neige_*` token in `prompt` checked against the tool registry: each must be a registered name; tokens in neither list must be visible to `role`; `callable_but_hidden` and `named_to_forbid` entries must be registered, NOT visible, and actually named by the prompt.
     /// With `must_name_all_visible` every tool visible to `role` must be named; `min_named` guards against an empty scanner only.
     fn assert_prompt_tool_names(
         label: &str,
@@ -651,7 +651,7 @@ mod tests {
         }
     }
 
-    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `neige.task.report_success` / `neige.task.report_failure` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task report-success` and is exempt.
+    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `neige_task_done` / `neige_task_fail` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task done` and is exempt.
     #[test]
     fn worker_prompts_name_only_tools_the_worker_role_can_see() {
         // `min_named` guards against an empty scanner only: the CLI prompt names exactly the one forbidden tool; the codex prompt adds the two visible completion tools.
@@ -669,15 +669,15 @@ mod tests {
                 &render_system_prompt(template, "track-registry"),
                 calm_types::model::CardRole::Worker,
                 &[],
-                &["neige.task.verdict"],
+                &["neige_task_verdict"],
                 must_name_all_visible,
                 min_named,
             );
         }
     }
 
-    /// `neige.report.read` is callable but hidden: its handler admits the Assistant while its descriptor is visible to Planner only, so the prompt is the Assistant's only contract for the read.
-    /// `neige` CLI mentions are not `neige.*` tokens and are pinned only by the goldens.
+    /// `neige_report_read` is callable but hidden: its handler admits the Assistant while its descriptor is visible to Planner only, so the prompt is the Assistant's only contract for the read.
+    /// `neige` CLI mentions are not `neige_*` tokens and are pinned only by the goldens.
     #[test]
     fn assistant_prompts_name_only_tools_the_assistant_role_can_see() {
         for (label, template) in [
@@ -694,7 +694,7 @@ mod tests {
                 label,
                 &render_system_prompt(template, "track-registry"),
                 calm_types::model::CardRole::Assistant,
-                &["neige.report.read"],
+                &["neige_report_read"],
                 &[],
                 false,
                 3,

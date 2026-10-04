@@ -16,7 +16,7 @@ fn retired_payload() -> Value {
 }
 
 async fn read(boot: &Boot, args: Value) -> Value {
-    call_tool(boot, "neige.report.read", planner_identity(boot), args)
+    call_tool(boot, "neige_report_read", planner_identity(boot), args)
         .await
         .unwrap()
 }
@@ -93,8 +93,8 @@ async fn retired_view_kind_is_refused_by_the_planner_block_upsert() {
     assert_eq!(
         error.message,
         format!(
-            "neige.report.commit: ops[0]: unknown kind `{RETIRED_KIND}` — supported kinds: prose, \
-             chart.candles, chart.series, table, app, task, preview, view. See neige.report.kinds."
+            "neige_report_commit: ops[0]: unknown kind `{RETIRED_KIND}` — supported kinds: prose, \
+             chart.candles, chart.series, table, app, task, preview, view. See neige_report_kinds."
         )
     );
     assert_eq!(read(&boot, json!({})).await["docRev"], before["docRev"]);
@@ -116,9 +116,9 @@ async fn retired_view_kind_is_refused_by_the_planner_whole_document_write() {
     assert_eq!(
         error.message,
         format!(
-            "neige.report.write: invalid `{RETIRED_KIND}` block payload: unknown block kind \
+            "neige_report_write: invalid `{RETIRED_KIND}` block payload: unknown block kind \
              `{RETIRED_KIND}` — known data kinds: chart.candles, chart.series, table, app, task, \
-             preview, view (see neige.report.kinds)"
+             preview, view (see neige_report_kinds)"
         )
     );
     assert_eq!(read(&boot, json!({})).await["docRev"], before["docRev"]);

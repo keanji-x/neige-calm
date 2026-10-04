@@ -54,7 +54,7 @@ export type AttachmentId = string;
  */
 export type BlockMention = { 
 /**
- * The block's heading as `neige.area.outline` lists it; a block with no heading is not offered.
+ * The block's heading as `neige_area_outline` lists it; a block with no heading is not offered.
  */
 label: string, block_id: string, 
 /**
@@ -388,7 +388,7 @@ export type ProposalDecision = "accepted" | "rejected" | "stale" | "withdrawn";
 
 /**
  * One proposed mutation of the track-report block document; a stricter sibling of the interactive
- * `neige.report.commit` op DTOs.
+ * `neige_report_commit` op DTOs.
  */
 export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: string, kind: string, payload: unknown, if_rev?: number, anchor?: ProposalAnchor, } | { "op": "move_block", block_id: string, if_rev: number, anchor: ProposalAnchor, } | { "op": "delete_block", block_id: string, if_rev: number, };
 

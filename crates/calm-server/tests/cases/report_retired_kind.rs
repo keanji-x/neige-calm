@@ -183,7 +183,7 @@ async fn retired_view_kind_is_refused_by_rest_replace() {
     assert_eq!(
         error_text(&error),
         format!(
-            "bad request: invalid `{RETIRED_KIND}` block payload: {} (see neige.report.kinds)",
+            "bad request: invalid `{RETIRED_KIND}` block payload: {} (see neige_report_kinds)",
             unknown_kind_text()
         )
     );
@@ -197,7 +197,7 @@ async fn retired_view_kind_is_refused_by_recipe_ingress() {
     // `BadRequest` nests: the recipe prefix wraps the fence validator's own `bad request:`.
     let expected = format!(
         "bad request: track recipe body: bad request: invalid `{RETIRED_KIND}` block payload: {} \
-         (see neige.report.kinds)",
+         (see neige_report_kinds)",
         unknown_kind_text()
     );
     let (status, error) = send(

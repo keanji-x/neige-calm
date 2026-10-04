@@ -52,11 +52,11 @@ pub fn register(registry: &mut ToolRegistry) {
         };
         registry.register(
             ToolDescriptor {
-                name: format!("neige.calendar.{action}"),
+                name: format!("neige_calendar_{action}"),
                 description: match action {
-                    "list" => include_str!("../../../prompts/tools/neige.calendar.list.md"),
-                    "create" => include_str!("../../../prompts/tools/neige.calendar.create.md"),
-                    _ => include_str!("../../../prompts/tools/neige.calendar.update.md"),
+                    "list" => include_str!("../../../prompts/tools/neige_calendar_list.md"),
+                    "create" => include_str!("../../../prompts/tools/neige_calendar_create.md"),
+                    _ => include_str!("../../../prompts/tools/neige_calendar_update.md"),
                 }
                 .trim_end()
                 .to_string(),

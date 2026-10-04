@@ -1,4 +1,4 @@
-//! The one read-side step both readers (`neige.report.read` and `GET /api/tracks/{id}/report/series/{block_id}`) share, so the route returns the same bytes the read does.
+//! The one read-side step both readers (`neige_report_read` and `GET /api/tracks/{id}/report/series/{block_id}`) share, so the route returns the same bytes the read does.
 //! Nothing here calls a plugin and nothing writes the database: a miss is an in-memory `enqueue`.
 
 use std::sync::Arc;

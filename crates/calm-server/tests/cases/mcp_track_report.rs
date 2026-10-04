@@ -498,7 +498,7 @@ async fn recv_env(
         .expect("bus open")
 }
 
-/// `neige.report.commit` arguments replacing the report's only block with `markdown` — the planner's
+/// `neige_report_commit` arguments replacing the report's only block with `markdown` — the planner's
 /// local edit, anchored by the planner's read here.
 async fn commit_replacing_only_block(boot: &Boot, markdown: &str, message: &str) -> Value {
     let read = call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
@@ -767,8 +767,8 @@ async fn write_markdown_records_agent_message_and_leaves_the_track_open() {
 fn assert_lifecycle_removed(message: &str) {
     assert!(
         message.contains(
-            "`lifecycle` is removed: close with neige.track.close; ask with \
-             neige.user.notify or neige.ratify.request"
+            "`lifecycle` is removed: close with neige_track_close; ask with \
+             neige_user_notify or neige_ratify_request"
         ),
         "{message}"
     );

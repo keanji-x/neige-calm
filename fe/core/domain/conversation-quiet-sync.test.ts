@@ -57,7 +57,7 @@ function activity(id: string, overrides: Partial<ConversationActivity> = {}): Co
   };
 }
 
-/** A completed `neige.report.commit` row. */
+/** A completed `neige_report_commit` row. */
 function wrote(id: string, overrides: Partial<ConversationActivity> = {}): ConversationActivity {
   return activity(id, { verb: 'Wrote report', tool: REPORT_WRITE_TOOLS[2] ?? null, ...overrides });
 }

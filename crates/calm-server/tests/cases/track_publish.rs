@@ -1,4 +1,4 @@
-//! #1830 S3 — `neige.dev.publish` (`docs/architecture/1830-s3-push-pr-reclaim.md` §5): the
+//! #1830 S3 — `neige_dev_publish` (`docs/architecture/1830-s3-push-pr-reclaim.md` §5): the
 //! Planner of an attached track pushes `neige/track-<id>` to its own upstream URL (the checkout's
 //! when the track worktree was made, #2112) and opens or reuses the PR, only when the branch tip is the commit of a `done` attempt of this track; no
 //! kernel git script shows its repository's code a GitHub token.
@@ -21,7 +21,7 @@ use crate::track_worker_cwd::{
     candidate_commit, declare_task, development_world, wait_running, wait_task,
 };
 
-const TOOL: &str = "neige.dev.publish";
+const TOOL: &str = "neige_dev_publish";
 
 /// The process environment of one test: the `gh` shim first on PATH, and optionally a
 /// `GH_TOKEN` in the kernel's own environment (which the forge child inherits).

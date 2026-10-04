@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 pub(super) fn kinds_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_KINDS.into(),
-        description: include_str!("../../../../prompts/tools/neige.report.kinds.md")
+        description: include_str!("../../../../prompts/tools/neige_report_kinds.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -38,7 +38,7 @@ pub(super) fn kinds_table() -> Value {
                     }
                 },
                 "usage": "Free-form Markdown prose. Create or replace via a \
-                     `neige.report.commit` `upsert` op passing the content in \
+                     `neige_report_commit` `upsert` op passing the content in \
                      the op's `markdown`. Blocks are split at \
                      H1/H2 headings, so a prose block conventionally starts \
                      with one. Prose markdown may NOT embed ```neige-block \
@@ -394,14 +394,14 @@ fn preview_kind() -> Value {
             "required": ["key"],
             "additionalProperties": false,
             "properties": {
-                "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$", "description": "The `key` you passed to `neige.preview.register`." },
+                "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$", "description": "The `key` you passed to `neige_preview_register`." },
                 "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
                 "path": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^/(?![/\\\\])[^\\\\]*$", "description": "Path on the preview (default `/`; `/next/` for a dev-calm FE). Same rules as the `app` block's `src`." },
                 "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Frame height in px (default chosen by the renderer)." }
             }
         },
         "usage": "Embed a live dev server you registered with \
-             `neige.preview.register` (its `block_hint` is this block's \
+             `neige_preview_register` (its `block_hint` is this block's \
              payload). Minimal example — a commit op { \"op\": \"upsert\", \
              \"kind\": \"preview\", \"payload\": { \"key\": \"fe\", \
              \"title\": \"前端\", \"path\": \"/next/\" } }. The block names \
@@ -415,7 +415,7 @@ fn preview_kind() -> Value {
 pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_WRITE.into(),
-        description: include_str!("../../../../prompts/tools/neige.report.write.md")
+        description: include_str!("../../../../prompts/tools/neige_report_write.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -463,7 +463,7 @@ fn native_view_kind() -> Value {
 pub(super) fn commit_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_COMMIT.into(),
-        description: include_str!("../../../../prompts/tools/neige.report.commit.md")
+        description: include_str!("../../../../prompts/tools/neige_report_commit.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -486,7 +486,7 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
                             "id": { "type": "string" },
                             "kind": { "type": "string", "enum": block_kind_enum() },
                             "markdown": { "type": "string" },
-                            "payload": { "type": "object", "description": "Data kinds: see neige.report.kinds." },
+                            "payload": { "type": "object", "description": "Data kinds: see neige_report_kinds." },
                             "position": { "type": "integer", "minimum": 0 },
                             "to_index": { "type": "integer", "minimum": 0 }
                         }

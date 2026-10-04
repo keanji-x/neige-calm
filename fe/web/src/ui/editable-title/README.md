@@ -29,7 +29,7 @@ leaves edit mode and writes nothing. That is right for the area header, where
 the owner is the only namer there will ever be.
 
 The track header passes `'clear'`, because a track has a second namer: the planner
-agent's `neige.track.rename` succeeds only while the title is empty (#1211), so
+agent's `neige_track_rename` succeeds only while the title is empty (#1211), so
 clearing the name is how a reader hands naming back to it. Under `'clear'` the
 only empty commit that still writes nothing is the one on an already-blank
 title, which is the arithmetic no-op, not the policy one.

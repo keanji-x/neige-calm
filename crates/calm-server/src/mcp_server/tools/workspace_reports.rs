@@ -11,31 +11,31 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_WORKSPACE_REPORTS: &str = "neige.workspace.reports";
-pub const TOOL_WORKSPACE_REPORT: &str = "neige.workspace.report";
-pub const TOOL_WORKSPACE_CHANGES: &str = "neige.workspace.changes";
-pub const TOOL_WORKSPACE_EDITS: &str = "neige.workspace.edits";
+pub const TOOL_WORKSPACE_REPORTS: &str = "neige_workspace_reports";
+pub const TOOL_WORKSPACE_REPORT: &str = "neige_workspace_report";
+pub const TOOL_WORKSPACE_CHANGES: &str = "neige_workspace_changes";
+pub const TOOL_WORKSPACE_EDITS: &str = "neige_workspace_edits";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     for (name, description, schema) in [
         (
             TOOL_WORKSPACE_REPORTS,
-            include_str!("../../../prompts/tools/neige.workspace.reports.md"),
+            include_str!("../../../prompts/tools/neige_workspace_reports.md"),
             json!({"type":"object","properties":{"after":{"type":"string"}},"additionalProperties":false}),
         ),
         (
             TOOL_WORKSPACE_REPORT,
-            include_str!("../../../prompts/tools/neige.workspace.report.md"),
+            include_str!("../../../prompts/tools/neige_workspace_report.md"),
             json!({"type":"object","required":["track_id"],"properties":{"track_id":{"type":"string"}},"additionalProperties":false}),
         ),
         (
             TOOL_WORKSPACE_CHANGES,
-            include_str!("../../../prompts/tools/neige.workspace.changes.md"),
+            include_str!("../../../prompts/tools/neige_workspace_changes.md"),
             json!({"type":"object","required":["date"],"properties":{"date":{"type":"string"},"after":{"type":"string"},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
         ),
         (
             TOOL_WORKSPACE_EDITS,
-            include_str!("../../../prompts/tools/neige.workspace.edits.md"),
+            include_str!("../../../prompts/tools/neige_workspace_edits.md"),
             json!({"type":"object","required":["date","track_id","through_event_id"],"properties":{"date":{"type":"string"},"track_id":{"type":"string"},"after":{"type":"integer","minimum":0},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
         ),
     ] {

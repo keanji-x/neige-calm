@@ -1,5 +1,5 @@
-//! The two notification sources of a track (#1829): an ask (a pending `neige.ratify.request`, or a
-//! `neige.user.notify` call) and planner down (the Planner's newest finished turn failed). A pure
+//! The two notification sources of a track (#1829): an ask (a pending `neige_ratify_request`, or a
+//! `neige_user_notify` call) and planner down (the Planner's newest finished turn failed). A pure
 //! function of the rows `sql::notification_rows` read; nothing else is an item.
 
 use std::collections::BTreeSet;
@@ -50,7 +50,7 @@ pub struct PendingRatify {
     pub reason: Option<String>,
 }
 
-/// N3, notify arm — one successful `neige.user.notify` call of the Planner card.
+/// N3, notify arm — one successful `neige_user_notify` call of the Planner card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotifyRow {
     pub row_id: i64,

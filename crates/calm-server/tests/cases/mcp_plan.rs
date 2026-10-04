@@ -1,5 +1,5 @@
 //! `mcp_server::tools::plan` integration coverage: an `AppContext` built directly (no live MCP
-//! listener) driving `neige.plan.cancel` / `neige.plan.list` end-to-end.
+//! listener) driving `neige_plan_cancel` / `neige_plan_list` end-to-end.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -445,7 +445,7 @@ async fn cancel_with_a_lifecycle_key_is_refused_and_writes_nothing() {
     .expect_err("a lifecycle key is refused");
     assert!(
         err.message
-            .contains("`lifecycle` is removed: close with neige.track.close"),
+            .contains("`lifecycle` is removed: close with neige_track_close"),
         "{err:?}"
     );
     let row = boot

@@ -12,7 +12,7 @@ async fn planner_opens_visible_terminal_and_receives_confirmed_input() {
     let h = Harness::start().await;
     let opened = h
         .call(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
         )
         .await;
@@ -30,19 +30,19 @@ async fn planner_opens_visible_terminal_and_receives_confirmed_input() {
     assert_eq!(card.kind, "terminal");
     let repeated = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
         )
         .await;
     assert_eq!(repeated["terminal_id"], terminal);
     h.ok(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"terminal_id":terminal,"action":"claim"}),
     )
     .await;
     let view = h
         .ok(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -100,12 +100,12 @@ async fn planner_terminal_refuses_unowned_and_cross_track_input() {
     let mut h = Harness::start().await;
     let open = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"exec /bin/sh","request_id":"no-owner"}),
         )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
-    let denied=h.call("neige.terminal.input",json!({"terminal_id":terminal,"observation_id":open["observation_id"],"request_id":"denied","action":{"type":"text","text":"bad"}})).await;
+    let denied=h.call("neige_terminal_input",json!({"terminal_id":terminal,"observation_id":open["observation_id"],"request_id":"denied","action":{"type":"text","text":"bad"}})).await;
     assert!(denied.get("error").is_some());
     let own_track = h.state.repo.track_get(&h.track).await.unwrap().unwrap();
     let foreign_track = h
@@ -148,7 +148,7 @@ async fn planner_terminal_refuses_unowned_and_cross_track_input() {
     // Same database and live renderer, different authenticated Planner Track.
     h.token = foreign_token.expect("second Planner token");
     let foreign = h
-        .call("neige.terminal.observe", json!({"terminal_id":terminal}))
+        .call("neige_terminal_observe", json!({"terminal_id":terminal}))
         .await;
     assert!(foreign.get("error").is_some(), "{foreign}");
     h.stop(&terminal).await;
@@ -164,19 +164,19 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
     let h = Harness::start().await;
     let open = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"exec /bin/sh","request_id":"handoff"}),
         )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
     h.ok(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"terminal_id":terminal,"action":"claim"}),
     )
     .await;
     let saved = h
         .ok(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -235,7 +235,7 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
     }).await.unwrap();
     let refused = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"observation_id":saved["observation_id"],
         "request_id":"stale-owner","action":{"type":"text","text":"printf BAD"}}),
         )
@@ -246,7 +246,7 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
         "{refused}"
     );
     let view = h
-        .ok("neige.terminal.observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
         .await;
     assert!(
         !view["text"]
@@ -265,19 +265,19 @@ async fn repeated_input_request_never_reaches_the_terminal_twice() {
     let h = Harness::start().await;
     let open = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"exec /bin/sh","request_id":"input-receipts"}),
         )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
     h.ok(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"terminal_id":terminal,"action":"claim"}),
     )
     .await;
     let view = h
         .ok(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -329,7 +329,7 @@ async fn repeated_input_request_never_reaches_the_terminal_twice() {
     );
     let after = h
         .ok(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -369,44 +369,44 @@ async fn detach_releases_receipts_and_old_observations_cannot_authorize_a_new_co
     let h = Harness::start().await;
     let open = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"exec /bin/sh","request_id":"detach"}),
         )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
     h.ok(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"terminal_id":terminal,"action":"claim"}),
     )
     .await;
     let old = h
         .ok(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
     h.input(&terminal, &old, "one", json!({"type":"key","key":"Ctrl+U"}))
         .await;
     h.ok(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"terminal_id":terminal,"action":"detach"}),
     )
     .await;
     h.ok(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"terminal_id":terminal,"action":"claim"}),
     )
     .await;
     let fresh = h
         .ok(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
     assert_ne!(old["connection_id"], fresh["connection_id"]);
     let stale = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"observation_id":old["observation_id"],
         "request_id":"one","action":{"type":"key","key":"Ctrl+U"}}),
         )
@@ -429,7 +429,7 @@ async fn default_terminal_observations_authorize_shell_input_without_images() {
     let h = Harness::start().await;
     let opened = h
         .call(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"exec /bin/sh","request_id":"text-default"}),
         )
         .await;
@@ -438,13 +438,13 @@ async fn default_terminal_observations_authorize_shell_input_without_images() {
         .unwrap()
         .to_owned();
     h.ok(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"terminal_id":terminal,"action":"claim"}),
     )
     .await;
     let observed = h
         .call(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -471,7 +471,7 @@ async fn default_terminal_observations_authorize_shell_input_without_images() {
         loop {
             let response = h
                 .call(
-                    "neige.terminal.observe",
+                    "neige_terminal_observe",
                     json!({"terminal_id":terminal,"wait_ms":30}),
                 )
                 .await;
@@ -517,7 +517,7 @@ async fn opened_terminal_path_leads_with_the_kernel_bin_dir() {
     );
     let opened = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":program,"request_id":"kernel-path","wait_for":"text",
                 "wait_text":["KERNEL_BIN_LEADS","KERNEL_BIN_MISSING"],"wait_ms":5000}),
         )

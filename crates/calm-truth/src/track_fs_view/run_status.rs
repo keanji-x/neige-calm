@@ -1,4 +1,4 @@
-//! The one run-status derivation behind every runs view: the live `neige.track.{ls,cat}`
+//! The one run-status derivation behind every runs view: the live `neige_track_{ls,cat}`
 //! projection and the track VCS snapshot and delta (#2058).
 
 use super::RunEventProjection;

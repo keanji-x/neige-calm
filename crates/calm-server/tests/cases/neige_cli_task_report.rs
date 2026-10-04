@@ -79,7 +79,7 @@ async fn neige_task_completed_emits_task_completed_event() {
         &boot,
         &[
             "task",
-            "report-success",
+            "done",
             "--attempt-id",
             "cli-completed-1",
             "--result",
@@ -130,7 +130,7 @@ async fn neige_task_failed_emits_task_failed_event() {
         &boot,
         &[
             "task",
-            "report-failure",
+            "fail",
             "--attempt-id",
             "cli-failed-1",
             "--reason",

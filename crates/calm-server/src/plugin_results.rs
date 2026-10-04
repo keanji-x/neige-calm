@@ -1,4 +1,4 @@
-//! The transient ring of plugin results the Planner's proxy calls produced, so `neige.source.capture` can vouch a source body is exactly what the kernel returned for one `(plugin, tool, args)` call.
+//! The transient ring of plugin results the Planner's proxy calls produced, so `neige_source_capture` can vouch a source body is exactly what the kernel returned for one `(plugin, tool, args)` call.
 //! A new call on the same key replaces the old entry whatever its status; eviction is lazy (on insert and lookup) and the ring is process memory.
 
 use std::collections::{BTreeMap, HashMap};
@@ -60,14 +60,19 @@ pub struct Recorded {
 }
 
 impl Recorded {
-    /// `plugin.<id>_<tool>` — the registry name of the routed tool.
+    /// `plugin_<id>_<tool>` — the registry name of the routed tool.
     pub fn registry_name(&self) -> String {
         registry_name(&self.plugin_id, &self.tool_name)
     }
 }
 
+/// The prefix of every minted plugin tool name.
+pub const PLUGIN_TOOL_PREFIX: &str = "plugin_";
+
+/// The one minting of a plugin tool's registry name: `plugin_<id>_<tool>`. Plugin ids exclude `_`,
+/// so the `_` after the id is an unambiguous id↔tool boundary.
 pub fn registry_name(plugin_id: &str, tool_name: &str) -> String {
-    format!("plugin.{plugin_id}_{tool_name}")
+    format!("{PLUGIN_TOOL_PREFIX}{plugin_id}_{tool_name}")
 }
 
 /// Canonical text of a `tools/call` `arguments` value: `serde_json` compact serialization (keys sorted; `1` and `1.0` differ; no Unicode normalization).
@@ -603,7 +608,7 @@ mod tests {
         let latest = ring.latest("t", "p", "tool").unwrap();
         assert_eq!(latest.args_canonical.as_deref(), Some(r#"{"id":2}"#));
         assert_eq!(latest.status, ResultStatus::Ok { text: "two".into() });
-        assert_eq!(latest.registry_name(), "plugin.p_tool");
+        assert_eq!(latest.registry_name(), "plugin_p_tool");
     }
 
     /// A single counter serving both completion and LRU order would answer A.

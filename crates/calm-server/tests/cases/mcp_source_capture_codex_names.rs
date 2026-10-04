@@ -1,5 +1,5 @@
 //! #2003 §3.2: the callable names the deployed `codex-cli 0.159.2` actually minted for the raw
-//! names below (captured from its Responses request), fed to `neige.source.capture`. Codex sends
+//! names below (captured from its Responses request), fed to `neige_source_capture`. Codex sends
 //! the raw name on `tools/call`; only `call.tool` here ever receives a Codex spelling.
 
 #![cfg(unix)]
@@ -24,7 +24,7 @@ const TRUNCATED_CALLABLES: [&str; 7] = [
 ];
 const HASHED_RAW_TOOL_LENGTHS: [usize; 7] = [91, 92, 93, 101, 102, 113, 173];
 
-/// `plugin.dev.x-y_t` and `plugin.dev.x.y_t` both sanitize to `plugin_dev_x_y_t`, so Codex
+/// `plugin_dev.x-y_t` and `plugin_dev.x.y_t` both sanitize to `plugin_dev_x_y_t`, so Codex
 /// hash-suffixed both.
 const COLLIDING_CALLABLES: [&str; 2] = [
     "plugin_dev_x_y_t_7a37e287c14a",
@@ -52,11 +52,11 @@ async fn hashed_codex_callables_fail_explicitly() {
             &json!({}),
             &ok_result(&[&format!("body-{len}")]),
         );
-        raw_names.push(format!("plugin.{FORGE}_{tool}"));
+        raw_names.push(format!("plugin_{FORGE}_{tool}"));
     }
     for plugin in ["dev.x-y", "dev.x.y"] {
         record(&boot, plugin, "t", &json!({}), &ok_result(&[plugin]));
-        raw_names.push(format!("plugin.{plugin}_t"));
+        raw_names.push(format!("plugin_{plugin}_t"));
     }
 
     for bare in TRUNCATED_CALLABLES.iter().chain(COLLIDING_CALLABLES.iter()) {
@@ -95,7 +95,7 @@ async fn hashed_codex_callables_fail_explicitly() {
         .expect("an unhashed callable resolves");
         assert_eq!(
             receipt["matched_call"]["tool"],
-            format!("plugin.{FORGE}_{}", "x".repeat(UNHASHED_TOOL_LENGTH))
+            format!("plugin_{FORGE}_{}", "x".repeat(UNHASHED_TOOL_LENGTH))
         );
     }
 }

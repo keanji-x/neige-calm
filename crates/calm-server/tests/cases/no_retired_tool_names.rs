@@ -5,8 +5,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The retired kernel tool names: the old `calm.` prefix on any kernel object, plus the removed
-/// aliases and shims by their own spelling.
-const RETIRED_TOOL_NAME: &str = r"\b(?:calm\.(admin|area|calendar|dispatch_request|get_track_state|plan|preview|ratify|report|review|source|task|task_completed|task_failed|terminal|track|update_task_meta|user)|neige\.track\.publish)\b";
+/// aliases and shims by their own spelling, assembled so this file does not carry the B0 spelling
+/// of the retired publish tool.
+const RETIRED_TOOL_NAME: &str = concat!(
+    r"\b(?:calm\.(admin|area|calendar|dispatch_request|get_track_state|plan|preview|ratify|report|review|source|task|task_completed|task_failed|terminal|track|update_task_meta|user)|neige_",
+    r"track_publish)\b"
+);
+
+/// #2087 B0: a kernel tool name never contains `.`, so a dotted `neige.<object>.` on any kernel
+/// object (or a family such as `neige.<object>.*`) is retired. The plugin-to-host callbacks
+/// `neige.kv.*`, `neige.overlay.*`, `neige.card.*` and `neige.event.subscribe` are JSON-RPC
+/// methods, not tools, and use none of these objects.
+const RETIRED_DOTTED_KERNEL_NAME: &str = r"(?:^|[^A-Za-z0-9_.\-])neige\.(?:admin|area|calendar|dev|dispatch|plan|preview|ratify|report|review|source|task|terminal|track|user|workspace)\.";
 
 /// The retired MCP server key as a client spells it, assembled from two literals so this file does
 /// not carry the token it hunts.
@@ -17,11 +27,13 @@ fn retired_server_key() -> String {
 /// A deliberate retired-name input (a rejection test) is exempt per line, never per file.
 const REJECTION_INPUT_MARKER: &str = "// retired-name: rejection input";
 
-/// The closed allowlist: released migrations and the #2003 migration (one directory, byte-frozen
-/// once released), the migration's test, and the design document that records the old names.
+/// The closed allowlist: released migrations and the #2003 and #2087 migrations (one directory,
+/// byte-frozen once released), the migrations' tests, and the design document that records the
+/// old names.
 fn allowlisted(path: &str) -> bool {
     path.starts_with("crates/calm-truth/migrations/")
         || path == "crates/calm-server/tests/cases/neige_tool_name_migration.rs"
+        || path == "crates/calm-server/tests/cases/tool_name_separator_migration.rs"
         || path == "docs/architecture/2003-cli-mcp-naming.md"
 }
 
@@ -56,9 +68,10 @@ fn tracked_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn patterns() -> [regex::Regex; 2] {
+fn patterns() -> [regex::Regex; 3] {
     [
         regex::Regex::new(RETIRED_TOOL_NAME).expect("tool-name regex"),
+        regex::Regex::new(RETIRED_DOTTED_KERNEL_NAME).expect("dotted-name regex"),
         regex::Regex::new(&retired_server_key()).expect("server-key regex"),
     ]
 }
@@ -73,24 +86,36 @@ fn offending(line: &str, patterns: &[regex::Regex]) -> bool {
 fn the_sweep_patterns_hit_only_retired_names() {
     let patterns = patterns();
     for hit in [
-        "neige.track.publish",        // retired-name: rejection input
-        "`calm.track.cat_at`",        // retired-name: rejection input
-        "calm.report.write_markdown", // retired-name: rejection input
-        "calm.task_completed",        // retired-name: rejection input
-        "\"calm.user.notify\"",       // retired-name: rejection input
-        "calm.track: no such path",   // retired-name: rejection input
+        "neige_track_publish",                // retired-name: rejection input
+        "`calm.track.cat_at`",                // retired-name: rejection input
+        "calm.report.write_markdown",         // retired-name: rejection input
+        "calm.task_completed",                // retired-name: rejection input
+        "\"calm.user.notify\"",               // retired-name: rejection input
+        "calm.track: no such path",           // retired-name: rejection input
+        "neige.track.cat",                    // retired-name: rejection input
+        "`neige.report.*`",                   // retired-name: rejection input
+        "(neige.task.report_success)",        // retired-name: rejection input
+        "prompts/tools/neige.dev.publish.md", // retired-name: rejection input
         concat!("mcp__", "calm__neige_report_read"),
         concat!("allowed: mcp__", "calm Edit"),
     ] {
         assert!(offending(hit, &patterns), "must be red: {hit}");
     }
     for miss in [
-        "neige.dev.publish",
+        "neige_dev_publish",
+        "neige.kv.set",
+        "neige.overlay.delete",
+        "neige.card.create",
+        "neige.event.subscribe",
+        "dev.neige.calendar",
+        "neige.worker.service",
+        "neige.track: path not available",
         "calm.db",
         "calm_server::mcp_server",
         "calm-server",
         "calm-truth/migrations",
-        "neige.track.show",
+        "neige_track_show",
+        "xneige.track.cat",
         "dev.neige.git-forge",
         "mcp__neige__neige_track_show",
         "calm.css",
@@ -129,7 +154,7 @@ fn no_retired_tool_names_remain() {
     }
     assert!(
         hits.is_empty(),
-        "retired tool names or server key remain (rename to `neige.<object>.<action>` / \
+        "retired tool names or server key remain (rename to `neige_<object>_<action>` / \
          `mcp__neige`, or mark a deliberate rejection input with `{REJECTION_INPUT_MARKER}`):\n{}",
         hits.join("\n")
     );

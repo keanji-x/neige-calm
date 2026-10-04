@@ -303,13 +303,13 @@ fn registry_with_track_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCap
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     let track_cat = registry
-        .lookup("neige.track.cat")
-        .expect("neige.track.cat registered");
+        .lookup("neige_track_cat")
+        .expect("neige_track_cat registered");
     let descriptor = registry
         .descriptors()
         .into_iter()
-        .find(|d| d.name == "neige.track.cat")
-        .expect("neige.track.cat descriptor registered");
+        .find(|d| d.name == "neige_track_cat")
+        .expect("neige_track_cat descriptor registered");
     let handler: ToolHandler = Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
         let tx = tx.clone();
         let track_cat = track_cat.clone();
@@ -343,7 +343,7 @@ async fn call_track_cat(
         wr,
         tools_call_frame(
             id,
-            "neige.track.cat",
+            "neige_track_cat",
             thread_id,
             json!({"path": "track.json"}),
         ),

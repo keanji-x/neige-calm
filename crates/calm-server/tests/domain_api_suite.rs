@@ -65,6 +65,8 @@ mod threads_api;
 mod threads_resolve_claude;
 #[path = "cases/today_launchpad.rs"]
 mod today_launchpad;
+#[path = "cases/tool_name_separator_migration.rs"]
+mod tool_name_separator_migration;
 
 #[path = "cases/today_summary.rs"]
 mod today_summary;

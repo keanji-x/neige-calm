@@ -39,9 +39,9 @@ use tokio::sync::OnceCell;
 use tokio::time::{Instant, sleep};
 
 const PLUGIN_ID: &str = "dev.neige.git-forge";
-const WORKTREE_TOOL: &str = "plugin.dev.neige.git-forge_git.worktree.add";
-const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
-const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
+const WORKTREE_TOOL: &str = "plugin_dev.neige.git-forge_git.worktree.add";
+const COMMIT_TOOL: &str = "plugin_dev.neige.git-forge_git.commit";
+const PR_CREATE_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.create";
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 

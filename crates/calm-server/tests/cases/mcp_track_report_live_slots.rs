@@ -15,7 +15,7 @@ async fn call(boot: &Boot, tool: &str, args: Value) -> Value {
 }
 
 async fn read(boot: &Boot, args: Value) -> Value {
-    call(boot, "neige.report.read", args).await
+    call(boot, "neige_report_read", args).await
 }
 
 fn presentation() -> Value {
@@ -478,7 +478,7 @@ async fn live_slot_template_write_read_and_stale_cas() {
     .unwrap();
     let error = call_tool(
         &boot,
-        "neige.report.commit",
+        "neige_report_commit",
         planner_identity(&boot),
         json!({
             "message": "stale replacement",
@@ -496,7 +496,7 @@ async fn live_slot_template_write_read_and_stale_cas() {
     );
     call(
         &boot,
-        "neige.report.write",
+        "neige_report_write",
         json!({"body": after["text"], "message": "round trip"}),
     )
     .await;

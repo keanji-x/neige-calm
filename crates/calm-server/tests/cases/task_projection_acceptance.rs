@@ -48,7 +48,7 @@ fn task(key: &str) -> Value {
 async fn read(boot: &Boot) -> Value {
     call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
         .await
-        .expect("neige.report.read")
+        .expect("neige_report_read")
 }
 
 async fn upsert(boot: &Boot, id: Option<&str>, payload: Value) -> (String, u64) {

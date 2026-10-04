@@ -135,7 +135,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. } => true,
-        // Workspace / worktree lifecycle notices are read back on demand (`neige.plan.list`);
+        // Workspace / worktree lifecycle notices are read back on demand (`neige_plan_list`);
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
         | Event::WorktreeProvisioned { .. }

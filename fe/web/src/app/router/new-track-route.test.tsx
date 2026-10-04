@@ -42,7 +42,7 @@ const LISTING = {
   path: '/srv/app', parent: '/srv', entries: [{ name: 'crates', is_dir: true }],
 };
 
-/* The kernel returns an empty title; the planner agent names the track later through `neige.track.rename`. */
+/* The kernel returns an empty title; the planner agent names the track later through `neige_track_rename`. */
 const TRACK_ROW = {
   id: 'w-new', area_id: 'c1', title: '', sort: 0, pinned_at: null,
   cwd: '/srv/managed', template_id: null, plugin_scope: null,
@@ -731,7 +731,7 @@ describe('the new-track page is a route reached from Area groups', () => {
   });
 
   /* Asserted on key absence: `title: ''` reaches the same stored value, and only a
-       missing key leaves `neige.track.rename` able to name the track. */
+       missing key leaves `neige_track_rename` able to name the track. */
   it('creates with no title control on screen and no title key on the wire', async () => {
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));

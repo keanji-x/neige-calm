@@ -165,7 +165,7 @@ pub fn request_line(id: i64, method: &str) -> String {
 /// A `tools/call` request with `id`.
 pub fn tools_call_line(id: i64) -> String {
     format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"neige.plan.list\",\"arguments\":{{}}}}}}\n"
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"neige_plan_list\",\"arguments\":{{}}}}}}\n"
     )
 }
 

@@ -1,5 +1,5 @@
-//! `area/reports/` (#1838 S2) through the registered handlers (`neige.track.ls`, `neige.track.cat`,
-//! `neige.report.find`): the Planner lists, finds and reads its own area's reports; another area's
+//! `area/reports/` (#1838 S2) through the registered handlers (`neige_track_ls`, `neige_track_cat`,
+//! `neige_report_find`): the Planner lists, finds and reads its own area's reports; another area's
 //! reports are unreachable by any path; a Worker is Forbidden; names resolve exactly or refuse.
 
 #![cfg(unix)]
@@ -236,7 +236,7 @@ async fn write_body(boot: &Boot, side: &Side, body: &str) {
         json!({ "body": body, "message": "write" }),
     )
     .await
-    .expect("neige.report.write");
+    .expect("neige_report_write");
 }
 
 async fn tag(boot: &Boot, side: &Side, add: &[&str]) {
@@ -247,7 +247,7 @@ async fn tag(boot: &Boot, side: &Side, add: &[&str]) {
         json!({ "path": "report.md", "add": add }),
     )
     .await
-    .expect("neige.report.tag");
+    .expect("neige_report_tag");
 }
 
 async fn set_report_updated_at(boot: &Boot, side: &Side, at: i64) {

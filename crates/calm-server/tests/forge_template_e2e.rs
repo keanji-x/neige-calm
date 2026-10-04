@@ -67,14 +67,14 @@ use tokio::time::{Instant, sleep, timeout};
 use tower::ServiceExt;
 
 const PLUGIN_ID: &str = "dev.neige.git-forge";
-const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
-const PR_LIST_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.list";
-const PUBLISH_TOOL: &str = "neige.dev.publish";
-const PR_DIFF_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.diff";
-const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
-const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
-const ISSUE_VIEW_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.view";
-const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
+const COMMIT_TOOL: &str = "plugin_dev.neige.git-forge_git.commit";
+const PR_LIST_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.list";
+const PUBLISH_TOOL: &str = "neige_dev_publish";
+const PR_DIFF_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.diff";
+const PR_CHECKS_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.checks";
+const PR_MERGE_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.merge";
+const ISSUE_VIEW_TOOL: &str = "plugin_dev.neige.git-forge_gh.issue.view";
+const ISSUE_CLOSE_TOOL: &str = "plugin_dev.neige.git-forge_gh.issue.close";
 const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PLANNER_SESSION_ID: &str = "forge-template-planner-session";
 
@@ -547,7 +547,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
 
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
-    assert_tool_succeeded(&create_resp, "neige.dev.publish");
+    assert_tool_succeeded(&create_resp, "neige_dev_publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let opened = opened_rows[0].clone();
     assert_track_event(&opened, &fx.track_id);
@@ -714,7 +714,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
 
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
-    assert_tool_succeeded(&create_resp, "neige.dev.publish");
+    assert_tool_succeeded(&create_resp, "neige_dev_publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let pr_number = opened_rows[0].payload["pr_number"]
         .as_u64()
@@ -826,7 +826,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
 
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
-    assert_tool_succeeded(&create_resp, "neige.dev.publish");
+    assert_tool_succeeded(&create_resp, "neige_dev_publish");
     let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
     let pr_number = opened_rows[0].payload["pr_number"]
         .as_u64()
@@ -1912,7 +1912,7 @@ async fn request_ratification(fx: &Fixture, reason: &str) -> EventRow {
     let before = event_rows(&fx.repo, "ratify.requested").await.len();
     let resp = call_review_tool(fx, TOOL_RATIFY_REQUEST, json!({ "reason": reason }))
         .await
-        .expect("neige.ratify.request succeeds");
+        .expect("neige_ratify_request succeeds");
     assert_eq!(resp["ok"], true, "ratify.request response: {resp}");
     let rows = wait_for_event_count(&fx.repo, "ratify.requested", before + 1).await;
     rows.last().expect("new ratify.requested").clone()
@@ -1955,7 +1955,7 @@ async fn delete_track(fx: &Fixture) -> StatusCode {
         .status()
 }
 
-/// The Planner closes the track (as `neige.track.close` does); returns the `track.updated` row.
+/// The Planner closes the track (as `neige_track_close` does); returns the `track.updated` row.
 async fn close_track(fx: &Fixture, message: &str) -> EventRow {
     let track_id = TrackId::from(fx.track_id.clone());
     let scope = EventScope::Track {
@@ -2041,7 +2041,7 @@ async fn drive_pr_to_diff(
     let base_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "origin/main"]);
 
     let create_resp = publish_delivery(fx, title, "Completed review candidate", "publish").await;
-    assert_tool_succeeded(&create_resp, "neige.dev.publish");
+    assert_tool_succeeded(&create_resp, "neige_dev_publish");
     let opened = wait_for_event_matching(&fx.repo, "forge.pr.opened", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["head_sha"] == json!(head_sha)

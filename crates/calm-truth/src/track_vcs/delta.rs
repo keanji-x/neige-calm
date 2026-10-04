@@ -485,7 +485,7 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         Event::TaskGateResult { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. } => {}
-        // #1727 S4: a Git delivery settlement is read back through `neige.plan.list`; no track-fs path.
+        // #1727 S4: a Git delivery settlement is read back through `neige_plan_list`; no track-fs path.
         Event::TaskGitDeliverySettled { .. } => {}
         // Operational history: persisted and replayable, no track-fs projection.
         Event::WorkspaceLeased { .. }

@@ -1,4 +1,4 @@
-//! Track-report MCP read tool `neige.report.read`, plus the report resolution helpers the write tools in `track_report_blocks` share.
+//! Track-report MCP read tool `neige_report_read`, plus the report resolution helpers the write tools in `track_report_blocks` share.
 //! `read` admits the Planner and the Assistant; its text is what anchors their report writes.
 
 use crate::mcp_server::framing::RpcError;
@@ -18,7 +18,7 @@ use crate::track_report_read::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_REPORT_READ: &str = "neige.report.read";
+pub const TOOL_REPORT_READ: &str = "neige_report_read";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(read_descriptor(), wrap_with(report_read, read_result));
@@ -79,7 +79,7 @@ fn read_summary_line(value: &Value) -> String {
 fn read_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_READ.into(),
-        description: include_str!("../../../prompts/tools/neige.report.read.md")
+        description: include_str!("../../../prompts/tools/neige_report_read.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -125,18 +125,18 @@ pub(crate) async fn report_read(
 ) -> Result<Value, RpcError> {
     // Assistant reads too: this is the read every agent report write is anchored by (#1883).
     require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
-    let select = parse_select_arg(&args, "neige.report.read")?;
+    let select = parse_select_arg(&args, "neige_report_read")?;
     let with_markers = match args.get("with_markers") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
         Some(_) => {
             return Err(RpcError::invalid_params(
-                "neige.report.read: `with_markers` must be a boolean if provided",
+                "neige_report_read: `with_markers` must be a boolean if provided",
             ));
         }
     };
     // The response body comes from ONE fresh row snapshot so `summary`/`text`/`blocks` can never tear against each other.
-    let resolve_modes = parse_resolve_arg(&args, "neige.report.read")?;
+    let resolve_modes = parse_resolve_arg(&args, "neige_report_read")?;
     let (track, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
     let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
         .await
@@ -185,7 +185,7 @@ pub(crate) async fn report_read(
     if let Some((text, _)) = text {
         response["text"] = Value::String(text);
     }
-    // `taskDiagnostics` is the dispatched-task runtime projection `neige.plan.list` withholds from the assistant; only the Planner gets it.
+    // `taskDiagnostics` is the dispatched-task runtime projection `neige_plan_list` withholds from the assistant; only the Planner gets it.
     if identity.role == CardRole::Planner {
         response["taskDiagnostics"] = json!(snapshot.task_diagnostics);
     }

@@ -122,7 +122,7 @@ describe('TrackPage delete confirm contract', () => {
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Track title' }).value).toBe('');
   });
 
-  /* Clearing the name is a request on a track: the planner's `neige.track.rename` only fires while the title is empty. On an area the same gesture is a cancel. */
+  /* Clearing the name is a request on a track: the planner's `neige_track_rename` only fires while the title is empty. On an area the same gesture is a cancel. */
   it('asks to clear the name when the box is emptied and committed', async () => {
     const onRenameTrack = vi.fn();
     renderPage({ track: track({ title: 'Alpha' }), onRenameTrack });

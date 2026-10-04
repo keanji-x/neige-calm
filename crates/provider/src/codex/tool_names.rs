@@ -1,5 +1,7 @@
 //! How Codex spells an MCP tool to the model. The kernel owns raw tool names only; this adapter
-//! owns the Codex spelling, which only `neige.source.capture`'s `call.tool` ever receives.
+//! owns the Codex spelling, which only `neige_source_capture`'s `call.tool` ever receives.
+//! Kernel tool names are minted in Codex's alphabet already (#2087 §2), so only a plugin name that
+//! still carries `.` or `-` (until #2087 B5) is respelled.
 //!
 //! Measured on the deployed `codex-cli 0.159.2` (#2003 §3.2, not the stale `external/codex`):
 //! - The model sees one Responses `namespace` tool `mcp__<server key>`. Each function in it is the
@@ -33,7 +35,7 @@ pub const CODEX_MCP_DELIMITER: &str = "__";
 pub const CODEX_QUALIFIED_NAME_CAP: usize = 128;
 
 /// The one key every spelling of a registry tool reduces to. A registry name starts with
-/// `plugin.` or the kernel prefix, never `mcp__`, so stripping cannot mis-read one.
+/// `plugin_` or the kernel prefix, never `mcp__`, so stripping cannot mis-read one.
 pub fn model_tool_key(name: &str) -> String {
     codex_sanitized(strip_codex_qualifier(name))
 }
@@ -52,7 +54,7 @@ fn strip_codex_qualifier(name: &str) -> &str {
 mod tests {
     use super::*;
 
-    const TRUSTED: &str = "plugin.dev.neige.git-forge_wf.tool";
+    const TRUSTED: &str = "plugin_dev.neige.git-forge_wf.tool";
 
     #[test]
     fn codex_sanitized_matches_the_responses_api_alphabet() {
@@ -67,7 +69,7 @@ mod tests {
     #[test]
     fn model_tool_key_strips_only_a_delimited_non_empty_server_segment() {
         assert_eq!(model_tool_key("mcp__neige__plugin_a_b"), "plugin_a_b");
-        assert_eq!(model_tool_key("mcp__neige__plugin.a-b_c"), "plugin_a_b_c");
+        assert_eq!(model_tool_key("mcp__neige__plugin_a-b_c"), "plugin_a_b_c");
         assert_eq!(model_tool_key("mcp__plugin_a_b"), "mcp__plugin_a_b");
         assert_eq!(model_tool_key("mcp____plugin_a_b"), "mcp____plugin_a_b");
         assert_eq!(model_tool_key(TRUSTED), codex_sanitized(TRUSTED));

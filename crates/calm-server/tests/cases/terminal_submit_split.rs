@@ -52,7 +52,7 @@ fn cr_read_alone(rows: &[String], last_text_row: &str) -> bool {
 async fn open_probe(h: &Harness, request: &str) -> String {
     let opened = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":READ_PROBE,"request_id":request,"claim":true,
                 "wait_for":"text","wait_text":["READY"],"wait_ms":5000}),
         )
@@ -69,7 +69,7 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
     let before = h.interaction().input_ack_sequence(terminal).await.unwrap();
     let sent = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":request,"action":{"type":"submit","text":text},
                 "observe":true,"wait_for":"change","wait_ms":3000}),
         )
@@ -88,7 +88,7 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
     loop {
         let view = h
             .ok(
-                "neige.terminal.observe",
+                "neige_terminal_observe",
                 json!({"terminal_id":terminal,"wait_ms":0}),
             )
             .await;
@@ -109,7 +109,7 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
     tokio::time::sleep(Duration::from_millis(300)).await;
     let view = h
         .ok(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":0}),
         )
         .await;
@@ -187,7 +187,7 @@ async fn submit_is_one_sequence_one_receipt_and_a_replay_writes_nothing() {
     assert_eq!(cr_rows(&seen), 1, "{seen:?}");
     let replay = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"once","action":{"type":"submit","text":"hello"},
                 "observe":true,"wait_ms":300}),
         )
@@ -205,7 +205,7 @@ async fn submit_is_one_sequence_one_receipt_and_a_replay_writes_nothing() {
     assert_eq!(cr_rows(&after), 1, "no second CR: {after:?}");
     let conflicting = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"once","action":{"type":"submit","text":"hello again"}}),
         )
         .await;

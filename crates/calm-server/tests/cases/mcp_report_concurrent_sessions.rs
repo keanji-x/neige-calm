@@ -1,5 +1,5 @@
 //! Two real assistant conversations interleaving on one track's report: both read the same
-//! revision from their own `neige.report.read`, A writes, B's write is refused with `-32001` and
+//! revision from their own `neige_report_read`, A writes, B's write is refused with `-32001` and
 //! must have written nothing. Only the CRDT bytes, the read projection and the event-log length
 //! are compared; that is sound only while every projection write shares the report-write transaction.
 
@@ -15,7 +15,7 @@ use calm_server::mcp_server::tools::track_report_blocks::{
 };
 use serde_json::{Value, json};
 
-const TOOL_REPORT_READ: &str = "neige.report.read";
+const TOOL_REPORT_READ: &str = "neige_report_read";
 
 /// What one session sees when it reads the report for itself, with block markers in the text.
 async fn read_as(boot: &Boot, identity: ToolCallIdentity) -> Value {

@@ -17,7 +17,7 @@ use calm_server::plugin_host::mcp::RpcError;
 use calm_types::report_blocks::{KIND_TASK, marker_line, render_fence};
 use serde_json::{Value, json};
 
-const TOOL_REPORT_READ: &str = "neige.report.read";
+const TOOL_REPORT_READ: &str = "neige_report_read";
 
 async fn read(boot: &Boot, identity: ToolCallIdentity, args: Value) -> Value {
     call_tool(boot, TOOL_REPORT_READ, identity, args)

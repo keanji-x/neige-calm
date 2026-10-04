@@ -1,4 +1,4 @@
-//! `neige.source.capture` / `neige.source.list` through the real tool registry. The transient ring
+//! `neige_source_capture` / `neige_source_list` through the real tool registry. The transient ring
 //! is seeded directly here (`ctx.plugin_results`); the transport recording point is covered by
 //! `mcp_source_capture_e2e.rs`.
 
@@ -19,7 +19,7 @@ use crate::mcp_track_report::{
 
 const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
-const REGISTRY_NAME: &str = "plugin.dev.echo_do.thing";
+const REGISTRY_NAME: &str = "plugin_dev.echo_do.thing";
 const SANITIZED_NAME: &str = "plugin_dev_echo_do_thing";
 /// The name the model's tool list actually shows for [`REGISTRY_NAME`].
 const QUALIFIED_NAME: &str = "mcp__neige__plugin_dev_echo_do_thing";
@@ -58,7 +58,7 @@ pub(crate) fn record(
 /// A plugin host whose registry exposes [`REGISTRY_NAME`], a second `dev.echo` tool and the
 /// colliding plugin, running nothing: the track-visible universe the refusal consults.
 const OTHER_TOOL_NAME: &str = "other.thing";
-const OTHER_REGISTRY_NAME: &str = "plugin.dev.echo_other.thing";
+const OTHER_REGISTRY_NAME: &str = "plugin_dev.echo_other.thing";
 
 fn install_registry(boot: &Boot) {
     let manifest = |id: &str, tools: &[&str]| {
@@ -293,7 +293,7 @@ async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
     for probe in [
         "mcp__plugin_dev_echo_do_thing",
         "mcp____plugin_dev_echo_do_thing",
-        "plugin.dev.echo_other",
+        "plugin_dev.echo_other",
         "mcp__neige__plugin_dev_echo_other",
     ] {
         let err = capture(
@@ -427,12 +427,12 @@ async fn capture_refuses_an_ambiguous_sanitized_spelling_and_lists_candidates() 
     .unwrap_err();
     assert_invalid_params(&err, "ambiguous");
     assert!(err.message.contains(REGISTRY_NAME), "{err}");
-    assert!(err.message.contains("plugin.dev_echo.do.thing"), "{err}");
+    assert!(err.message.contains("plugin_dev_echo.do.thing"), "{err}");
     // The exact registry name still resolves.
     let receipt = capture(
         &boot,
         json!({
-            "call": { "tool": "plugin.dev_echo.do.thing" },
+            "call": { "tool": "plugin_dev_echo.do.thing" },
             "provenance": "summary",
             "title": "x",
         }),
@@ -470,11 +470,11 @@ async fn capture_refuses_error_no_text_and_too_large_records() {
     );
 
     for (tool, needle) in [
-        ("plugin.dev.echo_err", "isError"),
-        ("plugin.dev.echo_empty", "no text block"),
-        ("plugin.dev.echo_huge", "size limit"),
-        ("plugin.dev.echo_bigargs", "size limit"),
-        ("plugin.dev.echo_overbody", "at most"),
+        ("plugin_dev.echo_err", "isError"),
+        ("plugin_dev.echo_empty", "no text block"),
+        ("plugin_dev.echo_huge", "size limit"),
+        ("plugin_dev.echo_bigargs", "size limit"),
+        ("plugin_dev.echo_overbody", "at most"),
     ] {
         let err = capture(
             &boot,

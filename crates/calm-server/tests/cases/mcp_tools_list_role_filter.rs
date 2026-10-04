@@ -11,32 +11,32 @@ use support::mcp::{
 
 fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
-        "neige.area.outline",
-        "neige.plan.cancel",
-        "neige.plan.list",
-        "neige.preview.register",
-        "neige.preview.unregister",
-        "neige.ratify.request",
-        "neige.report.backlinks",
-        "neige.report.commit",
-        "neige.report.kinds",
-        "neige.report.read",
-        "neige.report.write",
-        "neige.source.capture",
-        "neige.source.list",
-        "neige.task.verdict",
-        "neige.terminal.control",
-        "neige.terminal.input",
-        "neige.terminal.observe",
-        "neige.terminal.open",
-        "neige.terminal.resolve",
-        "neige.track.close",
-        "neige.track.rename",
-        "neige.user.notify",
-        "neige.workspace.changes",
-        "neige.workspace.edits",
-        "neige.workspace.report",
-        "neige.workspace.reports",
+        "neige_area_outline",
+        "neige_plan_cancel",
+        "neige_plan_list",
+        "neige_preview_register",
+        "neige_preview_unregister",
+        "neige_ratify_request",
+        "neige_report_backlinks",
+        "neige_report_commit",
+        "neige_report_kinds",
+        "neige_report_read",
+        "neige_report_write",
+        "neige_source_capture",
+        "neige_source_list",
+        "neige_task_verdict",
+        "neige_terminal_control",
+        "neige_terminal_input",
+        "neige_terminal_observe",
+        "neige_terminal_open",
+        "neige_terminal_resolve",
+        "neige_track_close",
+        "neige_track_rename",
+        "neige_user_notify",
+        "neige_workspace_changes",
+        "neige_workspace_edits",
+        "neige_workspace_report",
+        "neige_workspace_reports",
     ]
 }
 
@@ -91,14 +91,19 @@ async fn tools_list_for_planner_role_returns_planner_toolset() {
 fn removed_aliases_and_retired_shims_are_not_registered() {
     let registry = calm_server::mcp_server::build_default_registry();
     for removed in [
-        "calm.get_track_state",  // retired-name: rejection input
-        "calm.update_task_meta", // retired-name: rejection input
-        "calm.task_completed",   // retired-name: rejection input
-        "calm.task_failed",      // retired-name: rejection input
-        "calm.dispatch_request", // retired-name: rejection input
-        "calm.plan.upsert",      // retired-name: rejection input
-        "neige.task.complete",
-        "neige.task.fail",
+        "calm.get_track_state",      // retired-name: rejection input
+        "calm.update_task_meta",     // retired-name: rejection input
+        "calm.task_completed",       // retired-name: rejection input
+        "calm.task_failed",          // retired-name: rejection input
+        "calm.dispatch_request",     // retired-name: rejection input
+        "calm.plan.upsert",          // retired-name: rejection input
+        "neige.task.complete",       // retired-name: rejection input
+        "neige.task.fail",           // retired-name: rejection input
+        "neige.task.report_success", // retired-name: rejection input
+        "neige.task.report_failure", // retired-name: rejection input
+        "neige_task_complete",
+        "neige_task_report_success",
+        "plugin.dev.neige.git-forge_gh.pr.checks",
     ] {
         assert!(
             registry.lookup(removed).is_none(),
@@ -115,8 +120,10 @@ async fn unknown_tool_error_lists_the_sessions_tools() {
     for (role, stale) in [
         (CardRole::Planner, "calm.update_task_meta"), // retired-name: rejection input
         (CardRole::Worker, "calm.task_completed"),    // retired-name: rejection input
-        (CardRole::Worker, "neige.task.complete"),
-        (CardRole::Worker, "neige.task.fail"),
+        (CardRole::Worker, "neige.task.complete"),    // retired-name: rejection input
+        (CardRole::Worker, "neige.task.report_success"), // retired-name: rejection input
+        (CardRole::Planner, "neige.track.cat"),       // retired-name: rejection input
+        (CardRole::Worker, "neige_task_report_success"),
     ] {
         let boot = boot_with_role(role).await;
         let (mut rd, mut wr) = connect(&boot.socket_path).await;
@@ -177,7 +184,7 @@ async fn retired_report_write_and_edit_are_neither_listed_nor_registered() {
             "retired report writer must not remain as a hidden tool or alias: {retired}",
         );
     }
-    for kept in ["neige.report.commit", "neige.report.write"] {
+    for kept in ["neige_report_commit", "neige_report_write"] {
         assert!(
             names.iter().any(|name| name == kept),
             "the Planner keeps {kept}; names={names:?}",
@@ -199,12 +206,12 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
     let names = tools_list_names_for_role(CardRole::Worker).await;
     assert_eq!(
         names,
-        vec!["neige.task.report_failure", "neige.task.report_success"],
+        vec!["neige_task_done", "neige_task_fail"],
         "worker tools/list must contain exactly the two completion tools",
     );
 }
 
-/// `neige.report.read` is deliberately absent: an assistant can call it, but its descriptor is visible only to Planner.
+/// `neige_report_read` is deliberately absent: an assistant can call it, but its descriptor is visible only to Planner.
 /// #1883: the single-op block writers are gone; the assistant writes through `commit`.
 #[tokio::test]
 async fn tools_list_for_assistant_role_returns_the_report_write_surface_only() {
@@ -212,9 +219,9 @@ async fn tools_list_for_assistant_role_returns_the_report_write_surface_only() {
     assert_eq!(
         names,
         vec![
-            "neige.report.commit",
-            "neige.report.kinds",
-            "neige.report.write",
+            "neige_report_commit",
+            "neige_report_kinds",
+            "neige_report_write",
         ],
         "assistant tools/list must be exactly the report write surface",
     );
@@ -263,11 +270,11 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
 
     let names = tool_names_from_response(&resp);
     assert!(
-        names.contains(&"neige.task.verdict".to_string()),
+        names.contains(&"neige_task_verdict".to_string()),
         "daemon-trust tools/list without threadId must advertise Planner task.verdict, got: {names:?}"
     );
     assert!(
-        names.contains(&"neige.report.commit".to_string()),
+        names.contains(&"neige_report_commit".to_string()),
         "daemon-trust tools/list without threadId must include report.commit, got: {names:?}"
     );
     let _ = (&boot.server, &boot.repo);

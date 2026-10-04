@@ -20,7 +20,7 @@ async fn native_view_upsert_read_roundtrip_and_cas_are_one_truth() {
     .unwrap();
     let result = call_tool(
         &boot,
-        "neige.report.read",
+        "neige_report_read",
         planner_identity(&boot),
         json!({}),
     )
@@ -47,7 +47,7 @@ async fn native_view_upsert_read_roundtrip_and_cas_are_one_truth() {
     .unwrap();
     let error = call_tool(
         &boot,
-        "neige.report.commit",
+        "neige_report_commit",
         planner_identity(&boot),
         json!({"message":"stale replacement", "ops":[{"op":"upsert","id":created["id"],"kind":"view","payload":fixture["valid"]}]}),
     )
@@ -56,7 +56,7 @@ async fn native_view_upsert_read_roundtrip_and_cas_are_one_truth() {
     assert_eq!(error.code, -32001);
     let after = call_tool(
         &boot,
-        "neige.report.read",
+        "neige_report_read",
         planner_identity(&boot),
         json!({}),
     )
@@ -71,7 +71,7 @@ async fn native_view_upsert_read_roundtrip_and_cas_are_one_truth() {
     );
     let kinds = call_tool(
         &boot,
-        "neige.report.kinds",
+        "neige_report_kinds",
         planner_identity(&boot),
         json!({}),
     )

@@ -1,4 +1,4 @@
-//! Authenticated HTTP track file views, compared against MCP `neige.track.ls` / `neige.track.cat` over the same repo.
+//! Authenticated HTTP track file views, compared against MCP `neige_track_ls` / `neige_track_cat` over the same repo.
 
 #![cfg(unix)]
 

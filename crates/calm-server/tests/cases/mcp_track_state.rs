@@ -635,7 +635,7 @@ async fn task_verdict_with_a_lifecycle_key_is_refused_and_writes_nothing() {
     );
     assert!(
         err.message
-            .contains("`lifecycle` is removed: close with neige.track.close"),
+            .contains("`lifecycle` is removed: close with neige_track_close"),
         "{err:?}"
     );
 

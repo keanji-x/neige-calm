@@ -149,7 +149,7 @@ plugins can also be referenced. A reference supplies context and does not enable
 plugin or change its permissions.
 
 For a development-bound Track with its own worktree and an upstream, the Planner can
-publish through `neige.dev.publish`: the development plugin pushes the branch without
+publish through `neige_dev_publish`: the development plugin pushes the branch without
 forcing and opens or reuses its PR. The branch tip must be the candidate of a
 **done** task attempt. A later unverified commit cannot be published through
 this tool. Publication returns the PR link; merging remains a separate action.
@@ -173,7 +173,7 @@ viewer.
 
 A Planner can register a development server listening on `127.0.0.1` and add a
 `preview` block to the Report. Ask it to start the server, register it with
-`neige.preview.register`, and embed the returned preview key. The preview offers
+`neige_preview_register`, and embed the returned preview key. The preview offers
 **Desktop** and **Mobile** viewports and fullscreen. An offline notice means
 the target server is not responding; a missing-registration notice means the
 Planner needs to register it again.
@@ -199,9 +199,9 @@ tools with their commands.
 
 A Planner can read other reports through the read-only `area/reports/` view,
 inspect selected blocks with `neige track cat report.md --blocks <id>`, and query
-report tags with `neige report tag report.md`. Report writes use `neige.report.commit`
-for targeted edits or `neige.report.write` for whole-document changes.
-Both anchor to this session's prior `neige.report.read`; CLI reads do not establish
+report tags with `neige report tag report.md`. Report writes use `neige_report_commit`
+for targeted edits or `neige_report_write` for whole-document changes.
+Both anchor to this session's prior `neige_report_read`; CLI reads do not establish
 that write anchor.
 
 ## Add and configure plugins

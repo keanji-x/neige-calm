@@ -16,7 +16,7 @@ async fn git_forge_issue_comment_crash_recovers_without_reposting() {
         let fx = boot_fixture().await;
         let state = shim_state_dir(&fx.origin_repo);
         let block = ShimBlock::new(&state, "issue_comment");
-        let response = call_tool(&fx, 30, "plugin.dev.neige.git-forge_gh.issue.comment",
+        let response = call_tool(&fx, 30, "plugin_dev.neige.git-forge_gh.issue.comment",
             json!({"repo":fx.origin_repo.to_string_lossy(),"issue":810,"body":"Recovery update","idem":"recovery-1"})).await;
         assert_tool_succeeded(&response, "gh.issue.comment");
         let op_id = op_id_from_response(&response);
@@ -74,7 +74,7 @@ async fn git_forge_issue_comment_recovery_does_not_borrow_another_caller() {
     let second = boot_fixture().await;
     assert_ne!(first.track_id, second.track_id);
     assert_ne!(first.worker_card_id, second.worker_card_id);
-    let tool = "plugin.dev.neige.git-forge_gh.issue.comment";
+    let tool = "plugin_dev.neige.git-forge_gh.issue.comment";
     let args = json!({"repo":first.origin_repo.to_string_lossy(),"issue":810,"body":"Identical update","idem":"plan-1"});
     let first_response = call_tool(&first, 30, tool, args.clone()).await;
     assert_tool_succeeded(&first_response, "gh.issue.comment");

@@ -266,7 +266,7 @@ describe('creating a track lands in its planner conversation', () => {
 
 describe('clearing the track title', () => {
   /* `emptyCommit="clear"` on the track header: the empty title is the one state
-   * `neige.track.rename` will fill in, and the primitive swallows the keystroke by default. */
+   * `neige_track_rename` will fill in, and the primitive swallows the keystroke by default. */
   it('PATCHes an empty title when the box is emptied and committed', async () => {
     const { requests, router } = setup({ track: NAMED_TRACK });
     await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId: 'w1' } }); });

@@ -1,4 +1,4 @@
-//! `neige.report.commit` block ops + `write_markdown` integration coverage on the `mcp_track_report` fixture.
+//! `neige_report_commit` block ops + `write_markdown` integration coverage on the `mcp_track_report` fixture.
 
 #![cfg(unix)]
 
@@ -16,7 +16,7 @@ use calm_server::plugin_host::mcp::RpcError;
 use calm_server::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 
-const TOOL_REPORT_READ: &str = "neige.report.read";
+const TOOL_REPORT_READ: &str = "neige_report_read";
 /// The birth body, read at runtime rather than re-transcribed.
 fn seed_body() -> &'static str {
     static BODY: std::sync::LazyLock<String> =
@@ -24,7 +24,7 @@ fn seed_body() -> &'static str {
     &BODY
 }
 
-/// Position of the block whose text starts with `head`, within the block index a `neige.report.read` just returned.
+/// Position of the block whose text starts with `head`, within the block index a `neige_report_read` just returned.
 fn position_of_block_starting_with(read_out: &Value, head: &str) -> usize {
     let text = read_out["text"].as_str().expect("read returns text");
     calm_types::report_blocks::split_body(text)
@@ -44,7 +44,7 @@ async fn current_payload(boot: &Boot) -> TrackReportPayload {
     serde_json::from_value(card.payload).expect("payload deserializes")
 }
 
-/// `[(id, rev)]` from a `neige.report.read` response's blocks index.
+/// `[(id, rev)]` from a `neige_report_read` response's blocks index.
 fn index_of(read: &Value) -> Vec<(String, u64)> {
     read.get("blocks")
         .and_then(Value::as_array)
@@ -340,7 +340,7 @@ async fn kinds_returns_all_supported_schemas() {
         preview.pointer("/schema/additionalProperties"),
         Some(&Value::Bool(false))
     );
-    // The key pattern is `neige.preview.register`'s; the path pattern is the `app` block's `src`.
+    // The key pattern is `neige_preview_register`'s; the path pattern is the `app` block's `src`.
     assert_eq!(
         preview.pointer("/schema/properties/key/pattern"),
         Some(&json!("^[a-z0-9][a-z0-9_-]{0,63}$"))
@@ -824,7 +824,7 @@ async fn write_markdown_needs_a_whole_read_at_the_current_doc_rev() {
     let unread = write("# Unread\n").await.expect_err("no read at all");
     assert_eq!(unread.code, RpcError::INVALID_PARAMS);
     assert!(
-        unread.message.contains("full neige.report.read"),
+        unread.message.contains("full neige_report_read"),
         "{unread:?}"
     );
 
@@ -848,7 +848,7 @@ async fn write_markdown_needs_a_whole_read_at_the_current_doc_rev() {
         .expect_err("a partial read at a newer docRev must not anchor a rewrite");
     assert_eq!(partial.code, RpcError::INVALID_PARAMS);
     assert!(
-        partial.message.contains("full neige.report.read"),
+        partial.message.contains("full neige_report_read"),
         "{partial:?}"
     );
     assert!(current_payload(&boot).await.body.contains("# Second"));

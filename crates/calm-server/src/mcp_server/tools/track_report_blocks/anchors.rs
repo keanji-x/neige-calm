@@ -1,4 +1,4 @@
-//! `neige.report.commit`'s anchors (#1877): what this session last read, from the read ledger.
+//! `neige_report_commit`'s anchors (#1877): what this session last read, from the read ledger.
 
 use super::required_string;
 use crate::mcp_server::framing::RpcError;
@@ -59,7 +59,7 @@ pub(super) fn block_anchor(
         .ok_or_else(|| {
             RpcError::invalid_params(format!(
                 "{at}: block `{id}` has not been read by this session — read it first \
-                 (neige.report.read {{ select: {{ blocks: [\"{id}\"] }} }})"
+                 (neige_report_read {{ select: {{ blocks: [\"{id}\"] }} }})"
             ))
         })
 }

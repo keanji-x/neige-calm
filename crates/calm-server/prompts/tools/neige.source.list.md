@@ -1,1 +1,0 @@
-Planner-only: list this track's captured sources without bodies, oldest first; no parameters. Returns { sources: [{ source_id, provenance, title, published_at, content_id?, url?, quotes: [{ id, text }], body_bytes, captured_at }] }. Reuse a source_id and its q<n> anchors instead of capturing the same text again; append quotes with neige.source.capture { source_id, quotes }.

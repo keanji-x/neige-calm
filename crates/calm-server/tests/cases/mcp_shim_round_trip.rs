@@ -243,7 +243,7 @@ async fn shim_round_trip_initialize_and_tools_call_completes() {
     let call = json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {
-            "name": "neige.task.verdict",
+            "name": "neige_task_verdict",
             "arguments": {
                 "attempt_id": "shim-round-trip",
                 "status": "accepted",

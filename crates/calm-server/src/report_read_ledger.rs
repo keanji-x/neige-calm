@@ -1,5 +1,5 @@
 //! What each worker session last read of a report (#1877): the anchors of every agent report write,
-//! which takes no revisions (#1883). A `neige.report.read` that returned text records exactly the
+//! which takes no revisions (#1883). A `neige_report_read` that returned text records exactly the
 //! snapshot it rendered; an own `write_markdown` records its post-write document the same way; and
 //! [`ReadLedger::record_authored`] records only what the session's own commit wrote. The check
 //! itself stays in the persist tx.

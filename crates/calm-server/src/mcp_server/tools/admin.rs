@@ -16,8 +16,8 @@ use calm_truth::track_vcs_repo::TrackVcsRepo;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_ADMIN_GC: &str = "neige.admin.gc";
-pub const TOOL_ADMIN_VACUUM: &str = "neige.admin.vacuum";
+pub const TOOL_ADMIN_GC: &str = "neige_admin_gc";
+pub const TOOL_ADMIN_VACUUM: &str = "neige_admin_vacuum";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(track_gc_descriptor(), wrap(track_gc));
@@ -42,7 +42,7 @@ where
 fn track_gc_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_ADMIN_GC.into(),
-        description: include_str!("../../../prompts/tools/neige.admin.gc.md")
+        description: include_str!("../../../prompts/tools/neige_admin_gc.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -62,7 +62,7 @@ fn track_gc_descriptor() -> ToolDescriptor {
 fn vacuum_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_ADMIN_VACUUM.into(),
-        description: include_str!("../../../prompts/tools/neige.admin.vacuum.md")
+        description: include_str!("../../../prompts/tools/neige_admin_vacuum.md")
             .trim_end()
             .to_string(),
         input_schema: json!({ "type": "object", "properties": {} }),
@@ -82,15 +82,15 @@ async fn track_gc(
 
     let obj = args
         .as_object()
-        .ok_or_else(|| RpcError::invalid_params("neige.admin.gc: arguments must be an object"))?;
+        .ok_or_else(|| RpcError::invalid_params("neige_admin_gc: arguments must be an object"))?;
     let track_id = obj
         .get("track_id")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| RpcError::invalid_params("neige.admin.gc: `track_id` required"))?;
+        .ok_or_else(|| RpcError::invalid_params("neige_admin_gc: `track_id` required"))?;
     if track_id != track.id.as_str() {
         return Err(RpcError::invalid_params(format!(
-            "neige.admin.gc: track_id `{track_id}` does not match the caller's bound track `{}`",
+            "neige_admin_gc: track_id `{track_id}` does not match the caller's bound track `{}`",
             track.id.as_str()
         )));
     }
@@ -99,7 +99,7 @@ async fn track_gc(
         .and_then(Value::as_u64)
         .filter(|keep| *keep > 0)
         .ok_or_else(|| {
-            RpcError::invalid_params("neige.admin.gc: `keep` must be a positive integer")
+            RpcError::invalid_params("neige_admin_gc: `keep` must be a positive integer")
         })? as usize;
     let dry_run = obj.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
 
@@ -109,7 +109,7 @@ async fn track_gc(
         let pruned = track_vcs
             .prune_track_history(&track_ref, keep, true)
             .await
-            .map_err(|e| RpcError::internal(format!("neige.admin.gc: prune: {e}")))?;
+            .map_err(|e| RpcError::internal(format!("neige_admin_gc: prune: {e}")))?;
         return Ok(json!({
             "track_id": track_id, "keep": keep, "dry_run": true,
             "pruned_commits": pruned, "swept_objects": 0
@@ -119,11 +119,11 @@ async fn track_gc(
     let pruned = track_vcs
         .prune_track_history(&track_ref, keep, false)
         .await
-        .map_err(|e| RpcError::internal(format!("neige.admin.gc: prune: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("neige_admin_gc: prune: {e}")))?;
     let swept = track_vcs
         .sweep_unreferenced_objects()
         .await
-        .map_err(|e| RpcError::internal(format!("neige.admin.gc: sweep: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("neige_admin_gc: sweep: {e}")))?;
 
     Ok(json!({
         "track_id": track_id, "keep": keep, "dry_run": false,
@@ -140,7 +140,7 @@ async fn vacuum(
     let track_vcs = track_vcs_repo(&ctx)?;
     track_vcs.vacuum().await.map_err(|e| {
         RpcError::internal(format!(
-            "neige.admin.vacuum: VACUUM failed (db locked?): {e}"
+            "neige_admin_vacuum: VACUUM failed (db locked?): {e}"
         ))
     })?;
     Ok(json!({ "ok": true }))

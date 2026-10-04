@@ -19,9 +19,9 @@ use calm_truth::track_vcs_repo::TrackVcsRepo;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
-pub const TOOL_TRACK_DIFF: &str = "neige.track.diff";
-pub const TOOL_TRACK_SHOW: &str = "neige.track.show";
-pub const TOOL_TRACK_LOG: &str = "neige.track.log";
+pub const TOOL_TRACK_DIFF: &str = "neige_track_diff";
+pub const TOOL_TRACK_SHOW: &str = "neige_track_show";
+pub const TOOL_TRACK_LOG: &str = "neige_track_log";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(diff_descriptor(), wrap(track_diff));
@@ -47,7 +47,7 @@ where
 fn diff_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_DIFF.into(),
-        description: include_str!("../../../prompts/tools/neige.track.diff.md")
+        description: include_str!("../../../prompts/tools/neige_track_diff.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -67,7 +67,7 @@ fn diff_descriptor() -> ToolDescriptor {
 fn cat_at_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_SHOW.into(),
-        description: include_str!("../../../prompts/tools/neige.track.show.md")
+        description: include_str!("../../../prompts/tools/neige_track_show.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -86,7 +86,7 @@ fn cat_at_descriptor() -> ToolDescriptor {
 fn log_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LOG.into(),
-        description: include_str!("../../../prompts/tools/neige.track.log.md")
+        description: include_str!("../../../prompts/tools/neige_track_log.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -122,7 +122,7 @@ async fn track_diff(
             .await
             .map_err(vcs_error_to_rpc)?
             .ok_or_else(|| {
-                RpcError::invalid_params("neige.track.diff: current track has no VCS HEAD")
+                RpcError::invalid_params("neige_track_diff: current track has no VCS HEAD")
             })?,
     };
     let files = vcs

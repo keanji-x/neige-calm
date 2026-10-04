@@ -1,4 +1,4 @@
-//! Report writes the way an agent makes them (#1883): a full `neige.report.read` by the writing
+//! Report writes the way an agent makes them (#1883): a full `neige_report_read` by the writing
 //! session, which anchors the write, then the write tool itself. No revision is passed.
 
 use std::sync::Arc;
@@ -71,7 +71,7 @@ pub async fn upsert_block(
     Ok(out)
 }
 
-/// `neige.report.commit` of `ops` after a full read.
+/// `neige_report_commit` of `ops` after a full read.
 pub async fn read_then_commit(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,
@@ -83,7 +83,7 @@ pub async fn read_then_commit(
     call(ctx, registry, TOOL_REPORT_COMMIT, identity, args).await
 }
 
-/// `neige.report.write` of `args` after a full read.
+/// `neige_report_write` of `args` after a full read.
 pub async fn read_then_write_markdown(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,

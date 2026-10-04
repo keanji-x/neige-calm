@@ -1,4 +1,4 @@
-Planner-only. detail=summary: compact entries (key selects one); detail=full with key: evidence. Omit both for full plan. Compare attempt_id. Entries observe, not accept; absent key means no attempt/work (neige.report.read taskDiagnostics explains).
+Planner-only. detail=summary: compact entries (key selects one); detail=full with key: evidence. Omit both for full plan. Compare attempt_id. Entries observe, not accept; absent key means no attempt/work (neige_report_read taskDiagnostics explains).
 access/start: stored execution settings in summary and full entries; access=read_only/read_write, start=checkout/upstream.
 status: pending/awaiting_projection await scheduling (blocking_reason); dispatched: claimed, not started; running: recorded, not progress proof; verifying: awaits gate; done/failed/canceled: execution terminal (status_detail), not settled delivery or Planner acceptance. done may have pending/failed delivery. Dependencies await execution done, not acceptance.
 gate_result: latest verdict; gate failure status_detail: gate-red/gate-timeout/gate-infra. No gate commands. worktree/base_sha: workspace lease/start commit.

@@ -62,7 +62,7 @@ async fn wait_past(h: &Harness, terminal: &str, after: u64) -> u64 {
 async fn open_claimed(h: &Harness, program: &str, request: &str) -> String {
     let opened = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":program,"request_id":request,"claim":true}),
         )
         .await;
@@ -85,7 +85,7 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     // before `stty` lands, the cooked tty echoes and edits the bytes itself.
     let opened = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"stty raw -echo; echo READY; exec cat -v","request_id":"sequence-bytes","claim":true,"wait_for":"text","wait_text":["READY"],"wait_ms":5000}),
         )
         .await;
@@ -99,7 +99,7 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
         .expect("the open established the Planner's client");
     let sent = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"edit-1","action":edit(),"observe":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
@@ -122,7 +122,7 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     // second write; the action (its steps) is part of the fingerprint.
     let replay = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"edit-1","action":edit(),"observe":true,"wait_ms":200}),
         )
         .await;
@@ -143,7 +143,7 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     other["steps"][1]["repeat"] = json!(4);
     let conflicting = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"edit-1","action":other}),
         )
         .await;
@@ -161,7 +161,7 @@ async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
     // startup loses the race and the cooked tty echoes the raw bytes. Rows are trailing-trimmed, so the pattern is `$`, not `$ `.
     let opened = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"program":"exec /bin/bash --noprofile --norc","request_id":"sequence-readline","claim":true,"wait_for":"text","wait_text":["$"],"wait_ms":5000}),
         )
         .await;
@@ -175,7 +175,7 @@ async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
         {"type":"text","text":"9"}]});
     let edited = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"draft","action":sequence,"observe":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
@@ -189,7 +189,7 @@ async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
     assert!(!has_line(draft, "7200"), "{draft}");
     let submitted = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
@@ -271,7 +271,7 @@ async fn sequence_rejects_submission_keys_and_shapes_before_any_write() {
     ] {
         let response = h
             .call(
-                "neige.terminal.input",
+                "neige_terminal_input",
                 json!({"terminal_id":terminal,"request_id":"bad","action":action}),
             )
             .await;
@@ -290,7 +290,7 @@ async fn sequence_rejects_submission_keys_and_shapes_before_any_write() {
     // The request_id is free: nothing was cached for the refused shapes.
     let ok = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"bad","action":steps(json!([{"type":"text","text":"ab"},{"type":"key","key":"Backspace"},{"type":"text","text":"c"}])),"observe":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
@@ -298,7 +298,7 @@ async fn sequence_rejects_submission_keys_and_shapes_before_any_write() {
     assert_eq!(receipt(&ok)["steps"], 3);
     let entered = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
@@ -325,7 +325,7 @@ async fn sequence_behind_a_stale_observation_is_refused_then_resent() {
     let before = h.interaction().input_ack_sequence(&terminal).await.unwrap();
     let response = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"request_id":"edit","action":edit()}),
         )
         .await;
@@ -343,7 +343,7 @@ async fn sequence_behind_a_stale_observation_is_refused_then_resent() {
     assert!(!h.interaction().input_pending(&terminal).await);
     let resent = h
         .call(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"terminal_id":terminal,"request_id":"edit","action":edit(),"allow_output_since_observation":true,"observe":true,"wait_ms":200}),
         )
         .await;

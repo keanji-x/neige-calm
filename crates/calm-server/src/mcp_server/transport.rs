@@ -435,7 +435,7 @@ async fn extend_plugin_tool_descriptors(
     }
 }
 
-/// The only place `plugin.<id>_<tool>` names are minted for discovery; `plugin_tool_route` is its inverse.
+/// Discovery mints `plugin_<id>_<tool>` names with [`crate::plugin_results::registry_name`]; `plugin_tool_route` is its inverse.
 fn plugin_tool_descriptors_from(
     manifests: Vec<crate::plugin_host::Manifest>,
     running_ids: &BTreeSet<String>,
@@ -454,8 +454,7 @@ fn plugin_tool_descriptors_from(
                 description.push_str(super::forge_receipt::PENDING_GUIDANCE.trim());
             }
             descriptors.push(ToolDescriptor {
-                // Plugin ids exclude `_`, so `_` is an unambiguous id↔tool boundary.
-                name: format!("plugin.{}_{}", plugin_id, entry.name),
+                name: crate::plugin_results::registry_name(&plugin_id, &entry.name),
                 description,
                 input_schema: entry
                     .input_schema
@@ -599,7 +598,7 @@ async fn dispatch_plugin_tools_call(
                 .ok_or_else(|| {
                     RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
                 })?;
-            // Only a Planner's call carrying a track is recorded for `neige.source.capture`; the identity is the resolved one, never anything in the request.
+            // Only a Planner's call carrying a track is recorded for `neige_source_capture`; the identity is the resolved one, never anything in the request.
             let record_for = match (&identity.role, identity.track_id.as_deref()) {
                 (CardRole::Planner, Some(track_id)) => {
                     Some((track_id.to_string(), arguments.clone()))
@@ -667,13 +666,13 @@ async fn dispatch_plugin_tools_call(
     }
 }
 
-/// Inverse of [`plugin_tool_descriptors_from`]: resolve a minted `plugin.<id>_<tool>` name back to its owner.
+/// Inverse of [`plugin_tool_descriptors_from`]: resolve a minted `plugin_<id>_<tool>` name back to its owner.
 fn plugin_tool_route(
     registry: &crate::plugin_host::PluginRegistry,
     name: &str,
     running_ids: &BTreeSet<String>,
 ) -> Result<Option<(String, String, Option<ToolKind>)>, RpcError> {
-    let Some(rest) = name.strip_prefix("plugin.") else {
+    let Some(rest) = name.strip_prefix(crate::plugin_results::PLUGIN_TOOL_PREFIX) else {
         return Ok(None);
     };
 
@@ -704,7 +703,9 @@ fn plugin_tool_route(
             // Unreachable by construction (plugin ids cannot contain `_`); kept as defense-in-depth.
             let mut matches = candidates
                 .into_iter()
-                .map(|(plugin_id, tool_name, _kind)| format!("plugin.{plugin_id}_{tool_name}"))
+                .map(|(plugin_id, tool_name, _kind)| {
+                    crate::plugin_results::registry_name(&plugin_id, &tool_name)
+                })
                 .collect::<Vec<_>>();
             matches.sort();
             Err(RpcError::custom(
@@ -742,7 +743,7 @@ impl ToolEntry {
     }
 }
 
-/// Exact `(plugin_id, tool)` lookup — never a `plugin.{id}_{tool}` string re-parse, which would land `plugin.aa_b_c` on plugin `aa`'s tool `b_c`.
+/// Exact `(plugin_id, tool)` lookup — never a `plugin_{id}_{tool}` string re-parse, which would land `plugin_aa_b_c` on plugin `aa`'s tool `b_c`.
 pub(crate) fn plugin_tool_entry(
     registry: &crate::plugin_host::PluginRegistry,
     running_ids: &BTreeSet<String>,
@@ -1174,7 +1175,7 @@ mod connector_tool_routing_tests {
     use crate::plugin_host::{Manifest, PluginRegistry};
 
     const CONNECTOR_ID: &str = "mcp-wisburg";
-    /// Underscores, not hyphens: the tool name must contain `_`, the character the `plugin.<id>_<tool>` boundary is built on.
+    /// Underscores, not hyphens: the tool name must contain `_`, the character the `plugin_<id>_<tool>` boundary is built on.
     const UNDERSCORE_TOOL: &str = "list_institutional_reports";
     const OTHER_TOOL: &str = "get_report_detail";
     const DENIED_TOOL: &str = "admin_purge_everything";
@@ -1253,11 +1254,11 @@ mod connector_tool_routing_tests {
         .collect();
 
         assert!(
-            names.contains(&format!("plugin.{CONNECTOR_ID}_{UNDERSCORE_TOOL}")),
+            names.contains(&format!("plugin_{CONNECTOR_ID}_{UNDERSCORE_TOOL}")),
             "allowlisted connector tool must be discoverable: {names:?}"
         );
         assert!(
-            names.contains(&format!("plugin.{CONNECTOR_ID}_{OTHER_TOOL}")),
+            names.contains(&format!("plugin_{CONNECTOR_ID}_{OTHER_TOOL}")),
             "second allowlisted tool must be discoverable: {names:?}"
         );
         assert!(
@@ -1289,7 +1290,7 @@ mod connector_tool_routing_tests {
         );
     }
 
-    /// `entry is Found(e)` iff `route(plugin.{id}_{tool}) == Some((id, tool, e.kind))`.
+    /// `entry is Found(e)` iff `route(plugin_{id}_{tool}) == Some((id, tool, e.kind))`.
     #[test]
     fn tool_entry_matches_tool_route() {
         let sibling = "mcp";
@@ -1340,7 +1341,7 @@ mod connector_tool_routing_tests {
         for running in &running_sets {
             for (id, tool) in &pairs {
                 let entry = plugin_tool_entry(&registry, running, id, tool);
-                let minted = format!("plugin.{id}_{tool}");
+                let minted = format!("plugin_{id}_{tool}");
                 let route = plugin_tool_route(&registry, &minted, running)
                     .unwrap_or_else(|e| panic!("{minted}: {e:?}"));
                 match entry {
@@ -1370,7 +1371,7 @@ mod connector_tool_routing_tests {
             &[UNDERSCORE_TOOL, OTHER_TOOL],
             &[UNDERSCORE_TOOL, OTHER_TOOL],
         )]);
-        let minted = format!("plugin.{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
+        let minted = format!("plugin_{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
         let route = plugin_tool_route(&registry, &minted, &running(&[CONNECTOR_ID]))
             .expect("route resolution must not be ambiguous")
             .expect("minted name must route");
@@ -1405,8 +1406,8 @@ mod connector_tool_routing_tests {
             (sibling_manifest, None),
         ]);
 
-        let minted = format!("plugin.{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
-        let sibling_minted = format!("plugin.{sibling}_{near_miss}");
+        let minted = format!("plugin_{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
+        let sibling_minted = format!("plugin_{sibling}_{near_miss}");
         assert_ne!(
             minted, sibling_minted,
             "the `_` boundary must keep these distinct"

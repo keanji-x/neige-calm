@@ -268,7 +268,7 @@
     The new-track page must collect no title text — what it does collect is the track's intent, and
     the template's own inputs, such as issue development's Issue URL, are untouched — and its
     `NewTrackDraft` must carry no title key — absence, not the empty string — so the create POST
-    omits it and the kernel stores the empty title that `neige.track.rename` is allowed to fill in.
+    omits it and the kernel stores the empty title that `neige_track_rename` is allowed to fill in.
   why: >
     #1211 S1 made the title stop being the track's intent, so a title collected here reaches
     nothing; worse, any non-empty title makes every later planner-agent rename answer
@@ -323,7 +323,7 @@
     passes `emptyCommit` "clear" and a PATCH carrying the empty title leaves. The area header
     keeps the primitive's "cancel" default, and an already-blank title stays a no-op on both.
   why: >
-    A track has a second namer — the planner agent's `neige.track.rename`, which succeeds only while the
+    A track has a second namer — the planner agent's `neige_track_rename`, which succeeds only while the
     title is empty (#1211 S3) — so clearing the name is how a reader hands naming back to it, and
     swallowing the keystroke leaves "I cleared it, pressed Enter, and nothing happened". An area has
     no such agent, so the same gesture there must stay write-free: this is why the semantics is an

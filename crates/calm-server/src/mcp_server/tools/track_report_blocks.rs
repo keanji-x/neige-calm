@@ -1,5 +1,5 @@
-//! The agent report write surface (`neige.report.commit`, `neige.report.write`) plus the read-only `neige.report.kinds`.
-//! Neither write takes a revision (#1883): the anchors are what this session last read through `neige.report.read`, checked inside
+//! The agent report write surface (`neige_report_commit`, `neige_report_write`) plus the read-only `neige_report_kinds`.
+//! Neither write takes a revision (#1883): the anchors are what this session last read through `neige_report_read`, checked inside
 //! the persist transaction against CRDT truth; a mismatch is `-32001` and writes nothing.
 
 use crate::decision_sink::{CardDecisionSink, ReportOpCommit};
@@ -24,9 +24,9 @@ mod contracts;
 use anchors::{block_anchor, parse_section_op};
 use contracts::{commit_descriptor, kinds_descriptor, kinds_table, write_markdown_descriptor};
 
-pub const TOOL_REPORT_KINDS: &str = "neige.report.kinds";
-pub const TOOL_REPORT_WRITE: &str = "neige.report.write";
-pub const TOOL_REPORT_COMMIT: &str = "neige.report.commit";
+pub const TOOL_REPORT_KINDS: &str = "neige_report_kinds";
+pub const TOOL_REPORT_WRITE: &str = "neige_report_write";
+pub const TOOL_REPORT_COMMIT: &str = "neige_report_commit";
 
 /// JSON-RPC error code for an `if_rev` optimistic-concurrency conflict (kernel-extension range).
 pub const RPC_REV_CONFLICT: i64 = -32001;
@@ -111,7 +111,7 @@ async fn write_markdown(
         _ => {
             return Err(RpcError::invalid_params(format!(
                 "{tool}: this session has not read the whole report at its current docRev — \
-                 read it with a full neige.report.read (`with_markers: true` keeps the block ids), \
+                 read it with a full neige_report_read (`with_markers: true` keeps the block ids), \
                  then retry"
             )));
         }
@@ -234,7 +234,7 @@ async fn commit(
         &authored,
         doc_anchor_checked.then_some(doc_rev),
     );
-    // Read off the persisted payload so it is exactly what the next `neige.report.read` would return.
+    // Read off the persisted payload so it is exactly what the next `neige_report_read` would return.
     let blocks = card
         .payload
         .get("blocks")
@@ -257,7 +257,7 @@ async fn commit(
     }))
 }
 
-/// One `ops[i]` of `neige.report.commit`: an id op anchored by the block's rev in `last_read`, or a section op.
+/// One `ops[i]` of `neige_report_commit`: an id op anchored by the block's rev in `last_read`, or a section op.
 fn parse_batch_op(
     raw: &Value,
     index: usize,
@@ -327,7 +327,7 @@ fn parse_batch_op(
     }
 }
 
-/// The content of one `upsert` op of `neige.report.commit`.
+/// The content of one `upsert` op of `neige_report_commit`.
 fn resolve_upsert_content(
     obj: &serde_json::Map<String, Value>,
     tool: &str,
@@ -364,7 +364,7 @@ fn resolve_upsert_content(
         if !matches!(obj.get("markdown"), None | Some(Value::Null)) {
             return Err(RpcError::invalid_params(format!(
                 "{tool}: `markdown` is only valid for kind=prose — pass the {kind} data in \
-                 `payload` (see neige.report.kinds)"
+                 `payload` (see neige_report_kinds)"
             )));
         }
         let payload = match obj.get("payload") {
@@ -372,7 +372,7 @@ fn resolve_upsert_content(
             _ => {
                 return Err(RpcError::invalid_params(format!(
                     "{tool}: kind={kind} requires a `payload` object (see \
-                     neige.report.kinds for its schema)"
+                     neige_report_kinds for its schema)"
                 )));
             }
         };
@@ -380,7 +380,7 @@ fn resolve_upsert_content(
             .map_err(|why| RpcError::invalid_params(format!("{tool}: {why}")))?
     } else {
         return Err(RpcError::invalid_params(format!(
-            "{tool}: {}. See neige.report.kinds.",
+            "{tool}: {}. See neige_report_kinds.",
             report_blocks::unknown_kind_message(&kind)
         )));
     };
@@ -486,19 +486,19 @@ mod rev_conflict_tests {
     #[test]
     fn rev_conflict_error_parses_the_current_revisions_it_names() {
         let doc = rev_conflict_error(
-            "neige.report.commit: document revision conflict: current doc_rev is 12, expected \
+            "neige_report_commit: document revision conflict: current doc_rev is 12, expected \
              if_doc_rev 11 — re-read the report and retry with the current docRev"
                 .into(),
         );
         assert_eq!(doc.code, RPC_REV_CONFLICT);
         assert!(
             doc.message
-                .starts_with("neige.report.commit: document revision conflict")
+                .starts_with("neige_report_commit: document revision conflict")
         );
         assert_eq!(doc.data, Some(json!({"docRev": 12})));
 
         let block = rev_conflict_error(
-            "neige.report.commit: ops[0]: rev conflict on block b_1: current rev is 7, expected \
+            "neige_report_commit: ops[0]: rev conflict on block b_1: current rev is 7, expected \
              if_rev 3; current doc_rev is 12 — re-read the report and retry with the current rev"
                 .into(),
         );

@@ -84,8 +84,8 @@ async fn real_spy_app_admits_planner_plan_and_worker_execution_request() {
     fx.plugin_host.registry_insert(&guard, manifest, Some(app));
     drop(guard);
     fx.plugin_host.spawn(&id).await.unwrap();
-    let plan = format!("plugin.{id}_spy.plan");
-    let execute = format!("plugin.{id}_spy.execute");
+    let plan = format!("plugin_{id}_spy.plan");
+    let execute = format!("plugin_{id}_spy.execute");
     let target = json!({
         "decision_id": "caller-proof", "target_spy_bps": 0,
         "rationale": "Fixture evidence supports keeping cash.",

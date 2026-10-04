@@ -918,9 +918,9 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
     assert_eq!(
         thread_start.pointer("/params/config/mcp_servers/neige/tools"),
         Some(&json!({
-            "neige.terminal.open": {"approval_mode":"approve"},
-            "neige.terminal.control": {"approval_mode":"approve"},
-            "neige.terminal.input": {"approval_mode":"approve"}
+            "neige_terminal_open": {"approval_mode":"approve"},
+            "neige_terminal_control": {"approval_mode":"approve"},
+            "neige_terminal_input": {"approval_mode":"approve"}
         })),
         "Planner must explicitly delegate only Terminal writes to the kernel's live authority checks"
     );

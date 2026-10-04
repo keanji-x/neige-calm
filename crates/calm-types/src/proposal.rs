@@ -47,7 +47,7 @@ pub enum ProposalAnchor {
 }
 
 /// One proposed mutation of the track-report block document; a stricter sibling of the interactive
-/// `neige.report.commit` op DTOs.
+/// `neige_report_commit` op DTOs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]

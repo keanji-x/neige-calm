@@ -110,7 +110,7 @@ impl TrackReportPayload {
         Self::new("", initial_body())
     }
 
-    /// Whether planner's first turn must `neige.report.read`: `!self.is_unwritten()`.
+    /// Whether planner's first turn must `neige_report_read`: `!self.is_unwritten()`.
     pub fn report_startup_read_required(&self) -> bool {
         !self.is_unwritten()
     }

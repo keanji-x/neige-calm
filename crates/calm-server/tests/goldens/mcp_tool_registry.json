@@ -1,6 +1,6 @@
 [
   {
-    "name": "neige.admin.gc",
+    "name": "neige_admin_gc",
     "description_sha256": "4a2ad238060ed23e06ab148bcbc0979ee9557244284ad93c3816ece03f12bdc5",
     "input_schema": {
       "properties": {
@@ -25,7 +25,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.admin.vacuum",
+    "name": "neige_admin_vacuum",
     "description_sha256": "26d0d3c385621c2af572c88fd8cc44f0531d1acd4c134d2a82deaf753b00e0b4",
     "input_schema": {
       "properties": {},
@@ -34,7 +34,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.area.outline",
+    "name": "neige_area_outline",
     "description_sha256": "44f6c2828e6b30ae807ecd0eb2cce9ddad4a5d3334b38c6a7758a086e70b1ad9",
     "input_schema": {
       "additionalProperties": false,
@@ -49,7 +49,7 @@
     ]
   },
   {
-    "name": "neige.calendar.create",
+    "name": "neige_calendar_create",
     "description_sha256": "249d0709f53afd55bf9280346966bb4fe02747e9918cb8c9cdf4456b2caa573b",
     "input_schema": {
       "additionalProperties": false,
@@ -182,7 +182,7 @@
     ]
   },
   {
-    "name": "neige.calendar.list",
+    "name": "neige_calendar_list",
     "description_sha256": "7b893526b6dec8a21670e3c568a444913e732e1c8df5c358213454856dc86f07",
     "input_schema": {
       "additionalProperties": false,
@@ -213,7 +213,7 @@
     ]
   },
   {
-    "name": "neige.calendar.update",
+    "name": "neige_calendar_update",
     "description_sha256": "9468d2f5959965e94bcd9eac35a5779363f8f55b9c1846d68c78dd5afb77ff04",
     "input_schema": {
       "additionalProperties": false,
@@ -354,7 +354,7 @@
     ]
   },
   {
-    "name": "neige.dev.publish",
+    "name": "neige_dev_publish",
     "description_sha256": "601a75fc12781251d70d6a60ef0efd7f8f3a10378e6a5fac4903e00436b4e83c",
     "input_schema": {
       "properties": {
@@ -387,7 +387,7 @@
     ]
   },
   {
-    "name": "neige.plan.cancel",
+    "name": "neige_plan_cancel",
     "description_sha256": "8eb8c2c11056c05ed1bbd83d624716d198dfd57d22ad93257fea56d5dc28bfa9",
     "input_schema": {
       "properties": {
@@ -417,8 +417,8 @@
     ]
   },
   {
-    "name": "neige.plan.list",
-    "description_sha256": "fb7b965dbfa928306885a450fe654a988a5a25556cd639d6dd3a3d77f1589eed",
+    "name": "neige_plan_list",
+    "description_sha256": "9f55a1de6c2ea058dedd7df8ac7f6c06439c0cefc864c91e10b31f48e80c3178",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -445,8 +445,8 @@
     ]
   },
   {
-    "name": "neige.preview.register",
-    "description_sha256": "397598de3efc0792a05b9206a8250dcfd7864e135b2413a7c98eae86fb69023f",
+    "name": "neige_preview_register",
+    "description_sha256": "b015be12a2137ab7db9247c146fd57e31c7d7038e31f69b4807bc1b83b04cf74",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -485,7 +485,7 @@
     ]
   },
   {
-    "name": "neige.preview.unregister",
+    "name": "neige_preview_unregister",
     "description_sha256": "8aa686bdae538b8630c6ce9f2ff7333851b0c864ba2b0d2c3413cf7b1c2397c5",
     "input_schema": {
       "additionalProperties": false,
@@ -511,7 +511,7 @@
     ]
   },
   {
-    "name": "neige.ratify.request",
+    "name": "neige_ratify_request",
     "description_sha256": "6adcae81595eea2e9a027704a77c2cf532b74f989865682be689836bd5a2b823",
     "input_schema": {
       "properties": {
@@ -535,8 +535,8 @@
     ]
   },
   {
-    "name": "neige.report.backlinks",
-    "description_sha256": "390d2a5f26b54deeb1bff8cc14a0c608b5dc30b018bfb398918e581d57545bcd",
+    "name": "neige_report_backlinks",
+    "description_sha256": "90e71a3eca43c4d73dca04b12a07332dd1bf0b7a2987ce53d82b2afdaa698a5f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -550,8 +550,8 @@
     ]
   },
   {
-    "name": "neige.report.commit",
-    "description_sha256": "fa5517f531fc3bb467bbf04ae9211da8ef617dc20bf1dd4bf052f232a1d0e72f",
+    "name": "neige_report_commit",
+    "description_sha256": "821b43cb190ebabb2a057709a024b45ce5fa2b244bcdc10b46f3bac0f1849502",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -593,7 +593,7 @@
                 "type": "string"
               },
               "payload": {
-                "description": "Data kinds: see neige.report.kinds.",
+                "description": "Data kinds: see neige_report_kinds.",
                 "type": "object"
               },
               "position": {
@@ -636,7 +636,7 @@
     ]
   },
   {
-    "name": "neige.report.find",
+    "name": "neige_report_find",
     "description_sha256": "9bd09dad6a05fe739f814aac10e929843a9916d47dfda7d7b573ebc3816e8b8f",
     "input_schema": {
       "additionalProperties": false,
@@ -662,8 +662,8 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.report.kinds",
-    "description_sha256": "ccf5efd6453f53984f1098f16d44379bcf4b7743f9a90a6b4b29831fe22f5078",
+    "name": "neige_report_kinds",
+    "description_sha256": "004d0d3ec01d99d01ad8bfef1615cb008b115f532cc7f79b9f84767d919e28df",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -677,7 +677,7 @@
     ]
   },
   {
-    "name": "neige.report.read",
+    "name": "neige_report_read",
     "description_sha256": "115ad3a627340fa4d2f1055506e2c760d6da9a6da8ad117b454132a98e0242b3",
     "input_schema": {
       "properties": {
@@ -748,7 +748,7 @@
     ]
   },
   {
-    "name": "neige.report.tag",
+    "name": "neige_report_tag",
     "description_sha256": "dec041eb49eee91f5f031bb1615a9476fbad8b23b525c1da6a5330e68c67f542",
     "input_schema": {
       "additionalProperties": false,
@@ -782,8 +782,8 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.report.write",
-    "description_sha256": "47e285465f7bc02a68d060327c358c860de76ff9a035eadafa26caa34132f1aa",
+    "name": "neige_report_write",
+    "description_sha256": "d71395563cd2a29bab3930fc72e45f8596f7658ff6f7bb89bfaf86fb93b214ed",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -816,8 +816,8 @@
     ]
   },
   {
-    "name": "neige.source.capture",
-    "description_sha256": "9bac6c613a406d2196492d4fa78df07f514d64cdc7fb975bad858b8e6c15708c",
+    "name": "neige_source_capture",
+    "description_sha256": "15846996d62dfb3c8a50e502080c338bdae5dd199517a9258a7a539de5805f3f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -889,8 +889,8 @@
     ]
   },
   {
-    "name": "neige.source.list",
-    "description_sha256": "1c4a6867cc8541c886f0362a7af0eb77955c10601ba6d33d21c120679abe4a26",
+    "name": "neige_source_list",
+    "description_sha256": "0248d249848614827423b785c14444c4a399d364266fb45cb3a730af4dcfa215",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -904,35 +904,7 @@
     ]
   },
   {
-    "name": "neige.task.report_failure",
-    "description_sha256": "c4c54e75b8e898f1b0206e530fd2bd739d0f06b7b9918a92ec3a97c82f787a3d",
-    "input_schema": {
-      "properties": {
-        "attempt_id": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "reason": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "attempt_id",
-        "reason"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "worker"
-    ]
-  },
-  {
-    "name": "neige.task.report_success",
+    "name": "neige_task_done",
     "description_sha256": "e91d54b4498724ccf4c720a1928a2b3342f01472491849c497f5a1a563315d7c",
     "input_schema": {
       "properties": {
@@ -960,8 +932,36 @@
     ]
   },
   {
-    "name": "neige.task.verdict",
-    "description_sha256": "98f296a0ec91a3ba6933db42b210a0a0aa51f818ca018c617e17c51f01faa612",
+    "name": "neige_task_fail",
+    "description_sha256": "c4c54e75b8e898f1b0206e530fd2bd739d0f06b7b9918a92ec3a97c82f787a3d",
+    "input_schema": {
+      "properties": {
+        "attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "worker"
+    ]
+  },
+  {
+    "name": "neige_task_verdict",
+    "description_sha256": "bd4fad1e1c348c2230e203e145317239036334ab3322c70a5b1db4494a5389d8",
     "input_schema": {
       "properties": {
         "attempt_id": {
@@ -1001,8 +1001,8 @@
     ]
   },
   {
-    "name": "neige.terminal.control",
-    "description_sha256": "a9ade7043c1c2d9946853b9e5dfbfe0ef787104ac73230820d838cb6f7a62de1",
+    "name": "neige_terminal_control",
+    "description_sha256": "0d0947a9e9219fba880d6122bc9f6ca22ba76303500a0c1afe55c415d4526f56",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1093,8 +1093,8 @@
     ]
   },
   {
-    "name": "neige.terminal.input",
-    "description_sha256": "96a603f46c7a4500bfecef5ccaa7bfea2ae302ca7468c818ade6f22e9578cdb8",
+    "name": "neige_terminal_input",
+    "description_sha256": "b82fac2143c870a82104c632341a4585c444892335e6ea347f0ff78e186a5066",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1267,7 +1267,7 @@
     ]
   },
   {
-    "name": "neige.terminal.observe",
+    "name": "neige_terminal_observe",
     "description_sha256": "a533e518fb5795a90ebeb5c8e4cf0636fb67936da9336c63bbc48250db2a93fb",
     "input_schema": {
       "additionalProperties": false,
@@ -1350,8 +1350,8 @@
     ]
   },
   {
-    "name": "neige.terminal.open",
-    "description_sha256": "236c7b1e830985861713ee5de660410a954285e0b3e08c03e569bbba0a22e050",
+    "name": "neige_terminal_open",
+    "description_sha256": "32d851f40afaa426adfe0c3296010656d64883690406d630ce28d196fb4e0383",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1442,8 +1442,8 @@
     ]
   },
   {
-    "name": "neige.terminal.resolve",
-    "description_sha256": "72625d27bfd149f9912ed4e92d6886c240e5962f1299c3e5dfa67f00a0c9b3ff",
+    "name": "neige_terminal_resolve",
+    "description_sha256": "8306d83c8519b66bf4c65f35e892cd782cc971cb1364e997de35812f715c6a89",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1467,12 +1467,12 @@
     ]
   },
   {
-    "name": "neige.track.cat",
-    "description_sha256": "17169251bc341e55d3eb6e63b07028d99092bf573b97c56cfca7ea5aa4760b56",
+    "name": "neige_track_cat",
+    "description_sha256": "7b4bb8151233aa52c9c57c206616c287b4ba4bb48853752e3b44f9f899515552",
     "input_schema": {
       "properties": {
         "blocks": {
-          "description": "Report paths only: print just these blocks, as neige.report.read select.blocks does.",
+          "description": "Report paths only: print just these blocks, as neige_report_read select.blocks does.",
           "items": {
             "type": "string"
           },
@@ -1502,7 +1502,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.track.close",
+    "name": "neige_track_close",
     "description_sha256": "4d6eceaee396234a75c8c654df3bb55e92dc297474422b105bd30098ccaac3bc",
     "input_schema": {
       "properties": {
@@ -1527,7 +1527,7 @@
     ]
   },
   {
-    "name": "neige.track.diff",
+    "name": "neige_track_diff",
     "description_sha256": "d48847a7cd155b6e8597b8752c3ffe7bd0a9e9869ef3d9fb1750cc22d0ac478a",
     "input_schema": {
       "properties": {
@@ -1552,7 +1552,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.track.log",
+    "name": "neige_track_log",
     "description_sha256": "cb4868d442016f91ce5682cab8a9575b6da7a85ed2c74f7e897807bf24038f3f",
     "input_schema": {
       "properties": {
@@ -1577,8 +1577,8 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.track.ls",
-    "description_sha256": "e82e919ca8424cb190887d1f25be03c65d3aa04516fa7156ff00c1c9f1367a5f",
+    "name": "neige_track_ls",
+    "description_sha256": "1b161a56437746d949998c341eb08f19f6ba98b5c72f00bff4ce336a9ebd2251",
     "input_schema": {
       "properties": {
         "path": {
@@ -1593,7 +1593,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.track.rename",
+    "name": "neige_track_rename",
     "description_sha256": "424ac2281750e97ea9de8babd376773ffe391082a0b5bf88d6227fd494151a34",
     "input_schema": {
       "properties": {
@@ -1622,7 +1622,7 @@
     ]
   },
   {
-    "name": "neige.track.show",
+    "name": "neige_track_show",
     "description_sha256": "e09a7ace969e7040e2355637360efd9f836fc334213798a2358bfa70ed974ed9",
     "input_schema": {
       "properties": {
@@ -1645,7 +1645,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.track.state",
+    "name": "neige_track_state",
     "description_sha256": "b4a4baca88e0b375efe3e108553b9a79f7a6d85927d683ecd43c305eb0ffeb85",
     "input_schema": {
       "properties": {},
@@ -1657,7 +1657,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige.user.notify",
+    "name": "neige_user_notify",
     "description_sha256": "b0fddf7dae77ff50bcf539e6087bd0cffb690bf4b2277cc729972835c8754685",
     "input_schema": {
       "additionalProperties": false,
@@ -1684,7 +1684,7 @@
     ]
   },
   {
-    "name": "neige.workspace.changes",
+    "name": "neige_workspace_changes",
     "description_sha256": "20170c02dd967538243e11a617f5ec7bfd69a80b5efb51c0b11291e2d1e0695e",
     "input_schema": {
       "additionalProperties": false,
@@ -1713,7 +1713,7 @@
     ]
   },
   {
-    "name": "neige.workspace.edits",
+    "name": "neige_workspace_edits",
     "description_sha256": "c17a67a42b4ea5ed73590857ed069e82b999d2f29e560776550bc50c48a7588e",
     "input_schema": {
       "additionalProperties": false,
@@ -1748,7 +1748,7 @@
     ]
   },
   {
-    "name": "neige.workspace.report",
+    "name": "neige_workspace_report",
     "description_sha256": "2c052d2a7601a0b9c30d34f97f6215e8abbe406c37fed2fda9c9d5ee7daf274c",
     "input_schema": {
       "additionalProperties": false,
@@ -1770,7 +1770,7 @@
     ]
   },
   {
-    "name": "neige.workspace.reports",
+    "name": "neige_workspace_reports",
     "description_sha256": "9de81ae1f93d28e8df6269d9d5cbd473c556b5c5a12457ba7f22b9e99158423e",
     "input_schema": {
       "additionalProperties": false,

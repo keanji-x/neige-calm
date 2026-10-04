@@ -93,7 +93,7 @@ placeholder ("waiting for …", "cannot be displayed: …", or "this view does n
 carry live data" where no resolver is injected). Reading never invokes a plugin
 tool, changes the report or approves anything.
 
-`neige.report.read` gives a view with live slots
+`neige_report_read` gives a view with live slots
 `resolved = {status: ok|partial, validation: "presentation", cells: [{id, source, status, observed_at?, resolved_at?, reason?}]}`.
 `ok` certifies bounded structure, not the truth of publisher facts or any
 financial/account authority. `resolve: {<block id>: "full"}` adds each ok slot's
@@ -123,7 +123,7 @@ site template file is refused when the template roster loads, so the kernel
 does not boot with it.
 
 A report that still stores a `view.live` block reads without failing:
-`neige.report.read` lists it without `resolved`, the frontend shows one
+`neige_report_read` lists it without `resolved`, the frontend shows one
 "unsupported block kind" line in its place, and a user block DELETE still
 removes it. Search for leftovers with `view.live` (for example in the
 `track-report` card payloads and `track_recipes` bodies). There is no preset

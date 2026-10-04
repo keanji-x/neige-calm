@@ -14,7 +14,7 @@ use crate::mcp_server::tools::{
 use crate::track_fs_view::normalize_path;
 use crate::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP;
 
-/// One CLI command: `neige <object> <action>`, spelled from `tool` (`neige.<object>.<action>`).
+/// One CLI command: `neige <object> <action>`, the tool name `neige_<object>_<action>` split at `_`.
 pub(crate) struct Command {
     pub(crate) tool: &'static str,
     pub(crate) positionals: &'static [Positional],
@@ -24,12 +24,9 @@ pub(crate) struct Command {
 }
 
 impl Command {
-    /// `(object, action)` as typed: the two words of `tool` after `neige.`, the action's `_`
-    /// written `-` (`task report-success` for `neige.task.report_success`).
-    pub(crate) fn words(&self) -> (&'static str, String) {
-        let (object, action) =
-            tool_words(self.tool).expect("every CLI tool is neige.<object>.<action>");
-        (object, action.replace('_', "-"))
+    /// `(object, action)` as typed: the two words of `tool` after `neige_`.
+    pub(crate) fn words(&self) -> (&'static str, &'static str) {
+        tool_words(self.tool).expect("every CLI tool is neige_<object>_<action>")
     }
 
     /// Whether `neige <object> <action>` names this command.
@@ -38,7 +35,7 @@ impl Command {
         own_object == object && own_action == action
     }
 
-    /// `track cat` for `neige.track.cat`.
+    /// `track cat` for `neige_track_cat`.
     pub(crate) fn spelling(&self) -> String {
         let (object, action) = self.words();
         format!("{object} {action}")
@@ -46,7 +43,7 @@ impl Command {
 }
 
 fn tool_words(tool: &str) -> Option<(&str, &str)> {
-    tool.strip_prefix("neige.")?.split_once('.')
+    tool.strip_prefix("neige_")?.split_once('_')
 }
 
 /// The command that serves `tool`, if any.
@@ -84,7 +81,7 @@ pub(crate) fn actions(object: &str) -> Vec<String> {
         .iter()
         .map(Command::words)
         .filter(|(candidate, _)| *candidate == object)
-        .map(|(_, action)| action)
+        .map(|(_, action)| action.to_string())
         .collect()
 }
 
@@ -231,7 +228,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Tags,
     },
     Command {
-        tool: emit::TOOL_TASK_REPORT_SUCCESS,
+        tool: emit::TOOL_TASK_DONE,
         positionals: &[],
         options: &[
             opt("--attempt-id", "attempt_id", OptValue::Text, true),
@@ -242,7 +239,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Raw,
     },
     Command {
-        tool: emit::TOOL_TASK_REPORT_FAILURE,
+        tool: emit::TOOL_TASK_FAIL,
         positionals: &[],
         options: &[
             opt("--attempt-id", "attempt_id", OptValue::Text, true),

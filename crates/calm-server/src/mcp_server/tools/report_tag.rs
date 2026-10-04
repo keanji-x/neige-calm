@@ -1,4 +1,4 @@
-//! `neige.report.tag` (#1838 S1): list (Planner or Worker) or change (Planner) the tags of the
+//! `neige_report_tag` (#1838 S1): list (Planner or Worker) or change (Planner) the tags of the
 //! caller's own track report. The track comes only from the bound card identity; no argument names
 //! a track, and the one accepted path is `report.md`, so there is no cross-track tag write.
 
@@ -19,13 +19,13 @@ use crate::model::CardRole;
 use crate::report_tags::{MAX_TAGS_PER_REPORT, normalize_tag, store};
 use crate::track_fs_view::normalize_path;
 
-pub const TOOL_REPORT_TAG: &str = "neige.report.tag";
+pub const TOOL_REPORT_TAG: &str = "neige_report_tag";
 
 /// The only taggable path: the caller's own report.
 const REPORT_PATH: &str = "report.md";
 const KEYS: &[&str] = &["path", "add", "remove"];
 /// Rolls back a call that left the tag list unchanged; no row writer's conflict message equals it.
-const NO_CHANGE: &str = "neige.report.tag: no tag changed";
+const NO_CHANGE: &str = "neige_report_tag: no tag changed";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(descriptor(), wrap(report_tag));
@@ -51,7 +51,7 @@ fn descriptor() -> ToolDescriptor {
     let tags = json!({ "type": "array", "items": { "type": "string" } });
     ToolDescriptor {
         name: TOOL_REPORT_TAG.into(),
-        description: include_str!("../../../prompts/tools/neige.report.tag.md")
+        description: include_str!("../../../prompts/tools/neige_report_tag.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

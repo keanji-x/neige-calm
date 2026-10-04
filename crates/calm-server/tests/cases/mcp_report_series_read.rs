@@ -1,4 +1,4 @@
-//! `neige.report.read` hydration of `chart.series` blocks through the real tool. The resolver is
+//! `neige_report_read` hydration of `chart.series` blocks through the real tool. The resolver is
 //! unstarted: a read records what it would enqueue and the test runs the job by hand, so "the
 //! read did not call the plugin" is a count, not a timing argument.
 
@@ -197,7 +197,7 @@ async fn read_full_is_opt_in_per_block() {
 
     let err = call_tool(
         &fx.boot,
-        "neige.report.read",
+        "neige_report_read",
         planner_identity(&fx.boot),
         json!({ "resolve": { a.as_str(): "summary" } }),
     )

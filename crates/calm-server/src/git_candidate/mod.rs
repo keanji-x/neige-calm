@@ -15,9 +15,9 @@
 //! Every write goes through a `begin_immediate_tx` transaction the caller owns; no module here
 //! calls `pool.begin()`.
 //!
-//! Wired in: the report transaction (`decision_sink`) inserts the delivery row, `neige.task.report_success`
+//! Wired in: the report transaction (`decision_sink`) inserts the delivery row, `neige_task_done`
 //! and `scheduler::git_delivery` submit it, the scheduler settles it (a failed settlement fails a
-//! gated attempt still verifying), `neige.plan.list` reads it, the Track-delete sweep drops its refs.
+//! gated attempt still verifying), `neige_plan_list` reads it, the Track-delete sweep drops its refs.
 
 pub(crate) mod candidate;
 pub(crate) mod delivery;

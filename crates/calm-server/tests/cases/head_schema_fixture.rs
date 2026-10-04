@@ -78,6 +78,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0138_task_start.sql",
     "0139_planner_input_idempotency.sql",
     "0140_dev_template.sql",
+    "0141_tool_name_separator.sql",
 ];
 
 #[test]

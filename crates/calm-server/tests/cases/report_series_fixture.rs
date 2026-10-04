@@ -34,11 +34,11 @@ pub(crate) const FORGE_TOOL_SOURCE: &str = "neige://plugin/dev-neige-market/exec
 pub(crate) const UNEXPOSED_SOURCE: &str = "neige://plugin/dev-neige-market/market.nothing";
 /// A plugin id no manifest carries (`NotInstalled`).
 pub(crate) const UNINSTALLED_SOURCE: &str = "neige://plugin/nobody/market.series";
-/// The underscore probe: plugin `aa` exposes `b_c`; a `plugin.aa_b_c` re-parse would hit it, an exact lookup of `aa_b` must not.
+/// The underscore probe: plugin `aa` exposes `b_c`; a `plugin_aa_b_c` re-parse would hit it, an exact lookup of `aa_b` must not.
 pub(crate) const UNDERSCORE_PLUGIN_ID: &str = "aa";
 pub(crate) const UNDERSCORE_TOOL: &str = "b_c";
 pub(crate) const UNDERSCORE_SOURCE: &str = "neige://plugin/aa_b/c";
-pub(crate) const TOOL_REPORT_READ: &str = "neige.report.read";
+pub(crate) const TOOL_REPORT_READ: &str = "neige_report_read";
 
 /// 2026-09-14T12:00:00Z — a Monday; "yesterday UTC" is Sunday 2026-09-13.
 pub(crate) const T0_MS: i64 = 1_789_387_200_000;
@@ -133,7 +133,7 @@ fn underscore_manifest(control_dir: &Path) -> Value {
         "exposes_tools": [
             {
                 "name": UNDERSCORE_TOOL,
-                "description": "would be hit by a plugin.aa_b_c re-parse",
+                "description": "would be hit by a plugin_aa_b_c re-parse",
                 "annotations": { "readOnlyHint": true }
             }
         ],
@@ -376,7 +376,7 @@ impl SeriesFixture {
         block["rev"].as_u64().expect("block rev")
     }
 
-    /// The real `neige.report.read` as the planner.
+    /// The real `neige_report_read` as the planner.
     pub async fn read(&self, args: Value) -> Value {
         call_tool(
             &self.boot,

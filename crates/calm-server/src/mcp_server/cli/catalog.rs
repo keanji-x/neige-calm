@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn list_pages_cover_long_names_without_silent_truncation() {
         let names: Vec<String> = (0..43)
-            .map(|index| format!("plugin.{}.tool{index:02}", "x".repeat(180)))
+            .map(|index| format!("plugin_{}.tool{index:02}", "x".repeat(180)))
             .collect();
         let entries = listed(&names);
         let mut after = None;
@@ -309,7 +309,7 @@ mod tests {
         loop {
             let page = select(
                 Query::List {
-                    prefix: "plugin.".into(),
+                    prefix: "plugin_".into(),
                     after: after.clone(),
                 },
                 entries.clone(),
@@ -333,14 +333,14 @@ mod tests {
     #[test]
     fn catalog_names_and_cursors_round_trip_through_the_cli_parser() {
         let names: Vec<String> = (0..43)
-            .map(|index| format!("plugin.demo_读取/{index:02}:{}", "x".repeat(300)))
+            .map(|index| format!("plugin_demo_读取/{index:02}:{}", "x".repeat(300)))
             .collect();
         let entries = listed(&names);
         let mut argv = vec![
             "tool".into(),
             "list".into(),
             "--prefix".into(),
-            "plugin.".into(),
+            "plugin_".into(),
         ];
         let mut seen = Vec::new();
         loop {
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn details_refuse_oversize_and_keep_optional_annotations_absent() {
-        let mut large = tool("neige.large.tool".into());
+        let mut large = tool("neige_large_tool".into());
         large.description = "x".repeat(DETAIL_MAX_BYTES);
         assert!(
             select(
@@ -385,9 +385,9 @@ mod tests {
         );
         let details = select(
             Query::Describe {
-                name: "neige.small.tool".into(),
+                name: "neige_small_tool".into(),
             },
-            listed(&["neige.small.tool".into()]),
+            listed(&["neige_small_tool".into()]),
         )
         .unwrap();
         assert!(details.get("annotations").is_none());
@@ -405,12 +405,12 @@ mod tests {
         let registry = build_default_registry();
         let planner = registry.descriptors_for_role(CardRole::Planner);
         assert!(
-            !planner.iter().any(|tool| tool.name == "neige.track.cat"),
+            !planner.iter().any(|tool| tool.name == "neige_track_cat"),
             "precondition: track.cat is hidden from the Planner's tools/list"
         );
         let page = select(
             Query::List {
-                prefix: "neige.track.".into(),
+                prefix: "neige_track_".into(),
                 after: None,
             },
             entries(planner, &registry),
@@ -419,23 +419,23 @@ mod tests {
         let rows = page["tools"].as_array().unwrap();
         assert!(
             rows.contains(
-                &json!({"name":"neige.track.cat","cli":"neige track cat","listed":false})
+                &json!({"name":"neige_track_cat","cli":"neige track cat","listed":false})
             ),
             "{page}"
         );
         assert!(
             rows.contains(
-                &json!({"name":"neige.track.close","cli":"neige track close","listed":true})
+                &json!({"name":"neige_track_close","cli":"neige track close","listed":true})
             ),
             "{page}"
         );
         assert!(
-            rows.contains(&json!({"name":"neige.track.rename","cli":null,"listed":true})),
+            rows.contains(&json!({"name":"neige_track_rename","cli":null,"listed":true})),
             "{page}"
         );
         let described = select(
             Query::Describe {
-                name: "neige.track.cat".into(),
+                name: "neige_track_cat".into(),
             },
             entries(registry.descriptors_for_role(CardRole::Planner), &registry),
         )

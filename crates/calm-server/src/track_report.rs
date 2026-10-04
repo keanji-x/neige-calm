@@ -357,7 +357,7 @@ pub enum ReportDocOp {
         body: String,
         if_doc_rev: u64,
     },
-    /// `neige.report.write`: wholesale replace whose body may carry `<!-- neige:b_xxxx -->`
+    /// `neige_report_write`: wholesale replace whose body may carry `<!-- neige:b_xxxx -->`
     /// marker lines, stripped in-tx and used as exact id-reuse hints. `summary: None` keeps the current summary.
     /// `if_doc_rev` is the docRev at which the session last read the whole report.
     WriteMarkdown {
@@ -383,7 +383,7 @@ pub enum ReportDocOp {
     },
     /// The block-level REST delete: `if_rev` is mandatory.
     DeleteBlock { id: String, if_rev: u32 },
-    /// `neige.report.commit`: an ordered list of block ops + optional summary under ONE document anchor.
+    /// `neige_report_commit`: an ordered list of block ops + optional summary under ONE document anchor.
     /// A failure anywhere aborts the whole persist transaction; the doc rev advances exactly once.
     /// A `Delete` op may retire a live task it names by id; a section op may not.
     Batch {
@@ -588,7 +588,7 @@ fn apply_delete(doc: &mut ReportDoc, id: &str, if_rev: u32) -> Result<(), CalmEr
     doc.delete_block(id).map_err(block_op_internal)
 }
 
-/// Upper bound on the ops one `neige.report.commit` may carry.
+/// Upper bound on the ops one `neige_report_commit` may carry.
 pub const MAX_BATCH_OPS: usize = 64;
 
 /// The block-outcome half of [`apply_report_op_traced`], for the in-crate guard tests.
@@ -919,7 +919,7 @@ fn check_doc_anchor(doc: &ReportDoc, anchor: DocAnchor, needed: bool) -> Result<
         }
         DocAnchor::Unread if needed => Err(CalmError::BadRequest(
             "this session has not read the report's docRev: a summary, a created or moved block \
-             and a created section need it — read the report with neige.report.read and retry"
+             and a created section need it — read the report with neige_report_read and retry"
                 .into(),
         )),
         DocAnchor::Unread => Ok(false),

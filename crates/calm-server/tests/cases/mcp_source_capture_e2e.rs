@@ -1,5 +1,5 @@
 //! A Planner calls a fixture stdio plugin through the kernel socket, captures the result with
-//! `neige.source.capture { call }`, and the REST source answers with the sha256 of the joined text
+//! `neige_source_capture { call }`, and the REST source answers with the sha256 of the joined text
 //! blocks. One `AppContext` serves both the MCP listener and the axum router, so the ring the
 //! transport fills is the ring the tool reads.
 
@@ -42,7 +42,7 @@ use crate::support::mcp::call_tool_via_socket;
 const SERIES_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-series");
 const PLUGIN_ID: &str = "dev.wisburg";
 const TOOL_NAME: &str = "get-article-detail";
-const EXPOSED_NAME: &str = "plugin.dev.wisburg_get-article-detail";
+const EXPOSED_NAME: &str = "plugin_dev.wisburg_get-article-detail";
 /// The spelling Codex shows the model for [`EXPOSED_NAME`].
 const SANITIZED_NAME: &str = "plugin_dev_wisburg_get_article_detail";
 const KNOWN_REPLY: &str = include_str!("../fixtures/source_capture/reply.json");
@@ -435,7 +435,7 @@ impl Fixture {
         .await
     }
 
-    /// `neige.source.capture` over the socket; the structured payload of a
+    /// `neige_source_capture` over the socket; the structured payload of a
     /// success, the error object of a refusal.
     async fn capture(&self, id: i64, args: Value) -> Result<Value, Value> {
         let frame = self.planner_call(id, TOOL_SOURCE_CAPTURE, args).await;

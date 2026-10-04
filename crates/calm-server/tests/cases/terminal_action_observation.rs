@@ -26,7 +26,7 @@ fn has_line(state: &Value, expected: &str) -> bool {
 }
 async fn open(h: &Harness) -> String {
     h.ok(
-        "neige.terminal.open",
+        "neige_terminal_open",
         json!({"program":"exec /bin/sh","request_id":"action-view"}),
     )
     .await["terminal_id"]
@@ -36,13 +36,13 @@ async fn open(h: &Harness) -> String {
 }
 async fn claim(h: &Harness, terminal: &str) -> Value {
     h.call(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"terminal_id":terminal,"action":"claim","observe":true,"wait_ms":100}),
     )
     .await
 }
 async fn input(h: &Harness, terminal: &str, state: &Value, request: &str, action: Value) -> Value {
-    h.call("neige.terminal.input", json!({"terminal_id":terminal,"observation_id":state["observation_id"],"request_id":request,"action":action,"observe":true,"wait_ms":100})).await
+    h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":state["observation_id"],"request_id":request,"action":action,"observe":true,"wait_ms":100})).await
 }
 
 #[tokio::test]
@@ -89,7 +89,7 @@ async fn terminal_actions_return_fresh_text_observations() {
     assert_eq!(after["terminal_session_id"], before["terminal_session_id"]);
     let released = h
         .call(
-            "neige.terminal.control",
+            "neige_terminal_control",
             json!({"terminal_id":terminal,"action":"release","observe":true}),
         )
         .await;
@@ -131,7 +131,7 @@ async fn terminal_actions_return_fresh_text_observations() {
 #[tokio::test]
 async fn changing_readback_options_replays_receipt_without_duplicate_input() {
     let h = Harness::start().await;
-    let terminal = h.ok("neige.terminal.open", json!({"program":"i=0; printf 'READY\\n'; while IFS= read -r line; do i=$((i+1)); printf x >> physical-lines; printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done","request_id":"counter"})).await["terminal_id"].as_str().unwrap().to_owned();
+    let terminal = h.ok("neige_terminal_open", json!({"program":"i=0; printf 'READY\\n'; while IFS= read -r line; do i=$((i+1)); printf x >> physical-lines; printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done","request_id":"counter"})).await["terminal_id"].as_str().unwrap().to_owned();
     let claimed = claim(&h, &terminal).await;
     assert!(has_line(observation(&claimed), "READY"));
     let typed = input(
@@ -143,14 +143,14 @@ async fn changing_readback_options_replays_receipt_without_duplicate_input() {
     )
     .await;
     let args = json!({"terminal_id":terminal,"observation_id":observation(&typed)["observation_id"],"request_id":"enter-once","action":{"type":"key","key":"Enter"}});
-    let original = h.call("neige.terminal.input", args.clone()).await;
+    let original = h.call("neige_terminal_input", args.clone()).await;
     let original_receipt = receipt(&original);
     assert_eq!(original_receipt["outcome"], "written");
     assert!(original_receipt.get("observation").is_none());
     let mut readback_args = args.clone();
     readback_args["observe"] = json!(true);
     readback_args["wait_ms"] = json!(100);
-    let repeated = h.call("neige.terminal.input", readback_args.clone()).await;
+    let repeated = h.call("neige_terminal_input", readback_args.clone()).await;
     let mut repeated_receipt = receipt(&repeated).clone();
     // The readback and its digest (`summary`) are presentation on top of the cached physical
     // receipt, which stays byte-identical.
@@ -167,14 +167,14 @@ async fn changing_readback_options_replays_receipt_without_duplicate_input() {
     assert_eq!(repeated_receipt, physical);
     assert!(has_line(observation(&repeated), "COUNT:1:PAYLOAD"));
     readback_args["wait_ms"] = json!(0);
-    let again = h.call("neige.terminal.input", readback_args).await;
+    let again = h.call("neige_terminal_input", readback_args).await;
     assert_eq!(receipt(&again)["outcome"], "written");
     assert_ne!(
         observation(&again)["observation_id"],
         observation(&repeated)["observation_id"]
     );
     assert_eq!(
-        receipt(&h.call("neige.terminal.input", args).await),
+        receipt(&h.call("neige_terminal_input", args).await),
         original_receipt,
         "readback must not enter the cached physical receipt"
     );
@@ -235,7 +235,7 @@ async fn failed_readback_preserves_written_receipt_and_replay() {
             .invalidate("readback source lost after execution");
     };
     let (response, ()) = tokio::join!(
-        h.call("neige.terminal.input", args.clone()),
+        h.call("neige_terminal_input", args.clone()),
         fail_after_execution
     );
     let result = receipt(&response);
@@ -255,7 +255,7 @@ async fn failed_readback_preserves_written_receipt_and_replay() {
     let mut replay = args;
     replay.as_object_mut().unwrap().remove("observe");
     replay.as_object_mut().unwrap().remove("wait_ms");
-    let replay = h.call("neige.terminal.input", replay).await;
+    let replay = h.call("neige_terminal_input", replay).await;
     assert_eq!(receipt(&replay)["outcome"], "written");
     assert!(receipt(&replay).get("observation").is_none());
     assert_eq!(
@@ -294,7 +294,7 @@ async fn failed_control_readback_keeps_claim_receipt() {
     };
     let (response, ()) = tokio::join!(
         h.call(
-            "neige.terminal.control",
+            "neige_terminal_control",
             json!({"terminal_id":terminal,"action":"claim","observe":true,"wait_ms":2000})
         ),
         invalidate_after_claim
@@ -328,7 +328,7 @@ async fn invalid_action_readback_options_fail_before_side_effects() {
         args["terminal_id"] = json!(terminal);
         args["action"] = json!("claim");
         assert_eq!(
-            h.call("neige.terminal.control", args).await["error"]["code"],
+            h.call("neige_terminal_control", args).await["error"]["code"],
             -32602
         );
         assert!(
@@ -355,19 +355,19 @@ async fn invalid_action_readback_options_fail_before_side_effects() {
         args["request_id"] = json!("invalid");
         args["action"] = json!({"type":"text","text":"BAD"});
         assert_eq!(
-            h.call("neige.terminal.input", args).await["error"]["code"],
+            h.call("neige_terminal_input", args).await["error"]["code"],
             -32602
         );
     }
     let invalid_detach = h
         .call(
-            "neige.terminal.control",
+            "neige_terminal_control",
             json!({"terminal_id":terminal,"action":"detach","observe":true}),
         )
         .await;
     assert_eq!(invalid_detach["error"]["code"], -32602);
     let current = h
-        .ok("neige.terminal.observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(
         current["connection_id"],
@@ -389,7 +389,7 @@ async fn repeated_navigation_corrects_one_character_without_replaying_movement()
     let h = Harness::start().await;
     let terminal = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             // Wait for the prompt: typed before readline owns the line, the cooked tty echoes it.
             json!({"program":"exec /bin/bash --noprofile --norc","request_id":"readline","wait_for":"text","wait_text":["$"],"wait_ms":5000}),
         )
@@ -407,13 +407,13 @@ async fn repeated_navigation_corrects_one_character_without_replaying_movement()
     )
     .await;
     let args = json!({"terminal_id":terminal,"observation_id":observation(&typed)["observation_id"],"request_id":"left-four","action":{"type":"key","key":"Left","repeat":4},"observe":true,"wait_ms":100});
-    let moved = h.call("neige.terminal.input", args.clone()).await;
+    let moved = h.call("neige_terminal_input", args.clone()).await;
     assert_eq!(receipt(&moved)["outcome"], "written");
     assert_eq!(
         observation(&moved)["cursor"]["column"].as_u64().unwrap() + 4,
         observation(&typed)["cursor"]["column"].as_u64().unwrap()
     );
-    let replay = h.call("neige.terminal.input", args.clone()).await;
+    let replay = h.call("neige_terminal_input", args.clone()).await;
     assert_eq!(
         observation(&replay)["cursor"],
         observation(&moved)["cursor"],
@@ -422,7 +422,7 @@ async fn repeated_navigation_corrects_one_character_without_replaying_movement()
     let mut conflicting = args;
     conflicting["action"]["repeat"] = json!(3);
     assert!(
-        h.call("neige.terminal.input", conflicting)
+        h.call("neige_terminal_input", conflicting)
             .await
             .get("error")
             .is_some(),
@@ -459,7 +459,7 @@ async fn repeated_navigation_corrects_one_character_without_replaying_movement()
 #[tokio::test]
 async fn submission_keys_cannot_repeat_or_write_before_validation() {
     let h = Harness::start().await;
-    let terminal = h.ok("neige.terminal.open", json!({"program":"i=0; printf 'READY\\n'; while IFS= read -r line; do i=$((i+1)); printf x >> physical-lines; printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done","request_id":"key-boundary"})).await["terminal_id"].as_str().unwrap().to_owned();
+    let terminal = h.ok("neige_terminal_open", json!({"program":"i=0; printf 'READY\\n'; while IFS= read -r line; do i=$((i+1)); printf x >> physical-lines; printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done","request_id":"key-boundary"})).await["terminal_id"].as_str().unwrap().to_owned();
     let claimed = claim(&h, &terminal).await;
     let typed = input(
         &h,
@@ -469,12 +469,12 @@ async fn submission_keys_cannot_repeat_or_write_before_validation() {
         json!({"type":"text","text":"PROBE"}),
     )
     .await;
-    let forbidden = h.call("neige.terminal.input", json!({"terminal_id":terminal,"observation_id":observation(&typed)["observation_id"],"request_id":"forbidden","action":{"type":"key","key":"Enter","repeat":2},"observe":true,"wait_ms":100})).await;
+    let forbidden = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation(&typed)["observation_id"],"request_id":"forbidden","action":{"type":"key","key":"Enter","repeat":2},"observe":true,"wait_ms":100})).await;
     // A real input-counting application detects any accidental repeated Enter,
     // including a blank line; error text alone is not the physical evidence.
     let current = h
         .ok(
-            "neige.terminal.observe",
+            "neige_terminal_observe",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -496,7 +496,7 @@ async fn submission_keys_cannot_repeat_or_write_before_validation() {
     for key in [
         "Escape", "Tab", "Ctrl+C", "Ctrl+D", "Ctrl+J", "Home", "PageUp",
     ] {
-        let rejected = h.call("neige.terminal.input", json!({"terminal_id":terminal,"observation_id":observation(&submitted)["observation_id"],"request_id":key,"action":{"type":"key","key":key,"repeat":2}})).await;
+        let rejected = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation(&submitted)["observation_id"],"request_id":key,"action":{"type":"key","key":key,"repeat":2}})).await;
         assert!(rejected.get("error").is_some(), "{rejected}");
     }
     for (index, repeat) in [
@@ -510,7 +510,7 @@ async fn submission_keys_cannot_repeat_or_write_before_validation() {
     .into_iter()
     .enumerate()
     {
-        let rejected = h.call("neige.terminal.input", json!({"terminal_id":terminal,"observation_id":observation(&submitted)["observation_id"],"request_id":format!("invalid-{index}"),"action":{"type":"key","key":"Left","repeat":repeat}})).await;
+        let rejected = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation(&submitted)["observation_id"],"request_id":format!("invalid-{index}"),"action":{"type":"key","key":"Left","repeat":repeat}})).await;
         assert!(rejected.get("error").is_some(), "{rejected}");
     }
     h.stop(&terminal).await;
@@ -575,13 +575,13 @@ async fn action_readback_does_not_follow_a_replacement_worker_session() {
         .unwrap();
         tx.commit().await.unwrap();
     };
-    let (response, ()) = tokio::join!(h.call("neige.terminal.input", json!({"terminal_id":terminal,"observation_id":observation(&typed)["observation_id"],"request_id":"execute","action":{"type":"key","key":"Enter"},"observe":true,"wait_ms":2000})), replace_after_execution);
+    let (response, ()) = tokio::join!(h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation(&typed)["observation_id"],"request_id":"execute","action":{"type":"key","key":"Enter"},"observe":true,"wait_ms":2000})), replace_after_execution);
     let result = receipt(&response);
     assert_eq!(result["outcome"], "written");
     assert_eq!(result["observation"]["status"], "unavailable");
     assert!(result["observation"]["state"].is_null());
     let resolved = h
-        .ok("neige.terminal.resolve", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_resolve", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(resolved["worker_session_id"], next);
     assert_eq!(
@@ -596,10 +596,10 @@ async fn explicit_ctrl_j_reaches_the_pty_as_lf_and_enter_as_cr() {
     let h = Harness::start().await;
     // Raw mode disables line-discipline CR/LF conversion. A real byte-reading
     // application observes exactly what the production PTY writer delivered.
-    let terminal = h.ok("neige.terminal.open", json!({"program":"stty raw -echo; printf 'READY\\r\\n'; dd bs=1 count=2 2>/dev/null | od -An -tu1; cat >/dev/null","request_id":"raw-keys"})).await["terminal_id"].as_str().unwrap().to_owned();
+    let terminal = h.ok("neige_terminal_open", json!({"program":"stty raw -echo; printf 'READY\\r\\n'; dd bs=1 count=2 2>/dev/null | od -An -tu1; cat >/dev/null","request_id":"raw-keys"})).await["terminal_id"].as_str().unwrap().to_owned();
     let claimed = claim(&h, &terminal).await;
     assert!(has_line(observation(&claimed), "READY"));
-    let refused_text = h.call("neige.terminal.input", json!({"terminal_id":terminal,"observation_id":observation(&claimed)["observation_id"],"request_id":"raw-newline","action":{"type":"text","text":"first\nsecond"}})).await;
+    let refused_text = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation(&claimed)["observation_id"],"request_id":"raw-newline","action":{"type":"text","text":"first\nsecond"}})).await;
     assert!(
         refused_text.get("error").is_some(),
         "text still must exclude control characters"

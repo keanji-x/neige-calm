@@ -30,11 +30,11 @@ use tokio::time::{Instant, sleep};
 const TOOLCALL_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-toolcall");
 const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
-const EXPOSED_NAME: &str = "plugin.dev.echo_do.thing";
-const SECRET_NAME: &str = "plugin.dev.echo_secret";
+const EXPOSED_NAME: &str = "plugin_dev.echo_do.thing";
+const SECRET_NAME: &str = "plugin_dev.echo_secret";
 const COLLIDING_PLUGIN_ID: &str = "dev";
 const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
-const COLLIDING_EXPOSED_NAME: &str = "plugin.dev_echo.do.thing";
+const COLLIDING_EXPOSED_NAME: &str = "plugin_dev_echo.do.thing";
 // A trusted plugin owning a template, plus a track bound to that template. NOT the shipped
 // git-forge manifest: the id merely reuses the default trusted id so no env mutation is needed.
 const TEMPLATE_ID: &str = "tool-visibility-flow";
@@ -57,7 +57,7 @@ struct Fixture {
     bound_track_id: String,
     /// Plugin id from `NEIGE_TRUSTED_FORGE_PLUGINS` — the running trusted stub that owns [`TEMPLATE_ID`].
     trusted_plugin_id: String,
-    /// `plugin.<trusted_plugin_id>_wf.tool`.
+    /// `plugin_<trusted_plugin_id>_wf.tool`.
     trusted_exposed_name: String,
     /// Worker card token/thread minted in the template-bound track.
     bound_raw_token: String,
@@ -256,7 +256,7 @@ async fn disabled_plugin_hints_require_an_eligible_planner_and_exact_tool() {
     fx.plugin_host.stop(&fx.trusted_plugin_id).await.unwrap();
 }
 
-/// Dynamic `plugin.<id>_<tool>` names are not in the kernel registry, so the allow/deny
+/// Dynamic `plugin_<id>_<tool>` names are not in the kernel registry, so the allow/deny
 /// partition meta-test cannot see them; only `require_role_any(&identity, PLUGIN_TOOL_ROLES)`
 /// in `transport.rs` keeps an assistant off plugin tools. The worker control proves the tool
 /// is genuinely reachable.
@@ -331,7 +331,7 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &fx.bound_raw_token).await;
 
-    // Discovery with the bound thread: owning plugin + neige.* only.
+    // Discovery with the bound thread: owning plugin + neige_* only.
     send_frame(&mut wr, tools_list_frame(2, &fx.bound_thread_id)).await;
     let list = recv_frame(&mut rd).await;
     assert!(list.get("error").is_none(), "tools/list errored: {list:#?}");
@@ -341,8 +341,8 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
         "owning plugin tool missing from bound track tools/list: {names:?}"
     );
     assert!(
-        names.iter().any(|name| name.starts_with("neige.")),
-        "kernel neige.* tools must stay visible to a bound track: {names:?}"
+        names.iter().any(|name| name.starts_with("neige_")),
+        "kernel neige_* tools must stay visible to a bound track: {names:?}"
     );
     assert!(
         !names.iter().any(|name| name == EXPOSED_NAME),
@@ -421,7 +421,7 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
     );
 
     // Fail-closed: stopping the owning plugin loses ALL plugin tools (other running plugins are not
-    // widened back in); neige.* stays.
+    // widened back in); neige_* stays.
     fx.plugin_host
         .stop(&fx.trusted_plugin_id)
         .await
@@ -436,14 +436,14 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
     assert!(
         !names_after_stop
             .iter()
-            .any(|name| name.starts_with("plugin.")),
+            .any(|name| name.starts_with("plugin_")),
         "bound track with stopped owner must see zero plugin tools: {names_after_stop:?}"
     );
     assert!(
         names_after_stop
             .iter()
-            .any(|name| name.starts_with("neige.")),
-        "kernel neige.* tools must survive the fail-closed scope: {names_after_stop:?}"
+            .any(|name| name.starts_with("neige_")),
+        "kernel neige_* tools must survive the fail-closed scope: {names_after_stop:?}"
     );
     send_frame(
         &mut wr,
@@ -477,7 +477,7 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, DAEMON_TOKEN).await;
 
-    let unknown_plugin_tool = "plugin.dev.echo_no.such.tool";
+    let unknown_plugin_tool = "plugin_dev.echo_no.such.tool";
     let unknown_bare_tool = "no.such.tool";
     // EXPOSED_NAME exists but is out of the bound track's scope.
     let names = [EXPOSED_NAME, unknown_plugin_tool, unknown_bare_tool];
@@ -811,7 +811,7 @@ async fn boot_fixture() -> Fixture {
     )
     .await;
 
-    let trusted_exposed_name = format!("plugin.{trusted_plugin_id}_{TRUSTED_TOOL_NAME}");
+    let trusted_exposed_name = format!("plugin_{trusted_plugin_id}_{TRUSTED_TOOL_NAME}");
     let plugin_host = boot_plugin_host(
         repo.clone(),
         plugins_dir.clone(),

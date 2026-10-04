@@ -1,5 +1,5 @@
-//! #2058: a running Track worker canceled through `neige.plan.cancel` reads `canceled` in the
-//! runs views, both the live `neige.track.cat` projection and the track VCS head, as `neige state`
+//! #2058: a running Track worker canceled through `neige_plan_cancel` reads `canceled` in the
+//! runs views, both the live `neige_track_cat` projection and the track VCS head, as `neige state`
 //! does.
 
 use super::*;

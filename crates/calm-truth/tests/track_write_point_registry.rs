@@ -118,7 +118,7 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
         "crates/calm-server/tests/cases/track_publish.rs",
         "update tracks set workspace_worktree_path = null where id = ?1",
         "#1830 S3 D7 — the pre-#1830 attached shape (no track worktree), to \
-         pin that `neige.dev.publish` refuses it before any operation.",
+         pin that `neige_dev_publish` refuses it before any operation.",
     ),
     (
         "crates/calm-server/tests/cases/track_worker_cwd_ends.rs",

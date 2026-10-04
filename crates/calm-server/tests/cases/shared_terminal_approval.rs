@@ -63,9 +63,9 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
             assert_eq!(
                 tools,
                 Some(&json!({
-                    "neige.terminal.open":{"approval_mode":"approve"},
-                    "neige.terminal.control":{"approval_mode":"approve"},
-                    "neige.terminal.input":{"approval_mode":"approve"}
+                    "neige_terminal_open":{"approval_mode":"approve"},
+                    "neige_terminal_control":{"approval_mode":"approve"},
+                    "neige_terminal_input":{"approval_mode":"approve"}
                 }))
             );
         } else {

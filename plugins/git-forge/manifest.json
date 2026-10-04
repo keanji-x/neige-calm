@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "min_kernel_version": "0.0.1",
   "display_name": "development",
-  "description": "Develop GitHub issues using Git worktrees, validation and pull requests. Use neige.dev.publish to publish; kernel permissions and plugin enablement still apply.",
+  "description": "Develop GitHub issues using Git worktrees, validation and pull requests. Use neige_dev_publish to publish; kernel permissions and plugin enablement still apply.",
   "exposes_tools": [
     {
       "name": "git.worktree.add",

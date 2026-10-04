@@ -442,7 +442,7 @@ mod tests {
         let transcript = concat!(
             r#"{"timestamp":"T0","type":"session_meta","payload":{"id":"sess-1","cwd":"/w","originator":"neige"}}"#,
             "\n",
-            r#"{"timestamp":"T1","type":"response_item","payload":{"type":"function_call","name":"plugin.dev.neige.git-forge_git.commit","arguments":"{}","call_id":"call_1"}}"#,
+            r#"{"timestamp":"T1","type":"response_item","payload":{"type":"function_call","name":"plugin_dev.neige.git-forge_git.commit","arguments":"{}","call_id":"call_1"}}"#,
             "\n",
             r#"{"timestamp":"T2","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"missing required message"}}"#,
             "\n",
@@ -458,7 +458,7 @@ mod tests {
         assert!(summary.contains("session_meta id=\"sess-1\""), "{summary}");
         assert!(
             summary.contains(
-                "function_call \"plugin.dev.neige.git-forge_git.commit\" call_id=\"call_1\" arguments={}"
+                "function_call \"plugin_dev.neige.git-forge_git.commit\" call_id=\"call_1\" arguments={}"
             ),
             "{summary}"
         );

@@ -363,7 +363,7 @@ export function TrackPage({
                 <Icon name="arrow-left" />
               </button>
             )}
-            {/* The raw title, with the fallback as the placeholder. `emptyCommit="clear"`: the planner's `neige.track.rename` succeeds only while the title is empty, so clearing the name is a real request here, not a cancel. */}
+            {/* The raw title, with the fallback as the placeholder. `emptyCommit="clear"`: the planner's `neige_track_rename` succeeds only while the title is empty, so clearing the name is a real request here, not a cancel. */}
             <div className={styles.titleSlot} ref={desktopTitleSlotRef} />
           </>
         }

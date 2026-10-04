@@ -1,4 +1,4 @@
-//! `neige.terminal.open` waits like a readback: the observe wait arguments run as the open's final
+//! `neige_terminal_open` waits like a readback: the observe wait arguments run as the open's final
 //! observation, after the claim when there is one.
 use crate::terminal_support::{Harness, human_takeover};
 use calm_server::db::prelude::*;
@@ -79,7 +79,7 @@ async fn open_with_program_and_text_wait_returns_the_first_screen_in_one_call() 
     let h = Harness::start().await;
     let response = h
         .call(
-            "neige.terminal.open",
+            "neige_terminal_open",
             open_args(
                 TRUST_DIALOG,
                 "trust-observer",
@@ -120,7 +120,7 @@ async fn open_with_program_and_text_wait_returns_the_first_screen_in_one_call() 
 
     let claimed = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             open_args(
                 TRUST_DIALOG,
                 "trust-owner",
@@ -153,7 +153,7 @@ async fn open_with_claim_while_a_human_holds_control_returns_the_waited_state() 
     let h = Harness::start().await;
     let terminal = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             open_args(READY_THEN_LATER, "contended-wait", json!({})),
         )
         .await["terminal_id"]
@@ -170,7 +170,7 @@ async fn open_with_claim_while_a_human_holds_control_returns_the_waited_state() 
         &terminal,
         "go",
         h.call(
-            "neige.terminal.open",
+            "neige_terminal_open",
             open_args(
                 READY_THEN_LATER,
                 "contended-wait",
@@ -209,7 +209,7 @@ async fn open_with_change_wait_on_the_default_shell_runs_the_wait() {
     let h = Harness::start().await;
     let opened = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"request_id":"shell-change","wait_for":"change","wait_ms":300}),
         )
         .await;
@@ -230,7 +230,7 @@ async fn open_with_change_wait_on_the_default_shell_runs_the_wait() {
     );
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
     let plain = h
-        .ok("neige.terminal.open", json!({"request_id":"shell-plain"}))
+        .ok("neige_terminal_open", json!({"request_id":"shell-plain"}))
         .await;
     assert_eq!(
         plain["wait"],
@@ -288,7 +288,7 @@ async fn open_wait_argument_validation_matches_observe_and_creates_nothing() {
     ] {
         let mut open = args.clone();
         open["request_id"] = json!("invalid-wait");
-        let response = h.call("neige.terminal.open", open).await;
+        let response = h.call("neige_terminal_open", open).await;
         assert_eq!(response["error"]["code"], -32602, "{args}: {response}");
         assert!(
             error_text(&response).contains(expected),
@@ -298,7 +298,7 @@ async fn open_wait_argument_validation_matches_observe_and_creates_nothing() {
     assert_eq!(terminal_cards(&h).await, 0, "invalid waits create no card");
     let opened = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             json!({"request_id":"invalid-wait","wait_for":"elapsed","wait_ms":50}),
         )
         .await;
@@ -313,7 +313,7 @@ async fn replayed_open_with_a_different_wait_reuses_the_terminal_and_waits() {
     let h = Harness::start().await;
     let first = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             open_args(READY_THEN_LATER, "replay-wait", json!({})),
         )
         .await;
@@ -322,7 +322,7 @@ async fn replayed_open_with_a_different_wait_reuses_the_terminal_and_waits() {
     let cards = terminal_cards(&h).await;
     let replayed = h
         .ok(
-            "neige.terminal.open",
+            "neige_terminal_open",
             open_args(
                 READY_THEN_LATER,
                 "replay-wait",

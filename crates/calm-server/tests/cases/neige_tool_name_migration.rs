@@ -1,11 +1,11 @@
 //! #2003 §6.3: the one data migration that rewrites stored tool names. Every shape observed on the
 //! 4140 database is seeded under its old name through the production writers, the embedded
-//! migration runs, and the result is read back through the real readers: the activity projector
-//! for `neige.user.notify` and the recipe repository for the revision bump.
+//! migration runs, and the result is read back through the recipe repository for the revision
+//! bump. The activity projector reads the name #2087 respells; `tool_name_separator_migration`
+//! reads the migrated notify row back through it after the whole chain.
 
 use calm_server::model::CardRole;
 use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
-use calm_server::track_activity::NotificationSource;
 use calm_types::model::NewTrackRecipe;
 use serde_json::{Value, json};
 
@@ -103,7 +103,7 @@ async fn run_the_migration(f: &Fx) {
         .expect("apply the #2003 migration");
 }
 
-async fn tool_of(f: &Fx, id: i64) -> Value {
+pub(super) async fn tool_of(f: &Fx, id: i64) -> Value {
     let params: String = sqlx::query_scalar("SELECT params FROM harness_items WHERE id = ?1")
         .bind(id)
         .fetch_one(&f.pool)
@@ -236,18 +236,6 @@ async fn stored_tool_names_and_recipes_read_back_under_neige() {
                 "arguments": {"text": "Ship it?"}}}),
         )
         .await;
-    let asks = |p: &calm_server::track_activity::ActivityPayload| -> Vec<String> {
-        p.items
-            .iter()
-            .filter(|item| item.source == NotificationSource::Ask)
-            .map(|item| item.text.clone())
-            .collect()
-    };
-    assert_eq!(
-        asks(&f.recompute(&t).await),
-        Vec::<String>::new(),
-        "anti-vacuity: the projector does not read the old name"
-    );
 
     let old_body = "Read with calm.calendar.list, capture with calm.source.capture, write with \
                     calm.report.commit or calm.report.write_markdown, diff via calm.track.cat_at.";
@@ -281,11 +269,6 @@ async fn stored_tool_names_and_recipes_read_back_under_neige() {
     assert_eq!(
         tool_of(&f, notify).await["item"]["tool"],
         json!("neige.user.notify")
-    );
-    assert_eq!(
-        asks(&f.recompute(&t).await),
-        ["Ship it?"],
-        "the activity projector reads the migrated notify row"
     );
 
     let migrated = f

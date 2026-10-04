@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 const DEV: &str = "dev.neige.git-forge";
-const PUBLISH: &str = "neige.dev.publish";
+const PUBLISH: &str = "neige_dev_publish";
 
 async fn fixture() -> (CardBoot, Arc<PluginHost>) {
     let boot = boot_shared_daemon_with_planner_thread().await;
@@ -100,7 +100,7 @@ async fn bootstrap_catalog_covers_every_builtin_bound_role_catalog() {
                 }
             }
             for tool in &component.manifest().exposes_tools {
-                assert!(bound.contains(&format!("plugin.{owner}_{}", tool.name)));
+                assert!(bound.contains(&format!("plugin_{owner}_{}", tool.name)));
             }
         }
     }
@@ -186,7 +186,7 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
     assert!(
         !stopped
             .iter()
-            .any(|name| name.starts_with("plugin.dev.neige.git-forge_"))
+            .any(|name| name.starts_with("plugin_dev.neige.git-forge_"))
     );
 }
 

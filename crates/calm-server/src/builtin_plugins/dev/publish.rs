@@ -1,4 +1,4 @@
-//! `neige.dev.publish` (#1830 S3, Planner-only): push `neige/track-<id>` to the checkout's
+//! `neige_dev_publish` (#1830 S3, Planner-only): push `neige/track-<id>` to the checkout's
 //! upstream URL and open (or reuse) its PR, only when the branch tip is the commit of a `done`
 //! attempt of this track (`docs/architecture/1830-s3-push-pr-reclaim.md` D1–D7).
 //!
@@ -33,7 +33,7 @@ use crate::operation::forge_action_adapter::ProbeSpec;
 use crate::operation::workspace_lease::upstream::track_remote;
 use crate::workspace_materialize::isolated_git_command;
 
-pub const TOOL_DEV_PUBLISH: &str = "neige.dev.publish";
+pub const TOOL_DEV_PUBLISH: &str = "neige_dev_publish";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(dev_publish_descriptor(), wrap(dev_publish));
@@ -57,7 +57,7 @@ where
 fn dev_publish_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_DEV_PUBLISH.into(),
-        description: include_str!("../../../prompts/tools/neige.dev.publish.md")
+        description: include_str!("../../../prompts/tools/neige_dev_publish.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -343,11 +343,11 @@ mod tests {
     #[test]
     fn descriptor_is_planner_only_and_named() {
         let d = dev_publish_descriptor();
-        assert_eq!(d.name, "neige.dev.publish");
+        assert_eq!(d.name, "neige_dev_publish");
         assert_eq!(d.visible_to_roles, &[CardRole::Planner]);
         let mut registry = ToolRegistry::new();
         register_into(&mut registry);
-        assert!(registry.lookup("neige.dev.publish").is_some());
-        assert!(registry.lookup("neige.track.publish").is_none()); // retired-name: rejection input
+        assert!(registry.lookup("neige_dev_publish").is_some());
+        assert!(registry.lookup("neige_track_publish").is_none()); // retired-name: rejection input
     }
 }

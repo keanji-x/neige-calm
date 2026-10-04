@@ -1,4 +1,4 @@
-//! `neige.report.tag` (#1838 S1) through the registered handler: the tagged report is always the
+//! `neige_report_tag` (#1838 S1) through the registered handler: the tagged report is always the
 //! bound card's own track; `report.md` is the only path; the Planner changes tags, a Worker lists
 //! them; tags round-trip in insertion order.
 

@@ -1,4 +1,4 @@
-//! #1785 S1: `neige.plan.cancel` on a running Track worker, and the sweep's idle arm that fails a
+//! #1785 S1: `neige_plan_cancel` on a running Track worker, and the sweep's idle arm that fails a
 //! codex task whose worker turn ended without a report.
 
 use super::*;
@@ -674,7 +674,7 @@ async fn cancel_first_then_late_worker_report_is_rejected_without_delivery() {
     .expect("cancel wins");
     call_tool(
         &boot,
-        TOOL_TASK_REPORT_SUCCESS,
+        TOOL_TASK_DONE,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": {} }),
     )
@@ -701,7 +701,7 @@ async fn report_first_then_cancel_is_refused_with_the_current_status() {
 
     call_tool(
         &boot,
-        TOOL_TASK_REPORT_SUCCESS,
+        TOOL_TASK_DONE,
         worker_identity(&boot),
         json!({ "attempt_id": task_id, "result": {} }),
     )

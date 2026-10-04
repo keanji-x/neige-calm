@@ -2,8 +2,8 @@
 use super::*;
 use crate::support::gh_shim::write_gh_shim;
 
-const COMMENT: &str = "plugin.dev.neige.git-forge_gh.issue.comment";
-const COMMENTS: &str = "plugin.dev.neige.git-forge_gh.issue.comments";
+const COMMENT: &str = "plugin_dev.neige.git-forge_gh.issue.comment";
+const COMMENTS: &str = "plugin_dev.neige.git-forge_gh.issue.comments";
 
 async fn call(fx: &Fixture, token: &str, thread: &str, id: i64, tool: &str, args: Value) -> Value {
     call_tool_as(fx, token, thread, id, tool, args).await
@@ -165,7 +165,7 @@ async fn planner_issue_comments_are_recorded_deduplicated_and_refreshable() {
             .trim(),
         "2"
     );
-    let view_tool = "plugin.dev.neige.git-forge_gh.issue.view";
+    let view_tool = "plugin_dev.neige.git-forge_gh.issue.view";
     let original_body = call(
         &fx,
         &token,

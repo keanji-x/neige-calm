@@ -390,7 +390,7 @@ export const pluginStateSchema = z.object({
 
 export const pluginDataChangedSchema = z.object({ ev: z.literal('plugin.data.changed'), data: z.object({ plugin_id: z.string() }) });
 
-/** Boot-time announcement of a plugin MCP tool exposed as `plugin.<plugin_id>.<tool_name>`. */
+/** Boot-time announcement of a plugin MCP tool exposed as `plugin_<plugin_id>_<tool_name>`. */
 export const pluginToolRegisteredSchema = z.object({
   ev: z.literal('plugin.tool.registered'),
   data: z.object({

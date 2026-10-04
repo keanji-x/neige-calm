@@ -2,7 +2,7 @@
 
 This opt-in usability round sends human goals through the normal Planner REST
 input. The real Planner chooses and calls the production terminal tools. The
-driver never calls `neige.terminal.*`, simulates Claude, or supplies tool results.
+driver never calls `neige_terminal_*`, simulates Claude, or supplies tool results.
 It is separate from automatic Tier 2 cases because real rewind evidence and
 post-use feedback require review; collecting a round is not a passing UX test.
 

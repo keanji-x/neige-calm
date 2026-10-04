@@ -116,7 +116,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     std::fs::write(dir.path().join("audit.json"), result.to_string()).unwrap();
     call_tool(
         &boot,
-        "neige.task.report_success",
+        "neige_task_done",
         worker_identity(&boot),
         json!({"attempt_id":a.id, "result":result}),
     )
@@ -197,7 +197,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let decision = "Accept the accurate audit; recommend 30 seconds without changing config-v1.";
     call_tool(
         &boot,
-        "neige.task.verdict",
+        "neige_task_verdict",
         planner_identity(&boot),
         json!({"attempt_id":a.id,"status":"accepted","reason":decision,"message":decision}),
     )
@@ -265,7 +265,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         "source_attempt_id":worker_payload["context"]["source_attempt_id"]});
     call_tool(
         &boot,
-        "neige.task.report_success",
+        "neige_task_done",
         b_identity,
         json!({"attempt_id":b.id,"result":recommendation}),
     )

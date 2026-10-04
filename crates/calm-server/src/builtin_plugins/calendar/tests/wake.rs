@@ -86,7 +86,7 @@ pub(super) async fn create(
     task: serde_json::Value,
 ) -> Entry {
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("neige.calendar.create").unwrap();
+    let create = registry.lookup("neige_calendar_create").unwrap();
     let result = create(
         fx.ctx.clone(),
         who.clone(),
@@ -106,7 +106,7 @@ async fn update(
     cancelled: bool,
 ) -> Entry {
     let registry = crate::mcp_server::build_default_registry();
-    let update = registry.lookup("neige.calendar.update").unwrap();
+    let update = registry.lookup("neige_calendar_update").unwrap();
     let result = update(
         fx.ctx.clone(),
         who.clone(),

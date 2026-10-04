@@ -103,7 +103,7 @@ export type ConversationTurn = Readonly<{
   atMs: number;
   /** Images this turn carried; absent and empty mean the same thing. */
   attachments?: readonly PlannerAttachment[];
-  /** Set when the agent said this through `neige.user.notify`; the quiet-sync fold keeps it outside the fold. */
+  /** Set when the agent said this through `neige_user_notify`; the quiet-sync fold keeps it outside the fold. */
   origin?: 'notify';
 }>;
 
@@ -830,7 +830,7 @@ function isUserMessage(itemType: string | null): boolean {
 }
 
 /*
- * `neige.user.notify` is speech: the row is an agent turn whose text is `arguments.text`. Only a
+ * `neige_user_notify` is speech: the row is an agent turn whose text is `arguments.text`. Only a
  * SUCCESSFUL `item/completed` mints it; a refused call falls through to the failed activity line.
  */
 function userNotifyToTurn(
@@ -1041,14 +1041,14 @@ function toolShape(tool: string): ActivityShape {
   if (tool === PLAN_LIST_TOOL) {
     return { running: 'Reading plan', done: 'Read plan', target: null };
   }
-  // The `neige.track.*` tools that change the track; they must be tested before the prefix fallback below.
+  // The `neige_track_*` tools that change the track; they must be tested before the prefix fallback below.
   if (tool === TRACK_RENAME_TOOL) {
     return { running: 'Naming the track', done: 'Named the track', target: null };
   }
   if (tool === DEV_PUBLISH_TOOL) {
     return { running: 'Publishing the PR', done: 'Published the PR', target: null };
   }
-  // `cat`, `ls`, `state`, `log`, `diff` are looks; any new `neige.track.*` WRITE needs its own branch ahead of this one.
+  // `cat`, `ls`, `state`, `log`, `diff` are looks; any new `neige_track_*` WRITE needs its own branch ahead of this one.
   if (tool.startsWith(TRACK_TOOL_PREFIX)) {
     return { running: 'Reading the track', done: 'Read the track', target: null };
   }

@@ -678,7 +678,7 @@ fn validate_app(map: &Map<String, Value>, errors: &mut Vec<String>) {
 }
 
 /// `preview` (#1780): a registered dev-server preview of this track, named by `key` (the
-/// `neige.preview.register` key); `path` is the path opened on the preview port.
+/// `neige_preview_register` key); `path` is the path opened on the preview port.
 fn validate_preview(map: &Map<String, Value>, errors: &mut Vec<String>) {
     reject_unknown(map, &["key", "title", "path", "height"], errors);
     match map.get("key") {
@@ -696,7 +696,7 @@ fn validate_preview(map: &Map<String, Value>, errors: &mut Vec<String>) {
     optional_height(map, errors);
 }
 
-/// `^[a-z0-9][a-z0-9_-]{0,63}$`, the `neige.preview.register` key.
+/// `^[a-z0-9][a-z0-9_-]{0,63}$`, the `neige_preview_register` key.
 fn is_preview_key(key: &str) -> bool {
     let head = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
     key.len() <= 64

@@ -1,4 +1,4 @@
-//! `neige.track.rename`, the planner agent's naming write; these tests pin the guard's refusals.
+//! `neige_track_rename`, the planner agent's naming write; these tests pin the guard's refusals.
 
 use std::sync::Arc;
 

@@ -92,10 +92,10 @@ pub(super) fn visible_tools() -> ToolNames {
     ToolNames::new(
         "neige",
         [
-            "neige.report.write",
-            "neige.report.read",
-            "neige.user.notify",
-            "plugin.dev-neige-market_market_quote",
+            "neige_report_write",
+            "neige_report_read",
+            "neige_user_notify",
+            "plugin_dev-neige-market_market_quote",
         ]
         .map(String::from),
     )
@@ -242,8 +242,8 @@ fn a_calm_tool_keeps_its_dotted_name_from_the_visible_tool_list() {
         assert_eq!(
             tools,
             [
-                &json!("neige.report.write"),
-                &json!("plugin.dev-neige-market_market_quote")
+                &json!("neige_report_write"),
+                &json!("plugin_dev-neige-market_market_quote")
             ],
             "{method}"
         );
@@ -262,10 +262,10 @@ fn a_calm_tool_keeps_its_dotted_name_from_the_visible_tool_list() {
 fn an_unknown_or_ambiguous_calm_tool_keeps_the_claude_name() {
     let records = decode_fixture("pB_baseline.ndjson");
     let client_id = first_replay_client_id(&records);
-    // `neige.report.write` and `neige_report.write` both spell `neige_report_write`.
+    // `neige_report_write` and `neige_report.write` both spell `neige_report_write`.
     let ambiguous = ToolNames::new(
         "neige",
-        ["neige.report.write", "neige_report.write"].map(String::from),
+        ["neige_report_write", "neige_report.write"].map(String::from),
     );
     for tools in [ToolNames::new("neige", Vec::new()), ambiguous] {
         let mut translator =

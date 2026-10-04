@@ -35,7 +35,7 @@ use tempfile::TempDir;
 use tokio::time::{Instant, sleep};
 
 const PLUGIN_ID: &str = "dev.neige.git-forge";
-const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
+const PR_MERGE_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.merge";
 const CRASH_POINT: &str = "forge-pre-fence-commit:forge.pr.merged";
 const PRE_GO_CRASH_POINT: &str = "forge-pre-go-token:forge.pr.merged";
 
@@ -492,8 +492,8 @@ async fn prepare_pr(repo: Arc<SqlxRepo>, track: &str, tmp: &Path, shim: &Path) -
             stage_git_change(&started.cwd, "merge-crash.txt", "merge crash fixture\n");
             let head = support::done_delivery::complete(&repo, &socket, &started).await;
             let result = support::mcp::call_tool_via_socket(&socket, &token, &planner.thread_id, 21,
-                "neige.dev.publish", json!({"title":"Merge crash fixture", "body":"Completed candidate", "idempotency_key":"prepare"})).await;
-            assert_tool_succeeded(&result, "neige.dev.publish");
+                "neige_dev_publish", json!({"title":"Merge crash fixture", "body":"Completed candidate", "idempotency_key":"prepare"})).await;
+            assert_tool_succeeded(&result, "neige_dev_publish");
             assert_eq!(result["result"]["structuredContent"]["head_sha"], head);
             let number = result["result"]["structuredContent"]["pr_number"].as_u64().unwrap();
             host.stop(PLUGIN_ID).await.unwrap();

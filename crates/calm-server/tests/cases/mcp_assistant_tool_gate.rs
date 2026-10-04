@@ -10,70 +10,69 @@ use calm_server::model::CardRole;
 use serde_json::json;
 use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 
-/// Tools an Assistant token may call. Its report writes are anchored by its own `neige.report.read`;
+/// Tools an Assistant token may call. Its report writes are anchored by its own `neige_report_read`;
 /// their `lifecycle` field alone is refused.
 const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
-    "neige.calendar.list",
-    "neige.calendar.create",
-    "neige.calendar.update",
-    "neige.report.read",
-    "neige.report.kinds",
-    "neige.report.commit",
-    "neige.report.write",
+    "neige_calendar_list",
+    "neige_calendar_create",
+    "neige_calendar_update",
+    "neige_report_read",
+    "neige_report_kinds",
+    "neige_report_commit",
+    "neige_report_write",
 ];
 
 /// Denied tools whose handler a **Planner** token gets past; also the control list below.
 const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
-    "neige.workspace.reports",
-    "neige.workspace.report",
-    "neige.workspace.changes",
-    "neige.workspace.edits",
+    "neige_workspace_reports",
+    "neige_workspace_report",
+    "neige_workspace_changes",
+    "neige_workspace_edits",
     // Cross-track / cross-area report discovery reads.
-    "neige.area.outline",
-    "neige.report.backlinks",
-    "neige.report.find",
+    "neige_area_outline",
+    "neige_report_backlinks",
+    "neige_report_find",
     // Captured sources are the planner's evidence.
-    "neige.source.capture",
-    "neige.source.list",
+    "neige_source_capture",
+    "neige_source_list",
     // Track state + verdict.
-    "neige.track.state",
-    "neige.task.verdict",
+    "neige_track_state",
+    "neige_task_verdict",
     // Naming the track is a planner judgement.
-    "neige.track.rename",
+    "neige_track_rename",
     // Publishing the track's verified commit is a Planner action.
-    "neige.dev.publish",
+    "neige_dev_publish",
     // Closing the track is a Planner action; only the user reopens.
-    "neige.track.close",
+    "neige_track_close",
     // Speaking from a background sync turn is a planner action.
-    "neige.user.notify",
+    "neige_user_notify",
     // Preview gateway registration is a Planner action.
-    "neige.preview.register",
-    "neige.preview.unregister",
-    "neige.terminal.open",
-    "neige.terminal.resolve",
-    "neige.terminal.observe",
-    "neige.terminal.control",
-    "neige.terminal.input",
+    "neige_preview_register",
+    "neige_preview_unregister",
+    "neige_terminal_open",
+    "neige_terminal_resolve",
+    "neige_terminal_observe",
+    "neige_terminal_control",
+    "neige_terminal_input",
     // Track filesystem + history drill-ins (Planner|Worker, never Assistant).
-    "neige.track.ls",
-    "neige.track.cat",
+    "neige_track_ls",
+    "neige_track_cat",
     // `neige report tag report.md` (Planner lists and changes, Worker lists; never Assistant).
-    "neige.report.tag",
-    "neige.track.diff",
-    "neige.track.show",
-    "neige.track.log",
+    "neige_report_tag",
+    "neige_track_diff",
+    "neige_track_show",
+    "neige_track_log",
     // Planning, review, admin.
-    "neige.plan.cancel",
-    "neige.plan.list",
-    "neige.ratify.request",
-    "neige.admin.gc",
-    "neige.admin.vacuum",
+    "neige_plan_cancel",
+    "neige_plan_list",
+    "neige_ratify_request",
+    "neige_admin_gc",
+    "neige_admin_vacuum",
 ];
 
 /// Denied tools that only a **Worker** token gets past, so the Planner control does not assert
 /// something false about them.
-const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] =
-    &["neige.task.report_success", "neige.task.report_failure"];
+const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &["neige_task_done", "neige_task_fail"];
 
 fn assistant_denied_tools() -> Vec<&'static str> {
     ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE
@@ -147,7 +146,7 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
         let error = resp
             .get("error")
             .unwrap_or_else(|| panic!("`{tool}` must refuse an assistant caller, got: {resp:#?}"));
-        if *tool == "neige.dev.publish" {
+        if *tool == "neige_dev_publish" {
             assert_eq!(
                 error["code"].as_i64(),
                 Some(-32601),
@@ -184,14 +183,14 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
             "jsonrpc": "2.0",
             "id": 300,
             "method": "tools/call",
-            "params": { "name": "neige.report.read", "arguments": {} }
+            "params": { "name": "neige_report_read", "arguments": {} }
         }),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(
         resp.get("error").is_none(),
-        "neige.report.read must serve an assistant caller: {resp:#?}"
+        "neige_report_read must serve an assistant caller: {resp:#?}"
     );
 
     // The structured payload is the JSON text of the single content item.
@@ -205,7 +204,7 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
         "`docRev` must be the CRDT-derived revision — it is what this read \
          anchors a later write to: {payload:#?}"
     );
-    // `taskDiagnostics` is dispatched-task runtime state, the class `neige.plan.list` stays
+    // `taskDiagnostics` is dispatched-task runtime state, the class `neige_plan_list` stays
     // Planner-only to withhold; it must not leak out the side.
     assert!(
         payload.get("taskDiagnostics").is_none(),
@@ -261,14 +260,14 @@ async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
             "jsonrpc": "2.0",
             "id": 500,
             "method": "tools/call",
-            "params": { "name": "neige.report.read", "arguments": {} }
+            "params": { "name": "neige_report_read", "arguments": {} }
         }),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(
         resp.get("error").is_none(),
-        "neige.report.read must serve a planner caller: {resp:#?}"
+        "neige_report_read must serve a planner caller: {resp:#?}"
     );
     let payload = tool_result_payload(&resp);
     let diagnostics = payload

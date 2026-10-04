@@ -324,13 +324,13 @@ fn registry_with_track_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCap
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     let track_cat = registry
-        .lookup("neige.track.cat")
-        .expect("neige.track.cat registered");
+        .lookup("neige_track_cat")
+        .expect("neige_track_cat registered");
     let descriptor = registry
         .descriptors()
         .into_iter()
-        .find(|d| d.name == "neige.track.cat")
-        .expect("neige.track.cat descriptor registered");
+        .find(|d| d.name == "neige_track_cat")
+        .expect("neige_track_cat descriptor registered");
     let handler: ToolHandler = Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
         let tx = tx.clone();
         let track_cat = track_cat.clone();
@@ -540,7 +540,7 @@ async fn tools_call_before_initialize_is_rejected() {
         &mut wr,
         tools_call_frame(
             3,
-            "neige.task.report_success",
+            "neige_task_done",
             "pre-init-thread",
             json!({"attempt_id": "x"}),
         ),
@@ -576,7 +576,7 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         &mut wr,
         tools_call_frame(
             10,
-            "neige.track.cat",
+            "neige_track_cat",
             &b.thread_id,
             json!({"path": "track.json"}),
         ),
@@ -609,7 +609,7 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         &mut wr,
         tools_call_frame(
             11,
-            "neige.track.cat",
+            "neige_track_cat",
             &thread_id_a2,
             json!({"path": "track.json"}),
         ),
@@ -666,7 +666,7 @@ async fn card_bound_connection_rejects_same_card_cross_session_thread_id() {
         &mut wr,
         tools_call_frame(
             12,
-            "neige.track.cat",
+            "neige_track_cat",
             &second_thread_id,
             json!({"path": "track.json"}),
         ),
@@ -702,7 +702,7 @@ async fn planner_role_cannot_call_task_complete_or_fail() {
         &mut wr,
         tools_call_frame(
             12,
-            "neige.task.report_success",
+            "neige_task_done",
             &b.thread_id,
             json!({"attempt_id": "tc-planner-refused", "result": "ok"}),
         ),
@@ -718,7 +718,7 @@ async fn planner_role_cannot_call_task_complete_or_fail() {
         &mut wr,
         tools_call_frame(
             13,
-            "neige.task.report_failure",
+            "neige_task_fail",
             &b.thread_id,
             json!({"attempt_id": "tf-planner-refused", "reason": "nope"}),
         ),
@@ -745,7 +745,7 @@ async fn track_file_tools_support_two_calls_on_one_connection() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(20, "neige.track.ls", &b.thread_id, json!({"path": "/"})),
+        tools_call_frame(20, "neige_track_ls", &b.thread_id, json!({"path": "/"})),
     )
     .await;
     let r1 = recv_frame(&mut rd).await;
@@ -765,7 +765,7 @@ async fn track_file_tools_support_two_calls_on_one_connection() {
         &mut wr,
         tools_call_frame(
             21,
-            "neige.track.cat",
+            "neige_track_cat",
             &b.thread_id,
             json!({"path": "index.md"}),
         ),

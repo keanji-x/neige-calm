@@ -177,7 +177,7 @@ mod tests {
     use serde_json::{Value, json};
 
     fn ls(long: bool, reports: bool, value: &Value) -> String {
-        render(Render::Ls { long, reports }, "neige.track.ls", false, value).unwrap()
+        render(Render::Ls { long, reports }, "neige_track_ls", false, value).unwrap()
     }
 
     fn local(ms: i64) -> chrono::DateTime<Local> {
@@ -195,12 +195,12 @@ mod tests {
                 long: false,
                 reports: false,
             },
-            "neige.track.ls",
+            "neige_track_ls",
             false,
             &json!([{ "name": "x" }]),
         )
         .unwrap_err();
-        assert_eq!(err.message, "neige.track.ls entry missing string kind");
+        assert_eq!(err.message, "neige_track_ls entry missing string kind");
     }
 
     #[test]
@@ -290,7 +290,7 @@ mod tests {
             "an empty directory still prints its header"
         );
         assert_eq!(
-            render(Render::Find, "neige.report.find", false, &reports()).unwrap(),
+            render(Render::Find, "neige_report_find", false, &reports()).unwrap(),
             "area/reports/认证 方案.md\narea/reports/x%2Fy~abcdef12.md\n"
         );
         for how in [
@@ -316,14 +316,14 @@ mod tests {
                 long: true,
                 reports: true,
             },
-            "neige.track.ls",
+            "neige_track_ls",
             false,
             &bad,
         )
         .unwrap_err();
         assert_eq!(
             err.message,
-            "neige.track.ls entry updatedAt is not RFC 3339"
+            "neige_track_ls entry updatedAt is not RFC 3339"
         );
         let mut bad = reports();
         bad[1]["path"] = json!("report.md");
@@ -332,14 +332,14 @@ mod tests {
                 long: false,
                 reports: true,
             },
-            "neige.track.ls",
+            "neige_track_ls",
             false,
             &bad,
         )
         .unwrap_err();
         assert_eq!(
             err.message,
-            "neige.track.ls entry path is not under area/reports/"
+            "neige_track_ls entry path is not under area/reports/"
         );
     }
 }

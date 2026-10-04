@@ -1,5 +1,5 @@
 Calendar records user-level work commitments, not execution tasks. Use
-`neige.calendar.list`, `neige.calendar.create`, and `neige.calendar.update` only when
+`neige_calendar_list`, `neige_calendar_create`, and `neige_calendar_update` only when
 the user intends to arrange work. Calendar is always enabled by the kernel.
 They can access only entries sourced from your authenticated Track.
 

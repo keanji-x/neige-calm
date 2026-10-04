@@ -291,7 +291,7 @@ pub fn strip_markers_and_split(body: &str) -> MarkedBody {
     }
 }
 
-/// The exact marker line [`strip_markers_and_split`] strips and `neige.report.read { with_markers: true }` injects.
+/// The exact marker line [`strip_markers_and_split`] strips and `neige_report_read { with_markers: true }` injects.
 pub fn marker_line(id: &str) -> String {
     format!("<!-- neige:{id} -->\n")
 }

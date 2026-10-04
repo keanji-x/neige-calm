@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn golden_row_encodes_annotations_presence_like_the_wire() {
         let descriptor = |annotations: Option<Value>| ToolDescriptor {
-            name: "neige.fixture.tool".to_string(),
+            name: "neige_fixture_tool".to_string(),
             description: "fixture".to_string(),
             input_schema: serde_json::json!({ "type": "object" }),
             annotations,
@@ -306,27 +306,53 @@ mod tests {
         );
     }
 
-    /// #2003: every kernel tool is `neige.<object>.<action>`, a lowercase object and an underscore-separated action, so
-    /// the CLI spelling and the client callable ids derive from the name mechanically. Plugin
-    /// manifest tools keep their plugin-owned `plugin.<id>_<tool>` identity.
-    #[test]
-    fn kernel_tool_names_follow_the_grammar() {
-        let grammar =
-            regex::Regex::new(r"^neige\.[a-z]+\.[a-z]+(?:_[a-z]+)*$").expect("grammar regex");
+    fn kernel_tool_names() -> Vec<String> {
         let kernel: Vec<String> = build_default_registry()
             .descriptors()
             .into_iter()
             .map(|descriptor| descriptor.name)
-            .filter(|name| !name.starts_with("plugin."))
+            .filter(|name| !name.starts_with(crate::plugin_results::PLUGIN_TOOL_PREFIX))
             .collect();
         assert!(kernel.len() >= 30, "anti-vacuity: {kernel:?}");
-        let off_grammar: Vec<&String> = kernel
-            .iter()
-            .filter(|name| !grammar.is_match(name))
+        kernel
+    }
+
+    /// #2087 §2: every kernel tool is `neige_<object>_<action>`, each segment one word, so the
+    /// CLI command is the name split at `_`. No kernel object is `plugin`, the word that starts
+    /// every minted plugin tool name (`plugin_<id>_<tool>`).
+    #[test]
+    fn kernel_tool_names_follow_the_grammar() {
+        let grammar = regex::Regex::new(r"^neige_([a-z0-9]+)_[a-z0-9]+$").expect("grammar regex");
+        let off_grammar: Vec<String> = kernel_tool_names()
+            .into_iter()
+            .filter(|name| {
+                grammar
+                    .captures(name)
+                    .is_none_or(|words| &words[1] == "plugin")
+            })
             .collect();
         assert!(
             off_grammar.is_empty(),
-            "kernel tools outside `neige.<object>.<action>`: {off_grammar:?}"
+            "kernel tools outside `neige_<object>_<action>`: {off_grammar:?}"
+        );
+    }
+
+    /// #2087 §2: a served kernel name is in the provider alphabet `[A-Za-z0-9_]`, so no client
+    /// respells it and the model sees exactly the name prompts and help print.
+    #[test]
+    fn served_tool_names_use_the_word_alphabet() {
+        let outside: Vec<String> = kernel_tool_names()
+            .into_iter()
+            .filter(|name| {
+                name.is_empty()
+                    || !name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            })
+            .collect();
+        assert!(
+            outside.is_empty(),
+            "served kernel tool names outside [A-Za-z0-9_]: {outside:?}"
         );
     }
 }

@@ -1,5 +1,5 @@
 //! Shared read-only file views for a track, used by both the MCP
-//! `neige.track.{ls,cat}` tools and the HTTP track file endpoints; callers own
+//! `neige_track_{ls,cat}` tools and the HTTP track file endpoints; callers own
 //! their entry gates.
 
 use crate::db::sqlite::CanceledTaskAttempt;

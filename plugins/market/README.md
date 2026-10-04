@@ -302,7 +302,7 @@ Point `binance_endpoint` at the main API if your host is eligible.
 The plugin's second read tool. It is the resolution backend of a report's
 `chart.series` block — the kernel derives one request per block and calls it
 in the background — and it is also callable directly as
-`plugin.dev-neige-market_market.series`. Both callers get one contract.
+`plugin_dev-neige-market_market.series`. Both callers get one contract.
 
 **All seven keys are required, none is defaulted.** A request is
 `{series, fields, period, mode, start, as_of, deadline_ms}`:

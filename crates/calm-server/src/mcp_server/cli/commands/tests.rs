@@ -22,7 +22,7 @@ fn refusal(args: &[&str]) -> String {
 #[test]
 fn ls_without_a_path_sends_no_path() {
     let parsed = parse_args(&["track", "ls"]).expect("parse");
-    assert_eq!(parsed.tool, "neige.track.ls");
+    assert_eq!(parsed.tool, "neige_track_ls");
     assert_eq!(parsed.args, json!({}));
     assert!(!parsed.json);
     assert_eq!(
@@ -73,7 +73,7 @@ fn find_maps_path_name_and_tag_each_at_most_once() {
         "认证",
     ])
     .expect("parse");
-    assert_eq!(parsed.tool, "neige.report.find");
+    assert_eq!(parsed.tool, "neige_report_find");
     assert_eq!(parsed.render, Render::Find);
     assert_eq!(
         parsed.args,
@@ -131,7 +131,7 @@ fn cat_blocks_sends_the_comma_separated_ids_as_an_array() {
         "b_1,b_2",
     ])
     .expect("parse");
-    assert_eq!(parsed.tool, "neige.track.cat");
+    assert_eq!(parsed.tool, "neige_track_cat");
     assert_eq!(parsed.render, Render::Content);
     assert_eq!(
         parsed.args,
@@ -202,7 +202,7 @@ fn token_option_is_not_accepted() {
 fn diff_maps_positionals_to_from_to_and_path() {
     let parsed =
         parse_args(&["--json", "track", "diff", "abc123", "def456", "report.md"]).expect("parse");
-    assert_eq!(parsed.tool, "neige.track.diff");
+    assert_eq!(parsed.tool, "neige_track_diff");
     assert_eq!(
         parsed.args,
         json!({ "from": "abc123", "to": "def456", "path": "report.md" })
@@ -263,7 +263,7 @@ fn cat_at_maps_commit_and_path() {
 #[test]
 fn tag_maps_path_and_repeated_add_and_remove_in_order() {
     let parsed = parse_args(&["report", "tag", "report.md"]).expect("parse");
-    assert_eq!(parsed.tool, "neige.report.tag");
+    assert_eq!(parsed.tool, "neige_report_tag");
     assert_eq!(parsed.render, Render::Tags);
     assert_eq!(parsed.args, json!({ "path": "report.md" }));
     assert_eq!(
@@ -280,7 +280,7 @@ fn tag_maps_path_and_repeated_add_and_remove_in_order() {
         ]),
         json!({ "path": "report.md", "add": ["认证", "架构"], "remove": ["排障"] })
     );
-    // Values reach the tool unchecked: the path and tag rules belong to `neige.report.tag`.
+    // Values reach the tool unchecked: the path and tag rules belong to `neige_report_tag`.
     assert_eq!(
         tool_args(&["report", "tag", "track.json", "--add", " a,b "]),
         json!({ "path": "track.json", "add": [" a,b "] })
@@ -323,7 +323,7 @@ fn log_maps_path_limit_and_include_empty() {
 }
 
 /// H4: range and non-empty rules belong to the tool (log clamps 0 to 1, an empty `to`/`path` is none,
-/// a blank reason is refused by `neige.task.report_failure`).
+/// a blank reason is refused by `neige_task_fail`).
 #[test]
 fn values_reach_the_tool_unchecked() {
     assert_eq!(
@@ -335,14 +335,7 @@ fn values_reach_the_tool_unchecked() {
         json!({ "from": "a", "to": "", "path": "" })
     );
     assert_eq!(
-        tool_args(&[
-            "task",
-            "report-failure",
-            "--attempt-id",
-            "",
-            "--reason",
-            " "
-        ]),
+        tool_args(&["task", "fail", "--attempt-id", "", "--reason", " "]),
         json!({ "attempt_id": "", "reason": " " })
     );
     assert_eq!(
@@ -395,7 +388,7 @@ fn track_gc_requires_force_unless_dry_run() {
 fn vacuum_requires_force() {
     assert!(refusal(&["admin", "vacuum"]).contains("re-run with --force to confirm"));
     let parsed = parse_args(&["admin", "vacuum", "--force", "--json"]).expect("parse");
-    assert_eq!(parsed.tool, "neige.admin.vacuum");
+    assert_eq!(parsed.tool, "neige_admin_vacuum");
     assert_eq!(parsed.args, json!({}));
     assert!(parsed.json);
     assert_eq!(
@@ -408,7 +401,7 @@ fn vacuum_requires_force() {
 fn task_completed_parses_json_result_and_artifacts() {
     let parsed = parse_args(&[
         "task",
-        "report-success",
+        "done",
         "--attempt-id",
         "k1",
         "--result",
@@ -432,7 +425,7 @@ fn task_completed_keeps_plain_text_result_as_a_string() {
     assert_eq!(
         tool_args(&[
             "task",
-            "report-success",
+            "done",
             "--attempt-id",
             "k1",
             "--result",
@@ -441,23 +434,23 @@ fn task_completed_keeps_plain_text_result_as_a_string() {
         json!({ "attempt_id": "k1", "result": "plain text" })
     );
     assert_eq!(
-        refusal(&["task", "report-success"]),
-        "task report-success requires --attempt-id"
+        refusal(&["task", "done"]),
+        "task done requires --attempt-id"
     );
 }
 
 #[test]
 fn task_failed_requires_reason() {
     assert_eq!(
-        refusal(&["task", "report-failure", "--attempt-id", "k1"]),
-        "task report-failure requires --reason"
+        refusal(&["task", "fail", "--attempt-id", "k1"]),
+        "task fail requires --reason"
     );
 }
 
 #[test]
 fn track_close_maps_the_message_onto_neige_track_close() {
     let parsed = parse_args(&["track", "close", "--message", "goal met"]).expect("parse");
-    assert_eq!(parsed.tool, "neige.track.close");
+    assert_eq!(parsed.tool, "neige_track_close");
     assert_eq!(parsed.args, json!({ "message": "goal met" }));
     assert_eq!(
         refusal(&["track", "close"]),
@@ -650,10 +643,7 @@ fn every_command_is_spelled_from_its_tool() {
     let mut tools: Vec<&str> = COMMANDS.iter().map(|c| c.tool).collect();
     for command in COMMANDS {
         let (object, action) = command.words();
-        assert_eq!(
-            command.tool,
-            format!("neige.{object}.{}", action.replace('-', "_"))
-        );
+        assert_eq!(command.tool, format!("neige_{object}_{action}"));
         assert_eq!(
             cli_spelling(command.tool),
             Some(format!("neige {object} {action}"))
@@ -662,15 +652,15 @@ fn every_command_is_spelled_from_its_tool() {
     tools.sort();
     tools.dedup();
     assert_eq!(tools.len(), COMMANDS.len());
-    assert_eq!(cli_spelling("neige.track.rename"), None);
-    // #2053 actions: the action's `_` is written `-`.
+    assert_eq!(cli_spelling("neige_track_rename"), None);
+    // #2087 B0: every action is one word, so the CLI is the tool name split at `_`.
     assert_eq!(
-        cli_spelling("neige.task.report_success").as_deref(),
-        Some("neige task report-success")
+        cli_spelling("neige_task_done").as_deref(),
+        Some("neige task done")
     );
     assert_eq!(
-        cli_spelling("neige.task.report_failure").as_deref(),
-        Some("neige task report-failure")
+        cli_spelling("neige_task_fail").as_deref(),
+        Some("neige task fail")
     );
 }
 
@@ -689,7 +679,7 @@ fn help_documents_exactly_the_served_commands() {
     assert_eq!(documented, served);
     for command in COMMANDS {
         let (object, action) = command.words();
-        let text = help::render(help::HelpRequest::Command(object, &action)).expect("help");
+        let text = help::render(help::HelpRequest::Command(object, action)).expect("help");
         assert!(
             help::usage_line(Some(command.tool)).starts_with(&format!("neige {object} {action}")),
             "{text}"
@@ -795,8 +785,8 @@ fn prompt_neige_mentions_name_served_commands() {
 fn task_report_surfaces_name_the_execution_id_attempt_id() {
     // Where `idempotency_key` is a real caller-chosen dedupe key, not a task execution id.
     const CALLER_DEDUPE_KEY_PROMPTS: [&str; 2] = [
-        "prompts/tools/neige.calendar.create.md",
-        "prompts/tools/neige.dev.publish.md",
+        "prompts/tools/neige_calendar_create.md",
+        "prompts/tools/neige_dev_publish.md",
     ];
     const RETIRED_NAMES: [&str; 5] = [
         "idempotency_key",

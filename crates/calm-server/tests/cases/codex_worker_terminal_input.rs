@@ -81,12 +81,12 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
             args["request_id"] = json!(request_id);
             args["claim"] = json!(true);
             args["action"] = action.clone();
-            replies.push(h.call("neige.terminal.input", args).await);
+            replies.push(h.call("neige_terminal_input", args).await);
         }
     }
     replies.push(
         h.call(
-            "neige.terminal.control",
+            "neige_terminal_control",
             json!({"attempt_id":codex.task,"action":"claim"}),
         )
         .await,
@@ -95,14 +95,14 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
     // Positive control: the same recorder does capture a Claude task Worker's input, and it
     // is written after the codex attempts, so their bytes would have landed by now.
     h.ok(
-        "neige.terminal.control",
+        "neige_terminal_control",
         json!({"attempt_id":claude.task,"action":"claim"}),
     )
     .await;
     let claude_before = snapshot(&h, json!({"attempt_id":claude.task})).await;
     let written = h
         .ok(
-            "neige.terminal.input",
+            "neige_terminal_input",
             json!({"attempt_id":claude.task,"observation_id":claude_before["observation_id"],
                 "request_id":"probe","action":{"type":"text","text":"probe"}}),
         )
@@ -121,7 +121,7 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
 
     // Resolve and observe stay read-only and succeed; resolve names the refusal up front.
     let resolved = h
-        .ok("neige.terminal.resolve", json!({"attempt_id":codex.task}))
+        .ok("neige_terminal_resolve", json!({"attempt_id":codex.task}))
         .await;
     assert_eq!(resolved["available"], true, "{resolved}");
     assert_eq!(resolved["card_kind"], "codex", "{resolved}");

@@ -45,11 +45,11 @@ async fn main() -> anyhow::Result<()> {
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("tool name required"))?;
             anyhow::ensure!(
-                name.starts_with("neige.terminal."),
+                name.starts_with("neige_terminal_"),
                 "preview accepts terminal tools only"
             );
             let result = harness.call(name, request["arguments"].clone()).await;
-            if name == "neige.terminal.open"
+            if name == "neige_terminal_open"
                 && let Some(terminal) =
                     result["result"]["structuredContent"]["terminal_id"].as_str()
                 && !terminals.iter().any(|value| value == terminal)

@@ -404,7 +404,7 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
         mcp_socket.is_some_and(|value| !value.is_empty()),
         "#836: worker thread/start must set a non-empty NEIGE_MCP_SOCKET in \
          shell_environment_policy.set — otherwise the worker AI exec-shell \
-         cannot reach the MCP socket and `neige task report-success` fails. \
+         cannot reach the MCP socket and `neige task done` fails. \
          Captured request: {thread_start}"
     );
     assert_eq!(
@@ -417,7 +417,7 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
         mcp_token.is_some_and(|value| !value.is_empty()),
         "#836: worker thread/start must set a non-empty NEIGE_MCP_TOKEN in \
          shell_environment_policy.set — otherwise the worker AI exec-shell \
-         cannot authenticate to the MCP socket and `neige task report-success` \
+         cannot authenticate to the MCP socket and `neige task done` \
          fails. Captured request: {thread_start}"
     );
 }

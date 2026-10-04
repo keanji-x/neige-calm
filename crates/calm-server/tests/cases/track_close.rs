@@ -1,4 +1,4 @@
-//! `neige.track.close`: the Planner closes its own track, and every write tool refuses the removed
+//! `neige_track_close`: the Planner closes its own track, and every write tool refuses the removed
 //! `lifecycle` key the same way.
 
 use super::*;
@@ -69,8 +69,8 @@ async fn planner_close_stamps_closed_at_and_refuses_a_lifecycle_key() {
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(
         err.message.contains(
-            "`lifecycle` is removed: close with neige.track.close; ask with \
-             neige.user.notify or neige.ratify.request"
+            "`lifecycle` is removed: close with neige_track_close; ask with \
+             neige_user_notify or neige_ratify_request"
         ),
         "{err:?}"
     );

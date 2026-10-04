@@ -195,7 +195,7 @@
     携带 `agent_message` 的 standalone `plan.updated` 必须按事件中的 track id 失效
     `['track-report', trackId]`；投影伴随事件不得重复失效。
   why: >
-    `neige.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
+    `neige_plan_cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
   source: fe/core/events/invalidation-plan.ts:227-229
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:238-244

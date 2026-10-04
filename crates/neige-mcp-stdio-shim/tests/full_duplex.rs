@@ -19,7 +19,7 @@ const DEADLOCK_BUDGET: Duration = Duration::from_secs(15);
 
 fn big_tools_call(id: i64) -> String {
     format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"neige.report.write\",\"arguments\":{{\"body\":\"{}\"}}}}}}\n",
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"neige_report_write\",\"arguments\":{{\"body\":\"{}\"}}}}}}\n",
         "x".repeat(PAYLOAD)
     )
 }

@@ -111,7 +111,7 @@ export const appBlockPayloadSchema = z.strictObject({
 });
 
 /**
- * `preview` (#1780): a dev server the Planner registered with `neige.preview.register`, named by
+ * `preview` (#1780): a dev server the Planner registered with `neige_preview_register`, named by
  * its `key`. `path` follows the `app` block's `src` rules; it is opened on the preview's own port.
  */
 const PREVIEW_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;

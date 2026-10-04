@@ -27,7 +27,7 @@ pub struct TrackFsCardMeta {
 pub enum TrackFsRunStatus {
     Completed,
     Failed,
-    /// The attempt's task row was canceled (`neige.plan.cancel`) before the worker reported.
+    /// The attempt's task row was canceled (`neige_plan_cancel`) before the worker reported.
     Canceled,
     Running,
     Requested,

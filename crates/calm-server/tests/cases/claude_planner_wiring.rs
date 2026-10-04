@@ -115,7 +115,7 @@ async fn a_claude_track_runs_through_the_real_routes() {
     let tool = stored_item(&stack, &card_id, "mcpToolCall")
         .await
         .expect("mcp tool item");
-    assert_eq!(tool["item"]["tool"], "neige.report.commit");
+    assert_eq!(tool["item"]["tool"], "neige_report_commit");
     let token = root.spawned_token();
     assert!(stack.token_authenticates(&token).await);
     assert!(root.wait_unmarked(&runtime.id, BUDGET).await.is_empty());

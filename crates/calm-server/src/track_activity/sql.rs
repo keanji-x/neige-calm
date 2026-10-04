@@ -16,7 +16,7 @@ pub const E1_HARNESS_TURN_COMPLETED_SQL: &str = concat!(
 );
 
 /// N3 — the Planner card's transcript, one statement with two arms (`?1` = the Planner card):
-/// every successful `neige.user.notify` call (the completed MCP tool call row; a row whose
+/// every successful `neige_user_notify` call (the completed MCP tool call row; a row whose
 /// `item.error` is set or whose `item.status` is `failed` is not one), and the newest `turn/completed`
 /// row that is not `interrupted`. `NOT MATERIALIZED` keeps both arms on
 /// `idx_transcript_card_method_created_at`; a `const` so the plan test runs THIS text.
@@ -26,7 +26,7 @@ pub const N3_PLANNER_TRANSCRIPT_SQL: &str = "WITH h AS NOT MATERIALIZED ( \
      SELECT 'notify' AS arm, id, created_at_ms, \
             json_extract(params, '$.item.arguments.text') AS text, NULL AS status FROM h \
       WHERE method = 'item/completed' AND item_type = 'mcpToolCall' \
-        AND json_extract(params, '$.item.tool') = 'neige.user.notify' \
+        AND json_extract(params, '$.item.tool') = 'neige_user_notify' \
         AND json_extract(params, '$.item.error') IS NULL \
         AND COALESCE(json_extract(params, '$.item.status'), '') <> 'failed' \
      UNION ALL \
