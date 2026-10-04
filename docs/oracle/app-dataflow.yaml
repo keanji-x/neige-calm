@@ -658,14 +658,14 @@
     fe/web/src/app/providers/ui-preferences.tsx:74-110; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
     fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;
     fe/web/src/systems/cards/builtins/terminal-card.tsx:12-87;
-    fe/web/src/app/shell/mobile-tracks.tsx:73-89; fe/web/src/app/shell/public.tsx:353
+    fe/web/src/app/shell/mobile-tracks.tsx:73-89; fe/web/src/app/shell/public.tsx:361
   authoritative_test: fe/core/domain/activity.test.ts:10-40; fe/core/domain/track.test.ts:186-222,225-287;
     fe/web/src/app/router/track-conversation.test.tsx:298-392; fe/web/src/features/today/public.test.tsx:46-65;
     fe/web/src/app/router/today-activity.test.tsx:82-88;
-    fe/web/src/features/track/row/public.test.tsx:124-175; fe/web/src/app/providers/ui-preferences.test.tsx:173-218;
+    fe/web/src/features/track/row/public.test.tsx:124-175; fe/web/src/app/providers/ui-preferences.test.tsx:160-205;
     fe/web/src/app/shell/mobile-tracks.test.tsx:95-146; fe/web/src/app/shell/responsive.contract.test.tsx:104-123;
     fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:56-77;
-    fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:2596-2681;
+    fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:2597-2682;
     fe/web/src/app/router/today-conversation.test.tsx:188-211; fe/web/src/features/chat/thread/public.test.tsx:537-608;
     fe/web/src/features/track/page/public.test.tsx:180-270,349-419;
     fe/web/src/features/track/page/header-status.browser.test.tsx:82-193; fe/web/src/features/track/page/mobile-projection.test.tsx:255-283;
