@@ -1430,6 +1430,7 @@
     "expected_red": [
       "Today rows carry the track read receipt",
       "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
+      "Today agenda orders activity by latest row or overlay update and reorders after an update without mutating inputs",
       "Today agenda hands each agenda track to the injected renderer in the compact variant with update time",
       "Today agenda resolves each agenda track area name for the renderer",
       "Today agenda falls back to \"Unknown area\" when the track points at an area we cannot see",
@@ -1440,7 +1441,7 @@
       "web/src/app/router/today-activity.test.tsx",
       "web/src/features/today/public.test.tsx"
     ],
-    "why_more_than_one": "Restricting visible Activity rows to working tracks removes eligible idle rows. Router receipt, row rendering, area attribution, date selection and read-filter fixtures all exercise those rows; the working header count itself is unchanged."
+    "why_more_than_one": "Restricting visible Activity rows to working tracks removes eligible idle rows. Router receipt, row rendering, recency ordering, area attribution, date selection and read-filter fixtures all exercise those rows; the working header count itself is unchanged."
   },
   {
     "mutation_id": "s2b-conversation-row-from-session-state",
