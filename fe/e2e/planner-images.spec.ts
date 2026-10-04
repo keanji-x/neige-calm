@@ -20,7 +20,7 @@ test('shows local screenshots in planner history after reopening and on mobile',
     if (!path.startsWith('/api/')) { await route.continue(); return; }
     let body: unknown = [];
     if (path === '/api/auth/whoami') body = { userId: 'test', displayName: 'Test', role: 'admin', sessionId: 'test' };
-    if (path === '/api/version') body = { webCompatVersion: 38, minWebCompatVersion: 38,
+    if (path === '/api/version') body = { webCompatVersion: 39, minWebCompatVersion: 39,
       syncEventVersion: 24, dbInstanceId: 'image-test', databaseId: 'image-test', nowMs: Date.now() };
     if (path === '/api/settings') body = {};
     if (path === '/api/areas') body = [{ id: track.area_id, name: 'Work', color: '#123456', sort: 1,
