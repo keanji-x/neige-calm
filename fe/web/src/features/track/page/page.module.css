@@ -1226,12 +1226,6 @@
       color: var(--text) !important;
     }
 
-    .desktopPanelSurface {
-      border: 1px solid var(--hairline);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-    }
-
     .desktopPanelSurface [data-nc-module] {
       padding-block: var(--space-2);
     }
