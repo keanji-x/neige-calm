@@ -1,5 +1,5 @@
-//! MCP side of `area/reports/` (#1838 S2): the `area/` branch of `calm.track.ls` / `calm.track.cat`
-//! and the CLI-only `calm.report.find`. Planner only; the area is the caller's `identity.area_id`,
+//! MCP side of `area/reports/` (#1838 S2): the `area/` branch of `neige.track.ls` / `neige.track.cat`
+//! and the CLI-only `neige.report.find`. Planner only; the area is the caller's `identity.area_id`,
 //! never an argument. Listing, resolving and reading live in [`crate::area_reports`].
 
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use crate::mcp_server::registry::{
 use crate::model::CardRole;
 use crate::track_fs_view::{TrackFsEntry, TrackFsError, normalize_path};
 
-pub const TOOL_REPORT_FIND: &str = "calm.report.find";
+pub const TOOL_REPORT_FIND: &str = "neige.report.find";
 
 const FIND_KEYS: &[&str] = &["path", "name", "tag"];
 
@@ -43,7 +43,7 @@ where
 fn find_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_FIND.into(),
-        description: include_str!("../../../prompts/tools/calm.report.find.md")
+        description: include_str!("../../../prompts/tools/neige.report.find.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -62,7 +62,7 @@ fn find_descriptor() -> ToolDescriptor {
 }
 
 /// Other tracks' reports are the Planner's to read; a Worker is Forbidden. (Roles outside the track
-/// views' Planner|Worker are refused earlier, by the same role gate as `calm.track.ls`.)
+/// views' Planner|Worker are refused earlier, by the same role gate as `neige.track.ls`.)
 fn require_planner(identity: &ToolCallIdentity) -> Result<(), RpcError> {
     if identity.role == CardRole::Planner {
         return Ok(());
@@ -79,7 +79,7 @@ fn pool(ctx: &AppContext) -> Result<&sqlx::SqlitePool, RpcError> {
         .ok_or_else(|| RpcError::internal("area reports: requires a sqlite-backed repo"))
 }
 
-/// `calm.track.ls` on a path under `area/`.
+/// `neige.track.ls` on a path under `area/`.
 pub(crate) async fn ls(
     ctx: &AppContext,
     identity: &ToolCallIdentity,
@@ -108,7 +108,7 @@ pub(crate) async fn ls(
     entries.map_err(|e| RpcError::internal(format!("area reports: json serialization: {e}")))
 }
 
-/// `calm.track.cat` on `raw` (classified as `path`), a path under `area/`; `selection` narrows a report
+/// `neige.track.cat` on `raw` (classified as `path`), a path under `area/`; `selection` narrows a report
 /// to those blocks (#1874) or sections (#1877).
 pub(crate) async fn cat(
     ctx: &AppContext,

@@ -133,7 +133,7 @@ BRIDGE   := $(WORKTREE)/target/release/neige-codex-bridge
 APP      := $(WORKTREE)/target/release/neige-app
 # Issue #236 followup — kernel-as-MCP-server stdio bridge. Codex inside
 # the docker container spawns this per planner/worker card (config.toml's
-# `[mcp_servers.calm].command`); without it the handshake exits with
+# `[mcp_servers.neige].command`); without it the handshake exits with
 # `os error 2`. docker-compose.yml bind-mounts the built binary into
 # /usr/local/bin/.
 MCP_SHIM := $(WORKTREE)/target/release/neige-mcp-stdio-shim

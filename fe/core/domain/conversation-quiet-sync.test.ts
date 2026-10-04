@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_TOOL_PREFIX,
+  PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_TOOL_PREFIX,
   REPORT_WRITE_TOOLS, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
 import {
@@ -57,9 +57,9 @@ function activity(id: string, overrides: Partial<ConversationActivity> = {}): Co
   };
 }
 
-/** A completed `calm.report.commit` row. */
+/** A completed `neige.report.commit` row. */
 function wrote(id: string, overrides: Partial<ConversationActivity> = {}): ConversationActivity {
-  return activity(id, { verb: 'Wrote report', tool: REPORT_WRITE_TOOLS[4] ?? null, ...overrides });
+  return activity(id, { verb: 'Wrote report', tool: REPORT_WRITE_TOOLS[2] ?? null, ...overrides });
 }
 
 function outcome(id: string, status: ConversationTurnOutcome['status'] = 'completed'): ConversationTurnOutcome {
@@ -168,7 +168,7 @@ describe('foldQuietSyncs outcome', () => {
   it('is updated when a report write landed in the turn', () => {
     const blocks = foldQuietSyncs([reportEdited('s1'), activity('act1'), wrote('w1'), outcome('o1')]);
     expect(group(blocks[0]).outcome).toBe('updated');
-    for (const tool of [...REPORT_WRITE_TOOLS, REPORT_MOVE_TOOL, REPORT_DELETE_TOOL]) {
+    for (const tool of [...REPORT_WRITE_TOOLS, REPORT_DELETE_TOOL]) {
       const one = foldQuietSyncs([reportEdited('s1'), wrote('w1', { tool }), outcome('o1')]);
       expect(group(one[0]).outcome, tool).toBe('updated');
     }
@@ -230,7 +230,7 @@ describe('foldQuietSyncs outcome', () => {
     });
     const read = foldQuietSyncs(buildTranscript([wake, call(2, REPORT_READ_TOOLS[0] ?? ''), done]));
     expect(group(read[0]).outcome).toBe('accepted');
-    const write = foldQuietSyncs(buildTranscript([wake, call(2, REPORT_READ_TOOLS[0] ?? ''), call(3, REPORT_WRITE_TOOLS[4] ?? ''), done]));
+    const write = foldQuietSyncs(buildTranscript([wake, call(2, REPORT_READ_TOOLS[0] ?? ''), call(3, REPORT_WRITE_TOOLS[2] ?? ''), done]));
     expect(group(write[0]).outcome).toBe('updated');
   });
 });
@@ -317,7 +317,7 @@ describe('user-notify rows', () => {
       appContext: null, arguments: { text: '  Heads up: you edited the block I was writing.  ' },
       durationMs: 3, error: null, id: 'exec-notify-1', pluginId: null, readOnlyHint: false,
       result: { content: [{ text: '{"ok":true}', type: 'text' }], structuredContent: { ok: true } },
-      server: 'calm', status: 'completed', tool: USER_NOTIFY_TOOL, type: 'mcpToolCall', ...extra,
+      server: 'neige', status: 'completed', tool: USER_NOTIFY_TOOL, type: 'mcpToolCall', ...extra,
     },
   });
 

@@ -1,5 +1,5 @@
 //! A Planner calls a fixture stdio plugin through the kernel socket, captures the result with
-//! `calm.source.capture { call }`, and the REST source answers with the sha256 of the joined text
+//! `neige.source.capture { call }`, and the REST source answers with the sha256 of the joined text
 //! blocks. One `AppContext` serves both the MCP listener and the axum router, so the ring the
 //! transport fills is the ring the tool reads.
 
@@ -435,7 +435,7 @@ impl Fixture {
         .await
     }
 
-    /// `calm.source.capture` over the socket; the structured payload of a
+    /// `neige.source.capture` over the socket; the structured payload of a
     /// success, the error object of a refusal.
     async fn capture(&self, id: i64, args: Value) -> Result<Value, Value> {
         let frame = self.planner_call(id, TOOL_SOURCE_CAPTURE, args).await;

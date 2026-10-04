@@ -1,4 +1,4 @@
-//! Integration tests for the emit tools (`calm.task.complete`, `calm.task.fail`) over the real MCP
+//! Integration tests for the emit tools (`neige.task.complete`, `neige.task.fail`) over the real MCP
 //! server transport.
 
 #![cfg(unix)]
@@ -38,7 +38,7 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
         &mut wr,
         tools_call_frame(
             20,
-            "calm.task.complete",
+            "neige.task.complete",
             &b.thread_id,
             json!({"attempt_id": "tc-1", "result": {"ok": true}}),
         ),
@@ -72,7 +72,7 @@ async fn consumer_summary_authenticated_completion_preserves_entire_result() {
         &mut wr,
         tools_call_frame(
             20,
-            "calm.task.complete",
+            "neige.task.complete",
             &b.thread_id,
             json!({"attempt_id":"consumer-attempt", "result":result}),
         ),
@@ -118,7 +118,7 @@ async fn task_completed_from_claude_worker_persists_claude_session_actor() {
         &mut wr,
         tools_call_frame_no_thread(
             23,
-            "calm.task.complete",
+            "neige.task.complete",
             json!({"attempt_id": "tc-claude", "result": {"ok": true}}),
         ),
     )
@@ -161,7 +161,7 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
         &mut wr,
         tools_call_frame(
             30,
-            "calm.task.fail",
+            "neige.task.fail",
             &b.thread_id,
             json!({"attempt_id": "tf-1", "reason": "stub failure"}),
         ),
@@ -201,7 +201,7 @@ async fn task_fail_rejects_blank_reason() {
             &mut wr,
             tools_call_frame_no_thread(
                 id,
-                "calm.task.fail",
+                "neige.task.fail",
                 json!({"attempt_id": "tf-blank", "reason": reason}),
             ),
         )
@@ -230,7 +230,7 @@ async fn task_fail_rejects_blank_reason() {
     assert_eq!(stdout, "");
     assert_eq!(
         stderr,
-        "neige: calm.task.fail: task_fail: missing `reason` (non-empty) (code -32602)\n"
+        "neige: neige.task.fail: task_fail: missing `reason` (non-empty) (code -32602)\n"
     );
     assert_eq!(
         task_failed_event_count(&b).await,
@@ -252,7 +252,7 @@ async fn smuggled_card_id_in_args_is_ignored() {
         &mut wr,
         tools_call_frame(
             40,
-            "calm.task.complete",
+            "neige.task.complete",
             &b.thread_id,
             json!({
                 "attempt_id": "tc-smuggle",

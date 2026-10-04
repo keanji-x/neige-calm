@@ -106,7 +106,7 @@ pub struct ReportSeriesEntry {
     pub points: Option<Vec<Vec<f64>>>,
 }
 
-/// The flattened `resolved` object — the same shape `calm.report.read`
+/// The flattened `resolved` object — the same shape `neige.report.read`
 /// attaches to a `chart.series` block, with the block's presentation
 /// fields (`view` / `field` / `period` / `range`) alongside.
 #[derive(Debug, Serialize, ToSchema)]

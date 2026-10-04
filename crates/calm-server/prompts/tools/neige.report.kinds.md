@@ -1,0 +1,1 @@
+Planner + Assistant: discover report kinds and payload contracts: {kinds:[{kind,schema,usage}]}. Kinds: prose, chart.candles (inline), chart.series (plugin data), table, view (native composition), view.live (overlay composition), app, task, preview. Write with neige.report.commit upsert ops. Discovery grants no execution authority.

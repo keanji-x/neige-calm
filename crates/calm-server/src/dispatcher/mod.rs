@@ -135,7 +135,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. } => true,
-        // Workspace / worktree lifecycle notices are read back on demand (`calm.plan.list`);
+        // Workspace / worktree lifecycle notices are read back on demand (`neige.plan.list`);
         // `review.round` is planner-authored, so pushing it would be self-echo.
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }

@@ -1,4 +1,4 @@
-//! `calm.track.publish` (#1830 S3, Planner-only): push `neige/track-<id>` to the checkout's
+//! `neige.track.publish` (#1830 S3, Planner-only): push `neige/track-<id>` to the checkout's
 //! upstream URL and open (or reuse) its PR, only when the branch tip is the commit of a `done`
 //! attempt of this track (`docs/architecture/1830-s3-push-pr-reclaim.md` D1–D7).
 //!
@@ -31,7 +31,7 @@ use crate::operation::forge_action_adapter::ProbeSpec;
 use crate::operation::workspace_lease::upstream::track_remote;
 use crate::workspace_materialize::isolated_git_command;
 
-pub const TOOL_TRACK_PUBLISH: &str = "calm.track.publish";
+pub const TOOL_TRACK_PUBLISH: &str = "neige.track.publish";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(track_publish_descriptor(), wrap(track_publish));
@@ -55,7 +55,7 @@ where
 fn track_publish_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_PUBLISH.into(),
-        description: include_str!("../../../prompts/tools/calm.track.publish.md")
+        description: include_str!("../../../prompts/tools/neige.track.publish.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

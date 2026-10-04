@@ -130,7 +130,7 @@ impl Rig {
             track_id: self.track_id.clone(),
             cwd: self.ws.clone(),
             instructions: self.instructions.clone(),
-            calm_tools: CalmToolNames::new(["calm.report.commit".to_string()]),
+            calm_tools: CalmToolNames::new(["neige.report.commit".to_string()]),
             proxy: Vec::new(),
             prior_total_tokens: 0,
             repo: self.repo.clone(),

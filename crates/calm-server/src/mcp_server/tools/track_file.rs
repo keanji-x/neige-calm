@@ -1,4 +1,4 @@
-//! Read-only MCP file views (`calm.track.ls`, `calm.track.cat`) rooted at the track bound to the caller's MCP connection.
+//! Read-only MCP file views (`neige.track.ls`, `neige.track.cat`) rooted at the track bound to the caller's MCP connection.
 //! A path under `area/` is the Planner's `area/reports/` view instead (#1838, [`super::area_reports`]);
 //! `guide/` serves the Planner's on-demand guides, [`GUIDES`] (#1893).
 
@@ -20,8 +20,8 @@ use crate::track_report_read::{load_report_doc_snapshot, selected_blocks_text};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_TRACK_LS: &str = "calm.track.ls";
-pub const TOOL_TRACK_CAT: &str = "calm.track.cat";
+pub const TOOL_TRACK_LS: &str = "neige.track.ls";
+pub const TOOL_TRACK_CAT: &str = "neige.track.cat";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(ls_descriptor(), wrap(track_ls));
@@ -47,7 +47,7 @@ where
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LS.into(),
-        description: include_str!("../../../prompts/tools/calm.track.ls.md")
+        description: include_str!("../../../prompts/tools/neige.track.ls.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -64,7 +64,7 @@ fn ls_descriptor() -> ToolDescriptor {
 fn cat_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_CAT.into(),
-        description: include_str!("../../../prompts/tools/calm.track.cat.md")
+        description: include_str!("../../../prompts/tools/neige.track.cat.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -76,7 +76,7 @@ fn cat_descriptor() -> ToolDescriptor {
                     "type": "array",
                     "items": { "type": "string" },
                     "minItems": 1,
-                    "description": "Report paths only: print just these blocks, as calm.report.read select.blocks does."
+                    "description": "Report paths only: print just these blocks, as neige.report.read select.blocks does."
                 },
                 "sections": {
                     "type": "array",
@@ -156,18 +156,18 @@ async fn track_cat(
 fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {
     let obj = args
         .as_object()
-        .ok_or_else(|| RpcError::invalid_params("calm.track: arguments must be an object"))?;
+        .ok_or_else(|| RpcError::invalid_params("neige.track: arguments must be an object"))?;
     let Some(raw) = obj.get("path") else {
         if required {
             return Err(RpcError::invalid_params(
-                "calm.track.cat: missing `path` (string)",
+                "neige.track.cat: missing `path` (string)",
             ));
         }
         return Ok(String::new());
     };
     let path = raw
         .as_str()
-        .ok_or_else(|| RpcError::invalid_params("calm.track: `path` must be a string"))?;
+        .ok_or_else(|| RpcError::invalid_params("neige.track: `path` must be a string"))?;
     Ok(normalize_path(path))
 }
 
@@ -217,14 +217,14 @@ fn guide_cat(name: &str) -> Result<Value, RpcError> {
         .ok_or_else(|| {
             let names: Vec<&str> = GUIDES.iter().map(|(guide, _)| *guide).collect();
             RpcError::invalid_params(format!(
-                "calm.track: no guide `{GUIDE_DIR}/{name}`; guides: {}",
+                "neige.track: no guide `{GUIDE_DIR}/{name}`; guides: {}",
                 names.join(", ")
             ))
         })?;
     markdown_content((*text).to_string())
 }
 
-/// A partial report read, the same on every report path and in `calm.report.read`'s `select`:
+/// A partial report read, the same on every report path and in `neige.report.read`'s `select`:
 /// chosen blocks (#1874) or chosen H1 sections (#1877).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Selection {
@@ -321,7 +321,7 @@ async fn own_report(
     }
 }
 
-/// A report narrowed to `ids`: the exact `text` of `calm.report.read { select: { blocks: ids } }`.
+/// A report narrowed to `ids`: the exact `text` of `neige.report.read { select: { blocks: ids } }`.
 /// An unknown id is refused with the report's blocks as `<id>  <heading>` lines.
 pub(crate) fn report_blocks_content(
     blocks: &[ReportBlock],

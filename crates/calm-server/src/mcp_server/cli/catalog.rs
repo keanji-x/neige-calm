@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn details_refuse_oversize_and_keep_optional_annotations_absent() {
-        let mut large = tool("calm.large".into());
+        let mut large = tool("neige.large".into());
         large.description = "x".repeat(DETAIL_MAX_BYTES);
         assert!(
             select(
@@ -298,7 +298,7 @@ mod tests {
             .unwrap_err()
             .contains("byte limit")
         );
-        let plain = tool("calm.small".into());
+        let plain = tool("neige.small".into());
         let details = select(
             Query::Describe {
                 name: plain.name.clone(),

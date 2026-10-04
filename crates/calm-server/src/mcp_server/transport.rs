@@ -596,7 +596,7 @@ async fn dispatch_plugin_tools_call(
                 .ok_or_else(|| {
                     RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
                 })?;
-            // Only a Planner's call carrying a track is recorded for `calm.source.capture`; the identity is the resolved one, never anything in the request.
+            // Only a Planner's call carrying a track is recorded for `neige.source.capture`; the identity is the resolved one, never anything in the request.
             let record_for = match (&identity.role, identity.track_id.as_deref()) {
                 (CardRole::Planner, Some(track_id)) => {
                     Some((track_id.to_string(), arguments.clone()))

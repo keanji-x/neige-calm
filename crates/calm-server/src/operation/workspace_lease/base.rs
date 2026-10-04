@@ -5,7 +5,7 @@
 //! that directory's HEAD (`BaseSource::Commit`), its realpath and its common dir in the one
 //! INSERT ([`super::acquire_workspace_lease_tx`]), and the spawn only verifies
 //! ([`verify_worktree_base`]). `Head`, `Upstream` and `Attempt` are the values rows written before
-//! S2 carry (the per-card worktree's upstream / HEAD start, the `calm.task.replace` carry); the
+//! S2 carry (the per-card worktree's upstream / HEAD start, the retired `task.replace` carry); the
 //! column round-trip covers all four so the CHECK-accepted shapes and the Rust type never
 //! disagree.
 
@@ -30,7 +30,7 @@ pub(crate) enum BaseSource {
     Upstream,
     /// The worker checkout's HEAD at prepare time: every lease since #1830 S2.
     Commit,
-    /// Before #1830 S2: a kernel carry commit for a `calm.task.replace` successor (#1785);
+    /// Before #1830 S2: a kernel carry commit for a retired `task.replace` successor (#1785);
     /// `base_attempt_id` names the attempt that produced the candidate.
     Attempt,
 }

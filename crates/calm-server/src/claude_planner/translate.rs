@@ -23,11 +23,9 @@ use super::protocol::{
 };
 use crate::codex_appserver::InputItem;
 use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
+use crate::mcp_server::wiring::MCP_SERVER_KEY;
 
-/// The server name neige registers the calm MCP shim under.
-const CALM_MCP_PREFIX: &str = "mcp__calm__";
-
-/// The calm tools visible to the card, by the name Claude gives them.
+/// The kernel tools visible to the card, by the name Claude gives them.
 #[derive(Debug, Clone)]
 pub struct CalmToolNames {
     by_claude_name: HashMap<String, Vec<String>>,
@@ -53,6 +51,13 @@ impl CalmToolNames {
             _ => None,
         }
     }
+}
+
+/// The `<sanitized>` part of Claude's `mcp__<MCP_SERVER_KEY>__<sanitized>` kernel tool spelling.
+fn kernel_tool_suffix(name: &str) -> Option<&str> {
+    name.strip_prefix("mcp__")?
+        .strip_prefix(MCP_SERVER_KEY)?
+        .strip_prefix("__")
 }
 
 /// Claude's MCP tool spelling: every char outside `[A-Za-z0-9_-]` becomes `_`.
@@ -437,19 +442,19 @@ impl TurnTranslator {
             self.open.insert(id.to_string(), OpenTool::Suppressed);
             return None;
         }
-        let (kind, item) = if let Some(sanitized) = name.strip_prefix(CALM_MCP_PREFIX) {
+        let (kind, item) = if let Some(sanitized) = kernel_tool_suffix(name) {
             let tool = match self.tools.restore(sanitized) {
                 Some(dotted) => dotted.to_string(),
                 None => {
                     tracing::warn!(
                         tool = name,
-                        "claude planner: no single visible calm tool has this name; kept as is"
+                        "claude planner: no single visible kernel tool has this name; kept as is"
                     );
                     name.to_string()
                 }
             };
             let item = json!({
-                "id": id, "type": "mcpToolCall", "server": "calm", "tool": tool,
+                "id": id, "type": "mcpToolCall", "server": MCP_SERVER_KEY, "tool": tool,
                 "arguments": input, "status": "inProgress",
             });
             (ShownTool::Mcp, item)

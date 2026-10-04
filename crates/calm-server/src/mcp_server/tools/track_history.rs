@@ -19,9 +19,9 @@ use calm_truth::track_vcs_repo::TrackVcsRepo;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
-pub const TOOL_TRACK_DIFF: &str = "calm.track.diff";
-pub const TOOL_TRACK_CAT_AT: &str = "calm.track.cat_at";
-pub const TOOL_TRACK_LOG: &str = "calm.track.log";
+pub const TOOL_TRACK_DIFF: &str = "neige.track.diff";
+pub const TOOL_TRACK_SHOW: &str = "neige.track.show";
+pub const TOOL_TRACK_LOG: &str = "neige.track.log";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(diff_descriptor(), wrap(track_diff));
@@ -47,7 +47,7 @@ where
 fn diff_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_DIFF.into(),
-        description: include_str!("../../../prompts/tools/calm.track.diff.md")
+        description: include_str!("../../../prompts/tools/neige.track.diff.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -66,8 +66,8 @@ fn diff_descriptor() -> ToolDescriptor {
 
 fn cat_at_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_TRACK_CAT_AT.into(),
-        description: include_str!("../../../prompts/tools/calm.track.cat_at.md")
+        name: TOOL_TRACK_SHOW.into(),
+        description: include_str!("../../../prompts/tools/neige.track.show.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -86,7 +86,7 @@ fn cat_at_descriptor() -> ToolDescriptor {
 fn log_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LOG.into(),
-        description: include_str!("../../../prompts/tools/calm.track.log.md")
+        description: include_str!("../../../prompts/tools/neige.track.log.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -122,7 +122,7 @@ async fn track_diff(
             .await
             .map_err(vcs_error_to_rpc)?
             .ok_or_else(|| {
-                RpcError::invalid_params("calm.track.diff: current track has no VCS HEAD")
+                RpcError::invalid_params("neige.track.diff: current track has no VCS HEAD")
             })?,
     };
     let files = vcs
@@ -145,9 +145,9 @@ async fn track_cat_at(
     require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let vcs = track_vcs_repo(&ctx)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
-    let obj = object_args(&args, TOOL_TRACK_CAT_AT)?;
-    let commit = required_string(obj, "commit", TOOL_TRACK_CAT_AT)?;
-    let path = required_string(obj, "path", TOOL_TRACK_CAT_AT)?;
+    let obj = object_args(&args, TOOL_TRACK_SHOW)?;
+    let commit = required_string(obj, "commit", TOOL_TRACK_SHOW)?;
+    let path = required_string(obj, "path", TOOL_TRACK_SHOW)?;
     let commit = resolve_commit_in_track(vcs, &track.id, commit).await?;
     let blob = vcs.cat_at(&commit, path).await.map_err(vcs_error_to_rpc)?;
     Ok(json!({
@@ -183,7 +183,7 @@ async fn track_log(
 fn track_vcs_repo(ctx: &AppContext) -> Result<&dyn TrackVcsRepo, RpcError> {
     ctx.track_vcs
         .as_deref()
-        .ok_or_else(|| RpcError::internal("calm.track history requires sqlite-backed track-vcs"))
+        .ok_or_else(|| RpcError::internal("neige.track history requires sqlite-backed track-vcs"))
 }
 
 async fn resolve_commit_in_track(
@@ -198,7 +198,7 @@ async fn resolve_commit_in_track(
     {
         Some(record) if record.track_id == *track_id => Ok(record.hash),
         Some(_) => Err(RpcError::invalid_params(format!(
-            "calm.track: commit {commit_hash} is outside the bound track"
+            "neige.track: commit {commit_hash} is outside the bound track"
         ))),
         None => vcs
             .resolve_commit_prefix(track_id, commit_hash)
@@ -206,7 +206,7 @@ async fn resolve_commit_in_track(
             .map_err(vcs_error_to_rpc)?
             .map(|record| record.hash)
             .ok_or_else(|| {
-                RpcError::invalid_params(format!("calm.track: unknown commit {commit_hash}"))
+                RpcError::invalid_params(format!("neige.track: unknown commit {commit_hash}"))
             }),
     }
 }

@@ -267,7 +267,7 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     let (stdout, stderr, exit) = neige(&boot, &["cat", "area/reports/认证 方案.md"]).await;
     assert_eq!((exit, stdout.as_str()), (4, ""));
     assert!(
-        stderr.starts_with("neige: calm.track.cat: `area/reports/认证 方案.md` names 2 reports in this area; read one of: "),
+        stderr.starts_with("neige: neige.track.cat: `area/reports/认证 方案.md` names 2 reports in this area; read one of: "),
         "{stderr}"
     );
     assert!(stderr.ends_with(" (code -32602)\n"), "{stderr}");
@@ -327,7 +327,7 @@ async fn a_worker_is_refused_area_reports_through_neige() {
 const BLOCKS_BODY: &str =
     "Contract intro.\n\n# Goal\n\nalpha\n\n# Findings\n\nbeta\n\n# Next\n\ngamma\n";
 
-/// The report's block ids in document order, from the snapshot `calm.area.outline` also reads.
+/// The report's block ids in document order, from the snapshot `neige.area.outline` also reads.
 async fn block_ids(boot: &CardBoot, report_card: &str) -> Vec<String> {
     calm_server::track_report_read::load_report_doc_snapshot(boot.repo.as_ref(), report_card)
         .await

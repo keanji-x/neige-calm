@@ -33,7 +33,7 @@ fn args_with(start: SessionStart, selection: &TurnModelSelection, cwd: &str) -> 
 
 #[test]
 fn argv_is_exactly_the_spawn_contract() {
-    let mcp = json!({"mcpServers":{"calm":{"type":"stdio","command":"/opt/neige/neige-mcp-stdio-shim",
+    let mcp = json!({"mcpServers":{"neige":{"type":"stdio","command":"/opt/neige/neige-mcp-stdio-shim",
         "args":[],"env":{"NEIGE_MCP_SOCKET":"${NEIGE_MCP_SOCKET}","NEIGE_MCP_TOKEN":"${NEIGE_MCP_TOKEN}"}}}});
     let got = args(SessionStart::New, "/ws/track");
     let expected: Vec<String> = [
@@ -60,7 +60,7 @@ fn argv_is_exactly_the_spawn_contract() {
         "--permission-prompts",
         "none",
         "--allowedTools",
-        "Bash Read ToolSearch WebFetch WebSearch mcp__calm Edit(//ws/track/**) Write(//ws/track/**)",
+        "Bash Read ToolSearch WebFetch WebSearch mcp__neige Edit(//ws/track/**) Write(//ws/track/**)",
         "--append-system-prompt-file",
         "/data/claude-planner/tmp/ws1-turn1.md",
     ]
@@ -121,7 +121,7 @@ fn a_resumed_session_names_the_thread_with_resume() {
         .expect("--resume");
     assert_eq!(got[at + 1], THREAD);
     assert!(!got.iter().any(|arg| arg == "--session-id"));
-    assert!(got.contains(&"Bash Read ToolSearch WebFetch WebSearch mcp__calm Edit(//ws/track/**) Write(//ws/track/**)".to_string()));
+    assert!(got.contains(&"Bash Read ToolSearch WebFetch WebSearch mcp__neige Edit(//ws/track/**) Write(//ws/track/**)".to_string()));
 }
 
 #[test]

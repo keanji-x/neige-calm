@@ -1,6 +1,6 @@
-//! Track-state tools: `calm.track.state` (Planner or Worker snapshot read, no event emission),
-//! `calm.task.verdict` (Planner-only accept/reject, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track)
-//! and `calm.track.close` (Planner-only close of the caller's track).
+//! Track-state tools: `neige.track.state` (Planner or Worker snapshot read, no event emission),
+//! `neige.task.verdict` (Planner-only accept/reject, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track)
+//! and `neige.track.close` (Planner-only close of the caller's track).
 
 use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderShadowProbe};
 use crate::error::CalmError;
@@ -17,9 +17,9 @@ use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_TRACK_STATE: &str = "calm.track.state";
-pub const TOOL_TASK_VERDICT: &str = "calm.task.verdict";
-pub const TOOL_TRACK_CLOSE: &str = "calm.track.close";
+pub const TOOL_TRACK_STATE: &str = "neige.track.state";
+pub const TOOL_TASK_VERDICT: &str = "neige.task.verdict";
+pub const TOOL_TRACK_CLOSE: &str = "neige.track.close";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(track_state_descriptor(), wrap(track_state));
@@ -45,7 +45,7 @@ where
 fn track_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_STATE.into(),
-        description: include_str!("../../../prompts/tools/calm.track.state.md")
+        description: include_str!("../../../prompts/tools/neige.track.state.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -133,7 +133,7 @@ fn task_verdict_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_VERDICT.into(),
         description: calm_types::observation::render_task_acceptance_guidance(
-            include_str!("../../../prompts/tools/calm.task.verdict.md").trim_end(),
+            include_str!("../../../prompts/tools/neige.task.verdict.md").trim_end(),
         ),
         input_schema: json!({
             "type": "object",
@@ -212,7 +212,7 @@ async fn task_verdict(
 fn track_close_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_CLOSE.into(),
-        description: include_str!("../../../prompts/tools/calm.track.close.md")
+        description: include_str!("../../../prompts/tools/neige.track.close.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

@@ -1,11 +1,11 @@
 //! How Codex spells an MCP tool to the model. The kernel owns raw tool names only; this adapter
-//! owns the Codex spelling, which only `calm.source.capture`'s `call.tool` ever receives.
+//! owns the Codex spelling, which only `neige.source.capture`'s `call.tool` ever receives.
 //!
 //! Measured on the deployed `codex-cli 0.159.2` (#2003 §3.2, not the stale `external/codex`):
 //! - The model sees one Responses `namespace` tool `mcp__<server key>`. Each function in it is the
 //!   raw name with every character outside `[A-Za-z0-9_]` replaced by `_`.
-//! - `mcp__<server>__<name>` is capped at 128 bytes: under `mcp__calm` a callable name keeps at most
-//!   117 bytes. A longer one is cut to 104 bytes and gets `_` plus 12 hex characters of SHA-1.
+//! - `mcp__<server>__<name>` is capped at 128 bytes: under `mcp__neige` a callable name keeps at most
+//!   116 bytes. A longer one is cut to 104 bytes and gets `_` plus 12 hex characters of SHA-1.
 //! - Two raw names that sanitize to the same string are **both** hash-suffixed.
 //! - On `tools/call` Codex sends the **raw** name back, so ordinary calls never depend on this.
 //!
@@ -67,8 +67,8 @@ mod tests {
 
     #[test]
     fn model_tool_key_strips_only_a_delimited_non_empty_server_segment() {
-        assert_eq!(model_tool_key("mcp__calm__plugin_a_b"), "plugin_a_b");
-        assert_eq!(model_tool_key("mcp__calm__plugin.a-b_c"), "plugin_a_b_c");
+        assert_eq!(model_tool_key("mcp__neige__plugin_a_b"), "plugin_a_b");
+        assert_eq!(model_tool_key("mcp__neige__plugin.a-b_c"), "plugin_a_b_c");
         assert_eq!(model_tool_key("mcp__plugin_a_b"), "mcp__plugin_a_b");
         assert_eq!(model_tool_key("mcp____plugin_a_b"), "mcp____plugin_a_b");
         assert_eq!(model_tool_key(TRUSTED), codex_sanitized(TRUSTED));

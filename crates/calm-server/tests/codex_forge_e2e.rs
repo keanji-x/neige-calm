@@ -152,7 +152,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
 
     let task_completed_id = wait_for_task_completed_id(&fx, budget).await;
 
-    // The worker must commit/open/check in-turn BEFORE `calm.task.complete`.
+    // The worker must commit/open/check in-turn BEFORE `neige.task.complete`.
     assert!(
         s5_id < s6_id && s6_id < s7_id && s7_id < task_completed_id,
         "expected S5 < S6 < S7 < task.completed, got S5={s5_id}, S6={s6_id}, S7={s7_id}, task.completed={task_completed_id}"

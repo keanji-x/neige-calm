@@ -1,5 +1,5 @@
 //! The Planner's on-demand guides (#1893): every `neige cat guide/<name>.md` the rendered Planner
-//! prompt names is served by `calm.track.cat` with that file's exact bytes, and `guide/` lists
+//! prompt names is served by `neige.track.cat` with that file's exact bytes, and `guide/` lists
 //! exactly the named set.
 
 use std::collections::BTreeSet;

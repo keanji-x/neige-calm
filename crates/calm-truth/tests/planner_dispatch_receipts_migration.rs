@@ -1,4 +1,4 @@
-//! #1893 S4: the Planner dispatch receipt table is dropped with `calm.task.dispatch`.
+//! #1893 S4: the Planner dispatch receipt table is dropped with the retired `task.dispatch` tool.
 use calm_truth::MIGRATOR;
 use sqlx::{Connection, SqliteConnection, migrate::Migrate, sqlite::SqliteConnectOptions};
 

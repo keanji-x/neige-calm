@@ -2,7 +2,7 @@
 
 use calm_server::ids::TrackId;
 use calm_server::mcp_server::ToolCallIdentity;
-use calm_server::mcp_server::tools::admin::{TOOL_ADMIN_TRACK_GC, TOOL_ADMIN_VACUUM};
+use calm_server::mcp_server::tools::admin::{TOOL_ADMIN_GC, TOOL_ADMIN_VACUUM};
 use calm_server::model::CardRole;
 use calm_server::plugin_host::mcp::RpcError;
 use serde_json::json;
@@ -50,7 +50,7 @@ async fn track_gc_dry_run_reports_without_deleting() {
 
     let result = call_tool(
         &boot,
-        TOOL_ADMIN_TRACK_GC,
+        TOOL_ADMIN_GC,
         planner_identity(&boot),
         json!({ "track_id": boot.track_id.as_str(), "keep": 2, "dry_run": true }),
     )
@@ -74,7 +74,7 @@ async fn track_gc_real_run_prunes_sweeps_and_is_idempotent() {
 
     let result = call_tool(
         &boot,
-        TOOL_ADMIN_TRACK_GC,
+        TOOL_ADMIN_GC,
         planner_identity(&boot),
         json!({ "track_id": boot.track_id.as_str(), "keep": 2, "dry_run": false }),
     )
@@ -89,7 +89,7 @@ async fn track_gc_real_run_prunes_sweeps_and_is_idempotent() {
 
     let second = call_tool(
         &boot,
-        TOOL_ADMIN_TRACK_GC,
+        TOOL_ADMIN_GC,
         planner_identity(&boot),
         json!({ "track_id": boot.track_id.as_str(), "keep": 2, "dry_run": false }),
     )
@@ -110,7 +110,7 @@ async fn track_gc_rejects_wrong_track_without_deleting() {
 
     let err = call_tool(
         &boot,
-        TOOL_ADMIN_TRACK_GC,
+        TOOL_ADMIN_GC,
         planner_identity(&boot),
         json!({ "track_id": "wrong-track", "keep": 2, "dry_run": false }),
     )
@@ -134,7 +134,7 @@ async fn track_gc_rejects_worker_identity() {
 
     let err = call_tool(
         &boot,
-        TOOL_ADMIN_TRACK_GC,
+        TOOL_ADMIN_GC,
         worker_identity(&boot),
         json!({ "track_id": boot.track_id.as_str(), "keep": 2, "dry_run": true }),
     )

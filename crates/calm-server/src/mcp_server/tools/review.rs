@@ -1,4 +1,4 @@
-//! `calm.ratify.request`: a Planner asks the user to ratify a decision on an open Track.
+//! `neige.ratify.request`: a Planner asks the user to ratify a decision on an open Track.
 
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_RATIFY_REQUEST: &str = "calm.ratify.request";
+pub const TOOL_RATIFY_REQUEST: &str = "neige.ratify.request";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(ratify_request_descriptor(), wrap(ratify_request));
@@ -38,7 +38,7 @@ where
 fn ratify_request_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_RATIFY_REQUEST.into(),
-        description: include_str!("../../../prompts/tools/calm.ratify.request.md")
+        description: include_str!("../../../prompts/tools/neige.ratify.request.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

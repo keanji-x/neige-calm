@@ -35,7 +35,7 @@ fn claude_worker_command_line_uses_appended_system_prompt_not_mcp_tools() {
     );
     assert!(!command.contains("--mcp-config"), "{command}");
     assert!(!command.contains("--allowedTools"), "{command}");
-    assert!(!command.contains("mcp__calm__task_complete"), "{command}");
+    assert!(!command.contains("mcp__neige__task_complete"), "{command}");
 }
 
 #[tokio::test]

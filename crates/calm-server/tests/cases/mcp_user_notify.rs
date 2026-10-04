@@ -1,4 +1,4 @@
-//! `calm.user.notify` over the real MCP transport: `{"ok": true}` for a bounded text, and `-32602`
+//! `neige.user.notify` over the real MCP transport: `{"ok": true}` for a bounded text, and `-32602`
 //! naming the field for the empty / over-long refusals.
 
 #![cfg(unix)]

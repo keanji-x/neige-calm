@@ -11,7 +11,7 @@ use crate::mcp_track_report::{
     Boot, boot, call_tool, planner_identity, read_then_write_markdown, upsert_block,
 };
 
-const TOOL_REPORT_READ: &str = "calm.report.read";
+const TOOL_REPORT_READ: &str = "neige.report.read";
 
 /// A full read: this session's anchor for the next write, and the docRev it saw.
 async fn doc_rev(boot: &Boot) -> u64 {
@@ -249,7 +249,7 @@ async fn warnings_follow_a_dangling_link_through_its_repair_and_a_new_citation()
         }),
     )
     .await
-    .expect("calm.report.write_markdown");
+    .expect("neige.report.write");
     let warnings = receipt["warnings"].as_array().expect("warnings on write");
     assert_eq!(warnings.len(), 1, "{receipt}");
     assert_eq!(warnings[0]["destination"], "neige://source/src_deadbeef");
@@ -277,7 +277,7 @@ async fn warnings_follow_a_dangling_link_through_its_repair_and_a_new_citation()
     assert_eq!(warnings[0]["destination"], "neige://source/src_00000000#q1");
 }
 
-/// Replace the report's only block through `calm.report.commit`; returns the receipt.
+/// Replace the report's only block through `neige.report.commit`; returns the receipt.
 async fn commit_replacing_only_block(boot: &Boot, markdown: &str, message: &str) -> Value {
     let index = call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
         .await
@@ -297,5 +297,5 @@ async fn commit_replacing_only_block(boot: &Boot, markdown: &str, message: &str)
         }),
     )
     .await
-    .expect("calm.report.commit")
+    .expect("neige.report.commit")
 }

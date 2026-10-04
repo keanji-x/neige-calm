@@ -124,7 +124,7 @@ can also be referenced. A reference supplies context and does not enable the
 plugin or change its permissions.
 
 For a development-bound Track with its own worktree and an upstream, the Planner can
-publish through `calm.track.publish`: the kernel pushes the branch without
+publish through `neige.track.publish`: the kernel pushes the branch without
 forcing and opens or reuses its PR. The branch tip must be the candidate of a
 **done** task attempt. A later unverified commit cannot be published through
 this tool. Publication returns the PR link; merging remains a separate action.
@@ -148,7 +148,7 @@ viewer.
 
 A Planner can register a development server listening on `127.0.0.1` and add a
 `preview` block to the Report. Ask it to start the server, register it with
-`calm.preview.register`, and embed the returned preview key. The preview offers
+`neige.preview.register`, and embed the returned preview key. The preview offers
 **Desktop** and **Mobile** viewports and fullscreen. An offline notice means
 the target server is not responding; a missing-registration notice means the
 Planner needs to register it again.
@@ -171,11 +171,10 @@ path in the error.
 
 A Planner can read other reports through the read-only `area/reports/` view,
 inspect selected blocks with `neige cat report.md --blocks <id>`, and query
-report tags with `neige tag report.md`. Report writes use `calm.report.commit`
-for targeted edits or `calm.report.write_markdown` for whole-document changes.
-Both anchor to this session's prior `calm.report.read`; CLI reads do not establish
-that write anchor. The retired `calm.report.write` and `calm.report.edit` tools
-are no longer available.
+report tags with `neige tag report.md`. Report writes use `neige.report.commit`
+for targeted edits or `neige.report.write` for whole-document changes.
+Both anchor to this session's prior `neige.report.read`; CLI reads do not establish
+that write anchor.
 
 ## Add and configure plugins
 

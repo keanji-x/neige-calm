@@ -150,7 +150,7 @@ INIT+='"model":"claude-haiku-4-5","capabilities":["interrupt_receipt_v1"],'
 SKILLS='[]'
 # A skill fails the init check after the CLI has already named (and created) the session.
 if [ "$SCENARIO" = "bad-init" ]; then SKILLS='["dataviz"]'; fi
-INIT+='"mcp_servers":[{"name":"calm","status":"connected"}],"skills":'"$SKILLS"','
+INIT+='"mcp_servers":[{"name":"neige","status":"connected"}],"skills":'"$SKILLS"','
 INIT+='"plugins":[{"name":"telemetry","source":"telemetry@builtin"}]}\n'
 # `slow-bind` names the session a second late and then works for seven more seconds, so a test
 # can hold the database across the bind of `agent_session_id` and release it before the result.
@@ -212,7 +212,7 @@ f.flush()
 open(sys.argv[1], "w").write(f.readline())
 PY
     CALL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b003","message":{"id":"msg_fake_call","content":'
-    CALL+='[{"type":"tool_use","id":"toolu_mcp","name":"mcp__calm__calm_report_commit","input":{"text":"x"}}]}}'
+    CALL+='[{"type":"tool_use","id":"toolu_mcp","name":"mcp__neige__neige_report_commit","input":{"text":"x"}}]}}'
     RESULT='{"type":"user","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b004","message":{"role":"user","content":'
     RESULT+='[{"tool_use_id":"toolu_mcp","type":"tool_result","content":[{"type":"text","text":"ok"}]}]},'
     RESULT+='"tool_use_result":[{"type":"text","text":"ok"}]}'

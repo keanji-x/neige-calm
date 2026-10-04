@@ -10,7 +10,7 @@ use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 
 const ID: &str = "dev.neige.git-forge";
-const NATIVE: [&str; 1] = ["calm.track.publish"];
+const NATIVE: [&str; 1] = ["neige.track.publish"];
 struct Fixture {
     repo: Arc<SqlxRepo>,
     host: Arc<PluginHost>,
@@ -248,7 +248,7 @@ async fn builtin_issue_instructions_remain_documentation_when_dev_is_disabled() 
         crate::planner_card::SeededCardRole::Planner.prompt_template(),
         "test",
     );
-    assert!(!base.contains("calm.track.publish"));
+    assert!(!base.contains("neige.track.publish"));
     for scope in [None, Some("foreign.plugin"), Some(ID)] {
         let track = fx.track(scope).await;
         let card = fx

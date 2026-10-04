@@ -58,14 +58,14 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
             .iter()
             .find(|r| r["method"] == "thread/resume" && r["params"]["threadId"] == *thread)
             .unwrap();
-        let tools = request.pointer("/params/config/mcp_servers/calm/tools");
+        let tools = request.pointer("/params/config/mcp_servers/neige/tools");
         if *role == CardRole::Planner {
             assert_eq!(
                 tools,
                 Some(&json!({
-                    "calm.terminal.open":{"approval_mode":"approve"},
-                    "calm.terminal.control":{"approval_mode":"approve"},
-                    "calm.terminal.input":{"approval_mode":"approve"}
+                    "neige.terminal.open":{"approval_mode":"approve"},
+                    "neige.terminal.control":{"approval_mode":"approve"},
+                    "neige.terminal.input":{"approval_mode":"approve"}
                 }))
             );
         } else {

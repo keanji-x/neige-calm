@@ -1,5 +1,5 @@
-//! `area/reports/` (#1838 S2) through the registered handlers (`calm.track.ls`, `calm.track.cat`,
-//! `calm.report.find`): the Planner lists, finds and reads its own area's reports; another area's
+//! `area/reports/` (#1838 S2) through the registered handlers (`neige.track.ls`, `neige.track.cat`,
+//! `neige.report.find`): the Planner lists, finds and reads its own area's reports; another area's
 //! reports are unreachable by any path; a Worker is Forbidden; names resolve exactly or refuse.
 
 #![cfg(unix)]
@@ -17,7 +17,7 @@ use calm_server::mcp_server::tools::area_reports::TOOL_REPORT_FIND;
 use calm_server::mcp_server::tools::report_tag::TOOL_REPORT_TAG;
 use calm_server::mcp_server::tools::track_file::{TOOL_TRACK_CAT, TOOL_TRACK_LS};
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
-use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_WRITE_MARKDOWN;
+use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_WRITE;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
@@ -231,12 +231,12 @@ async fn write_body(boot: &Boot, side: &Side, body: &str) {
         .expect("read");
     call(
         boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         planner(side),
         json!({ "body": body, "message": "write" }),
     )
     .await
-    .expect("calm.report.write_markdown");
+    .expect("neige.report.write");
 }
 
 async fn tag(boot: &Boot, side: &Side, add: &[&str]) {
@@ -247,7 +247,7 @@ async fn tag(boot: &Boot, side: &Side, add: &[&str]) {
         json!({ "path": "report.md", "add": add }),
     )
     .await
-    .expect("calm.report.tag");
+    .expect("neige.report.tag");
 }
 
 async fn set_report_updated_at(boot: &Boot, side: &Side, at: i64) {

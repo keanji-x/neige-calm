@@ -1,4 +1,4 @@
-//! Pure derivations of the Planner read surface (`calm.plan.list.candidate`, D8): the effective
+//! Pure derivations of the Planner read surface (`neige.plan.list.candidate`, D8): the effective
 //! delivery state of one attempt from its rows (D2 derivation table) and the binding of one
 //! task's current attempt (D8 first-match table). Inputs are rows; no Operation is consulted.
 
@@ -293,7 +293,7 @@ pub(crate) fn candidate_binding(
     }
 }
 
-/// `calm.plan.list.candidate` for one current attempt: the lease row of its worker card (the
+/// `neige.plan.list.candidate` for one current attempt: the lease row of its worker card (the
 /// same latest row `facts` was derived from), the attempt's latest delivery row and candidate
 /// row for a kernel lease, then the pure derivations. `facts` is the entry's `worktree`
 /// facts, read by the caller from the same card.

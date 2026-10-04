@@ -1,5 +1,5 @@
-//! `calm.plan.*` — the planner card's durable per-track task plan.
-//! `calm.plan.list` never echoes gate commands, only `{present, steps: [names]}`.
+//! `neige.plan.*` — the planner card's durable per-track task plan.
+//! `neige.plan.list` never echoes gate commands, only `{present, steps: [names]}`.
 
 use crate::db::sqlite::{task_cancel_tx, task_get_tx};
 use crate::db::write_with_actor_events_typed;
@@ -28,8 +28,8 @@ use std::sync::Arc;
 mod cancel_running;
 mod list;
 
-pub const TOOL_PLAN_CANCEL: &str = "calm.plan.cancel";
-pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
+pub const TOOL_PLAN_CANCEL: &str = "neige.plan.cancel";
+pub const TOOL_PLAN_LIST: &str = "neige.plan.list";
 
 /// Gate timeout defaults/caps; the task-verify adapter re-clamps at run time.
 pub fn register_into(registry: &mut ToolRegistry) {
@@ -324,7 +324,7 @@ fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Tas
 fn plan_cancel_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_CANCEL.into(),
-        description: include_str!("../../../prompts/tools/calm.plan.cancel.md")
+        description: include_str!("../../../prompts/tools/neige.plan.cancel.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -429,7 +429,7 @@ where
                     Some(current) if current.id == task_id => current,
                     _ => {
                         return Err(CalmError::Conflict(
-                            "current execution changed; refresh calm.plan.list".into(),
+                            "current execution changed; refresh neige.plan.list".into(),
                         ));
                     }
                 };
@@ -512,7 +512,7 @@ where
 fn plan_list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_LIST.into(),
-        description: include_str!("../../../prompts/tools/calm.plan.list.md")
+        description: include_str!("../../../prompts/tools/neige.plan.list.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

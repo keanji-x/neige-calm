@@ -6,8 +6,8 @@ use serde_json::{Map, Value};
 pub(crate) fn refuse_lifecycle_key(obj: &Map<String, Value>, tool: &str) -> Result<(), RpcError> {
     if obj.contains_key("lifecycle") {
         return Err(RpcError::invalid_params(format!(
-            "{tool}: `lifecycle` is removed: close with calm.track.close; ask with \
-             calm.user.notify or calm.ratify.request"
+            "{tool}: `lifecycle` is removed: close with neige.track.close; ask with \
+             neige.user.notify or neige.ratify.request"
         )));
     }
     Ok(())
@@ -28,7 +28,7 @@ pub(crate) fn parse_write_args(args: &Value, tool: &str) -> Result<String, RpcEr
         .to_string())
 }
 
-/// The optional twin of [`parse_write_args`] for `calm.report.write_markdown`:
+/// The optional twin of [`parse_write_args`] for `neige.report.write`:
 /// `message` may be omitted, but when present it must be a non-empty string.
 pub(crate) fn parse_optional_write_args(
     args: &Value,

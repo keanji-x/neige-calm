@@ -369,6 +369,9 @@ syn = { version = "2.0.117", features = ["full", "visit"] }
 # `quote`; it is already locked as syn's own dependency, so this adds no crate to
 # the graph.
 quote = "1"
+# #2003 — the tool-name grammar and the stale-name sweep match the design's regexes verbatim.
+# This release is already locked as a transitive dependency.
+regex = "1.12.3"
 # #1196 S1 review r5 — `a9b` needs a POSITIVE observation that the stale crash
 # supervisor woke from its backoff and took the epoch-mismatch branch, instead
 # of sleeping to a computed instant and asserting an arithmetic identity about

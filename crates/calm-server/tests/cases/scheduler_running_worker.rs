@@ -1,4 +1,4 @@
-//! #1785 S1: `calm.plan.cancel` on a running Track worker, and the sweep's idle arm that fails a
+//! #1785 S1: `neige.plan.cancel` on a running Track worker, and the sweep's idle arm that fails a
 //! codex task whose worker turn ended without a report.
 
 use super::*;

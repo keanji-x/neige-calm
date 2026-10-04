@@ -1,5 +1,5 @@
 Calendar records user-level work commitments, not execution tasks. Use
-`calm.calendar.list`, `calm.calendar.create`, and `calm.calendar.update` only when
+`neige.calendar.list`, `neige.calendar.create`, and `neige.calendar.update` only when
 the user intends to arrange work. Calendar is always enabled by the kernel.
 They can access only entries sourced from your authenticated Track.
 

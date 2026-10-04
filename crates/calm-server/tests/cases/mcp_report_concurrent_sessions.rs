@@ -1,5 +1,5 @@
 //! Two real assistant conversations interleaving on one track's report: both read the same
-//! revision from their own `calm.report.read`, A writes, B's write is refused with `-32001` and
+//! revision from their own `neige.report.read`, A writes, B's write is refused with `-32001` and
 //! must have written nothing. Only the CRDT bytes, the read projection and the event-log length
 //! are compared; that is sound only while every projection write shares the report-write transaction.
 
@@ -11,11 +11,11 @@ use crate::mcp_track_report::{
 };
 use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::mcp_server::tools::track_report_blocks::{
-    RPC_REV_CONFLICT, TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE_MARKDOWN,
+    RPC_REV_CONFLICT, TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE,
 };
 use serde_json::{Value, json};
 
-const TOOL_REPORT_READ: &str = "calm.report.read";
+const TOOL_REPORT_READ: &str = "neige.report.read";
 
 /// What one session sees when it reads the report for itself, with block markers in the text.
 async fn read_as(boot: &Boot, identity: ToolCallIdentity) -> Value {
@@ -295,7 +295,7 @@ async fn two_assistant_sessions_rewriting_the_whole_document_second_writer_gets_
 
     call_tool(
         &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         assistant_identity(&boot),
         json!({
             "body": "# A\n\nalpha, whole-document rewrite by A\n\n# B\n\nbeta\n",
@@ -312,7 +312,7 @@ async fn two_assistant_sessions_rewriting_the_whole_document_second_writer_gets_
 
     let err = call_tool(
         &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         assistant_b_identity(&boot),
         json!({
             "body": "# A\n\nalpha, whole-document rewrite by B\n\n# B\n\nbeta\n",

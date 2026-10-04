@@ -912,17 +912,17 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
         Some(&json!("never"))
     );
     assert_eq!(
-        thread_start.pointer("/params/config/mcp_servers/calm/tools"),
+        thread_start.pointer("/params/config/mcp_servers/neige/tools"),
         Some(&json!({
-            "calm.terminal.open": {"approval_mode":"approve"},
-            "calm.terminal.control": {"approval_mode":"approve"},
-            "calm.terminal.input": {"approval_mode":"approve"}
+            "neige.terminal.open": {"approval_mode":"approve"},
+            "neige.terminal.control": {"approval_mode":"approve"},
+            "neige.terminal.input": {"approval_mode":"approve"}
         })),
         "Planner must explicitly delegate only Terminal writes to the kernel's live authority checks"
     );
     assert!(
         thread_start
-            .pointer("/params/config/mcp_servers/calm/default_tools_approval_mode")
+            .pointer("/params/config/mcp_servers/neige/default_tools_approval_mode")
             .is_none()
     );
 

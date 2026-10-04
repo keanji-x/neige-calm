@@ -2918,7 +2918,7 @@ async fn settled_event_maps_to_observation_with_turn_text() {
     );
     assert!(!text.contains("no change"), "{text}");
     assert!(
-        !text.contains("calm.task.delivery") && !text.contains("base:{"),
+        !text.contains("task.delivery") && !text.contains("base:{"),
         "{text}"
     );
 
@@ -3102,7 +3102,7 @@ async fn failed_wake_text_offers_no_delivery_decision() {
                 .unwrap()
                 .to_turn_text();
         assert!(text.ends_with(TAIL), "{text}");
-        assert!(!text.contains("calm.task.delivery"), "{text}");
+        assert!(!text.contains("task.delivery"), "{text}");
         assert!(!text.contains(id), "no delivery id to quote: {text}");
         assert!(!text.to_ascii_lowercase().contains("retr"), "{text}");
     }

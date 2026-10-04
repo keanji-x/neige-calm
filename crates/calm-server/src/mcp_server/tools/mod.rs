@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn golden_row_encodes_annotations_presence_like_the_wire() {
         let descriptor = |annotations: Option<Value>| ToolDescriptor {
-            name: "calm.fixture.tool".to_string(),
+            name: "neige.fixture.tool".to_string(),
             description: "fixture".to_string(),
             input_schema: serde_json::json!({ "type": "object" }),
             annotations,
@@ -302,6 +302,29 @@ mod tests {
             expected.len() >= 30,
             "anti-vacuity floor: {} tools",
             expected.len()
+        );
+    }
+
+    /// #2003: every kernel tool is `neige.<object>.<action>`, one lowercase word per segment, so
+    /// the CLI spelling and the client callable ids derive from the name mechanically. Plugin
+    /// manifest tools keep their plugin-owned `plugin.<id>_<tool>` identity.
+    #[test]
+    fn kernel_tool_names_follow_the_grammar() {
+        let grammar = regex::Regex::new(r"^neige\.[a-z]+\.[a-z]+$").expect("grammar regex");
+        let kernel: Vec<String> = build_default_registry()
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .filter(|name| !name.starts_with("plugin."))
+            .collect();
+        assert!(kernel.len() >= 30, "anti-vacuity: {kernel:?}");
+        let off_grammar: Vec<&String> = kernel
+            .iter()
+            .filter(|name| !grammar.is_match(name))
+            .collect();
+        assert!(
+            off_grammar.is_empty(),
+            "kernel tools outside `neige.<object>.<action>`: {off_grammar:?}"
         );
     }
 }

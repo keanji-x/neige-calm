@@ -1150,7 +1150,7 @@ impl ProviderAdapter for BootstrapAdapter {
     }
 }
 
-/// Fast-worker-report fixture: the spawn side effect itself reports `calm.task.complete` BEFORE the scheduler's
+/// Fast-worker-report fixture: the spawn side effect itself reports `neige.task.complete` BEFORE the scheduler's
 /// `wait()` returns; the card-shaped `prepare_tx` output is stamped as the op target first, like a real fast worker.
 struct FastReportAdapter {
     kind: &'static str,
@@ -1658,7 +1658,7 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
         "status_detail must carry the real reason, got {detail:?}"
     );
 
-    // It must also reach the wire type both the planner (`calm.report.read`) and the FE (`GET /api/tracks/:id`) read.
+    // It must also reach the wire type both the planner (`neige.report.read`) and the FE (`GET /api/tracks/:id`) read.
     let report = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .expect("report read");
@@ -2966,7 +2966,7 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
 
 #[tokio::test]
 async fn codex_task_pty_exit_does_not_complete_task() {
-    // A codex PTY exiting says nothing about the task outcome — only `calm.task.complete` may finish it.
+    // A codex PTY exiting says nothing about the task outcome — only `neige.task.complete` may finish it.
     let boot = boot().await;
     let mut task = plan_task(&boot.track_id, "cx", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
@@ -6299,7 +6299,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
     )
     .await;
 
-    let pending = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+    let pending = call_tool(&boot, "neige.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(pending["tasks"][0]["status"], "pending");
@@ -6322,7 +6322,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
     tokio::time::timeout(Duration::from_secs(5), claimed.notified())
         .await
         .expect("production claim must reach the post-claim hook");
-    let dispatched = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+    let dispatched = call_tool(&boot, "neige.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(dispatched["tasks"][0]["attempt_id"], attempt_id);
@@ -6334,7 +6334,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
         .await
         .expect("provider startup must settle")
         .unwrap();
-    let running = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+    let running = call_tool(&boot, "neige.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(running["tasks"][0]["attempt_id"], attempt_id);

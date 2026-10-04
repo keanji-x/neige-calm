@@ -1,5 +1,5 @@
 //! #2003 §3.2: the callable names the deployed `codex-cli 0.159.2` actually minted for the raw
-//! names below (captured from its Responses request), fed to `calm.source.capture`. Codex sends
+//! names below (captured from its Responses request), fed to `neige.source.capture`. Codex sends
 //! the raw name on `tools/call`; only `call.tool` here ever receives a Codex spelling.
 
 #![cfg(unix)]
@@ -62,9 +62,9 @@ async fn hashed_codex_callables_fail_explicitly() {
     for bare in TRUNCATED_CALLABLES.iter().chain(COLLIDING_CALLABLES.iter()) {
         assert!(
             bare.len() <= 117,
-            "{bare} is a captured callable under `mcp__calm`"
+            "{bare} is a captured callable under `mcp__neige`"
         );
-        for probe in [bare.to_string(), format!("mcp__calm__{bare}")] {
+        for probe in [bare.to_string(), format!("mcp__neige__{bare}")] {
             let err = capture(
                 &boot,
                 json!({ "call": { "tool": probe }, "provenance": "summary", "title": "x" }),
@@ -86,7 +86,7 @@ async fn hashed_codex_callables_fail_explicitly() {
         "x".repeat(UNHASHED_TOOL_LENGTH)
     );
     assert_eq!(unhashed.len(), 117);
-    for probe in [unhashed.clone(), format!("mcp__calm__{unhashed}")] {
+    for probe in [unhashed.clone(), format!("mcp__neige__{unhashed}")] {
         let receipt = capture(
             &boot,
             json!({ "call": { "tool": probe }, "provenance": "summary", "title": "x" }),

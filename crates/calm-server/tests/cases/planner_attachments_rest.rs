@@ -540,7 +540,7 @@ async fn an_agent_actor_cannot_upload() {
         "the refusal must say why this endpoint in particular is closed: {message}"
     );
     assert!(
-        !message.contains("calm.report"),
+        !message.contains("neige.report"),
         "the track-report redirect is the wrong advice here: {message}"
     );
     assert!(file_names(&b.staging()).is_empty());

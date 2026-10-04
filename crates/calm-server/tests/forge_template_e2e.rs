@@ -1934,7 +1934,7 @@ async fn request_ratification(fx: &Fixture, reason: &str) -> EventRow {
     let before = event_rows(&fx.repo, "ratify.requested").await.len();
     let resp = call_review_tool(fx, TOOL_RATIFY_REQUEST, json!({ "reason": reason }))
         .await
-        .expect("calm.ratify.request succeeds");
+        .expect("neige.ratify.request succeeds");
     assert_eq!(resp["ok"], true, "ratify.request response: {resp}");
     let rows = wait_for_event_count(&fx.repo, "ratify.requested", before + 1).await;
     rows.last().expect("new ratify.requested").clone()
@@ -1977,7 +1977,7 @@ async fn delete_track(fx: &Fixture) -> StatusCode {
         .status()
 }
 
-/// The Planner closes the track (as `calm.track.close` does); returns the `track.updated` row.
+/// The Planner closes the track (as `neige.track.close` does); returns the `track.updated` row.
 async fn close_track(fx: &Fixture, message: &str) -> EventRow {
     let track_id = TrackId::from(fx.track_id.clone());
     let scope = EventScope::Track {

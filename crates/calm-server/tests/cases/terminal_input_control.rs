@@ -79,7 +79,7 @@ fn registry_owner(h: &Harness, terminal: &str) -> Option<uuid::Uuid> {
 async fn open_observed(h: &Harness, request: &str) -> (String, Value) {
     let terminal = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"program":COUNT_PROBE,"request_id":request}),
         )
         .await["terminal_id"]
@@ -133,7 +133,7 @@ async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt()
     let before = h.interaction().input_ack_sequence(&terminal).await.unwrap();
     let first = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "first", "hello", json!({"claim":true})),
         )
         .await;
@@ -168,7 +168,7 @@ async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt()
     // Held: no second claim, the same lease, the ordinary fences.
     let second = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "second", "again", json!({"claim":true})),
         )
         .await;
@@ -184,7 +184,7 @@ async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt()
     // claim and no write.
     let replay = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(
                 &terminal,
                 "first",
@@ -204,7 +204,7 @@ async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt()
     // `claim` is part of the fingerprint.
     let toggled = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "first", "hello", json!({})),
         )
         .await;
@@ -225,7 +225,7 @@ async fn input_claim_is_refused_while_a_human_holds_control_and_writes_nothing()
     let before = h.interaction().input_ack_sequence(&terminal).await.unwrap();
     let refused = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "hi", "hi", json!({"claim":true})),
         )
         .await;
@@ -271,7 +271,7 @@ async fn input_claim_is_refused_while_a_human_holds_control_and_writes_nothing()
     // conflict (and is refused again while the human holds control).
     let again = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "hi", "hi there", json!({"claim":true})),
         )
         .await;
@@ -287,7 +287,7 @@ async fn input_claim_is_refused_while_a_human_holds_control_and_writes_nothing()
     }
     let claimed = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "hi", "hi", json!({"claim":true})),
         )
         .await;
@@ -304,20 +304,20 @@ async fn input_claim_is_refused_when_the_observation_named_a_lost_lease() {
     let (terminal, _ready) = open_observed(&h, "claim-lost").await;
     let claimed = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"claim","observe":true}),
         )
         .await;
     let owner_view = observation(&claimed).clone();
     assert_eq!(owner_view["role"], "owner");
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"terminal_id":terminal,"action":"release"}),
     )
     .await;
     let refused = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(
                 &terminal,
                 "lost",
@@ -340,7 +340,7 @@ async fn input_claim_is_refused_when_the_observation_named_a_lost_lease() {
     assert_eq!(fresh["role"], "observer");
     let claimed = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(
                 &terminal,
                 "lost",
@@ -354,7 +354,7 @@ async fn input_claim_is_refused_when_the_observation_named_a_lost_lease() {
     // Without `claim:true` an observer observation stays the ordinary error.
     let plain = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(
                 &terminal,
                 "plain",
@@ -417,7 +417,7 @@ async fn input_claim_folded_with_a_takeover_is_refused_without_a_write() {
     let started = std::time::Instant::now();
     let refused = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "folded", "x", json!({"claim":true})),
         )
         .await;
@@ -452,7 +452,7 @@ async fn input_claim_then_stale_fence_reports_the_claim() {
     let h = Harness::start().await;
     let terminal = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"program":"printf 'READY\\n'; while [ ! -e go ]; do sleep 0.02; done; printf 'STATUS_LINE\\n'; cat >/dev/null","request_id":"claim-stale"}),
         )
         .await["terminal_id"]
@@ -465,7 +465,7 @@ async fn input_claim_then_stale_fence_reports_the_claim() {
     wait_for_live_line(&h, &terminal, "STATUS_LINE").await;
     let response = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"observation_id":ready["observation_id"],"request_id":"typed","action":{"type":"text","text":"abc"},"claim":true}),
         )
         .await;
@@ -500,7 +500,7 @@ async fn input_claim_then_stale_fence_reports_the_claim() {
     // Resend as advised on the fresh (owner) observation: `held`, written.
     let resent = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"typed","action":{"type":"text","text":"abc"},"claim":true,"observe":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
@@ -515,7 +515,7 @@ async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
     let h = Harness::start().await;
     let terminal = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"program":"i=0; while [ $i -lt 40 ]; do printf \"L$i\\n\"; i=$((i+1)); done; printf 'READY\\n'; cat >/dev/null","request_id":"claim-errors"}),
         )
         .await["terminal_id"]
@@ -526,7 +526,7 @@ async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
     assert_eq!(ready["role"], "observer");
     let invalid = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"enter-seq","claim":true,
                 "action":{"type":"sequence","steps":[{"type":"text","text":"x"},{"type":"key","key":"Enter"}]}}),
         )
@@ -542,14 +542,14 @@ async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
     assert_eq!(registry_owner(&h, &terminal), None, "no claim happened");
     let history = h
         .ok(
-            "calm.terminal.observe",
+            "neige.terminal.observe",
             json!({"terminal_id":terminal,"scroll_offset":1}),
         )
         .await;
     assert_eq!(history["scroll_offset"], 1, "{history}");
     let scrolled = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"observation_id":history["observation_id"],"request_id":"scrolled","claim":true,
                 "action":{"type":"text","text":"x"}}),
         )
@@ -564,7 +564,7 @@ async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
     // The surface fence needs the live screen, so it runs after the claim:
     // the error then says the caller holds control.
     let live = h
-        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .ok("neige.terminal.observe", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(live["role"], "observer");
     let entry = h.state.terminal_renderer.get(&terminal).unwrap();
@@ -577,7 +577,7 @@ async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
         .on_resize(size.cols + 2, size.rows);
     let resized = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"observation_id":live["observation_id"],"request_id":"resized","claim":true,
                 "action":{"type":"text","text":"x"}}),
         )
@@ -592,7 +592,7 @@ async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
         "the claim was granted before the surface fence"
     );
     let lease = h
-        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .ok("neige.terminal.observe", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(lease["role"], "owner", "{lease}");
     assert!(
@@ -610,14 +610,14 @@ async fn input_release_releases_after_the_write_and_reads_back_as_observer() {
     let h = Harness::start().await;
     let (terminal, _ready) = open_observed(&h, "release").await;
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"terminal_id":terminal,"action":"claim","observe":true}),
     )
     .await;
     let before = h.interaction().input_ack_sequence(&terminal).await.unwrap();
     let last = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "bye", "bye", json!({"release":true})),
         )
         .await;
@@ -648,7 +648,7 @@ async fn input_release_releases_after_the_write_and_reads_back_as_observer() {
     // The next plain input has only an observer observation to name.
     let plain = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "after", "x", json!({})),
         )
         .await;
@@ -659,13 +659,13 @@ async fn input_release_releases_after_the_write_and_reads_back_as_observer() {
     // A replay after control was claimed again: the cached receipt is
     // returned unchanged, the readback says owner, nothing is released.
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"terminal_id":terminal,"action":"claim"}),
     )
     .await;
     let replay = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(
                 &terminal,
                 "bye",
@@ -689,7 +689,7 @@ async fn input_release_releases_after_the_write_and_reads_back_as_observer() {
     // `release` is part of the fingerprint.
     let toggled = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(&terminal, "bye", "bye", json!({})),
         )
         .await;
@@ -707,7 +707,7 @@ async fn input_keeps_claim_and_release_in_one_request() {
     let before = h.interaction().input_ack_sequence(&terminal).await.unwrap();
     let both = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(
                 &terminal,
                 "solo",
@@ -742,7 +742,7 @@ async fn input_release_after_a_takeover_reports_not_held() {
     let h = Harness::start().await;
     let (terminal, _ready) = open_observed(&h, "release-takeover").await;
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"terminal_id":terminal,"action":"claim","observe":true}),
     )
     .await;
@@ -760,7 +760,7 @@ async fn input_release_after_a_takeover_reports_not_held() {
     };
     let (response, (pump, _incoming)) = tokio::join!(
         h.call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             submit(
                 &terminal,
                 "bye",
@@ -790,7 +790,7 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     let h = Harness::start().await;
     let opened = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             // The claim must land before the exit; 3 s is margin for a loaded CI shard.
             json!({"program":"sleep 3; exit 3","request_id":"exit-release","claim":true}),
         )
@@ -807,7 +807,7 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     let exited = loop {
         let view = h
             .ok(
-                "calm.terminal.observe",
+                "neige.terminal.observe",
                 json!({"terminal_id":terminal,"wait_for":"change","wait_ms":5000}),
             )
             .await;
@@ -830,7 +830,7 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     let started = std::time::Instant::now();
     let response = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"release","observe":true}),
         )
         .await;
@@ -862,7 +862,7 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     tokio::time::sleep(Duration::from_millis(2100)).await;
     let detached = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"detach"}),
         )
         .await;
@@ -870,7 +870,7 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     let start = std::time::Instant::now();
     let fresh = loop {
         let view = h
-            .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+            .ok("neige.terminal.observe", json!({"terminal_id":terminal}))
             .await;
         assert_ne!(view["connection_id"], exited["connection_id"], "{view}");
         if view["exited"] == true {
@@ -891,7 +891,7 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     // The claim arm on an exited terminal: the binding check refuses it.
     let claim = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"claim"}),
         )
         .await;
@@ -907,7 +907,7 @@ async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
     let h = Harness::start().await;
     let opened = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"program":"echo FINAL; sleep 1; exit 3","request_id":"exit-sweep","claim":true}),
         )
         .await;
@@ -917,7 +917,7 @@ async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
     let exited = loop {
         let view = h
             .ok(
-                "calm.terminal.observe",
+                "neige.terminal.observe",
                 json!({"terminal_id":terminal,"wait_for":"change","wait_ms":5000}),
             )
             .await;
@@ -977,7 +977,7 @@ async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
         .unwrap();
 
     let after = h
-        .call("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .call("neige.terminal.observe", json!({"terminal_id":terminal}))
         .await;
     let state = receipt(&after);
     assert_eq!(state["exited"], true, "{state}");
@@ -985,7 +985,7 @@ async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
     assert!(has_line(state, "FINAL"), "{state}");
     let response = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"release","observe":true}),
         )
         .await;

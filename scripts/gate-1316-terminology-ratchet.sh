@@ -9,6 +9,8 @@
 # #1923 bounded exception: harness_item/crates 262 -> 264 comes solely from the two SQL statements
 # of the rewind that read and delete rows of the `harness_items` table, whose name stays; the new
 # Rust names say `transcript`.
+# #2003 bounded exception: harness_item/crates 264 -> 266 comes solely from the one-time tool-name
+# migration's UPDATE of the `harness_items` table and its test's read-back of one row; no new name.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

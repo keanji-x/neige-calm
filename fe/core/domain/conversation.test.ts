@@ -539,14 +539,14 @@ describe('harnessItemToActivity', () => {
 
   it('reads the root cause out of a `Caused by:` chain, not its wrapper', () => {
     expect(harnessItemToActivity(mcpFailure({
-      message: 'tool call error: tool call failed for `calm/calm.report.edit`\n'
+      message: 'tool call error: tool call failed for `neige/neige.report.write`\n'
         + '\nCaused by:\n    Mcp error: -32602: message must be non-empty\n',
     }))).toMatchObject({ state: 'failed', detail: 'Mcp error: -32602: message must be non-empty' });
   });
 
   it('reads the root cause of the other failed row on the wire', () => {
     expect(harnessItemToActivity(mcpFailure({
-      message: 'tool call error: tool call failed for `calm/calm.plan.upsert`\n'
+      message: 'tool call error: tool call failed for `neige/neige.plan.cancel`\n'
         + '\nCaused by:\n    Mcp error: -32602: `tasks` must be a non-empty array\n',
     }))).toMatchObject({
       state: 'failed', detail: 'Mcp error: -32602: `tasks` must be a non-empty array',
@@ -574,7 +574,7 @@ describe('harnessItemToActivity', () => {
       params: JSON.stringify({
         completedAtMs: 1786763335477,
         item: {
-          server: 'calm', tool: REPORT_WRITE_TOOLS[3], arguments: { body: '# 概要' },
+          server: 'neige', tool: REPORT_WRITE_TOOLS[1], arguments: { body: '# 概要' },
           error: null, status: 'completed', durationMs: 15, type: 'mcpToolCall',
         },
       }),
@@ -623,7 +623,7 @@ describe('harnessItemToActivity', () => {
     }
   });
 
-  it('still reads the other `calm.track.*` tools as looks', () => {
+  it('still reads the other `neige.track.*` tools as looks', () => {
     expect(harnessItemToActivity(row({
       item_type: 'mcpToolCall',
       params: JSON.stringify({ item: { tool: `${TRACK_TOOL_PREFIX}state`, status: 'completed' } }),

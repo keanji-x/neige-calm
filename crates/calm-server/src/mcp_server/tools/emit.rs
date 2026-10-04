@@ -1,4 +1,4 @@
-//! Worker outcome tools (`calm.task.complete`, `calm.task.fail`). Every emitted event's scope is
+//! Worker outcome tools (`neige.task.complete`, `neige.task.fail`). Every emitted event's scope is
 //! anchored on the caller's card.
 
 use crate::decision_sink::CardDecisionSink;
@@ -16,8 +16,8 @@ use serde_json::Map;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
-pub const TOOL_TASK_FAIL: &str = "calm.task.fail";
+pub const TOOL_TASK_COMPLETE: &str = "neige.task.complete";
+pub const TOOL_TASK_FAIL: &str = "neige.task.fail";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(task_complete_descriptor(), wrap(task_complete));
@@ -43,7 +43,7 @@ where
 fn task_complete_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_COMPLETE.into(),
-        description: include_str!("../../../prompts/tools/calm.task.complete.md")
+        description: include_str!("../../../prompts/tools/neige.task.complete.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -129,7 +129,7 @@ pub(crate) fn worker_delivery_payload(
 fn task_fail_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_FAIL.into(),
-        description: include_str!("../../../prompts/tools/calm.task.fail.md")
+        description: include_str!("../../../prompts/tools/neige.task.fail.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

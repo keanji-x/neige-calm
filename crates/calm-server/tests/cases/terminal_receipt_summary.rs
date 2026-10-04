@@ -32,7 +32,7 @@ fn digest(fields: Value) -> Value {
 async fn open_observed(h: &Harness, request: &str) -> String {
     let terminal = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"program":COUNT_PROBE,"request_id":request}),
         )
         .await["terminal_id"]
@@ -50,7 +50,7 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     let terminal = open_observed(&h, "summary-written").await;
     let first = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"first","action":{"type":"submit","text":"one"},
                 "claim":true,"release":true,"observe":true,"wait_for":"change","wait_ms":3000}),
         )
@@ -86,7 +86,7 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     );
     let text = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"second","action":{"type":"submit","text":"two"},
                 "claim":true,"observe":true,"wait_for":"text","wait_text":["COUNT:2:two"],"wait_ms":5000}),
         )
@@ -121,7 +121,7 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     );
     let bare = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"third","action":{"type":"text","text":"three"},"claim":true}),
         )
         .await;
@@ -140,7 +140,7 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     h.observe_text(&terminal, "three").await;
     let released = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"last","action":{"type":"key","key":"Enter"},
                 "release":true,"observe":true,"wait_for":"change","wait_ms":3000}),
         )
@@ -164,7 +164,7 @@ async fn summary_names_the_hook_signal_and_the_repaint() {
     let h = Harness::start().await;
     let opened = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"program":COUNT_PROBE,"request_id":"summary-signal","claim":true}),
         )
         .await;
@@ -179,7 +179,7 @@ async fn summary_names_the_hook_signal_and_the_repaint() {
     };
     let (response, ()) = tokio::join!(
         h.call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"ask","action":{"type":"submit","text":"hello"},
                 "observe":true,"wait_for":"signal","wait_ms":10000}),
         ),
@@ -219,7 +219,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let (pump, _incoming) = human_takeover(&entry, &terminal, user).await;
     let refused = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"held","action":{"type":"submit","text":"x"},"claim":true}),
         )
         .await;
@@ -262,7 +262,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     }
     let claimed = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"claim"}),
         )
         .await;
@@ -278,7 +278,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     );
     let again = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"claim","observe":true,"wait_ms":50}),
         )
         .await;
@@ -305,7 +305,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let latest = observation(&again).clone();
     let typed = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"line","action":{"type":"submit","text":"moved"},
                 "observe":true,"wait_for":"text","wait_text":["COUNT:1:moved"],"wait_ms":5000}),
         )
@@ -313,7 +313,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     assert_eq!(receipt(&typed)["outcome"], "written", "{typed}");
     let stale = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"request_id":"late","action":{"type":"key","key":"Enter"}}),
         )
         .await;
@@ -336,7 +336,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     );
     let released = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"release","observe":true,"wait_ms":50}),
         )
         .await;
@@ -359,7 +359,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     // Detach has no readback and no summary: its line names the client.
     let detached = h
         .call(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal,"action":"detach"}),
         )
         .await;

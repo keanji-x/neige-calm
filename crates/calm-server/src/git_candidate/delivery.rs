@@ -69,11 +69,11 @@ pub(crate) enum DeliverySettled {
 /// that ends the attempt writes it on the row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AttemptOutcome {
-    /// `calm.task.complete`.
+    /// `neige.task.complete`.
     Completed,
-    /// `calm.task.fail`, a dead worker, or a liveness timeout.
+    /// `neige.task.fail`, a dead worker, or a liveness timeout.
     Failed,
-    /// `calm.plan.cancel` of a running worker.
+    /// `neige.plan.cancel` of a running worker.
     Canceled,
     /// The spawn failed before the launch may have started (compensation).
     SpawnFailed,

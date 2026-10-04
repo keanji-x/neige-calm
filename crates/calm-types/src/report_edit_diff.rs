@@ -19,7 +19,7 @@ pub const MAX_TOTAL_BYTES: usize = 8192;
 /// Appended (on its own line) wherever a bound cut something.
 pub const TRUNCATED_MARKER: &str = "… (truncated)";
 
-/// A block's identity in the body a diff was rendered against: the `id` / `rev` pair `calm.report.read` returns for it.
+/// A block's identity in the body a diff was rendered against: the `id` / `rev` pair `neige.report.read` returns for it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportBlockRef {
     pub id: String,

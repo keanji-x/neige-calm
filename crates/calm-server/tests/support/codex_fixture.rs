@@ -198,9 +198,9 @@ pub fn forge_pr_goal(repo_gitdir: &str) -> String {
 
 4. Call the MCP tool whose name ends in `gh.pr.checks` (full name `plugin.dev.neige.git-forge_gh.pr.checks`) with arguments {{"repo":"{repo}","pr":<the PR number from step 3>}}.
 
-5. Call `calm.task.complete` with a non-empty `idempotency_key`.
+5. Call `neige.task.complete` with a non-empty `idempotency_key`.
 
-Hard constraints: Do NOT run `git push`. Do NOT call gh.pr.merge. Do NOT close any issue. Do NOT call gh.pr.diff or gh.pr.list. Perform steps 2, 3, 4 in that exact order BEFORE calling calm.task.complete in step 5.
+Hard constraints: Do NOT run `git push`. Do NOT call gh.pr.merge. Do NOT close any issue. Do NOT call gh.pr.diff or gh.pr.list. Perform steps 2, 3, 4 in that exact order BEFORE calling neige.task.complete in step 5.
 Acceptance: `FORGE_E2E.md` exists with exactly that content; a PR was created; its checks were read."#,
         repo = repo_gitdir
     )

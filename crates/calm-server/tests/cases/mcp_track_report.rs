@@ -17,9 +17,7 @@ use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
-use calm_server::mcp_server::tools::track_report_blocks::{
-    TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE_MARKDOWN,
-};
+use calm_server::mcp_server::tools::track_report_blocks::{TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::mcp::RpcError;
@@ -500,7 +498,7 @@ async fn recv_env(
         .expect("bus open")
 }
 
-/// `calm.report.commit` arguments replacing the report's only block with `markdown` — the planner's
+/// `neige.report.commit` arguments replacing the report's only block with `markdown` — the planner's
 /// local edit, anchored by the planner's read here.
 async fn commit_replacing_only_block(boot: &Boot, markdown: &str, message: &str) -> Value {
     let read = call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
@@ -553,7 +551,7 @@ async fn whole_document_write_requires_a_read_and_rejects_stale_planner_writer()
     let boot = boot().await;
     let missing = call_tool(
         &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         planner_identity(&boot),
         json!({"body": "# A\n", "message": "no read"}),
     )
@@ -573,7 +571,7 @@ async fn whole_document_write_requires_a_read_and_rejects_stale_planner_writer()
     .unwrap();
     let conflict = call_tool(
         &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         planner_identity(&boot),
         json!({"body": "# Stale\n", "message": "second writer"}),
     )
@@ -769,8 +767,8 @@ async fn write_markdown_records_agent_message_and_leaves_the_track_open() {
 fn assert_lifecycle_removed(message: &str) {
     assert!(
         message.contains(
-            "`lifecycle` is removed: close with calm.track.close; ask with \
-             calm.user.notify or calm.ratify.request"
+            "`lifecycle` is removed: close with neige.track.close; ask with \
+             neige.user.notify or neige.ratify.request"
         ),
         "{message}"
     );
@@ -1597,7 +1595,7 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
             json!({"message": "stale commit", "summary": "stale"}),
         ),
         (
-            TOOL_REPORT_WRITE_MARKDOWN,
+            TOOL_REPORT_WRITE,
             json!({"body": "# stale\n", "message": "stale write"}),
         ),
     ] {

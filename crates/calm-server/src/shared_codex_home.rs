@@ -14,7 +14,7 @@ use toml_edit::DocumentMut;
 
 /// The only `[mcp_servers.*]` keys that may legitimately exist in the shared CODEX_HOME's
 /// config.toml; `seed_from` strips host `mcp_servers`, so this is a const, not config.
-pub const EXPECTED_MCP_SERVERS: &[&str] = &["calm"];
+pub const EXPECTED_MCP_SERVERS: &[&str] = &[crate::mcp_server::wiring::MCP_SERVER_KEY];
 
 /// Layout: <data_dir>/codex-home/ — the shared daemon's single CODEX_HOME, no per-card subdir.
 pub struct SharedCodexHome {
@@ -317,14 +317,14 @@ impl SharedCodexHome {
             let mcp_servers = doc["mcp_servers"].or_insert(toml_edit::table());
             if let Some(mcp_servers_table) = mcp_servers.as_table_mut() {
                 mcp_servers_table.set_implicit(true);
-                let calm = mcp_servers_table
-                    .entry("calm")
+                let kernel = mcp_servers_table
+                    .entry(crate::mcp_server::wiring::MCP_SERVER_KEY)
                     .or_insert(toml_edit::table());
-                if let Some(calm_table) = calm.as_table_mut() {
-                    calm_table["command"] =
+                if let Some(kernel_table) = kernel.as_table_mut() {
+                    kernel_table["command"] =
                         toml_edit::value(shim.shim_bin.to_string_lossy().to_string());
-                    calm_table["args"] = toml_edit::value(toml_edit::Array::new());
-                    let env = calm_table.entry("env").or_insert(toml_edit::table());
+                    kernel_table["args"] = toml_edit::value(toml_edit::Array::new());
+                    let env = kernel_table.entry("env").or_insert(toml_edit::table());
                     if let Some(env_table) = env.as_table_mut() {
                         for (key, value) in daemon_shim_env(&shim.socket_path, daemon_token) {
                             env_table[key] = toml_edit::value(value);

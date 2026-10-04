@@ -160,7 +160,7 @@ pub struct TerminalCreateOperationPayload {
     /// Wire key frozen as `runtime_id`: stored payloads keep it, and without the rename a parked operation would resume with a fresh session id.
     #[serde(rename = "runtime_id")]
     pub worker_session_id: Option<String>,
-    /// Set only by `calm.terminal.open`; REST-created terminals leave it false and get exactly the env they asked for.
+    /// Set only by `neige.terminal.open`; REST-created terminals leave it false and get exactly the env they asked for.
     #[serde(default)]
     pub planner_hooks: bool,
     #[serde(flatten)]

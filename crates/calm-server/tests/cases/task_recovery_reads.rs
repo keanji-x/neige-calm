@@ -104,7 +104,7 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
     )
     .await
     .unwrap();
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+    let list = call_tool(&boot, "neige.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let entry = list["tasks"]
@@ -118,7 +118,7 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
     assert!(entry["blocking_reason"].as_str().unwrap().contains("ready"));
     let summary = call_tool(
         &boot,
-        "calm.plan.list",
+        "neige.plan.list",
         planner_identity(&boot),
         json!({"detail":"summary","key":"b"}),
     )
@@ -164,7 +164,7 @@ async fn task_recovery_history_retains_current_dependency_blocker() {
     finish(&boot, &b, false).await;
     let report = call_tool(
         &boot,
-        "calm.report.read",
+        "neige.report.read",
         planner_identity(&boot),
         json!({}),
     )
@@ -254,7 +254,7 @@ async fn task_recovery_history_survives_a_deleted_frozen_reference() {
     let rest = rest_attempts(&boot, "b", axum::http::StatusCode::OK).await;
     assert_eq!(rest["current"]["attempt_id"], b.id);
     rest_attempts(&boot, "absent", axum::http::StatusCode::NOT_FOUND).await;
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+    let list = call_tool(&boot, "neige.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(list["tasks"].as_array().unwrap().len(), 2);
@@ -280,7 +280,7 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
             .bind(format!("{}:{key}", boot.track_id)).bind(boot.track_id.as_str()).bind(key).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
-    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+    let list = call_tool(&boot, "neige.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let keys: Vec<_> = list["tasks"]
@@ -296,7 +296,7 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
         std::time::Duration::from_secs(5),
         call_tool(
             &boot,
-            "calm.plan.list",
+            "neige.plan.list",
             planner_identity(&boot),
             json!({"detail":"summary","key":"k129"}),
         ),
@@ -310,7 +310,7 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
         std::time::Duration::from_secs(5),
         call_tool(
             &boot,
-            "calm.plan.list",
+            "neige.plan.list",
             planner_identity(&boot),
             json!({"detail":"summary","key":"unknown"}),
         ),
@@ -348,7 +348,7 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
         .unwrap();
     let report = call_tool(
         &boot,
-        "calm.report.read",
+        "neige.report.read",
         planner_identity(&boot),
         json!({}),
     )
@@ -377,7 +377,7 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
 }
 
 async fn list_entry(boot: &crate::mcp_track_report::Boot, args: Value) -> Value {
-    let list = call_tool(boot, "calm.plan.list", planner_identity(boot), args)
+    let list = call_tool(boot, "neige.plan.list", planner_identity(boot), args)
         .await
         .unwrap();
     list["tasks"]

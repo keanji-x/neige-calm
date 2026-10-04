@@ -415,7 +415,7 @@ async fn normalization_is_byte_identical_the_second_time() {
     );
 }
 
-/// The shared block-endpoint 403 sends callers to the MCP `calm.report.*` tools, which do not write recipes.
+/// The shared block-endpoint 403 sends callers to the MCP `neige.report.*` tools, which do not write recipes.
 #[tokio::test]
 async fn the_recipe_403_explains_recipes_not_report_blocks() {
     let boot = boot().await;
@@ -434,7 +434,7 @@ async fn the_recipe_403_explains_recipes_not_report_blocks() {
         "must name what was refused: {message}"
     );
     assert!(
-        !message.contains("calm.report."),
+        !message.contains("neige.report."),
         "must not redirect to a tool that cannot write recipes: {message}"
     );
     assert!(

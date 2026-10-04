@@ -286,7 +286,7 @@ impl Harness {
         loop {
             let view = self
                 .ok(
-                    "calm.terminal.observe",
+                    "neige.terminal.observe",
                     json!({"terminal_id":terminal,"wait_ms":30}),
                 )
                 .await;
@@ -305,7 +305,7 @@ impl Harness {
         }
     }
     pub async fn input(&self, terminal: &str, view: &Value, key: &str, action: Value) -> Value {
-        self.ok("calm.terminal.input",json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":key,"action":action})).await
+        self.ok("neige.terminal.input",json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":key,"action":action})).await
     }
     pub async fn stop(self, terminal: &str) {
         self.state.terminal_renderer.drop_entry(terminal).await;

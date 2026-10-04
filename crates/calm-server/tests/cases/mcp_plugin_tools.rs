@@ -331,7 +331,7 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &fx.bound_raw_token).await;
 
-    // Discovery with the bound thread: owning plugin + calm.* only.
+    // Discovery with the bound thread: owning plugin + neige.* only.
     send_frame(&mut wr, tools_list_frame(2, &fx.bound_thread_id)).await;
     let list = recv_frame(&mut rd).await;
     assert!(list.get("error").is_none(), "tools/list errored: {list:#?}");
@@ -341,8 +341,8 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
         "owning plugin tool missing from bound track tools/list: {names:?}"
     );
     assert!(
-        names.iter().any(|name| name.starts_with("calm.")),
-        "kernel calm.* tools must stay visible to a bound track: {names:?}"
+        names.iter().any(|name| name.starts_with("neige.")),
+        "kernel neige.* tools must stay visible to a bound track: {names:?}"
     );
     assert!(
         !names.iter().any(|name| name == EXPOSED_NAME),
@@ -421,7 +421,7 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
     );
 
     // Fail-closed: stopping the owning plugin loses ALL plugin tools (other running plugins are not
-    // widened back in); calm.* stays.
+    // widened back in); neige.* stays.
     fx.plugin_host
         .stop(&fx.trusted_plugin_id)
         .await
@@ -442,8 +442,8 @@ async fn bound_track_scopes_plugin_tools_to_template_owner() {
     assert!(
         names_after_stop
             .iter()
-            .any(|name| name.starts_with("calm.")),
-        "kernel calm.* tools must survive the fail-closed scope: {names_after_stop:?}"
+            .any(|name| name.starts_with("neige.")),
+        "kernel neige.* tools must survive the fail-closed scope: {names_after_stop:?}"
     );
     send_frame(
         &mut wr,

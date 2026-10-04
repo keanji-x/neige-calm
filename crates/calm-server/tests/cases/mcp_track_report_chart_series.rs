@@ -1,4 +1,4 @@
-//! `chart.series` through the real MCP write end, a `calm.report.commit` upsert op.
+//! `chart.series` through the real MCP write end, a `neige.report.commit` upsert op.
 //! A cutoff in the future is accepted on purpose: `calm-types` has no clock.
 
 #![cfg(unix)]
@@ -12,7 +12,7 @@ use calm_server::track_report::TrackReportPayload;
 use calm_types::report_blocks::{KIND_CHART_SERIES, parse_fence, split_body};
 use serde_json::{Value, json};
 
-const TOOL_REPORT_READ: &str = "calm.report.read";
+const TOOL_REPORT_READ: &str = "neige.report.read";
 const SOURCE: &str = "neige://plugin/dev-neige-market/market.series";
 
 async fn read(boot: &Boot, args: Value) -> Value {
@@ -59,7 +59,7 @@ fn chart_series_fences(read_out: &Value) -> Vec<Value> {
         .collect()
 }
 
-/// One `calm.report.commit` carrying exactly one `chart.series` upsert op.
+/// One `neige.report.commit` carrying exactly one `chart.series` upsert op.
 async fn commit_one_series(boot: &Boot, payload: Value) -> Result<Value, RpcError> {
     read(boot, json!({})).await;
     call_tool(

@@ -1,4 +1,4 @@
-//! The transient ring of plugin results the Planner's proxy calls produced, so `calm.source.capture` can vouch a source body is exactly what the kernel returned for one `(plugin, tool, args)` call.
+//! The transient ring of plugin results the Planner's proxy calls produced, so `neige.source.capture` can vouch a source body is exactly what the kernel returned for one `(plugin, tool, args)` call.
 //! A new call on the same key replaces the old entry whatever its status; eviction is lazy (on insert and lookup) and the ring is process memory.
 
 use std::collections::{BTreeMap, HashMap};

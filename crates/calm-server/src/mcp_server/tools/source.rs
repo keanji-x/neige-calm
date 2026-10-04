@@ -1,4 +1,4 @@
-//! `calm.source.capture` and `calm.source.list`: turn a plugin result the Planner just read into a stable, verifiable source.
+//! `neige.source.capture` and `neige.source.list`: turn a plugin result the Planner just read into a stable, verifiable source.
 //! Both handlers check `require_role(Planner)` themselves; tools still dispatch by name.
 
 use std::sync::Arc;
@@ -22,8 +22,8 @@ use crate::report_sources::{
 };
 use calm_types::report_source_links::is_source_id;
 
-pub const TOOL_SOURCE_CAPTURE: &str = "calm.source.capture";
-pub const TOOL_SOURCE_LIST: &str = "calm.source.list";
+pub const TOOL_SOURCE_CAPTURE: &str = "neige.source.capture";
+pub const TOOL_SOURCE_LIST: &str = "neige.source.list";
 
 /// Wording shared by every "nothing recorded" refusal for a tool the Track can see.
 const NO_RECORD: &str = "no recorded result for this call in this track \
@@ -62,7 +62,7 @@ where
 fn capture_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_SOURCE_CAPTURE.into(),
-        description: include_str!("../../../prompts/tools/calm.source.capture.md")
+        description: include_str!("../../../prompts/tools/neige.source.capture.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -106,7 +106,7 @@ fn capture_descriptor() -> ToolDescriptor {
 fn list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_SOURCE_LIST.into(),
-        description: include_str!("../../../prompts/tools/calm.source.list.md")
+        description: include_str!("../../../prompts/tools/neige.source.list.md")
             .trim_end()
             .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -557,7 +557,7 @@ async fn source_list(
     Ok(json!({ "sources": sources }))
 }
 
-/// One `calm.source.list` entry: everything but the body.
+/// One `neige.source.list` entry: everything but the body.
 pub fn list_entry(row: &SourceRow) -> Value {
     let mut entry = json!({
         "source_id": row.source_id,

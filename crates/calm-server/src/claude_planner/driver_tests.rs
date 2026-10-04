@@ -72,7 +72,7 @@ fn init(thread: Uuid) -> SystemInit {
         model: "claude-haiku-4-5".into(),
         capabilities: vec!["interrupt_receipt_v1".into()],
         mcp_servers: vec![McpStatus {
-            name: "calm".into(),
+            name: "neige".into(),
             status: "connected".into(),
         }],
         skills: vec![],
@@ -94,7 +94,7 @@ fn every_init_check_refuses_its_own_deviation() {
         ("version", |i| i.claude_code_version = "2.1.281".into()),
         ("session", |i| i.session_id = Uuid::new_v4()),
         ("capability", |i| i.capabilities.clear()),
-        ("calm", |i| i.mcp_servers[0].status = "failed".into()),
+        ("neige", |i| i.mcp_servers[0].status = "failed".into()),
         ("skills", |i| i.skills.push("dataviz".into())),
         ("plugin", |i| i.plugins[0].source = "x@market".into()),
     ];

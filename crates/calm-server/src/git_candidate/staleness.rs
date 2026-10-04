@@ -1,4 +1,4 @@
-//! `calm.plan.list.candidate.upstream` (#1777): how far a bound candidate's
+//! `neige.plan.list.candidate.upstream` (#1777): how far a bound candidate's
 //! base is behind the upstream of the branch the Track's attached checkout is
 //! on *now*, as last known. Read-only and computed at read time — never
 //! stored, never fetched: the upstream is the one a new lease of this Track

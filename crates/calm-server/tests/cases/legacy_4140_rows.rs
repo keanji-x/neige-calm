@@ -214,7 +214,7 @@ async fn legacy_4140_rows_load() {
 
     for (track, key) in TRACKS {
         // The Planner's plan reads return every current entry.
-        let full = call_tool(&boot, "calm.plan.list", planner(track), json!({}))
+        let full = call_tool(&boot, "neige.plan.list", planner(track), json!({}))
             .await
             .unwrap_or_else(|error| panic!("{track}: plan.list full: {error:?}"));
         let keys: Vec<&str> = full["tasks"]
@@ -234,7 +234,7 @@ async fn legacy_4140_rows_load() {
         }
         let summary = call_tool(
             &boot,
-            "calm.plan.list",
+            "neige.plan.list",
             planner(track),
             json!({"detail":"summary","key":key}),
         )
@@ -256,7 +256,7 @@ async fn legacy_4140_rows_load() {
         assert_eq!(generations, if track == "legacy-a" { 2 } else { 1 });
 
         // The report and its task block read.
-        let report = call_tool(&boot, "calm.report.read", planner(track), json!({}))
+        let report = call_tool(&boot, "neige.report.read", planner(track), json!({}))
             .await
             .unwrap_or_else(|error| panic!("{track}: report.read: {error:?}"));
         assert!(report.to_string().contains(key), "{track}: {report}");

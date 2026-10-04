@@ -1,4 +1,4 @@
-//! Authenticated HTTP track file views, compared against MCP `calm.track.ls` / `calm.track.cat` over the same repo.
+//! Authenticated HTTP track file views, compared against MCP `neige.track.ls` / `neige.track.cat` over the same repo.
 
 #![cfg(unix)]
 
@@ -142,7 +142,7 @@ async fn unknown_path_returns_400_with_mcp_message() {
         body["error"]
             .as_str()
             .unwrap()
-            .contains("calm.track: path not available in this view: nope"),
+            .contains("neige.track: path not available in this view: nope"),
         "{body}"
     );
 }

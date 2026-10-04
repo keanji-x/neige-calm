@@ -9,6 +9,10 @@ use crate::error::Result;
 use crate::mcp_server::auth::{CardMcpToken, hash_token};
 use crate::model::CardRole;
 
+/// The key every provider registers the kernel MCP shim under: Codex `[mcp_servers.neige]`, Claude
+/// `mcpServers.neige`, so a client calls kernel tools as `mcp__neige__…`.
+pub const MCP_SERVER_KEY: &str = "neige";
+
 /// Pure per-card MCP environment assembler.
 pub fn card_mcp_env(socket_path: &Path, raw_token: &str) -> [(&'static str, String); 2] {
     [
@@ -50,10 +54,10 @@ pub(crate) fn card_mcp_thread_start_config(
     });
     // Delegated only for a Planner thread; the kernel remains the live role/Track/session/control authority.
     if role == CardRole::Planner {
-        config["mcp_servers"] = serde_json::json!({"calm":{"tools":{
-            "calm.terminal.open":{"approval_mode":"approve"},
-            "calm.terminal.control":{"approval_mode":"approve"},
-            "calm.terminal.input":{"approval_mode":"approve"}
+        config["mcp_servers"] = serde_json::json!({MCP_SERVER_KEY:{"tools":{
+            "neige.terminal.open":{"approval_mode":"approve"},
+            "neige.terminal.control":{"approval_mode":"approve"},
+            "neige.terminal.input":{"approval_mode":"approve"}
         }}});
     }
     config
@@ -187,10 +191,10 @@ mod tests {
             if role == CardRole::Planner {
                 assert_eq!(
                     cfg["mcp_servers"],
-                    serde_json::json!({"calm":{"tools":{
-                        "calm.terminal.open":{"approval_mode":"approve"},
-                        "calm.terminal.control":{"approval_mode":"approve"},
-                        "calm.terminal.input":{"approval_mode":"approve"}
+                    serde_json::json!({"neige":{"tools":{
+                        "neige.terminal.open":{"approval_mode":"approve"},
+                        "neige.terminal.control":{"approval_mode":"approve"},
+                        "neige.terminal.input":{"approval_mode":"approve"}
                     }}})
                 );
             } else {
@@ -212,7 +216,7 @@ mod tests {
             CardRole::Planner,
             "/k/bin:/usr/bin",
         );
-        let granted: std::collections::BTreeSet<_> = cfg["mcp_servers"]["calm"]["tools"]
+        let granted: std::collections::BTreeSet<_> = cfg["mcp_servers"]["neige"]["tools"]
             .as_object()
             .unwrap()
             .keys()
@@ -222,12 +226,12 @@ mod tests {
         let mut writes = std::collections::BTreeSet::new();
         for descriptor in descriptors
             .iter()
-            .filter(|d| d.name.starts_with("calm.terminal."))
+            .filter(|d| d.name.starts_with("neige.terminal."))
         {
             assert_eq!(descriptor.visible_to_roles, &[CardRole::Planner]);
             let read = matches!(
                 descriptor.name.as_str(),
-                "calm.terminal.resolve" | "calm.terminal.observe"
+                "neige.terminal.resolve" | "neige.terminal.observe"
             );
             assert_eq!(
                 descriptor.annotations,

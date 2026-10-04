@@ -30,7 +30,7 @@ track 的 VCS diff）。不要把秘密写进来。
     在末尾给结论。
   · 每一个数字都带口径、数据日期和来源；官方统计、机构估算、市场定价、
     你自己的推断要分层标清，不能混写。机构观点要注明拿到的是原文还是摘要。
-  · 引用一律是 `neige://source/…` 链接（来源先用 `calm.source.capture` 存进
+  · 引用一律是 `neige://source/…` 链接（来源先用 `neige.source.capture` 存进
     track，再引用），不写裸的内容 ID 或纯文本 URL：正文引用带 `#q<n>` 锚点指到
     原句，无法定位到具体句子时可只给 `neige://source/<source_id>`；清单条目的
     锚点可选。

@@ -1,4 +1,4 @@
-//! `calm.report.commit` block ops + `write_markdown` integration coverage on the `mcp_track_report` fixture.
+//! `neige.report.commit` block ops + `write_markdown` integration coverage on the `mcp_track_report` fixture.
 
 #![cfg(unix)]
 
@@ -10,13 +10,13 @@ use crate::mcp_track_report::{
 };
 use calm_server::event::Event;
 use calm_server::mcp_server::tools::track_report_blocks::{
-    RPC_REV_CONFLICT, TOOL_REPORT_BLOCKS_KINDS, TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE_MARKDOWN,
+    RPC_REV_CONFLICT, TOOL_REPORT_COMMIT, TOOL_REPORT_KINDS, TOOL_REPORT_WRITE,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 
-const TOOL_REPORT_READ: &str = "calm.report.read";
+const TOOL_REPORT_READ: &str = "neige.report.read";
 /// The birth body, read at runtime rather than re-transcribed.
 fn seed_body() -> &'static str {
     static BODY: std::sync::LazyLock<String> =
@@ -24,7 +24,7 @@ fn seed_body() -> &'static str {
     &BODY
 }
 
-/// Position of the block whose text starts with `head`, within the block index a `calm.report.read` just returned.
+/// Position of the block whose text starts with `head`, within the block index a `neige.report.read` just returned.
 fn position_of_block_starting_with(read_out: &Value, head: &str) -> usize {
     let text = read_out["text"].as_str().expect("read returns text");
     calm_types::report_blocks::split_body(text)
@@ -44,7 +44,7 @@ async fn current_payload(boot: &Boot) -> TrackReportPayload {
     serde_json::from_value(card.payload).expect("payload deserializes")
 }
 
-/// `[(id, rev)]` from a `calm.report.read` response's blocks index.
+/// `[(id, rev)]` from a `neige.report.read` response's blocks index.
 fn index_of(read: &Value) -> Vec<(String, u64)> {
     read.get("blocks")
         .and_then(Value::as_array)
@@ -115,7 +115,7 @@ async fn another_writer_invalidates_a_previously_read_whole_document() {
 
     let conflict = call_tool(
         &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         planner_identity(&boot),
         json!({"body": "# stale rewrite\n"}),
     )
@@ -148,12 +148,12 @@ async fn removed_revision_params_are_refused_as_unknown_parameters() {
             "ops[0]: unknown key `if_rev`",
         ),
         (
-            TOOL_REPORT_WRITE_MARKDOWN,
+            TOOL_REPORT_WRITE,
             json!({ "body": "# overwrite\n", "if_doc_rev": 0 }),
             "unknown key `if_doc_rev`",
         ),
         (
-            TOOL_REPORT_WRITE_MARKDOWN,
+            TOOL_REPORT_WRITE,
             json!({ "body": "# overwrite\n", "if_rev": 1 }),
             "unknown key `if_rev`",
         ),
@@ -171,14 +171,9 @@ async fn removed_revision_params_are_refused_as_unknown_parameters() {
 #[tokio::test]
 async fn kinds_returns_all_supported_schemas() {
     let boot = boot().await;
-    let out = call_tool(
-        &boot,
-        TOOL_REPORT_BLOCKS_KINDS,
-        planner_identity(&boot),
-        json!({}),
-    )
-    .await
-    .expect("kinds succeeds");
+    let out = call_tool(&boot, TOOL_REPORT_KINDS, planner_identity(&boot), json!({}))
+        .await
+        .expect("kinds succeeds");
     let kinds = out
         .get("kinds")
         .and_then(Value::as_array)
@@ -346,7 +341,7 @@ async fn kinds_returns_all_supported_schemas() {
         preview.pointer("/schema/additionalProperties"),
         Some(&Value::Bool(false))
     );
-    // The key pattern is `calm.preview.register`'s; the path pattern is the `app` block's `src`.
+    // The key pattern is `neige.preview.register`'s; the path pattern is the `app` block's `src`.
     assert_eq!(
         preview.pointer("/schema/properties/key/pattern"),
         Some(&json!("^[a-z0-9][a-z0-9_-]{0,63}$"))
@@ -426,14 +421,9 @@ async fn kinds_returns_all_supported_schemas() {
 #[tokio::test]
 async fn kinds_refuses_worker() {
     let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_REPORT_BLOCKS_KINDS,
-        worker_identity(&boot),
-        json!({}),
-    )
-    .await
-    .expect_err("worker must be denied");
+    let err = call_tool(&boot, TOOL_REPORT_KINDS, worker_identity(&boot), json!({}))
+        .await
+        .expect_err("worker must be denied");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 }
 
@@ -827,7 +817,7 @@ async fn write_markdown_needs_a_whole_read_at_the_current_doc_rev() {
     let write = |body: &str| {
         call_tool(
             &boot,
-            TOOL_REPORT_WRITE_MARKDOWN,
+            TOOL_REPORT_WRITE,
             planner_identity(&boot),
             json!({ "body": body }),
         )
@@ -835,7 +825,7 @@ async fn write_markdown_needs_a_whole_read_at_the_current_doc_rev() {
     let unread = write("# Unread\n").await.expect_err("no read at all");
     assert_eq!(unread.code, RpcError::INVALID_PARAMS);
     assert!(
-        unread.message.contains("full calm.report.read"),
+        unread.message.contains("full neige.report.read"),
         "{unread:?}"
     );
 
@@ -859,7 +849,7 @@ async fn write_markdown_needs_a_whole_read_at_the_current_doc_rev() {
         .expect_err("a partial read at a newer docRev must not anchor a rewrite");
     assert_eq!(partial.code, RpcError::INVALID_PARAMS);
     assert!(
-        partial.message.contains("full calm.report.read"),
+        partial.message.contains("full neige.report.read"),
         "{partial:?}"
     );
     assert!(current_payload(&boot).await.body.contains("# Second"));
@@ -897,7 +887,7 @@ async fn an_own_write_markdown_counts_as_read_but_a_foreign_write_in_between_doe
     read(&boot, json!({})).await;
     let written = call_tool(
         &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         planner_identity(&boot),
         json!({ "body": "# A\n\nalpha\n" }),
     )
@@ -913,7 +903,7 @@ async fn an_own_write_markdown_counts_as_read_but_a_foreign_write_in_between_doe
 
     call_tool(
         &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         planner_identity(&boot),
         json!({ "body": "# A\n\nalpha 2\n" }),
     )
@@ -1374,7 +1364,7 @@ async fn write_markdown_refuses_worker() {
     let boot = boot().await;
     let err = call_tool(
         &boot,
-        TOOL_REPORT_WRITE_MARKDOWN,
+        TOOL_REPORT_WRITE,
         worker_identity(&boot),
         json!({ "body": "evil\n" }),
     )

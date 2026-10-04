@@ -29,22 +29,22 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
     let terminal_schemas: serde_json::Map<String, Value> = descriptors
         .iter()
-        .filter(|descriptor| descriptor.name.starts_with("calm.terminal."))
+        .filter(|descriptor| descriptor.name.starts_with("neige.terminal."))
         .map(|descriptor| (descriptor.name.clone(), descriptor.input_schema.clone()))
         .collect();
     println!("TERMINAL_TOOL_SCHEMAS={}", Value::Object(terminal_schemas));
     assert_eq!(
         descriptors
             .iter()
-            .filter(|descriptor| descriptor.name.starts_with("calm.terminal.")
-                && descriptor.name != "calm.terminal.open")
+            .filter(|descriptor| descriptor.name.starts_with("neige.terminal.")
+                && descriptor.name != "neige.terminal.open")
             .map(|descriptor| descriptor.name.clone())
             .collect::<BTreeSet<_>>(),
         fields(&[
-            "calm.terminal.resolve",
-            "calm.terminal.observe",
-            "calm.terminal.control",
-            "calm.terminal.input"
+            "neige.terminal.resolve",
+            "neige.terminal.observe",
+            "neige.terminal.control",
+            "neige.terminal.input"
         ]),
         "every registered targeted Terminal tool must be covered by this sweep"
     );
@@ -87,7 +87,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             vec!["request_id", "action"],
         ),
     ] {
-        let name = format!("calm.terminal.{name}");
+        let name = format!("neige.terminal.{name}");
         let descriptor = descriptors
             .iter()
             .find(|descriptor| descriptor.name == name)
@@ -140,7 +140,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
                     .starts_with("Resolve exactly one attempt_id"),
             "{name}: exactly-one targeting is the first sentence"
         );
-        if name != "calm.terminal.resolve" {
+        if name != "neige.terminal.resolve" {
             // The omitted-budget default depends on wait_for, so it is stated in the description rather than as a JSON Schema default.
             assert_eq!(
                 schema["properties"]["wait_ms"],
@@ -180,7 +180,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     }
     let open_schema = &descriptors
         .iter()
-        .find(|descriptor| descriptor.name == "calm.terminal.open")
+        .find(|descriptor| descriptor.name == "neige.terminal.open")
         .unwrap()
         .input_schema;
     assert_eq!(
@@ -194,7 +194,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     assert_eq!(required(open_schema), fields(&["request_id"]));
     let observe_schema = &descriptors
         .iter()
-        .find(|descriptor| descriptor.name == "calm.terminal.observe")
+        .find(|descriptor| descriptor.name == "neige.terminal.observe")
         .unwrap()
         .input_schema;
     for property in WAIT {
@@ -210,7 +210,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     );
     let input = &descriptors
         .iter()
-        .find(|descriptor| descriptor.name == "calm.terminal.input")
+        .find(|descriptor| descriptor.name == "neige.terminal.input")
         .unwrap()
         .input_schema;
     for flag in ["allow_output_since_observation", "claim", "release"] {
@@ -233,7 +233,7 @@ fn input_schema_lists_only_live_actions() {
     let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
     let input = &descriptors
         .iter()
-        .find(|descriptor| descriptor.name == "calm.terminal.input")
+        .find(|descriptor| descriptor.name == "neige.terminal.input")
         .unwrap()
         .input_schema;
     let actions = input["properties"]["action"]["anyOf"].as_array().unwrap();

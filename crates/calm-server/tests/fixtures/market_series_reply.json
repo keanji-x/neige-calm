@@ -1,5 +1,5 @@
 {
-  "_comment": "#1628 S2/S3 seam: one market.series request, the plugin's structuredContent reply, and the resolved summary calm.report.read hands out for it. S2 reads `reply` through the fake plugin and asserts `resolved`; S3 asserts its own plugin produces `reply` for `request`.",
+  "_comment": "#1628 S2/S3 seam: one market.series request, the plugin's structuredContent reply, and the resolved summary neige.report.read hands out for it. S2 reads `reply` through the fake plugin and asserts `resolved`; S3 asserts its own plugin produces `reply` for `request`.",
   "block": {
     "source": "neige://plugin/dev-neige-market/market.series",
     "series": ["US:NVDA", "HK:9988"],

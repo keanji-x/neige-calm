@@ -10,65 +10,66 @@ use calm_server::model::CardRole;
 use serde_json::json;
 use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 
-/// Tools an Assistant token may call. Its report writes are anchored by its own `calm.report.read`;
+/// Tools an Assistant token may call. Its report writes are anchored by its own `neige.report.read`;
 /// their `lifecycle` field alone is refused.
 const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
-    "calm.calendar.list",
-    "calm.calendar.create",
-    "calm.calendar.update",
-    "calm.report.read",
-    "calm.report.blocks.kinds",
-    "calm.report.commit",
-    "calm.report.write_markdown",
+    "neige.calendar.list",
+    "neige.calendar.create",
+    "neige.calendar.update",
+    "neige.report.read",
+    "neige.report.kinds",
+    "neige.report.commit",
+    "neige.report.write",
 ];
 
 /// Denied tools whose handler a **Planner** token gets past; also the control list below.
 const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Cross-track / cross-area report discovery reads.
-    "calm.area.outline",
-    "calm.report.links.backlinks",
-    "calm.report.find",
+    "neige.area.outline",
+    "neige.report.backlinks",
+    "neige.report.find",
     // Captured sources are the planner's evidence.
-    "calm.source.capture",
-    "calm.source.list",
+    "neige.source.capture",
+    "neige.source.list",
     // Track state + verdict.
-    "calm.track.state",
-    "calm.task.verdict",
+    "neige.track.state",
+    "neige.task.verdict",
     // Naming the track is a planner judgement.
-    "calm.track.rename",
+    "neige.track.rename",
     // Publishing the track's verified commit is a Planner action.
-    "calm.track.publish",
+    "neige.track.publish",
     // Closing the track is a Planner action; only the user reopens.
-    "calm.track.close",
+    "neige.track.close",
     // Speaking from a background sync turn is a planner action.
-    "calm.user.notify",
+    "neige.user.notify",
     // Preview gateway registration is a Planner action.
-    "calm.preview.register",
-    "calm.preview.unregister",
-    "calm.terminal.open",
-    "calm.terminal.resolve",
-    "calm.terminal.observe",
-    "calm.terminal.control",
-    "calm.terminal.input",
+    "neige.preview.register",
+    "neige.preview.unregister",
+    "neige.terminal.open",
+    "neige.terminal.resolve",
+    "neige.terminal.observe",
+    "neige.terminal.control",
+    "neige.terminal.input",
     // Track filesystem + history drill-ins (Planner|Worker, never Assistant).
-    "calm.track.ls",
-    "calm.track.cat",
+    "neige.track.ls",
+    "neige.track.cat",
     // `neige tag report.md` (Planner lists and changes, Worker lists; never Assistant).
-    "calm.report.tag",
-    "calm.track.diff",
-    "calm.track.cat_at",
-    "calm.track.log",
+    "neige.report.tag",
+    "neige.track.diff",
+    "neige.track.show",
+    "neige.track.log",
     // Planning, review, admin.
-    "calm.plan.cancel",
-    "calm.plan.list",
-    "calm.ratify.request",
-    "calm.admin.track_gc",
-    "calm.admin.vacuum",
+    "neige.plan.cancel",
+    "neige.plan.list",
+    "neige.ratify.request",
+    "neige.admin.gc",
+    "neige.admin.vacuum",
 ];
 
 /// Denied tools that only a **Worker** token gets past, so the Planner control does not assert
 /// something false about them.
-const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &["calm.task.complete", "calm.task.fail"];
+const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] =
+    &["neige.task.complete", "neige.task.fail"];
 
 fn assistant_denied_tools() -> Vec<&'static str> {
     ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE
@@ -142,7 +143,7 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
         let error = resp
             .get("error")
             .unwrap_or_else(|| panic!("`{tool}` must refuse an assistant caller, got: {resp:#?}"));
-        if *tool == "calm.track.publish" {
+        if *tool == "neige.track.publish" {
             assert_eq!(
                 error["code"].as_i64(),
                 Some(-32601),
@@ -179,14 +180,14 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
             "jsonrpc": "2.0",
             "id": 300,
             "method": "tools/call",
-            "params": { "name": "calm.report.read", "arguments": {} }
+            "params": { "name": "neige.report.read", "arguments": {} }
         }),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(
         resp.get("error").is_none(),
-        "calm.report.read must serve an assistant caller: {resp:#?}"
+        "neige.report.read must serve an assistant caller: {resp:#?}"
     );
 
     // The structured payload is the JSON text of the single content item.
@@ -200,7 +201,7 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
         "`docRev` must be the CRDT-derived revision — it is what this read \
          anchors a later write to: {payload:#?}"
     );
-    // `taskDiagnostics` is dispatched-task runtime state, the class `calm.plan.list` stays
+    // `taskDiagnostics` is dispatched-task runtime state, the class `neige.plan.list` stays
     // Planner-only to withhold; it must not leak out the side.
     assert!(
         payload.get("taskDiagnostics").is_none(),
@@ -256,14 +257,14 @@ async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
             "jsonrpc": "2.0",
             "id": 500,
             "method": "tools/call",
-            "params": { "name": "calm.report.read", "arguments": {} }
+            "params": { "name": "neige.report.read", "arguments": {} }
         }),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
     assert!(
         resp.get("error").is_none(),
-        "calm.report.read must serve a planner caller: {resp:#?}"
+        "neige.report.read must serve a planner caller: {resp:#?}"
     );
     let payload = tool_result_payload(&resp);
     let diagnostics = payload

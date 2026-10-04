@@ -1,4 +1,4 @@
-//! `calm.source.capture` / `calm.source.list` through the real tool registry. The transient ring
+//! `neige.source.capture` / `neige.source.list` through the real tool registry. The transient ring
 //! is seeded directly here (`ctx.plugin_results`); the transport recording point is covered by
 //! `mcp_source_capture_e2e.rs`.
 
@@ -22,7 +22,7 @@ const TOOL_NAME: &str = "do.thing";
 const REGISTRY_NAME: &str = "plugin.dev.echo_do.thing";
 const SANITIZED_NAME: &str = "plugin_dev_echo_do_thing";
 /// The name the model's tool list actually shows for [`REGISTRY_NAME`].
-const QUALIFIED_NAME: &str = "mcp__calm__plugin_dev_echo_do_thing";
+const QUALIFIED_NAME: &str = "mcp__neige__plugin_dev_echo_do_thing";
 const COLLIDING_PLUGIN_ID: &str = "dev";
 const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
 
@@ -294,7 +294,7 @@ async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
         "mcp__plugin_dev_echo_do_thing",
         "mcp____plugin_dev_echo_do_thing",
         "plugin.dev.echo_other",
-        "mcp__calm__plugin_dev_echo_other",
+        "mcp__neige__plugin_dev_echo_other",
     ] {
         let err = capture(
             &boot,

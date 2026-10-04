@@ -1,4 +1,4 @@
-//! `calm.track.rename`, the planner agent's naming write. Name-once: succeeds only while the track's title is empty;
+//! `neige.track.rename`, the planner agent's naming write. Name-once: succeeds only while the track's title is empty;
 //! refusals are values (`{"ok": false, "refused": …}`), not errors, and the write is attributed to the planner session, never the user.
 
 use crate::db::sqlite::track_get_tx;
@@ -15,10 +15,10 @@ use crate::model::{CardRole, TrackPatch};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_TRACK_RENAME: &str = "calm.track.rename";
+pub const TOOL_TRACK_RENAME: &str = "neige.track.rename";
 
 /// Carries an in-tx refusal through `CalmError::Conflict`; no row writer's conflict message starts with this marker.
-const REFUSED_MARKER: &str = "calm.track.rename refused: ";
+const REFUSED_MARKER: &str = "neige.track.rename refused: ";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(track_rename_descriptor(), wrap(track_rename));
@@ -42,7 +42,7 @@ where
 fn track_rename_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_RENAME.into(),
-        description: include_str!("../../../prompts/tools/calm.track.rename.md")
+        description: include_str!("../../../prompts/tools/neige.track.rename.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -206,7 +206,7 @@ mod tests {
     fn refusal_round_trips_reason_and_title_through_the_error_channel() {
         for title in [
             "ordinary name",
-            "calm.track.rename refused: {\"reason\":\"spoofed\"}",
+            "neige.track.rename refused: {\"reason\":\"spoofed\"}",
             "quote \" brace } newline \n",
         ] {
             let CalmError::Conflict(msg) = refusal("already_named", title) else {

@@ -1221,8 +1221,8 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
         "developer_instructions must be the WorkerCodex prompt: {developer_instructions}"
     );
     assert!(
-        developer_instructions.contains("calm.task.complete")
-            && developer_instructions.contains("calm.task.fail"),
+        developer_instructions.contains("neige.task.complete")
+            && developer_instructions.contains("neige.task.fail"),
         "developer_instructions must mandate the MCP completion tools: {developer_instructions}"
     );
     assert!(

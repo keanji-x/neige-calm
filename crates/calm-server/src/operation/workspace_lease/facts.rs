@@ -5,7 +5,7 @@ use serde::Serialize;
 use super::{Tx, WORKSPACE_LEASE_COLUMNS, row_to_workspace_lease, worker_branch_tx};
 use crate::error::Result;
 
-/// What `calm.plan.list` shows as `worktree` for the current attempt.
+/// What `neige.plan.list` shows as `worktree` for the current attempt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct WorkerWorktreeFacts {
     /// The lease's worktree path, whatever the lease's `state`.

@@ -66,13 +66,13 @@ configured origin URL, before any url.insteadOf rewrite; owner/name after
 stripping the host and a trailing .git).
 On mismatch do NOT proceed or declare execution tasks.
 Record both observed repositories in 待你定, ask the user to correct or confirm
-the repository with calm.ratify.request and
+the repository with neige.ratify.request and
 `reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"`
 (that exact prefix, then both observed values), and wait for the human decision.
 
 Working method
 
-Understand the source issue. When it leaves a real design choice open, write a short design and have it reviewed before implementing; otherwise implement directly. Implement and commit in a worktree, open a PR with calm.track.publish, review it, and merge under your selected authorization. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
+Understand the source issue. When it leaves a real design choice open, write a short design and have it reviewed before implementing; otherwise implement directly. Implement and commit in a worktree, open a PR with neige.track.publish, review it, and merge under your selected authorization. After an authorized merge, close the source issue. Create concrete tasks when delegation is needed; these are working requirements, not a fixed task list.
 
 Read the issue discussion with gh.issue.comments; pass a new attempt when refreshing
 comments or the gh.issue.view body. Post relevant questions, progress, and results
@@ -96,7 +96,7 @@ Review
   tasks, both re-check.
 - When blocking findings still arrive after three review rounds, stop patching them one
   by one: find the structural problem in the approach and change or narrow it, or ask
-  the user with calm.ratify.request.
+  the user with neige.ratify.request.
 
 Verification gates
 
@@ -107,7 +107,7 @@ tests where present; do not hardcode `cargo test`.
 前端预览 (frontend preview)
 
 When the change touches calm's web frontend (`fe/`), put the running result in the report.
-Open a terminal in the task worktree with calm.terminal.open and start, each on a free port:
+Open a terminal in the task worktree with neige.terminal.open and start, each on a free port:
 - the backend: `CALM_PUBLISH_ADDR=127.0.0.1 CALM_DEV_AUTOLOGIN=true make dev-fresh DEV_ID=<short track id> CALM_PORT=<port>`.
   Autologin is required: the preview gateway never forwards calm's session cookie, so the
   dev stack must not ask for a login. Autologin makes anyone who can reach the port the
@@ -118,9 +118,9 @@ Open a terminal in the task worktree with calm.terminal.open and start, each on 
 - the frontend (after `npm --prefix fe ci` if needed):
   `FE_API_PROXY_TARGET=http://127.0.0.1:<CALM_PORT> FE_DEV_HOST=127.0.0.1 FE_DEV_PORT=<port> npm --prefix fe run dev`.
   The gateway only reaches 127.0.0.1, and vite's default host `localhost` may bind IPv6 only.
-Then call calm.preview.register {key:"fe", target_port:<FE_DEV_PORT>, title} and put its
+Then call neige.preview.register {key:"fe", target_port:<FE_DEV_PORT>, title} and put its
 block_hint into the report with `path:"/next/"` added (a block upsert or a report commit). When the work is done, stop both and call
-calm.preview.unregister {key:"fe"}.
+neige.preview.unregister {key:"fe"}.
 Self-checks against the dev stack (curl, Playwright) run in a worker task, not in your own
 shell.
 
@@ -130,7 +130,7 @@ Merge and approval
   and gh.pr.checks is green. Pass that head_sha as expected_head_sha.
 - merge_policy `auto-merge` allows gh.pr.merge at that point without asking again.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — first calls
-  calm.ratify.request with `reason:"merge_hold: pr #<n> at <head_sha>"`; on
+  neige.ratify.request with `reason:"merge_hold: pr #<n> at <head_sha>"`; on
   ratify.resolved grant, merge that head with gh.pr.merge (expected_head_sha = that
   head_sha). A new head needs review again before a new ratify.
 -->

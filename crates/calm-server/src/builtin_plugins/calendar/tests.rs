@@ -293,9 +293,9 @@ async fn calendar_create_retry_update_conflict_cancel_and_durable_receipt() {
 async fn calendar_native_tools_enforce_scope_role_session_and_enablement() {
     let fx = Fixture::new().await;
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("calm.calendar.create").unwrap();
-    let list = registry.lookup("calm.calendar.list").unwrap();
-    let update = registry.lookup("calm.calendar.update").unwrap();
+    let create = registry.lookup("neige.calendar.create").unwrap();
+    let list = registry.lookup("neige.calendar.list").unwrap();
+    let update = registry.lookup("neige.calendar.update").unwrap();
     let owner = fx.identity(CardRole::Planner).await;
     let other = fx.identity(CardRole::Assistant).await;
     let result = create(fx.ctx.clone(), owner.clone(), json!(request()))
@@ -500,9 +500,9 @@ async fn calendar_concurrent_creation_and_edits_are_serialized() {
 async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     let fx = Fixture::new().await;
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("calm.calendar.create").unwrap();
-    let list = registry.lookup("calm.calendar.list").unwrap();
-    let update = registry.lookup("calm.calendar.update").unwrap();
+    let create = registry.lookup("neige.calendar.create").unwrap();
+    let list = registry.lookup("neige.calendar.list").unwrap();
+    let update = registry.lookup("neige.calendar.update").unwrap();
     let planner = fx.identity(CardRole::Planner).await;
     let timed = json!({"title":"Review research","description":"Deliver recommendations","schedule":{
         "kind":"timed","start":"2026-10-02T09:00:00+08:00","end":"2026-10-02T10:00:00+08:00","timezone":"Asia/Shanghai"
@@ -609,9 +609,9 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
 async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
     let fx = Fixture::new().await;
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("calm.calendar.create").unwrap();
-    let list = registry.lookup("calm.calendar.list").unwrap();
-    let update = registry.lookup("calm.calendar.update").unwrap();
+    let create = registry.lookup("neige.calendar.create").unwrap();
+    let list = registry.lookup("neige.calendar.list").unwrap();
+    let update = registry.lookup("neige.calendar.update").unwrap();
     let planner = fx.identity(CardRole::Planner).await;
     let task = json!({"title":"Research","description":"Deliver findings","schedule":{
         "kind":"timed","start":"2026-10-02T09:00","end":"2026-10-02T10:00","timezone":"Asia/Shanghai"
@@ -712,7 +712,11 @@ async fn scoped_catalog_respects_builtin_lifecycle_and_track_owner() {
     let names = tool_descriptors_for_connection(&fx.ctx, &registry, &bound, None)
         .await
         .unwrap();
-    assert!(names.iter().any(|tool| tool.name == "calm.calendar.create"));
+    assert!(
+        names
+            .iter()
+            .any(|tool| tool.name == "neige.calendar.create")
+    );
     fx.host.stop(PLUGIN_ID).await.unwrap();
     let names = tool_descriptors_for_connection(&fx.ctx, &registry, &bound, None)
         .await
@@ -720,7 +724,7 @@ async fn scoped_catalog_respects_builtin_lifecycle_and_track_owner() {
     assert!(
         !names
             .iter()
-            .any(|tool| tool.name.starts_with("calm.calendar."))
+            .any(|tool| tool.name.starts_with("neige.calendar."))
     );
     fx.host.enable(PLUGIN_ID).await.unwrap();
     fx.host
@@ -739,9 +743,9 @@ async fn scoped_catalog_respects_builtin_lifecycle_and_track_owner() {
     assert!(
         !names
             .iter()
-            .any(|tool| tool.name.starts_with("calm.calendar."))
+            .any(|tool| tool.name.starts_with("neige.calendar."))
     );
-    assert!(names.iter().any(|tool| tool.name == "calm.track.publish"));
+    assert!(names.iter().any(|tool| tool.name == "neige.track.publish"));
 }
 
 #[tokio::test]

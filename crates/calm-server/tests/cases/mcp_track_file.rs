@@ -1,4 +1,4 @@
-//! Read-only track file MCP tools (`calm.track.ls` / `calm.track.cat`); scope comes from the
+//! Read-only track file MCP tools (`neige.track.ls` / `neige.track.cat`); scope comes from the
 //! per-call `ToolCallIdentity`, no call accepts a track id.
 
 #![cfg(unix)]
@@ -13,7 +13,7 @@ use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::track_file::{TOOL_TRACK_CAT, TOOL_TRACK_LS};
 use calm_server::mcp_server::tools::track_history::{
-    TOOL_TRACK_CAT_AT, TOOL_TRACK_DIFF, TOOL_TRACK_LOG,
+    TOOL_TRACK_DIFF, TOOL_TRACK_LOG, TOOL_TRACK_SHOW,
 };
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::track_state::TOOL_TASK_VERDICT;
@@ -35,7 +35,7 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     sqlx_repo: Arc<SqlxRepo>,
     repo: Arc<dyn Repo>,
-    /// The configured gate-logs dir wired into `AppContext`; `calm.track.cat runs/<attempt_id>/gates/<N>.log` must read this dir, never an env-recomputed default.
+    /// The configured gate-logs dir wired into `AppContext`; `neige.track.cat runs/<attempt_id>/gates/<N>.log` must read this dir, never an env-recomputed default.
     gate_logs_dir: std::path::PathBuf,
     area_id: AreaId,
     track_id: TrackId,
@@ -2245,7 +2245,7 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
 
     let cat = call_tool(
         &boot,
-        TOOL_TRACK_CAT_AT,
+        TOOL_TRACK_SHOW,
         planner_identity(&boot),
         json!({ "commit": short_after, "path": "report.md" }),
     )
@@ -2349,7 +2349,7 @@ async fn track_history_rejects_ambiguous_commit_prefixes() {
 
     let err = call_tool(
         &boot,
-        TOOL_TRACK_CAT_AT,
+        TOOL_TRACK_SHOW,
         planner_identity(&boot),
         json!({ "commit": "deadbeef", "path": "report.md" }),
     )
@@ -2519,7 +2519,7 @@ async fn gate_log_view_is_file_backed_and_needs_a_card_surface() {
 }
 
 /// #1970: a read-only reviewer's test evidence is the producer task's gate log. Any card of the
-/// bound track reads it over `calm.track.cat`; another track's task stays -32403.
+/// bound track reads it over `neige.track.cat`; another track's task stays -32403.
 #[tokio::test]
 async fn worker_reads_own_track_gate_log_but_not_another_tracks() {
     let boot = boot().await;

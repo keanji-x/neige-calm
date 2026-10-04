@@ -836,7 +836,7 @@ async fn tools_call_malformed_meta_rejects_even_when_cardbound_token_present() {
             "method": "tools/call",
             "_meta": "not-an-object",
             "params": {
-                "name": "calm.track.state",
+                "name": "neige.track.state",
                 "arguments": {}
             }
         }),
@@ -866,7 +866,7 @@ async fn tools_call_malformed_params_meta_also_rejects() {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "calm.track.state",
+                "name": "neige.track.state",
                 "arguments": {},
                 "_meta": ["array-not-object"]
             }
@@ -1010,7 +1010,7 @@ async fn daemontrust_with_unresolvable_thread_id_rejects() {
 #[tokio::test]
 async fn default_track_state_tool_without_thread_id_uses_cardbound_planner_identity() {
     let boot = boot_with_registry(build_default_registry()).await;
-    let resp = call_with_token(&boot, &boot.raw_token, "calm.track.state", None, json!({})).await;
+    let resp = call_with_token(&boot, &boot.raw_token, "neige.track.state", None, json!({})).await;
     assert!(
         resp.get("error").is_none(),
         "shell-neige style CardBound no-thread call must succeed: {resp:#?}"
@@ -1025,7 +1025,7 @@ async fn pre_initialize_tools_call_rejects() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(2, "calm.track.state", None, json!({})),
+        tools_call_frame(2, "neige.track.state", None, json!({})),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
@@ -1050,7 +1050,7 @@ async fn cardbound_role_gate_still_applies() {
     let resp = call_with_token(
         &boot,
         &report.mcp_token,
-        "calm.track.state",
+        "neige.track.state",
         None,
         json!({}),
     )
@@ -1078,19 +1078,19 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
 
     let cases = [
         (
-            "calm.task.complete",
+            "neige.task.complete",
             json!({ "attempt_id": "report-completed" }),
         ),
         (
-            "calm.task.fail",
+            "neige.task.fail",
             json!({
                 "attempt_id": "report-failed",
                 "reason": "should not run"
             }),
         ),
-        ("calm.track.state", json!({})),
+        ("neige.track.state", json!({})),
         (
-            "calm.task.verdict",
+            "neige.task.verdict",
             json!({
                 "attempt_id": "report-meta",
                 "status": "accepted"

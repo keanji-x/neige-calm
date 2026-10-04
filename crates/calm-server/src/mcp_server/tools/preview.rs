@@ -1,4 +1,4 @@
-//! #1780 `calm.preview.register` / `calm.preview.unregister`: bind a loopback dev server to a
+//! #1780 `neige.preview.register` / `neige.preview.unregister`: bind a loopback dev server to a
 //! preview gateway pool port for the caller's own track. The track is always
 //! `identity.track_id`, never an argument (unknown arguments are ignored, as in sibling tools), so
 //! registrations are per track. Planner-only: Dispatch workers are isolated, have no network, and
@@ -15,8 +15,8 @@ use crate::preview::PreviewRegistry;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_PREVIEW_REGISTER: &str = "calm.preview.register";
-pub const TOOL_PREVIEW_UNREGISTER: &str = "calm.preview.unregister";
+pub const TOOL_PREVIEW_REGISTER: &str = "neige.preview.register";
+pub const TOOL_PREVIEW_UNREGISTER: &str = "neige.preview.unregister";
 
 const KEY_PATTERN: &str = "^[a-z0-9][a-z0-9_-]{0,63}$";
 pub const MAX_TITLE_CHARS: usize = 120;
@@ -52,7 +52,7 @@ fn key_schema() -> Value {
 fn register_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PREVIEW_REGISTER.into(),
-        description: include_str!("../../../prompts/tools/calm.preview.register.md")
+        description: include_str!("../../../prompts/tools/neige.preview.register.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -83,7 +83,7 @@ fn register_descriptor() -> ToolDescriptor {
 fn unregister_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PREVIEW_UNREGISTER.into(),
-        description: include_str!("../../../prompts/tools/calm.preview.unregister.md")
+        description: include_str!("../../../prompts/tools/neige.preview.unregister.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

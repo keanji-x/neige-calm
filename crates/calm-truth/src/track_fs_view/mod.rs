@@ -1,5 +1,5 @@
 //! Shared read-only file views for a track, used by both the MCP
-//! `calm.track.{ls,cat}` tools and the HTTP track file endpoints; callers own
+//! `neige.track.{ls,cat}` tools and the HTTP track file endpoints; callers own
 //! their entry gates.
 
 use crate::db::{RouteRepo, TrackEvent};
@@ -1439,7 +1439,7 @@ fn entry(name: &str, kind: &str, size: Option<usize>, updated_at: Option<i64>) -
 
 fn path_not_available(path: &str) -> TrackFsError {
     TrackFsError::PathNotAvailable(format!(
-        "calm.track: path not available in this view: {}",
+        "neige.track: path not available in this view: {}",
         if path.is_empty() { "/" } else { path }
     ))
 }

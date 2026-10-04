@@ -1,7 +1,7 @@
 //! #1727 S4 slice 2 PR-B: kernel git delivery for attached workers, wired end to end — the
 //! report transaction's delivery row, the keyed forge submission, the scheduler's settlement
 //! into `task_candidates` + `task.git_delivery_settled`, the deferred self-report and the
-//! `calm.plan.list.candidate` read surface. Design §6 rows A3–A7, A23–A23c, A25–A31.
+//! `neige.plan.list.candidate` read surface. Design §6 rows A3–A7, A23–A23c, A25–A31.
 //!
 //! #1893 S6 (the second half of this file): a failed delivery fails its gated task; Track and
 //! Area deletion take the delivery tables and candidate refs with them (A9d, A6c).
@@ -502,7 +502,7 @@ impl Fx {
     pub(super) async fn complete(&self, worker: &ToolCallIdentity, task_id: &str) {
         call_tool(
             &self.boot,
-            "calm.task.complete",
+            "neige.task.complete",
             worker.clone(),
             json!({"attempt_id": task_id, "result": {"ok": true}}),
         )
@@ -511,7 +511,7 @@ impl Fx {
     }
 
     /// The report transaction alone — no forge submission — the state a kernel that died right
-    /// after `calm.task.complete`'s transaction leaves behind (no crash seam: 5.1.16).
+    /// after `neige.task.complete`'s transaction leaves behind (no crash seam: 5.1.16).
     pub(super) async fn report_only(&self, worker: &ToolCallIdentity, task_id: &str) {
         CardDecisionSink::from_app_context(&self.boot.ctx)
             .commit_worker_task_report(
@@ -649,11 +649,11 @@ impl Fx {
             .collect()
     }
 
-    /// `calm.plan.list` (full detail) entry of `key`.
+    /// `neige.plan.list` (full detail) entry of `key`.
     pub(super) async fn plan_entry(&self, key: &str) -> Value {
         let list = call_tool(
             &self.boot,
-            "calm.plan.list",
+            "neige.plan.list",
             planner_identity(&self.boot),
             json!({"detail": "full", "key": key}),
         )
@@ -665,7 +665,7 @@ impl Fx {
     pub(super) async fn plan_summary_entry(&self, key: &str) -> Value {
         let list = call_tool(
             &self.boot,
-            "calm.plan.list",
+            "neige.plan.list",
             planner_identity(&self.boot),
             json!({"detail": "summary", "key": key}),
         )
@@ -2192,7 +2192,7 @@ async fn workspace_missing_delivery_is_not_retryable() {
     let text = pending[0].to_turn_text();
     assert!(!text.contains("Files retained at"), "{text}");
     assert!(text.contains("(workspace_missing)"), "{text}");
-    assert!(!text.contains("calm.task.delivery"), "{text}");
+    assert!(!text.contains("task.delivery"), "{text}");
     assert!(!text.to_ascii_lowercase().contains("retr"), "{text}");
 }
 
@@ -2697,7 +2697,7 @@ async fn candidate_view_is_total_over_task_status() {
 
     let list = call_tool(
         &fx.boot,
-        "calm.plan.list",
+        "neige.plan.list",
         planner_identity(&fx.boot),
         json!({"detail": "full"}),
     )

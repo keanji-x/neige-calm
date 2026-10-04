@@ -15,7 +15,7 @@ pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = concat!(
     include_str!("../prompts/worker/tail.md")
 );
 
-/// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `calm.task.complete` / `calm.task.fail` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
+/// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `neige.task.complete` / `neige.task.fail` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
 pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
     include_str!("../prompts/worker/head-mcp.md"),
     include_str!("../prompts/tool-discovery.md"),
@@ -61,13 +61,13 @@ pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
 #[cfg(test)]
 const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "   * Maintain task declarations as report `task` blocks. Read the report (or the section ",
-    "that holds the task) with `calm.report.read`, then create or replace the task block with ",
-    "an `upsert` op of `calm.report.commit`; pass no revisions, the kernel anchors the op to ",
+    "that holds the task) with `neige.report.read`, then create or replace the task block with ",
+    "an `upsert` op of `neige.report.commit`; pass no revisions, the kernel anchors the op to ",
     "your read. To start an authorized Planner task, ",
     "its payload needs a per-track-unique ",
     "`key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, ",
     "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
-    "sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to ",
+    "sibling keys, `priority`, and usually `gate`. Use `neige.plan.cancel` to ",
     "cancel a pending task, or a running codex/claude task whose worker the kernel ",
     "then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. ",
     "A `codex`/`claude` task requires `goal`, a natural-language objective, and ",
@@ -127,7 +127,7 @@ pub(crate) enum SeededCardRole {
     Planner,
     /// Worker card for a **claude** provider: completion is reported through the `neige` shell CLI.
     Worker,
-    /// Worker card for a **codex** provider: completion is reported through the native `calm.task.complete` / `calm.task.fail` MCP tools.
+    /// Worker card for a **codex** provider: completion is reported through the native `neige.task.complete` / `neige.task.fail` MCP tools.
     WorkerCodex,
 }
 
@@ -171,7 +171,7 @@ mod tests {
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "acceptance-track");
         let descriptors = crate::mcp_server::build_default_registry()
             .descriptors_for_role(calm_types::model::CardRole::Planner);
-        let descriptions = ["calm.task.verdict"].map(|name| {
+        let descriptions = ["neige.task.verdict"].map(|name| {
             descriptors
                 .iter()
                 .find(|tool| tool.name == name)
@@ -484,13 +484,13 @@ mod tests {
         }
     }
 
-    /// Every `calm.`-prefixed token in `text`: `calm.` not preceded by `[A-Za-z0-9_.]`, extended over `[A-Za-z0-9_.]`, trailing `.`s stripped, wildcard families (`calm.*`) dropped.
-    /// Uppercase is part of the continuation so `calm.plan.listX` stays one unregistered token.
-    fn calm_tool_tokens(text: &str) -> Vec<&str> {
+    /// Every `neige.`-prefixed token in `text`: `neige.` not preceded by `[A-Za-z0-9_.]`, extended over `[A-Za-z0-9_.]`, trailing `.`s stripped, wildcard families (`neige.*`) dropped.
+    /// Uppercase is part of the continuation so `neige.plan.listX` stays one unregistered token.
+    fn kernel_tool_tokens(text: &str) -> Vec<&str> {
         let bytes = text.as_bytes();
         let mut tokens = Vec::new();
         let mut from = 0;
-        while let Some(i) = text[from..].find("calm.") {
+        while let Some(i) = text[from..].find("neige.") {
             let at = from + i;
             let preceded_by_ident = at > 0 && {
                 let b = bytes[at - 1];
@@ -511,22 +511,23 @@ mod tests {
     }
 
     #[test]
-    fn calm_tool_tokens_are_whole_tokens() {
+    fn kernel_tool_tokens_are_whole_tokens() {
         for (text, expected) in [
-            ("see calm.plan.list.", vec!["calm.plan.list"]),
-            ("xcalm.plan.list", vec![]),
-            ("calm.*", vec![]),
-            ("calm.report.blocks.*", vec![]),
-            ("calm.plan.list2", vec!["calm.plan.list2"]),
-            ("calm.plan.listX", vec!["calm.plan.listX"]),
+            ("see neige.plan.list.", vec!["neige.plan.list"]),
+            ("xneige.plan.list", vec![]),
+            ("dev.neige.git-forge", vec![]),
+            ("neige.*", vec![]),
+            ("neige.terminal.*", vec![]),
+            ("neige.plan.list2", vec!["neige.plan.list2"]),
+            ("neige.plan.listX", vec!["neige.plan.listX"]),
             ("", vec![]),
-            ("calm.", vec!["calm"]),
+            ("neige.", vec!["neige"]),
         ] {
-            assert_eq!(calm_tool_tokens(text), expected, "input: {text:?}");
+            assert_eq!(kernel_tool_tokens(text), expected, "input: {text:?}");
         }
     }
 
-    /// Tokens are whole-token matched, so a misspelling or a stray suffix (`calm.plan.list2`) is red, not a prefix hit; only wildcard families are skipped.
+    /// Tokens are whole-token matched, so a misspelling or a stray suffix (`neige.plan.list2`) is red, not a prefix hit; only wildcard families are skipped.
     #[test]
     fn planner_prompt_names_only_tools_the_planner_role_can_see() {
         use std::collections::BTreeSet;
@@ -539,7 +540,7 @@ mod tests {
             .collect();
         assert!(!visible.is_empty(), "the Planner role sees no tools at all");
 
-        let named: BTreeSet<&str> = calm_tool_tokens(&prompt).into_iter().collect();
+        let named: BTreeSet<&str> = kernel_tool_tokens(&prompt).into_iter().collect();
         assert!(
             named.len() >= 10,
             "anti-vacuity: the planner prompt names fewer than 10 distinct tools; \
@@ -555,7 +556,7 @@ mod tests {
         }
     }
 
-    /// Every `calm.*` token in `prompt` checked against the tool registry: each must be a registered name; tokens in neither list must be visible to `role`; `callable_but_hidden` and `named_to_forbid` entries must be registered, NOT visible, and actually named by the prompt.
+    /// Every `neige.*` token in `prompt` checked against the tool registry: each must be a registered name; tokens in neither list must be visible to `role`; `callable_but_hidden` and `named_to_forbid` entries must be registered, NOT visible, and actually named by the prompt.
     /// With `must_name_all_visible` every tool visible to `role` must be named; `min_named` guards against an empty scanner only.
     fn assert_prompt_tool_names(
         label: &str,
@@ -584,7 +585,7 @@ mod tests {
             "the {role:?} role sees no tools at all"
         );
 
-        let named: BTreeSet<&str> = calm_tool_tokens(prompt).into_iter().collect();
+        let named: BTreeSet<&str> = kernel_tool_tokens(prompt).into_iter().collect();
         assert!(
             named.len() >= min_named,
             "anti-vacuity: {label} names fewer than {min_named} distinct tools; the \
@@ -650,7 +651,7 @@ mod tests {
         }
     }
 
-    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `calm.task.complete` / `calm.task.fail` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task-completed` and is exempt.
+    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `neige.task.complete` / `neige.task.fail` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task-completed` and is exempt.
     #[test]
     fn worker_prompts_name_only_tools_the_worker_role_can_see() {
         // `min_named` guards against an empty scanner only: the CLI prompt names exactly the one forbidden tool; the codex prompt adds the two visible completion tools.
@@ -668,15 +669,15 @@ mod tests {
                 &render_system_prompt(template, "track-registry"),
                 calm_types::model::CardRole::Worker,
                 &[],
-                &["calm.task.verdict"],
+                &["neige.task.verdict"],
                 must_name_all_visible,
                 min_named,
             );
         }
     }
 
-    /// `calm.report.read` is callable but hidden: its handler admits the Assistant while its descriptor is visible to Planner only, so the prompt is the Assistant's only contract for the read.
-    /// `neige` CLI mentions are not `calm.*` tokens and are pinned only by the goldens.
+    /// `neige.report.read` is callable but hidden: its handler admits the Assistant while its descriptor is visible to Planner only, so the prompt is the Assistant's only contract for the read.
+    /// `neige` CLI mentions are not `neige.*` tokens and are pinned only by the goldens.
     #[test]
     fn assistant_prompts_name_only_tools_the_assistant_role_can_see() {
         for (label, template) in [
@@ -693,7 +694,7 @@ mod tests {
                 label,
                 &render_system_prompt(template, "track-registry"),
                 calm_types::model::CardRole::Assistant,
-                &["calm.report.read"],
+                &["neige.report.read"],
                 &[],
                 false,
                 3,

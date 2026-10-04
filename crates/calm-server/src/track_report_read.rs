@@ -4,7 +4,7 @@ use crate::track_report::TrackReportPayload;
 use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_blocks;
 use calm_types::track_report::ReportBlock;
 
-/// One self-consistent `calm.report.read` snapshot derived from a single row read, so a concurrent
+/// One self-consistent `neige.report.read` snapshot derived from a single row read, so a concurrent
 /// persist can never tear `text` against `blocks`.
 pub struct ReportReadSnapshot {
     pub updated_at: i64,

@@ -45,15 +45,15 @@ mod shared_codex_home {
             .expect("ensure daemon mcp config");
 
         let config = parsed_config(&home);
-        let calm = config
+        let kernel = config
             .get("mcp_servers")
-            .and_then(|v| v.get("calm"))
-            .expect("mcp_servers.calm");
+            .and_then(|v| v.get("neige"))
+            .expect("mcp_servers.neige");
         assert_eq!(
-            calm.get("command").and_then(|v| v.as_str()),
+            kernel.get("command").and_then(|v| v.as_str()),
             Some(shim.shim_bin.to_string_lossy().as_ref())
         );
-        let env = calm.get("env").expect("mcp_servers.calm.env");
+        let env = kernel.get("env").expect("mcp_servers.neige.env");
         assert_eq!(
             env.get("NEIGE_MCP_SOCKET").and_then(|v| v.as_str()),
             Some(shim.socket_path.to_string_lossy().as_ref())
@@ -591,7 +591,7 @@ args = ["--bar"]
     }
 
     #[test]
-    fn verify_expected_mcp_servers_accepts_missing_empty_and_calm_only_configs() {
+    fn verify_expected_mcp_servers_accepts_missing_empty_and_kernel_only_configs() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
@@ -607,9 +607,11 @@ args = ["--bar"]
             socket_path: root.path().join("mcp/kernel.sock"),
         };
         home.ensure_daemon_mcp_config(&shim, "daemon-token")
-            .expect("write calm entry");
+            .expect("write kernel entry");
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
-            .expect("calm-only config is ok (subset policy: missing calm would also be ok)");
+            .expect(
+                "kernel-only config is ok (subset policy: a missing kernel entry would also be ok)",
+            );
     }
 
     #[test]
@@ -691,7 +693,7 @@ args = ["--bar"]
             socket_path: root.path().join("mcp/kernel.sock"),
         };
         home.ensure_daemon_mcp_config(&shim, "daemon-token")
-            .expect("write calm entry");
+            .expect("write kernel entry");
         std::fs::write(home.path().join(".env"), "SECRET=leak\n").expect("write leaked .env");
 
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
@@ -706,7 +708,7 @@ args = ["--bar"]
     }
 
     #[test]
-    fn sanitize_removes_offenders_hooks_and_dotenv_preserving_calm() {
+    fn sanitize_removes_offenders_hooks_and_dotenv_preserving_the_kernel_entry() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         home.seed_from(None).expect("seed empty");
@@ -715,7 +717,7 @@ args = ["--bar"]
             socket_path: root.path().join("mcp/kernel.sock"),
         };
         home.ensure_daemon_mcp_config(&shim, "daemon-token")
-            .expect("write calm entry");
+            .expect("write kernel entry");
         let cfg_path = home.path().join("config.toml");
         let mut polluted = std::fs::read_to_string(&cfg_path).expect("read config");
         polluted.push_str(concat!(
@@ -747,13 +749,14 @@ args = ["--bar"]
         assert!(config.get("hooks").is_none());
         let mcp = config.get("mcp_servers").expect("mcp_servers survives");
         assert!(mcp.get("gravity_town").is_none());
-        let calm = mcp.get("calm").expect("calm entry preserved");
+        let kernel = mcp.get("neige").expect("kernel entry preserved");
         assert_eq!(
-            calm.get("env")
+            kernel
+                .get("env")
                 .and_then(|env| env.get("NEIGE_MCP_DAEMON_TOKEN"))
                 .and_then(|v| v.as_str()),
             Some("daemon-token"),
-            "calm env sub-table must be preserved intact"
+            "kernel env sub-table must be preserved intact"
         );
         home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .expect("sanitized home must pass the boot guard");
@@ -803,6 +806,61 @@ args = ["--bar"]
             parsed.get("approval_policy").and_then(|v| v.as_str()),
             Some("on-failure"),
             "must preserve user override: {text}",
+        );
+    }
+
+    /// #2003 S3: a home written under the retired `calm` server key is repaired by the real boot:
+    /// the stale table is removed and the kernel shim is written under `neige` only.
+    #[tokio::test]
+    async fn boot_replaces_a_stale_calm_server_key() {
+        use clap::Parser as _;
+
+        let runtime = tempfile::tempdir().expect("tempdir");
+        let data = runtime.path().join("data");
+        let home = data.join("codex-home");
+        std::fs::create_dir_all(&home).expect("mkdir codex-home");
+        // A present `auth.json` and `config.toml` keep the boot seed from importing the host's.
+        std::fs::write(home.join("auth.json"), "{}").expect("write auth.json");
+        std::fs::write(
+            home.join("config.toml"),
+            concat!(
+                "[mcp_servers.calm]\n",
+                "command = \"/old/neige-mcp-stdio-shim\"\n",
+                "args = []\n",
+                "[mcp_servers.calm.env]\n",
+                "NEIGE_MCP_SOCKET = \"/old/kernel.sock\"\n",
+            ),
+        )
+        .expect("write stale config");
+        let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
+        cfg.data_dir = Some(data);
+        cfg.plugins_dir = Some(runtime.path().join("plugins"));
+        cfg.plugins_data_dir = Some(runtime.path().join("plugins-data"));
+
+        let _state = calm_server::state::AppState::boot(&cfg)
+            .await
+            .expect("boot");
+
+        let config: toml::Value = toml::from_str(
+            &std::fs::read_to_string(home.join("config.toml")).expect("read config.toml"),
+        )
+        .expect("config.toml must be valid TOML");
+        let servers: Vec<&str> = config["mcp_servers"]
+            .as_table()
+            .expect("mcp_servers table")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            servers,
+            ["neige"],
+            "only the kernel key may remain: {config}"
+        );
+        assert!(
+            config["mcp_servers"]["neige"]["env"]
+                .get("NEIGE_MCP_DAEMON_TOKEN")
+                .is_some(),
+            "the boot writes the daemon token under the new key: {config}"
         );
     }
 }

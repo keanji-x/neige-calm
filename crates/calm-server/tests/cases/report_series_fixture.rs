@@ -38,7 +38,7 @@ pub(crate) const UNINSTALLED_SOURCE: &str = "neige://plugin/nobody/market.series
 pub(crate) const UNDERSCORE_PLUGIN_ID: &str = "aa";
 pub(crate) const UNDERSCORE_TOOL: &str = "b_c";
 pub(crate) const UNDERSCORE_SOURCE: &str = "neige://plugin/aa_b/c";
-pub(crate) const TOOL_REPORT_READ: &str = "calm.report.read";
+pub(crate) const TOOL_REPORT_READ: &str = "neige.report.read";
 
 /// 2026-09-14T12:00:00Z — a Monday; "yesterday UTC" is Sunday 2026-09-13.
 pub(crate) const T0_MS: i64 = 1_789_387_200_000;
@@ -376,7 +376,7 @@ impl SeriesFixture {
         block["rev"].as_u64().expect("block rev")
     }
 
-    /// The real `calm.report.read` as the planner.
+    /// The real `neige.report.read` as the planner.
     pub async fn read(&self, args: Value) -> Value {
         call_tool(
             &self.boot,

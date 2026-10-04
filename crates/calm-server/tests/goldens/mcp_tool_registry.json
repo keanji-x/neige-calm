@@ -1,6 +1,6 @@
 [
   {
-    "name": "calm.admin.track_gc",
+    "name": "neige.admin.gc",
     "description_sha256": "4a2ad238060ed23e06ab148bcbc0979ee9557244284ad93c3816ece03f12bdc5",
     "input_schema": {
       "properties": {
@@ -25,7 +25,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.admin.vacuum",
+    "name": "neige.admin.vacuum",
     "description_sha256": "26d0d3c385621c2af572c88fd8cc44f0531d1acd4c134d2a82deaf753b00e0b4",
     "input_schema": {
       "properties": {},
@@ -34,7 +34,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.area.outline",
+    "name": "neige.area.outline",
     "description_sha256": "1f919a9d6239d9afb4f3b594740979efa24e25d118183acb57799869e397f63c",
     "input_schema": {
       "additionalProperties": false,
@@ -49,7 +49,7 @@
     ]
   },
   {
-    "name": "calm.calendar.create",
+    "name": "neige.calendar.create",
     "description_sha256": "249d0709f53afd55bf9280346966bb4fe02747e9918cb8c9cdf4456b2caa573b",
     "input_schema": {
       "additionalProperties": false,
@@ -182,7 +182,7 @@
     ]
   },
   {
-    "name": "calm.calendar.list",
+    "name": "neige.calendar.list",
     "description_sha256": "7b893526b6dec8a21670e3c568a444913e732e1c8df5c358213454856dc86f07",
     "input_schema": {
       "additionalProperties": false,
@@ -213,7 +213,7 @@
     ]
   },
   {
-    "name": "calm.calendar.update",
+    "name": "neige.calendar.update",
     "description_sha256": "9468d2f5959965e94bcd9eac35a5779363f8f55b9c1846d68c78dd5afb77ff04",
     "input_schema": {
       "additionalProperties": false,
@@ -354,7 +354,7 @@
     ]
   },
   {
-    "name": "calm.plan.cancel",
+    "name": "neige.plan.cancel",
     "description_sha256": "8eb8c2c11056c05ed1bbd83d624716d198dfd57d22ad93257fea56d5dc28bfa9",
     "input_schema": {
       "properties": {
@@ -384,8 +384,8 @@
     ]
   },
   {
-    "name": "calm.plan.list",
-    "description_sha256": "8e38b60569164c26bd4beaef4084d2b0ea64856f2f5af6f948d402cd45198b8a",
+    "name": "neige.plan.list",
+    "description_sha256": "78f8781055cc42dd565a1a288296bacd709c9f7f2b06264df0a320df4bd15bf4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -412,8 +412,8 @@
     ]
   },
   {
-    "name": "calm.preview.register",
-    "description_sha256": "696fcd38fe63836434c516494f496bb959a6f6a798fc3a06fbc625e6dbeca88c",
+    "name": "neige.preview.register",
+    "description_sha256": "397598de3efc0792a05b9206a8250dcfd7864e135b2413a7c98eae86fb69023f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -452,7 +452,7 @@
     ]
   },
   {
-    "name": "calm.preview.unregister",
+    "name": "neige.preview.unregister",
     "description_sha256": "8aa686bdae538b8630c6ce9f2ff7333851b0c864ba2b0d2c3413cf7b1c2397c5",
     "input_schema": {
       "additionalProperties": false,
@@ -478,7 +478,7 @@
     ]
   },
   {
-    "name": "calm.ratify.request",
+    "name": "neige.ratify.request",
     "description_sha256": "6adcae81595eea2e9a027704a77c2cf532b74f989865682be689836bd5a2b823",
     "input_schema": {
       "properties": {
@@ -502,9 +502,10 @@
     ]
   },
   {
-    "name": "calm.report.blocks.kinds",
-    "description_sha256": "08d6a683d9bff26f1e434d96623430d3f89ba2307c6e1b3fa2f345653938b4b8",
+    "name": "neige.report.backlinks",
+    "description_sha256": "390d2a5f26b54deeb1bff8cc14a0c608b5dc30b018bfb398918e581d57545bcd",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
@@ -512,13 +513,12 @@
       "readOnlyHint": true
     },
     "visible_to_roles": [
-      "planner",
-      "assistant"
+      "planner"
     ]
   },
   {
-    "name": "calm.report.commit",
-    "description_sha256": "5d8a785eaf44db078f6a42001bd439dc3338f2945ce99a7157d060227f8b9b96",
+    "name": "neige.report.commit",
+    "description_sha256": "f27272eb800685441c31be0c43467c68f6bf27c38470a0c9e96aa783d98d4776",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -561,7 +561,7 @@
                 "type": "string"
               },
               "payload": {
-                "description": "Data kinds: see calm.report.blocks.kinds.",
+                "description": "Data kinds: see neige.report.kinds.",
                 "type": "object"
               },
               "position": {
@@ -604,7 +604,7 @@
     ]
   },
   {
-    "name": "calm.report.find",
+    "name": "neige.report.find",
     "description_sha256": "719b7b9150fbb836d94edc905b4425a5540a67e1a038335a943909de33aaa6f0",
     "input_schema": {
       "additionalProperties": false,
@@ -630,10 +630,9 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.report.links.backlinks",
-    "description_sha256": "25898f00c41c8d3740d3c9ce8b762c519355e0becb93256e381d3c74458887cd",
+    "name": "neige.report.kinds",
+    "description_sha256": "0c350860895d436723c6b22bafce39d7227ce4d3881654172df4e3261c827286",
     "input_schema": {
-      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
@@ -641,11 +640,12 @@
       "readOnlyHint": true
     },
     "visible_to_roles": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {
-    "name": "calm.report.read",
+    "name": "neige.report.read",
     "description_sha256": "0c5d95c36ff48127e676cb7cad5e33a44df29bc8e8de1e20d97c057b73ccc38b",
     "input_schema": {
       "properties": {
@@ -716,7 +716,7 @@
     ]
   },
   {
-    "name": "calm.report.tag",
+    "name": "neige.report.tag",
     "description_sha256": "4150ff72f6dbdd2a7933b3244251b1ba38e89771ae65259598ce848dc7025c54",
     "input_schema": {
       "additionalProperties": false,
@@ -750,8 +750,8 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.report.write_markdown",
-    "description_sha256": "ecaed7ec3aac58b16ef0b2cbe04086454df271cea85c54c60a37649296172349",
+    "name": "neige.report.write",
+    "description_sha256": "47e285465f7bc02a68d060327c358c860de76ff9a035eadafa26caa34132f1aa",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -784,8 +784,8 @@
     ]
   },
   {
-    "name": "calm.source.capture",
-    "description_sha256": "ed850e7005f511d1fa58850b001b00afe5e0b9494b4b5b119baefc1cd9204b85",
+    "name": "neige.source.capture",
+    "description_sha256": "9bac6c613a406d2196492d4fa78df07f514d64cdc7fb975bad858b8e6c15708c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -857,8 +857,8 @@
     ]
   },
   {
-    "name": "calm.source.list",
-    "description_sha256": "24132683c83964a5f400451e66d185519474be5fdb249de6dfd6a2d6539d07a4",
+    "name": "neige.source.list",
+    "description_sha256": "1c4a6867cc8541c886f0362a7af0eb77955c10601ba6d33d21c120679abe4a26",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -872,7 +872,7 @@
     ]
   },
   {
-    "name": "calm.task.complete",
+    "name": "neige.task.complete",
     "description_sha256": "13068d1235821e07f686153dde9f293b44944f9c5fd4f4f261a31bee72645062",
     "input_schema": {
       "properties": {
@@ -900,7 +900,7 @@
     ]
   },
   {
-    "name": "calm.task.fail",
+    "name": "neige.task.fail",
     "description_sha256": "ef955eed54a6a34e0cf7ab684bc3a5f327c50f4298360fbfd925ff0c54ae5711",
     "input_schema": {
       "properties": {
@@ -928,8 +928,8 @@
     ]
   },
   {
-    "name": "calm.task.verdict",
-    "description_sha256": "9b9f307cfeb3e80187baf83f96dc564adfd06ad221631adf4bb60e56e4610b81",
+    "name": "neige.task.verdict",
+    "description_sha256": "f44bfcff959712bcfe328853fd0cce501821c17f199874c5c8b60bf5670881d6",
     "input_schema": {
       "properties": {
         "attempt_id": {
@@ -969,8 +969,8 @@
     ]
   },
   {
-    "name": "calm.terminal.control",
-    "description_sha256": "aecab2f1f24c40ebcc4456f7b2b9c3e4427f2f0e3bba946ded790026dd07d825",
+    "name": "neige.terminal.control",
+    "description_sha256": "a9ade7043c1c2d9946853b9e5dfbfe0ef787104ac73230820d838cb6f7a62de1",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1061,8 +1061,8 @@
     ]
   },
   {
-    "name": "calm.terminal.input",
-    "description_sha256": "a1fb9423e857248c4a4a9c81868aefc3adc23fd95c647ef6ada945cd92ed3685",
+    "name": "neige.terminal.input",
+    "description_sha256": "96a603f46c7a4500bfecef5ccaa7bfea2ae302ca7468c818ade6f22e9578cdb8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1235,7 +1235,7 @@
     ]
   },
   {
-    "name": "calm.terminal.observe",
+    "name": "neige.terminal.observe",
     "description_sha256": "a533e518fb5795a90ebeb5c8e4cf0636fb67936da9336c63bbc48250db2a93fb",
     "input_schema": {
       "additionalProperties": false,
@@ -1318,8 +1318,8 @@
     ]
   },
   {
-    "name": "calm.terminal.open",
-    "description_sha256": "7498b24967b40bbd7216d9aba730793f2aa4c0141a1914b271abfcefe09fa363",
+    "name": "neige.terminal.open",
+    "description_sha256": "236c7b1e830985861713ee5de660410a954285e0b3e08c03e569bbba0a22e050",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1410,8 +1410,8 @@
     ]
   },
   {
-    "name": "calm.terminal.resolve",
-    "description_sha256": "c11a4a27e92d78e45b8c47b1831705122f060bd36230ad43ad46343768032536",
+    "name": "neige.terminal.resolve",
+    "description_sha256": "72625d27bfd149f9912ed4e92d6886c240e5962f1299c3e5dfa67f00a0c9b3ff",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1435,12 +1435,12 @@
     ]
   },
   {
-    "name": "calm.track.cat",
-    "description_sha256": "0f689d67c112c4e1d70fd60b5e922f68f3bc37974b1b4c3a23060aba096950d2",
+    "name": "neige.track.cat",
+    "description_sha256": "aa6c825ed814a967fce2b876d464b027c7bb6232c063212089634ba41a39b2f9",
     "input_schema": {
       "properties": {
         "blocks": {
-          "description": "Report paths only: print just these blocks, as calm.report.read select.blocks does.",
+          "description": "Report paths only: print just these blocks, as neige.report.read select.blocks does.",
           "items": {
             "type": "string"
           },
@@ -1470,30 +1470,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.track.cat_at",
-    "description_sha256": "e09a7ace969e7040e2355637360efd9f836fc334213798a2358bfa70ed974ed9",
-    "input_schema": {
-      "properties": {
-        "commit": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "commit",
-        "path"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "visible_to_roles": []
-  },
-  {
-    "name": "calm.track.close",
+    "name": "neige.track.close",
     "description_sha256": "07692172fbbbaa80bb1a2d43a66eca5451b073f7e75885478d8fbbc582018181",
     "input_schema": {
       "properties": {
@@ -1518,7 +1495,7 @@
     ]
   },
   {
-    "name": "calm.track.diff",
+    "name": "neige.track.diff",
     "description_sha256": "d48847a7cd155b6e8597b8752c3ffe7bd0a9e9869ef3d9fb1750cc22d0ac478a",
     "input_schema": {
       "properties": {
@@ -1543,7 +1520,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.track.log",
+    "name": "neige.track.log",
     "description_sha256": "cb4868d442016f91ce5682cab8a9575b6da7a85ed2c74f7e897807bf24038f3f",
     "input_schema": {
       "properties": {
@@ -1568,8 +1545,8 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.track.ls",
-    "description_sha256": "477897b19098ff445326d7c76199275e683a5524aabc39d022a269f9d347b10b",
+    "name": "neige.track.ls",
+    "description_sha256": "e82e919ca8424cb190887d1f25be03c65d3aa04516fa7156ff00c1c9f1367a5f",
     "input_schema": {
       "properties": {
         "path": {
@@ -1584,7 +1561,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.track.publish",
+    "name": "neige.track.publish",
     "description_sha256": "6a91955c21452bc05b51573c997f82a65d497802fc36fc7f87e08324589a8e5b",
     "input_schema": {
       "properties": {
@@ -1617,7 +1594,7 @@
     ]
   },
   {
-    "name": "calm.track.rename",
+    "name": "neige.track.rename",
     "description_sha256": "424ac2281750e97ea9de8babd376773ffe391082a0b5bf88d6227fd494151a34",
     "input_schema": {
       "properties": {
@@ -1646,7 +1623,30 @@
     ]
   },
   {
-    "name": "calm.track.state",
+    "name": "neige.track.show",
+    "description_sha256": "e09a7ace969e7040e2355637360efd9f836fc334213798a2358bfa70ed974ed9",
+    "input_schema": {
+      "properties": {
+        "commit": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commit",
+        "path"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "neige.track.state",
     "description_sha256": "8754f715ae8d7253abfa190d8c464926ee7455b08d7b9a29e54beeebef42622f",
     "input_schema": {
       "properties": {},
@@ -1658,7 +1658,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "calm.user.notify",
+    "name": "neige.user.notify",
     "description_sha256": "b140ec857270a88719168ee4c653caa8b46352a245269032f4270ef8311600b8",
     "input_schema": {
       "additionalProperties": false,

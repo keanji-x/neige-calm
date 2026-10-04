@@ -8,7 +8,7 @@ fn thread_start_params_debug_redacts_secrets() {
         sandbox_mode: "workspace-write".into(),
         developer_instructions: None,
         config: Some(
-            json!({"mcp_servers":{"calm":{"env":{"NEIGE_MCP_TOKEN":"MCP_SECRET"},"http_headers":{"Authorization":"HEADER_SECRET"}}},"shell_environment_policy":{"set":{"TOKEN":"SHELL_SECRET"}}}),
+            json!({"mcp_servers":{"neige":{"env":{"NEIGE_MCP_TOKEN":"MCP_SECRET"},"http_headers":{"Authorization":"HEADER_SECRET"}}},"shell_environment_policy":{"set":{"TOKEN":"SHELL_SECRET"}}}),
         ),
     };
     let debug = format!("{params:?}");

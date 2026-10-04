@@ -11,28 +11,28 @@ use support::mcp::{
 
 fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
-        "calm.area.outline",
-        "calm.plan.cancel",
-        "calm.plan.list",
-        "calm.preview.register",
-        "calm.preview.unregister",
-        "calm.ratify.request",
-        "calm.report.blocks.kinds",
-        "calm.report.commit",
-        "calm.report.links.backlinks",
-        "calm.report.read",
-        "calm.report.write_markdown",
-        "calm.source.capture",
-        "calm.source.list",
-        "calm.task.verdict",
-        "calm.terminal.control",
-        "calm.terminal.input",
-        "calm.terminal.observe",
-        "calm.terminal.open",
-        "calm.terminal.resolve",
-        "calm.track.close",
-        "calm.track.rename",
-        "calm.user.notify",
+        "neige.area.outline",
+        "neige.plan.cancel",
+        "neige.plan.list",
+        "neige.preview.register",
+        "neige.preview.unregister",
+        "neige.ratify.request",
+        "neige.report.backlinks",
+        "neige.report.commit",
+        "neige.report.kinds",
+        "neige.report.read",
+        "neige.report.write",
+        "neige.source.capture",
+        "neige.source.list",
+        "neige.task.verdict",
+        "neige.terminal.control",
+        "neige.terminal.input",
+        "neige.terminal.observe",
+        "neige.terminal.open",
+        "neige.terminal.resolve",
+        "neige.track.close",
+        "neige.track.rename",
+        "neige.user.notify",
     ]
 }
 
@@ -87,12 +87,12 @@ async fn tools_list_for_planner_role_returns_planner_toolset() {
 fn removed_aliases_and_retired_shims_are_not_registered() {
     let registry = calm_server::mcp_server::build_default_registry();
     for removed in [
-        "calm.get_track_state",
-        "calm.update_task_meta",
-        "calm.task_completed",
-        "calm.task_failed",
-        "calm.dispatch_request",
-        "calm.plan.upsert",
+        "calm.get_track_state",  // retired-name: rejection input
+        "calm.update_task_meta", // retired-name: rejection input
+        "calm.task_completed",   // retired-name: rejection input
+        "calm.task_failed",      // retired-name: rejection input
+        "calm.dispatch_request", // retired-name: rejection input
+        "calm.plan.upsert",      // retired-name: rejection input
     ] {
         assert!(
             registry.lookup(removed).is_none(),
@@ -107,8 +107,8 @@ fn removed_aliases_and_retired_shims_are_not_registered() {
 #[tokio::test]
 async fn unknown_tool_error_lists_the_sessions_tools() {
     for (role, stale) in [
-        (CardRole::Planner, "calm.update_task_meta"),
-        (CardRole::Worker, "calm.task_completed"),
+        (CardRole::Planner, "calm.update_task_meta"), // retired-name: rejection input
+        (CardRole::Worker, "calm.task_completed"),    // retired-name: rejection input
     ] {
         let boot = boot_with_role(role).await;
         let (mut rd, mut wr) = connect(&boot.socket_path).await;
@@ -147,18 +147,18 @@ async fn unknown_tool_error_lists_the_sessions_tools() {
     }
 }
 
-/// #1874 / #1883: the Planner writes the report through `commit` and `write_markdown` only; the
+/// #1874 / #1883: the Planner writes the report through `commit` and `write` only; the
 /// retired writers are neither listed nor callable under their old names.
 #[tokio::test]
 async fn retired_report_write_and_edit_are_neither_listed_nor_registered() {
     let names = tools_list_names_for_role(CardRole::Planner).await;
     let registry = calm_server::mcp_server::build_default_registry();
     for retired in [
-        "calm.report.write",
-        "calm.report.edit",
-        "calm.report.blocks.upsert",
-        "calm.report.blocks.move",
-        "calm.report.blocks.delete",
+        "calm.report.write",         // retired-name: rejection input
+        "calm.report.edit",          // retired-name: rejection input
+        "calm.report.blocks.upsert", // retired-name: rejection input
+        "calm.report.blocks.move",   // retired-name: rejection input
+        "calm.report.blocks.delete", // retired-name: rejection input
     ] {
         assert!(
             !names.iter().any(|name| name == retired),
@@ -169,7 +169,7 @@ async fn retired_report_write_and_edit_are_neither_listed_nor_registered() {
             "retired report writer must not remain as a hidden tool or alias: {retired}",
         );
     }
-    for kept in ["calm.report.commit", "calm.report.write_markdown"] {
+    for kept in ["neige.report.commit", "neige.report.write"] {
         assert!(
             names.iter().any(|name| name == kept),
             "the Planner keeps {kept}; names={names:?}",
@@ -191,22 +191,22 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
     let names = tools_list_names_for_role(CardRole::Worker).await;
     assert_eq!(
         names,
-        vec!["calm.task.complete", "calm.task.fail"],
+        vec!["neige.task.complete", "neige.task.fail"],
         "worker tools/list must contain exactly the two completion tools",
     );
 }
 
-/// `calm.report.read` is deliberately absent: an assistant can call it, but its descriptor is visible only to Planner.
-/// #1883: the single-op `calm.report.blocks.*` writers are gone; the assistant writes through `commit`.
+/// `neige.report.read` is deliberately absent: an assistant can call it, but its descriptor is visible only to Planner.
+/// #1883: the single-op block writers are gone; the assistant writes through `commit`.
 #[tokio::test]
 async fn tools_list_for_assistant_role_returns_the_report_write_surface_only() {
     let names = tools_list_names_for_role(CardRole::Assistant).await;
     assert_eq!(
         names,
         vec![
-            "calm.report.blocks.kinds",
-            "calm.report.commit",
-            "calm.report.write_markdown",
+            "neige.report.commit",
+            "neige.report.kinds",
+            "neige.report.write",
         ],
         "assistant tools/list must be exactly the report write surface",
     );
@@ -255,11 +255,11 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
 
     let names = tool_names_from_response(&resp);
     assert!(
-        names.contains(&"calm.task.verdict".to_string()),
+        names.contains(&"neige.task.verdict".to_string()),
         "daemon-trust tools/list without threadId must advertise Planner task.verdict, got: {names:?}"
     );
     assert!(
-        names.contains(&"calm.report.commit".to_string()),
+        names.contains(&"neige.report.commit".to_string()),
         "daemon-trust tools/list without threadId must include report.commit, got: {names:?}"
     );
     let _ = (&boot.server, &boot.repo);

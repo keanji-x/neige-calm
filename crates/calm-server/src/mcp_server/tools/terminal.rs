@@ -23,32 +23,32 @@ use uuid::Uuid;
 pub fn register_into(registry: &mut ToolRegistry) {
     for (name, description, properties, required) in [
         (
-            "calm.terminal.resolve",
-            include_str!("../../../prompts/tools/calm.terminal.resolve.md").trim_end(),
+            "neige.terminal.resolve",
+            include_str!("../../../prompts/tools/neige.terminal.resolve.md").trim_end(),
             json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"}}),
             vec![],
         ),
         (
-            "calm.terminal.open",
-            include_str!("../../../prompts/tools/calm.terminal.open.md").trim_end(),
+            "neige.terminal.open",
+            include_str!("../../../prompts/tools/neige.terminal.open.md").trim_end(),
             json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec!["request_id"],
         ),
         (
-            "calm.terminal.observe",
-            include_str!("../../../prompts/tools/calm.terminal.observe.md").trim_end(),
+            "neige.terminal.observe",
+            include_str!("../../../prompts/tools/neige.terminal.observe.md").trim_end(),
             json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec![],
         ),
         (
-            "calm.terminal.control",
-            include_str!("../../../prompts/tools/calm.terminal.control.md").trim_end(),
+            "neige.terminal.control",
+            include_str!("../../../prompts/tools/neige.terminal.control.md").trim_end(),
             json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec!["action"],
         ),
         (
-            "calm.terminal.input",
-            include_str!("../../../prompts/tools/calm.terminal.input.md").trim_end(),
+            "neige.terminal.input",
+            include_str!("../../../prompts/tools/neige.terminal.input.md").trim_end(),
             json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
             "action":{"anyOf":[
                 {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"enum":["text","submit"]},"text":{"type":"string","minLength":1,"maxLength":16384}}},
@@ -68,7 +68,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
         registry.register(ToolDescriptor { name:name.into(),description:description.into(),
             input_schema,
             // Terminal programs may reach network/filesystem; no auto-approval annotation.
-            annotations:Some(json!({"readOnlyHint":matches!(name,"calm.terminal.observe"|"calm.terminal.resolve"),"destructiveHint":!matches!(name,"calm.terminal.observe"|"calm.terminal.resolve"),"openWorldHint":true})),
+            annotations:Some(json!({"readOnlyHint":matches!(name,"neige.terminal.observe"|"neige.terminal.resolve"),"destructiveHint":!matches!(name,"neige.terminal.observe"|"neige.terminal.resolve"),"openWorldHint":true})),
             visible_to_roles:&[CardRole::Planner],
         },handler);
     }
@@ -308,7 +308,7 @@ async fn call(
         .get()
         .ok_or_else(|| RpcError::internal("terminal interaction unavailable"))?;
     match name {
-        "calm.terminal.resolve" => {
+        "neige.terminal.resolve" => {
             let args: Resolve = parse(args)?;
             let resolved = service
                 .resolve(&identity, &target(args.terminal_id, args.attempt_id)?)
@@ -322,7 +322,7 @@ async fn call(
             );
             Ok(ToolResult::structured_with_summary(resolved, summary))
         }
-        "calm.terminal.open" => {
+        "neige.terminal.open" => {
             let args: Open = parse(args)?;
             if args.request_id.is_empty()
                 || args.request_id.len() > 128
@@ -447,7 +447,7 @@ async fn call(
             metadata["operation_id"] = json!(operation);
             Ok(observation_result(metadata))
         }
-        "calm.terminal.observe" => {
+        "neige.terminal.observe" => {
             let args: Observe = parse(args)?;
             if args.scroll_offset > 2000 {
                 return Err(RpcError::invalid_params(
@@ -480,7 +480,7 @@ async fn call(
                 .map_err(failure)?;
             Ok(observation_result(metadata))
         }
-        "calm.terminal.control" => {
+        "neige.terminal.control" => {
             let args: Control = parse(args)?;
             let readback = action_observation(
                 args.observe,
@@ -506,7 +506,7 @@ async fn call(
                 .map(|receipt| receipt_result(&args.action, receipt))
                 .map_err(write_failure)
         }
-        "calm.terminal.input" => {
+        "neige.terminal.input" => {
             let args: Input = parse(args)?;
             let readback = action_observation(
                 args.observe,

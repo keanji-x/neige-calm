@@ -65,10 +65,10 @@ async fn real_planner_creates_calendar_commitment() {
             .map(|(_, _, _, _, params)| serde_json::from_str::<Value>(&params).unwrap())
             .filter(|params| {
                 params["item"]["type"] == "mcpToolCall"
-                    && params["item"]["server"] == "calm"
+                    && params["item"]["server"] == "neige"
                     && params["item"]["tool"]
                         .as_str()
-                        .is_some_and(|name| name.starts_with("calm.calendar."))
+                        .is_some_and(|name| name.starts_with("neige.calendar."))
             })
             .map(|params| params["item"].clone())
             .collect::<Vec<_>>();
@@ -81,13 +81,13 @@ async fn real_planner_creates_calendar_commitment() {
             };
             let created = calls.iter().position(|call| {
                 successful(call)
-                    && call["tool"] == "calm.calendar.create"
+                    && call["tool"] == "neige.calendar.create"
                     && call["result"]["structuredContent"]["id"] == entry["id"]
             });
             if created.is_some_and(|index| {
                 calls.iter().skip(index + 1).any(|call| {
                     successful(call)
-                        && call["tool"] == "calm.calendar.list"
+                        && call["tool"] == "neige.calendar.list"
                         && call["result"]["structuredContent"]
                             .as_array()
                             .is_some_and(|listed| listed.iter().any(|item| item == entry))

@@ -1888,7 +1888,7 @@ mod tests {
         let descriptor = crate::mcp_server::build_default_registry()
             .descriptors()
             .into_iter()
-            .find(|descriptor| descriptor.name == "calm.track.close")
+            .find(|descriptor| descriptor.name == "neige.track.close")
             .expect("GIVE-UP tool descriptor");
         assert!(
             descriptor.visible_to_roles == [crate::model::CardRole::Planner],

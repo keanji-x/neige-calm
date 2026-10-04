@@ -163,7 +163,7 @@ async fn mcp_tool_call_notifications_persist_with_camelcase_status_round_trip() 
                 "id": "mcp-1",
                 "type": "mcpToolCall",
                 "server": "neige",
-                "tool": "calm.track.cat",
+                "tool": "neige.track.cat",
                 "status": "inProgress",
                 "arguments": { "path": "report.md" }
             }
@@ -186,7 +186,7 @@ async fn mcp_tool_call_notifications_persist_with_camelcase_status_round_trip() 
                 "id": "mcp-1",
                 "type": "mcpToolCall",
                 "server": "neige",
-                "tool": "calm.track.cat",
+                "tool": "neige.track.cat",
                 "status": "completed",
                 "result": { "content": [{ "type": "text", "text": "ok" }] },
                 "durationMs": 42

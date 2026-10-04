@@ -22,7 +22,7 @@ fn refusal(args: &[&str]) -> String {
 #[test]
 fn ls_without_a_path_sends_no_path() {
     let parsed = parse_args(&["ls"]).expect("parse");
-    assert_eq!(parsed.tool, "calm.track.ls");
+    assert_eq!(parsed.tool, "neige.track.ls");
     assert_eq!(parsed.args, json!({}));
     assert!(!parsed.json);
     assert_eq!(tool_args(&["ls", "runs/"]), json!({ "path": "runs/" }));
@@ -56,7 +56,7 @@ fn ls_long_is_a_view_flag_and_area_reports_selects_the_report_listing() {
 fn find_maps_path_name_and_tag_each_at_most_once() {
     let parsed =
         parse_args(&["find", "area/reports/", "-name", "*认证*", "-tag", "认证"]).expect("parse");
-    assert_eq!(parsed.tool, "calm.report.find");
+    assert_eq!(parsed.tool, "neige.report.find");
     assert_eq!(parsed.render, Render::Find);
     assert_eq!(
         parsed.args,
@@ -95,7 +95,7 @@ fn find_maps_path_name_and_tag_each_at_most_once() {
 fn cat_blocks_sends_the_comma_separated_ids_as_an_array() {
     let parsed =
         parse_args(&["cat", "area/reports/认证 方案.md", "--blocks", "b_1,b_2"]).expect("parse");
-    assert_eq!(parsed.tool, "calm.track.cat");
+    assert_eq!(parsed.tool, "neige.track.cat");
     assert_eq!(parsed.render, Render::Content);
     assert_eq!(
         parsed.args,
@@ -148,7 +148,7 @@ fn token_option_is_not_accepted() {
 #[test]
 fn diff_maps_positionals_to_from_to_and_path() {
     let parsed = parse_args(&["--json", "diff", "abc123", "def456", "report.md"]).expect("parse");
-    assert_eq!(parsed.tool, "calm.track.diff");
+    assert_eq!(parsed.tool, "neige.track.diff");
     assert_eq!(
         parsed.args,
         json!({ "from": "abc123", "to": "def456", "path": "report.md" })
@@ -205,7 +205,7 @@ fn cat_at_maps_commit_and_path() {
 #[test]
 fn tag_maps_path_and_repeated_add_and_remove_in_order() {
     let parsed = parse_args(&["tag", "report.md"]).expect("parse");
-    assert_eq!(parsed.tool, "calm.report.tag");
+    assert_eq!(parsed.tool, "neige.report.tag");
     assert_eq!(parsed.render, Render::Tags);
     assert_eq!(parsed.args, json!({ "path": "report.md" }));
     assert_eq!(
@@ -221,7 +221,7 @@ fn tag_maps_path_and_repeated_add_and_remove_in_order() {
         ]),
         json!({ "path": "report.md", "add": ["认证", "架构"], "remove": ["排障"] })
     );
-    // Values reach the tool unchecked: the path and tag rules belong to `calm.report.tag`.
+    // Values reach the tool unchecked: the path and tag rules belong to `neige.report.tag`.
     assert_eq!(
         tool_args(&["tag", "track.json", "--add", " a,b "]),
         json!({ "path": "track.json", "add": [" a,b "] })
@@ -260,7 +260,7 @@ fn log_maps_path_limit_and_include_empty() {
 }
 
 /// H4: range and non-empty rules belong to the tool (log clamps 0 to 1, an empty `to`/`path` is none,
-/// a blank reason is refused by `calm.task.fail`).
+/// a blank reason is refused by `neige.task.fail`).
 #[test]
 fn values_reach_the_tool_unchecked() {
     assert_eq!(tool_args(&["log", "--limit", "0"]), json!({ "limit": 0 }));
@@ -319,7 +319,7 @@ fn track_gc_requires_force_unless_dry_run() {
 fn vacuum_requires_force() {
     assert!(refusal(&["vacuum"]).contains("re-run with --force to confirm"));
     let parsed = parse_args(&["vacuum", "--force", "--json"]).expect("parse");
-    assert_eq!(parsed.tool, "calm.admin.vacuum");
+    assert_eq!(parsed.tool, "neige.admin.vacuum");
     assert_eq!(parsed.args, json!({}));
     assert!(parsed.json);
     assert_eq!(
@@ -379,7 +379,7 @@ fn task_failed_requires_reason() {
 #[test]
 fn track_close_maps_the_message_onto_calm_track_close() {
     let parsed = parse_args(&["track-close", "--message", "goal met"]).expect("parse");
-    assert_eq!(parsed.tool, "calm.track.close");
+    assert_eq!(parsed.tool, "neige.track.close");
     assert_eq!(parsed.args, json!({ "message": "goal met" }));
     assert_eq!(refusal(&["track-close"]), "track-close requires --message");
 }
@@ -522,8 +522,8 @@ fn prompt_neige_mentions_name_served_commands() {
 fn task_report_surfaces_name_the_execution_id_attempt_id() {
     // Where `idempotency_key` is a real caller-chosen dedupe key, not a task execution id.
     const CALLER_DEDUPE_KEY_PROMPTS: [&str; 2] = [
-        "prompts/tools/calm.calendar.create.md",
-        "prompts/tools/calm.track.publish.md",
+        "prompts/tools/neige.calendar.create.md",
+        "prompts/tools/neige.track.publish.md",
     ];
     const RETIRED_NAMES: [&str; 5] = [
         "idempotency_key",

@@ -166,7 +166,7 @@ async fn spawn_viewer_running(h: &Harness, terminal: &str, script: &str) {
 pub(crate) async fn snapshot(h: &Harness, target: Value) -> Value {
     let mut args = target;
     args["wait_ms"] = json!(50);
-    h.ok("calm.terminal.observe", args).await
+    h.ok("neige.terminal.observe", args).await
 }
 pub(crate) async fn stop(h: &Harness, w: &Worker) {
     h.state.terminal_renderer.drop_entry(&w.terminal).await;
@@ -178,7 +178,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
     for kind in ["terminal", "codex", "claude"] {
         let w = worker(&h, kind, &h.track, true).await;
         let resolved = h
-            .ok("calm.terminal.resolve", json!({"attempt_id":w.task}))
+            .ok("neige.terminal.resolve", json!({"attempt_id":w.task}))
             .await;
         assert_eq!(resolved["available"], true);
         assert_eq!(resolved["card_kind"], kind);
@@ -186,7 +186,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
         assert_eq!(resolved["worker_session_id"], w.session);
         let viewed = h
             .call(
-                "calm.terminal.observe",
+                "neige.terminal.observe",
                 json!({"attempt_id":w.task,"wait_ms":50}),
             )
             .await;
@@ -198,7 +198,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
             json!({"attempt_id":w.task}),
             json!({"terminal_id":w.terminal}),
         ] {
-            let text = h.call("calm.terminal.observe", target).await;
+            let text = h.call("neige.terminal.observe", target).await;
             let text_meta = assert_text_observation(&text);
             assert_eq!(text_meta["task"]["attempt_id"], w.task);
             assert_eq!(
@@ -213,7 +213,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
         }
         let claimed = h
             .ok(
-                "calm.terminal.control",
+                "neige.terminal.control",
                 json!({"attempt_id":w.task,"action":"claim","observe":true,"wait_ms":50}),
             )
             .await;
@@ -223,10 +223,10 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
             w.task
         );
         let before = snapshot(&h, json!({"attempt_id":w.task})).await;
-        let typed=h.ok("calm.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"text","action":{"type":"text","text":"hello"}})).await;
+        let typed=h.ok("neige.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"text","action":{"type":"text","text":"hello"}})).await;
         assert_eq!(typed["outcome"], "written");
         let before = snapshot(&h, json!({"terminal_id":w.terminal})).await;
-        let entered=h.ok("calm.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
+        let entered=h.ok("neige.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
         assert_eq!(entered["outcome"], "written");
         let after = h.observe_text(&w.terminal, "WORKER_REPLY:hello").await;
         assert_eq!(before["terminal_session_id"], after["terminal_session_id"]);
@@ -258,7 +258,7 @@ async fn foreign_track_task_and_terminal_are_both_refused() {
         json!({"attempt_id":w.task}),
         json!({"terminal_id":w.terminal}),
     ] {
-        let result = h.call("calm.terminal.observe", target).await;
+        let result = h.call("neige.terminal.observe", target).await;
         assert!(result.get("error").is_some(), "{result}");
     }
     stop(&h, &w).await;
@@ -269,13 +269,13 @@ async fn task_without_a_viewer_reports_unavailable_without_spawning() {
     let h = Harness::start().await;
     let w = worker(&h, "codex", &h.track, false).await;
     let result = h
-        .ok("calm.terminal.resolve", json!({"attempt_id":w.task}))
+        .ok("neige.terminal.resolve", json!({"attempt_id":w.task}))
         .await;
     assert_eq!(result["available"], false);
     assert_eq!(result["controllable"], false);
     assert_eq!(result["terminal_id"], w.terminal);
     assert!(
-        h.call("calm.terminal.observe", json!({"attempt_id":w.task}))
+        h.call("neige.terminal.observe", json!({"attempt_id":w.task}))
             .await
             .get("error")
             .is_some()
@@ -300,7 +300,7 @@ async fn selectors_are_exclusive_and_planner_cards_are_not_worker_terminals() {
         json!({"attempt_id":"x","terminal_id":"y"}),
         json!({"attempt_id":""}),
     ] {
-        let reply = h.call("calm.terminal.resolve", args).await;
+        let reply = h.call("neige.terminal.resolve", args).await;
         assert_eq!(reply["error"]["code"], -32602, "{reply}");
     }
     let planner = h
@@ -318,7 +318,7 @@ async fn selectors_are_exclusive_and_planner_cards_are_not_worker_terminals() {
         .unwrap()
         .unwrap();
     let reply = h
-        .call("calm.terminal.resolve", json!({"terminal_id":terminal.id}))
+        .call("neige.terminal.resolve", json!({"terminal_id":terminal.id}))
         .await;
     assert!(reply.get("error").is_some());
 }
@@ -328,7 +328,7 @@ async fn task_completion_revokes_control_but_preserves_current_output() {
     let h = Harness::start().await;
     let w = worker(&h, "claude", &h.track, true).await;
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"attempt_id":w.task,"action":"claim"}),
     )
     .await;
@@ -350,14 +350,14 @@ async fn task_completion_revokes_control_but_preserves_current_output() {
         args["request_id"] = json!("late");
         args["action"] = json!({"type":"text","text":"wrong"});
         assert!(
-            h.call("calm.terminal.input", args)
+            h.call("neige.terminal.input", args)
                 .await
                 .get("error")
                 .is_some()
         );
     }
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"attempt_id":w.task,"action":"release"}),
     )
     .await;
@@ -369,7 +369,7 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
     let h = Harness::start().await;
     let w = worker(&h, "claude", &h.track, true).await;
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"attempt_id":w.task,"action":"claim"}),
     )
     .await;
@@ -377,7 +377,7 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
     let waiters = || entry.handle.model_view.lock().unwrap().change_waiters();
     let before = waiters();
     let released = h.call(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"attempt_id":w.task,"action":"release","observe":true,"wait_for":"change","wait_ms":10000}),
     );
     let finish = async {
@@ -430,7 +430,7 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
     .await;
     h.observe_text(&w.terminal, "WORKER_READY").await;
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"attempt_id":w.task,"action":"claim"}),
     )
     .await;
@@ -439,7 +439,7 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
     let waiters = || entry.handle.model_view.lock().unwrap().change_waiters();
     let subscribed = waiters();
     let holder = h.call(
-        "calm.terminal.input",
+        "neige.terminal.input",
         json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"hold","action":{"type":"text","text":"a"},"observe":true,"wait_for":"change","wait_ms":10000}),
     );
     let driver = async {
@@ -451,7 +451,7 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
         // The queued input is called while the task is still running and the
         // task is finished only once that input is waiting for the serial.
         let queued = h.call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"queued","action":{"type":"text","text":"b"}}),
         );
         let service = h.interaction();
@@ -518,7 +518,7 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         let w = worker(&h, kind, &h.track, true).await;
         if writable {
             h.ok(
-                "calm.terminal.control",
+                "neige.terminal.control",
                 json!({"attempt_id":w.task,"action":"claim"}),
             )
             .await;
@@ -554,22 +554,22 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         .unwrap();
         tx.commit().await.unwrap();
         let resolved = h
-            .ok("calm.terminal.resolve", json!({"attempt_id":w.task}))
+            .ok("neige.terminal.resolve", json!({"attempt_id":w.task}))
             .await;
         assert_eq!(resolved["worker_session_id"], next);
         if writable {
             h.ok(
-                "calm.terminal.control",
+                "neige.terminal.control",
                 json!({"attempt_id":w.task,"action":"claim"}),
             )
             .await;
         }
         let fresh = snapshot(&h, json!({"attempt_id":w.task})).await;
         assert_ne!(before["connection_id"], fresh["connection_id"], "{kind}");
-        let rejected=h.call("calm.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"old","action":{"type":"text","text":"stale"}})).await;
+        let rejected=h.call("neige.terminal.input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"old","action":{"type":"text","text":"stale"}})).await;
         assert!(rejected.get("error").is_some(), "{rejected}");
         if writable {
-            let accepted=h.ok("calm.terminal.input",json!({"attempt_id":w.task,"observation_id":fresh["observation_id"],"request_id":"new","action":{"type":"text","text":"current"}})).await;
+            let accepted=h.ok("neige.terminal.input",json!({"attempt_id":w.task,"observation_id":fresh["observation_id"],"request_id":"new","action":{"type":"text","text":"current"}})).await;
             assert_eq!(accepted["outcome"], "written");
         }
         stop(&h, &w).await;
@@ -584,7 +584,7 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
     let h = Harness::start().await;
     let w = worker(&h, "terminal", &h.track, true).await;
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"attempt_id":w.task,"action":"claim"}),
     )
     .await;
@@ -634,14 +634,14 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
         json!({"terminal_id":w.terminal}),
     ] {
         assert!(
-            h.call("calm.terminal.observe", target)
+            h.call("neige.terminal.observe", target)
                 .await
                 .get("error")
                 .is_some()
         );
     }
     h.ok(
-        "calm.terminal.control",
+        "neige.terminal.control",
         json!({"attempt_id":w.task,"action":"detach"}),
     )
     .await;
@@ -664,7 +664,7 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
         json!({"terminal_id":old.terminal}),
     ] {
         assert!(
-            h.call("calm.terminal.resolve", target)
+            h.call("neige.terminal.resolve", target)
                 .await
                 .get("error")
                 .is_some()
@@ -680,7 +680,7 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
         .unwrap();
     assert!(
         h.call(
-            "calm.terminal.resolve",
+            "neige.terminal.resolve",
             json!({"terminal_id":restarted.terminal})
         )
         .await
@@ -697,7 +697,7 @@ async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
     let h = Harness::start().await;
     let w = worker(&h, "codex", &h.track, true).await;
     assert_eq!(
-        h.ok("calm.terminal.resolve", json!({"attempt_id":w.task}))
+        h.ok("neige.terminal.resolve", json!({"attempt_id":w.task}))
             .await["available"],
         true
     );
@@ -707,7 +707,7 @@ async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
         .await
         .unwrap();
     let result = h
-        .call("calm.terminal.resolve", json!({"terminal_id":w.terminal}))
+        .call("neige.terminal.resolve", json!({"terminal_id":w.terminal}))
         .await;
     stop(&h, &w).await;
     assert!(
@@ -776,14 +776,14 @@ async fn manual_codex_and_claude_workers_are_controllable_without_a_task() {
         tx.commit().await.unwrap();
         spawn_viewer(&h, &terminal.id).await;
         let resolved = h
-            .ok("calm.terminal.resolve", json!({"terminal_id":terminal.id}))
+            .ok("neige.terminal.resolve", json!({"terminal_id":terminal.id}))
             .await;
         assert_eq!(resolved["task"], Value::Null);
         assert_eq!(resolved["card_kind"], kind);
         assert_eq!(resolved["available"], true);
         assert_eq!(resolved["controllable"], true);
         h.ok(
-            "calm.terminal.control",
+            "neige.terminal.control",
             json!({"terminal_id":terminal.id,"action":"claim"}),
         )
         .await;

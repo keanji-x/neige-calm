@@ -14,7 +14,7 @@ async fn call(boot: &Boot, tool: &str, args: Value) -> Value {
 }
 
 async fn read(boot: &Boot, args: Value) -> Value {
-    call(boot, "calm.report.read", args).await
+    call(boot, "neige.report.read", args).await
 }
 
 fn reference() -> Value {
@@ -144,7 +144,7 @@ async fn live_view_storage_error_is_not_reported_as_pending() {
 #[tokio::test]
 async fn live_view_discovery_write_read_and_stale_cas() {
     let boot = boot().await;
-    let kinds = call(&boot, "calm.report.blocks.kinds", json!({})).await;
+    let kinds = call(&boot, "neige.report.kinds", json!({})).await;
     let kind = kinds["kinds"]
         .as_array()
         .unwrap()
@@ -172,7 +172,7 @@ async fn live_view_discovery_write_read_and_stale_cas() {
     .unwrap();
     let error = call_tool(
         &boot,
-        "calm.report.commit",
+        "neige.report.commit",
         planner_identity(&boot),
         json!({
             "message": "stale replacement",
@@ -185,7 +185,7 @@ async fn live_view_discovery_write_read_and_stale_cas() {
     assert_eq!(read(&boot, json!({})).await["docRev"], updated["docRev"]);
     let commit = call(
         &boot,
-        "calm.report.commit",
+        "neige.report.commit",
         json!({"message": "append view",
         "ops": [{"op": "upsert", "kind": "view.live", "payload": reference()}]}),
     )
@@ -194,7 +194,7 @@ async fn live_view_discovery_write_read_and_stale_cas() {
     let snapshot = read(&boot, json!({})).await;
     call(
         &boot,
-        "calm.report.write_markdown",
+        "neige.report.write",
         json!({"body": snapshot["text"], "message": "round trip"}),
     )
     .await;
@@ -368,11 +368,11 @@ async fn live_view_invalid_reference_cannot_mutate_report() {
     ] {
         for (tool, args) in [
             (
-                "calm.report.commit",
+                "neige.report.commit",
                 json!({"message": "bad", "ops": [{"op": "upsert", "kind": "view.live", "payload": bad}]}),
             ),
             (
-                "calm.report.write_markdown",
+                "neige.report.write",
                 json!({"message": "bad", "body": format!("```neige-block view.live\n{bad}\n```\n")}),
             ),
         ] {

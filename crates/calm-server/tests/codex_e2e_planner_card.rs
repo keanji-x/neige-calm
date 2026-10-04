@@ -232,7 +232,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         "track create returned non-201; body={body}",
     );
 
-    // 1a. The planner card's `$CODEX_HOME/config.toml` must carry `[mcp_servers.calm.env]`: codex CLI does not forward the daemon env to MCP subprocesses.
+    // 1a. The planner card's `$CODEX_HOME/config.toml` must carry `[mcp_servers.neige.env]`: codex CLI does not forward the daemon env to MCP subprocesses.
     let track_id = body
         .get("id")
         .and_then(Value::as_str)
@@ -278,12 +278,12 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         cfg_text.len(),
     );
     assert!(
-        cfg_text.contains("[mcp_servers.calm]"),
-        "planner card config.toml missing `[mcp_servers.calm]` block; got:\n{cfg_text}",
+        cfg_text.contains("[mcp_servers.neige]"),
+        "planner card config.toml missing `[mcp_servers.neige]` block; got:\n{cfg_text}",
     );
     assert!(
-        cfg_text.contains("[mcp_servers.calm.env]"),
-        "planner card config.toml missing `[mcp_servers.calm.env]` block — codex won't pass MCP vars to the shim subprocess (#236 followup); got:\n{cfg_text}",
+        cfg_text.contains("[mcp_servers.neige.env]"),
+        "planner card config.toml missing `[mcp_servers.neige.env]` block — codex won't pass MCP vars to the shim subprocess (#236 followup); got:\n{cfg_text}",
     );
     // The token is minted per-card and not surfaced by any read API, so only the line shape and non-emptiness are checked.
     let env_socket_line = cfg_text

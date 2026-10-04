@@ -71,9 +71,9 @@ pub(super) fn context(client_id: String, input: Vec<InputItem>) -> TurnContext {
 pub(super) fn visible_tools() -> CalmToolNames {
     CalmToolNames::new(
         [
-            "calm.report.write",
-            "calm.report.read",
-            "calm.user.notify",
+            "neige.report.write",
+            "neige.report.read",
+            "neige.user.notify",
             "plugin.dev-neige-market_market_quote",
         ]
         .map(String::from),
@@ -221,12 +221,12 @@ fn a_calm_tool_keeps_its_dotted_name_from_the_visible_tool_list() {
         assert_eq!(
             tools,
             [
-                &json!("calm.report.write"),
+                &json!("neige.report.write"),
                 &json!("plugin.dev-neige-market_market_quote")
             ],
             "{method}"
         );
-        assert!(calls.iter().all(|item| item["server"] == "calm"));
+        assert!(calls.iter().all(|item| item["server"] == "neige"));
     }
     let completed = of_type(&items(&notifications, "item/completed"), "mcpToolCall");
     assert_eq!(completed[0]["arguments"], json!({ "text": "hi" }));
@@ -241,9 +241,9 @@ fn a_calm_tool_keeps_its_dotted_name_from_the_visible_tool_list() {
 fn an_unknown_or_ambiguous_calm_tool_keeps_the_claude_name() {
     let records = decode_fixture("pB_baseline.ndjson");
     let client_id = first_replay_client_id(&records);
-    // `calm.report.write` and `calm_report.write` both spell `calm_report_write`.
+    // `neige.report.write` and `neige_report.write` both spell `neige_report_write`.
     let ambiguous =
-        CalmToolNames::new(["calm.report.write", "calm_report.write"].map(String::from));
+        CalmToolNames::new(["neige.report.write", "neige_report.write"].map(String::from));
     for tools in [CalmToolNames::new(Vec::new()), ambiguous] {
         let mut translator =
             TurnTranslator::new(context(client_id.clone(), Vec::new()), tools).unwrap();
@@ -252,7 +252,7 @@ fn an_unknown_or_ambiguous_calm_tool_keeps_the_claude_name() {
             .flat_map(|r| translator.translate(r, 1))
             .collect();
         let calls = of_type(&items(&notifications, "item/started"), "mcpToolCall");
-        assert_eq!(calls[0]["tool"], "mcp__calm__calm_report_write");
+        assert_eq!(calls[0]["tool"], "mcp__neige__neige_report_write");
     }
 }
 

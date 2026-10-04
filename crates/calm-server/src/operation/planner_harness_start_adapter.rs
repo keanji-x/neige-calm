@@ -2504,7 +2504,7 @@ mod tests {
         assert_eq!(out, expected);
         assert!(
             expected.contains(
-                "Before you first edit the report in a session, read it in full with `calm.report.read`."
+                "Before you first edit the report in a session, read it in full with `neige.report.read`."
             ),
             "base prompt must require the report read before direct edits"
         );

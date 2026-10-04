@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::stop::MARKER_KEY;
 use crate::error::{CalmError, Result};
+use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::planner_model::TurnModelSelection;
 use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
 
@@ -33,14 +34,14 @@ pub(crate) fn settings_json() -> String {
     .to_string()
 }
 
-/// The `calm` shim; its secrets reach it through `${VAR}` expansion of the CLI's own environment.
+/// The kernel MCP shim; its secrets reach it through `${VAR}` expansion of the CLI's own environment.
 fn mcp_config_json(shim: &Path) -> Result<String> {
     let command = shim.to_str().ok_or_else(|| {
         CalmError::Internal(format!("mcp shim path is not UTF-8: {}", shim.display()))
     })?;
     Ok(json!({
         "mcpServers": {
-            "calm": {
+            MCP_SERVER_KEY: {
                 "type": "stdio",
                 "command": command,
                 "args": [],
@@ -73,7 +74,7 @@ fn allowed_tools(cwd: &Path) -> Result<String> {
         })?;
     let root = cwd.trim_end_matches('/');
     Ok(format!(
-        "Bash Read ToolSearch WebFetch WebSearch mcp__calm Edit(/{root}/**) Write(/{root}/**)"
+        "Bash Read ToolSearch WebFetch WebSearch mcp__{MCP_SERVER_KEY} Edit(/{root}/**) Write(/{root}/**)"
     ))
 }
 

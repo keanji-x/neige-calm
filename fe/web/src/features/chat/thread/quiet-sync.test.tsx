@@ -230,7 +230,7 @@ describe('QuietSyncFold in the thread', () => {
     expect(accepted.title).toMatch(/ · accepted, no action$/);
     const updated = label([
       reportEdited('user'), activity('act1'),
-      activity('w1', { verb: 'Wrote report', tool: REPORT_WRITE_TOOLS[4] ?? null }), outcome('o1', 'completed'),
+      activity('w1', { verb: 'Wrote report', tool: REPORT_WRITE_TOOLS[2] ?? null }), outcome('o1', 'completed'),
     ]);
     expect(updated.text).toMatch(/ · updated the report$/);
     expect(updated.outcome).toBe('updated');

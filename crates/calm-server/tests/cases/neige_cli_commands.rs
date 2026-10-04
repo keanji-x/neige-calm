@@ -61,42 +61,42 @@ async fn cli_output_equals_direct_tool_call() {
 
     // (argv without --json, tool, direct args, render)
     let cases: Vec<(Vec<&str>, &str, Value, Render)> = vec![
-        (vec!["ls"], "calm.track.ls", json!({}), LS),
+        (vec!["ls"], "neige.track.ls", json!({}), LS),
         (
             vec!["ls", "cards"],
-            "calm.track.ls",
+            "neige.track.ls",
             json!({ "path": "cards" }),
             LS,
         ),
-        (vec!["state"], "calm.track.state", json!({}), Render::State),
+        (vec!["state"], "neige.track.state", json!({}), Render::State),
         (
             vec!["diff", &c0, &c2],
-            "calm.track.diff",
+            "neige.track.diff",
             json!({ "from": c0, "to": c2 }),
             Render::Diff,
         ),
         (
             vec!["diff", &c0, "--path", "file-2.txt"],
-            "calm.track.diff",
+            "neige.track.diff",
             json!({ "from": c0, "path": "file-2.txt" }),
             Render::Diff,
         ),
-        (vec!["log"], "calm.track.log", json!({}), Render::Log),
+        (vec!["log"], "neige.track.log", json!({}), Render::Log),
         (
             vec!["log", "--limit", "0", "--include-empty"],
-            "calm.track.log",
+            "neige.track.log",
             json!({ "limit": 0, "include_empty": true }),
             Render::Log,
         ),
         (
             vec!["cat", "track.json"],
-            "calm.track.cat",
+            "neige.track.cat",
             json!({ "path": "track.json" }),
             Render::Content,
         ),
         (
             vec!["cat-at", &c2, "file-2.txt"],
-            "calm.track.cat_at",
+            "neige.track.show",
             json!({ "commit": c2, "path": "file-2.txt" }),
             Render::Content,
         ),
@@ -561,7 +561,7 @@ async fn cli_authorization_equals_direct_call() {
     assert_same_refusal(
         &worker,
         &["vacuum", "--force"],
-        "calm.admin.vacuum",
+        "neige.admin.vacuum",
         json!({}),
     )
     .await;
@@ -570,7 +570,7 @@ async fn cli_authorization_equals_direct_call() {
     assert_same_refusal(
         &planner,
         &["task-completed", "--attempt-id", "k"],
-        "calm.task.complete",
+        "neige.task.complete",
         json!({ "attempt_id": "k" }),
     )
     .await;
@@ -747,7 +747,7 @@ async fn cli_tag_round_trips_the_planners_report_tags() {
     assert_same_refusal(
         &boot,
         &["tag", "track.json", "--add", "x"],
-        "calm.report.tag",
+        "neige.report.tag",
         json!({ "path": "track.json", "add": ["x"] }),
     )
     .await;
@@ -763,7 +763,7 @@ async fn cli_tag_lists_for_a_worker_and_refuses_its_changes() {
     assert_same_refusal(
         &boot,
         &["tag", "report.md", "--add", "认证"],
-        "calm.report.tag",
+        "neige.report.tag",
         json!({ "path": "report.md", "add": ["认证"] }),
     )
     .await;
@@ -833,14 +833,14 @@ async fn cli_tools_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions(
                 "tools",
                 "describe",
                 "--name",
-                "calm.hidden.nonexistent",
+                "neige.hidden.nonexistent",
                 "--json",
             ],
         )
         .await;
         assert_eq!(exit, 4);
         assert!(stdout.is_empty());
-        let (_, _, exit) = cli(&boot, &["tools", "names", "--prefix", "calm.*", "--json"]).await;
+        let (_, _, exit) = cli(&boot, &["tools", "names", "--prefix", "neige.*", "--json"]).await;
         assert_eq!(exit, 1);
         sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?")
             .bind(&boot.card_id)

@@ -53,7 +53,7 @@ async fn open_busy_claude(h: &Harness, request: &str) -> String {
     );
     let opened = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"program":program,"request_id":request,"claim":true}),
         )
         .await;
@@ -77,7 +77,7 @@ async fn absent_condition_holds_the_signal_readback_until_the_busy_hint_is_gone(
     let terminal = open_busy_claude(&h, "conditions-absent").await;
     let plain = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             ask(&terminal, "plain", "one", json!({})),
         )
         .await;
@@ -104,7 +104,7 @@ async fn absent_condition_holds_the_signal_readback_until_the_busy_hint_is_gone(
     h.observe_text(&terminal, "ANSWER:one").await;
     let gated = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             ask(
                 &terminal,
                 "gated",
@@ -131,7 +131,7 @@ async fn absent_condition_holds_the_signal_readback_until_the_busy_hint_is_gone(
     h.observe_text(&terminal, "ANSWER:two").await;
     let both = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             ask(
                 &terminal,
                 "both",
@@ -156,7 +156,7 @@ async fn budget_with_the_hint_still_shown_is_unsettled() {
     let terminal = open_busy_claude(&h, "conditions-unsettled").await;
     let held = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             ask(
                 &terminal,
                 "held",
@@ -180,7 +180,7 @@ async fn budget_with_the_hint_still_shown_is_unsettled() {
     // A later text wait on the absence alone returns once the answer lands.
     let later = h
         .ok(
-            "calm.terminal.observe",
+            "neige.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"text","wait_text_absent":["esc to interrupt"],"wait_ms":8000}),
         )
         .await;
@@ -199,7 +199,7 @@ async fn text_condition_validation_on_every_carrier() {
     let h = Harness::start().await;
     let terminal = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"program":"printf 'READY\\n'; cat >/dev/null","request_id":"conditions-validation"}),
         )
         .await["terminal_id"]
@@ -256,7 +256,7 @@ async fn text_condition_validation_on_every_carrier() {
     ] {
         let mut observe = args.clone();
         observe["terminal_id"] = json!(terminal);
-        let response = h.call("calm.terminal.observe", observe).await;
+        let response = h.call("neige.terminal.observe", observe).await;
         assert_eq!(response["error"]["code"], -32602, "{args}: {response}");
         assert!(
             error_text(&response).contains(expected),
@@ -267,17 +267,17 @@ async fn text_condition_validation_on_every_carrier() {
         }
         for (tool, extra) in [
             (
-                "calm.terminal.control",
+                "neige.terminal.control",
                 json!({"action":"claim","observe":true}),
             ),
             (
-                "calm.terminal.input",
+                "neige.terminal.input",
                 json!({"request_id":"invalid","action":{"type":"text","text":"BAD"},"observe":true}),
             ),
-            ("calm.terminal.open", json!({"request_id":"invalid-open"})),
+            ("neige.terminal.open", json!({"request_id":"invalid-open"})),
         ] {
             let mut call = args.clone();
-            if tool != "calm.terminal.open" {
+            if tool != "neige.terminal.open" {
                 call["terminal_id"] = json!(terminal);
             }
             for (key, value) in extra.as_object().unwrap() {
@@ -296,7 +296,7 @@ async fn text_condition_validation_on_every_carrier() {
     }
     let no_observe = h
         .call(
-            "calm.terminal.input",
+            "neige.terminal.input",
             json!({"terminal_id":terminal,"request_id":"x","action":{"type":"text","text":"x"},"wait_for":"signal","wait_text_absent":["x"]}),
         )
         .await;
@@ -310,7 +310,7 @@ async fn text_condition_validation_on_every_carrier() {
     // not on the screen: matched at once after the settle window).
     let absent = h
         .ok(
-            "calm.terminal.observe",
+            "neige.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"text","wait_text_absent":["never painted"],"settle_ms":0}),
         )
         .await;
@@ -322,7 +322,7 @@ async fn text_condition_validation_on_every_carrier() {
     );
     let present_still = h
         .ok(
-            "calm.terminal.observe",
+            "neige.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"text","wait_text":["READY"],"wait_text_absent":["READY"],"wait_ms":200}),
         )
         .await;
@@ -337,7 +337,7 @@ async fn text_condition_validation_on_every_carrier() {
     );
     let signal = h
         .ok(
-            "calm.terminal.observe",
+            "neige.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"signal","wait_ms":200,"wait_text":["READY"],"wait_text_absent":["x"]}),
         )
         .await;
@@ -349,7 +349,7 @@ async fn text_condition_validation_on_every_carrier() {
     );
     let opened = h
         .ok(
-            "calm.terminal.open",
+            "neige.terminal.open",
             json!({"request_id":"open-absent","program":"printf 'hello\\n'; cat >/dev/null",
                 "wait_for":"text","wait_text_absent":["busy"],"settle_ms":0}),
         )

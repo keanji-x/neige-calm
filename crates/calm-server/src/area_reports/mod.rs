@@ -54,7 +54,7 @@ pub fn classify(path: &str) -> Option<Result<AreaPath<'_>, String>> {
         Ok(AreaPath::Report(file))
     } else {
         Err(format!(
-            "calm.track: path not available in this view: {path} (under `area/` there is only \
+            "neige.track: path not available in this view: {path} (under `area/` there is only \
              `area/reports/<name>.md`)"
         ))
     })
@@ -235,8 +235,8 @@ pub async fn read(
     report_markdown(&report.card_id, report.payload)
 }
 
-/// The block projection of the report `file` names in `area_id` — the blocks `calm.area.outline`
-/// indexes and `calm.report.read` selects — resolved and re-checked exactly as [`read`].
+/// The block projection of the report `file` names in `area_id` — the blocks `neige.area.outline`
+/// indexes and `neige.report.read` selects — resolved and re-checked exactly as [`read`].
 pub async fn read_blocks(
     pool: &SqlitePool,
     area_id: &str,

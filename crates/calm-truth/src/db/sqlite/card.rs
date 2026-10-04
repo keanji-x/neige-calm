@@ -214,7 +214,7 @@ pub async fn card_update_tx(
     if transitions_from_report || targets_report || updates_report_payload {
         return Err(CalmError::BadRequest(
             "track-report kind transitions and payloads must go through the report persist boundary \
-             (POST /api/tracks/:id/report or the calm.report.* tools)",
+             (POST /api/tracks/:id/report or the neige.report.* tools)",
         ));
     }
     card_update_inner_tx(tx, existing, p).await

@@ -1,4 +1,4 @@
-//! #1777 B — `calm.plan.list.candidate.upstream`: every bound candidate reads the commit, as last
+//! #1777 B — `neige.plan.list.candidate.upstream`: every bound candidate reads the commit, as last
 //! known now, of the upstream of the branch the Track's checkout is on now, and how many commits its
 //! base (since #1830 S2 the track worktree's HEAD) is behind it. Absent when that branch has no known
 //! upstream. Read-only: the read fetches nothing and writes no ref.

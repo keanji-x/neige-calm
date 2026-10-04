@@ -181,7 +181,7 @@ async fn the_cut_is_checked_then_rides_the_next_spawn_and_survives_a_restart() {
     assert_eq!(argv[resume + 1], thread);
     assert_eq!(argv[resume + 2], format!("--resume-session-at={anchor}"));
     assert_eq!(argv[resume + 3], format!("--resume-drops-turn={drops}"));
-    assert!(arg_after(&argv, "--mcp-config").contains("calm"));
+    assert!(arg_after(&argv, "--mcp-config").contains("\"neige\""));
     assert!(
         stored_snapshot(&stack, &card_id).await["pending_rewind"].is_null(),
         "consumed by the start"

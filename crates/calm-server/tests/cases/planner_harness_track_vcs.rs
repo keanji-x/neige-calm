@@ -1196,7 +1196,7 @@ async fn legacy_report_edited_turn_keeps_the_unified_patch() {
 
 /// The channel statement is a fact about the batch, not about one edit: the front end folds a turn away only when every segment is a report edit.
 const CHANNEL_LINE: &str = "This is a background sync turn: an ordinary reply here \
-    is folded away by the front end. Call calm.user.notify only for a conflict \
+    is folded away by the front end. Call neige.user.notify only for a conflict \
     with work still in flight, data you cannot parse, or a decision only the \
     user can make; otherwise end the turn silently.";
 

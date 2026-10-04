@@ -20,6 +20,7 @@ use super::stop::{STOP_BOUND, stop_by};
 use super::translate::{TurnOutcome, TurnTranslator};
 use crate::error::CalmError;
 use crate::harness::planner_event::{PlannerEvent, PlannerEventKind};
+use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::worker::WorkerSessionId;
 
@@ -136,9 +137,9 @@ pub(crate) fn init_check(init: &SystemInit, thread: Uuid, version: &str) -> Resu
     if !init
         .mcp_servers
         .iter()
-        .any(|server| server.name == "calm" && server.status == "connected")
+        .any(|server| server.name == MCP_SERVER_KEY && server.status == "connected")
     {
-        return Err("the calm MCP server is not connected".into());
+        return Err("the neige MCP server is not connected".into());
     }
     if !init.skills.is_empty() {
         return Err(format!("claude loaded skills {:?}", init.skills));

@@ -7,7 +7,7 @@
 //! by the production `ensure_track_worktree` (the create route's post-commit step); a runtime with
 //! the real `CodexWorkerAdapter` on a fake running Codex daemon, the forge and task-verify
 //! adapters; a live Dispatcher and its scheduler. The worker is played by the test: it writes
-//! files in the cwd its op froze and reports through the `calm.task.*` MCP tools.
+//! files in the cwd its op froze and reports through the `neige.task.*` MCP tools.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -222,7 +222,7 @@ impl Started {
     pub(super) async fn fail(&self, fx: &Fx, reason: &str) {
         call_tool(
             &fx.boot,
-            "calm.task.fail",
+            "neige.task.fail",
             self.identity.clone(),
             json!({"attempt_id": self.task.id, "reason": reason}),
         )

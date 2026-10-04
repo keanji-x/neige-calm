@@ -398,8 +398,9 @@ Every slice has these common gates:
 | S6 | Codex adapter ownership + measured regression | move `codex_sanitized`/`model_tool_key` → `crate::codex_appserver::tool_names` (callers: source.rs:15, plugin_tool_names.rs:172), fix the comment to the 0.159.2 rule, add unit tests with the literal names captured in §3.2 | Bare and `mcp__neige__`-qualified names resolve. Hashed and colliding names → `source.capture` error `UNKNOWN_TOOL_NAME` listing raw names. Every kernel tool sanitizes injectively to ≤ 116 B. | New `hashed_codex_callables_fail_explicitly` + `kernel_tool_callables_are_injective_and_unhashed`. Mutation: make the key strip a trailing `_[0-9a-f]{12}` → the first test is red. |
 
 **Stale-name sweep invariant (PR-2, replaces hand-made file lists).** A test
-`no_retired_tool_names_remain` scans every tracked file under `crates/`, `fe/`, `plugins/` and
-`templates/` and `docs/using-neige-calm.md` (its tool-name lines therefore move into PR-2; PR-4 keeps the CLI-spelling and e2e text) for
+`no_retired_tool_names_remain` scans every tracked file under `crates/`, `fe/` and `plugins/` and
+`docs/using-neige-calm.md` (there is no root `templates/`; the built-in templates live under
+`crates/calm-server/templates/`) (its tool-name lines therefore move into PR-2; PR-4 keeps the CLI-spelling and e2e text) for
 `\bcalm\.(admin|area|calendar|dispatch_request|get_track_state|plan|preview|ratify|report|review|source|task|task_completed|task_failed|terminal|track|update_task_meta|user)\b`
 and for `mcp__calm(?:__|\b)`. The allowlist is closed: released migrations, the §6.3 migration and its
 test, and this document. A deliberate retired-name rejection input (S1's -32601 test) is exempt
@@ -458,10 +459,10 @@ text column of every table in `calm.db` (opened `mode=ro`). The results that mat
 
 | Where | Old names | Read back by code? | Action |
 |---|---|---|---|
-| Planner transcript items table (`<harness>_items`).params: `"tool":"calm.*"` in `mcpToolCall` rows | 1168 rows (2026-09-16 … 10-02). Aliases: get_track_state 3, task_completed 1, task_failed 1. `mcp__calm__` 35 | **yes**: fe classifies history by name (mcp-tools.ts, conversation.ts:784,993), and activity SQL (`track_activity/sql.rs:29`) | §6.3 migration |
+| Planner transcript items table (`<harness>_items`).params: `"tool":"calm.*"` in `mcpToolCall` rows | 1168 rows (2026-09-16 … 10-02), all in `$.item.tool`. Aliases: 0 in the tool field (get_track_state 3, task_completed 1, task_failed 1 occur only in other params text). Retired writers in the tool field: report.blocks.upsert 12, report.blocks.delete 8, task.replace 2. `mcp__calm__`: 34 rows, 20 of them in the tool field (5 git-forge plugin names, 0 kernel names) | **yes**: fe classifies history by name (mcp-tools.ts, conversation.ts:784,993), and activity SQL (`track_activity/sql.rs:29`) | §6.3 migration |
 | worker_flow_items.payload | calm.* 438, `mcp__calm__` 159, aliases 28 | displayed only (raw tool name) | none |
 | track_recipes.body | 1 row "SPY 与现金 · 每日例程": calm.calendar.list, calm.source.capture, calm.report.commit | **yes**: agents read it as instructions | §6.3 migration (with revision bump) |
-| plugins.manifest (`dev.neige.git-forge`) | description: calm.track.publish, calm.review.round | read by the Planner as a description | verify on deploy that boot or reinstall refreshes it from `plugins/git-forge/manifest.json`; else reinstall the plugin |
+| plugins.manifest (`dev.neige.git-forge`) | description: calm.track.publish, calm.review.round | read by the Planner as a description | none: every boot refreshes it from the compiled `plugins/git-forge/manifest.json` (§6.3) |
 | cards.payload, tasks.goal/acceptance, operations.*, events.payload (card.*, track.report_edited, task.*), track_vcs_objects | prompt and report text, history | no: all matching tasks are terminal (`done`/`failed`) | none |
 | report_sources (77 rows) | stores `plugin_id` + `tool` separately (`Origin::Plugin`) | no change | none |
 | `data/codex-home/config.toml` `[mcp_servers.calm]` | 1 table | boot rewrites it (S3) | automatic |
@@ -486,7 +487,6 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
   standard production restart runbook; real Codex E2E is never run on this host.
 - **After deploy:**
   - Check that the SPY recipe row and the git-forge manifest row no longer contain `calm.`.
-    If the manifest still does, reinstall the plugin (§6.3).
   - Re-run the §6.1 counts.
 
 ### 6.3 Stored names are rewritten once (DECIDED)
@@ -514,9 +514,12 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
   `mcp__calm__` tool field, a recipe row) and asserts the read-back through the real readers: the
   activity projector for `neige.user.notify`, and the recipe revision bump.
 - **Not rewritten:**
-  - `plugins.manifest`, because the manifest may be trust-hashed. The implementer checks whether
-    boot or reinstall refreshes it from `plugins/git-forge/manifest.json`. If neither does, the
-    deploy step is a plugin reinstall.
+  - `plugins.manifest`. It needs no migration: `git-forge` is a compiled built-in, and every boot
+    runs `PluginHost::reconcile_builtins` (state.rs → plugin_host/builtin.rs), whose
+    `plugin_install` upsert (`ON CONFLICT(id) DO UPDATE SET manifest = excluded.manifest`) writes
+    the compiled manifest back. No reinstall step.
+  - The stored `server` field (`"calm"`), which no reader uses (the fe and the projector key on
+    `tool`).
   - `worker_flow_items`, task text and events. Events are replayed (`replay.rs:145`), but
     the item-added event carries a row reference, not params (`calm-types/src/event.rs:335`). Event
     goldens and frozen vectors hold no tool names, and no hash covers the two rewritten columns.
@@ -562,3 +565,24 @@ The S-slices are review units. They land as four PRs, so the brand is never mixe
 | PR-2 | S2a–S2d + S3 + the §6.3 migration | The atomic brand and grammar switch; no `(calm\|neige)` scanner window |
 | PR-3 | S4 | Mechanical CLI and discovery |
 | PR-4 | S5 | Living docs and e2e scripts |
+
+## 10. PR-2 implementation record
+
+- The migration is `crates/calm-truth/migrations/0134_neige_tool_names.sql` (renumber last at
+  merge). It rewrites only `$.item.tool` (`json_set`, byte-identical elsewhere) through one map:
+  §4.3, the four aliases, the two shims, the three retired writers stored on 4140
+  (`calm.report.blocks.upsert` → `neige.report.upsert`, `calm.report.blocks.delete` →
+  `neige.report.delete`, `calm.task.replace` → `neige.task.replace`) and the five
+  Claude-qualified git-forge names → their raw `plugin.dev.neige.git-forge_gh.*` names. The 70
+  stored `calm.review.round` rows become `neige.review.round`, a history-only name since #2017. Recipe
+  bodies get the same rename; a changed row bumps `revision` and sets `updated_at` to
+  `max(updated_at + 1, now_ms)`.
+- Dry run on an in-memory copy of 4140's Planner transcript table and `track_recipes` (2026-10-04): 1188 rows
+  changed (1168 `calm.*` + 20 qualified), 0 rows changed outside the tool field, 0 `calm.*` or
+  `mcp__calm__` tool fields left; the SPY recipe went from revision 3 to 4.
+- The fe keeps only names that 4140 history holds: `REPORT_WRITE_TOOLS` is `neige.report.write`,
+  `neige.report.upsert`, `neige.report.commit`; `REPORT_DELETE_TOOL` is `neige.report.delete`. The
+  never-stored `calm.report.write`, `calm.report.edit` and `calm.report.blocks.move` (and with it
+  `REPORT_MOVE_TOOL`) are dropped.
+- The server key has one owner, `mcp_server::wiring::MCP_SERVER_KEY`; the Codex home,
+  the Planner approvals, the Claude MCP config, allowed tools, translate and driver all read it.

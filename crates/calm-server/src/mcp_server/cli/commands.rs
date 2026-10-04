@@ -143,7 +143,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     },
     Command {
         name: "cat-at",
-        tool: track_history::TOOL_TRACK_CAT_AT,
+        tool: track_history::TOOL_TRACK_SHOW,
         positionals: &[
             pos("commit", Some("cat-at requires <commit> <path>")),
             pos("path", Some("cat-at requires <commit> <path>")),
@@ -221,7 +221,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     },
     Command {
         name: "track-gc",
-        tool: admin::TOOL_ADMIN_TRACK_GC,
+        tool: admin::TOOL_ADMIN_GC,
         positionals: &[],
         too_many: None,
         options: &[

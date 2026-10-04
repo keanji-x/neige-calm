@@ -1,10 +1,10 @@
 # Driving a terminal
 
-The `calm.terminal.*` tool descriptions define every switch. This is the order to use them in.
+The `neige.terminal.*` tool descriptions define every switch. This is the order to use them in.
 
-1. Find the exact tool names (`calm.terminal.resolve`, `open`, `observe`, `control`, `input`) once, then reuse them. Avoid broad, overlapping tool searches.
-2. A task's worker terminal: call `calm.terminal.resolve` with the current `attempt_id` from `calm.plan.list`, then observe, control and input with that same `attempt_id`. Never open a substitute terminal for a task. For a codex task's worker, wait for its task to settle, then plan its successor.
-3. Your own terminal: `calm.terminal.open` with a stable `request_id`, and `claim: true` when you will operate it.
+1. Find the exact tool names (`neige.terminal.resolve`, `open`, `observe`, `control`, `input`) once, then reuse them. Avoid broad, overlapping tool searches.
+2. A task's worker terminal: call `neige.terminal.resolve` with the current `attempt_id` from `neige.plan.list`, then observe, control and input with that same `attempt_id`. Never open a substitute terminal for a task. For a codex task's worker, wait for its task to settle, then plan its successor.
+3. Your own terminal: `neige.terminal.open` with a stable `request_id`, and `claim: true` when you will operate it.
 4. Start Claude in that one open: `program` `claude --settings "$NEIGE_CLAUDE_SETTINGS"` (`ccode` when the user asks for it; keep the configured proxy), `claim: true`, `wait_for: "text"` with `wait_text` `["trust this folder","❯"]`.
 5. Send Claude a prompt: `submit` with `observe: true`, `wait_for: "signal"` and `wait_text_absent: ["esc to interrupt"]`, then read the answer from the returned state. Signal `stop` means the turn ended; `permission_request` or a notification means Claude needs your input.
 6. Run a shell command: `submit` with `observe: true` and `wait_for: "change"` (`wait_ms: 15000` to wait for an answer). To wait for a TUI's screen, use `wait_for: "text"` with `wait_text` naming the target state.

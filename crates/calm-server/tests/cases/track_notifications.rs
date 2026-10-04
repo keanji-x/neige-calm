@@ -1,5 +1,5 @@
 //! #1829 / #1876 — the two notification sources of `kernel/track/activity`: an ask (a pending
-//! `calm.ratify.request`, or a `calm.user.notify` call) and planner down (the Planner's newest
+//! `neige.ratify.request`, or a `neige.user.notify` call) and planner down (the Planner's newest
 //! finished turn failed). Every row is written through its production event writer; each case
 //! asserts the payload the projector computes. One test per row of the design's producer × state
 //! matrix (§7).
@@ -91,7 +91,7 @@ async fn emit(f: &Fx, track: &str, actor: ActorId, event: Event) {
     .unwrap();
 }
 
-/// The Planner asks for ratification with `reason` (the `ratify.requested` of `calm.ratify.request`).
+/// The Planner asks for ratification with `reason` (the `ratify.requested` of `neige.ratify.request`).
 pub(crate) async fn request_ratify(f: &Fx, p: &Planner, reason: &str) {
     let event = Event::RatifyRequested {
         track_id: TrackId::from(p.track.clone()),
@@ -136,11 +136,11 @@ async fn send(f: &Fx, track: &str, card: &str, actor: ActorId) {
         .unwrap();
 }
 
-/// One completed `calm.user.notify` call row of the Planner card; `error` / `status` shape a failed call.
+/// One completed `neige.user.notify` call row of the Planner card; `error` / `status` shape a failed call.
 async fn notify_call(f: &Fx, p: &Planner, uuid: &str, status: &str, error: Option<&str>) -> i64 {
     settle().await;
     let mut item = json!({
-        "id": uuid, "type": "mcpToolCall", "server": "calm", "tool": "calm.user.notify",
+        "id": uuid, "type": "mcpToolCall", "server": "neige", "tool": "neige.user.notify",
         "status": status, "arguments": {"text": format!("  Question {uuid}?  ")},
     });
     if let Some(message) = error {

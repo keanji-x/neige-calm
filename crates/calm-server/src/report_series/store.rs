@@ -1,5 +1,5 @@
 //! `report_series` rows: one per `(track, block, request_hash)`. Every reader selects by the full primary key; 'any row for this block' would let a pinned row for an old parameter set shadow the current one forever.
-//! The summary read leaves the `data` column on disk: `calm.report.read` is on the planner's CAS path.
+//! The summary read leaves the `data` column on disk: `neige.report.read` is on the planner's CAS path.
 
 use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};

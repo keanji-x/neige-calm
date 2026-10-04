@@ -1,5 +1,5 @@
 //! Wire vocabulary for captured sources: what `GET /api/tracks/{id}/sources[/{source_id}]` and
-//! `calm.source.list` hand out, and the two enums the `report_sources` rows store.
+//! `neige.source.list` hand out, and the two enums the `report_sources` rows store.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

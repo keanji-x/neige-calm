@@ -12,7 +12,7 @@ use calm_types::report_blocks::{
 fn check_fence_payload(fence: &NonProseFence) -> Result<(), CalmError> {
     validate_payload(&fence.kind, &fence.payload).map_err(|errors| {
         CalmError::BadRequest(format!(
-            "invalid `{}` block payload: {errors} (see calm.report.blocks.kinds)",
+            "invalid `{}` block payload: {errors} (see neige.report.kinds)",
             fence.kind
         ))
     })
@@ -24,7 +24,7 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
     let invalid = invalid_neige_fences(body);
     if let Some(first) = invalid.first() {
         return Err(CalmError::BadRequest(format!(
-            "{first} — fix the fence or remove it (see calm.report.blocks.kinds for payload \
+            "{first} — fix the fence or remove it (see neige.report.kinds for payload \
              schemas)"
         )));
     }
