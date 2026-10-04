@@ -2,7 +2,6 @@ use super::*;
 use crate::daily_planner::TIME_ZONE;
 use crate::daily_planner::tests::{fixture, foreign_track};
 use axum::extract::FromRef;
-use serde_json::json;
 
 async fn event(
     pool: &SqlitePool,
@@ -11,13 +10,47 @@ async fn event(
     before: &str,
     after: &str,
 ) -> i64 {
-    // Historical edit fixtures model persisted events; the production projection is exercised below.
-    let payload = json!({"track_id":track.id,"edit_id":format!("edit-{at}"),"summary_before":"before","summary_after":"after","body_before":before,"body_after":after});
-    sqlx::query_scalar(concat!(
-"INSERT INTO events(kind,payload,actor,at,event_version,scope_kind,scope_area,scope_track) ",
-"VALUES('track.report_edited',?1,'\"kernel\"',?2,1,'track',?3,?4) RETURNING id",
-))
-        .bind(payload.to_string()).bind(at).bind(track.area_id.as_str()).bind(track.id.as_str()).fetch_one(pool).await.unwrap()
+    use crate::event::{EditAuthor, Event, EventScope};
+    let card_id: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(track.id.as_str())
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let edit = Event::TrackReportEdited {
+        track_id: track.id.clone(),
+        card_id: card_id.into(),
+        author: EditAuthor::Kernel,
+        author_plugin_id: None,
+        edit_id: format!("edit-{at}"),
+        summary_before: "before".into(),
+        summary_after: "after".into(),
+        body_before: before.into(),
+        body_after: after.into(),
+        agent_message: None,
+    };
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await.unwrap();
+    let id = crate::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &crate::ids::ActorId::Kernel,
+        &EventScope::Track {
+            track: track.id.clone(),
+            area: track.area_id.clone(),
+        },
+        None,
+        &edit,
+    )
+    .await
+    .unwrap();
+    // Pin historical date edges after the authoritative event writer supplies the event contract.
+    sqlx::query("UPDATE events SET at=?1 WHERE id=?2")
+        .bind(at)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    id
 }
 
 #[tokio::test]
