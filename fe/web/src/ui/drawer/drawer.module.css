@@ -218,10 +218,10 @@
    *
    * **A quiet row, not a band.** Desktop paints the conversation's name on the
    * left and the reading-width toggle and Close on the right, on one row as
-   * tall as the controls (`--control-h`) with the card inset above it — the
-   * same 36px the floating controls used to clear. The scroller starts below
-   * it, so the first line of the transcript no longer runs under the controls
-   * and nothing scrolls beneath them. The title is the drawer's accessible
+   * tall as the controls (`--control-h`). It shares the card's ground (no new
+   * fill) and is set off by one full-width hairline below it — the design
+   * system's "internal structure takes the separators it needs". The scroller
+   * starts below the line, so the transcript never runs under the controls. The title is the drawer's accessible
    * name (`aria-labelledby`), so it is said once. Compact viewports paint the
    * shared `MobileHeader` instead and never this row.
    *
@@ -245,7 +245,8 @@
     flex: none;
     align-items: center;
     gap: var(--space-6);
-    padding: var(--nc-card-inset, var(--space-4)) var(--nc-card-inset, var(--space-4)) 0;
+    padding: var(--nc-card-inset, var(--space-4));
+    border-block-end: 1px solid var(--hairline);
   }
 
   .title {
@@ -254,9 +255,9 @@
     margin: 0;
     overflow: hidden;
     font-size: var(--text-base);
-    font-weight: var(--weight-medium);
+    font-weight: var(--weight-semibold);
     line-height: var(--leading-snug);
-    color: var(--text-2);
+    color: var(--text);
     text-overflow: ellipsis;
     white-space: nowrap;
   }

@@ -635,7 +635,7 @@ describe('expanded reading width', () => {
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(document.documentElement.clientWidth);
   });
 
-  it('keeps the header controls clear of the first transcript line, at either width', async () => {
+  it('sets the header off with a hairline and keeps its controls clear of the first transcript line, at either width', async () => {
     await page.viewport(1400, 900);
     render(<WidthPage initiallyOpen />);
     await settled();
@@ -646,6 +646,14 @@ describe('expanded reading width', () => {
       const controls = [toggle()!, drawer().querySelector<HTMLElement>('button[aria-label="Close conversation"]')!]
         .map((control) => control.getBoundingClientRect());
       const firstLine = paragraphStarting('Show me the plan.').getBoundingClientRect();
+      /* One full-width hairline sets the header off; the transcript starts below it. */
+      const header = drawer().querySelector<HTMLElement>(':scope > header')!;
+      const rule = getComputedStyle(header);
+      expect(rule.borderBlockEndStyle, step).toBe('solid');
+      expect(rule.borderBlockEndWidth, step).toBe('1px');
+      expect(rule.borderBlockEndColor, step).not.toBe('rgba(0, 0, 0, 0)');
+      expect(header.getBoundingClientRect().width, step).toBeCloseTo(drawer().getBoundingClientRect().width, 0);
+      expect(firstLine.top, step).toBeGreaterThan(header.getBoundingClientRect().bottom);
       for (const box of controls) {
         expect(box.bottom, step).toBeLessThanOrEqual(scroller().getBoundingClientRect().top);
         expect(box.bottom <= firstLine.top || box.right <= firstLine.left || box.left >= firstLine.right, step).toBe(true);
