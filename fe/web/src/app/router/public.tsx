@@ -950,7 +950,7 @@ function useConversationPanel(
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
     { ...options, ownedCardIds, inline: true, slotId: sideSlot, enabled: belongsToParent });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, ownedCardIds, sideError, stacked: !compact, showSideCommand: !compact, companion: belongsToParent && side.isOpen ? side.drawer : undefined,
+    { ...options, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, companion: belongsToParent && side.isOpen ? side.drawer : undefined,
       onSide: (parent, entries, question) => {
         if (compact) { setSideError('Side conversations are available on desktop.'); return false; }
         if (capabilities.data?.conversationSide !== true) {

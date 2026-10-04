@@ -410,11 +410,6 @@
          retain the same rounded contour as desktop conversation content. */
       --nc-card-radius: var(--radius-lg);
       --radius-chat: var(--radius-lg);
-      position: fixed;
-      inset: 0 0 calc(var(--mobile-dock-h, 0px) + env(safe-area-inset-bottom));
-      inline-size: 100%;
-      block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
-      max-inline-size: none;
       border-radius: 0;
       background: var(--surface-card);
       box-shadow: none;
@@ -486,4 +481,15 @@
   }
 
 
+  /* One viewport geometry for a standalone drawer and the stable pane host. */
+  @media (width < 60rem) {
+    .drawer,
+    .stack {
+      position: fixed;
+      inset: 0 0 calc(var(--mobile-dock-h, 0px) + env(safe-area-inset-bottom));
+      inline-size: 100%;
+      block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
+      max-inline-size: none;
+    }
+  }
 }

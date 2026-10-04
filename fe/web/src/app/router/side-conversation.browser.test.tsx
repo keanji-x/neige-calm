@@ -14,7 +14,7 @@ import '../../styles/entry.css';
 
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); await page.viewport(1280, 720); });
 
-function setup() {
+function setup(outcome?: 'interrupted' | 'failed') {
   const requests: ApiRequest[] = [];
   const track = { id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
@@ -47,6 +47,11 @@ function setup() {
       card_id: 'parent', track_id: track.id, thread_id: 'thread-parent', turn_id: null, turn_error_text: null,
       item_uuid: null, item_type: 'agentMessage', method: 'item/completed', created_at_ms: 1,
       params: JSON.stringify({ item: { id: 'explanation', type: 'agentMessage', text: 'The main conversation keeps working while a separate discussion explores this design.' } }) }];
+    if (outcome !== undefined && request.path.startsWith('/api/cards/parent/harness/items')) {
+      body = [{ id: 99, worker_session_id: 'session-parent', card_id: 'parent', track_id: track.id, thread_id: 'thread-parent',
+        turn_id: 'finished-turn', turn_error_text: null, item_uuid: null, item_type: null, method: 'turn/completed',
+        created_at_ms: 1, params: JSON.stringify({ id: 'finished-turn', status: outcome, error: null }) }];
+    }
     return { status, statusText: status === 201 ? 'Created' : 'OK', body };
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -98,4 +103,19 @@ it('keeps the existing mobile conversation and refuses /side without creating a 
   expect(document.querySelectorAll('[data-nc-drawer]')).toHaveLength(1);
   expect(requests.filter((request) => request.method === 'POST' && request.path.endsWith('/conversations'))).toEqual([]);
   await expect.element(field).toHaveTextContent('/side');
+});
+
+
+it('keeps opened continuation details when a desktop conversation becomes mobile', async () => {
+  await page.viewport(1512, 950);
+  setup('interrupted');
+  await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  await page.getByRole('button', { name: /^Interrupted/ }).click();
+  const guidance = page.getByText('Send a message to continue.', { exact: true });
+  await expect.element(guidance).toBeVisible();
+  const composer = page.getByRole('combobox', { name: 'Message' });
+  await composer.fill('Continue deliberately');
+  await page.viewport(390, 844);
+  await expect.element(guidance).toBeVisible();
+  await expect.element(composer).toHaveTextContent('Continue deliberately');
 });
