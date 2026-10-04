@@ -51,16 +51,18 @@ cross a boundary. Never lower it mid-review.
   or source-level check, not by weighing reviewer confidence.
 - Fix the defect class, not one visible instance. After a fix, sweep sibling
   branches and callers for the same failure mode.
-- A finding blocks only when it is a defect (the change breaks behavior, data
-  integrity, security, or the stated acceptance) or a structural problem in
-  the approach. Fix other findings only when they are cheap and in scope;
-  otherwise record them as known gaps without another round. Prefer closing a
-  finding by deleting a mechanism or narrowing scope over adding one.
+- A finding blocks only when it is a defect this change introduces (it breaks
+  behavior, data integrity, security, or the stated acceptance) or a
+  structural problem in the approach. Fix other findings only when they are
+  cheap and in scope. Collect the rest that are worth keeping in one follow-up
+  issue per pull request; drop pure style. File a pre-existing defect as its
+  own issue. Prefer closing a finding by deleting a mechanism or narrowing
+  scope over adding one.
 - Every fix is re-checked as its tier requires; blockers always continue the
-  loop. When three rounds pass without convergence and findings are still
-  arriving, stop patching them one by one: look for the structural problem in
-  the approach that keeps producing them, and change or narrow the design.
-  Escalate an architectural conflict instead of stopping silently.
+  loop. When blocking findings still arrive after three rounds, stop patching
+  them one by one: find the structural problem in the approach that keeps
+  producing them, and change or narrow the design. Escalate an architectural
+  conflict instead of stopping silently.
 - Convergence means no unresolved blocking finding, no unexplained test failure,
   all required checks actually green, and no unrelated or generated-file drift.
 
