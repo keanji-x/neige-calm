@@ -6,7 +6,7 @@
   "display_name": "Invest portfolio",
   "entrypoint": {"command": "run"},
   "permissions": {"overlays_write": ["track"]},
-  "planner_instructions": "invest runs one US paper portfolio. It has two kinds of Track; on any other Track ignore these instructions.\nPortfolio Track (its Report shows portfolio.* views): the only Track that decides or trades. instrument_add covers a symbol; once portfolio_status shows it live, pass its track_add to neige_track_add verbatim, never edited (a retry replays the same Track). A live instrument marked stale has no working research Track: renew it with instrument_set and pass the returned track_add to neige_track_add. If neige_track_add refuses at its open-Track cap (-32409), call neige_user_notify with the open Tracks it lists and the current keys from portfolio_status: each listed Track whose invest-* key is not current is superseded and should be closed. thesis_add raises a thesis on a live symbol (at most 3 open per symbol); thesis_rm retires one; instrument_rm retires a symbol's theses and is refused while it is held. The 研究论点 board shows each assessment; never copy an assessment into prose.\nResearch Track (added by the portfolio Track under an invest-<VENUE>-<CODE>-<n> key; its Report shows instrument.position and thesis.records): it never trades. Start every step with instrument_status. If it answers superseded (-32409), close this Track with neige_track_close and stop; if it answers forbidden (-32403), stop and say why. Assess each open thesis of your symbol with thesis_set under its version: assessment open, holding, at_risk or broken, a summary of the evidence, and captured neige://source/ references.",
+  "planner_instructions": "invest runs one US paper portfolio with two kinds of Track; on any other Track ignore these instructions.\nPortfolio Track (its Report shows portfolio.* views): the only Track that decides or trades. plugin_invest_instrument_add covers a symbol; once plugin_invest_portfolio_status shows it live, pass its track_add to neige_track_add verbatim, never edited (a retry replays the same Track). A live instrument marked stale has no working research Track: renew it with plugin_invest_instrument_set and pass the returned track_add to neige_track_add. If neige_track_add refuses at its open-Track cap (-32409), call neige_user_notify with the open Tracks it lists and the current keys from plugin_invest_portfolio_status: each listed Track whose invest-* key is not current is superseded and should be closed. plugin_invest_thesis_add raises a thesis on a live symbol (at most 3 open per symbol); plugin_invest_thesis_rm retires one; plugin_invest_instrument_rm retires a symbol's theses and is refused while it is held. The 研究论点 board shows each assessment; never copy an assessment into prose.\nResearch Track (added by the portfolio Track under an invest-<VENUE>-<CODE>-<n> key; its Report shows instrument.position and thesis.records): it never trades. Start every step with plugin_invest_instrument_status. If it answers superseded (-32409), close this Track with neige_track_close and stop; if it answers forbidden (-32403), stop and say why. Assess each open thesis of your symbol with plugin_invest_thesis_set under its version: assessment open, holding, at_risk or broken, a summary of the evidence, and captured neige://source/ references.\nEvery invest refusal is a JSON-RPC error: -32602 bad argument, -32403 wrong Track or role, -32404 unknown, -32409 state changed (reread and retry).",
   "config_schema": {
     "type": "object",
     "properties": {
@@ -68,13 +68,13 @@
     },
     {
       "name": "execution_add",
-      "description": "Portfolio Track Worker only. Durably request execution of the exact persisted, unexpired, queued decision (state becomes requested) and wake the App's loop; this call never contacts the broker. The loop sends one regular-session DAY market order per symbol outside the drift band to the pinned official PAPER account, one at a time, sells first, buys from settled cash only. Repeating the request records nothing. Poll portfolio_status until the decision is done, noop or expired, or your stated limit; its error says why it waits. Uncertain orders are never resubmitted.",
+      "description": "Portfolio Track Worker only. Durably request execution of the exact persisted, unexpired, queued decision (state becomes requested) and wake the App's loop; this call never contacts the broker. The loop sends one regular-session DAY market order per symbol outside the drift band to the pinned official PAPER account, one at a time, sells first, buys from settled cash only. Repeating the request records nothing. Poll plugin_invest_portfolio_status until the decision is done, noop or expired, or your stated limit; its error says why it waits. Uncertain orders are never resubmitted.",
       "input_schema": {"type": "object", "properties": {"decision_id": {"type": "string"}}, "required": ["decision_id"], "additionalProperties": false},
       "annotations": {"title": "execution_add", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
     },
     {
       "name": "instrument_add",
-      "description": "Portfolio Track Planner only. Cover a US symbol: it is pending until the loop sees a broker quote, then live with research key invest-<VENUE>-<CODE>-<n> and its track_add in portfolio_status, or dropped. Needs fewer than max_watched watched symbols (covered, not held). Adding a covered symbol changes nothing; re-adding a dropped one issues the next key.",
+      "description": "Portfolio Track Planner only. Cover a US symbol: it is pending until the loop sees a broker quote, then live with research key invest-<VENUE>-<CODE>-<n> and its track_add in plugin_invest_portfolio_status, or dropped. Needs fewer than max_watched watched symbols (covered, not held). Adding a covered symbol changes nothing; re-adding a dropped one issues the next key.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -143,7 +143,7 @@
     },
     {
       "name": "thesis_set",
-      "description": "Research Track Planner only, attested as instrument_status is. Assess one open thesis of your own symbol under its version: the new assessment, a summary of the evidence and its captured sources. The portfolio's board shows the change on its next tick.",
+      "description": "Research Track Planner only, attested as plugin_invest_instrument_status is. Assess one open thesis of your own symbol under its version: the new assessment, a summary of the evidence and its captured sources. The portfolio's board shows the change on its next tick.",
       "input_schema": {
         "type": "object",
         "properties": {

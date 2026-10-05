@@ -14,6 +14,7 @@ import json
 import re
 
 from .config import timestamp, version
+from .errors import CONFLICT, NOT_FOUND, Refused
 from .ledger import encoded
 
 COUNTED = ('pending', 'live')
@@ -106,8 +107,10 @@ def drop(ledger, db, symbol, reason, **audit):
 def current(db, symbol, expected_version):
     """The counted instrument a `set` or `rm` names, at the caller's `expected_version`."""
     row = get(db, symbol)
-    if row is None or row['state'] not in COUNTED:
-        raise ValueError(f'{symbol} is not a covered instrument; read portfolio_status')
+    if row is None:
+        raise Refused(NOT_FOUND, f'{symbol} is not a covered instrument; read plugin_invest_portfolio_status')
+    if row['state'] not in COUNTED:
+        raise Refused(CONFLICT, f"{symbol} is {row['state']}; read plugin_invest_portfolio_status")
     version(expected_version, row['version'])
     return row
 
@@ -116,7 +119,7 @@ def renew(ledger, db, config, symbol, expected_version, now, **audit):
     """Replace a live symbol's issued key with the next one, returning the new `track_add`."""
     row = current(db, symbol, expected_version)
     if row['state'] != 'live':
-        raise ValueError(f'{symbol} is {row["state"]}; only a live instrument has a research key to renew')
+        raise Refused(CONFLICT, f'{symbol} is {row["state"]}; only a live instrument has a research key to renew')
     issued = issue(ledger, db, config, symbol, now)
     ledger.event(db, 'instrument_renewed', {'symbol': symbol, **audit})
     return issued

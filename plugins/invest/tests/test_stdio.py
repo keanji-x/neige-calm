@@ -32,12 +32,21 @@ def test_stdio_entrypoint_fences_roles_and_publishes_every_unit(rig):
         args = {'decision_id': 'stdio-target', 'weights': [{'symbol': 'US:AAA', 'bps': 2000}],
                 'message': 'Research and live market data support the target weights.',
                 'source_refs': SOURCES, 'valid_until': (now + timedelta(hours=1)).isoformat()}
-        refused = host.tool('decision_add', args, track='owner', caller=WORKER)
-        assert refused['isError'] and refused['content'][0]['text'].startswith('decision_add: ')
-        assert host.tool('portfolio_status', {}, track='owner')['isError']
+        def refused(name, call_args, code, caller=None):
+            params = {'name': name, 'arguments': call_args, '_meta': {'dev.neige/track': {
+                'id': 'owner', 'creator_track_id': None, 'creator_key': None}}}
+            if caller is not None:
+                params['_meta']['dev.neige/caller'] = caller
+            error = host.response('tools/call', params)['error']
+            assert error['code'] == code and error['message'].startswith(f'plugin_invest_{name}: '), error
+
+        refused('decision_add', args, -32403, WORKER)
+        refused('portfolio_status', {}, -32403)
+        refused('decision_add', args | {'weights': 'all'}, -32602, PLANNER)
         result = host.tool('decision_add', args, track='owner', caller=PLANNER)['structuredContent']
         assert result['decisions'][0]['state'] == 'queued'
-        assert host.tool('execution_add', {'decision_id': 'stdio-target'}, track='owner', caller=PLANNER)['isError']
+        refused('execution_add', {'decision_id': 'stdio-target'}, -32403, PLANNER)
+        refused('execution_add', {'decision_id': 'missing'}, -32404, WORKER)
         result = host.tool('execution_add', {'decision_id': 'stdio-target'}, track='owner', caller=WORKER)
         assert result['structuredContent']['decisions'][0]['state'] == 'requested'
         # The request woke the loop that owns the broker write.
@@ -72,7 +81,7 @@ def test_stdio_research_call_refuses_with_codes_and_projects_onto_the_caller(rig
 
         for key, creator, code in ((current, 'elsewhere', -32403), ('invest-US-AAA-2', 'owner', -32403)):
             frame = research(key, creator)
-            assert frame['error']['code'] == code and frame['error']['message'].startswith('instrument_status: ')
+            assert frame['error']['code'] == code and frame['error']['message'].startswith('plugin_invest_instrument_status: ')
         assert not [o for o in host.overlays if o['entity_id'] == 'research-aaa']
         result = research(current)['result']['structuredContent']
         assert result['symbol'] == 'US:AAA' and result['position']['shares'] == 10

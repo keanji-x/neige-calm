@@ -10,7 +10,7 @@ import time
 from . import VERSION, series
 from .runtime import Runtime
 from .broker import Broker
-from .errors import Refused
+from .errors import INTERNAL, Refused, served
 from .portfolio import RESEARCH_TOOLS, VIEWS, Portfolio
 from .research_views import research_units
 from .settings import InvestConfig
@@ -86,9 +86,10 @@ def serve():
                                     "structuredContent": result})
             except Refused as error:
                 rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": error.code, "message": str(error)}})
-            except Exception as error:
-                message = str(error) if isinstance(error, ValueError) else "invalid request or unavailable ledger"
-                reply(frame["id"], {"isError": True, "content": [{"type": "text", "text": message}]})
+            except Exception:
+                name = frame.get("params", {}).get("name") if isinstance(frame.get("params"), dict) else None
+                rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {
+                    "code": INTERNAL, "message": f"{served(name)}: unavailable ledger"}})
 
     def series_worker():
         # Its own thread: a slow SDK read for a chart never delays a portfolio tool call.

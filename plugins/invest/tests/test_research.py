@@ -1,19 +1,14 @@
 """Research Tracks: provenance attestation, one issued key per live symbol, and the lease (#2104 §3.3)."""
 from datetime import timedelta
 
-import pytest
-
-from invest.errors import Refused
+from invest.errors import CONFLICT, FORBIDDEN
 from invest.ledger import encoded
-from rig import NOW, OWNER, PLANNER, SOURCES
-
-FORBIDDEN, CONFLICT = -32403, -32409
+from rig import NOW, OWNER, PLANNER, SOURCES, refusal, track
 
 
 def refused(code, call, *args, **kwargs):
-    with pytest.raises(Refused) as caught:
+    with refusal(code) as caught:
         call(*args, **kwargs)
-    assert caught.value.code == code, caught.value
     return str(caught.value)
 
 
@@ -33,7 +28,7 @@ def test_attestation_requires_portfolio_creator_and_current_key(rig):
             'source_refs': SOURCES, 'expected_version': thesis['version']}
     # A foreign creator holding S's current key.
     message = refused(FORBIDDEN, r.research, key(r, 'US:AAA'), 'thesis_set', args, creator='elsewhere')
-    assert message.startswith('thesis_set: ')
+    assert message.startswith('plugin_invest_thesis_set: ')
     refused(FORBIDDEN, r.research, key(r, 'US:AAA'), 'instrument_status', creator='elsewhere')
     # S's thesis written with the current key of another symbol.
     refused(FORBIDDEN, r.research, key(r, 'US:BBB'), 'thesis_set', args)
@@ -73,6 +68,10 @@ def test_superseded_key_refused(rig):
     r.remove('US:AAA')
     for stale_key in (old, renewed):
         assert 'superseded' in refused(CONFLICT, r.research, stale_key, 'instrument_status')
+    # Re-added, S is pending with no current key: its last key stays superseded until n+1 is issued.
+    r.add('US:AAA')
+    assert r.instrument('US:AAA')['state'] == 'pending'
+    assert 'superseded' in refused(CONFLICT, r.research, renewed, 'instrument_status')
 
 
 def test_never_seen_key_goes_stale(rig):
@@ -113,7 +112,7 @@ def test_set_issues_next_key_with_byte_identical_args(rig):
     r.configure(instrument_recipe_id='recipe-instrument-v2')
     assert encoded(r.instrument('US:AAA')['track_add']) == encoded(first)
     row = r.instrument('US:AAA')
-    with pytest.raises(ValueError, match='expected_version'):
+    with refusal(CONFLICT, 'expected_version'):
         r.app.call(OWNER, 'instrument_set', {'symbol': 'US:AAA', 'expected_version': row['version'] - 1,
                                              'message': 'Renew under a stale version.'}, PLANNER)
     assert r.instrument('US:AAA') == row
@@ -128,7 +127,7 @@ def test_set_issues_next_key_with_byte_identical_args(rig):
         'invest-US-AAA-2', 2, row['version'] + 1, None)
     # Only a live symbol has a key to replace.
     r.add('US:BBB')
-    with pytest.raises(ValueError, match='live'):
+    with refusal(CONFLICT, 'live'):
         r.renew('US:BBB')
 
 
@@ -166,3 +165,29 @@ def test_last_seen_never_changes_authority(rig):
     r.research(current, 'instrument_status')
     after = r.instrument('US:AAA')
     assert after['stale'] is False and after['version'] == version and after['key'] == current
+
+
+def test_thesis_set_requires_current_version(rig):
+    r = rig
+    r.cover('US:AAA')
+    r.thesis('aaa-margins', 'US:AAA')
+    current = key(r, 'US:AAA')
+    r.assess(current, 'aaa-margins', 'holding')
+    before = r.dump()
+    # A lost answer retried under the version it read first, or any other stale version.
+    for stale in (1, 3):
+        assert 'stale' in refused(CONFLICT, r.assess, current, 'aaa-margins', 'broken', expected_version=stale)
+    assert r.dump() == before
+    assert r.open_thesis('aaa-margins')['assessment'] == 'holding'
+
+
+def test_track_context_requires_provenance_and_ignores_extra_keys(rig):
+    r = rig
+    r.cover('US:AAA')
+    current = key(r, 'US:AAA')
+    extra = track('research-aaa', 'owner', current) | {'created_at': 1}
+    view = r.app.call(extra, 'instrument_status', {}, PLANNER)
+    assert view['symbol'] == 'US:AAA' and view['portfolio_track_id'] == 'owner'  # the research report's link
+    assert r.app.call(OWNER | {'created_at': 1}, 'portfolio_status', {}, PLANNER)['instruments']
+    missing = {'id': 'research-aaa', 'creator_track_id': 'owner'}
+    refused(FORBIDDEN, r.app.call, missing, 'instrument_status', {}, PLANNER)

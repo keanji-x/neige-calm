@@ -1,10 +1,14 @@
 """Theses in the plugin ledger (#2104 §3.2): the portfolio raises one on a live symbol, the symbol's
-research Track assesses it, and the portfolio retires it. Retiring is a verb, never an assessment."""
+research Track assesses it, and the portfolio retires it. Retiring is a verb, never an assessment.
+
+The portfolio owns a thesis's stance, title, summary, body and sources; an assessment never changes
+them. The research Track owns the assessment and its own `research` summary and sources."""
 import json
 import re
 
 from . import instruments
 from .config import captured, exact, text, version
+from .errors import CONFLICT, NOT_FOUND, Refused
 from .ledger import encoded
 from .symbols import canonical
 
@@ -13,7 +17,7 @@ STANCES = ('bullish', 'bearish', 'neutral')
 ASSESSMENTS = ('open', 'holding', 'at_risk', 'broken')
 THESIS_ID = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
 RETIRED_SHOWN = 20  # the research Track's records keep the latest retired theses
-CONTENT = ('stance', 'title', 'summary', 'body', 'source_refs')
+CONTENT = ('stance', 'title', 'summary', 'body', 'source_refs')  # portfolio-owned
 
 
 def row_of(row):
@@ -24,7 +28,8 @@ def row_of(row):
 def get(db, thesis_id):
     row = db.execute('SELECT * FROM theses WHERE id=?', (thesis_id,)).fetchone()
     if row is None:
-        raise ValueError(f'unknown thesis {thesis_id!r}; read the theses of portfolio_status or instrument_status')
+        raise Refused(NOT_FOUND, f'unknown thesis {thesis_id!r}; read the theses of '
+                                 'plugin_invest_portfolio_status or plugin_invest_instrument_status')
     return row_of(row)
 
 
@@ -58,33 +63,39 @@ def add(ledger, db, args, now, **audit):
     old = db.execute('SELECT * FROM theses WHERE id=?', (thesis_id,)).fetchone()
     if old is not None:
         old = row_of(old)
-        if old['symbol'] == symbol and old['retired_at'] is None and {k: old[k] for k in CONTENT} == content:
-            return
-        raise ValueError(f'thesis_id {thesis_id} already names another thesis; choose a new thesis_id')
+        if old['symbol'] == symbol and {k: old[k] for k in CONTENT} == content:
+            if old['retired_at'] is None:
+                return  # a replay: assessments never change the portfolio's fields
+            raise Refused(CONFLICT, f'thesis {thesis_id} was retired; choose a new thesis_id')
+        raise Refused(CONFLICT, f'thesis_id {thesis_id} already names another thesis; choose a new thesis_id')
     instrument = instruments.get(db, symbol)
     if instrument is None or instrument['state'] != 'live':
-        state = instrument['state'] if instrument else 'not covered'
-        raise ValueError(f'{symbol} is {state}; a thesis needs a live instrument')
+        if instrument is None:
+            raise Refused(NOT_FOUND, f'{symbol} is not a covered instrument; add it with plugin_invest_instrument_add')
+        raise Refused(CONFLICT, f"{symbol} is {instrument['state']}; a thesis needs a live instrument")
     if len(open_theses(db, symbol)) >= OPEN_CAP:
-        raise ValueError(f'{symbol} has at most {OPEN_CAP} open theses; retire one with thesis_rm first')
+        raise Refused(CONFLICT, f'{symbol} has at most {OPEN_CAP} open theses; retire one with '
+                                'plugin_invest_thesis_rm first')
     db.execute('INSERT INTO theses(id,symbol,assessment,version,retired_at,body) VALUES (?,?,?,?,?,?)',
                (thesis_id, symbol, 'open', 1, None, encoded(content | {'added_at': now.isoformat()})))
-    ledger.event(db, 'thesis_added', {'thesis_id': thesis_id, 'symbol': symbol, **audit})
+    ledger.event(db, 'thesis_added', {'thesis_id': thesis_id, 'symbol': symbol,
+                                      **{k: v for k, v in content.items() if k != 'body'}, **audit})
 
 
 def assess(ledger, db, thesis, args, now, **audit):
     """The research assessment of one open thesis, under `expected_version`."""
     if thesis['retired_at'] is not None:
-        raise ValueError(f"thesis {thesis['thesis_id']} is retired; assess an open thesis")
+        raise Refused(CONFLICT, f"thesis {thesis['thesis_id']} is retired; assess an open thesis")
     if args['assessment'] not in ASSESSMENTS:
         raise ValueError(f'assessment must be one of {", ".join(ASSESSMENTS)}')
     version(args['expected_version'], thesis['version'])
-    body = {k: thesis[k] for k in CONTENT + ('added_at',)} | {
-        'summary': text(args['summary'], 'summary', 500), 'source_refs': captured(args['source_refs']),
-        'assessed_at': now.isoformat()}
+    research = {'summary': text(args['summary'], 'summary', 500), 'source_refs': captured(args['source_refs']),
+                'assessed_at': now.isoformat()}
+    body = {k: thesis[k] for k in CONTENT + ('added_at',)} | {'research': research}
     db.execute('UPDATE theses SET assessment=?, version=version+1, body=? WHERE id=?',
                (args['assessment'], encoded(body), thesis['thesis_id']))
-    ledger.event(db, 'thesis_assessed', {'thesis_id': thesis['thesis_id'], 'assessment': args['assessment'], **audit})
+    ledger.event(db, 'thesis_assessed', {'thesis_id': thesis['thesis_id'], 'assessment': args['assessment'],
+                                         **research, **audit})
 
 
 def retire(ledger, db, thesis_id, now, message, **audit):
@@ -98,7 +109,7 @@ def remove(ledger, db, args, now, **audit):
     exact(args, {'thesis_id', 'expected_version', 'message'})
     thesis = get(db, args['thesis_id'])
     if thesis['retired_at'] is not None:
-        raise ValueError(f"thesis {thesis['thesis_id']} is already retired")
+        raise Refused(CONFLICT, f"thesis {thesis['thesis_id']} is already retired")
     version(args['expected_version'], thesis['version'])
     retire(ledger, db, thesis['thesis_id'], now, text(args['message'], 'message', 2000), **audit)
 

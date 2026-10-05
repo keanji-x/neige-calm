@@ -34,14 +34,14 @@ for wide histories. No credentials, network or broker orders are used.
 | `instrument_rm` | portfolio Planner | Drops a symbol and retires its open theses; refused while held |
 | `thesis_add` | portfolio Planner | Raises a thesis on a live symbol: `thesis_id`, `stance`, `title` ≤ 110, `summary` ≤ 500, `body` ≤ 6000, `source_refs`; at most 3 open per symbol |
 | `thesis_rm` | portfolio Planner | Retires one thesis under `expected_version` |
-| `instrument_status` | attested research Planner | Its symbol's state, key, position, target and theses; refreshes the research units |
+| `instrument_status` | attested research Planner | Its symbol's state, key, position, target, theses and `portfolio_track_id`; refreshes the research units |
 | `thesis_set` | attested research Planner | Assesses one open thesis of its own symbol: `assessment`, `summary`, `source_refs`, `expected_version` |
 | `series_show` | the chart resolver only | Daily, weekly or monthly bars for a report's `chart.series` block |
 
 The App reads the Track, its creator provenance and the caller from host metadata
 (`dev.neige/track` = `{id, creator_track_id, creator_key}`, `dev.neige/caller`). Every portfolio tool
-refuses any Track but `portfolio_track_id`; research Tracks never trade. Refusals start with the tool
-name.
+refuses any Track but `portfolio_track_id`; research Tracks never trade. Refusals start with the served tool
+name (see Errors).
 
 ## Chart series
 
@@ -90,7 +90,22 @@ stored at binding time. An older key of S, or a dropped S, is refused with JSON-
 Every attested call sets S's `last_seen_at`: access metadata that bumps no version, writes no journal
 row and grants nothing. `portfolio_status` marks a live S **stale** when its current key was not seen
 within 120 minutes of issue, or has not been seen for `lease_days`. The portfolio renews a stale S
-with `instrument_set`; the superseded Track closes itself on its next call.
+with `instrument_set`; the superseded Track closes itself on its next call. Until it is closed, a
+superseded Track's `instrument.position` and `thesis.records` keep the state of its last attested
+call: the App refreshes them only for attested callers.
+
+The two kinds of report link each other: the portfolio's 研究论点 section lists one
+`neige://wave/<track_id>` link per live research Track, and each research report's 研究笔记 starts
+with a link to the portfolio Track (`portfolio_track_id` in `instrument_status`).
+
+## Errors
+
+Every refusal is a JSON-RPC error whose message starts with the served name
+(`plugin_invest_<tool>: …`), per `docs/conventions/agent-commands.md` §5: -32602 invalid argument,
+-32403 wrong role, Track or provenance, -32404 unknown entity, -32409 state conflict (a stale
+`expected_version`, a full limit, a superseded research key), -32601 unknown tool, -32603 ledger
+failure. Only `series_show` answers a request-level failure as an `isError` result, because that is
+the `market.series` contract the kernel's chart resolver validates.
 
 ## Execution invariants
 

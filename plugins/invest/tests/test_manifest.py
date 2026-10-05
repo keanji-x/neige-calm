@@ -1,5 +1,6 @@
 """The manifest, the operator configuration and the recipe agree with the App."""
 import json
+import re
 
 import jsonschema
 import pytest
@@ -89,3 +90,28 @@ def test_planner_instructions_fit_the_kernel_cap():
     text = MANIFEST['planner_instructions']
     # `plugin_host/manifest.rs` MAX_PLANNER_INSTRUCTIONS_BYTES, legal only at manifest_version 5.
     assert text.strip() and len(text.encode()) <= 2048
+
+
+def agent_texts():
+    """Every text an agent reads that names invest tools: the standing instructions, the tool
+    descriptions and both recipes."""
+    yield 'planner_instructions', MANIFEST['planner_instructions']
+    for tool in MANIFEST['exposes_tools']:
+        yield tool['name'], tool['description']
+    for recipe in (PORTFOLIO, INSTRUMENT):
+        yield recipe, (ROOT / recipe).read_text()
+
+
+def test_agent_texts_name_tools_by_their_served_names():
+    names = '|'.join(tool['name'] for tool in MANIFEST['exposes_tools'])
+    # A bare `instrument_status` is an unknown tool to the agent; only `plugin_invest_<tool>` is served.
+    # (`neige://plugin/invest/<tool>` is a report source, not a call.)
+    bare = re.compile(rf'(?<![A-Za-z0-9_/]){"(?:" + names + ")"}(?![A-Za-z0-9_])')
+    for where, text in agent_texts():
+        assert not bare.findall(re.sub(r'plugin_invest_\w+', '', text)), where
+
+
+def test_recipes_link_each_others_reports():
+    portfolio, research = ((ROOT / recipe).read_text() for recipe in (PORTFOLIO, INSTRUMENT))
+    assert '研究链接' in portfolio and '- [<symbol> 研究](neige://wave/<track_id>)' in portfolio
+    assert '[组合 Track](neige://wave/<portfolio_track_id>)' in research

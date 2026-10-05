@@ -1,10 +1,15 @@
 """The production Portfolio, its SDK subprocess runner and a prescribed broker transport."""
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
+
+import pytest
 
 from invest import instruments
 from invest.broker import Broker
+from invest.errors import Refused
 from invest.ledger import encoded
 from invest.portfolio import Portfolio
 from invest.settings import InvestConfig
@@ -15,6 +20,17 @@ NOW = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)  # 11:00 New York, regular 
 PLANNER = {'role': 'planner', 'card_id': 'planner-card', 'session_id': 'planner-session'}
 WORKER = {'role': 'worker', 'card_id': 'worker-card', 'session_id': 'worker-session'}
 SOURCES = ['neige://source/research-1', 'neige://source/market-1']
+
+
+@contextmanager
+def refusal(code, match=None):
+    """The call is refused with JSON-RPC `code`; the message names the served tool and matches `match`."""
+    with pytest.raises(Refused) as caught:
+        yield caught
+    message = str(caught.value)
+    assert caught.value.code == code, (caught.value.code, message)
+    assert message.startswith('plugin_invest_'), message
+    assert match is None or re.search(match, message), message
 
 
 def track(track_id, creator=None, key=None):

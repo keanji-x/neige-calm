@@ -8,6 +8,7 @@ section labeled with its assessment and title, so an assessment change shows on 
 from collections import Counter
 from decimal import Decimal
 
+from .instruments import COUNTED
 from .report_text import bounded, new_york
 from .report_views import metric, record, records, scalar, unit, unknown
 from .symbols import unit_id
@@ -22,6 +23,12 @@ PENDING = '尚未完成账户对账'
 def label(thesis):
     """`<assessment> · <title>`: a title of at most 110 characters fits the 120-character label."""
     return f"{ASSESSMENTS[thesis['assessment']]} · {thesis['title']}"
+
+
+def section_body(thesis):
+    """The portfolio's summary, then the research Track's latest assessment summary."""
+    research = thesis.get('research')
+    return thesis['summary'] + (f"\n研究评估：{research['summary']}" if research else '')
 
 
 def research_badge(instrument):
@@ -39,11 +46,11 @@ def board_record(instrument, open_theses):
     return record(unit_id(symbol), symbol, f'{len(open_theses)} 项论点' if open_theses else '尚无论点',
                   subtitle='持有' if instrument['held'] else '关注',
                   badges=[research_badge(instrument)],
-                  sections=[{'label': label(t), 'body': t['summary']} for t in open_theses])
+                  sections=[{'label': label(t), 'body': section_body(t)} for t in open_theses])
 
 
 def board(state):
-    counted = [i for i in state['instruments'] if i['state'] in ('pending', 'live')]
+    counted = [i for i in state['instruments'] if i['state'] in COUNTED]
     positions = state['snapshot']['positions'] if state['snapshot'] else {}
     value = {s: Decimal(p['value_usd']) for s, p in positions.items()}
     order = sorted(counted, key=lambda i: (not i['held'], -value.get(i['symbol'], Decimal(0)),
@@ -89,7 +96,12 @@ def thesis_record(thesis):
                           {'label': '状态', 'value': '已退役' if retired else '进行中', 'tone': 'neutral'},
                           {'label': '版本', 'value': str(thesis['version']), 'tone': 'neutral'}],
                   sections=[{'label': '论点', 'body': thesis['body']},
-                            {'label': '来源', 'body': bounded('\n'.join(thesis['source_refs']), 8000)}])
+                            {'label': '来源', 'body': bounded('\n'.join(thesis['source_refs']), 8000)}]
+                  + ([{'label': '研究评估', 'body': research_text(thesis['research'])}] if 'research' in thesis else []))
+
+
+def research_text(research):
+    return bounded(f"{research['summary']}\n" + '\n'.join(research['source_refs']), 8000)
 
 
 def research_units(view):

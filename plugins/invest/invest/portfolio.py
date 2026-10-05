@@ -8,7 +8,7 @@ import re
 
 from . import instruments, research, theses
 from .config import captured, exact, identifier, text, timestamp
-from .errors import FORBIDDEN, Refused
+from .errors import CONFLICT, FORBIDDEN, INVALID, NOT_FOUND, UNKNOWN_TOOL, Refused, served
 from .execution import FINAL, IN_FLIGHT, advance, expire
 from .ledger import Ledger, encoded
 from .reconcile import reconcile, validate_snapshot
@@ -61,16 +61,16 @@ class Portfolio:
         """`track` is the host's `_meta["dev.neige/track"]`, `caller` its `dev.neige/caller`."""
         try:
             if name not in TOOLS:
-                raise ValueError(f'unknown tool; the invest tools are {sorted(TOOLS)}')
+                raise Refused(UNKNOWN_TOOL, f'unknown tool; the invest tools are {sorted(map(served, TOOLS))}')
             track = research.context(track)
             if name in PORTFOLIO_TOOLS and track['id'] != self.config.portfolio_track_id:
-                raise ValueError('only the portfolio Track may call this tool; research Tracks never trade')
+                raise Refused(FORBIDDEN, 'only the portfolio Track may call this tool; research Tracks never trade')
             role = caller.get('role') if isinstance(caller, dict) else None
             if role not in ('planner', 'worker') or not all(isinstance(caller.get(k), str) and caller[k]
                                                             for k in ('card_id', 'session_id')):
-                raise ValueError('host-provided agent identity required')
+                raise Refused(FORBIDDEN, 'host-provided agent identity required')
             if role not in ROLES[name]:
-                raise ValueError(f"requires {' or '.join(r.capitalize() for r in ROLES[name])} identity")
+                raise Refused(FORBIDDEN, f"requires {' or '.join(r.capitalize() for r in ROLES[name])} identity")
             with self.ledger.session() as db:
                 if name in RESEARCH_TOOLS:
                     return self.research_call(db, track, name, args, caller)
@@ -89,9 +89,9 @@ class Portfolio:
                     exact(args, set())
                 return self.status(db) | result
         except Refused as error:
-            raise Refused(error.code, f'{name}: {error}') from None
+            raise Refused(error.code, f'{served(name)}: {error}') from None
         except ValueError as error:
-            raise ValueError(f'{name}: {error}') from None
+            raise Refused(INVALID, f'{served(name)}: {error}') from None
 
     def instrument_write(self, db, name, args, caller):
         """`instrument_add`, `instrument_set` (renew the issued key) and `instrument_rm`."""
@@ -104,8 +104,8 @@ class Portfolio:
         if name == 'instrument_rm':
             instruments.current(db, symbol, args['expected_version'])
             if symbol in held:
-                raise ValueError(f'{symbol} is held (weighted above 0 by the latest decision, or in a position); '
-                                 'sell it to 0 and let the sale settle first')
+                raise Refused(CONFLICT, f'{symbol} is held (weighted above 0 by the latest decision, or in a '
+                                        'position); sell it to 0 and let the sale settle first')
             instruments.drop(self.ledger, db, symbol, f'removed: {message}', caller=caller)
             theses.retire_open(self.ledger, db, symbol, now, message, caller=caller)
             return {}
@@ -114,8 +114,8 @@ class Portfolio:
             return {}  # already covered
         watched = sum(s not in held for s in instruments.counted(db))
         if watched >= self.config.max_watched:
-            raise ValueError(f'{watched} symbols are watched (covered, not held), at max_watched '
-                             f'{self.config.max_watched}; remove one with instrument_rm first')
+            raise Refused(CONFLICT, f'{watched} symbols are watched (covered, not held), at max_watched '
+                                    f'{self.config.max_watched}; remove one with plugin_invest_instrument_rm first')
         instruments.admit(self.ledger, db, symbol, now, message=message, caller=caller)
         return {}
 
@@ -134,7 +134,8 @@ class Portfolio:
         else:
             exact(args, set())
         targets, held = self.held(db)
-        return research.view(db, row, self.ledger.get_meta(db, 'snapshot'), targets, held)
+        return research.view(db, row, self.ledger.get_meta(db, 'snapshot'), targets, held,
+                             self.config.portfolio_track_id)
 
     def held(self, db):
         """`(targets, held)`: the latest decision's weights, and every symbol it weights above 0 or that
@@ -160,7 +161,7 @@ class Portfolio:
         old = db.execute('SELECT body FROM decisions WHERE id=?', (key,)).fetchone()
         if old is not None:
             if old[0] != encoded(body):
-                raise ValueError('decision_id already names a different decision')
+                raise Refused(CONFLICT, 'decision_id already names a different decision')
             return
         if not isinstance(body['message'], str) or not 10 <= len(body['message']) <= 6000:
             raise ValueError('message must contain 10-6000 characters')
@@ -169,7 +170,7 @@ class Portfolio:
         if not now < timestamp(body['valid_until']) <= now + timedelta(hours=24):
             raise ValueError('valid_until must fall within the next 24 hours')
         if any(d['state'] not in FINAL for d in self.ledger.decisions(db)):
-            raise ValueError('resolve the current decision before adding another')
+            raise Refused(CONFLICT, 'resolve the current decision before adding another')
         self.check_bounds(db, body['weights'])
         db.execute('INSERT INTO decisions(id,body,state,created_at) VALUES (?,?,?,?)',
                    (key, encoded(body), 'queued', now.isoformat()))
@@ -179,9 +180,9 @@ class Portfolio:
         config, covered = self.config, instruments.counted(db)
         for symbol, bps in weights.items():
             if symbol not in covered:
-                raise ValueError(f'{symbol} is not a covered instrument')
+                raise Refused(NOT_FOUND, f'{symbol} is not a covered instrument')
             if bps and covered[symbol] != 'live':
-                raise ValueError(f'{symbol} is {covered[symbol]}; a weight above 0 requires a live instrument')
+                raise Refused(CONFLICT, f'{symbol} is {covered[symbol]}; a weight above 0 requires a live instrument')
             if bps > config.max_weight_bps:
                 raise ValueError(f'{symbol} weight {bps} exceeds max_weight_bps {config.max_weight_bps}')
         if sum(weights.values()) > 10000 - config.cash_buffer_bps:
@@ -189,20 +190,23 @@ class Portfolio:
                              f'({10000 - config.cash_buffer_bps})')
         held_after = {s for s, bps in weights.items() if bps} | set(self.positions(db))
         if len(held_after) > config.max_held:
-            raise ValueError(f'{len(held_after)} symbols would be held (weighted or still in a position), '
-                             f'above max_held {config.max_held}; sell first, then buy once the sells settle')
+            raise Refused(CONFLICT, f'{len(held_after)} symbols would be held (weighted or still in a position), '
+                                    f'above max_held {config.max_held}; sell first, then buy once the sells settle')
 
     def execution_add(self, db, args, caller):
         """Record the Worker's execution request; the background loop performs it."""
         exact(args, {'decision_id'})
         key = identifier(args['decision_id'])
+        if db.execute('SELECT 1 FROM decisions WHERE id=?', (key,)).fetchone() is None:
+            raise Refused(NOT_FOUND, f'unknown decision {key!r}; read plugin_invest_portfolio_status')
         decision = self.ledger.decision(db, key)
         if decision['state'] == 'requested':
             return
         if decision['state'] != 'queued':
-            raise ValueError(f"decision {key} is {decision['state']}, not awaiting execution; read portfolio_status")
+            raise Refused(CONFLICT, f"decision {key} is {decision['state']}, not awaiting execution; "
+                                    'read plugin_invest_portfolio_status')
         if timestamp(decision['body']['valid_until']) <= self.clock():
-            raise ValueError(f'decision {key} expired; the Planner must add a new decision')
+            raise Refused(CONFLICT, f'decision {key} expired; the Planner must add a new decision')
         self.ledger.decide(db, key, 'requested')
         self.ledger.event(db, 'execution_requested', {'decision_id': key, 'caller': caller})
 

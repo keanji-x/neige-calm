@@ -15,7 +15,7 @@ import math
 import re
 
 from .broker import BrokerError
-from .errors import FORBIDDEN, Refused
+from .errors import FORBIDDEN, Refused, served
 from .symbols import canonical, to_sdk
 
 TOOL = 'series_show'
@@ -37,9 +37,9 @@ def admit(meta):
     meta = meta if isinstance(meta, dict) else {}
     track = meta.get(TRACK_KEY)
     if not isinstance(track, dict) or not isinstance(track.get('id'), str) or not track['id']:
-        raise Refused(FORBIDDEN, f'{TOOL} serves only the chart resolver: host Track context required')
+        raise Refused(FORBIDDEN, f'{served(TOOL)}: serves only the chart resolver: host Track context required')
     if CALLER_KEY in meta:
-        raise Refused(FORBIDDEN, f'{TOOL} serves only the chart resolver, never an agent')
+        raise Refused(FORBIDDEN, f'{served(TOOL)}: serves only the chart resolver, never an agent')
 
 
 def calendar_date(raw):
@@ -159,7 +159,7 @@ def resolve(request, answer):
 
 
 def tool_error(text):
-    return {'isError': True, 'content': [{'type': 'text', 'text': f'{TOOL}: {text}'}]}
+    return {'isError': True, 'content': [{'type': 'text', 'text': f'{served(TOOL)}: {text}'}]}
 
 
 def show(broker, args, now_ms):

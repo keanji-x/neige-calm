@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import re
 
+from .errors import CONFLICT, Refused
+
 
 def money(value, *, zero=False):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,12}(\.[0-9]{1,8})?", value):
@@ -83,4 +85,5 @@ def version(value, current):
     if type(value) is not int or value < 1:
         raise ValueError('expected_version must be a positive integer')
     if value != current:
-        raise ValueError(f'expected_version {value} is stale: the current version is {current}; re-read and retry')
+        raise Refused(CONFLICT, f'expected_version {value} is stale: the current version is {current}; '
+                                'reread and retry')

@@ -16,11 +16,11 @@ BPS = Decimal('0.01')
 
 def context(meta):
     """The host's `_meta["dev.neige/track"]`: `{id, creator_track_id, creator_key}`, creator fields null
-    when the Track was not added by a Planner."""
-    if not isinstance(meta, dict) or set(meta) != set(PROVENANCE) or not isinstance(meta['id'], str) \
+    when the Track was not added by a Planner. All three are required; any other key is ignored."""
+    if not isinstance(meta, dict) or not set(PROVENANCE) <= set(meta) or not isinstance(meta['id'], str) \
             or not meta['id'] or any(meta[k] is not None and not isinstance(meta[k], str) for k in PROVENANCE[1:]):
-        raise ValueError('host-provided Track context required')
-    return meta
+        raise Refused(FORBIDDEN, 'host-provided Track context {id, creator_track_id, creator_key} required')
+    return {k: meta[k] for k in PROVENANCE}
 
 
 def attest(db, config, track):
@@ -39,7 +39,7 @@ def attest(db, config, track):
     return row
 
 
-def view(db, row, snapshot, targets, held):
+def view(db, row, snapshot, targets, held, portfolio_track_id):
     """`instrument_status`: this Track's own symbol only, never the rest of the portfolio."""
     symbol = row['symbol']
     position = None
@@ -52,6 +52,7 @@ def view(db, row, snapshot, targets, held):
                     'value_usd': str(value),
                     'weight_bps': str((value / equity * 10000).quantize(BPS)) if equity > 0 else None}
     return {'symbol': symbol, 'state': row['state'], 'key': row['body']['track_add']['idempotency_key'],
+            'portfolio_track_id': portfolio_track_id,
             'held': symbol in held, 'target_bps': targets.get(symbol, 0),
             'snapshot': {'at': snapshot['at'], 'date': snapshot['date']} if snapshot else None,
             'position': position,

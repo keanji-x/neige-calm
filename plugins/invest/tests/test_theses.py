@@ -8,9 +8,10 @@ from account import SimulatedAccount
 from invest import theses
 from invest.research_views import research_units
 from invest.symbols import canonical, unit_id
+from invest.errors import CONFLICT
 from invest.views import units
 from recipe import unit_kinds
-from rig import NOW, SOURCES
+from rig import NOW, SOURCES, refusal
 from test_projections import valid
 
 ID = re.compile(r'[A-Za-z0-9._-]{1,100}')
@@ -26,16 +27,18 @@ def test_board_shows_assessment_change(rig):
     r.cover('US:AAA')
     r.thesis('aaa-margins', 'US:AAA', title='Margins keep expanding')
     current = r.instrument('US:AAA')['key']
-    r.research(current, 'instrument_status')  # seen: the research Track is bound
-    before = board(r.step())
-    [record] = before
+    [record] = board(r.step())
     assert record['id'] == 'US.AAA'
-    [section] = record['sections']
-    assert section == {'label': '待评估 · Margins keep expanding', 'body': 'Demand outruns supply through next year.'}
-    # Only the assessment changes: the same summary and sources.
-    r.assess(current, 'aaa-margins', 'at_risk')
+    assert record['sections'] == [{'label': '待评估 · Margins keep expanding',
+                                   'body': 'Demand outruns supply through next year.'}]
+    r.assess(current, 'aaa-margins', 'holding', summary='Orders grew 30% this quarter.')
+    before = board(r.step())
+    # Only the assessment changes: the same research summary and sources.
+    r.assess(current, 'aaa-margins', 'at_risk', summary='Orders grew 30% this quarter.')
     after = board(r.step())
-    assert after[0]['sections'] == [{'label': '承压 · Margins keep expanding', 'body': section['body']}]
+    body = 'Demand outruns supply through next year.\n研究评估：Orders grew 30% this quarter.'
+    assert before[0]['sections'] == [{'label': '成立 · Margins keep expanding', 'body': body}]
+    assert after[0]['sections'] == [{'label': '承压 · Margins keep expanding', 'body': body}]
     assert after[0] | {'sections': []} == before[0] | {'sections': []}
 
 
@@ -45,7 +48,7 @@ def test_fourth_open_thesis_refused_state_unchanged(rig):
     for n in (1, 2, 3):
         r.thesis(f'aaa-{n}', 'US:AAA')
     before = r.dump()
-    with pytest.raises(ValueError, match='at most 3 open theses'):
+    with refusal(CONFLICT, 'at most 3 open theses'):
         r.thesis('aaa-4', 'US:AAA')
     assert r.dump() == before
     # The cap is per symbol, and a retired thesis frees its place.
@@ -75,7 +78,7 @@ def test_rm_retires_open_theses(rig):
         r.thesis(f'aaa-{n}', 'US:AAA')
     # A held symbol cannot be removed.
     r.decide({'US:BBB': 1000})
-    with pytest.raises(ValueError, match='held'):
+    with refusal(CONFLICT, 'held'):
         r.remove('US:BBB')
 
 
@@ -83,11 +86,11 @@ def test_dropped_counts_toward_no_limit(rig):
     r = rig
     r.configure(max_watched=2)
     r.cover('US:AAA', 'US:BBB')
-    with pytest.raises(ValueError, match='max_watched'):
+    with refusal(CONFLICT, 'max_watched'):
         r.add('US:CCC')
     r.remove('US:AAA')
     r.add('US:CCC')  # pending: counted
-    with pytest.raises(ValueError, match='max_watched'):
+    with refusal(CONFLICT, 'max_watched'):
         r.add('US:DDD')
     state = r.step()  # no quote for CCC: verification drops it
     assert {i['symbol']: i['state'] for i in state['instruments']} == {
@@ -158,3 +161,24 @@ def test_unit_ids_injective(rig):
         assert ID.fullmatch(identity)
         venue, code = identity.split('.', 1)  # the venue has no `.`: the id inverts to its symbol
         assert canonical(f'{venue}:{code}') in symbols
+
+
+def test_assessment_keeps_the_portfolio_fields(rig):
+    r = rig
+    r.cover('US:AAA')
+    r.thesis('aaa-margins', 'US:AAA')
+    raised = r.open_thesis('aaa-margins')
+    r.assess(r.instrument('US:AAA')['key'], 'aaa-margins', 'at_risk', summary='Orders slipped in September.',
+             source_refs=['neige://source/research-2'])
+    thesis = r.open_thesis('aaa-margins')
+    for field in ('stance', 'title', 'summary', 'source_refs', 'added_at'):
+        assert thesis[field] == raised[field], field
+    assert thesis['research'] == {'summary': 'Orders slipped in September.',
+                                  'source_refs': ['neige://source/research-2'], 'assessed_at': NOW.isoformat()}
+    # A lost answer of thesis_add replays after the assessment; another thesis under its id does not.
+    assert r.thesis('aaa-margins', 'US:AAA')['theses'] == [thesis]
+    with refusal(CONFLICT, 'another thesis'):
+        r.thesis('aaa-margins', 'US:AAA', summary='A different thesis.')
+    journal = {e['kind']: e['body'] for e in r.status()['journal']}
+    assert journal['thesis_added']['summary'] == raised['summary']
+    assert journal['thesis_assessed']['summary'] == 'Orders slipped in September.'

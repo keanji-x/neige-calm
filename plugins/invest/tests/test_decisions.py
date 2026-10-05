@@ -2,7 +2,8 @@
 import pytest
 
 from invest import instruments
-from rig import OWNER, PLANNER, WORKER, NOW, SOURCES, track
+from invest.errors import CONFLICT, FORBIDDEN, INVALID, NOT_FOUND
+from rig import OWNER, PLANNER, WORKER, NOW, SOURCES, refusal, track
 
 
 def test_weights_respect_bounds(rig):
@@ -14,22 +15,22 @@ def test_weights_respect_bounds(rig):
     with r.app.ledger.session() as db:
         instruments.admit(r.app.ledger, db, 'US:CCC', NOW)  # added, not yet verified
     refused = [
-        ({'US:AAA': 4001}, 'max_weight_bps'),
-        ({'US:AAA': 4000, 'US:BBB': 4000, 'US:DDD': 1801}, 'cash_buffer_bps'),
-        ({'US:CCC': 100}, 'live'),
-        ({'US:ZZZ': 100}, 'not a covered instrument'),
-        ({'HK:700': 100}, 'US'),
-        ({'US:AAA': -1}, 'integer'),
-        ({'US:AAA': 1.5}, 'integer'),
-        ({'US:AAA': True}, 'integer'),
+        ({'US:AAA': 4001}, INVALID, 'max_weight_bps'),
+        ({'US:AAA': 4000, 'US:BBB': 4000, 'US:DDD': 1801}, INVALID, 'cash_buffer_bps'),
+        ({'US:CCC': 100}, CONFLICT, 'live'),
+        ({'US:ZZZ': 100}, NOT_FOUND, 'not a covered instrument'),
+        ({'HK:700': 100}, INVALID, 'US'),
+        ({'US:AAA': -1}, INVALID, 'integer'),
+        ({'US:AAA': 1.5}, INVALID, 'integer'),
+        ({'US:AAA': True}, INVALID, 'integer'),
     ]
-    for weights, match in refused:
-        with pytest.raises(ValueError, match=match):
+    for weights, code, match in refused:
+        with refusal(code, match):
             r.decide(weights)
     duplicate = [{'symbol': 'US:AAA', 'bps': 100}, {'symbol': 'us:aaa', 'bps': 200}]
-    with pytest.raises(ValueError, match='more than once'):
+    with refusal(INVALID, 'more than once'):
         r.decide({}, weights=duplicate)
-    with pytest.raises(ValueError, match='missing or unknown'):
+    with refusal(INVALID, 'missing or unknown'):
         r.decide({}, weights=[{'symbol': 'US:AAA'}])
     assert r.status()['decisions'] == []
     # At the bounds, with a lower-case symbol canonicalized.
@@ -48,7 +49,7 @@ def test_held_after_counts_positions(rig):
     r.watch('US:CCC')
     # Both positions remain held until their sells settle, so a third symbol cannot be bought yet.
     for weights in ({'US:CCC': 3000}, {'US:AAA': 0, 'US:BBB': 0, 'US:CCC': 3000}):
-        with pytest.raises(ValueError, match='max_held'):
+        with refusal(CONFLICT, 'max_held'):
             r.decide(weights)
     assert r.status()['decisions'] == []
     # Rotating a full book takes two decisions: sell first ...
@@ -76,7 +77,7 @@ def test_research_track_cannot_trade(rig):
     for name, args, caller in (('decision_add', other, PLANNER),
                                ('execution_add', {'decision_id': 'd-1'}, WORKER),
                                ('portfolio_status', {}, PLANNER)):
-        with pytest.raises(ValueError, match='portfolio Track'):
+        with refusal(FORBIDDEN, 'portfolio Track'):
             r.app.call(track('research-aaa', 'owner', 'invest-US-AAA-1'), name, args, caller)
     assert r.status() == before
     r.step()
@@ -91,7 +92,7 @@ def test_roles_are_fenced(rig, name, caller, match):
     r.quote('US:AAA', '100'); r.watch('US:AAA'); r.decide({'US:AAA': 5000})
     args = {'decision_id': 'd-1'} if name == 'execution_add' else {}
     before = r.status()
-    with pytest.raises(ValueError, match=match):
+    with refusal(FORBIDDEN, match):
         r.app.call(OWNER, name, args, caller)
     assert r.status() == before
 
@@ -99,7 +100,7 @@ def test_roles_are_fenced(rig, name, caller, match):
 @pytest.mark.parametrize('caller', [None, {}, {'role': 'worker'}, PLANNER | {'card_id': ''},
                                     {'role': 'assistant', 'card_id': 'a', 'session_id': 'b'}])
 def test_host_identity_is_required(rig, caller):
-    with pytest.raises(ValueError, match='identity'):
+    with refusal(FORBIDDEN, 'identity'):
         rig.app.call(OWNER, 'portfolio_status', {}, caller)
 
 
@@ -107,13 +108,23 @@ def test_decision_is_immutable_and_one_is_unresolved(rig):
     r = rig
     r.quote('US:AAA', '100'); r.watch('US:AAA')
     r.decide({'US:AAA': 5000}); r.decide({'US:AAA': 5000})
-    with pytest.raises(ValueError, match='different decision'):
+    with refusal(CONFLICT, 'different decision'):
         r.decide({'US:AAA': 4000})
-    with pytest.raises(ValueError, match='resolve'):
+    with refusal(CONFLICT, 'resolve'):
         r.decide({'US:AAA': 4000}, decision_id='d-2')
     assert len(r.status()['decisions']) == 1
 
 
-def test_refusals_name_the_tool(rig):
-    with pytest.raises(ValueError, match='^decision_add: '):
+def test_refusals_name_the_served_tool(rig):
+    with refusal(NOT_FOUND, '^plugin_invest_decision_add: '):
         rig.decide({'US:ZZZ': 100})
+    rig.decide({})
+    rig.execute()  # nothing to trade: the decision ends noop
+    with refusal(CONFLICT, '^plugin_invest_execution_add: decision d-1 is noop, not awaiting'):
+        rig.request()
+    with refusal(NOT_FOUND, '^plugin_invest_execution_add: unknown decision'):
+        rig.request('nope')
+    with refusal(INVALID, '^plugin_invest_execution_add: missing or unknown'):
+        rig.app.call(OWNER, 'execution_add', {}, WORKER)
+    with refusal(-32601, '^plugin_invest_nope: unknown tool'):
+        rig.app.call(OWNER, 'nope', {}, PLANNER)
