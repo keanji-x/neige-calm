@@ -324,6 +324,7 @@ async fn boot_with_scope(db_url: &str, plugin_scope: Option<&str>) -> Boot {
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        track_creator: Arc::new(tokio::sync::OnceCell::new()),
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
         // Unstarted: reads record their `enqueue` outcomes and the series tests run the recorded jobs by hand.
         series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(

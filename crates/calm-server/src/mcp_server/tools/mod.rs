@@ -14,6 +14,7 @@ pub mod report_tag;
 pub mod review;
 pub mod source;
 pub mod terminal;
+pub mod track_add;
 pub mod track_file;
 pub mod track_history;
 pub mod track_rename;
@@ -40,6 +41,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     mail::register_into(registry);
     preview::register_into(registry);
     track_state::register_into(registry);
+    track_add::register_into(registry);
     track_report::register_into(registry);
     track_report_blocks::register_into(registry);
     track_file::register_into(registry);
@@ -175,7 +177,8 @@ mod tests {
         // #2130: measured 29,796 bytes across 32 Planner tools before `neige_mail_send` (798
         // bytes: description 536, schema 262); trimming restated schema facts from eight existing
         // descriptions freed 164, and the cap rose by the remaining 430 to the measured 30,430
-        // across 33 tools. Keep the aggregate bound and the unchanged per-description cap.
+        // across 33 tools. #2104 K1 added `neige_track_add` without raising it: trims to the
+        // largest descriptions paid for it. Keep the aggregate bound and the per-description cap.
         const SURFACE_MAX_BYTES: usize = 30_430;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 

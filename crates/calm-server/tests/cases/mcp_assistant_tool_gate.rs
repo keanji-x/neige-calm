@@ -46,6 +46,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_dev_publish",
     // Closing the track is a Planner action; only the user reopens.
     "neige_track_close",
+    // Opening a top-level Track from a recipe is a Planner action.
+    "neige_track_add",
     // Speaking from a background sync turn is a planner action.
     "neige_user_notify",
     // Mail between the Tracks of an Area wakes another Planner (#2130).
@@ -160,15 +162,18 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
             );
             continue;
         }
-        assert_eq!(
-            error["code"].as_i64(),
-            Some(-32602),
-            "`{tool}` must refuse with INVALID_PARAMS, got: {resp:#?}"
-        );
         let message = error["message"].as_str().unwrap_or_default();
+        let role_refusal = match error["code"].as_i64() {
+            // The `require_role*` refusal.
+            Some(-32602) => message.contains("tool requires role"),
+            // The conventions' role refusal (agent-commands.md §5), raised before any argument
+            // is read.
+            Some(-32403) => message.contains("only a Planner"),
+            _ => false,
+        };
         assert!(
-            message.contains("tool requires role"),
-            "`{tool}` must refuse for the *role* reason (not argument parsing); got: {message}"
+            role_refusal,
+            "`{tool}` must refuse for the *role* reason (not argument parsing); got: {resp:#?}"
         );
     }
 

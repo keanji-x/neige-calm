@@ -810,12 +810,13 @@ fn prompt_neige_mentions_name_served_commands() {
 #[test]
 fn task_report_surfaces_name_the_execution_id_attempt_id() {
     // Where `idempotency_key` is a real caller-chosen dedupe key, not a task execution id.
-    const CALLER_DEDUPE_KEY_PROMPTS: [&str; 5] = [
+    const CALLER_DEDUPE_KEY_PROMPTS: [&str; 6] = [
         "prompts/tools/neige_calendar_add.md",
         "prompts/tools/neige_dev_publish.md",
         "prompts/tools/neige_terminal_open.md",
         "prompts/tools/neige_terminal_input.md",
         "prompts/guides/terminal.md",
+        "prompts/tools/neige_track_add.md",
     ];
     const RETIRED_NAMES: [&str; 5] = [
         "idempotency_key",

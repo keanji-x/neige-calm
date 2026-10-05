@@ -525,6 +525,20 @@ impl AppState {
         self
     }
 
+    /// Hand `neige_track_add` the keyed Track create over this state's routes, with its
+    /// `--track-add-max-open` cap. Bound once; the creator keeps the route state it is given, so a
+    /// test binds it after its last fixture builder.
+    pub fn bind_track_creator(&self, max_open: u32) {
+        let creator = crate::routes::tracks::RouteTrackCreator::new(self.route.clone(), max_open);
+        let _ = self.route.mcp_context.track_creator.set(Arc::new(creator));
+    }
+
+    /// The MCP tools' context, for a test that drives a tool handler against this state.
+    #[cfg(feature = "fixtures")]
+    pub fn mcp_context(&self) -> Arc<crate::mcp_server::registry::AppContext> {
+        self.route.mcp_context.clone()
+    }
+
     /// The managed workspace root this process was booted with.
     pub fn workspace_root(&self) -> &std::path::Path {
         &self.route.workspace_root
@@ -1330,6 +1344,7 @@ impl AppState {
             activity_wake,
         };
         let state = state.into_app_state();
+        state.bind_track_creator(cfg.track_add_max_open);
 
         // Orphan-terminal sweeper; emits `TerminalDeleted` through the audited write pipeline. The
         // same tick also ends worker sessions left running on completed tracks.

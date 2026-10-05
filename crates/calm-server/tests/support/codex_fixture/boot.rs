@@ -363,6 +363,7 @@ pub async fn boot_forge_e2e_fixture(
         gate_logs_dir: tmp.path().join("gate-logs"),
         plugin_host: plugin_host_cell,
         operation_runtime: operation_runtime_cell,
+        track_creator: Arc::new(tokio::sync::OnceCell::new()),
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
         series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
             None,

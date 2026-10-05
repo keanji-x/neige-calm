@@ -566,13 +566,18 @@ impl SeriesResolver {
                 )
                 .await;
         }
+        let track = match ctx.repo.track_get(&track_id).await {
+            Ok(Some(track)) => crate::plugin_host::mcp::TrackMeta::from_track(&track),
+            Ok(None) => return ResolveOutcome::Dropped("track not found".into()),
+            Err(error) => return ResolveOutcome::Dropped(format!("track lookup failed: {error}")),
+        };
         let deadline_ms = now + self.resolve_timeout.as_millis() as i64;
         let arguments = request.tool_arguments(&window, deadline_ms);
         let call = async {
             match &client {
                 ConnectorClient::Stdio(c) => {
                     // A background read acts for no agent, so it carries no caller identity.
-                    c.tools_call(&request.tool, arguments, Some(&track_id), None)
+                    c.tools_call(&request.tool, arguments, Some(&track), None)
                         .await
                 }
                 ConnectorClient::Cli(c) => c.tools_call(&request.tool, arguments).await,

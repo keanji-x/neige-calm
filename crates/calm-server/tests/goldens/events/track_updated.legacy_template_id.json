@@ -34,7 +34,9 @@
         "frozen_at": null
       },
       "recipe_id": null,
-      "recipe_revision": null
+      "recipe_revision": null,
+      "creator_track_id": null,
+      "creator_key": null
     }
   }
 }

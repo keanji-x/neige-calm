@@ -530,7 +530,16 @@ recipe_id: string | null,
 /**
  * The recipe's `revision` at the moment this track was created.
  */
-recipe_revision: number | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
+recipe_revision: number | null, 
+/**
+ * The Track whose Planner created this one as a top-level Track; `None` for every other
+ * creation. May name a Track that no longer exists.
+ */
+creator_track_id: string | null, 
+/**
+ * The raw idempotency key that creator passed; set exactly when `creator_track_id` is.
+ */
+creator_key: string | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
 /**
  * One row of `GET /api/tracks/{track_id}/conversations`.
@@ -709,7 +718,16 @@ recipe_id: string | null,
 /**
  * The recipe's `revision` at the moment this track was created.
  */
-recipe_revision: number | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
+recipe_revision: number | null, 
+/**
+ * The Track whose Planner created this one as a top-level Track; `None` for every other
+ * creation. May name a Track that no longer exists.
+ */
+creator_track_id: string | null, 
+/**
+ * The raw idempotency key that creator passed; set exactly when `creator_track_id` is.
+ */
+creator_key: string | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
 /**
  * A track's typed workspace. `path` is its single stored path.

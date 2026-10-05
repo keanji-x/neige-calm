@@ -94,6 +94,8 @@ mod tests {
             template_input: None,
             recipe_id: None,
             recipe_revision: None,
+            creator_track_id: None,
+            creator_key: None,
             workspace: Default::default(),
             created_at: 0,
             updated_at: 0,

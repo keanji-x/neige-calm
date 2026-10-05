@@ -101,6 +101,8 @@ fn track_min() -> Track {
         template_input: None,
         recipe_id: None,
         recipe_revision: None,
+        creator_track_id: None,
+        creator_key: None,
         workspace: TrackWorkspace::default(),
         created_at: 1000,
         updated_at: 2000,
@@ -179,6 +181,8 @@ golden_test!(
             // Populated only here; the other three `track.updated` goldens pin these as `null`.
             recipe_id: Some("recipe-01".into()),
             recipe_revision: Some(7),
+            creator_track_id: Some("track-00".into()),
+            creator_key: Some("invest-US-SPY-1".into()),
             ..track_min()
         },
         Some("planner says hi".into()),

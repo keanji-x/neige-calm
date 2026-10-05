@@ -23,18 +23,19 @@ use super::{
 
 pub const CHILD_TRACK_KIND: &str = "child-track";
 
-/// A child track's Planner runs on its parent Planner's backend; a parent Planner card that is
-/// not a harness card (`PlannerBinding` is the one decoder) refuses the child rather than guessing.
-async fn parent_planner_provider_tx(
-    tx: &mut Tx<'_>,
-    parent_track_id: &str,
+/// The backend of a Track's Planner. A child track's Planner, and a Track another Planner adds
+/// with `neige_track_add`, runs on its creator's backend; a Planner card that is not a harness card
+/// (`PlannerBinding` is the one decoder) refuses the create rather than guessing.
+pub(crate) async fn track_planner_provider<'e, E: sqlx::SqliteExecutor<'e>>(
+    executor: E,
+    track_id: &str,
 ) -> Result<crate::session_projection_repo::AgentProvider> {
     let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
         "SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at \
            FROM cards WHERE track_id=?1 AND role='planner'",
     )
-    .bind(parent_track_id)
-    .fetch_optional(&mut **tx)
+    .bind(track_id)
+    .fetch_optional(executor)
     .await?
     .map(crate::model::Card::from);
     card.as_ref()
@@ -44,7 +45,7 @@ async fn parent_planner_provider_tx(
         .map(|binding| binding.provider)
         .ok_or_else(|| {
             CalmError::Conflict(format!(
-                "parent track {parent_track_id} has no Planner card naming its planner_provider"
+                "track {track_id} has no Planner card naming its planner_provider"
             ))
         })
 }
@@ -237,7 +238,7 @@ impl ProviderAdapter for ChildTrackAdapter {
             worktree: None,
         };
         let plan = child_workspace_plan(&parent_workspace, &self.workspace_root)?;
-        let planner_provider = parent_planner_provider_tx(tx, &payload.parent_track_id).await?;
+        let planner_provider = track_planner_provider(&mut **tx, &payload.parent_track_id).await?;
         let seed = render_child_seed(&payload);
         let child = track_create_tx(
             tx,
@@ -1839,6 +1840,7 @@ mod tests {
             gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
             plugin_host,
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+            track_creator: Arc::new(tokio::sync::OnceCell::new()),
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),

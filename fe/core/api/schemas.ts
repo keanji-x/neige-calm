@@ -60,6 +60,9 @@ const trackObjectSchema = z.object({
   /** Server-owned provenance; both are `null` together for tracks that came from anywhere else. */
   recipe_id: z.string().nullable().default(null),
   recipe_revision: z.number().nullable().default(null),
+  /** Server-owned provenance of a Track another Track's Planner created; both `null` together otherwise. */
+  creator_track_id: z.string().nullable().default(null),
+  creator_key: z.string().nullable().default(null),
   /** The typed workspace; `cwd` above is a projection of `workspace.path`. */
   workspace: z
     .object({

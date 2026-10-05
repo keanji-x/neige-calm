@@ -68,8 +68,11 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 #[cfg(feature = "fixtures")]
 use tokio::sync::Notify;
 
+mod add;
 mod create;
 mod fork_guard;
+
+pub(crate) use add::RouteTrackCreator;
 
 /// Test seam that makes the cross-instance same-key mint race deterministic.
 pub type TrackCreateMintRendezvous = Option<std::sync::Arc<TrackCreateMintGate>>;
@@ -816,7 +819,9 @@ pub(crate) async fn create_track(
     // `message_less` carries the per-key claim guard that must be held until after the mint.
     let (plan, message_less) = match plan {
         create::CreatePlan::Resume(resume) => {
-            return create::resume_prior_attempt(s, actor, resume).await;
+            let track =
+                create::resume_prior_attempt(s, &create::KeyedActor::rest(&actor), resume).await?;
+            return Ok((StatusCode::CREATED, Json(track)).into_response());
         }
         create::CreatePlan::MessageLessResume(resume) => {
             return create::resume_message_less(s, actor, resume).await;
@@ -957,11 +962,21 @@ pub(crate) async fn create_track(
         // `Legacy` has nothing to bind.
         idempotency_claim: message_less.as_ref().map(create::MessageLessPlan::claim),
         managed_identity: None,
+        creator: None,
+        creation_message: None,
     };
     // The resuming arms returned above, so `Some` here is always a mint.
     let created = match plan {
         None => create_track_with_planner_harness(s, actor, p, options).await,
-        Some(plan) => create::create_track_with_first_message(s, actor, p, options, plan).await,
+        Some(plan) => create::create_track_with_first_message(
+            s,
+            &create::KeyedActor::rest(&actor),
+            p,
+            options,
+            plan,
+        )
+        .await
+        .map(|track| (StatusCode::CREATED, Json(track)).into_response()),
     };
     // The per-key claim guard rides here so two same-key message-less creates in
     // one process cannot both read "no binding" and each mint a track. Dropped
@@ -1203,6 +1218,11 @@ enum TrackInit {
 
 struct CreateTrackOptions {
     managed_identity: Option<crate::managed_track::ManagedTrackIdentity>,
+    /// The Track whose Planner is creating this one with `neige_track_add`: its open-created cap is
+    /// counted and its provenance stamped inside the create transaction. `None` on every other path.
+    creator: Option<add::CreatorAdmission>,
+    /// The audit note the creation `TrackUpdated` carries; only `neige_track_add` supplies one.
+    creation_message: Option<String>,
     planner_provider: AgentProvider,
     model: Option<String>,
     reasoning_effort: Option<String>,
@@ -1253,6 +1273,8 @@ async fn create_track_structure(
 ) -> Result<(Track, bool, String, String)> {
     let CreateTrackOptions {
         managed_identity,
+        creator,
+        creation_message,
         planner_provider,
         model,
         reasoning_effort,
@@ -1301,6 +1323,10 @@ async fn create_track_structure(
                         return Err(CalmError::Conflict("managed Track already exists".into()));
                     }
                 }
+                // Counted in this transaction, so two concurrent adds cannot both take the last slot.
+                if let Some(creator) = &creator {
+                    creator.admit_tx(tx).await?;
+                }
                 // Claim scan + insert, atomic with the track row; must stay first so every branch
                 // either rolls back or leaves the claim table consistent.
                 enforce_folder_claim_tx(
@@ -1331,7 +1357,7 @@ async fn create_track_structure(
                     revision: recipe.revision,
                 });
 
-                let track = track_create_tx(
+                let mut track = track_create_tx(
                     tx,
                     p,
                     None,
@@ -1340,6 +1366,9 @@ async fn create_track_structure(
                     write_for_tx.area_cache(),
                 )
                 .await?;
+                if let Some(creator) = &creator {
+                    creator.stamp_tx(tx, &mut track).await?;
+                }
                 let track_id = track.id.clone();
                 let area_id = track.area_id.clone();
                 if let Some(identity) = &managed_identity {
@@ -1561,7 +1590,7 @@ async fn create_track_structure(
                         track_scope.clone(),
                         Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
                             track.clone(),
-                            None,
+                            creation_message,
                         )),
                     ),
                     (
@@ -1681,6 +1710,8 @@ pub(crate) async fn create_managed_track(
         .ok_or_else(|| CalmError::Internal("managed Track template is not registered".into()))?;
     let options = CreateTrackOptions {
         managed_identity: Some(identity),
+        creator: None,
+        creation_message: None,
         planner_provider: AgentProvider::Codex,
         model: None,
         reasoning_effort: None,

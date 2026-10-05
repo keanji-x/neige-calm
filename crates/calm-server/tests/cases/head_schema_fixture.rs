@@ -84,6 +84,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0144_crud_verbs.sql",
     "0145_task_git_delivery_commit_message.sql",
     "0146_mails.sql",
+    "0147_track_creator_provenance.sql",
 ];
 
 #[test]

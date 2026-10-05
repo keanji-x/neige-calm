@@ -181,10 +181,32 @@ impl Drop for ResponderSlot<'_> {
 /// Wire-name of the experimental capability that opts a plugin into the `neige.*` host-callback namespace.
 pub const KERNEL_CALLBACKS_CAPABILITY: &str = "dev.neige/kernel-callbacks";
 
-/// `_meta` namespace naming the Track a `tools/call` was made from, as `{"id": "<track_id>"}`.
+/// `_meta` namespace naming the Track a `tools/call` was made from, as a [`TrackMeta`].
 /// The kernel fills this from the resolved identity; nothing in the request body reaches it. Not every
 /// `tools/call` carries it, so a plugin must refuse rather than default when it is absent.
 pub const TRACK_META_KEY: &str = "dev.neige/track";
+
+/// The value under [`TRACK_META_KEY`]: the Track's id and how it was created, copied from its
+/// row (`null` when absent). Built only by [`TrackMeta::from_track`], for every plugin call.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct TrackMeta {
+    pub id: String,
+    /// The Track whose Planner created this one with `neige_track_add`.
+    pub creator_track_id: Option<String>,
+    /// The raw `idempotency_key` that creator passed.
+    pub creator_key: Option<String>,
+}
+
+impl TrackMeta {
+    pub fn from_track(track: &crate::model::Track) -> Self {
+        Self {
+            id: track.id.to_string(),
+            creator_track_id: track.creator_track_id.clone(),
+            // MUTATION-K1-8: `creator_key`.
+            creator_key: track.creator_key.clone(),
+        }
+    }
+}
 
 /// `_meta` namespace carrying the calling agent's host-resolved identity to a local plugin.
 /// Never copied from the request: the agent's own `_meta` and `arguments` cannot claim a role.
@@ -411,19 +433,19 @@ impl McpClient {
         }
     }
 
-    /// MCP `tools/call`. `track_id` and `caller` ride in `params._meta` under [`TRACK_META_KEY`] and
+    /// MCP `tools/call`. `track` and `caller` ride in `params._meta` under [`TRACK_META_KEY`] and
     /// [`CALLER_META_KEY`] rather than in `arguments`: the tool's `input_schema` is plugin-authored
     /// and often `additionalProperties: false`.
     pub async fn tools_call(
         &self,
         name: &str,
         arguments: Value,
-        track_id: Option<&str>,
+        track: Option<&TrackMeta>,
         caller: Option<AgentCaller<'_>>,
     ) -> Result<CallToolResult, RpcError> {
         let mut meta = serde_json::Map::new();
-        if let Some(track_id) = track_id {
-            meta.insert(TRACK_META_KEY.into(), json!({ "id": track_id }));
+        if let Some(track) = track {
+            meta.insert(TRACK_META_KEY.into(), json!(track));
         }
         if let Some(caller) = caller {
             meta.insert(CALLER_META_KEY.into(), json!(caller));
@@ -438,11 +460,13 @@ impl McpClient {
         self.call_tool_params(params).await
     }
 
-    /// Local forge lowerers receive the resolved caller scope outside user arguments.
+    /// Local forge lowerers receive the resolved caller scope outside user arguments. `track` is
+    /// the caller's Track, the one `caller.track_id` names.
     pub async fn forge_tools_call(
         &self,
         name: &str,
         arguments: Value,
+        track: &TrackMeta,
         caller: &super::forge_caller::ForgeCallerScope,
     ) -> Result<CallToolResult, RpcError> {
         use super::forge_caller::FORGE_CALLER_META_KEY;
@@ -450,7 +474,7 @@ impl McpClient {
             "name": name,
             "arguments": arguments,
             "_meta": {
-                TRACK_META_KEY: { "id": caller.track_id },
+                TRACK_META_KEY: track,
                 FORGE_CALLER_META_KEY: caller,
             }
         }))
