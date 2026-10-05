@@ -17,7 +17,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
+import { MAX_ATTACHMENTS_PER_MESSAGE, trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
 import { DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
@@ -604,8 +604,8 @@ describe('track conversations', () => {
     expect(messageField().textContent).toBe('');
   });
 
-  /* The outcome the composer reads is `abandoned` once another conversation is shown,
-   * or the first conversation's sentence lands in the second's composer. */
+  /* A refusal gives the words back to the composer of the conversation they were sent from (#2068), never to the
+   * one shown when it lands. */
   it('does not put a refused sentence into the conversation the reader walked to', async () => {
     const held = new Map<string, () => void>();
     setup(async (request) => {
@@ -643,32 +643,31 @@ describe('track conversations', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('[F4] retains a typed refusal after reopening without duplicating the mounted restore', async () => {
+  /* #2068: a refusal is settled by giving the words back; the thread keeps nothing of it that a later press could drop. */
+  it('[F4] keeps a typed refusal in the composer alone, across reopening and a newer draft', async () => {
     let refuse = true;
-    setup((request) => request.path.endsWith('/planner/input') && refuse
+    const { requests } = setup((request) => request.path.endsWith('/planner/input') && refuse
       ? failure(409, 'planner_harness_runtime_superseded', 'Your message was not stored') : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     await write('Original typed refusal');
     await waitFor(() => expect(messageField().textContent).toBe('Original typed refusal'));
+    /* Once, in the composer: no copy of it is drawn in the thread. */
     expect(within(drawerElement()).getAllByText('Original typed refusal', TRANSCRIPT_TEXT)).toHaveLength(1);
-    await typeInto(messageField(), 'A newer unsent draft');
+    expect(drawerElement().querySelector('[data-nc-turn="you"]')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
-    expect(messageField().textContent).toBe('A newer unsent draft');
+    await typeInto(messageField(), 'A newer unsent draft');
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    /* Closing keeps the newer draft, and the refused message stays out of sight behind it. */
     await waitFor(() => expect(messageField().textContent).toBe('A newer unsent draft'));
     expect(within(drawerElement()).queryByText('Original typed refusal', TRANSCRIPT_TEXT)).toBeNull();
-    await clearField();
-    expect(within(drawerElement()).getByText('Original typed refusal', TRANSCRIPT_TEXT)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    expect(messageField().textContent).toBe('Original typed refusal');
     refuse = false;
     await act(async () => { fireEvent.keyDown(messageField(), { key: 'Enter' }); await Promise.resolve(); });
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(messageField().textContent).toBe('');
+    expect(requests.filter((request) => request.path.endsWith('/planner/input')).map((request) => request.body))
+      .toEqual([{ text: 'Original typed refusal' }, { text: 'A newer unsent draft' }]);
   });
 
   it('[F4] retains a rejected message across reopen and retries its exact text once', async () => {
@@ -1321,12 +1320,49 @@ describe('track conversations', () => {
       expect(await within(drawerElement()).findByText('The image could not be uploaded.')).toBeTruthy();
       expect(chatText()).not.toMatch(CONNECTIVITY);
     });
+
+    /* #2068 item 27: a write refused where it is admitted never left the browser, so it reads as not done, never as
+       unconfirmed; why it could not go out is the global recovery indicator's to say. */
+    describe('[#2068] refused at admission (bundled build, offline)', () => {
+      async function offlineAfterOpening(reply: Reply) {
+        vi.stubGlobal('__NC_BUNDLED__', true);
+        const access = new RecoveryAccess(); access.change('connected');
+        const { requests } = setup(reply, undefined, access);
+        await openAssistant();
+        act(() => { access.change('offline'); });
+        return requests;
+      }
+
+      it('model select: says the model was not changed', async () => {
+        const requests = await offlineAfterOpening(() => undefined);
+        fireEvent.click(within(drawerElement()).getByRole('button', { name: /^Model:/ }));
+        fireEvent.click(await screen.findByRole('menuitem', { name: /^Default/ }));
+        expect((await screen.findByRole('alert')).textContent).toBe('The model was not changed.');
+        expect(requests.filter((request) => request.path.endsWith('/planner/model'))).toEqual([]);
+      });
+
+      it('Stop: says the response was not stopped', async () => {
+        const requests = await offlineAfterOpening((request) => request.path.endsWith('/planner/run') ? running() : undefined);
+        fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Stop failed', expanded: false }));
+        expect(screen.getByText('The response was not stopped.', { exact: true })).toBeTruthy();
+        expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toEqual([]);
+      });
+
+      it('image upload: says the image was not uploaded', async () => {
+        const requests = await offlineAfterOpening((request) => request.path.endsWith('/planner/run')
+          ? ok({ ...running().body as object, phase: 'idle' }) : undefined);
+        await attachAnImage();
+        expect(await within(drawerElement()).findByText('The image was not uploaded.')).toBeTruthy();
+        expect(requests.filter((request) => request.path.endsWith('/planner/attachments'))).toEqual([]);
+      });
+    });
   });
 
   it('[#1505] re-sends the image the failed message was shown with, not just its words', async () => {
     const text = 'look at this';
     const { requests } = withAttachments((attempt) => attempt === 1
-      ? ({ status: 400, statusText: 'Bad Request', body: { error: 'nope', code: 'bad_request' } })
+      ? failure(429, 'rate_limited', 'Wait a moment')
       : ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
@@ -1348,7 +1384,7 @@ describe('track conversations', () => {
 
   it('[#1505] retrying an image-only message does not post the one body the server refuses', async () => {
     const { requests } = withAttachments((attempt) => attempt === 1
-      ? ({ status: 400, statusText: 'Bad Request', body: { error: 'nope', code: 'bad_request' } })
+      ? failure(429, 'rate_limited', 'Wait a moment')
       : ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
@@ -1862,7 +1898,7 @@ describe('track conversations', () => {
     let attempts = 0;
     const { requests } = editSetup(() => {
       attempts += 1;
-      return attempts === 1 ? failure(400, 'bad_request', 'Not this time') : undefined;
+      return attempts === 1 ? failure(429, 'rate_limited', 'Not this time') : undefined;
     });
     await editIntoComposer(requests);
     await submit();
@@ -1954,7 +1990,7 @@ describe('track conversations', () => {
   });
 
   it('keeps the images of a rejected send for the footer’s Edit', async () => {
-    const { requests } = editSetup(() => failure(400, 'bad_request', 'Not this time'));
+    const { requests } = editSetup(() => failure(429, 'rate_limited', 'Not this time'));
     await editIntoComposer(requests);
     await submit();
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
@@ -2052,7 +2088,7 @@ describe('track conversations', () => {
   });
 
   it('puts a failed Regenerate’s words and images back beside the composer’s own image', async () => {
-    const { requests } = editSetup(() => failure(400, 'bad_request', 'Not this time'));
+    const { requests } = editSetup(() => failure(429, 'rate_limited', 'Not this time'));
     await openEditableAssistant();
     await attachAnImage();
     await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_ID))).toBe(true));
@@ -2064,7 +2100,7 @@ describe('track conversations', () => {
   });
 
   it('puts a failed send’s words back with its image once', async () => {
-    editSetup(() => failure(400, 'bad_request', 'Not this time'));
+    editSetup(() => failure(429, 'rate_limited', 'Not this time'));
     await openEditableAssistant();
     await attachAnImage();
     await waitFor(() => expect(composerImages().some((src) => src?.endsWith(DRAFT_IMAGE_ID))).toBe(true));
@@ -2131,6 +2167,128 @@ describe('track conversations', () => {
     expect(messageField().textContent).toBe('');
     expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull();
     expect(inputBodies(requests)).toEqual([]);
+  });
+
+  /* #2068 item 19: an answer that refuses the body itself can never be sent as it is, so it is settled as a refusal:
+     its words and images go back to the composer with the server's reason, and nothing offers a Try again. */
+  it.each([400, 403, 404, 413, 422])('[#2068] gives a send refused %s back to the composer with its reason, offering no Try again', async (status) => {
+    const text = 'look at these';
+    const { requests } = withAttachments(() => failure(status, 'bad_request', 'The server will never take this.'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await attachAnImage();
+    await write(text);
+    expect((await screen.findByRole('alert')).textContent).toBe('Not sent. The server will never take this.');
+    await waitFor(() => expect(messageField().textContent).toBe(text));
+    expect(composerImages()).toEqual([REWIND_IMAGE.url]);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    /* The words are the composer's alone: no copy of a message the server never took is drawn. */
+    expect(drawerElement().querySelector('[data-nc-turn="you"]')).toBeNull();
+    expect(inputBodies(requests)).toEqual([{ text, attachments: [ATTACHMENT_ID] }]);
+  });
+
+  it('[#2068] puts at most the images a message carries in the composer for an Edit, saying the rest were not attached', async () => {
+    const images = Array.from({ length: MAX_ATTACHMENTS_PER_MESSAGE + 1 }, (_, index) => ({
+      ...REWIND_IMAGE, id: `image-${index}.png`, url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/image-${index}.png`,
+    }));
+    const { requests } = scriptedSetup(() => turnRows('turn', 91, 'Original prompt', 'Original answer', images));
+    await openEditableAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    expect(composerImages()).toEqual(images.slice(0, MAX_ATTACHMENTS_PER_MESSAGE).map((image) => image.url));
+    expect(within(drawerElement()).getByText('That image was not attached').parentElement?.textContent)
+      .toContain(`A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.`);
+    await submit();
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
+    expect(inputBodies(requests)[0]).toEqual({ text: 'Original prompt', replaces_turn: 'turn',
+      attachments: images.slice(0, MAX_ATTACHMENTS_PER_MESSAGE).map((image) => image.id) });
+  });
+
+  /* #2068 items 13 and 22: a refusal gives the words back through the registry, to the composer of the conversation
+     the send was pressed in, whichever conversation is shown when it lands. */
+  it('[#2068] gives a refused send its words back in its own conversation when the refusal lands while another is shown', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const { requests } = editSetup(async () => {
+      await held;
+      return failure(409, 'planner_harness_runtime_superseded', 'Your message was not stored; send it again.');
+    });
+    await openEditableAssistant();
+    await typeInto(messageField(), 'Words the server refused');
+    await submit();
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
+    await pickPlanner();
+    await act(async () => { release(); await held; });
+    await settleFor(20);
+    expect(messageField().textContent).toBe('');
+    expect(screen.queryByRole('alert')).toBeNull();
+    await pickAssistant();
+    await waitFor(() => expect(messageField().textContent).toBe('Words the server refused'));
+    expect(screen.getByRole('alert').textContent).toBe('Not sent. Your message was not stored; send it again.');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    /* The next press sends the words again as a new message, and nothing of the refused one is left to drop. */
+    await submit();
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(2));
+    expect(inputBodies(requests)[1]).toEqual({ text: 'Words the server refused' });
+  });
+
+  /* #2068 item 25: a replace that failed is drawn as what it is, the turn's replacement, so its words do not read as a
+     second copy and Try again plainly replaces the marked turn. */
+  it.each([
+    ['rejected', () => failure(429, 'rate_limited', 'Wait a moment'), 'Not sent. Wait a moment'],
+    ['unknown', () => failure(502, 'bad_gateway', 'Upstream unavailable'), 'Delivery is unconfirmed.'],
+  ] as const)('[#2068] marks a %s replace as the replacement of the turn it names', async (_, answer, footer) => {
+    twoTurnSetup(answer);
+    await openEditableAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    await typeInto(messageField(), 'Revised prompt');
+    await submit();
+    expect((await screen.findByRole('alert')).textContent).toContain(footer);
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    expect(markedMessages()).toEqual(['Original prompt']);
+    expect(Array.from(drawerElement().querySelectorAll('[data-nc-turn="you"][data-nc-replacement]'))
+      .map((said) => said.textContent)).toEqual(['Revised prompt']);
+    expect(within(drawerElement()).getByText('Replaces the marked message above')).toBeTruthy();
+  });
+
+  /* #2068 item 8: a stored row stands for one send over its lifetime. Once it retired one, a later send with the same
+     words that was never stored must stay drawn, or Dismiss would drop words the server never held. */
+  it('[#2068] never lets the row that retired one send hide a later equal send that was never stored', async () => {
+    const text = 'the same words twice';
+    const state = { queued: false, drained: false, inputs: 0 };
+    const { client } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: state.drained ? 'idle' : 'turn_running',
+          model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
+          pending: state.queued && !state.drained ? [{ entry_id: 'entry-a', text, rev: 0, queued_at_ms: 5 }] : [],
+          pending_overflow: 0 });
+      }
+      if (request.path.includes(HISTORY_PATH)) return ok(state.drained ? [harnessMessage(1, 'userMessage', { content: [{ text }] })] : []);
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      state.inputs += 1;
+      if (state.inputs > 1) throw new Error('response dropped');
+      state.queued = true;
+      return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', entry_id: 'entry-a' });
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('button', { name: 'Stop' });
+    /* 1. A is confirmed and queued. */
+    await typeInto(messageField(), text);
+    await submit();
+    await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="entry-a"]')?.textContent).toContain(text));
+    /* 2. B, the same words, is pressed after it; its answers are all lost, and it was never stored. */
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await typeInto(messageField(), text);
+    await submit();
+    expect((await screen.findByRole('alert')).textContent).toContain('Delivery is unconfirmed');
+    /* 3. A drains: its row retires A. */
+    state.drained = true;
+    await act(async () => { await client.invalidateQueries(); });
+    await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="entry-a"]')).toBeNull());
+    await settleFor(20);
+    /* 4. That row is A's: B stays drawn beside it, with its footer. */
+    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
+    expect(screen.getByRole('alert').textContent).toContain('Delivery is unconfirmed');
   });
 
   it.each(['interrupted', 'failed'] as const)('shows one current paused status over a recorded %s result', async (status) => {
@@ -2750,6 +2908,32 @@ describe('registry write-through', () => {
       turns: () => readTurns(ASSISTANT_CARD.id),
     };
   }
+
+  /* #2068 item 17: Edit takes a failed send back into the composer, which only a send that was not stored may do; the
+     outbox refuses it for an unknown one itself, not only by the footer offering no Edit there. */
+  it('[#2068] refuses to take a spent unknown send back for an Edit', async () => {
+    const transport: ApiTransportPort = {
+      send: (request) => request.path.endsWith('/planner/input') ? Promise.reject(new Error('response dropped'))
+        : Promise.resolve(request.path.endsWith('/planner/run') ? runIdle() : ok([])),
+    };
+    let store!: ReturnType<typeof useConversationStore>;
+    let composerText = '';
+    function Probe() {
+      const current = useConversationStore(transport, unauthorized, SCOPE, { rows: ROWS, rememberOn: 'w1' });
+      const composer = useConversationRegistry().composerOf(ASSISTANT_CARD.id);
+      useEffect(() => { store = current; composerText = composer.text; });
+      return null;
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
+    render(<QueryClientProvider client={client}><ConversationProvider><Probe /></ConversationProvider></QueryClientProvider>);
+    await waitFor(() => expect(store.historyReady).toBe(true));
+    await act(async () => { void store.send(ASSISTANT_CARD.id, 'maybe stored', [], true, null); await Promise.resolve(); });
+    await waitFor(() => expect(store.failedSend?.delivery).toBe('unknown'));
+    const key = store.failedSend?.key ?? '';
+    act(() => { store.discardFailedSend(key); });
+    expect(store.failedSend?.key).toBe(key);
+    expect(composerText).toBe('');
+  });
 
   /* Recorded per commit (a layout effect), since `act` would flush the render a switch leaks before any assertion. */
   it('[#2041] shows the next conversation no part of the last one’s send or error, not for one commit', async () => {

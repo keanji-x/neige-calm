@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
 import { stopFailureFeedback, type ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
-import { ApiError } from '../providers/queries.ts';
+import { writeFailureOf } from '../providers/queries.ts';
 
 type StopLease = { historyKnown: boolean; newestRowId: number };
 type StopView = { cardId: string; request: StopLease | null; canStop: boolean };
@@ -57,7 +57,7 @@ export function useConversationStop({ cardId, canStop, responseEnded, historyKno
     }).catch((error: unknown) => {
       if (!current()) return;
       view.request = null;
-      setNotice({ view, lease, feedback: stopFailureFeedback(error instanceof ApiError ? error.failure : null) });
+      setNotice({ view, lease, feedback: stopFailureFeedback(writeFailureOf(error)) });
     });
   };
   const feedback = ended ? null : owned?.feedback ?? null;

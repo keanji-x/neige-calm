@@ -5,11 +5,11 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
 import {
   conversationNameFrom, isConversationMessage,
-  type ConversationMessage, type ConversationTurn, type SendOutcome, type SentPlannerInput, type TranscriptEntry,
+  type ConversationMessage, type ConversationTurn, type SentPlannerInput, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  outboxView, settleSendOp, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
+  outboxView, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
 } from '../../../../core/domain/conversation-outbox.ts';
 import { withRefill } from '../../../../core/domain/conversation-rewind.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
@@ -59,8 +59,10 @@ export function useRunReads(nextRead: () => number): RunReads {
 }
 
 /** The row a confirmed send leaves in the tab's memory, written whether or not its conversation is open. */
-function rememberSent(entry: RememberedConversation, ops: readonly SendOp[], text: string, atMs: number): RememberedConversation {
-  const shown = withConfirmedSends(entry.turns, ops);
+function rememberSent(
+  entry: RememberedConversation, ops: readonly SendOp[], spent: readonly string[], text: string, atMs: number,
+): RememberedConversation {
+  const shown = withConfirmedSends(entry.turns, ops, spent);
   return {
     conversation: {
       ...entry.conversation,
@@ -101,25 +103,28 @@ export function useConversationOutbox({
   pressed: () => void;
 }) {
   const registry = useConversationRegistry();
-  const { editOutbox, beginSend, nextRead, updateExisting } = registry;
+  const { editOutbox, retireSends, beginSend, nextRead, updateExisting } = registry;
   const ops = registry.outboxOf(cardId);
+  const spent = registry.spentRowsOf(cardId);
   /** The card shown now; a send's own `cardId` is the one it was pressed in. */
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
   const view = useMemo(
-    () => outboxView({ serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, ops, landed }),
-    [serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, ops, landed],
+    () => outboxView({ serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, ops, spent, landed }),
+    [serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, ops, spent, landed],
   );
   const { retire } = view;
-  /* Filtering by key is safe only because a `confirmed` or `replayed` op, the only ones retired, never changes phase
+  /* Retiring by key is safe only because a `confirmed` or `replayed` op, the only ones retired, never changes phase
      again: an op under that key here is still the one the view retired. */
   useEffect(() => {
-    if (retire.length === 0) return;
-    editOutbox(cardId, (current) => {
-      const kept = current.filter((op) => !retire.includes(op.key));
-      return kept.length === current.length ? current : kept;
-    });
-  }, [cardId, editOutbox, retire]);
+    if (retire.length > 0) retireSends(cardId, retire);
+  }, [cardId, retireSends, retire]);
+
+  /** Words and images back in the composer of the card they were sent from, whichever conversation is shown: the one
+   * way a send gives its words back (#2068). */
+  const refill = (sentTo: string, text: string, attachments: readonly PlannerAttachment[]) => {
+    registry.editComposer(sentTo, (current) => withRefill(current, { text, attachments }));
+  };
 
   /**
    * A composer send's images leave the composer of the card they were sent from, whichever conversation is shown by
@@ -133,7 +138,7 @@ export function useConversationOutbox({
   };
 
   /** One run of a begun op: its attempts under one key, settled into the outbox of the card it was pressed in. */
-  const run = (op: SendOp & { phase: 'sending' }, admittedAtPress: ApiTransportPort): Promise<SendOutcome> => {
+  const run = (op: SendOp & { phase: 'sending' }, admittedAtPress: ApiTransportPort): Promise<void> => {
     const sentTo = cardId;
     const { key, echo, fromComposer, replaces } = op;
     const attachments: readonly PlannerAttachment[] = echo.attachments ?? [];
@@ -152,39 +157,37 @@ export function useConversationOutbox({
       (error) => (error instanceof ApiError ? error.failure : null),
       (retry) => new Promise<void>((resolve) => { setTimeout(resolve, recoveryDelay(retry, Math.random())); }),
       op.unknown,
-    ).then(({ sent, everUnknown }): SendOutcome => {
+    ).then(({ sent, everUnknown }) => {
       if (fromComposer) releaseComposerImages(sentTo, attachments);
       /* Not claimed: the answer may replay an entry deleted, rewound or reset since, which no read would ever
          show. The echo stays until reads started after this answer land, and they alone then show the message. */
-      if (everUnknown) { settle({ key, echo, fromComposer, replaces, phase: 'replayed', afterRead: answeredRead }); return 'delivered'; }
+      if (everUnknown) { settle({ key, echo, fromComposer, replaces, phase: 'replayed', afterRead: answeredRead }); return; }
       const confirmed = settle({ key, echo: { ...echo, entryId: sent.entry_id }, fromComposer, replaces, phase: 'confirmed' });
       /* The answer can outlive the drawer: the row is written straight through for the conversation it was sent
          to, through `updateExisting` because a background refresh may already have put newer data there. */
-      updateExisting(sentTo, (entry) => rememberSent(entry, confirmed, echo.text, echo.atMs));
-      return 'delivered';
-    }, (error: unknown): SendOutcome => {
+      updateExisting(sentTo, (entry) => rememberSent(entry, confirmed, registry.spentRowsOf(sentTo), echo.text, echo.atMs));
+    }, (error: unknown) => {
       const failed = error instanceof KeyedSendFailure ? error : new KeyedSendFailure(error, 'unknown');
       const message = failed.cause instanceof Error && failed.cause.message !== '' ? failed.cause.message : 'Could not send the message.';
-      if (replaces !== null && failed.delivery === 'refused') {
-        /* Refused before any write: the turn is untouched, so the op is settled by its refill alone. Its words and
-           images go back to the composer it was sent from and nothing of it stays in the outbox, so the thread is
-           the server's again and the turn can be edited anew. */
+      if (failed.delivery === 'refused') {
+        /* Refused before any write, and the same body would be refused again: nothing to try again. The op is
+           settled by its refill alone, its words and images back in the composer it was sent from with the server's
+           reason, and nothing of it stays in the outbox: the thread is the server's again, an Edit's turn untouched. */
         settle(null);
-        registry.editComposer(sentTo, (current) => withRefill(current, { text: echo.text, attachments }));
-        registry.noteRefusedEdit(sentTo, message);
-        return 'refused';
+        refill(sentTo, echo.text, attachments);
+        registry.noteRefusedSend(sentTo, message, replaces !== null);
+        return;
       }
       /* `message` is shown only for an op that was not sent: an unknown op's footer says no more than that it is unconfirmed. */
       settle({ key, echo, fromComposer, replaces, phase: 'failed', delivery: failed.delivery, message });
-      return failed.delivery === 'refused' ? 'refused' : 'unresolved';
-    }).then((outcome) => shownCardId.current === sentTo ? outcome : 'abandoned');
+    });
   };
 
-  /** Take the failed op under `key` out of the outbox; returns it, or `null` when it is no longer the failed op. */
-  const discard = (key: string): SendOp | null => {
+  /** Take the failed op under `key` out of the outbox if `may` lets it go; returns it, or `null` when it did not leave. */
+  const discard = (key: string, may: (op: SendOp) => boolean): SendOp | null => {
     let taken: SendOp | null = null;
     editOutbox(cardId, (current) => {
-      taken = current.find((op) => op.key === key && op.phase === 'failed') ?? null;
+      taken = current.find((op) => op.key === key && op.phase === 'failed' && may(op)) ?? null;
       return taken === null ? current : settleSendOp(current, key, null);
     });
     return taken;
@@ -193,21 +196,21 @@ export function useConversationOutbox({
   return {
     view,
     /**
-     * A press: a new op under a new key. `attachments` are ids already uploaded; naming one here is what makes it
-     * permanent. `fromComposer`: they are the composer's own, so a delivery clears them (and the upload refusal) there.
+     * A press: a new op under a new key, settled when it is answered; `null` when the conversation cannot take it now
+     * and nothing was sent, so its words stay where they were typed. `attachments` are ids already uploaded; naming one
+     * here makes it permanent. `fromComposer`: they are the composer's own, so a delivery clears them (and the upload
+     * refusal) there.
      * `replaces`: the turn an Edit's Send replaces, in the same request (#2043); beginning the op ends that Edit.
      */
     send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean,
-      replaces: ReplacedTurn | null): Promise<SendOutcome> => {
-      if (conversationId !== cardId || stalled || (view.failed !== null && view.failed.delivery !== 'refused')) {
-        return Promise.resolve('not-sent');
-      }
+      replaces: ReplacedTurn | null): Promise<void> | null => {
+      if (conversationId !== cardId || stalled || view.failed !== null) return null;
       /* Admitted at the press. Where the transport carries a recovery admission (the bundled build), a press that
          cannot leave the browser is refused here and sends nothing: the composer keeps its words, and the global
          recovery status already says why. The web build admits every press, and a send that cannot leave fails as a
          transport error — unknown, retried. */
       let admitted: ApiTransportPort;
-      try { admitted = admitTransport(transport); } catch { return Promise.resolve('refused'); }
+      try { admitted = admitTransport(transport); } catch { return null; }
       const op = {
         key: mintIdempotencyKey(), fromComposer, replaces, phase: 'sending', unknown: false,
         echo: {
@@ -224,7 +227,7 @@ export function useConversationOutbox({
           entryId: null,
         },
       } as const;
-      if (!beginSend(cardId, op)) return Promise.resolve('not-sent');
+      if (!beginSend(cardId, op)) return null;
       if (shownCardId.current === cardId) pressed();
       return run(op, admitted);
     },
@@ -247,15 +250,21 @@ export function useConversationOutbox({
       pressed();
       void run(op, admitted);
     },
-    /** Edit of the failed op: it leaves the outbox, and the caller puts its words and images back in the composer. */
-    discardFailedSend: (key: string) => { discard(key); },
+    /**
+     * Edit of the failed op: it leaves the outbox and its words and images go back to the composer. Only for an op that
+     * was not stored: an unknown one may have been, and an edited message would be a second send under a new key.
+     */
+    discardFailedSend: (key: string) => {
+      const taken = discard(key, (op) => !wasUnknown(op));
+      if (taken !== null) refill(cardId, taken.echo.text, taken.echo.attachments ?? []);
+    },
     /**
      * Dismiss of the failed op: it leaves the outbox and nothing of it comes back, since an unknown send may already be
      * delivered (a read then shows it). Its composer images leave the composer too, as a delivery takes them: they may
      * be bound to the stored message, and the next message must not send them again.
      */
     dismissFailedSend: (key: string) => {
-      const dismissed = discard(key);
+      const dismissed = discard(key, () => true);
       if (dismissed?.fromComposer === true) releaseComposerImages(cardId, dismissed.echo.attachments ?? []);
     },
     /** A queued entry this client deleted: the confirmed send that claimed it will never be shown by a read. */

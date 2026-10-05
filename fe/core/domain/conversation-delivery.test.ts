@@ -9,7 +9,7 @@ import {
 const FAILURE_OF: Readonly<Record<SendFailureKind, ApiFailure>> = {
   unknown: { kind: 'transport', message: 'dropped' },
   refused: { kind: 'http', status: 409, code: 'planner_harness_dormant', message: 'reset' },
-  rejected: { kind: 'http', status: 400, code: 'bad_request', message: 'empty' },
+  rejected: { kind: 'http', status: 429, code: 'rate_limited', message: 'wait' },
 };
 
 describe('retrying an unknown send', () => {

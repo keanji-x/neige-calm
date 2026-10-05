@@ -57,11 +57,12 @@ import {
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
   createSerialWriter, deletePlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
-  uploadPlannerAttachmentOperation, plannerWriteFailureText, PLANNER_ATTACHMENT_FAILURES,
+  uploadPlannerAttachmentOperation, PLANNER_ATTACHMENT_FAILURES, UPLOAD_TEXT,
   type Conversation, type ModelCatalogScope, type ModelSelection, type ModelSelectionResult,
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
+import { NotSentError, refusalText } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem, UploadAttachmentResponse } from '../../../../core/api/generated/wire.ts';
@@ -75,6 +76,11 @@ export class ApiError extends Error {
     this.name = 'ApiError';
     this.failure = failure;
   }
+}
+
+/** A failed write's error as the core failure classes read it: the answer's failure, a write not sent, or `null`. */
+export function writeFailureOf(error: unknown): ApiFailure | NotSentError | null {
+  return error instanceof ApiError ? error.failure : error instanceof NotSentError ? error : null;
 }
 
 /** A failed capability preflight guarantees no Area POST was submitted. */
@@ -264,7 +270,9 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
       admitted: ApiTransportPort, answered: () => void) =>
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
         .then((sent) => { answered(); return refreshAfterSend(sent); }),
-    interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
+    /* Admitted at the press, as every chat write is: a stop that cannot leave the browser is not sent (#2068). */
+    interrupt: () => Promise.resolve().then(() => admitTransport(transport))
+      .then((admitted) => runOperation(admitted, interruptPlannerOperation(cardId), unauthorized)).then(refreshAfter),
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
@@ -295,10 +303,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     /* No `refreshAfter`: an upload changes nothing any query holds until a send names it. Every failure, the
      * admission's included, rejects with the sentence the strip shows, read against the route's table. */
     uploadAttachment: async (readBytes: () => Promise<Uint8Array>, contentType: string) => {
-      const failed = (error: unknown) => new Error(plannerWriteFailureText(
-        error instanceof ApiError ? error.failure : null, PLANNER_ATTACHMENT_FAILURES,
-        { refused: 'The image was not accepted.', unknown: 'The image could not be uploaded.' },
-      ));
+      const failed = (error: unknown) => new Error(
+        refusalText(writeFailureOf(error), PLANNER_ATTACHMENT_FAILURES, UPLOAD_TEXT.refused) ?? UPLOAD_TEXT.unknown);
       let admitted: ApiTransportPort;
       let uploaded: UploadAttachmentResponse;
       try {

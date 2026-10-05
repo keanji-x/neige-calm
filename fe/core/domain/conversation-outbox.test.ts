@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ConversationTurn, TranscriptEntry } from './conversation.js';
 import {
-  beginSendOp, matchSendOps, outboxView, replacingTurn, settleSendOp, withConfirmedSends, withoutQueuedEntry,
+  beginSendOp, markedReplace, matchSendOps, outboxView, replacingTurn, settleSendOp, withConfirmedSends, withoutQueuedEntry,
   type SendOp, type SendOpPhase,
 } from './conversation-outbox.js';
 
@@ -18,23 +18,30 @@ const SENDING = { phase: 'sending', unknown: false } as const;
 const CONFIRMED = { phase: 'confirmed' } as const;
 const UNKNOWN_SPENT = { phase: 'failed', delivery: 'unknown', message: 'dropped' } as const;
 const NOTHING_READ = { transcript: 0, run: 0 } as const;
+const NONE_SPENT: readonly string[] = [];
 
 const view = (ops: readonly SendOp[], server: readonly ConversationTurn[] = [], extra: Partial<Parameters<typeof outboxView>[0]> = {}) =>
   outboxView({
     serverEntries: server, serverTurns: server, liveReplies: [], queuedEntryIds: new Set(), stalled: false,
-    ops, landed: NOTHING_READ, ...extra,
+    ops, spent: NONE_SPENT, landed: NOTHING_READ, ...extra,
   });
 
 const texts = (entries: readonly TranscriptEntry[]) => entries.map((entry) => 'text' in entry ? entry.text : entry.id);
 
 describe('matching sends to persisted rows', () => {
   it('does not let an identical older row stand for a newer send', () => {
-    expect(matchSendOps([row('4')], [op('a', CONFIRMED)]).size).toBe(0);
-    expect([...matchSendOps([row('5')], [op('a', CONFIRMED)])]).toEqual(['a']);
+    expect(matchSendOps([row('4')], [op('a', CONFIRMED)], NONE_SPENT).size).toBe(0);
+    expect([...matchSendOps([row('5')], [op('a', CONFIRMED)], NONE_SPENT)]).toEqual([['a', '5']]);
   });
 
   it('lets one new row stand for only one of two identical sends, the older', () => {
-    expect([...matchSendOps([row('5')], [op('b', CONFIRMED, { atMs: 3 }), op('a', CONFIRMED, { atMs: 2 })])]).toEqual(['a']);
+    expect([...matchSendOps([row('5')], [op('b', CONFIRMED, { atMs: 3 }), op('a', CONFIRMED, { atMs: 2 })], NONE_SPENT)])
+      .toEqual([['a', '5']]);
+  });
+
+  /* #2068 item 8: over its lifetime, not only within one read. */
+  it('never lets a row that already retired a send stand for another', () => {
+    expect(matchSendOps([row('5')], [op('b', UNKNOWN_SPENT)], ['5']).size).toBe(0);
   });
 });
 
@@ -43,7 +50,7 @@ describe('the outbox view', () => {
     expect(view([op('a', CONFIRMED)]).retire).toEqual([]);
     expect(texts(view([op('a', CONFIRMED)]).transcript)).toEqual(['same']);
     const shown = view([op('a', CONFIRMED)], [row('5')]);
-    expect(shown.retire).toEqual(['a']);
+    expect(shown.retire).toEqual([{ key: 'a', row: '5' }]);
     expect(texts(shown.transcript)).toEqual(['same']);
   });
 
@@ -61,7 +68,7 @@ describe('the outbox view', () => {
     expect(view([replayed], [], { landed: { transcript: 8, run: 7 } }).retire).toEqual([]);
     expect(view([replayed], [], { landed: { transcript: 7, run: 9 } }).retire).toEqual([]);
     /* Whatever those reads show: here nothing, because the entry was disposed of meanwhile. */
-    expect(view([replayed], [], { landed: { transcript: 8, run: 9 } }).retire).toEqual(['a']);
+    expect(view([replayed], [], { landed: { transcript: 8, run: 9 } }).retire).toEqual([{ key: 'a', row: null }]);
     /* A matching row hides it at once, but does not retire it before its reads. */
     const matched = view([replayed], [row('5')]);
     expect(matched.retire).toEqual([]);
@@ -106,11 +113,10 @@ describe('the outbox view', () => {
 });
 
 describe('outbox transitions', () => {
-  it('takes one send at a time, and a new press only past a refusal', () => {
+  it('takes one send at a time, and no new press while a failed one waits', () => {
     expect(beginSendOp([op('a', SENDING)], op('b', SENDING))).toBeNull();
     expect(beginSendOp([op('a', UNKNOWN_SPENT)], op('b', SENDING))).toBeNull();
-    expect(beginSendOp([op('a', { phase: 'failed', delivery: 'refused', message: 'no' })], op('b', SENDING))?.map((held) => held.key))
-      .toEqual(['b']);
+    expect(beginSendOp([op('a', { phase: 'failed', delivery: 'rejected', message: 'no' })], op('b', SENDING))).toBeNull();
     /* Try again resumes the failed op under its own key. */
     expect(beginSendOp([op('a', CONFIRMED), op('b', UNKNOWN_SPENT)], op('b', { phase: 'sending', unknown: true }))
       ?.map((held) => `${held.key}:${held.phase}`)).toEqual(['a:confirmed', 'b:sending']);
@@ -130,8 +136,9 @@ describe('outbox transitions', () => {
 
   it('adds back to remembered entries the confirmed sends no row stands for yet', () => {
     const ops = [op('a', CONFIRMED, { before: 0 }), op('b', CONFIRMED, { before: 5 }), op('c', SENDING)];
-    expect(texts(withConfirmedSends([row('5')], ops))).toEqual(['same', 'same']);
-    expect(withConfirmedSends([row('5')], [])).toEqual([row('5')]);
+    expect(texts(withConfirmedSends([row('5')], ops, NONE_SPENT))).toEqual(['same', 'same']);
+    expect(texts(withConfirmedSends([row('5')], ops, ['5']))).toEqual(['same', 'same', 'same']);
+    expect(withConfirmedSends([row('5')], [], NONE_SPENT)).toEqual([row('5')]);
   });
 });
 
@@ -150,7 +157,7 @@ describe('a send that replaces a turn', () => {
   });
   const viewOf = (ops: readonly SendOp[], entries: readonly TranscriptEntry[] = server) => outboxView({
     serverEntries: entries, serverTurns: entries.filter((entry): entry is ConversationTurn => entry.author === 'you'),
-    liveReplies: [], queuedEntryIds: new Set(), stalled: false, ops, landed: NOTHING_READ,
+    liveReplies: [], queuedEntryIds: new Set(), stalled: false, ops, spent: NONE_SPENT, landed: NOTHING_READ,
   });
 
   it('while out draws nothing and leaves the turn, which the caller marks', () => {
@@ -164,6 +171,12 @@ describe('a send that replaces a turn', () => {
     expect(replacingTurn([op('plain', SENDING)])).toBeNull();
   });
 
+  it('marks the turn a replace names while it is out or failed, never once answered', () => {
+    for (const phase of [SENDING, UNKNOWN_SPENT]) expect(markedReplace([replace(phase)])).toEqual({ turnId: 'turn-1', outcomeId: 'o-edit' });
+    expect(markedReplace([replace(CONFIRMED)])).toBeNull();
+    expect(markedReplace([op('plain', UNKNOWN_SPENT)])).toBeNull();
+  });
+
   it.each([['confirmed', CONFIRMED], ['replayed', { phase: 'replayed', afterRead: 1 } as const]] as const)(
     'once answered (%s) hides the turn a stale read still shows, and draws its message', (_, phase) => {
       const shown = viewOf([replace(phase)]);
@@ -173,14 +186,14 @@ describe('a send that replaces a turn', () => {
     });
 
   it('leaves the turn as the server has it when the replace failed', () => {
-    for (const delivery of ['unknown', 'refused', 'rejected'] as const) {
+    for (const delivery of ['unknown', 'rejected'] as const) {
       const shown = viewOf([replace({ phase: 'failed', delivery, message: 'no' })]);
       expect(texts(shown.transcript).slice(0, 6)).toEqual(texts(server));
     }
   });
 
   it('hides the replaced turn from the remembered entries while its confirmed message waits for a read', () => {
-    expect(texts(withConfirmedSends(server, [replace(CONFIRMED)]))).toEqual(['Earlier', 'Earlier answer', 'o-early', 'Revised']);
-    expect(withConfirmedSends(server, [replace(SENDING)])).toBe(server);
+    expect(texts(withConfirmedSends(server, [replace(CONFIRMED)], NONE_SPENT))).toEqual(['Earlier', 'Earlier answer', 'o-early', 'Revised']);
+    expect(withConfirmedSends(server, [replace(SENDING)], NONE_SPENT)).toBe(server);
   });
 });

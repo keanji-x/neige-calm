@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CONVERSATION_GAP_MS, buildTranscript,
   type Conversation, type ConversationActivity, type ConversationSystemEntry,
-  type ConversationTurn, type ConversationTurnOutcome, type SendOutcome,
+  type ConversationTurn, type ConversationTurnOutcome,
 } from '../../../../../core/domain/conversation.ts';
 import { ChatComposer, ChatThread } from './public.tsx';
 
@@ -1175,43 +1175,15 @@ describe('ChatComposer', () => {
     expect(document.activeElement).toBe(messageField());
   });
 
-  it.each([
-    ['refused', 'Rebuild it'],
-    ['unresolved', ''],
-    ['not-sent', ''],
-    ['abandoned', ''],
-    ['delivered', ''],
-  ] as const)('after %s the field holds %o', async (outcome, expected) => {
-    let answer: (result: typeof outcome) => void = () => {};
-    render(<ChatComposer onSend={() => new Promise((resolve) => { answer = resolve; })} />);
-    const field = messageField();
-    await userEvent.type(field, 'Rebuild it{Enter}');
-    expect(fieldText(field).trim()).toBe('');
-    await act(async () => { answer(outcome); await Promise.resolve(); });
+  /* Words a taken send gives back come through the caller's `draft` (#2068): the composer has no second way to restore
+     them, and keeps only a message the caller did not take. */
+  it.each([[undefined, ''], [true, ''], [false, 'Rebuild it']] as const)('after a send taken: %o the field holds %o', async (taken, expected) => {
+    const onSend = vi.fn(() => taken);
+    render(<ChatComposer onSend={onSend} />);
+    await userEvent.type(messageField(), 'Rebuild it{Enter}');
+    expect(onSend).toHaveBeenCalledWith('Rebuild it');
+    await act(async () => { await Promise.resolve(); });
     expect(fieldText(messageField()).trim()).toBe(expected);
-  });
-
-  it('leaves a refused sentence out when the reader has already typed the next one', async () => {
-    let answer: (result: 'refused') => void = () => {};
-    render(<ChatComposer onSend={() => new Promise((resolve) => { answer = resolve; })} />);
-    const field = messageField();
-    await userEvent.type(field, 'Rebuild it{Enter}');
-    await userEvent.type(messageField(), 'new words after');
-    await act(async () => { answer('refused'); await Promise.resolve(); });
-    expect(fieldText(messageField()).trim()).toBe('new words after');
-  });
-
-  /* `not-sent` (the store's own in-flight refusal) is excluded from the restore, or the second message's text would take the field from the one the server refused. */
-  it('gives the field back to the send the server refused, not to the one it never saw', async () => {
-    const answers: ((result: SendOutcome) => void)[] = [];
-    render(<ChatComposer onSend={() => new Promise<SendOutcome>((resolve) => { answers.push(resolve); })} />);
-    await userEvent.type(messageField(), 'the one the server saw{Enter}');
-    await userEvent.type(messageField(), 'the one it never saw{Enter}');
-    expect(answers).toHaveLength(2);
-
-    await act(async () => { answers[1]?.('not-sent'); await Promise.resolve(); });
-    await act(async () => { answers[0]?.('refused'); await Promise.resolve(); });
-    expect(fieldText(messageField()).trim()).toBe('the one the server saw');
   });
 
   it('turns Send into Stop while a turn is running', async () => {

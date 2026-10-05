@@ -1,5 +1,5 @@
 import type { PlannerAttachment } from '../api/generated/wire.js';
-import type { ConversationTurn, TranscriptEntry } from './conversation.js';
+import { MAX_ATTACHMENTS_PER_MESSAGE, type ConversationTurn, type TranscriptEntry } from './conversation.js';
 
 /** What one conversation's composer holds: its words and the images already uploaded for it. */
 export type ComposerContent = Readonly<{ text: string; attachments: readonly PlannerAttachment[] }>;
@@ -60,10 +60,14 @@ export function withoutEditedTurn(entries: readonly TranscriptEntry[], outcomeId
   return span === null ? entries : [...entries.slice(0, span.start), ...entries.slice(span.end + 1)];
 }
 
-/** `refill` added to what a composer holds, never replacing it: words after a blank line, each image once. */
+/**
+ * `refill` added to what a composer holds, never replacing it: words after a blank line, each image once, and no more
+ * images than a message carries, the composer's one cap (#2068): a refill never makes a send the server must refuse.
+ */
 export function withRefill(content: ComposerContent, refill: ComposerContent): ComposerContent {
   const text = content.text.trim() === '' ? refill.text
     : refill.text === '' ? content.text : `${content.text}\n\n${refill.text}`;
   const held = new Set(content.attachments.map((image) => image.id));
-  return { text, attachments: [...content.attachments, ...refill.attachments.filter((image) => !held.has(image.id))] };
+  const added = refill.attachments.filter((image) => !held.has(image.id));
+  return { text, attachments: added.length === 0 ? content.attachments : [...content.attachments, ...added].slice(0, MAX_ATTACHMENTS_PER_MESSAGE) };
 }

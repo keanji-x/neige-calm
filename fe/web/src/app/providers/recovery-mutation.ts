@@ -1,11 +1,17 @@
 import { useMutation, type UseMutationOptions, type UseMutationResult, type MutationFunctionContext } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
+import { NotSentError } from '../../../../core/domain/failure-class.ts';
 
-/** Captured at the user's call boundary, before React Query or a serial queue accepts work. */
+/**
+ * Captured at the user's call boundary, before React Query or a serial queue accepts work. A refusal here is a
+ * `NotSentError`: nothing left the browser, which a write's failure class reads as refused, never unknown (#2068).
+ */
 export function admitTransport(transport: ApiTransportPort): ApiTransportPort {
-  if (transport.recovery) return transport.recovery.scope(transport.recovery.capture());
-  if (__NC_BUNDLED__) throw new Error('工作区恢复权限尚未准备好。');
-  return transport;
+  try {
+    if (transport.recovery) return transport.recovery.scope(transport.recovery.capture());
+    if (__NC_BUNDLED__) throw new Error('工作区恢复权限尚未准备好。');
+    return transport;
+  } catch (cause) { throw new NotSentError(cause); }
 }
 
 export function useRecoveryMutation<TData, TError = Error, TVariables = void, TContext = unknown>(

@@ -6,7 +6,7 @@ import {
 } from './conversation.js';
 import { SEND_FAILURES } from './conversation-delivery.js';
 import { PLANNER_INTERRUPT_FAILURES } from './conversation-stop.js';
-import { classifyFailure, type FailureTable } from './failure-class.js';
+import { classifyFailure, NotSentError, refusalText, type FailureTable } from './failure-class.js';
 
 const http = (status: number, code = 'http_error', message = 'answered'): ApiFailure =>
   ({ kind: 'http', status, code, message, body: { error: message, code } });
@@ -17,8 +17,10 @@ const decode: ApiFailure = { kind: 'decode', message: 'malformed' };
 /** Each route table against every failure kind: 401, each listed status and code, a lost answer, an unreadable one, none. */
 const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray<readonly [ApiFailure | null, string]>]> = [
   ['POST /planner/input', SEND_FAILURES, [
-    [http(400), 'rejected'], [http(403), 'rejected'], [http(404), 'rejected'], [http(413), 'rejected'],
-    [http(422), 'rejected'], [http(429), 'rejected'], [unauthorized, 'rejected'],
+    /* A refusal of the body or the card: the same send would be refused again (#2068). */
+    [http(400), 'refused'], [http(403), 'refused'], [http(404), 'refused'], [http(413), 'refused'], [http(422), 'refused'],
+    /* Answered before handling, for a reason that can pass: the same send may be tried again. */
+    [http(429), 'rejected'], [unauthorized, 'rejected'],
     [http(409, 'planner_harness_dormant'), 'refused'], [http(409, 'planner_harness_runtime_superseded'), 'refused'],
     /* An Edit's replace refused before any write (#2043): final, the server's reason is shown. */
     [http(409, 'planner_turn_not_replaceable'), 'refused'],
@@ -54,9 +56,9 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
     [http(409, 'planner_harness_dormant'), 'refused'], [unauthorized, 'refused'],
     /* Only the dormant 409 is answered before a dispatch; any other may follow one. */
-    [http(409, 'conflict'), 'unconfirmed'], [http(400), 'unconfirmed'], [http(500, 'internal'), 'unconfirmed'],
-    [http(503, 'service_unavailable'), 'unconfirmed'],
-    [transport, 'unconfirmed'], [decode, 'unconfirmed'], [null, 'unconfirmed'],
+    [http(409, 'conflict'), 'unknown'], [http(400), 'unknown'], [http(500, 'internal'), 'unknown'],
+    [http(503, 'service_unavailable'), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   ['POST /planner/attachments', PLANNER_ATTACHMENT_FAILURES, [
     [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
@@ -96,5 +98,26 @@ describe('classifyFailure', () => {
 
   it('never reads rules for a 401, however its code reads', () => {
     expect(classifyFailure({ ...unauthorized, code: 'a', message: 'needle' }, table)).toBe('auth');
+  });
+});
+
+describe('refusalText', () => {
+  const text = (failure: Parameters<typeof refusalText>[0]) => refusalText(failure, PLANNER_MODEL_FAILURES, 'Not changed.');
+
+  it('shows a refusal in the server’s own words, or the fixed refusal when it gave none', () => {
+    expect(text(http(400, 'bad_request', 'Claude is not ready'))).toBe('Claude is not ready');
+    expect(text({ kind: 'http', status: 404, code: 'not_found', message: '' })).toBe('Not changed.');
+  });
+
+  /* #2068 item 27: stopped at admission, nothing left the browser. */
+  it('reads a write that was not sent as refused, in the fixed words', () => {
+    expect(text(new NotSentError(new Error('工作区恢复权限尚未准备好。')))).toBe('Not changed.');
+  });
+
+  it('gives no words for a failure that may have been stored', () => {
+    expect(text(transport)).toBeNull();
+    expect(text({ kind: 'transport', message: 'Request timed out.' })).toBeNull();
+    expect(text(http(500, 'internal', 'model store unavailable'))).toBeNull();
+    expect(text(null)).toBeNull();
   });
 });

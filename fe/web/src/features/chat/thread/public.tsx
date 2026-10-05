@@ -30,7 +30,7 @@ import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
 import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
   isQueuedConversationTurn, opensAfterGap, opensExchange,
-  type Conversation, type ConversationTurn, type ConversationActivity, type ConversationTurnOutcome, type SendOutcome,
+  type Conversation, type ConversationTurn, type ConversationActivity, type ConversationTurnOutcome,
   type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
@@ -72,13 +72,15 @@ export type ChatThreadProps = Readonly<{
   editMessage?: (outcome: ConversationTurnOutcome) => void;
   /** The outcome of the turn being edited: its messages stay on screen, marked. */
   editing?: string | null;
+  /** A failed send that replaces that turn: its message is drawn as the replacement, not as a second copy (#2068). */
+  replacement?: string | null;
   /** Where the running turn's clock starts, from the run response; `null` draws `Running` with no number. */
   runningAnchor?: RunningTurnAnchor | null;
   /** Local reply images use the open conversation's workspace, never the browser's URL base. */
   imageFiles?: ReplyImageFiles | null;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, runningAnchor = null, imageFiles = null }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -297,6 +299,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
               data-nc-turn="you"
               {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
               {...(edited.has(turn.id) ? { 'data-nc-editing': '' } : {})}
+              {...(turn.id === replacement ? { 'data-nc-replacement': '' } : {})}
             >{sentMentionParts(turn.text).map((part, index) => part.label === null ? part.text : (
               <span key={index} data-nc-sent-mention="" title={part.text}>
                 <Badge className={styles.mentionPill}
@@ -319,6 +322,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
                 Queued · sends when this turn ends
               </p>
             )}
+            {turn.id === replacement && <p className={styles.queuedNote}>Replaces the marked message above</p>}
           </>
         ) : (
           <div className={styles.reply} data-nc-turn="agent">
@@ -478,19 +482,15 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
 
 export const SIDE_CONVERSATION_COMMAND = Object.freeze({ id: 'side-conversation', label: 'Side conversation' });
 
-/** Checked by shape: the `void` half of `onSend`'s signature is a return the caller does not make. */
-function isThenable(value: unknown): value is Promise<SendOutcome> {
-  return typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
-}
-
 /** Astryx's ChatComposer; we own the value and the send callback so the kernel path stays a string. */
 export function ChatComposer({
   onSend, onStop, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
   draft: controlledDraft, footerActions, sendAdornment,
   drawer, headerActions, allowEmptyText = false, mentionTrigger,
 }: {
-  /** A caller with its own draft persistence returns `void`. */
-  onSend: (text: string) => void | Promise<SendOutcome>;
+  /** Hand over the words, or return `false` when they were not taken and stay in the field. Words of a send taken
+   * and later given back return through the caller's `draft`; the composer has no second way to restore them. */
+  onSend: (text: string) => boolean | void;
   /** A route may retain unsent words across its recovery surfaces. */
   draft?: Readonly<{ text: string; onChange: Dispatch<SetStateAction<string>> }>;
   /** Interrupt the turn in flight; its presence turns Send into Stop. No `stopping` guard: `ChatSendButton` is unconditionally enabled while Stop is shown, so withholding the callback only empties its `onClick` — the rule lives at the top of the router's `interrupt()`. */
@@ -616,15 +616,10 @@ export function ChatComposer({
       setDraft('');
       return;
     }
-    const outcome = onSend(text);
+    const taken = onSend(text);
     setDraft('');
-    /* Cleared optimistically, put back only for the outcome that says the server stored nothing, and only into an empty field. Excluded: `unresolved` (the failed send holds them, and its Try again reuses the send's key; Enter would be a second message), `abandoned` (another conversation) and `not-sent` (must not take the field from an earlier send still waiting). */
-    if (isThenable(outcome)) {
-      void outcome.then((result) => {
-        if (result !== 'refused') return;
-        setDraft((current) => current === '' ? text : current);
-      });
-    }
+    /* Astryx clears after calling `onSend`: put an untaken message back after that clear, into an empty field. */
+    if (taken === false) void Promise.resolve().then(() => setDraft((current) => current === '' ? text : current));
     /* The caret goes back from the effect above: `onSend` may already have queued the `disabled` that takes the field away. */
     wantsFieldFocus.current = true;
     /* A fresh request: the effect's first run must not compare against an earlier perch. */

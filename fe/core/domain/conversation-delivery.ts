@@ -6,8 +6,10 @@ export type SendFailureKind = 'unknown' | 'refused' | 'rejected';
 
 /**
  * What one failed attempt of `POST /planner/input` says, taken alone. `rejected`: answered before
- * the request was handled. `refused`: a refusal decided before any write, so the text is unspent;
- * the generic `conflict` is deliberately not one, the write may already have been persisted.
+ * the request was handled, for a reason that can pass (429, 401), so the same send may be tried again.
+ * `refused`: a refusal decided before any write, so the text is unspent, and the same body would be
+ * refused again: the body itself (400, 413, 422), the card (403, 404) or the codes below (#2068). The
+ * generic `conflict` is deliberately not one, the write may already have been persisted.
  * Anything else, `null` included (a connection that is not ready), is `unknown`.
  * `planner_turn_not_replaceable` is an Edit's replace refused before anything was written (#2043).
  * `planner_harness_dormant`, `planner_harness_runtime_superseded` and `planner_turn_not_replaceable`
@@ -20,7 +22,8 @@ export const SEND_FAILURES: FailureTable<SendFailureKind> = Object.freeze({
     Object.freeze({ code: 'planner_harness_runtime_superseded', is: 'refused' as const }),
     Object.freeze({ code: 'planner_harness_dormant', is: 'refused' as const }),
     Object.freeze({ code: 'planner_turn_not_replaceable', is: 'refused' as const }),
-    Object.freeze({ status: Object.freeze([400, 403, 404, 413, 422, 429]), is: 'rejected' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 404, 413, 422]), is: 'refused' as const }),
+    Object.freeze({ status: Object.freeze([429]), is: 'rejected' as const }),
   ]),
   unauthorized: 'rejected',
   otherwise: 'unknown',

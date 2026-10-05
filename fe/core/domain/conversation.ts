@@ -9,7 +9,7 @@ import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
   TASK_VERDICT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
-import { classifyFailure, type FailureTable } from './failure-class.js';
+import { classifyFailure, type FailureTable, type WriteFailure } from './failure-class.js';
 import { sha256Hex } from './sha256.js';
 
 /** A frozen discussion source; does not name a provider session. */
@@ -443,36 +443,18 @@ export function setPlannerModelOperation(
   };
 }
 
-/** What a failed model, interrupt or upload write says: `refused`, answered before anything was stored; `unknown`, it may have been. */
-export type PlannerWriteFailure = 'refused' | 'unknown';
-
 /**
  * What a failed `PUT /planner/model` says. Each listed status is answered before anything is stored: 400 (a Claude
  * card while Claude is not ready), 403, 404 and 422. A 5xx, a lost or an unreadable answer may follow a stored one.
  */
-export const PLANNER_MODEL_FAILURES: FailureTable<PlannerWriteFailure> = Object.freeze({
+export const PLANNER_MODEL_FAILURES: FailureTable<WriteFailure> = Object.freeze({
   rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const })]),
   unauthorized: 'refused',
   otherwise: 'unknown',
 });
 
-/**
- * The sentence for a failed write on the route `table` describes: a refusal is the server's own reason, or
- * `fixed.refused` when it gave none; anything else is `fixed.unknown`, which never speaks of the connection,
- * since that is the global recovery indicator's to say.
- */
-export function plannerWriteFailureText(
-  failure: ApiFailure | null, table: FailureTable<PlannerWriteFailure>, fixed: Readonly<Record<PlannerWriteFailure, string>>,
-): string {
-  const kind = classifyFailure(failure, table);
-  return kind === 'refused' && failure !== null && failure.message !== '' ? failure.message : fixed[kind];
-}
-
-/**
- * What became of one send. `unresolved`: its answer stayed unknown through every automatic retry;
- * the failed send keeps its words and its `Idempotency-Key`, so Try again cannot deliver twice.
- */
-export type SendOutcome = 'delivered' | 'refused' | 'unresolved' | 'not-sent' | 'abandoned';
+/** What a failed model change says (`refusalText`): not changed, or, when it may have been stored, unconfirmed. */
+export const MODEL_CHANGE_TEXT = Object.freeze({ refused: 'The model was not changed.', unknown: 'The model change is unconfirmed.' });
 
 /** What a `POST /planner/input` answers, including where the text landed. */
 export type SentPlannerInput = Readonly<{
@@ -517,15 +499,21 @@ export const ATTACHABLE_IMAGE_TYPES = Object.freeze(
 /** Mirrors `MAX_ATTACHMENTS_PER_MESSAGE` in `planner_attachments::bind`. */
 export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 
+/** Why the composer took no more images: its one cap, for a pick and a refill alike. */
+export const TOO_MANY_IMAGES = `A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.`;
+
 /**
  * What a failed `POST /planner/attachments` says: 400 (not an accepted image, an attached workspace, the card's
  * budget spent, a body that stopped arriving), 403, 404 and 413 store nothing; anything else may have stored it.
  */
-export const PLANNER_ATTACHMENT_FAILURES: FailureTable<PlannerWriteFailure> = Object.freeze({
+export const PLANNER_ATTACHMENT_FAILURES: FailureTable<WriteFailure> = Object.freeze({
   rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 413]), is: 'refused' as const })]),
   unauthorized: 'refused',
   otherwise: 'unknown',
 });
+
+/** What a failed upload says (`refusalText`): not uploaded, or, when it may have been stored, could not be. */
+export const UPLOAD_TEXT = Object.freeze({ refused: 'The image was not uploaded.', unknown: 'The image could not be uploaded.' });
 
 /**
  * Upload one image as raw bytes; `content-type` here is merged *over* the `application/json` the

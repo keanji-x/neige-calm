@@ -3,8 +3,10 @@ import {
 } from 'react';
 
 import type { SideConversation } from '../../../../core/domain/conversation.ts';
-import { isOptimisticConversationTurn, type ModelSelection, type Conversation, type TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { beginSendOp, withConfirmedSends, type SendOp } from '../../../../core/domain/conversation-outbox.ts';
+import {
+  isOptimisticConversationTurn, TOO_MANY_IMAGES, type ModelSelection, type Conversation, type TranscriptEntry,
+} from '../../../../core/domain/conversation.ts';
+import { beginSendOp, withConfirmedSends, type RetiredSend, type SendOp } from '../../../../core/domain/conversation-outbox.ts';
 import { EMPTY_COMPOSER, isSameComposer, withRefill, type ComposerContent } from '../../../../core/domain/conversation-rewind.ts';
 import { NO_UPLOAD, type UploadState } from '../../features/planner/attachments.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
@@ -111,10 +113,11 @@ export type ConversationEdit = Readonly<{
 }>;
 
 /**
- * How this conversation's last Edit ended, shown above its composer until its next Edit or send: a newer turn
- * arrived first, or the server refused the replace (the turn is untouched and its words are back in the composer).
+ * How this conversation's last Edit or send ended, shown above its composer until its next Edit or send: a newer turn
+ * arrived first, or the server refused the send (`edit`: the replace of a turn, which is untouched); a refused send's
+ * words are back in the composer (#2068).
  */
-export type EditNotice = Readonly<{ kind: 'stale' } | { kind: 'refused'; message: string }>;
+export type EditNotice = Readonly<{ kind: 'stale' } | { kind: 'refused'; message: string; edit: boolean }>;
 
 export type RememberedConversation = Readonly<{
   conversation: Conversation;
@@ -157,6 +160,10 @@ export type ConversationRegistry = Readonly<{
   beginSend: (conversationId: string, op: SendOp) => boolean;
   /** Change one conversation's outbox, whichever is shown; returns it as written. */
   editOutbox: (conversationId: string, next: (current: readonly SendOp[]) => readonly SendOp[]) => readonly SendOp[];
+  /** Remove the sends server state now carries; each row that retired one stands for no other send of the outbox (#2068). */
+  retireSends: (conversationId: string, retired: readonly RetiredSend[]) => void;
+  /** The rows that already retired a send of that conversation's outbox. */
+  spentRowsOf: (conversationId: string) => readonly string[];
   /** The next number in the tab's one read order: a read numbered later started later, whichever view started it. */
   nextRead: () => number;
   /** Each existing conversation's unsent words and images, kept across closing, switching and remounts. */
@@ -175,8 +182,8 @@ export type ConversationRegistry = Readonly<{
   cancelEdit: (conversationId: string) => void;
   /** The edited turn is no longer the latest: edit mode ends and the composer keeps what it holds. */
   leaveEdit: (conversationId: string, outcomeId: string) => void;
-  /** The server refused an Edit's replace, changing nothing: say why above that conversation's composer. */
-  noteRefusedEdit: (conversationId: string, message: string) => void;
+  /** The server refused a send (`edit`: an Edit's replace), changing nothing: say why above that conversation's composer. */
+  noteRefusedSend: (conversationId: string, message: string, edit: boolean) => void;
   editNoticeOf: (conversationId: string) => EditNotice | null;
   /** One card's image uploads, held here so a remount or another route sees an upload still in flight. */
   uploadOf: (cardId: string) => UploadState;
@@ -188,6 +195,7 @@ export type ConversationRegistry = Readonly<{
 const ConversationContext = createContext<ConversationRegistry | null>(null);
 
 const NO_SENDS: readonly SendOp[] = Object.freeze([]);
+const NO_ROWS: readonly string[] = Object.freeze([]);
 const NO_TURNS: readonly TranscriptEntry[] = Object.freeze([]);
 
 function equalRecord(left: Readonly<Record<string, unknown>>, right: Readonly<Record<string, unknown>>): boolean {
@@ -251,6 +259,22 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     return true;
   }, [clearEditNotice, editOutbox, writeEdit]);
   const outboxOf = useCallback((conversationId: string) => outboxes[conversationId] ?? NO_SENDS, [outboxes]);
+  const [spentRows, setSpentRows] = useState<Readonly<Record<string, readonly string[]>>>({});
+  const retireSends = useCallback((conversationId: string, retired: readonly RetiredSend[]) => {
+    const keys = new Set(retired.map(({ key }) => key));
+    const left = editOutbox(conversationId, (current) => {
+      const kept = current.filter((op) => !keys.has(op.key));
+      return kept.length === current.length ? current : kept;
+    });
+    setSpentRows((current) => {
+      const updated = { ...current };
+      /* With no send left there is nothing a row could stand for twice. */
+      if (left.length === 0) delete updated[conversationId];
+      else updated[conversationId] = [...current[conversationId] ?? [], ...retired.flatMap(({ row }) => row === null ? [] : [row])];
+      return updated;
+    });
+  }, [editOutbox]);
+  const spentRowsOf = useCallback((conversationId: string) => spentRows[conversationId] ?? NO_ROWS, [spentRows]);
   const nextRead = useCallback(() => { readsStarted.current += 1; return readsStarted.current; }, []);
   const [composers, setComposers] = useState<Readonly<Record<string, ComposerContent>>>({});
   const editComposer = useCallback((conversationId: string, next: (current: ComposerContent) => ComposerContent) => {
@@ -293,28 +317,35 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   }, []);
   const beginEdit = useCallback((conversationId: string, edit: ConversationEdit) => {
     if (conversationId in editsRef.current) return false;
-    writeEdit(conversationId, edit);
-    editComposer(conversationId, (current) => withRefill(current, edit.refill));
+    /* What the composer can take of the turn: as a pick, no more images than a message carries, and it says so (#2068). */
+    const refill = withRefill(EMPTY_COMPOSER, edit.refill);
+    writeEdit(conversationId, { ...edit, refill });
+    editComposer(conversationId, (current) => withRefill(current, refill));
+    if (refill.attachments.length < edit.refill.attachments.length) {
+      editUpload(conversationId, (current) => ({ ...current, refusal: TOO_MANY_IMAGES }));
+    }
     clearEditNotice(conversationId);
     return true;
-  }, [clearEditNotice, editComposer, writeEdit]);
+  }, [clearEditNotice, editComposer, editUpload, writeEdit]);
   const cancelEdit = useCallback((conversationId: string) => {
     const edit = editsRef.current[conversationId];
     if (edit === undefined) return;
     writeEdit(conversationId, null);
     clearEditNotice(conversationId);
+    /* The Edit's word that the composer took fewer images than the turn holds goes with it. */
+    editUpload(conversationId, (current) => current.refusal === TOO_MANY_IMAGES ? { ...current, refusal: null } : current);
     /* An image still uploading is a change the composer does not show yet: keep everything. */
     if ((uploads[conversationId]?.inFlight ?? 0) > 0) return;
     editComposer(conversationId, (current) => isSameComposer(current, edit.refill) ? EMPTY_COMPOSER : current);
-  }, [clearEditNotice, editComposer, uploads, writeEdit]);
+  }, [clearEditNotice, editComposer, editUpload, uploads, writeEdit]);
   const leaveEdit = useCallback((conversationId: string, outcomeId: string) => {
     const edit = editsRef.current[conversationId];
     if (edit?.outcomeId !== outcomeId) return;
     writeEdit(conversationId, null);
     noteEdit(conversationId, { kind: 'stale' });
   }, [noteEdit, writeEdit]);
-  const noteRefusedEdit = useCallback((conversationId: string, message: string) => {
-    noteEdit(conversationId, { kind: 'refused', message });
+  const noteRefusedSend = useCallback((conversationId: string, message: string, edit: boolean) => {
+    noteEdit(conversationId, { kind: 'refused', message, edit });
   }, [noteEdit]);
   const editOf = useCallback((conversationId: string) => edits[conversationId] ?? null, [edits]);
   const editNoticeOf = useCallback((conversationId: string) => editNotices[conversationId] ?? null, [editNotices]);
@@ -375,8 +406,9 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const requestedOpenFocusesComposer = openRequest?.focusComposer ?? false;
   const conversations = useMemo(() => Object.values(entries).map(({ conversation }) => conversation), [entries]);
   const turnsOf = useCallback(
-    (conversationId: string) => withConfirmedSends(entries[conversationId]?.turns ?? NO_TURNS, outboxes[conversationId] ?? NO_SENDS),
-    [entries, outboxes],
+    (conversationId: string) => withConfirmedSends(entries[conversationId]?.turns ?? NO_TURNS, outboxes[conversationId] ?? NO_SENDS,
+      spentRows[conversationId] ?? NO_ROWS),
+    [entries, outboxes, spentRows],
   );
   const value = useMemo<ConversationRegistry>(
     () => ({
@@ -384,12 +416,12 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
-      outboxOf, beginSend, editOutbox, nextRead,
+      outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
       composerOf, editComposer, newConversationComposerOf, editNewConversationComposer,
-      editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedEdit, editNoticeOf, uploadOf, editUpload,
+      editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, editNoticeOf, uploadOf, editUpload,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedEdit, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, nextRead,
+      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
       remember, requestOpen,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf,
       updateExisting],

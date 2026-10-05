@@ -38,3 +38,28 @@ export function classifyFailure<C extends string>(failure: ApiFailure | null, ta
   if (failure.kind === 'unauthorized') return table.unauthorized;
   return table.rules.find((rule) => matches(rule, failure))?.is ?? table.otherwise;
 }
+
+/**
+ * A write stopped where it is admitted, before anything left the browser (the bundled build offline or syncing): nothing
+ * was sent, so on every route it reads as a refusal, never as an unknown outcome (#2068).
+ */
+export class NotSentError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'Nothing was sent.', { cause });
+    this.name = 'NotSentError';
+  }
+}
+
+/** What a failed model, interrupt or upload write says: `refused`, nothing was stored; `unknown`, it may have been. */
+export type WriteFailure = 'refused' | 'unknown';
+
+/**
+ * The sentence for a failed write on the route `table` describes, or `null` when it may have been stored: a refusal is
+ * the server's own reason, or `refused` when it gave none, and a write that was not sent reads `refused` too. An
+ * unknown outcome is the caller's fixed state, which never speaks of the connection: that is the global indicator's.
+ */
+export function refusalText(failure: ApiFailure | NotSentError | null, table: FailureTable<WriteFailure>, refused: string): string | null {
+  if (failure instanceof NotSentError) return refused;
+  if (classifyFailure(failure, table) === 'unknown') return null;
+  return failure !== null && failure.message !== '' ? failure.message : refused;
+}

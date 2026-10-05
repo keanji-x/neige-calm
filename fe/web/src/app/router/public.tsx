@@ -8,7 +8,8 @@ import { useLiveReplies, useTranscriptReads } from '../conversations/live-replie
 import { useConversationEdit } from '../conversations/edit.ts';
 import { useConversationOutbox, useRunReads } from '../conversations/outbox.ts';
 import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
-import { EMPTY_COMPOSER, isComposerEmpty, withRefill } from '../../../../core/domain/conversation-rewind.ts';
+import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-rewind.ts';
+import { refusalText } from '../../../../core/domain/failure-class.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -78,14 +79,14 @@ import type { ReportSourceLinkTarget } from '../../../../core/domain/report-sour
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
-  isConversationMessage, kernelQueuesInput, plannerWriteFailureText, PLANNER_MODEL_FAILURES,
+  isConversationMessage, kernelQueuesInput, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES,
   serverItemHighWater,
   trackConversationCardId,
   FOLLOW_INSTALLATION_DEFAULT,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
   type ModelCatalog, type ModelSelection,
   type PendingQueueEntry, type PlannerRunTokenUsage,
-  type PlannerQueueWriteOutcome, type SendOutcome, type TranscriptEntry,
+  type PlannerQueueWriteOutcome, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
@@ -97,7 +98,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, OfflineSubmissionError, harnessItemsQueryOptions,
+  ApiError, OfflineSubmissionError, harnessItemsQueryOptions, writeFailureOf,
   modelCatalogQueryOptions, serverVersionOperation, runOperation,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
@@ -165,7 +166,7 @@ type ConversationStore = Readonly<{
   failedSend: FailedSendOp | null;
   /** Resume the failed send under its key. */
   retrySend: (key: string) => void;
-  /** Edit: the failed send leaves the outbox; the caller puts its words and images back. */
+  /** Edit: a failed send that was not stored leaves the outbox, its words and images back in the composer. */
   discardFailedSend: (key: string) => void;
   /** Dismiss: the failed send leaves the outbox and nothing of it comes back, its composer images included. */
   dismissFailedSend: (key: string) => void;
@@ -175,7 +176,7 @@ type ConversationStore = Readonly<{
    * `replaces`: the turn an Edit's Send replaces in the same request, or `null` for a new message.
    */
   send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean,
-    replaces: ReplacedTurn | null) => Promise<SendOutcome>;
+    replaces: ReplacedTurn | null) => Promise<void> | null;
   /** Whether this card's track can take image attachments at all. */
   attachmentsSupported: boolean;
   /** How full this conversation's context is; `null` when the harness has never said. */
@@ -562,8 +563,7 @@ export function useConversationStore(
           }
         })
         .catch((error: unknown) => {
-          fail(plannerWriteFailureText(error instanceof ApiError ? error.failure : null, PLANNER_MODEL_FAILURES,
-            { refused: 'The model was not changed.', unknown: 'The model change is unconfirmed.' }));
+          fail(refusalText(writeFailureOf(error), PLANNER_MODEL_FAILURES, MODEL_CHANGE_TEXT.refused) ?? MODEL_CHANGE_TEXT.unknown);
         });
     },
   };
@@ -1325,21 +1325,15 @@ function useConversationPane(
                   <ChatFooterRemedy onClick={() => { if (store.failedSend !== null) store.dismissFailedSend(store.failedSend.key); }}>
                     Dismiss
                   </ChatFooterRemedy>
-                </> : (store.failedSend.delivery !== 'refused' || composer.text === '') && <>
+                </> : <>
                   <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
-                    onClick={() => {
-                      if (store.failedSend === null) return;
-                      store.retrySend(store.failedSend.key);
-                    }}>
+                    onClick={() => { if (store.failedSend !== null) store.retrySend(store.failedSend.key); }}>
                     Try again
                   </ChatFooterRemedy>
-                  <ChatFooterRemedy onClick={() => {
-                    if (store.failedSend === null) return;
-                    const { echo, key } = store.failedSend;
-                    /* The failed message's words and images go back together; nothing already there is lost. */
-                    editComposer(open.id, (current) => withRefill(current, { text: echo.text, attachments: echo.attachments ?? [] }));
-                    store.discardFailedSend(key);
-                  }}>Edit</ChatFooterRemedy>
+                  {/* Its words and images go back to the composer together; nothing already there is lost. */}
+                  <ChatFooterRemedy onClick={() => { if (store.failedSend !== null) store.discardFailedSend(store.failedSend.key); }}>
+                    Edit
+                  </ChatFooterRemedy>
                 </>}
               </ChatFooterNotice>
             )}
@@ -1372,7 +1366,7 @@ function useConversationPane(
               showSideCommand={options?.showSideCommand}
               onSideConversation={options?.onSide === undefined || !store.historyReady ? undefined
                 : (question) => options.onSide?.(open, store.turnsOf(open.id), question)}
-              onSend={(text) => store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id))}
+              onSend={(text) => store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null}
               allowEmptyText={attachments.items.length > 0}
               /* The queue lives inside the composer, above the field: these messages have
                                not reached the model, so they are not part of the conversation behind it. */
@@ -1460,8 +1454,8 @@ function useConversationPane(
                 key={open.id}
                 conversation={open}
                 imageFiles={imageFiles}
-                turns={store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
-                  || composer.text === '' || turn.id !== store.failedSend.echo.id)} editing={edit.marked}
+                turns={store.turnsOf(open.id)} editing={edit.marked}
+                replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
                 stalled={store.stalled}
