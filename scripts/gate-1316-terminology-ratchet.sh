@@ -21,6 +21,9 @@
 # one UPDATE of the existing transcript table; its test reads rows back through the same helper.
 # #2087 B1c bounded exception: harness_item/crates 271 -> 272 comes solely from migration 0144's
 # one UPDATE of the existing transcript table; its test reads rows back through the same helper.
+# #2130 bounded exception: harness_item/crates 272 -> 273 comes solely from the one SQL statement
+# that reads a Planner session's newest turn-input row (`transcript_latest_turn_input_tx`); the new
+# Rust names say `transcript` and `turn_input`.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

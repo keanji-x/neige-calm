@@ -2,6 +2,8 @@ mod support;
 
 #[path = "cases/handle_state_writers.rs"]
 mod handle_state_writers;
+#[path = "cases/mails_cascade.rs"]
+mod mails_cascade;
 #[path = "cases/migration_0014_backfill.rs"]
 mod migration_0014_backfill;
 #[path = "cases/migration_0017_backfill.rs"]

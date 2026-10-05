@@ -4,7 +4,7 @@
 use serde_json::Value;
 
 use crate::db::TranscriptRow;
-use crate::model::{HarnessInputPresentation, HarnessInputSegment};
+use crate::model::HarnessInputPresentation;
 
 /// The rows of one turn, cut from the thread.
 #[derive(Debug, Clone)]
@@ -68,7 +68,7 @@ pub(crate) fn plan(rows: &[TranscriptRow], turn_id: &str) -> Result<RewindPlan, 
         let Some(segments) = row
             .input_segments
             .as_deref()
-            .and_then(|json| serde_json::from_str::<Vec<HarnessInputSegment>>(json).ok())
+            .and_then(super::turn_input::segments)
         else {
             return Err(
                 "a message in this turn was recorded without its input, so it cannot be told \

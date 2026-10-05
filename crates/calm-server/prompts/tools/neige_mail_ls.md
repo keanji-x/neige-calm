@@ -1,0 +1,1 @@
+Planner-only view, served as `neige mail ls [--cursor C]`: this Track's mail, newest first, 50 per page, as {mails: [{mail_id, direction, track_id, title, summary, hop, state, sent_at, read_at}], next_cursor}. track_id and title name the other Track. state is unread or read (the recipient's Planner ran neige mail cat). Listing stamps nothing.

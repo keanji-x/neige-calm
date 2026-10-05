@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 
 use super::catalog;
 use super::commands::{self, COMMANDS};
+use crate::mail::{TOOL_MAIL_CAT, TOOL_MAIL_LS};
 use crate::mcp_server::tools::{
     admin, area_reports, emit, report_tag, track_file, track_history, track_state,
 };
@@ -182,6 +183,37 @@ const HELP: &[CommandHelp] = &[
         "      --remove <tag>  Remove a tag; may be repeated",
         "      --json          Emit compact JSON output",
         "  -h, --help          Print help",
+    ),
+    command_help!(
+        TOOL_MAIL_LS,
+        "List this track's mail, newest first (Planner)",
+        "Usage: neige mail ls [--cursor <cursor>] [--json]",
+        "",
+        "Prints one mail per line: `<mail_id>  in|out  unread|read  hop <n>/6  <title>: <summary>`,",
+        "where the title names the other track; 50 per page, then a `more:` line with the next",
+        "command. A mail is read once the recipient's Planner ran `neige mail cat`. Listing stamps",
+        "nothing.",
+        "",
+        "Options:",
+        "      --cursor <cursor>  Continue after the page whose next_cursor this is",
+        "      --json             Emit {mails: [...], next_cursor}",
+        "  -h, --help             Print help",
+    ),
+    command_help!(
+        TOOL_MAIL_CAT,
+        "Print one mail to or from this track (Planner)",
+        "Usage: neige mail cat <mail_id> [--json]",
+        "",
+        "Arguments:",
+        "  <mail_id>  The mail to print (also --mail-id)",
+        "",
+        "Prints the mail's header line, `summary:` and its text. The recipient's first cat stamps",
+        "the read time, the sender's read receipt; it wakes nobody. The last line is the hop a new",
+        "mail from this turn would get, `next hop <n>/6`, or that hop 6/6 is reached.",
+        "",
+        "Options:",
+        "      --json  Emit the mail with text, reply_to, hop and next_hop",
+        "  -h, --help  Print help",
     ),
     command_help!(
         emit::TOOL_TASK_DONE,

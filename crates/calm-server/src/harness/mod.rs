@@ -21,6 +21,7 @@ pub mod run_loop;
 pub mod snapshot;
 pub mod state;
 pub mod token_usage;
+pub(crate) mod turn_input;
 pub(crate) mod turn_outcome;
 
 use std::collections::{HashSet, VecDeque};

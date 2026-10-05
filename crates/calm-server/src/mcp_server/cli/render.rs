@@ -13,6 +13,7 @@ use crate::session_projection_repo::WorkerSessionState;
 use crate::track_vcs::DiffStatus;
 
 mod listing;
+mod mail;
 
 /// How one command prints its tool result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +32,10 @@ pub enum Render {
     Log,
     /// `report tag`: the current tags space-joined on one line.
     Tags,
+    /// `mail ls`: one mail per line (#2130).
+    MailLs,
+    /// `mail cat`: one mail and the hop a send from this turn would get (#2130).
+    MailCat,
     /// Maintenance and task reports: the result as compact JSON.
     Raw,
 }
@@ -59,6 +64,8 @@ pub fn render(
         Render::Log => log(tool, value),
         Render::Tags if json => Ok(compact(value)),
         Render::Tags => tags(tool, value),
+        Render::MailLs => mail::ls(tool, json, value),
+        Render::MailCat => mail::cat(tool, json, value),
         Render::Raw => Ok(compact(value)),
     }
 }

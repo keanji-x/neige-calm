@@ -289,21 +289,45 @@ async fn persist(
             let (summary_before, body_before) = doc.project().map_err(|e| {
                 CalmError::Internal(format!("track_report: project CRDT for card {id}: {e}"))
             })?;
-            let reports_only: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_track_identities WHERE track_id=?1 AND tool_policy='reports')")
-                .bind(track.id.as_str()).fetch_one(&mut **tx).await?;
+            let reports_only =
+                crate::managed_track::reports_only_track(&mut **tx, track.id.as_str()).await?;
             if reports_only && (author == EditAuthor::Planner || author == EditAuthor::Assistant) {
-                let closed: bool = sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
-                    .bind(track_id.as_str()).fetch_one(&mut **tx).await?;
-                if closed { return Err(CalmError::Forbidden("Agents may only read this closed report-planning Track.".into())); }
+                let closed: bool =
+                    sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
+                        .bind(track_id.as_str())
+                        .fetch_one(&mut **tx)
+                        .await?;
+                if closed {
+                    return Err(CalmError::Forbidden(
+                        "Agents may only read this closed report-planning Track.".into(),
+                    ));
+                }
             }
-            let tasks_before = if reports_only { Some(doc.blocks_snapshot().map_err(block_op_internal)?
-                .into_iter().filter(|block| block.kind == calm_types::report_blocks::KIND_TASK).collect::<Vec<_>>()) } else { None };
+            let tasks_before = if reports_only {
+                Some(
+                    doc.blocks_snapshot()
+                        .map_err(block_op_internal)?
+                        .into_iter()
+                        .filter(|block| block.kind == calm_types::report_blocks::KIND_TASK)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
             // 3. Apply the op; `if_rev` checks happen in here against the CRDT truth, a conflict aborts the tx.
             let (trace, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
             if let Some(before) = tasks_before {
-                let after = doc.blocks_snapshot().map_err(block_op_internal)?
-                    .into_iter().filter(|block| block.kind == calm_types::report_blocks::KIND_TASK).collect::<Vec<_>>();
-                if before != after { return Err(CalmError::Forbidden("This report-planning Track cannot declare or modify worker tasks.".into())); }
+                let after = doc
+                    .blocks_snapshot()
+                    .map_err(block_op_internal)?
+                    .into_iter()
+                    .filter(|block| block.kind == calm_types::report_blocks::KIND_TASK)
+                    .collect::<Vec<_>>();
+                if before != after {
+                    return Err(CalmError::Forbidden(
+                        "This report-planning Track cannot declare or modify worker tasks.".into(),
+                    ));
+                }
             }
             // 4. Project back — the CRDT block map is the source of truth; nothing is re-derived at the JSON layer.
             let (summary_after, body_after) = doc.project().map_err(|e| {

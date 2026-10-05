@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use super::help;
 use super::render::Render;
 use crate::area_reports::{self, AreaPath};
+use crate::mail::{TOOL_MAIL_CAT, TOOL_MAIL_LS};
 use crate::mcp_server::tools::{
     admin, area_reports as area_reports_tool, emit, report_tag, track_file, track_history,
     track_state,
@@ -226,6 +227,20 @@ pub(crate) const COMMANDS: &[Command] = &[
         ],
         confirm: None,
         render: Render::Tags,
+    },
+    Command {
+        tool: TOOL_MAIL_LS,
+        positionals: &[],
+        options: &[opt("--cursor", "cursor", OptValue::Text, false)],
+        confirm: None,
+        render: Render::MailLs,
+    },
+    Command {
+        tool: TOOL_MAIL_CAT,
+        positionals: &[pos("mail_id", true)],
+        options: &[],
+        confirm: None,
+        render: Render::MailCat,
     },
     Command {
         tool: emit::TOOL_TASK_DONE,

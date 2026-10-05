@@ -48,6 +48,10 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_track_close",
     // Speaking from a background sync turn is a planner action.
     "neige_user_notify",
+    // Mail between the Tracks of an Area wakes another Planner (#2130).
+    "neige_mail_send",
+    "neige_mail_ls",
+    "neige_mail_cat",
     // Preview gateway registration is a Planner action.
     "neige_preview_add",
     "neige_preview_rm",

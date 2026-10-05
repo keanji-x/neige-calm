@@ -194,6 +194,19 @@ pub(crate) fn report_planning_tool(name: &str) -> bool {
     )
 }
 
+/// The one track-keyed owner of the reports-only policy query (#2130 §6).
+pub(crate) async fn reports_only_track<'e, E>(executor: E, track_id: &str) -> Result<bool>
+where
+    E: sqlx::SqliteExecutor<'e>,
+{
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM managed_track_identities WHERE track_id=?1 AND tool_policy='reports')",
+    )
+    .bind(track_id)
+    .fetch_one(executor)
+    .await?)
+}
+
 pub(crate) async fn reports_only_card(
     ctx: &AppContext,
     card_id: &str,
@@ -201,15 +214,18 @@ pub(crate) async fn reports_only_card(
     let Some(pool) = ctx.sqlite_pool.as_ref() else {
         return Ok(false);
     };
-    sqlx::query_scalar(concat!(
-        "SELECT EXISTS(SELECT 1 FROM managed_track_identities m JOIN cards c ON ",
-        "c.track_id=m.track_id WHERE c.id=?1 AND c.role=?2 AND m.tool_policy='reports')",
-    ))
-    .bind(card_id)
-    .bind(CardRole::Planner.as_db_str())
-    .fetch_one(pool)
-    .await
-    .map_err(|e| RpcError::internal(e.to_string()))
+    let internal = |e: CalmError| RpcError::internal(e.to_string());
+    let track: Option<String> =
+        sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1 AND role=?2")
+            .bind(card_id)
+            .bind(CardRole::Planner.as_db_str())
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| internal(e.into()))?;
+    match track {
+        Some(track) => reports_only_track(pool, &track).await.map_err(internal),
+        None => Ok(false),
+    }
 }
 
 pub(crate) async fn require_tool_allowed(

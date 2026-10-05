@@ -755,7 +755,7 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
             "{argv:?}"
         );
         assert!(
-            stderr.contains("Objects: track, report, task, admin, tool\n"),
+            stderr.contains("Objects: track, report, mail, task, admin, tool\n"),
             "{stderr}"
         );
     }

@@ -6,6 +6,7 @@ use crate::mcp_server::registry::ToolRegistry;
 pub mod admin;
 pub mod area_reports;
 pub mod emit;
+pub mod mail;
 pub mod plan;
 pub mod preview;
 pub mod report_links;
@@ -36,6 +37,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     source::register_into(registry);
     track_rename::register_into(registry);
     user_notify::register_into(registry);
+    mail::register_into(registry);
     preview::register_into(registry);
     track_state::register_into(registry);
     track_report::register_into(registry);
@@ -170,9 +172,11 @@ mod tests {
     /// compact input schema. One-sided caps; a change that shrinks the surface lowers them.
     #[test]
     fn planner_tool_surface_fits_its_byte_budget() {
-        // Measured 29,909 bytes across 30 Planner tools after the overlay view kind was removed
-        // (#2021 S4). Keep the aggregate bound and the unchanged per-description cap.
-        const SURFACE_MAX_BYTES: usize = 30_000;
+        // #2130: measured 29,999 bytes across 30 Planner tools before `neige_mail_send` (1,059
+        // bytes: description 797, schema 262); trimming restated schema facts from ten existing
+        // descriptions freed 201, and the cap rose by the remaining 857 to the measured 30,857
+        // across 31 tools. Keep the aggregate bound and the unchanged per-description cap.
+        const SURFACE_MAX_BYTES: usize = 30_857;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);

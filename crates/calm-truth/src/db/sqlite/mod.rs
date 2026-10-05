@@ -61,6 +61,8 @@ mod track_occupancy_tests;
 mod track_recipe;
 mod track_tree;
 mod track_workspace;
+mod transcript_turn_input;
+pub use transcript_turn_input::transcript_latest_turn_input_tx;
 
 pub use area::{
     area_create_bind_tx, area_create_replay_tx, area_create_system_tx, area_create_tx,

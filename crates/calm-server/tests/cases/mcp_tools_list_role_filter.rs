@@ -13,6 +13,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
         "neige_area_ls",
         "neige_link_ls",
+        "neige_mail_send",
         "neige_preview_add",
         "neige_preview_rm",
         "neige_ratify_request",

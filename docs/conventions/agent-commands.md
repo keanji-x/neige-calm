@@ -75,6 +75,7 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `rm` | W | remove an entry from its collection | `rm`, `git rm` |
 | `capture` | W | store a recorded call result as an immutable source | none (domain) |
 | `notify` | W | put one ask on the user's notifications | `notify-send` |
+| `send` | W | deliver one message to another Track's Planner and wake it | `send(2)`, `sendmail` |
 | `input` | W | send text or keys to a terminal against the latest read | `tmux send-keys` |
 | `control` | W | claim, release or detach terminal control | none (domain) |
 | `open` | LC | start a terminal | `open(2)` |
@@ -114,6 +115,9 @@ Decisions, one line each:
   claims (`task_done`, `task_fail`); the Planner decides (`task_accept`, `task_reject`).
 - **A view may stamp access metadata** (e.g. a last-seen time) and refresh derived projections onto
   the caller's own Track; it never changes authority or domain state (#2104).
+- **`send` means mail only** (#2130): `add` would hide the wake (principle 2), `notify` is the
+  user's notifications and `input` is a terminal. Appendix B's cut `terminal_input` → `send` stays
+  cut.
 
 ## 4. Parameter vocabulary
 
@@ -125,7 +129,7 @@ Decisions, one line each:
 | `expected_version` | the optimistic lock of a `set` or `rm` |
 | `message` | the audit note a write records: why this change (`git commit -m`) |
 | `reason` | why something failed or was rejected; stored with the failure |
-| `text` | verbatim text delivered to a person or typed into a terminal |
+| `text` | verbatim text delivered to a person, typed into a terminal, or mailed to a Track |
 | `body` | a document's whole content (report body, PR body, comment body) |
 | `summary` / `title` | one-line summary / display name |
 | `path` | a track-relative view path (`report.md`, `area/reports/x.md`) |
@@ -227,7 +231,10 @@ Adding or changing a tool or command:
 4. Return an object (§5). Refuse with §5 codes, message prefixed by the tool name, valid choices listed.
 5. Add `prompts/tools/<name>.md` (roles, effect, result, the read it needs).
 6. Add a CLI row only for a §2 reason. Options are schema keys.
-7. Regenerate goldens and keep the Planner byte budget. Run the tests below.
+7. Regenerate goldens and keep the Planner byte budget. Run the tests below. One recorded
+   exception (#2130, owner): `neige_mail_send` must be listed to be discoverable, so S1 trimmed
+   restated schema facts from ten Planner descriptions (201 B) and raised
+   `planner_tool_surface_fits_its_byte_budget`'s cap by the remaining 857 B, to 30,857 B.
 
 Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes it to §2's
 `neige_<word>_<word>`), `every_option_is_its_schema_key`, `prompt_neige_mentions_name_served_commands` (H8),
