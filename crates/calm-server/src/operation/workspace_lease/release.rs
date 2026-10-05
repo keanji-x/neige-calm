@@ -22,6 +22,7 @@ use crate::db::sqlite::{
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
+use crate::git_candidate::commit_message::DeliveryMessage;
 use crate::git_candidate::delivery::{
     AttemptOutcome, delivery_latest_for_attempt_tx, insert_initial_delivery_tx,
 };
@@ -145,7 +146,15 @@ async fn release_lease_tx(
         ReleaseDelivery::Commit(outcome) => outcome,
         ReleaseDelivery::CommitAsTaskEnded => ended_outcome_tx(tx, &attempt_id).await?,
     };
-    insert_initial_delivery_tx(tx, &attempt_id, lease, outcome, now_ms()).await?;
+    insert_initial_delivery_tx(
+        tx,
+        &attempt_id,
+        lease,
+        outcome,
+        DeliveryMessage::Kernel,
+        now_ms(),
+    )
+    .await?;
     Ok(events)
 }
 

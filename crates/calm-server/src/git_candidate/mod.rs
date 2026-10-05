@@ -20,6 +20,7 @@
 //! gated attempt still verifying), `neige_task_ls` reads it, the Track-delete sweep drops its refs.
 
 pub(crate) mod candidate;
+pub(crate) mod commit_message;
 pub(crate) mod delivery;
 pub(crate) mod refs;
 pub(crate) mod staleness;

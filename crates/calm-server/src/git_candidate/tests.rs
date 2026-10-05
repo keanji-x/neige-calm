@@ -14,6 +14,7 @@ use calm_types::task_recovery::{TASK_CHILD_TRACK_ROUTE, TASK_IN_TRACK_ROUTE};
 use serde_json::{Value, json};
 
 use super::candidate::{CandidateRow, candidate_for_attempt_tx, from_operation_result};
+use super::commit_message::{CommitMessage, DeliveryMessage};
 use super::delivery::{
     AttemptOutcome, DeliveryRow, DeliverySettled, FAILURE_EVIDENCE_MAX_LINE_BYTES,
     FAILURE_EVIDENCE_MAX_LINES, candidate_ref_name, classify_failure, delivery_argv,
@@ -37,6 +38,8 @@ use crate::operation::workspace_lease::{
     DeliveryPolicy, LeaseBase, WorkerLeasePlan, WorkspaceLease, acquire_workspace_lease_tx, base,
 };
 use crate::workspace_materialize::neige_git_command;
+
+mod commit_message;
 
 const TRACK: &str = "trk";
 const CARD: &str = "crd";
@@ -1251,12 +1254,19 @@ async fn count(repo: &SqlxRepo, sql: &str) -> i64 {
 
 impl DbFixture {
     async fn insert_delivery(&self, attempt: &str) -> DeliveryRow {
+        self.insert_delivery_with(attempt, DeliveryMessage::Kernel)
+            .await
+    }
+
+    /// A completed attempt's first row, committing with `message`.
+    async fn insert_delivery_with(&self, attempt: &str, message: DeliveryMessage) -> DeliveryRow {
         let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
         let row = insert_initial_delivery_tx(
             &mut tx,
             attempt,
             &self.lease,
             AttemptOutcome::Completed,
+            message,
             1_000,
         )
         .await
@@ -1847,9 +1857,15 @@ async fn initial_delivery_row_and_readers() {
     .await
     .unwrap();
     assert_eq!(plain.delivery_policy, None);
-    let refused =
-        insert_initial_delivery_tx(&mut tx, "attempt-plain", &plain, AttemptOutcome::Failed, 1)
-            .await;
+    let refused = insert_initial_delivery_tx(
+        &mut tx,
+        "attempt-plain",
+        &plain,
+        AttemptOutcome::Failed,
+        DeliveryMessage::Kernel,
+        1,
+    )
+    .await;
     assert!(refused.is_err(), "{refused:?}");
     tx.rollback().await.unwrap();
 }
@@ -1933,6 +1949,32 @@ async fn delivery_payload_semantic_hash_is_stable() {
     let mut outcomeless = row.clone();
     outcomeless.outcome = None;
     assert!(forge_payload_for(&outcomeless, &fx.lease, &branch).is_err());
+
+    // #2139: a row carrying a worker message is just as stable — the message is in argv, which
+    // the semantic hash leaves out, and every assembly reads it from the row.
+    let message = "fix: stable\n\nOWNERSHIP-CHANGE: fe/x.ts — why (#1)\n";
+    let messaged = fx
+        .insert_delivery_with(
+            "attempt-2",
+            DeliveryMessage::Worker(CommitMessage::parse(message).unwrap()),
+        )
+        .await;
+    let first = forge_payload_for(&messaged, &fx.lease, &branch).unwrap();
+    let second = forge_payload_for(&messaged, &fx.lease, &branch).unwrap();
+    assert_eq!(first.argv, second.argv);
+    assert_eq!(hash(&first).unwrap(), hash(&second).unwrap());
+    let ref_name = candidate_ref_name(&fx.track_id, &fx.card_id, &messaged.delivery_id);
+    assert_eq!(
+        first.argv,
+        delivery_argv(
+            &delivery_message(&messaged, AttemptOutcome::Completed),
+            &branch,
+            &ref_name,
+            &base.base_sha,
+            base.canonical_path.to_str().unwrap(),
+            base.git_common_dir.to_str().unwrap(),
+        )
+    );
 }
 
 /// The candidate row is a copy of the result event and the lease; an event naming another
@@ -2161,6 +2203,7 @@ fn delivery_row(settlement: Option<DeliverySettled>) -> DeliveryRow {
         operation_key: "op-key".into(),
         forge_idempotency_key: "idem".into(),
         outcome: Some(AttemptOutcome::Completed),
+        commit_message: DeliveryMessage::Kernel,
         created_at_ms: 1,
         settlement,
     }

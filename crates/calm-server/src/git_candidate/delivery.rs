@@ -16,6 +16,7 @@ use calm_types::git_candidate::{DeliveryFailureCode, DeliveryWakeReason};
 use sqlx::Row;
 
 use super::candidate::CandidateRow;
+use super::commit_message::{CommitMessage, DeliveryMessage};
 use crate::builtin_plugins::dev::PLUGIN_ID as GIT_FORGE_PLUGIN_ID;
 use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, Result};
@@ -119,6 +120,8 @@ pub(crate) struct DeliveryRow {
     pub forge_idempotency_key: String,
     /// `None` only on a row settled before migration 0122; every row S2 writes has one.
     pub outcome: Option<AttemptOutcome>,
+    /// The message the delivery commits with (#2139); `Kernel` when the column is NULL.
+    pub commit_message: DeliveryMessage,
     pub created_at_ms: i64,
     /// `None` while unsettled.
     pub settlement: Option<DeliverySettled>,
@@ -135,7 +138,7 @@ pub(crate) struct UnsettledDelivery {
 
 const DELIVERY_COLUMNS: &str = "d.delivery_id, d.track_id, d.producer_attempt_id, d.card_id, \
      d.lease_id, d.ordinal, d.operation_key, d.forge_idempotency_key, d.outcome, \
-     d.created_at_ms, d.settlement, d.settled_event_id, d.failure_code, d.failure_reason, \
+     d.commit_message, d.created_at_ms, d.settlement, d.settled_event_id, d.failure_code, d.failure_reason, \
      d.retry_allowed, d.wake_reason";
 
 /// The forge `idem_key` of one delivery; the full idempotency key is
@@ -149,15 +152,19 @@ pub(crate) fn candidate_ref_name(track_id: &str, card_id: &str, delivery_id: &st
     format!("refs/neige/candidates/{track_id}/{card_id}/{delivery_id}")
 }
 
-/// The commit message the delivery script uses when it has to commit (D8); human-readable only.
-/// Built from the row alone, so every builder of one row produces the same text.
+/// The commit message the delivery script uses when it has to commit (D8): the worker's own
+/// message verbatim (#2139), else the kernel's one-line text. Built from the row alone, so every
+/// builder of one row produces the same text.
 pub(crate) fn delivery_message(delivery: &DeliveryRow, outcome: AttemptOutcome) -> String {
-    format!(
-        "neige: attempt {} {} (delivery {})",
-        delivery.producer_attempt_id,
-        outcome.as_column(),
-        delivery.delivery_id
-    )
+    match &delivery.commit_message {
+        DeliveryMessage::Worker(message) => message.as_str().to_string(),
+        DeliveryMessage::Kernel => format!(
+            "neige: attempt {} {} (delivery {})",
+            delivery.producer_attempt_id,
+            outcome.as_column(),
+            delivery.delivery_id
+        ),
+    }
 }
 
 /// The argv of one delivery: the credential split (#1830 S3 D4), the provenance function and the
@@ -276,13 +283,16 @@ fn utf8<'a>(path: &'a std::path::Path, what: &str) -> Result<&'a str> {
 }
 
 /// Insert the first delivery row of one attempt (`ordinal = 1`, fresh `delivery_id` and
-/// `operation_key`) with how the attempt ended. The lease must be a kernel-delivery lease: the
-/// row exists only for one. Only the release that ends the attempt calls this (#1830 S2 D7).
+/// `operation_key`) with how the attempt ended and the message its commit carries. The lease must
+/// be a kernel-delivery lease: the row exists only for one. Only the release that ends the attempt
+/// calls this (#1830 S2 D7), with a worker message only for a completed attempt (the 0145 CHECK
+/// refuses any other pair).
 pub(crate) async fn insert_initial_delivery_tx(
     tx: &mut Tx<'_>,
     producer_attempt_id: &str,
     lease: &WorkspaceLease,
     outcome: AttemptOutcome,
+    commit_message: DeliveryMessage,
     now_ms: i64,
 ) -> Result<DeliveryRow> {
     let (track_id, card_id) = (lease.track_id.as_str(), lease.card_id.as_str());
@@ -306,13 +316,15 @@ pub(crate) async fn insert_initial_delivery_tx(
             delivery_idem_key(&delivery_id)
         ),
         outcome: Some(outcome),
+        commit_message,
         created_at_ms: now_ms,
         settlement: None,
     };
     sqlx::query(
         "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, card_id, \
-         lease_id, ordinal, operation_key, forge_idempotency_key, outcome, created_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         lease_id, ordinal, operation_key, forge_idempotency_key, outcome, commit_message, \
+         created_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )
     .bind(&row.delivery_id)
     .bind(&row.track_id)
@@ -323,6 +335,7 @@ pub(crate) async fn insert_initial_delivery_tx(
     .bind(&row.operation_key)
     .bind(&row.forge_idempotency_key)
     .bind(outcome.as_column())
+    .bind(row.commit_message.as_column())
     .bind(row.created_at_ms)
     .execute(&mut **tx)
     .await?;
@@ -611,6 +624,13 @@ fn row_to_delivery(row: sqlx::sqlite::SqliteRow) -> Result<DeliveryRow> {
             )));
         }
     };
+    // A stored message goes through the one validator again: a corrupt row fails here, never in argv.
+    let commit_message = match row.try_get::<Option<String>, _>("commit_message")? {
+        None => DeliveryMessage::Kernel,
+        Some(text) => DeliveryMessage::Worker(CommitMessage::parse(&text).map_err(|error| {
+            CalmError::Internal(format!("task_git_deliveries {delivery_id}: {error}"))
+        })?),
+    };
     Ok(DeliveryRow {
         delivery_id,
         track_id: row.try_get("track_id")?,
@@ -625,6 +645,7 @@ fn row_to_delivery(row: sqlx::sqlite::SqliteRow) -> Result<DeliveryRow> {
             .as_deref()
             .map(AttemptOutcome::from_column)
             .transpose()?,
+        commit_message,
         created_at_ms: row.try_get("created_at_ms")?,
         settlement,
     })
