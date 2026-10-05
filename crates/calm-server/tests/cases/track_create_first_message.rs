@@ -3675,7 +3675,7 @@ async fn create_model_defaults_preserve_legacy_fingerprint_and_null_replay() {
     let old_shape = json!({"title": "", "sort": null, "cwd": null,
         "template_id": null, "recipe_id": null, "template_input": null,
         "attach_folder": false, "theme": body["theme"], "fork_report_from": null});
-    let expected = calm_server::routes::terminal_cards::stable_payload_hash(&old_shape).unwrap();
+    let expected = calm_server::routes::idempotency_key::stable_payload_hash(&old_shape).unwrap();
     let actual: String =
         sqlx::query_scalar("SELECT create_request_sha256 FROM track_create_idempotency")
             .fetch_one(b.repo.pool())

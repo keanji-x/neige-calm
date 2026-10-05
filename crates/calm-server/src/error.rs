@@ -43,7 +43,7 @@ pub enum CalmError {
     IdempotencyKeyExhausted(String),
 
     /// 400 — the `Idempotency-Key` header is not one the server stores: blank, not visible ASCII,
-    /// or longer than [`crate::routes::terminal_cards::IDEMPOTENCY_KEY_MAX_LEN`].
+    /// or longer than [`crate::routes::idempotency_key::IDEMPOTENCY_KEY_MAX_LEN`].
     #[error("invalid Idempotency-Key: {0}")]
     IdempotencyKeyInvalid(String),
 
@@ -148,6 +148,13 @@ pub enum CalmError {
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),
 
+    /// 500 — the operation this request ran, or the one its `Idempotency-Key` names, failed past
+    /// its commit and its compensation settled it. Final for that key: a replay answers the same,
+    /// and only a new key may try again. A stuck operation is never driven again either, but what it
+    /// wrote may exist, so its outcome stays unknown: `Internal`.
+    #[error("operation failed: {0}")]
+    OperationFailed(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -187,6 +194,7 @@ impl CalmError {
             CalmError::CodexRefused(_) => "codex_refused",
             CalmError::ServiceUnavailable(_) => "service_unavailable",
             CalmError::PayloadTooLarge(_) => "payload_too_large",
+            CalmError::OperationFailed(_) => "operation_failed",
             CalmError::Internal(_) => "internal",
         }
     }
@@ -222,6 +230,7 @@ impl CalmError {
             | CalmError::Serde(_)
             | CalmError::CodexAppServer(_)
             | CalmError::CodexRefused(_)
+            | CalmError::OperationFailed(_)
             | CalmError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -376,6 +385,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::CodexRefused(m)
             | CalmError::CodexAppServer(m)
             | CalmError::PayloadTooLarge(m)
+            | CalmError::OperationFailed(m)
             | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),
         }
     }

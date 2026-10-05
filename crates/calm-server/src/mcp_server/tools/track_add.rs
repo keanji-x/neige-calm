@@ -26,7 +26,7 @@ pub const TOOL_TRACK_ADD: &str = "neige_track_add";
 const MAX_TITLE_CHARS: usize = 200;
 /// Upper bound on `idempotency_key`, in bytes, the same as every keyed route's; it is stored
 /// verbatim as `tracks.creator_key`.
-const MAX_KEY_BYTES: usize = crate::routes::terminal_cards::IDEMPOTENCY_KEY_MAX_LEN;
+const MAX_KEY_BYTES: usize = crate::routes::idempotency_key::IDEMPOTENCY_KEY_MAX_LEN;
 
 /// The tool's five inputs, all required. Exactly these are the request fingerprint.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -59,7 +59,7 @@ pub struct TrackAddRequest {
 impl TrackAddRequest {
     /// What the key binds: the five inputs, nothing derived from the caller or from current state.
     pub fn fingerprint(&self) -> Result<String, CalmError> {
-        crate::routes::terminal_cards::stable_payload_hash(&self.args)
+        crate::routes::idempotency_key::stable_payload_hash(&self.args)
     }
 }
 

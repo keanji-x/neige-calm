@@ -47,7 +47,7 @@ use crate::operation::workspace_lease::{
     ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
 };
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
-use crate::routes::terminal_cards::stable_payload_hash;
+use crate::routes::idempotency_key::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
 

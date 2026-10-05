@@ -60,7 +60,7 @@ pub async fn area_create_replay_tx(
     };
     if original_fingerprint != fingerprint {
         return Err(CalmError::IdempotencyKeyReused(
-            "This Area creation key belongs to a different request. Retry the original request or explicitly start a new Area.".into(),
+            "This Area request reused the key of a different request, so no Area was created. Create the Area again.".into(),
         ));
     }
     let area = sqlx::query_as::<_, crate::db::rows::AreaRow>(

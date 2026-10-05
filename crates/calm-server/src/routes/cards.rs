@@ -1,9 +1,7 @@
 //! `/api/cards`, `/api/tracks/:id/cards` — Card CRUD. The create route accepts an optional `via_tool_call` variant, which wins over the direct-create fields when both are sent.
 
 use crate::actor::Actor;
-use crate::db::sqlite::{
-    card_create_with_id_tx, card_delete_tx, card_update_tx, terminal_delete_tx,
-};
+use crate::db::sqlite::{card_delete_tx, card_update_tx, terminal_delete_tx};
 use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -11,18 +9,22 @@ use crate::event::{Event, EventScope, RatifyDecision};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage};
 use crate::ids::{ActorId, CardId, TrackId};
-use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Track, new_id};
+use crate::model::{Card, CardPatch, CardRole, HarnessItem, Track, new_id};
+use crate::operation::card_create_adapter::{CARD_CREATE, CardCreateOperationPayload};
 use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
 use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownOperationPayload;
 use crate::operation::planner_harness_start_adapter::{
     HarnessProfile, PlannerHarnessStartOperationPayload,
 };
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
-use crate::operation::{OperationKey, OperationOutcome};
-use crate::per_card_lock::lock_card;
+use crate::operation::{OperationId, OperationKey, OperationOutcome};
+use crate::per_card_lock::{lock_card, lock_key};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::ratify_state::ratify_request_pending_tx;
-use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
+use crate::routes::idempotency_key::{
+    calm_error_from_operation_failure, keyed_card_answer, parse_idempotency_key_header,
+    stable_payload_hash,
+};
 use crate::session_projection_lookup::{
     card_is_shared_planner, project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
@@ -34,7 +36,7 @@ use crate::validation::reject_client_supplied_server_owned_keys;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -290,7 +292,7 @@ pub(crate) async fn harness_card(s: &RouteState, id: &str) -> Result<Card> {
 }
 
 /// Body payload accepted by `POST /api/tracks/:track_id/cards`: direct create (`kind`, `sort`, `payload`, `title`) or `via_tool_call`, which wins when both are sent.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateCardBody {
     /// Legacy direct-create fields; `track_id` comes from the path.
     #[serde(default)]
@@ -307,7 +309,7 @@ pub struct CreateCardBody {
     pub via_tool_call: Option<ViaToolCall>,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ViaToolCall {
     pub plugin_id: String,
     pub tool_name: String,
@@ -320,29 +322,47 @@ pub struct ViaToolCall {
     post,
     path = "/api/tracks/{track_id}/cards",
     tag = "cards",
-    params(("track_id" = String, Path, description = "Track id this card belongs to")),
+    params(
+        ("track_id" = String, Path, description = "Track id this card belongs to"),
+        ("Idempotency-Key" = Option<String>, Header, description = "Optional; without one a retry creates another card. A retry under the key returns its card and calls no tool again."),
+    ),
     request_body = CreateCardBody,
     responses(
         (status = 201, description = "Card created", body = Card),
-        (status = 400, description = "Missing `kind` and no `via_tool_call`", body = ErrorBody),
+        (status = 400, description = "Missing `kind` and no `via_tool_call`, or a blank, non-ASCII or over-long `Idempotency-Key` (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 403, description = "Plugin lacks `permissions.cards_create`", body = ErrorBody),
-        (status = 404, description = "Plugin not running / not in registry", body = ErrorBody),
+        (status = 404, description = "Track not found, or plugin not running / not in registry", body = ErrorBody),
+        (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key", body = ErrorBody),
         (status = 422, description = "Tool returned no `_meta.ui.resourceUri`", body = ErrorBody),
         (status = 502, description = "Plugin tool call failed", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
+        (status = 500, description = "Internal error; `operation_failed` when the create under this key failed and is final for it", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
 #[allow(clippy::result_large_err)]
 pub(crate) async fn create_card(
     State(s): State<AppState>,
+    State(route): State<RouteState>,
     actor: Actor,
+    headers: HeaderMap,
     Path(track_id): Path<String>,
     Json(body): Json<CreateCardBody>,
 ) -> Result<Response, Response> {
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key: parse_idempotency_key_header(&headers)
+            .map_err(IntoResponse::into_response)?,
+        // The request as sent: what a retry under the key must repeat to be answered by the first attempt.
+        payload_hash: stable_payload_hash(&json!({
+            "actor": actor.as_str(),
+            "track_id": &track_id,
+            "request": &body,
+        }))
+        .map_err(IntoResponse::into_response)?,
+    };
     // The tool-call branch overrides the actor to `plugin:<id>` regardless of any `X-Calm-Actor` header — plugins cannot spoof their own actor via REST.
     if let Some(via) = body.via_tool_call {
-        return create_via_tool_call(&s, track_id, via).await;
+        return create_via_tool_call(&s, &route, track_id, via, key).await;
     }
 
     let kind = body.kind.ok_or_else(|| {
@@ -357,62 +377,56 @@ pub(crate) async fn create_card(
     s.card_kind_registry()
         .validate_payload(&kind, &payload)
         .map_err(|e| CalmError::from(e).into_response())?;
-    // Pre-mint the card id so `EventScope::Card` is determinable before the txn opens.
-    let card_id = CardId::from(new_id());
-    let track_id: TrackId = track_id.into();
-    let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone())
-        .await
-        .map_err(|e| e.into_response())?;
-    let new = NewCard {
+    let card = CardCreateOperationPayload {
+        actor: actor.to_actor_id(),
+        correlation: None,
         track_id,
         kind,
         sort: body.sort,
         payload,
         title: body.title,
     };
-    let card_id_for_tx = card_id.0.clone();
-    let write_for_tx = s.write().clone();
-    let (mut card, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        actor.to_actor_id(),
-        scope,
-        None,
-        &s.events,
-        s.write(),
-        move |tx| {
-            Box::pin(async move {
-                // User-driven creates mint user-deletable Worker cards; `false` is reserved for kernel-owned cards.
-                let card = card_create_with_id_tx(
-                    tx,
-                    card_id_for_tx,
-                    new,
-                    CardRole::Worker,
-                    true,
-                    write_for_tx.role_cache(),
-                )
-                .await?;
-                Ok((card.clone(), Event::CardAdded(card)))
-            })
-        },
-    )
-    .await
-    .map_err(|e| e.into_response())?;
-    project_runtime_into_card_payload(s.repo.as_ref(), &mut card)
+    submit_card_create(&s, key, card)
         .await
-        .map_err(CalmError::from)
-        .map_err(|e| e.into_response())?;
-    Ok((StatusCode::CREATED, Json(card)).into_response())
+        .map_err(IntoResponse::into_response)
 }
 
 /// Kernel invokes `tools/call` on the plugin, then writes a Card row keyed off `_meta.ui.resourceUri`.
 /// plugin not running → 404; `permissions.cards_create` not granted → 403; `isError: true` → 502; no `_meta.ui.resourceUri` → 422 `not_a_card_tool`.
+/// A key that already holds a card is answered with it before any of that, so the tool runs once per key.
 #[allow(deprecated)]
 #[allow(clippy::result_large_err)]
 async fn create_via_tool_call(
     s: &AppState,
+    route: &RouteState,
     track_id: String,
     via: ViaToolCall,
+    key: OperationKey,
 ) -> Result<Response, Response> {
+    // Held from the replay check through the submit, so a concurrent retry under the key waits for
+    // this request and is answered by its card instead of calling the tool again. In-process only;
+    // the `operations` UNIQUE index is the cross-process wall (a second tool call, one card).
+    let _same_key = match key.idempotency_key.as_deref() {
+        Some(idempotency_key) => Some(
+            lock_key(
+                &route.conversation_first_message_locks,
+                &format!("{CARD_CREATE}:{idempotency_key}"),
+            )
+            .await,
+        ),
+        None => None,
+    };
+    if let Some(op_id) = s
+        .operation_runtime
+        .keyed_replay(CARD_CREATE, &key)
+        .await
+        .map_err(IntoResponse::into_response)?
+    {
+        return card_create_answer(s, op_id)
+            .await
+            .map_err(IntoResponse::into_response);
+    }
+
     // 1. Plugin must be a RUNNING `app`. Card creation is stdio-only: it depends on the plugin owning a `ui://` view, which a connector structurally cannot. A Running connector must not be told it 'is not running'.
     let mcp = match s.plugin.mcp_client(&via.plugin_id).await {
         Some(c) => c,
@@ -495,53 +509,40 @@ async fn create_via_tool_call(
     s.card_kind_registry()
         .validate_payload(&creation.resource_uri, &payload)
         .map_err(|e| CalmError::from(e).into_response())?;
-    let new = NewCard {
-        track_id: track_id.into(),
+    // Actor stays `Plugin(<id>)`; `correlation` records the user-driven invocation so audit queries can reconstruct the causal chain.
+    let card = CardCreateOperationPayload {
+        actor: ActorId::Plugin(via.plugin_id.clone()),
+        correlation: Some(format!("user_tool_call:{}", via.tool_name)),
+        track_id,
         kind: creation.resource_uri,
         sort: None,
         payload,
         title: None,
     };
-    // Actor stays `Plugin(<id>)`; `correlation` records the user-driven invocation so audit queries can reconstruct the causal chain.
-    let actor = ActorId::Plugin(via.plugin_id.clone());
-    let correlation = format!("user_tool_call:{}", via.tool_name);
-    let card_id = CardId::from(new_id());
-    let track_id_for_scope: TrackId = new.track_id.clone();
-    let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id_for_scope)
+    submit_card_create(s, key, card)
         .await
-        .map_err(|e| e.into_response())?;
-    let card_id_for_tx = card_id.0.clone();
-    let write_for_tx = s.write().clone();
-    let (mut card, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        actor,
-        scope,
-        Some(&correlation),
-        &s.events,
-        s.write(),
-        move |tx| {
-            Box::pin(async move {
-                // User-driven creates mint user-deletable Worker cards; `false` is reserved for kernel-owned cards.
-                let card = card_create_with_id_tx(
-                    tx,
-                    card_id_for_tx,
-                    new,
-                    CardRole::Worker,
-                    true,
-                    write_for_tx.role_cache(),
-                )
-                .await?;
-                Ok((card.clone(), Event::CardAdded(card)))
-            })
-        },
-    )
-    .await
-    .map_err(|e| e.into_response())?;
-    project_runtime_into_card_payload(s.repo.as_ref(), &mut card)
-        .await
-        .map_err(CalmError::from)
-        .map_err(|e| e.into_response())?;
-    Ok((StatusCode::CREATED, Json(card)).into_response())
+        .map_err(IntoResponse::into_response)
+}
+
+/// Submit the card's one write under the request's key and answer with what that key holds.
+async fn submit_card_create(
+    s: &AppState,
+    key: OperationKey,
+    card: CardCreateOperationPayload,
+) -> Result<Response> {
+    let op_id = s
+        .operation_runtime
+        .submit(CARD_CREATE, key, serde_json::to_value(card)?)
+        .await?;
+    card_create_answer(s, op_id).await
+}
+
+/// The stored card (with its runtime projected), or the stored failure, of a `card-create` operation.
+async fn card_create_answer(s: &AppState, op_id: OperationId) -> Result<Response> {
+    let outcome = s.operation_runtime.wait(&op_id).await?.outcome;
+    Ok(keyed_card_answer(s.repo.as_ref(), outcome)
+        .await?
+        .into_response())
 }
 
 fn tool_call_bad_gateway(plugin_id: &str, tool_name: &str, detail: &str) -> Response {

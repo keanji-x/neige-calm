@@ -23,7 +23,7 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, retryable_operation_key, validate_first_message,
 };
-use crate::routes::terminal_cards::{
+use crate::routes::idempotency_key::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
 use crate::session_projection_repo::WorkerSessionState;

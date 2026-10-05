@@ -47,6 +47,8 @@ pub enum TruthError {
 /// [`TruthError::IdempotencyKeyConcurrent`], never the raw SQL text. Every other error passes through.
 pub(crate) fn idempotency_binding_insert_error(error: sqlx::Error) -> TruthError {
     match error {
+        // Only a key collision reaches this arm. A binding's other UNIQUE column (area's
+        // `area_id`) holds an id minted in the same transaction, so it cannot collide.
         sqlx::Error::Database(db) if db.is_unique_violation() => {
             TruthError::IdempotencyKeyConcurrent(
                 "another request under this Idempotency-Key was accepted at the same time; send \

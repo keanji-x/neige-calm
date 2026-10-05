@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::routes::terminal_cards::stable_payload_hash;
+use crate::routes::idempotency_key::stable_payload_hash;
 use crate::state::{AppState, RouteState};
 use crate::track_report::TrackReportPayload;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;

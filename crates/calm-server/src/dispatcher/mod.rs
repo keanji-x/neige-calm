@@ -19,6 +19,7 @@ use crate::harness::{
 };
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::CardRole;
+use crate::operation::card_create_adapter::CardCreateAdapter;
 use crate::operation::child_track_adapter::ChildTrackAdapter;
 use crate::operation::claude_adapter::{ClaudeAdapter, ClaudeWorkerAdapter};
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
@@ -27,6 +28,7 @@ use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterrupt
 use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownAdapter;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter;
 use crate::operation::terminal_adapter::{TerminalAdapter, TerminalWorkerAdapter};
+use crate::operation::track_recipe_create_adapter::TrackRecipeCreateAdapter;
 use crate::operation::{OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::plugin_host::{PluginHost, PluginRegistry};
@@ -415,6 +417,10 @@ fn dispatcher_operation_runtime(
         write.area_cache().clone(),
         workspace_root.clone(),
     ));
+    let card_create_adapter = Arc::new(CardCreateAdapter::new(
+        route_repo.clone(),
+        write.role_cache().clone(),
+    ));
     let completion = OperationCompletionBus::new();
     Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -432,6 +438,8 @@ fn dispatcher_operation_runtime(
             task_verify_adapter,
             forge_action_adapter,
             child_track_adapter,
+            card_create_adapter,
+            Arc::new(TrackRecipeCreateAdapter),
         ],
         events.clone(),
         completion.clone(),

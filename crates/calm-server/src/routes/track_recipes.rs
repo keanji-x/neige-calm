@@ -4,19 +4,27 @@
 
 use crate::actor::Actor;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::model::new_id;
+use crate::operation::OperationKey;
+use crate::operation::track_recipe_create_adapter::{
+    TRACK_RECIPE_CREATE, TrackRecipeCreateOperationPayload,
+};
+use crate::routes::idempotency_key::{
+    keyed_create_result, parse_idempotency_key_header, stable_payload_hash,
+};
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{AppState, RouteState};
 use crate::task_privilege::normalize_task_privilege_fields;
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::get,
 };
 use calm_types::model::{NewTrackRecipe, TrackRecipe};
 use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
 use calm_types::report_contract::{check_document, normalize_header};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 use utoipa::ToSchema;
@@ -135,7 +143,7 @@ fn validate_title(title: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateRecipeBody {
     pub title: String,
@@ -182,30 +190,45 @@ pub(crate) async fn get_recipe(
 
 #[utoipa::path(
     post, path = "/api/track-recipes", tag = "track-recipes",
+    params(
+        ("Idempotency-Key" = Option<String>, Header, description = "Optional; without one a retry saves another recipe. A retry under the key returns the recipe its first attempt saved."),
+    ),
     request_body = CreateRecipeBody,
     responses(
         (status = 201, description = "Recipe created", body = TrackRecipe),
-        (status = 400, description = "Malformed body or empty title", body = ErrorBody),
+        (status = 400, description = "Malformed body or empty title, or an `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 403, description = "Only `X-Calm-Actor: user` may write recipes", body = ErrorBody),
+        (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key", body = ErrorBody),
+        (status = 500, description = "Internal error; `operation_failed` when the create under this key failed and is final for it", body = ErrorBody),
     ),
 )]
 pub(crate) async fn create_recipe(
     State(s): State<RouteState>,
     actor: Actor,
+    headers: HeaderMap,
     Json(body): Json<CreateRecipeBody>,
 ) -> Result<(StatusCode, Json<TrackRecipe>)> {
     require_recipe_user_actor(&actor)?;
+    let idempotency_key = parse_idempotency_key_header(&headers)?;
     validate_title(&body.title)?;
     let normalized = normalize_recipe_header(&normalize_recipe_body(&body.body))?;
     validate_recipe_body(&normalized)?;
-    let created = s
-        .repo
-        .track_recipe_create(NewTrackRecipe {
-            title: body.title,
-            body: normalized,
-        })
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key,
+        // The request as sent, not the normalized body: a retry repeats the request.
+        payload_hash: stable_payload_hash(&body)?,
+    };
+    let payload = serde_json::to_value(TrackRecipeCreateOperationPayload {
+        title: body.title,
+        body: normalized,
+    })?;
+    let op_id = s
+        .operation_runtime
+        .submit(TRACK_RECIPE_CREATE, key, payload)
         .await?;
-    Ok((StatusCode::CREATED, Json(created)))
+    let created = keyed_create_result(s.operation_runtime.wait(&op_id).await?.outcome)?;
+    Ok((StatusCode::CREATED, Json(serde_json::from_value(created)?)))
 }
 
 #[utoipa::path(

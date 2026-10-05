@@ -12,6 +12,7 @@ use crate::claude_planner::wiring::ClaudePlannerWiring;
 use crate::harness::HarnessRegistry;
 use crate::ids::ActorId;
 use crate::mcp_server::McpServer;
+use crate::operation::card_create_adapter::CardCreateAdapter;
 use crate::operation::child_track_adapter::ChildTrackAdapter;
 use crate::operation::claude_adapter::{ClaudeAdapter, ClaudeWorkerAdapter};
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
@@ -22,6 +23,7 @@ use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownAd
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter;
 use crate::operation::task_verify_adapter::TaskVerifyAdapter;
 use crate::operation::terminal_adapter::{SpawnHook, TerminalAdapter, TerminalWorkerAdapter};
+use crate::operation::track_recipe_create_adapter::TrackRecipeCreateAdapter;
 use crate::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
 };
@@ -110,6 +112,8 @@ pub struct RouteState {
     /// Per-card claim for the Today bootstrap's first-message send. A SEPARATE map from
     /// `planner_recovery_locks`: the claim is held across a call that takes that lock and
     /// `tokio::sync::Mutex` is not reentrant. In-process only — one calm-server per data directory.
+    /// Also the same-key claim of a keyed track create and of a tool-call card create, each under
+    /// its own key namespace.
     pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
     /// `None` in production; armed by the cross-instance primary-key race test.
     pub(crate) track_create_mint_rendezvous: crate::routes::tracks::TrackCreateMintRendezvous,
@@ -489,6 +493,10 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.track_area_cache.clone(),
         input.workspace_root.clone(),
     ));
+    let card_create_adapter: Arc<dyn ProviderAdapter> = Arc::new(CardCreateAdapter::new(
+        input.route_repo.clone(),
+        input.card_role_cache.clone(),
+    ));
 
     vec![
         terminal_adapter,
@@ -504,6 +512,8 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         task_verify_adapter,
         forge_action_adapter,
         child_track_adapter,
+        card_create_adapter,
+        Arc::new(TrackRecipeCreateAdapter),
     ]
 }
 

@@ -11,8 +11,9 @@ use crate::operation::claude_adapter::{
 use crate::operation::claude_restart_adapter::ClaudeRestartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::codex_cards::shell_single_quote;
-use crate::routes::terminal_cards::{
-    calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
+use crate::routes::idempotency_key::{
+    calm_error_from_operation_failure, keyed_card_answer, parse_idempotency_key_header,
+    stable_payload_hash,
 };
 use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::{AppState, CodexShellState, RouteState};
@@ -75,9 +76,9 @@ pub struct NewClaudeCardBody {
         (status = 201, description = "Worker card + linked terminal created atomically; Claude daemon spawned", body = Card),
         (status = 400, description = "A refused body field, or an `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
-        (status = 409, description = "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key", body = ErrorBody),
+        (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
-        (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
+        (status = 500, description = "Daemon spawn failed (rows persist; sweeper reaps within ~60s); `operation_failed` is final for this key", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
@@ -118,27 +119,11 @@ pub(crate) async fn create_claude_card(
             payload,
         )
         .await?;
-    let result = s.operation_runtime.wait(&op_id).await?;
-    match result.outcome {
-        OperationOutcome::Succeeded { result }
-        | OperationOutcome::SucceededViaCollision { result, .. } => {
-            let mut card: Card = serde_json::from_value(result)?;
-            project_runtime_into_card_payload(s.repo.as_ref(), &mut card).await?;
-            Ok((StatusCode::CREATED, Json(card)))
-        }
-        OperationOutcome::Failed {
-            last_error,
-            from_phase,
-            last_error_class,
-        } => Err(calm_error_from_operation_failure(
-            last_error_class.as_deref(),
-            last_error,
-            from_phase,
-        )),
-        OperationOutcome::Stuck { .. } => {
-            Err(CalmError::Internal("operation stuck, see DB".to_string()))
-        }
-    }
+    keyed_card_answer(
+        s.repo.as_ref(),
+        s.operation_runtime.wait(&op_id).await?.outcome,
+    )
+    .await
 }
 
 pub(crate) fn normalize_claude_create_request(

@@ -27,7 +27,18 @@ struct Fixture {
     state: AppState,
     track_id: String,
     plugin_id: String,
+    /// One line per `tools/call` the stub received (`STUB_TOOLCALL_COUNT_FILE`).
+    calls: std::path::PathBuf,
     _tmp: tempfile::TempDir,
+}
+
+impl Fixture {
+    /// How many `tools/call` requests the plugin has answered so far.
+    fn tool_calls(&self) -> usize {
+        std::fs::read_to_string(&self.calls)
+            .map(|calls| calls.lines().count())
+            .unwrap_or(0)
+    }
 }
 
 struct StubConfig<'a> {
@@ -45,6 +56,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
     std::fs::create_dir_all(&bin_dir).unwrap();
     std::fs::create_dir_all(&plugins_data_dir).unwrap();
     std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub")).unwrap();
+    let calls = tmp.path().join("tool-calls.log");
 
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -92,7 +104,10 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         "display_name": "Tool-call stub",
         "entrypoint": {
             "command": "bin/stub",
-            "env": { "STUB_TOOLCALL_MODE": cfg.mode }
+            "env": {
+                "STUB_TOOLCALL_MODE": cfg.mode,
+                "STUB_TOOLCALL_COUNT_FILE": calls.display().to_string(),
+            }
         },
         "permissions": perms, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
@@ -139,6 +154,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         state,
         track_id: track.id.to_string(),
         plugin_id: cfg.plugin_id.to_string(),
+        calls,
         _tmp: tmp,
     }
 }
@@ -300,3 +316,6 @@ async fn via_tool_call_returns_403_when_cards_create_not_granted() {
 
     fx.state.plugin.stop(&fx.plugin_id).await.ok();
 }
+
+#[path = "plugin_routes_card_create_keyed.rs"]
+mod keyed;

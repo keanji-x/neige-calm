@@ -15,7 +15,7 @@ use crate::per_card_lock::lock_card;
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key, validate_first_message,
 };
-use crate::routes::terminal_cards::{parse_idempotency_key_header, stable_payload_hash};
+use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
 use crate::state::RouteState;
 
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};

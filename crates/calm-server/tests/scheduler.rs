@@ -42,7 +42,7 @@ use calm_server::operation::{
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes::terminal_cards::stable_payload_hash;
+use calm_server::routes::idempotency_key::stable_payload_hash;
 use calm_server::scheduler::{
     ClaimFenceTestHook, PostClaimDriveTestHook, Scheduler, TerminalTaskHook,
     WORKER_IDLE_PROBE_TIMEOUT, WORKER_IDLE_TURN_GRACE, WorkerIdleWake, build_child_track_payload,

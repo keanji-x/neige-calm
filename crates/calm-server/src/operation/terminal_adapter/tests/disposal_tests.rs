@@ -274,7 +274,7 @@ async fn exercise(history: History, disposal: Disposal) {
     let key = OperationKey {
         operation_key: new_id(),
         idempotency_key: Some(task.id),
-        payload_hash: crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
+        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
     };
     let operations = SqlxOperationRepo::new(repo.pool().clone());
     if matches!(history, History::PidWriteFailure) {

@@ -10,7 +10,7 @@ use crate::operation::terminal_adapter::{
     TerminalCreateOperationPayload, TerminalCreateRequestPayload, normalize_terminal_create_request,
 };
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::routes::terminal_cards::stable_payload_hash;
+use crate::routes::idempotency_key::stable_payload_hash;
 use crate::terminal_interaction::{
     CodexTaskWorkerInputRefused, InputOptions, Target, TerminalInteraction, WaitFor, WaitPlan,
     receipt_summary, summary_line,

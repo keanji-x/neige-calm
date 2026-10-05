@@ -129,18 +129,32 @@ impl OperationRuntime {
         let adapter = self.adapter(kind)?;
         // A keyed `operations` row is PERMANENT: this short-circuit is the only thing that stops a byte-identical retry from re-running an
         // operation that already succeeded (for `planner-harness-start`, delivering the user's first message twice). Never add a retention pass over keyed rows.
-        if let Some(existing) = self.repo.find_by_idempotency_key(kind, &key).await? {
-            if existing.payload_hash == key.payload_hash {
-                let op_id = existing.id;
-                self.drive().await?;
-                return Ok(op_id);
-            }
-            return Err(idempotency_payload_conflict(key.idempotency_key.as_deref()));
+        if let Some(op_id) = self.keyed_replay(kind, &key).await? {
+            return Ok(op_id);
         }
         adapter.validate(&payload).await?;
         let op_id = self.repo.insert_operation(kind, key, payload).await?;
         self.drive().await?;
         Ok(op_id)
+    }
+
+    /// The operation that already holds this request's key: `Some` for the same payload hash (a
+    /// replay, driven on), 409 `idempotency_key_reused` for another; `None` when the key is vacant or
+    /// absent. [`Self::submit`] asks this first. A route whose work starts before it submits (a
+    /// plugin tool call) asks it before that work, so a replay does not do the work again.
+    pub async fn keyed_replay(
+        &self,
+        kind: &str,
+        key: &OperationKey,
+    ) -> Result<Option<OperationId>> {
+        let Some(existing) = self.repo.find_by_idempotency_key(kind, key).await? else {
+            return Ok(None);
+        };
+        if existing.payload_hash != key.payload_hash {
+            return Err(idempotency_payload_conflict(key.idempotency_key.as_deref()));
+        }
+        self.drive().await?;
+        Ok(Some(existing.id))
     }
 
     pub async fn start(

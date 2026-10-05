@@ -4855,6 +4855,20 @@
           "track-recipes"
         ],
         "operationId": "create_recipe",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Optional; without one a retry saves another recipe. A retry under the key returns the recipe its first attempt saved.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4877,7 +4891,7 @@
             }
           },
           "400": {
-            "description": "Malformed body or empty title",
+            "description": "Malformed body or empty title, or an `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4888,6 +4902,26 @@
           },
           "403": {
             "description": "Only `X-Calm-Actor: user` may write recipes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; `operation_failed` when the create under this key failed and is final for it",
             "content": {
               "application/json": {
                 "schema": {
@@ -6818,6 +6852,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Optional; without one a retry creates another card. A retry under the key returns its card and calls no tool again.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -6842,7 +6888,7 @@
             }
           },
           "400": {
-            "description": "Missing `kind` and no `via_tool_call`",
+            "description": "Missing `kind` and no `via_tool_call`, or a blank, non-ASCII or over-long `Idempotency-Key` (`idempotency_key_invalid`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6862,7 +6908,17 @@
             }
           },
           "404": {
-            "description": "Plugin not running / not in registry",
+            "description": "Track not found, or plugin not running / not in registry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key",
             "content": {
               "application/json": {
                 "schema": {
@@ -6882,7 +6938,7 @@
             }
           },
           "500": {
-            "description": "Internal error",
+            "description": "Internal error; `operation_failed` when the create under this key failed and is final for it",
             "content": {
               "application/json": {
                 "schema": {
@@ -6976,7 +7032,7 @@
             }
           },
           "409": {
-            "description": "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key",
+            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key",
             "content": {
               "application/json": {
                 "schema": {
@@ -6996,7 +7052,7 @@
             }
           },
           "500": {
-            "description": "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)",
+            "description": "Daemon spawn failed (rows persist; sweeper reaps within ~60s); `operation_failed` is final for this key",
             "content": {
               "application/json": {
                 "schema": {
@@ -7080,7 +7136,7 @@
             }
           },
           "409": {
-            "description": "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key",
+            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key",
             "content": {
               "application/json": {
                 "schema": {
@@ -7100,7 +7156,7 @@
             }
           },
           "500": {
-            "description": "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)",
+            "description": "Daemon spawn failed (rows persist; sweeper reaps within ~60s); `operation_failed` is final for this key",
             "content": {
               "application/json": {
                 "schema": {
@@ -7347,7 +7403,7 @@
             }
           },
           "409": {
-            "description": "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key",
+            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key",
             "content": {
               "application/json": {
                 "schema": {
@@ -7367,7 +7423,7 @@
             }
           },
           "500": {
-            "description": "Daemon spawn failed; the saga rolled back the committed transaction (no leaked rows).",
+            "description": "Daemon spawn failed; the saga rolled back the transaction (no leaked rows); `operation_failed` is final for this key",
             "content": {
               "application/json": {
                 "schema": {

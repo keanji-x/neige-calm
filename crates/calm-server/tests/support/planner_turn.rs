@@ -8,7 +8,7 @@ use calm_server::operation::planner_harness_start_adapter::{
     HarnessProfile, PlannerHarnessStartOperationPayload, planner_instructions_for_test,
 };
 use calm_server::operation::{OperationKey, OperationOutcome};
-use calm_server::routes::terminal_cards::stable_payload_hash;
+use calm_server::routes::idempotency_key::stable_payload_hash;
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionProjectionRepo};
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};

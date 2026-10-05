@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
 
 use super::area_folders::normalize_path;
-use super::terminal_cards::{parse_idempotency_key_header, stable_payload_hash};
+use super::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
 #[cfg(feature = "fixtures")]
 use std::collections::HashMap;
 #[cfg(feature = "fixtures")]

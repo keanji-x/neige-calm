@@ -119,8 +119,8 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
         "context": { "from": "legacy" },
     });
     assert_eq!(
-        crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
-        crate::routes::terminal_cards::stable_payload_hash(&legacy_without_cwd).unwrap()
+        crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
+        crate::routes::idempotency_key::stable_payload_hash(&legacy_without_cwd).unwrap()
     );
 
     let task_with_cwd = crate::model::Task {
@@ -160,8 +160,8 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
         "build_worker_payload must not leak task.cwd into codex op identity"
     );
     assert_eq!(
-        crate::routes::terminal_cards::stable_payload_hash(&built).unwrap(),
-        crate::routes::terminal_cards::stable_payload_hash(&legacy_without_cwd).unwrap()
+        crate::routes::idempotency_key::stable_payload_hash(&built).unwrap(),
+        crate::routes::idempotency_key::stable_payload_hash(&legacy_without_cwd).unwrap()
     );
 }
 

@@ -28,6 +28,9 @@
 //!
 //! Anything else (e.g. another method) replies with a generic `{"echo": method}`
 //! so the test can still smoke the wire.
+//!
+//! When `STUB_TOOLCALL_COUNT_FILE` is set, every `tools/call` appends one line
+//! to that file before it replies, so a test can count the calls the kernel made.
 
 use std::io::{BufRead, BufWriter, Write};
 
@@ -48,6 +51,7 @@ fn main() {
         .unwrap_or_else(|_| r#"{"msg":"hi"}"#.to_string());
     // Same capability omit knob the other stubs use, in case a test wants to
     // exercise the kernel's no-callbacks drainer alongside tools/call.
+    let count_file = std::env::var("STUB_TOOLCALL_COUNT_FILE").ok();
     let omit_capability = std::env::var("STUB_OMIT_CAPABILITY")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -113,6 +117,21 @@ fn main() {
                 "result": result
             })
         } else if method == "tools/call" {
+            if let Some(path) = count_file.as_deref() {
+                let mut calls = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .expect("open the tool-call count file");
+                writeln!(
+                    calls,
+                    "{}",
+                    v.pointer("/params/name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                )
+                .expect("count one tool call");
+            }
             let requested_name = v
                 .pointer("/params/name")
                 .and_then(|n| n.as_str())

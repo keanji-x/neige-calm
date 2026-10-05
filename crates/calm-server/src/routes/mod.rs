@@ -22,6 +22,7 @@ pub mod conversations_shared;
 pub mod daily_planner;
 pub mod fs;
 pub mod harness_live;
+pub mod idempotency_key;
 pub mod models;
 pub mod overlays;
 pub mod planner_input;

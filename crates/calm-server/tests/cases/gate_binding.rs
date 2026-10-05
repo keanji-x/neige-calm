@@ -246,7 +246,7 @@ async fn submit_gate_bypassing_admission(fx: &Fx, task: &Task) -> String {
         attempt: 1,
     })
     .unwrap();
-    let payload_hash = calm_server::routes::terminal_cards::stable_payload_hash(&payload).unwrap();
+    let payload_hash = calm_server::routes::idempotency_key::stable_payload_hash(&payload).unwrap();
     let op_id = fx
         .runtime
         .submit(

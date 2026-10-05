@@ -9,6 +9,7 @@ pub(crate) mod owned_parked;
 mod repo_sqlite;
 pub(crate) mod workspace_lease;
 
+pub mod card_create_adapter;
 pub mod child_track_adapter;
 pub mod claude_adapter;
 pub mod claude_restart_adapter;
@@ -25,6 +26,7 @@ pub mod task_verify_adapter;
 pub mod terminal_adapter;
 pub(crate) mod terminal_disposal;
 pub(crate) mod terminal_launch;
+pub mod track_recipe_create_adapter;
 pub(crate) mod worker_cleanup;
 
 pub use driver::{OperationCompletionBus, OperationRuntime};
@@ -72,7 +74,9 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 5] = [
     "child-track",
 ];
 
-pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 8] = [
+pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 10] = [
+    card_create_adapter::CARD_CREATE,
+    track_recipe_create_adapter::TRACK_RECIPE_CREATE,
     "terminal-create",
     "codex-create",
     "claude-create",

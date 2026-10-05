@@ -72,7 +72,7 @@ impl TerminalInteraction {
         let key = idempotency_key.to_owned();
         // The fingerprint hashes the arguments as given (null when omitted) so a replayed
         // idempotency_key returns the same receipt and never claims, releases or writes again.
-        let fingerprint = crate::routes::terminal_cards::stable_payload_hash(&json!({
+        let fingerprint = crate::routes::idempotency_key::stable_payload_hash(&json!({
             "observation_id":observation,"action":action,
             "allow_output_since_observation":options.allow_output_since_observation,
             "claim":options.claim,"release":options.release

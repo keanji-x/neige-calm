@@ -137,7 +137,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
     let key = OperationKey {
         operation_key: new_id(),
         idempotency_key: Some(task.id.clone()),
-        payload_hash: crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
+        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
     };
     let submitted_key = key.clone();
     let run = tokio::spawn(async move { runtime.submit(kind, submitted_key, payload).await });

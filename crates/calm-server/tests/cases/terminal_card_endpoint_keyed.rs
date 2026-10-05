@@ -94,3 +94,67 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_card() {
         "one operation: the first request's INSERT was refused by the index"
     );
 }
+
+/// A boot whose every terminal spawn fails after the card's transaction committed, so the saga
+/// compensates and the operation ends `Failed`.
+async fn boot_failing_spawn() -> super::Boot {
+    let super::Boot {
+        state,
+        track_id,
+        events,
+        repo,
+        _tmp,
+        ..
+    } = super::boot().await;
+    let hook: super::TestSpawnHook = Arc::new(|_terminal_id, _program, _cwd, _env| {
+        Box::pin(async {
+            Err(calm_server::error::CalmError::Internal(
+                "injected spawn failure".into(),
+            ))
+        })
+    });
+    let state = super::install_spawn_runtime_with_hook(state, repo.clone(), events.clone(), hook);
+    let app = calm_server::routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state.clone());
+    super::Boot {
+        app,
+        state,
+        track_id,
+        events,
+        repo,
+        _tmp,
+    }
+}
+
+/// #2131 S4: a create that failed after its commit is final under its key. The first answer and
+/// every replay are 500 `operation_failed`, which the client reads as final and so releases the key;
+/// a stuck operation, whose card may exist, keeps the plain 500.
+#[tokio::test]
+async fn a_create_that_failed_after_its_commit_is_final_under_its_key() {
+    let boot = boot_failing_spawn().await;
+    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
+    for attempt in ["first", "replay"] {
+        let (status, answer) = post_with_idempotency(
+            boot.app.clone(),
+            uri.clone(),
+            body("/bin/sh"),
+            Some("k-failed"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{attempt}: {answer}"
+        );
+        assert_eq!(answer["code"], "operation_failed", "{attempt}: {answer}");
+    }
+    assert_eq!(operations_under(&boot, "k-failed").await, 1);
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
+    assert!(
+        cards.is_empty(),
+        "the compensation removed the card: {cards:?}"
+    );
+}
