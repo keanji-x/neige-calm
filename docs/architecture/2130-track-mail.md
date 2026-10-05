@@ -26,7 +26,7 @@ from the caller's current turn, refuses the seventh hop. No new event kind, no F
 | D3 | **Hop carrier = the caller's current turn**, not an exact wake carrier and not the issue's fallback. `hop = 1` if the turn's input has a user segment; else `1 + max(hop of mails to this Track read since the turn started, hop of the mail replied to)`. §5 compares the three. | F11–F14, §5 |
 | D4 | **Reply = `send` with `mail_id`**; the recipient is that mail's sender. A send gives exactly one of `track_id` (new) or `mail_id` (reply). One way to do each thing. | §4 |
 | D5 | **Names:** object `mail`; `ls` and `cat` (V; `cat` stamps access metadata, §3 last decision); new verb **`send`** (W). Final form `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat`. §3 and §4 of the convention change first (§4.1). | convention §1, §3, §8.1 |
-| D6 | **`send` is listed** (MCP, Planner, no CLI row); **`ls`/`cat` are hidden views with CLI rows** (`neige mail ls`, `neige mail cat <mail_id>`), like `track ls/cat` and `report find`. The fixed rules live only in `neige_mail_send`'s description; the Planner system prompt is untouched (#1893). **Budget (orchestrator, rev 2):** the send description is kept minimal and `planner_tool_surface_fits_its_byte_budget`'s cap is raised by exactly the measured bytes `neige_mail_send` adds, with the number and `#2130` in its comment. Trimming unrelated tool descriptions to make room is out of scope (it would edit prompt text this feature does not own); a hidden `send` would leave Planners unable to discover mail. | F17, F19 |
+| D6 | **`send` is listed** (MCP, Planner, no CLI row); **`ls`/`cat` are hidden views with CLI rows** (`neige mail ls`, `neige mail cat <mail_id>`), like `track ls/cat` and `report find`. The fixed rules live only in `neige_mail_send`'s description; the Planner system prompt is untouched (#1893). **Budget (owner, 2026-10-05: "先看能压缩吗, 如果不好压缩就上调"):** keep the send description minimal, then first trim wording of existing Planner tool descriptions (meaning-preserving only: duplicated sentences, restated schema facts) to make room; raise `planner_tool_surface_fits_its_byte_budget`'s cap only by the bytes that trimming cannot free, with the measured numbers and `#2130` in its comment. Every trimmed description is read whole in review. A hidden `send` would leave Planners unable to discover mail. | F17, F19 |
 | D7 | **Planner only, same Area.** A reports-only managed *caller* is refused by the existing wrapper (mail is not added to `report_planning_tool`), then `require_role(Planner)`; Assistant denied. The Area is `identity.area_id`, never an argument. | F12, F20–F22 |
 | D8 | **A closed, area-chat, reports-only, self or other-Area recipient is refused at send.** Nothing is stored undelivered for later; a refused send is an error to the sender, never a new mail. A reports-only recipient (every Area's daily planner) is listed by `neige.area.outline` but could never `cat` (F37). | F15, F16, F37, §6 |
 | D9 | **A peer mail carries no user authority.** The wake is always a `System` segment (a mail can never become a `User` segment); the body arrives as a tool result; the send description says so once. | F14 |
@@ -156,7 +156,7 @@ Tool texts below use today's dotted names (D12).
   `send` means mail only.
 - §4 `text`: "verbatim text delivered to a person, typed into a terminal, or mailed to a Track".
 - `mail_id` is `<noun>_id`; `summary`, `track_id`, `cursor`/`next_cursor` already exist.
-- §8 item 7 ("keep the Planner byte budget") gains a recorded exception: `planner_tool_surface_fits_its_byte_budget`'s cap grows by exactly the bytes `neige.mail.send` measures (description + compact schema), with that number and `#2130` in the test comment. Why: the surface was 91 B under the cap (F19); `send` must be listed to be discoverable (D6); trimming other tools' descriptions would edit prompt text this feature does not own. The per-description 2,048 B cap is unchanged.
+- §8 item 7 ("keep the Planner byte budget"): S1 first trims wording of existing Planner tool descriptions to fit `neige.mail.send` (description + compact schema); only the remainder trimming cannot free raises `planner_tool_surface_fits_its_byte_budget`'s cap, recorded here and in the test comment with the measured numbers and `#2130` (owner decision, D6). Why an exception is possible at all: the surface was 91 B under the cap (F19) and `send` must be listed to be discoverable. The per-description 2,048 B cap is unchanged.
 
 ### 4.2 `neige_mail_send` (W, listed for the Planner, no CLI row)
 
@@ -189,10 +189,10 @@ Planner-only view, served as `neige mail ls [--cursor C]`: this Track's mail, ne
 
 Schema `{mail_id: string}` (positional). Result `{mail_id, direction, track_id, title, summary,
 text, reply_to, state, sent_at, read_at, hop, next_hop}` where `hop` is this mail's hop and
-`next_hop` the hop a send from **this turn** would get (D14). The text render prints a header line,
+`next_hop` the hop a **new, non-reply** send from this turn would get (D14); a reply also counts the replied mail (§5), so it can be higher. Both are `"n/6"` strings, `next_hop` `null` when there is none (one shape everywhere: send, ls, cat). The text render prints a header line,
 `summary:`, the text, and ends with exactly one line: `next hop <n>/6`, or
 `hop 6/6 reached — hand off with neige.user.notify` when a send would be refused. With no recorded
-turn input (unreachable in practice, §5) `next_hop` is `null` and the line is omitted. Description:
+turn input (only an older binary's turn in flight at upgrade, §5) `next_hop` is `null` and the line is omitted. Description:
 
 ```text
 Planner-only view, served as `neige mail cat <mail_id>`: one mail to or from this Track, with its text. The recipient's first cat stamps read_at, the sender's read receipt; it wakes nobody. The last line (next_hop in --json) is the hop a send from this turn would get.
@@ -221,10 +221,10 @@ SELECT created_at_ms, input_segments FROM <transcript table>
  WHERE card_id = :caller_card AND worker_session_id = :caller_session
    AND method = 'item/completed' AND item_type IN ('userMessage', 'user_message')
    AND input_segments IS NOT NULL
- ORDER BY created_at_ms DESC, id DESC LIMIT 1
+ ORDER BY id DESC LIMIT 1
 ```
 
-`turn_id` is not required (NULL until the echo, F11). `input_segments IS NOT NULL` skips a
+`turn_id` is not required (NULL until the echo, F11). `id` order equals creation order (a projection row keeps its id when the echo upgrades it; a steer row is inserted later) and is served by the `(card_id, id)` index (migration 0032, line 29), so the read inside the write lock does not scan the transcript. `input_segments IS NOT NULL` skips a
 non-projected echo row (F39). The session predicate keeps a reset's predecessor rows out; the
 caller session is the active one (D16). **No row:** the send is refused (-32409, §6) and `cat`
 shows no next hop. A Planner tool call runs inside a turn its own session issued, and issuance
@@ -317,7 +317,7 @@ AGENTS.md (predicted red set, one production mutation, restore, residue check).
 
 | # | Test (NEW unless noted) | Production mutation that reds it |
 |---|---|---|
-| 1 **M** | `mail_send_wakes_the_recipient_planner_with_one_line` (row + `track.wake_requested{source:"mail", key}`; N's next turn input holds the line text, not the body). Atomicity case: the test DB gets a trigger that aborts the insert of a `track.wake_requested` row (the append failure path, F41); the send errors and neither the mail row nor an event exists | move the mail `INSERT` into its own committed write before the event write → reds 1 only |
+| 1 **M** | `mail_send_wakes_the_recipient_planner_with_one_line` (row + `track.wake_requested{source:"mail", key}`; N's next turn input holds the line text, not the body). Atomicity case: the test DB gets a trigger that aborts the insert of a `track.wake_requested` row (the append failure path, F41); the send errors and neither the mail row nor an event exists | move the mail `INSERT` into its own committed write placed after every refusal check (so refusing tests still find no row) and before the event write → reds 1 only |
 | 2 **M** | `mail_hop_follows_the_worked_example` (§5 steps 1–9 through real turns) | `next = 1` always → reds 2, 3, 5 |
 | 3 **M** | `mail_send_refuses_the_seventh_hop_with_the_handoff_token` (exact text, -32409, no row, no event) | limit compare `>` → `>=` (refuses hop 6 too) → reds 2, 3 |
 | 4 **M** | `mail_hop_restarts_in_a_user_turn` (a user turn that also reads a hop-3 mail sends hop 1; same after a user steer) | drop the user-segment clause → reds 4 only |
@@ -326,7 +326,7 @@ AGENTS.md (predicted red set, one production mutation, restore, residue check).
 | 7 **M** | `mail_cat_stamps_read_at_once_and_only_for_the_recipient` (two recipient cats keep the first `read_at`; a sender cat stamps nothing) | drop `AND read_at IS NULL` from the stamp's `WHERE` → reds 7 only |
 | 8 **M** | `mail_send_refusals_follow_the_table` (other Area, self, closed, area chat, reports-only daily planner, foreign `mail_id`) | drop the Area comparison → reds 8 only (its other-Area case) |
 | 9 | `mail_to_a_down_planner_is_woken_on_its_next_harness_start` (no live harness at send; the lazy respawn's catch-up carries the wake line into its first turn) | none in mail code: pins the reused F8 path the design relies on |
-| 10 **M** | `mail_wake_never_presents_as_user` (observation test) | present `TrackWake` as `User` in `input_presentation` → reds 10, 2, 3 (5 is pinned to a task-completion turn, so it stays green) |
+| 10 **M** | `mail_wake_never_presents_as_user` (observation test) | present `TrackWake` as `User` in `input_presentation` → reds 10, 2, 3 (5 is pinned to a task-completion turn, and 1 and 9 assert the line text, not its presentation, so they stay green) |
 | 11 | `mails_rows_cascade_with_either_track` (migration test, real migration chain) | `ON DELETE CASCADE` → `NO ACTION` on `to_track_id` (pre-release only) |
 | 12 | existing, updated: `assistant_verdict_covers_every_registered_tool`, Planner `tools/list` set, registry golden, `prompt_files_cover_exactly_the_registered_tools`, `kernel_tool_names_follow_the_grammar`, CLI `every_option_is_its_schema_key` / `help_documents_exactly_the_served_commands` / `prompt_neige_mentions_name_served_commands`, `head_schema_fixture`, `planner_tool_surface_fits_its_byte_budget` | each reds on the unadjusted tree (new name unlisted, missing prompt file, budget) |
 | 13 **M** | `mail_send_from_a_superseded_session_is_refused` (drives the mail module's send below the transport, with the caller's `worker_sessions` row set to `superseded`; also a `cat` case) | remove the `decide_recorder` call from the send tx → reds 13 only (its send case) |
@@ -340,7 +340,7 @@ the whole `-p calm-server` run (new tools and SQL reads hit source-scan suites);
 
 | # | Slice | Size | Acceptance |
 |---|---|---|---|
-| S1 | Kernel + tools: convention §3/§4/§8 rows; migration (number last); `mails` module (send/ls/cat, hop, state); `harness::turn_input::latest` + the shared segment parse (rewind switches to it); `managed_track::reports_only_track`; three prompt files; CLI rows, help and two renders; Assistant deny list; role-list pins; registry golden; Planner surface cap raised by exactly `neige_mail_send`'s measured bytes (D6) | ~1,000 lines incl. tests | §2 trace passes end to end on a Codex and a Claude Planner fixture; rows 1–12 green after red |
+| S1 | Kernel + tools: convention §3/§4/§8 rows; migration (number last); `mails` module (send/ls/cat, hop, state); `harness::turn_input::latest` + the shared segment parse (rewind switches to it); `managed_track::reports_only_track`; three prompt files; CLI rows, help and two renders; Assistant deny list; role-list pins; registry golden; Planner surface: trim existing wording first, raise the cap only by the remainder (D6) | ~1,000 lines incl. tests | §2 trace passes end to end on a Codex and a Claude Planner fixture; rows 1–13 green after red |
 | S2 | FE sender line (optional) | ~150 lines | `Sent mail` row with the summary; `fe` gates |
 
 ## 10. KNOWN GAPS
@@ -357,8 +357,8 @@ the whole `-p calm-server` run (new tools and SQL reads hit source-scan suites);
 - G11 The recipient sees `System update`, not a mail label.
 - G12 No mailbox view in the FE; read state is visible only through `neige mail ls`.
 - G13 One recipient per mail; no CC, groups or cross-Area mail.
-- G15 A mail first read in an earlier turn is not counted when a later turn sends a new (non-reply) mail (§5).
-- G14 The Planner surface cap grows by `neige_mail_send`'s bytes (D6); #2104 K1 competes for the same budget.
+- G15 A mail first read in an earlier turn is not counted when a later turn sends a new mail or a reply to a different mail (§5).
+- G14 The Planner surface may grow by what wording trims cannot free (D6); #2104 K1 competes for the same budget.
 
 ## 11. 4140 queries (read-only; run by the orchestrator 2026-10-05)
 
