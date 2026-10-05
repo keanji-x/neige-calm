@@ -23,39 +23,39 @@ use uuid::Uuid;
 pub fn register_into(registry: &mut ToolRegistry) {
     for (name, description, properties, required) in [
         (
-            "neige_terminal_resolve",
-            include_str!("../../../prompts/tools/neige_terminal_resolve.md").trim_end(),
+            "neige_terminal_show",
+            include_str!("../../../prompts/tools/neige_terminal_show.md").trim_end(),
             json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"}}),
             vec![],
         ),
         (
             "neige_terminal_open",
             include_str!("../../../prompts/tools/neige_terminal_open.md").trim_end(),
-            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
-            vec!["request_id"],
+            json!({"idempotency_key":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
+            vec!["idempotency_key"],
         ),
         (
-            "neige_terminal_observe",
-            include_str!("../../../prompts/tools/neige_terminal_observe.md").trim_end(),
+            "neige_terminal_read",
+            include_str!("../../../prompts/tools/neige_terminal_read.md").trim_end(),
             json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec![],
         ),
         (
             "neige_terminal_control",
             include_str!("../../../prompts/tools/neige_terminal_control.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
+            json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"read":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec!["action"],
         ),
         (
             "neige_terminal_input",
             include_str!("../../../prompts/tools/neige_terminal_input.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
+            json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"idempotency_key":{"type":"string","minLength":1,"maxLength":128},"read":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
             "action":{"anyOf":[
                 {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"enum":["text","submit"]},"text":{"type":"string","minLength":1,"maxLength":16384}}},
                 {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"},"repeat":{"type":"integer","minimum":1,"maximum":32,"default":1}}},
                 {"type":"object","required":["type","steps"],"additionalProperties":false,"properties":{"type":{"const":"sequence"},"steps":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}}}}
             ]}}),
-            vec!["request_id", "action"],
+            vec!["idempotency_key", "action"],
         ),
     ] {
         let tool = name.to_owned();
@@ -68,7 +68,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
         registry.register(ToolDescriptor { name:name.into(),description:description.into(),
             input_schema,
             // Terminal programs may reach network/filesystem; no auto-approval annotation.
-            annotations:Some(json!({"readOnlyHint":matches!(name,"neige_terminal_observe"|"neige_terminal_resolve"),"destructiveHint":!matches!(name,"neige_terminal_observe"|"neige_terminal_resolve"),"openWorldHint":true})),
+            annotations:Some(json!({"readOnlyHint":matches!(name,"neige_terminal_read"|"neige_terminal_show"),"destructiveHint":!matches!(name,"neige_terminal_read"|"neige_terminal_show"),"openWorldHint":true})),
             visible_to_roles:&[CardRole::Planner],
         },handler);
     }
@@ -76,7 +76,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Open {
-    request_id: String,
+    idempotency_key: String,
     title: Option<String>,
     program: Option<String>,
     #[serde(default)]
@@ -91,7 +91,7 @@ struct Open {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Observe {
+struct Read {
     terminal_id: Option<String>,
     attempt_id: Option<String>,
     #[serde(default)]
@@ -111,7 +111,7 @@ struct Control {
     attempt_id: Option<String>,
     action: String,
     #[serde(default)]
-    observe: bool,
+    read: bool,
     wait_ms: Option<u64>,
     wait_for: Option<WaitFor>,
     settle_ms: Option<u64>,
@@ -126,10 +126,10 @@ struct Input {
     terminal_id: Option<String>,
     attempt_id: Option<String>,
     observation_id: Option<Uuid>,
-    request_id: String,
+    idempotency_key: String,
     action: Value,
     #[serde(default)]
-    observe: bool,
+    read: bool,
     wait_ms: Option<u64>,
     wait_for: Option<WaitFor>,
     settle_ms: Option<u64>,
@@ -146,7 +146,7 @@ struct Input {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Resolve {
+struct Show {
     terminal_id: Option<String>,
     attempt_id: Option<String>,
 }
@@ -268,21 +268,21 @@ impl WaitArgs {
     }
 }
 fn action_observation(
-    observe: bool,
+    read: bool,
     wait: WaitArgs,
     detach: bool,
 ) -> Result<Option<WaitPlan>, RpcError> {
-    if (wait.any() && !observe) || (detach && observe) {
+    if (wait.any() && !read) || (detach && read) {
         return Err(RpcError::invalid_params(
-            "wait_ms/wait_for/settle_ms/signal_events/repaint_ms/wait_text/wait_text_absent need observe=true; detach cannot observe",
+            "wait_ms/wait_for/settle_ms/signal_events/repaint_ms/wait_text/wait_text_absent need read=true; detach cannot read",
         ));
     }
-    if !observe {
+    if !read {
         return Ok(None);
     }
     wait.plan().map(Some)
 }
-/// The idempotency hash view of an open. The generated hook env never enters it, so a replayed request_id hashes identically.
+/// The idempotency hash view of an open. The generated hook env never enters it, so a replayed idempotency_key hashes identically.
 fn open_payload_hash(
     identity: &ToolCallIdentity,
     request: &TerminalCreateRequestPayload,
@@ -308,8 +308,8 @@ async fn call(
         .get()
         .ok_or_else(|| RpcError::internal("terminal interaction unavailable"))?;
     match name {
-        "neige_terminal_resolve" => {
-            let args: Resolve = parse(args)?;
+        "neige_terminal_show" => {
+            let args: Show = parse(args)?;
             let resolved = service
                 .resolve(&identity, &target(args.terminal_id, args.attempt_id)?)
                 .await
@@ -324,8 +324,8 @@ async fn call(
         }
         "neige_terminal_open" => {
             let args: Open = parse(args)?;
-            if args.request_id.is_empty()
-                || args.request_id.len() > 128
+            if args.idempotency_key.is_empty()
+                || args.idempotency_key.len() > 128
                 || args.title.as_ref().is_some_and(|s| s.len() > 200)
                 || args
                     .program
@@ -333,7 +333,7 @@ async fn call(
                     .is_some_and(|s| s.is_empty() || s.len() > 4096 || s.contains('\0'))
             {
                 return Err(RpcError::invalid_params(
-                    "invalid terminal request_id or title",
+                    "invalid terminal idempotency_key or title",
                 ));
             }
             // The wait arguments never enter the idempotency hash.
@@ -353,7 +353,7 @@ async fn call(
                 .map_err(failure)?;
             let idempotency_key = format!(
                 "planner-terminal:{}:{}",
-                identity.session_id, args.request_id
+                identity.session_id, args.idempotency_key
             );
             let runtime = ctx
                 .operation_runtime
@@ -447,8 +447,8 @@ async fn call(
             metadata["operation_id"] = json!(operation);
             Ok(observation_result(metadata))
         }
-        "neige_terminal_observe" => {
-            let args: Observe = parse(args)?;
+        "neige_terminal_read" => {
+            let args: Read = parse(args)?;
             if args.scroll_offset > 2000 {
                 return Err(RpcError::invalid_params(
                     "scroll_offset exceeds history limit",
@@ -483,7 +483,7 @@ async fn call(
         "neige_terminal_control" => {
             let args: Control = parse(args)?;
             let readback = action_observation(
-                args.observe,
+                args.read,
                 WaitArgs {
                     wait_for: args.wait_for,
                     wait_ms: args.wait_ms,
@@ -509,7 +509,7 @@ async fn call(
         "neige_terminal_input" => {
             let args: Input = parse(args)?;
             let readback = action_observation(
-                args.observe,
+                args.read,
                 WaitArgs {
                     wait_for: args.wait_for,
                     wait_ms: args.wait_ms,
@@ -526,7 +526,7 @@ async fn call(
                     &identity,
                     &target(args.terminal_id, args.attempt_id)?,
                     args.observation_id,
-                    &args.request_id,
+                    &args.idempotency_key,
                     args.action,
                     InputOptions {
                         allow_output_since_observation: args.allow_output_since_observation,

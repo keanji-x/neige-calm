@@ -59,6 +59,8 @@ mod review_ratify;
 mod role_enforcement;
 #[path = "cases/settings.rs"]
 mod settings;
+#[path = "cases/terminal_verbs_migration.rs"]
+mod terminal_verbs_migration;
 #[path = "cases/threads_api.rs"]
 mod threads_api;
 #[path = "cases/threads_resolve_claude.rs"]

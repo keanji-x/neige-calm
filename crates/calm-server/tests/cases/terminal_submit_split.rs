@@ -53,7 +53,7 @@ async fn open_probe(h: &Harness, request: &str) -> String {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":READ_PROBE,"request_id":request,"claim":true,
+            json!({"program":READ_PROBE,"idempotency_key":request,"claim":true,
                 "wait_for":"text","wait_text":["READY"],"wait_ms":5000}),
         )
         .await;
@@ -70,8 +70,8 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
     let sent = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":request,"action":{"type":"submit","text":text},
-                "observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":request,"action":{"type":"submit","text":text},
+                "read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     let written = receipt(&sent);
@@ -88,7 +88,7 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
     loop {
         let view = h
             .ok(
-                "neige_terminal_observe",
+                "neige_terminal_read",
                 json!({"terminal_id":terminal,"wait_ms":0}),
             )
             .await;
@@ -109,7 +109,7 @@ async fn submit_and_read(h: &Harness, terminal: &str, request: &str, text: &str)
     tokio::time::sleep(Duration::from_millis(300)).await;
     let view = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":0}),
         )
         .await;
@@ -188,8 +188,8 @@ async fn submit_is_one_sequence_one_receipt_and_a_replay_writes_nothing() {
     let replay = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"once","action":{"type":"submit","text":"hello"},
-                "observe":true,"wait_ms":300}),
+            json!({"terminal_id":terminal,"idempotency_key":"once","action":{"type":"submit","text":"hello"},
+                "read":true,"wait_ms":300}),
         )
         .await;
     let cached = receipt(&replay);
@@ -206,7 +206,7 @@ async fn submit_is_one_sequence_one_receipt_and_a_replay_writes_nothing() {
     let conflicting = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"once","action":{"type":"submit","text":"hello again"}}),
+            json!({"terminal_id":terminal,"idempotency_key":"once","action":{"type":"submit","text":"hello again"}}),
         )
         .await;
     assert!(

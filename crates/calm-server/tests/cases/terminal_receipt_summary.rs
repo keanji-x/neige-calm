@@ -33,7 +33,7 @@ async fn open_observed(h: &Harness, request: &str) -> String {
     let terminal = h
         .ok(
             "neige_terminal_open",
-            json!({"program":COUNT_PROBE,"request_id":request}),
+            json!({"program":COUNT_PROBE,"idempotency_key":request}),
         )
         .await["terminal_id"]
         .as_str()
@@ -51,8 +51,8 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     let first = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"first","action":{"type":"submit","text":"one"},
-                "claim":true,"release":true,"observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":"first","action":{"type":"submit","text":"one"},
+                "claim":true,"release":true,"read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     let written = receipt(&first);
@@ -87,8 +87,8 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     let text = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"second","action":{"type":"submit","text":"two"},
-                "claim":true,"observe":true,"wait_for":"text","wait_text":["COUNT:2:two"],"wait_ms":5000}),
+            json!({"terminal_id":terminal,"idempotency_key":"second","action":{"type":"submit","text":"two"},
+                "claim":true,"read":true,"wait_for":"text","wait_text":["COUNT:2:two"],"wait_ms":5000}),
         )
         .await;
     let state = observation(&text);
@@ -122,7 +122,7 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     let bare = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"third","action":{"type":"text","text":"three"},"claim":true}),
+            json!({"terminal_id":terminal,"idempotency_key":"third","action":{"type":"text","text":"three"},"claim":true}),
         )
         .await;
     assert_eq!(
@@ -141,8 +141,8 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     let released = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"last","action":{"type":"key","key":"Enter"},
-                "release":true,"observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":"last","action":{"type":"key","key":"Enter"},
+                "release":true,"read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     let last = receipt(&released);
@@ -165,7 +165,7 @@ async fn summary_names_the_hook_signal_and_the_repaint() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":COUNT_PROBE,"request_id":"summary-signal","claim":true}),
+            json!({"program":COUNT_PROBE,"idempotency_key":"summary-signal","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -180,8 +180,8 @@ async fn summary_names_the_hook_signal_and_the_repaint() {
     let (response, ()) = tokio::join!(
         h.call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"ask","action":{"type":"submit","text":"hello"},
-                "observe":true,"wait_for":"signal","wait_ms":10000}),
+            json!({"terminal_id":terminal,"idempotency_key":"ask","action":{"type":"submit","text":"hello"},
+                "read":true,"wait_for":"signal","wait_ms":10000}),
         ),
         post
     );
@@ -220,7 +220,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let refused = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"held","action":{"type":"submit","text":"x"},"claim":true}),
+            json!({"terminal_id":terminal,"idempotency_key":"held","action":{"type":"submit","text":"x"},"claim":true}),
         )
         .await;
     assert_eq!(
@@ -279,7 +279,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let again = h
         .call(
             "neige_terminal_control",
-            json!({"terminal_id":terminal,"action":"claim","observe":true,"wait_ms":50}),
+            json!({"terminal_id":terminal,"action":"claim","read":true,"wait_ms":50}),
         )
         .await;
     let digested = &receipt(&again)["summary"];
@@ -306,15 +306,15 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let typed = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"line","action":{"type":"submit","text":"moved"},
-                "observe":true,"wait_for":"text","wait_text":["COUNT:1:moved"],"wait_ms":5000}),
+            json!({"terminal_id":terminal,"idempotency_key":"line","action":{"type":"submit","text":"moved"},
+                "read":true,"wait_for":"text","wait_text":["COUNT:1:moved"],"wait_ms":5000}),
         )
         .await;
     assert_eq!(receipt(&typed)["outcome"], "written", "{typed}");
     let stale = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"request_id":"late","action":{"type":"key","key":"Enter"}}),
+            json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"idempotency_key":"late","action":{"type":"key","key":"Enter"}}),
         )
         .await;
     assert_eq!(receipt(&stale)["outcome"], "stale_observation", "{stale}");
@@ -337,7 +337,7 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let released = h
         .call(
             "neige_terminal_control",
-            json!({"terminal_id":terminal,"action":"release","observe":true,"wait_ms":50}),
+            json!({"terminal_id":terminal,"action":"release","read":true,"wait_ms":50}),
         )
         .await;
     let digested = &receipt(&released)["summary"];

@@ -1002,7 +1002,7 @@
   },
   {
     "name": "neige_terminal_control",
-    "description_sha256": "0d0947a9e9219fba880d6122bc9f6ca22ba76303500a0c1afe55c415d4526f56",
+    "description_sha256": "f6bc238fdf5bdf6b95eb969b9a8ef386ae8f41f8096c15b56c99f961d7e88185",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1017,7 +1017,7 @@
         "attempt_id": {
           "type": "string"
         },
-        "observe": {
+        "read": {
           "default": false,
           "type": "boolean"
         },
@@ -1094,7 +1094,7 @@
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "b82fac2143c870a82104c632341a4585c444892335e6ea347f0ff78e186a5066",
+    "description_sha256": "13239025c573194ab203be3641af00d6b98e29188e53861e700fcc644c5b8a28",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1177,11 +1177,16 @@
           "default": false,
           "type": "boolean"
         },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
         "observation_id": {
           "format": "uuid",
           "type": "string"
         },
-        "observe": {
+        "read": {
           "default": false,
           "type": "boolean"
         },
@@ -1193,11 +1198,6 @@
           "maximum": 5000,
           "minimum": 0,
           "type": "integer"
-        },
-        "request_id": {
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string"
         },
         "settle_ms": {
           "default": 150,
@@ -1252,7 +1252,7 @@
         }
       },
       "required": [
-        "request_id",
+        "idempotency_key",
         "action"
       ],
       "type": "object"
@@ -1267,8 +1267,100 @@
     ]
   },
   {
-    "name": "neige_terminal_observe",
-    "description_sha256": "a533e518fb5795a90ebeb5c8e4cf0636fb67936da9336c63bbc48250db2a93fb",
+    "name": "neige_terminal_open",
+    "description_sha256": "f85dc260d2a53aa6cabc6d3143ed76710c5cc6681224b7d7e72ca95cdf6abf92",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "default": false,
+          "type": "boolean"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "program": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repaint_ms": {
+          "maximum": 5000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settle_ms": {
+          "default": 150,
+          "maximum": 2000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "signal_events": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 200,
+          "type": "string"
+        },
+        "wait_for": {
+          "default": "elapsed",
+          "enum": [
+            "elapsed",
+            "change",
+            "signal",
+            "text"
+          ],
+          "type": "string"
+        },
+        "wait_ms": {
+          "maximum": 20000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wait_text": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        "wait_text_absent": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige_terminal_read",
+    "description_sha256": "cf0bdb1eec875e2dd45ed8f0fb6c0418669da8c033380ea7f8c81853ababb8ff",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1350,100 +1442,8 @@
     ]
   },
   {
-    "name": "neige_terminal_open",
-    "description_sha256": "32d851f40afaa426adfe0c3296010656d64883690406d630ce28d196fb4e0383",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "claim": {
-          "default": false,
-          "type": "boolean"
-        },
-        "program": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "type": "string"
-        },
-        "repaint_ms": {
-          "maximum": 5000,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "request_id": {
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string"
-        },
-        "settle_ms": {
-          "default": 150,
-          "maximum": 2000,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "signal_events": {
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
-        "title": {
-          "maxLength": 200,
-          "type": "string"
-        },
-        "wait_for": {
-          "default": "elapsed",
-          "enum": [
-            "elapsed",
-            "change",
-            "signal",
-            "text"
-          ],
-          "type": "string"
-        },
-        "wait_ms": {
-          "maximum": 20000,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "wait_text": {
-          "items": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          },
-          "maxItems": 8,
-          "minItems": 1,
-          "type": "array"
-        },
-        "wait_text_absent": {
-          "items": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          },
-          "maxItems": 8,
-          "minItems": 1,
-          "type": "array"
-        }
-      },
-      "required": [
-        "request_id"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": true,
-      "openWorldHint": true,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
-    "name": "neige_terminal_resolve",
-    "description_sha256": "2b4fa2e1dafe2dbdfef90a1b5898e70b574d46b54deb986beeb2ea1abf836202",
+    "name": "neige_terminal_show",
+    "description_sha256": "e7848e0703fdfa7cd171a93f3cae43c8965271868f199a2b52b60c1eadb2cc86",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

@@ -52,7 +52,7 @@ impl ReleaseStep {
 /// Reason of an `input claim:true` whose observation was taken as owner
 /// while this connection no longer holds control.
 pub const CONTROL_NO_LONGER_HELD: &str =
-    "terminal control held at the observation is no longer held; observe before input";
+    "terminal control held at the observation is no longer held; read before input";
 /// Reason of a release on an exited terminal that the owner registry did not confirm in time.
 pub const RELEASE_NOT_CONFIRMED_AFTER_EXIT: &str = "terminal exited; release not confirmed";
 

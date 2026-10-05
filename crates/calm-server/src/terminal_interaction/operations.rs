@@ -45,7 +45,7 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         target: &Target,
         observation: Option<Uuid>,
-        request_key: &str,
+        idempotency_key: &str,
         action: Value,
         options: InputOptions,
         observation_wait: Option<WaitPlan>,
@@ -54,8 +54,8 @@ impl TerminalInteraction {
             wait.validate()?;
         }
         ensure!(
-            !request_key.is_empty() && request_key.len() <= 128,
-            "invalid input request key"
+            !idempotency_key.is_empty() && idempotency_key.len() <= 128,
+            "invalid input idempotency_key"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         resolved.ensure_accepts_input()?;
@@ -69,9 +69,9 @@ impl TerminalInteraction {
         // Write authority is decided under the serial lock: a task that finished during the queue
         // must not be answered with stale_observation although write authority is gone.
         Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
-        let key = request_key.to_owned();
+        let key = idempotency_key.to_owned();
         // The fingerprint hashes the arguments as given (null when omitted) so a replayed
-        // request_id returns the same receipt and never claims, releases or writes again.
+        // idempotency_key returns the same receipt and never claims, releases or writes again.
         let fingerprint = crate::routes::terminal_cards::stable_payload_hash(&json!({
             "observation_id":observation,"action":action,
             "allow_output_since_observation":options.allow_output_since_observation,
@@ -82,13 +82,13 @@ impl TerminalInteraction {
             if let Some((prior, result)) = requests.get(&key) {
                 ensure!(
                     prior == &fingerprint,
-                    "input request key reused with different arguments"
+                    "input idempotency_key reused with different arguments"
                 );
                 Some(result.clone())
             } else {
                 ensure!(
                     requests.len() < 4096,
-                    "terminal connection receipt limit reached; detach and observe a fresh connection"
+                    "terminal connection receipt limit reached; detach and read on a fresh connection"
                 );
                 None
             }
@@ -109,7 +109,9 @@ impl TerminalInteraction {
                 .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?
                 .map(|latest| latest.id)
                 .ok_or_else(|| {
-                    anyhow::anyhow!("no observation on this connection; observe first")
+                    anyhow::anyhow!(
+                        "no observation on this connection; read first with neige_terminal_read"
+                    )
                 })?,
         };
         let saved = self.saved_observation(identity, &resolved, &client, observation)?;
@@ -129,7 +131,7 @@ impl TerminalInteraction {
         if let Some(ClaimStep::Unavailable { status, reason }) = &claim {
             // No write and nothing cached: a resend after the human is done must not conflict.
             let receipt =
-                control_unavailable_receipt(terminal, request_key, observation, status, reason);
+                control_unavailable_receipt(terminal, idempotency_key, observation, status, reason);
             return Ok(self
                 .with_observation(identity, &client, receipt, Some(WaitPlan::default()), None)
                 .await);
@@ -151,7 +153,7 @@ impl TerminalInteraction {
                 // Granted, then taken over before the fence read the lease: fail closed.
                 let receipt = control_unavailable_receipt(
                     terminal,
-                    request_key,
+                    idempotency_key,
                     observation,
                     "unavailable",
                     CONTROL_TAKEN_BY_ANOTHER_CLIENT,
@@ -161,10 +163,10 @@ impl TerminalInteraction {
                     .await);
             }
             Fence::Stale { current, diff } => {
-                // No physical write and nothing cached under the request_id: a later resend must not conflict.
+                // No physical write and nothing cached under the idempotency_key: a later resend must not conflict.
                 let mut receipt = stale_receipt(
                     terminal,
-                    request_key,
+                    idempotency_key,
                     observation,
                     saved.revision,
                     current,
@@ -186,7 +188,7 @@ impl TerminalInteraction {
         });
         let mut receipts = WriteReceipts::new(
             terminal,
-            request_key,
+            idempotency_key,
             observation,
             drift.as_ref(),
             sequence_steps(&action),
@@ -250,7 +252,7 @@ impl TerminalInteraction {
             .map_err(|_| anyhow::anyhow!("observation registry poisoned"))?;
         let saved = observations
             .get(&observation)
-            .ok_or_else(|| anyhow::anyhow!("observation expired; observe again"))?;
+            .ok_or_else(|| anyhow::anyhow!("observation expired; read again"))?;
         ensure!(
             saved.binding == resolved.binding.key(identity)
                 && saved.connection == client.connection
@@ -298,7 +300,7 @@ impl TerminalInteraction {
             ControlVerdict::Ok => {}
             ControlVerdict::Lost => return Ok(Fence::ControlLost),
             ControlVerdict::Changed => {
-                anyhow::bail!("terminal control changed; observe before input")
+                anyhow::bail!("terminal control changed; read before input")
             }
         }
         // Read immediately before the physical write: the readback baseline and the drift evidence.
@@ -313,7 +315,7 @@ impl TerminalInteraction {
         let now = frame.input_surface();
         ensure!(
             same_input_surface(&saved.surface, &now),
-            "terminal surface changed since observation (size, input modes or alternate screen); observe again"
+            "terminal surface changed since observation (size, input modes or alternate screen); read again"
         );
         // Encode before deciding stale vs ready: an invalid action is an RPC error whatever the
         // revision did, so only the exact-revision fence is relaxed by the stale result.

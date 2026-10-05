@@ -65,7 +65,7 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
     // are judged after the byte check, so a lost refusal shows up as bytes on the PTY.
     let before = snapshot(&h, json!({"attempt_id":codex.task})).await;
     let mut replies = Vec::new();
-    for (request_id, action) in [
+    for (idempotency_key, action) in [
         ("interrupt", json!({"type":"key","key":"Escape"})),
         (
             "new-scope",
@@ -78,7 +78,7 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
         ] {
             let mut args = target;
             args["observation_id"] = before["observation_id"].clone();
-            args["request_id"] = json!(request_id);
+            args["idempotency_key"] = json!(idempotency_key);
             args["claim"] = json!(true);
             args["action"] = action.clone();
             replies.push(h.call("neige_terminal_input", args).await);
@@ -104,7 +104,7 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
         .ok(
             "neige_terminal_input",
             json!({"attempt_id":claude.task,"observation_id":claude_before["observation_id"],
-                "request_id":"probe","action":{"type":"text","text":"probe"}}),
+                "idempotency_key":"probe","action":{"type":"text","text":"probe"}}),
         )
         .await;
     assert_eq!(written["outcome"], "written", "{written}");
@@ -119,9 +119,9 @@ async fn codex_task_worker_refuses_terminal_input_and_writes_no_bytes() {
         assert_refused(reply);
     }
 
-    // Resolve and observe stay read-only and succeed; resolve names the refusal up front.
+    // Show and read stay read-only and succeed; show names the refusal up front.
     let resolved = h
-        .ok("neige_terminal_resolve", json!({"attempt_id":codex.task}))
+        .ok("neige_terminal_show", json!({"attempt_id":codex.task}))
         .await;
     assert_eq!(resolved["available"], true, "{resolved}");
     assert_eq!(resolved["card_kind"], "codex", "{resolved}");

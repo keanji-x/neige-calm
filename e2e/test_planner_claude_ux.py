@@ -12,7 +12,7 @@ from unittest.mock import patch
 import planner_claude_ux as ux
 
 
-def row(identifier, tool="neige_terminal_observe", *, text=("3141",), terminal="t1"):
+def row(identifier, tool="neige_terminal_read", *, text=("3141",), terminal="t1"):
     return {"id": identifier, "method": "item/completed", "worker_session_id": "planner1",
             "params": {"item": {"id": f"call-{identifier}", "type": "mcpToolCall",
                                 "tool": tool, "status": "completed", "arguments": {"terminal_id": terminal},
@@ -30,7 +30,7 @@ class CollectorTests(unittest.TestCase):
             call = row(identifier, "neige_terminal_input")
             call["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
             call["params"]["item"]["result"] = {"structuredContent": {
-                "terminal_id": "t1", "request_id": f"request-{identifier}", "outcome": "written",
+                "terminal_id": "t1", "idempotency_key": f"request-{identifier}", "outcome": "written",
                 "application_result": "unverified", "observation": observation}}
             calls.append(call)
         result = ux.metrics(calls)
@@ -74,12 +74,12 @@ class CollectorTests(unittest.TestCase):
         for tool, action, receipt in (
                 ("neige_terminal_control", "claim", {"terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}),
                 ("neige_terminal_input", {"type": "key", "key": "Enter"},
-                 {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified"}),
+                 {"terminal_id": "t1", "idempotency_key": "r1", "outcome": "written", "application_result": "unverified"}),
                 ("neige_terminal_input", {"type": "key", "key": "Enter"},
-                 {"terminal_id": "t1", "request_id": "r1", "outcome": "unknown", "repeat_input": False})):
+                 {"terminal_id": "t1", "idempotency_key": "r1", "outcome": "unknown", "repeat_input": False})):
             observed = row(1, tool)
             item = observed["params"]["item"]
-            item["arguments"].update({"action": action, "observe": True})
+            item["arguments"].update({"action": action, "read": True})
             item["result"] = {"structuredContent": {**receipt, "observation": {"status": "available", "state": state}}}
             original = copy.deepcopy(observed)
             with self.subTest(tool=tool, receipt=receipt):
@@ -92,7 +92,7 @@ class CollectorTests(unittest.TestCase):
     def test_unavailable_readback_preserves_written_receipt_without_inventing_view(self):
         written = row(2, "neige_terminal_input")
         written["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
-        receipt = {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified",
+        receipt = {"terminal_id": "t1", "idempotency_key": "r1", "outcome": "written", "application_result": "unverified",
                    "observation": {"status": "unavailable", "reason": "connection lost after write"}}
         written["params"]["item"]["result"] = {"structuredContent": receipt}
         original = copy.deepcopy(written)
@@ -191,9 +191,9 @@ class CollectorTests(unittest.TestCase):
         state = {**row(4)["params"]["item"]["result"]["structuredContent"], **wait("exited")}
         readback = row(4, "neige_terminal_input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
-                                                         "observe": True, "wait_for": "change"})
+                                                         "read": True, "wait_for": "change"})
         readback["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r4", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r4", "outcome": "written", "application_result": "unverified",
             "observation_id_used": "obs-3", "output_since_observation": False,
             "observation": {"status": "available", "state": state}}}
         calls.append(readback)
@@ -203,9 +203,9 @@ class CollectorTests(unittest.TestCase):
         calls.append(refused)
         unavailable = row(6, "neige_terminal_input")
         unavailable["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
-                                                            "observe": True, "wait_for": "change"})
+                                                            "read": True, "wait_for": "change"})
         unavailable["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r6", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r6", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "unavailable", "reason": "readback timeout"}}}
         calls.append(unavailable)
         original = copy.deepcopy(calls)
@@ -255,9 +255,9 @@ class CollectorTests(unittest.TestCase):
         requested["params"]["item"]["arguments"]["wait_for"] = "change"
         state = row(3)["params"]["item"]["result"]["structuredContent"]
         readback = row(3, "neige_terminal_input")
-        readback["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"}, "observe": True})
+        readback["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"}, "read": True})
         readback["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r3", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": state}}}
         result = ux.metrics([plain, requested, readback])
         self.assertEqual(result["unmeasured_wait_observations"], 3)
@@ -282,15 +282,15 @@ class CollectorTests(unittest.TestCase):
                       "changed_since_previous_observation": True})
         explicit = row(1, "neige_terminal_input")
         explicit["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
-                                                        "observation_id": "obs-1", "request_id": "r1"})
+                                                        "observation_id": "obs-1", "idempotency_key": "r1"})
         explicit["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r1", "outcome": "written", "application_result": "unverified",
             "observation_id_used": "obs-1", "output_since_observation": False}}
         implicit = row(2, "neige_terminal_input")
         implicit["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
-                                                        "request_id": "r2", "observe": True})
+                                                        "idempotency_key": "r2", "read": True})
         implicit["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r2", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r2", "outcome": "written", "application_result": "unverified",
             "observation_id_used": "obs-1", "output_since_observation": False,
             "observation": {"status": "available", "state": state}}}
         original = copy.deepcopy([explicit, implicit])
@@ -309,14 +309,14 @@ class CollectorTests(unittest.TestCase):
             call = row(identifier, "neige_terminal_input")
             item = call["params"]["item"]
             item["arguments"].update({"action": {"type": "key", "key": "Escape"}, "observation_id": "obs-1",
-                                      "request_id": f"r{identifier}"})
+                                      "idempotency_key": f"r{identifier}"})
             if allow is not None:
                 item["arguments"]["allow_output_since_observation"] = allow
-            item["result"] = {"structuredContent": {"terminal_id": "t1", "request_id": f"r{identifier}",
+            item["result"] = {"structuredContent": {"terminal_id": "t1", "idempotency_key": f"r{identifier}",
                                                     "outcome": "written", "application_result": "unverified",
                                                     "observation_id_used": "obs-1", **receipt}}
             if failed:
-                item["status"], item["error"] = "failed", {"message": "terminal changed since observation; observe again"}
+                item["status"], item["error"] = "failed", {"message": "terminal changed since observation; read again"}
             return call
         calls = [
             input_call(1, True, {"output_since_observation": True,
@@ -376,9 +376,9 @@ class CollectorTests(unittest.TestCase):
         unmatched["params"]["item"]["result"]["structuredContent"] = text_state("unmatched")
         readback = row(3, "neige_terminal_input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "claude"},
-                                                         "observe": True, "wait_for": "text", "wait_text": ["❯"]})
+                                                         "read": True, "wait_for": "text", "wait_text": ["❯"]})
         readback["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r3", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": text_state("matched")}}}
         refused = row(4)
         refused["params"]["item"]["arguments"].update({"wait_for": "text"})
@@ -409,8 +409,8 @@ class CollectorTests(unittest.TestCase):
         def input_call(identifier, arguments, receipt=None, failed=False):
             call = row(identifier, "neige_terminal_input")
             item = call["params"]["item"]
-            item["arguments"].update({"request_id": f"r{identifier}", **arguments})
-            item["result"] = {"structuredContent": {"terminal_id": "t1", "request_id": f"r{identifier}",
+            item["arguments"].update({"idempotency_key": f"r{identifier}", **arguments})
+            item["result"] = {"structuredContent": {"terminal_id": "t1", "idempotency_key": f"r{identifier}",
                                                     "outcome": "written", "application_result": "unverified",
                                                     "observation_id_used": "obs-1", **(receipt or {})}}
             if failed:
@@ -451,9 +451,9 @@ class CollectorTests(unittest.TestCase):
         edited["params"]["item"]["arguments"].update({
             "action": {"type": "sequence", "steps": [{"type": "key", "key": "Left", "repeat": 5},
                                                      {"type": "key", "key": "Backspace"}, {"type": "text", "text": "9"}]},
-            "observe": True, "request_id": "edit-1"})
+            "read": True, "idempotency_key": "edit-1"})
         edited["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "edit-1", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "edit-1", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": row(1, text=("7219",))["params"]["item"]["result"]["structuredContent"]}}}
         _, evidence = ux.check_scenario("edit", [edited], None)
         self.assertEqual(evidence["status"], "review_required")
@@ -468,24 +468,24 @@ class CollectorTests(unittest.TestCase):
             return {"wait": {"mode": mode, "outcome": outcome, "waited_ms": 812, "settled": outcome != "unmatched"},
                     "changed_since_previous_observation": outcome == "changed"}
         text = row(1, "neige_terminal_open")
-        text["params"]["item"]["arguments"] = {"request_id": "o1", "program": "claude", "claim": True,
+        text["params"]["item"]["arguments"] = {"idempotency_key": "o1", "program": "claude", "claim": True,
                                                "wait_for": "text", "wait_text": ["trust this folder"]}
         text["params"]["item"]["result"]["structuredContent"].update(
             {**wait("text", "matched"), "claim": {"status": "claimed", "control_id": "c1"}})
         change = row(2, "neige_terminal_open")
-        change["params"]["item"]["arguments"] = {"request_id": "o2", "wait_for": "change", "wait_ms": 300}
+        change["params"]["item"]["arguments"] = {"idempotency_key": "o2", "wait_for": "change", "wait_ms": 300}
         change["params"]["item"]["result"]["structuredContent"].update(wait("change", "unchanged"))
         elapsed = row(3, "neige_terminal_open")
-        elapsed["params"]["item"]["arguments"] = {"request_id": "o3", "wait_ms": 500}
+        elapsed["params"]["item"]["arguments"] = {"idempotency_key": "o3", "wait_ms": 500}
         elapsed["params"]["item"]["result"]["structuredContent"].update(wait("elapsed", "elapsed"))
         plain = row(4, "neige_terminal_open")
-        plain["params"]["item"]["arguments"] = {"request_id": "o4", "claim": True}
+        plain["params"]["item"]["arguments"] = {"idempotency_key": "o4", "claim": True}
         plain["params"]["item"]["result"]["structuredContent"].update(wait("elapsed", "elapsed"))
         refused = row(5, "neige_terminal_open")
-        refused["params"]["item"]["arguments"] = {"request_id": "o5", "wait_for": "text"}
+        refused["params"]["item"]["arguments"] = {"idempotency_key": "o5", "wait_for": "text"}
         refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_for=text requires wait_text"}
         older = row(6, "neige_terminal_open")
-        older["params"]["item"]["arguments"] = {"request_id": "o6", "wait_for": "text", "wait_text": ["x"]}
+        older["params"]["item"]["arguments"] = {"idempotency_key": "o6", "wait_for": "text", "wait_text": ["x"]}
         calls = [text, change, elapsed, plain, refused, older]
         original = copy.deepcopy(calls)
         result = ux.metrics(calls)
@@ -505,8 +505,8 @@ class CollectorTests(unittest.TestCase):
         def input_call(identifier, action, receipt=None, failed=False, **arguments):
             call = row(identifier, "neige_terminal_input")
             item = call["params"]["item"]
-            item["arguments"].update({"request_id": f"r{identifier}", "action": action, **arguments})
-            item["result"] = {"structuredContent": {"terminal_id": "t1", "request_id": f"r{identifier}",
+            item["arguments"].update({"idempotency_key": f"r{identifier}", "action": action, **arguments})
+            item["result"] = {"structuredContent": {"terminal_id": "t1", "idempotency_key": f"r{identifier}",
                                                     "outcome": "written", "application_result": "unverified",
                                                     "observation_id_used": "obs-1", **(receipt or {})}}
             if failed:
@@ -555,10 +555,10 @@ class CollectorTests(unittest.TestCase):
             return state
         def readback(identifier, arguments, state):
             call = row(identifier, "neige_terminal_input")
-            call["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "hi"}, "observe": True,
+            call["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "hi"}, "read": True,
                                                          "wait_for": "signal", **arguments})
             call["params"]["item"]["result"] = {"structuredContent": {
-                "terminal_id": "t1", "request_id": f"r{identifier}", "outcome": "written",
+                "terminal_id": "t1", "idempotency_key": f"r{identifier}", "outcome": "written",
                 "application_result": "unverified", "observation": {"status": "available", "state": state}}}
             return call
         absent = {"wait_text_absent": ["esc to interrupt"]}
@@ -583,7 +583,7 @@ class CollectorTests(unittest.TestCase):
                      "conditions": {"present": None, "absent": True}}})
         calls.append(text)
         opened = row(10, "neige_terminal_open")
-        opened["params"]["item"]["arguments"] = {"request_id": "o1", "wait_for": "signal", "wait_text_absent": ["busy"]}
+        opened["params"]["item"]["arguments"] = {"idempotency_key": "o1", "wait_for": "signal", "wait_text_absent": ["busy"]}
         opened["params"]["item"]["result"]["structuredContent"] = signal_state("settled", {"present": None, "absent": True})
         calls.append(opened)
         original = copy.deepcopy(calls)
@@ -664,9 +664,9 @@ class CollectorTests(unittest.TestCase):
         budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("no_signal")
         readback = row(3, "neige_terminal_input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "3100 + 41"},
-                                                         "observe": True, "wait_for": "signal"})
+                                                         "read": True, "wait_for": "signal"})
         readback["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r3", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": self.signal_wait_state()}}}
         refused = row(4)
         refused["params"]["item"]["arguments"]["wait_for"] = "signal"
@@ -715,7 +715,7 @@ class CollectorTests(unittest.TestCase):
             calls.append(call)
         failed = row(5, "neige_terminal_input")
         failed["params"]["item"]["arguments"]["action"] = {"type": "submit", "text": "refused"}
-        failed["params"]["item"]["status"], failed["params"]["item"]["error"] = "failed", {"message": "no observation on this connection; observe first"}
+        failed["params"]["item"]["status"], failed["params"]["item"]["error"] = "failed", {"message": "no observation on this connection; read first with neige_terminal_read"}
         calls.append(failed)
         result = ux.metrics(calls)
         self.assertEqual(result["submit_actions"], 3)
@@ -747,17 +747,17 @@ class CollectorTests(unittest.TestCase):
         state = row(3)["params"]["item"]["result"]["structuredContent"]
         state["signals"] = self.signals(True, ("Notification",))
         readback = row(3, "neige_terminal_input")
-        readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "hi"}, "observe": True})
+        readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "hi"}, "read": True})
         readback["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r3", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "available", "state": state}}}
         older = row(4)
         opened = row(5, "neige_terminal_open")
         opened["params"]["item"]["result"]["structuredContent"]["signals"] = self.signals(True, ("Stop",))
         unavailable = row(6, "neige_terminal_input")
-        unavailable["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"}, "observe": True})
+        unavailable["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"}, "read": True})
         unavailable["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "r6", "outcome": "written", "application_result": "unverified",
+            "terminal_id": "t1", "idempotency_key": "r6", "outcome": "written", "application_result": "unverified",
             "observation": {"status": "unavailable", "reason": "readback timeout"}}}
         calls = [seen, silent, readback, older, opened, unavailable]
         original = copy.deepcopy(calls)
@@ -823,15 +823,15 @@ class CollectorTests(unittest.TestCase):
     def test_changed_since_observation_production_refusal_is_counted(self):
         bad = row(1, "neige_terminal_input")
         bad["params"]["item"]["status"] = "failed"
-        bad["params"]["item"]["error"] = {"message": "terminal changed since observation; observe again"}
+        bad["params"]["item"]["error"] = {"message": "terminal changed since observation; read again"}
         self.assertEqual(ux.metrics([bad])["observation_refusals"], 1)
 
     def test_observation_refusal_variants_and_error_envelopes(self):
-        for message in ("observation expired; observe again",
+        for message in ("observation expired; read again",
                         "observation belongs to another connection or expired",
-                        "terminal changed since observation; observe again",
-                        "terminal surface changed since observation (size, input modes or alternate screen); observe again",
-                        "no observation on this connection; observe first"):
+                        "terminal changed since observation; read again",
+                        "terminal surface changed since observation (size, input modes or alternate screen); read again",
+                        "no observation on this connection; read first with neige_terminal_read"):
             for envelope in ("error", "result", "both"):
                 failed = row(1, "neige_terminal_input")
                 item = failed["params"]["item"]
@@ -847,9 +847,9 @@ class CollectorTests(unittest.TestCase):
         unrelated = row(1, "neige_terminal_input")
         unrelated["params"]["item"]["error"] = {"message": "observation renderer changed resolution"}
         other_tool = row(2, "neige_track_cat")
-        other_tool["params"]["item"]["error"] = {"message": "observation expired; observe again"}
+        other_tool["params"]["item"]["error"] = {"message": "observation expired; read again"}
         success = row(3, "neige_terminal_input")
-        data = {"terminal_id": "t1", "outcome": "written", "next": "terminal changed since observation; observe again"}
+        data = {"terminal_id": "t1", "outcome": "written", "next": "terminal changed since observation; read again"}
         success["params"]["item"]["result"] = {"isError": False, "structuredContent": data, "content": [
             {"type": "text", "text": json.dumps(data)}]}
         self.assertEqual(ux.metrics([unrelated, other_tool, success])["observation_refusals"], 0)
@@ -958,10 +958,10 @@ class CollectorTests(unittest.TestCase):
 
     def test_drift_and_implicit_observation_refusals_are_counted_exactly(self):
         for message, counted in (
-                ("terminal surface changed since observation (size, input modes or alternate screen); observe again", 1),
-                ("no observation on this connection; observe first", 1),
-                ("terminal control changed; observe before input", 0),
-                ("observe first", 0)):
+                ("terminal surface changed since observation (size, input modes or alternate screen); read again", 1),
+                ("no observation on this connection; read first with neige_terminal_read", 1),
+                ("terminal control changed; read before input", 0),
+                ("read first", 0)):
             failed = row(1, "neige_terminal_input")
             failed["params"]["item"]["status"] = "failed"
             failed["params"]["item"]["error"] = {"message": f"MCP error: -32403: {message}"}
@@ -976,7 +976,7 @@ class CollectorTests(unittest.TestCase):
         stale = row(2, "neige_terminal_input")
         stale["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
         stale["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "enter", "outcome": "stale_observation",
+            "terminal_id": "t1", "idempotency_key": "enter", "outcome": "stale_observation",
             "application_result": "unverified", "observation_id_used": "old",
             "observed_revision": 41, "current_revision": 42, "next": "inspect observation.state",
             "observation": {"status": "available", "state": state}}}
@@ -994,10 +994,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(stale, original)
         failed = row(3, "neige_terminal_input")
         failed["params"]["item"]["status"] = "failed"
-        failed["params"]["item"]["error"] = {"message": "terminal changed since observation; observe again"}
+        failed["params"]["item"]["error"] = {"message": "terminal changed since observation; read again"}
         written = row(4, "neige_terminal_input")
         written["params"]["item"]["result"] = {"structuredContent": {
-            "terminal_id": "t1", "request_id": "enter", "outcome": "written", "application_result": "unverified"}}
+            "terminal_id": "t1", "idempotency_key": "enter", "outcome": "written", "application_result": "unverified"}}
         self.assertEqual(ux.metrics([stale, failed, written])["observation_refusals"], 2)
 
     def test_stale_observation_outcome_is_not_counted_on_failed_or_started_calls(self):
@@ -1048,7 +1048,7 @@ class CollectorTests(unittest.TestCase):
     def test_tool_errors_retained_as_review_findings(self):
         bad = row(2, "neige_terminal_input")
         bad["params"]["item"]["status"] = "failed"
-        bad["params"]["item"]["error"] = {"message": "observation expired; observe again"}
+        bad["params"]["item"]["error"] = {"message": "observation expired; read again"}
         _, evidence = ux.check_scenario("short", [row(1), bad], None)
         self.assertEqual(evidence["status"], "review_required")
         self.assertEqual(evidence["tool_error_rows"], [2])

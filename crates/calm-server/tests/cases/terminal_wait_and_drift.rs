@@ -71,7 +71,7 @@ fn error_text(response: &Value) -> String {
 async fn open(h: &Harness, program: &str, request: &str) -> String {
     h.ok(
         "neige_terminal_open",
-        json!({"program":program,"request_id":request}),
+        json!({"program":program,"idempotency_key":request}),
     )
     .await["terminal_id"]
         .as_str()
@@ -81,7 +81,7 @@ async fn open(h: &Harness, program: &str, request: &str) -> String {
 async fn claim(h: &Harness, terminal: &str) -> Value {
     h.call(
         "neige_terminal_control",
-        json!({"terminal_id":terminal,"action":"claim","observe":true,"wait_ms":100}),
+        json!({"terminal_id":terminal,"action":"claim","read":true,"wait_ms":100}),
     )
     .await
 }
@@ -129,7 +129,7 @@ async fn observe_change_wait_returns_after_late_output_and_settles() {
         &terminal,
         "go",
         h.call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change","wait_ms":5000}),
         ),
     )
@@ -158,7 +158,7 @@ async fn observe_change_wait_on_quiet_shell_reports_unchanged_at_budget() {
     let terminal = open(&h, "exec /bin/sh", "quiet").await;
     let settled = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":200}),
         )
         .await;
@@ -175,7 +175,7 @@ async fn observe_change_wait_on_quiet_shell_reports_unchanged_at_budget() {
     );
     let view = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change","wait_ms":300}),
         )
         .await;
@@ -198,7 +198,7 @@ async fn observe_change_wait_on_quiet_shell_reports_unchanged_at_budget() {
     );
     let rejected = h
         .call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"settle_ms":10}),
         )
         .await;
@@ -212,7 +212,7 @@ async fn observe_change_wait_on_quiet_shell_reports_unchanged_at_budget() {
         let mut args = options;
         args["terminal_id"] = json!(terminal);
         assert_eq!(
-            h.call("neige_terminal_observe", args).await["error"]["code"],
+            h.call("neige_terminal_read", args).await["error"]["code"],
             -32602
         );
     }
@@ -260,7 +260,7 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
         injected
     };
     let (first, injected) = tokio::join!(
-        h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"first","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000})),
+        h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"first","action":{"type":"key","key":"Enter"},"read":true,"wait_for":"change","wait_ms":3000})),
         inject
     );
     assert_eq!(receipt(&first)["outcome"], "written", "{first}");
@@ -305,7 +305,7 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
         observation(&claimed)["observation_revision"]
     );
     // A reply 300 ms after the write is included without a second call.
-    let second = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"second","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000})).await;
+    let second = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"second","action":{"type":"key","key":"Enter"},"read":true,"wait_for":"change","wait_ms":3000})).await;
     let state = observation(&second);
     assert_eq!(state["wait"]["outcome"], "changed", "{state}");
     assert!(has_line(state, "LATER"), "{state}");
@@ -325,7 +325,7 @@ async fn observe_change_wait_reports_process_exit() {
     let terminal = open(&h, "sleep 0.3; exit 0", "exit").await;
     let view = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change","wait_ms":5000}),
         )
         .await;
@@ -350,12 +350,12 @@ async fn drift_tolerant_input_interrupts_streaming_output_but_not_a_changed_surf
     // observation is not the one the inputs below name.
     let moved = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     assert_eq!(moved["wait"]["outcome"], "changed", "{moved}");
-    let refused = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape","action":{"type":"key","key":"Escape"}})).await;
+    let refused = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"idempotency_key":"escape","action":{"type":"key","key":"Escape"}})).await;
     // Only the revision moved, so the refusal is a structured result with a fresh observation rather
     // than an RPC error.
     let stale = receipt(&refused);
@@ -370,8 +370,8 @@ async fn drift_tolerant_input_interrupts_streaming_output_but_not_a_changed_surf
         observation(&refused)["observation_id"],
         observed["observation_id"]
     );
-    let conflicting = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
-    // The stale result above cached nothing, so the same request_id is free with different arguments;
+    let conflicting = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"idempotency_key":"escape","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    // The stale result above cached nothing, so the same idempotency_key is free with different arguments;
     // the flag is part of the fingerprint once a receipt exists.
     let written = receipt(&conflicting);
     assert_eq!(written["outcome"], "written", "{written}");
@@ -386,7 +386,7 @@ async fn drift_tolerant_input_interrupts_streaming_output_but_not_a_changed_surf
         drift["input_revision"].as_u64().unwrap() > drift["observed_revision"].as_u64().unwrap(),
         "{drift}"
     );
-    let reused = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape","action":{"type":"key","key":"Escape"}})).await;
+    let reused = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"idempotency_key":"escape","action":{"type":"key","key":"Escape"}})).await;
     assert!(
         error_text(&reused).contains("reused with different arguments"),
         "{reused}"
@@ -400,7 +400,7 @@ async fn drift_tolerant_input_interrupts_streaming_output_but_not_a_changed_surf
         .lock()
         .unwrap()
         .on_resize(size.cols + 2, size.rows);
-    let surface = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape-2","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    let surface = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"idempotency_key":"escape-2","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
     assert!(
         error_text(&surface).contains("terminal surface changed since observation"),
         "{surface}"
@@ -414,19 +414,19 @@ async fn omitted_observation_id_uses_the_latest_observation_on_this_connection()
     let terminal = open(&h, "exec /bin/sh", "implicit").await;
     let claimed = claim(&h, &terminal).await;
     let latest = observation(&claimed)["observation_id"].clone();
-    let typed = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"},"observe":true,"wait_for":"change","wait_ms":3000})).await;
+    let typed = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"},"read":true,"wait_for":"change","wait_ms":3000})).await;
     assert_eq!(receipt(&typed)["outcome"], "written", "{typed}");
     assert_eq!(receipt(&typed)["observation_id_used"], latest);
     assert_eq!(receipt(&typed)["output_since_observation"], false);
     assert!(receipt(&typed).get("observation_drift").is_none());
     let readback = observation(&typed)["observation_id"].clone();
     // The readback became the latest observation; the receipt replays for
-    // the same request_id with the omitted argument hashed as null.
-    let replay = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"}})).await;
+    // the same idempotency_key with the omitted argument hashed as null.
+    let replay = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"}})).await;
     assert_eq!(receipt(&replay)["observation_id_used"], latest);
-    let explicit = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":latest,"request_id":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"}})).await;
+    let explicit = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":latest,"idempotency_key":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"}})).await;
     assert!(error_text(&explicit).contains("reused with different arguments"));
-    let entered = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000})).await;
+    let entered = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"enter","action":{"type":"key","key":"Enter"},"read":true,"wait_for":"change","wait_ms":3000})).await;
     assert_eq!(receipt(&entered)["observation_id_used"], readback);
     assert!(has_line(observation(&entered), "IMPLICIT_OK"), "{entered}");
     // A fresh connection has no observation to fall back to.
@@ -440,9 +440,10 @@ async fn omitted_observation_id_uses_the_latest_observation_on_this_connection()
         json!({"terminal_id":terminal,"action":"claim"}),
     )
     .await;
-    let none = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"blind","action":{"type":"key","key":"Enter"}})).await;
+    let none = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"blind","action":{"type":"key","key":"Enter"}})).await;
     assert!(
-        error_text(&none).contains("no observation on this connection; observe first"),
+        error_text(&none)
+            .contains("no observation on this connection; read first with neige_terminal_read"),
         "{none}"
     );
     h.stop(&terminal).await;
@@ -455,7 +456,7 @@ async fn observe_until(h: &Harness, terminal: &str, alternate: bool, line: Optio
     loop {
         let view = h
             .ok(
-                "neige_terminal_observe",
+                "neige_terminal_read",
                 json!({"terminal_id":terminal,"wait_for":"change","wait_ms":1000}),
             )
             .await;
@@ -491,7 +492,7 @@ async fn drift_tolerant_input_refuses_an_alternate_screen_switch_in_either_direc
         "the switch must not be a resize"
     );
     assert_eq!(menu["rows"], normal["rows"]);
-    let into_menu = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":normal["observation_id"],"request_id":"esc-normal","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    let into_menu = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":normal["observation_id"],"idempotency_key":"esc-normal","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
     let message = error_text(&into_menu);
     assert!(
         message.contains("terminal surface changed since observation")
@@ -500,7 +501,7 @@ async fn drift_tolerant_input_refuses_an_alternate_screen_switch_in_either_direc
     );
     std::fs::write(h.root.path().join("back"), b"x").unwrap();
     let again = observe_until(&h, &terminal, false, Some("AGAIN")).await;
-    let out_of_menu = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":menu["observation_id"],"request_id":"esc-menu","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    let out_of_menu = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":menu["observation_id"],"idempotency_key":"esc-menu","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
     let message = error_text(&out_of_menu);
     assert!(
         message.contains("terminal surface changed since observation")
@@ -508,7 +509,7 @@ async fn drift_tolerant_input_refuses_an_alternate_screen_switch_in_either_direc
         "{out_of_menu}"
     );
     // Same screen kind as the live frame: the flag still writes.
-    let same = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":again["observation_id"],"request_id":"esc-again","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    let same = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":again["observation_id"],"idempotency_key":"esc-again","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
     assert_eq!(receipt(&same)["outcome"], "written", "{same}");
     h.stop(&terminal).await;
 }
@@ -526,7 +527,7 @@ async fn change_wait_settles_only_after_a_sustained_burst_ends() {
         &terminal,
         "go",
         h.call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change","settle_ms":150,"wait_ms":3000}),
         ),
     )
@@ -552,7 +553,7 @@ async fn change_wait_budget_ends_mid_burst_unsettled() {
         &terminal,
         "go",
         h.call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change","settle_ms":150,"wait_ms":300}),
         ),
     )
@@ -568,7 +569,7 @@ async fn change_wait_budget_ends_mid_burst_unsettled() {
     // The burst is still running; a fresh change wait sees more of it.
     let later = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change","wait_ms":3000}),
         )
         .await;
@@ -591,7 +592,7 @@ async fn omitted_wait_ms_in_change_mode_waits_for_a_late_reply() {
         &terminal,
         "go",
         h.call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change"}),
         ),
     )
@@ -603,7 +604,7 @@ async fn omitted_wait_ms_in_change_mode_waits_for_a_late_reply() {
     assert!(waited < 2000, "waited_ms={waited}: {view}");
     // Elapsed mode without wait_ms still returns at once.
     let immediate = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(
         immediate["wait"],
@@ -634,12 +635,12 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
     let moved = wait_past(&h, &terminal, revision(&latest)).await;
     // No observation was taken since the claim readback: the implicit
     // observation is stale by exactly the program's line.
-    let response = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
+    let response = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"enter","action":{"type":"key","key":"Enter"}})).await;
     let stale = receipt(&response);
     assert_eq!(stale["outcome"], "stale_observation", "{stale}");
     assert_eq!(stale["application_result"], "unverified");
     assert_eq!(stale["terminal_id"], terminal);
-    assert_eq!(stale["request_id"], "enter");
+    assert_eq!(stale["idempotency_key"], "enter");
     assert_eq!(stale["observation_id_used"], latest["observation_id"]);
     assert_eq!(
         stale["observed_revision"].as_u64().unwrap(),
@@ -653,7 +654,7 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
         stale["next"]
             .as_str()
             .unwrap()
-            .contains("resend the same request_id with observation_id omitted and allow_output_since_observation=true"),
+            .contains("resend the same idempotency_key with observation_id omitted and allow_output_since_observation=true"),
         "{stale}"
     );
     assert!(stale.get("output_since_observation").is_none());
@@ -665,7 +666,7 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
         json!({"type":"key","key":"Enter","repeat":2}),
         "only navigation and editing keys may repeat",
     )] {
-        let invalid = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"request_id":request,"action":action})).await;
+        let invalid = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"idempotency_key":request,"action":action})).await;
         assert!(
             error_text(&invalid).contains(expected),
             "{request}: {invalid}"
@@ -701,13 +702,13 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
     assert_eq!(live_revision(&h, &terminal), revision(&fresh));
     // Resend as advised: the fresh observation is the connection's latest and nothing was cached under
     // "enter", so this writes rather than conflicting.
-    let resent = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"allow_output_since_observation":true})).await;
+    let resent = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"enter","action":{"type":"key","key":"Enter"},"allow_output_since_observation":true})).await;
     let written = receipt(&resent);
     assert_eq!(written["outcome"], "written", "{written}");
     assert_eq!(written["observation_id_used"], fresh["observation_id"]);
     assert_eq!(written["output_since_observation"], false);
     // The written receipt is cached with the flag in its fingerprint.
-    let replay = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
+    let replay = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"enter","action":{"type":"key","key":"Enter"}})).await;
     assert!(
         error_text(&replay).contains("reused with different arguments"),
         "{replay}"
@@ -723,9 +724,9 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
     assert_eq!(released["control_id"], Value::Null);
     std::fs::write(h.root.path().join("go2"), b"x").unwrap();
     wait_past(&h, &terminal, revision(&fresh)).await;
-    let refused = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":fresh["observation_id"],"request_id":"after-release","action":{"type":"key","key":"Enter"}})).await;
+    let refused = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":fresh["observation_id"],"idempotency_key":"after-release","action":{"type":"key","key":"Enter"}})).await;
     assert!(
-        error_text(&refused).contains("terminal control changed; observe before input"),
+        error_text(&refused).contains("terminal control changed; read before input"),
         "{refused}"
     );
     h.stop(&terminal).await;
@@ -742,7 +743,7 @@ async fn release_readback_omits_text_only_when_unchanged_since_previous_observat
     let released = h
         .call(
             "neige_terminal_control",
-            json!({"terminal_id":terminal,"action":"release","observe":true}),
+            json!({"terminal_id":terminal,"action":"release","read":true}),
         )
         .await;
     assert_eq!(receipt(&released)["control_id"], Value::Null);
@@ -791,7 +792,7 @@ async fn release_readback_omits_text_only_when_unchanged_since_previous_observat
     let released = h
         .call(
             "neige_terminal_control",
-            json!({"terminal_id":terminal,"action":"release","observe":true}),
+            json!({"terminal_id":terminal,"action":"release","read":true}),
         )
         .await;
     let state = observation(&released);
@@ -821,7 +822,7 @@ async fn release_readback_keeps_text_after_a_history_view_of_the_same_revision()
     claim(&h, &terminal).await;
     let history = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"scroll_offset":1}),
         )
         .await;
@@ -830,7 +831,7 @@ async fn release_readback_keeps_text_after_a_history_view_of_the_same_revision()
     let released = h
         .call(
             "neige_terminal_control",
-            json!({"terminal_id":terminal,"action":"release","observe":true}),
+            json!({"terminal_id":terminal,"action":"release","read":true}),
         )
         .await;
     let state = observation(&released);
@@ -846,7 +847,7 @@ async fn release_readback_keeps_text_after_a_history_view_of_the_same_revision()
     let released = h
         .call(
             "neige_terminal_control",
-            json!({"terminal_id":terminal,"action":"release","observe":true}),
+            json!({"terminal_id":terminal,"action":"release","read":true}),
         )
         .await;
     let state = observation(&released);
@@ -877,7 +878,7 @@ async fn history_view_of_coloured_output_pads_short_lines() {
     for offset in [1, 4, history_rows] {
         let history = h
             .ok(
-                "neige_terminal_observe",
+                "neige_terminal_read",
                 json!({"terminal_id":terminal,"scroll_offset":offset}),
             )
             .await;
@@ -914,13 +915,13 @@ async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
     wait_past(&h, &terminal, revision(&live_before_mode)).await;
     let history = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"scroll_offset":1}),
         )
         .await;
     assert_eq!(history["scroll_offset"], 1, "{history}");
     let live = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(live["scroll_offset"], 0);
     for (name, observation, expected) in [
@@ -935,11 +936,11 @@ async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
             "return to live viewport before input",
         ),
     ] {
-        let refused = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation["observation_id"],"request_id":name,"action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+        let refused = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation["observation_id"],"idempotency_key":name,"action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
         assert!(error_text(&refused).contains(expected), "{name}: {refused}");
         assert!(!h.interaction().input_pending(&terminal).await, "{name}");
     }
-    let written = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":live["observation_id"],"request_id":"live","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    let written = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":live["observation_id"],"idempotency_key":"live","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
     assert_eq!(receipt(&written)["outcome"], "written", "{written}");
     h.stop(&terminal).await;
 }
@@ -952,7 +953,7 @@ async fn output_since_observation_receipt_lists_the_changed_rows() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"printf 'Title line\\nType here: '; cat >/dev/null","request_id":"rows","claim":true}),
+            json!({"program":"printf 'Title line\\nType here: '; cat >/dev/null","idempotency_key":"rows","claim":true}),
         )
         .await;
     assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
@@ -969,7 +970,7 @@ async fn output_since_observation_receipt_lists_the_changed_rows() {
         .unwrap()
         .on_pty_chunk(b"\x1b7\x1b[1;1HOther title\x1b[4;1Hhint\x1b8".to_vec());
     wait_past(&h, &terminal, revision(&view)).await;
-    let admitted = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"type","action":{"type":"text","text":"abc"},"allow_output_since_observation":true,"observe":true,"wait_for":"change","wait_ms":2000})).await;
+    let admitted = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":view["observation_id"],"idempotency_key":"type","action":{"type":"text","text":"abc"},"allow_output_since_observation":true,"read":true,"wait_for":"change","wait_ms":2000})).await;
     let written = receipt(&admitted);
     assert_eq!(written["outcome"], "written", "{written}");
     assert_eq!(written["output_since_observation"], true);
@@ -992,14 +993,14 @@ async fn output_since_observation_receipt_lists_the_changed_rows() {
     assert_eq!(text[1].as_str().unwrap().trim_end(), "Type here: abc");
     // The readback is the latest observation and nothing painted since: the exact-revision path admits
     // with the flag set and reports no drift, so there is no tolerance key either.
-    let exact = h.call("neige_terminal_input", json!({"terminal_id":terminal,"request_id":"more","action":{"type":"text","text":"d"},"allow_output_since_observation":true})).await;
+    let exact = h.call("neige_terminal_input", json!({"terminal_id":terminal,"idempotency_key":"more","action":{"type":"text","text":"d"},"allow_output_since_observation":true})).await;
     let plain = receipt(&exact);
     assert_eq!(plain["outcome"], "written", "{plain}");
     assert_eq!(plain["observation_id_used"], after["observation_id"]);
     assert_eq!(plain["output_since_observation"], false);
     assert!(plain.get("observation_drift").is_none(), "{plain}");
     // A replay returns the cached receipt with the same drift rows.
-    let replay = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"type","action":{"type":"text","text":"abc"},"allow_output_since_observation":true})).await;
+    let replay = h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":view["observation_id"],"idempotency_key":"type","action":{"type":"text","text":"abc"},"allow_output_since_observation":true})).await;
     assert_eq!(
         receipt(&replay)["observation_drift"]["rows_changed"],
         json!([0, 3])
@@ -1090,7 +1091,7 @@ async fn wait_stops_when_the_projection_is_invalidated(wait_for: &str, loss: Pro
     let started = std::time::Instant::now();
     let (response, ()) = tokio::join!(
         h.call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":wait_for,"wait_ms":10000})
         ),
         sever
@@ -1117,7 +1118,7 @@ async fn detach_receipt_names_the_closed_connection() {
     let h = Harness::start().await;
     let terminal = open(&h, "exec /bin/sh", "detach").await;
     let view = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     let detached = h
         .call(
@@ -1163,7 +1164,7 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
     let opened = h
         .call(
             "neige_terminal_open",
-            json!({"program":"printf 'SCREEN_SECRET\\n'; exec /bin/sh","request_id":"single-copy"}),
+            json!({"program":"printf 'SCREEN_SECRET\\n'; exec /bin/sh","idempotency_key":"single-copy"}),
         )
         .await;
     let terminal = receipt(&opened)["terminal_id"].as_str().unwrap().to_owned();
@@ -1173,7 +1174,7 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
         json!({"terminal_id":terminal}),
         json!({"terminal_id":terminal,"wait_for":"change","wait_ms":50}),
     ] {
-        let response = h.call("neige_terminal_observe", args).await;
+        let response = h.call("neige_terminal_read", args).await;
         let state = receipt(&response);
         assert!(has_line(state, "SCREEN_SECRET"), "{state}");
         let text = summary(&response);
@@ -1216,7 +1217,7 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
     );
     assert!(has_line(observation(&claimed), "SCREEN_SECRET"));
     let resolved = h
-        .call("neige_terminal_resolve", json!({"terminal_id":terminal}))
+        .call("neige_terminal_show", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(
         summary(&resolved),

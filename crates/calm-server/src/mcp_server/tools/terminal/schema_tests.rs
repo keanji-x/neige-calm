@@ -41,8 +41,8 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             .map(|descriptor| descriptor.name.clone())
             .collect::<BTreeSet<_>>(),
         fields(&[
-            "neige_terminal_resolve",
-            "neige_terminal_observe",
+            "neige_terminal_show",
+            "neige_terminal_read",
             "neige_terminal_control",
             "neige_terminal_input"
         ]),
@@ -58,15 +58,11 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         "wait_text_absent",
     ];
     for (name, common, mandatory) in [
-        ("resolve", vec![], vec![]),
-        (
-            "observe",
-            [&["scroll_offset"][..], &WAIT[..]].concat(),
-            vec![],
-        ),
+        ("show", vec![], vec![]),
+        ("read", [&["scroll_offset"][..], &WAIT[..]].concat(), vec![]),
         (
             "control",
-            [&["action", "observe"][..], &WAIT[..]].concat(),
+            [&["action", "read"][..], &WAIT[..]].concat(),
             vec!["action"],
         ),
         (
@@ -74,9 +70,9 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             [
                 &[
                     "observation_id",
-                    "request_id",
+                    "idempotency_key",
                     "action",
-                    "observe",
+                    "read",
                     "allow_output_since_observation",
                     "claim",
                     "release",
@@ -84,7 +80,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
                 &WAIT[..],
             ]
             .concat(),
-            vec!["request_id", "action"],
+            vec!["idempotency_key", "action"],
         ),
     ] {
         let name = format!("neige_terminal_{name}");
@@ -140,7 +136,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
                     .starts_with("Resolve exactly one attempt_id"),
             "{name}: exactly-one targeting is the first sentence"
         );
-        if name != "neige_terminal_resolve" {
+        if name != "neige_terminal_show" {
             // The omitted-budget default depends on wait_for, so it is stated in the description rather than as a JSON Schema default.
             assert_eq!(
                 schema["properties"]["wait_ms"],
@@ -189,18 +185,24 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     );
     assert_eq!(
         properties(open_schema),
-        fields(&[&["request_id", "title", "program", "claim"][..], &WAIT[..]].concat())
+        fields(
+            &[
+                &["idempotency_key", "title", "program", "claim"][..],
+                &WAIT[..]
+            ]
+            .concat()
+        )
     );
-    assert_eq!(required(open_schema), fields(&["request_id"]));
-    let observe_schema = &descriptors
+    assert_eq!(required(open_schema), fields(&["idempotency_key"]));
+    let read_schema = &descriptors
         .iter()
-        .find(|descriptor| descriptor.name == "neige_terminal_observe")
+        .find(|descriptor| descriptor.name == "neige_terminal_read")
         .unwrap()
         .input_schema;
     for property in WAIT {
         assert_eq!(
-            open_schema["properties"][property], observe_schema["properties"][property],
-            "open/{property}: the same wait contract as observe"
+            open_schema["properties"][property], read_schema["properties"][property],
+            "open/{property}: the same wait contract as read"
         );
     }
     let bytes = open_schema.to_string().len();

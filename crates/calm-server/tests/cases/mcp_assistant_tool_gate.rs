@@ -50,8 +50,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_preview_register",
     "neige_preview_unregister",
     "neige_terminal_open",
-    "neige_terminal_resolve",
-    "neige_terminal_observe",
+    "neige_terminal_show",
+    "neige_terminal_read",
     "neige_terminal_control",
     "neige_terminal_input",
     // Track filesystem + history drill-ins (Planner|Worker, never Assistant).

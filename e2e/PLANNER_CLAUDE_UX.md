@@ -123,9 +123,9 @@ confirmed physical writes. Invalid repeat counts contribute to
 
 #1618 wait/drift counters (aggregated per scenario as `wait_summary` in
 `review.json` for comparison with rounds 05/06) are each read from a completed
-call's own arguments or result, never inferred. `change_wait_requests`: `observe`
-calls and `observe: true` readbacks whose arguments say `wait_for: "change"`;
-`change_wait_outcomes`: tally of those calls' returned `wait.outcome` (observe
+call's own arguments or result, never inferred. `change_wait_requests`: `read`
+calls and `read: true` readbacks whose arguments say `wait_for: "change"`;
+`change_wait_outcomes`: tally of those calls' returned `wait.outcome` (read
 result or readback `observation.state`; failed calls and unavailable readbacks
 contribute none); `unsettled_change_waits`: outcome `changed` with `settled:
 false`; `elapsed_wait_requests`: explicit `wait_for: "elapsed"` or `wait_ms > 0`
@@ -138,7 +138,7 @@ settled or `unchanged` wait outcome, like `application_result: "unverified"`,
 is not application completion.
 
 #1620 hook-signal counters (also in `wait_summary`), read the same way:
-`signal_wait_requests`: `observe` calls and `observe: true` readbacks whose
+`signal_wait_requests`: `read` calls and `read: true` readbacks whose
 arguments say `wait_for: "signal"`; `signal_wait_outcomes`: tally of those
 calls' returned `wait.outcome` (`signal` is an ordinary observation, not
 application completion); `submit_actions`: input calls whose action type is
@@ -155,7 +155,7 @@ over the same measured observations (`signals_observed` is its total). The goals
 tell the Planner to start Claude with `--settings "$NEIGE_CLAUDE_SETTINGS"`.
 
 #1666 round-trip counters (also in `wait_summary`), read the same way:
-`text_wait_requests`: `observe` calls and `observe: true` readbacks whose
+`text_wait_requests`: `read` calls and `read: true` readbacks whose
 arguments say `wait_for: "text"`; `text_wait_outcomes`: tally of those calls'
 returned `wait.outcome` (`matched` is an ordinary observation, not application
 completion); `sequence_actions`: input requests whose action type is

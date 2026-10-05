@@ -177,11 +177,11 @@ def observation_refused(call):
             if part.get("type") == "text":
                 messages.append(part.get("text"))
     # Exact production refusals; a broad regex would count unrelated errors.
-    refusals = ("observation expired; observe again",
+    refusals = ("observation expired; read again",
                 "observation belongs to another connection or expired",
-                "terminal changed since observation; observe again",
+                "terminal changed since observation; read again",
                 "terminal surface changed since observation",
-                "no observation on this connection; observe first")
+                "no observation on this connection; read first with neige_terminal_read")
     return any(refusal in message for message in messages if isinstance(message, str)
                for refusal in refusals)
 

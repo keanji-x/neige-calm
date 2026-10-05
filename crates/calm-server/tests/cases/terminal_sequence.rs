@@ -63,7 +63,7 @@ async fn open_claimed(h: &Harness, program: &str, request: &str) -> String {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":program,"request_id":request,"claim":true}),
+            json!({"program":program,"idempotency_key":request,"claim":true}),
         )
         .await;
     assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
@@ -86,7 +86,7 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"stty raw -echo; echo READY; exec cat -v","request_id":"sequence-bytes","claim":true,"wait_for":"text","wait_text":["READY"],"wait_ms":5000}),
+            json!({"program":"stty raw -echo; echo READY; exec cat -v","idempotency_key":"sequence-bytes","claim":true,"wait_for":"text","wait_text":["READY"],"wait_ms":5000}),
         )
         .await;
     assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
@@ -100,7 +100,7 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     let sent = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"edit-1","action":edit(),"observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":"edit-1","action":edit(),"read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     let written = receipt(&sent);
@@ -123,7 +123,7 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     let replay = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"edit-1","action":edit(),"observe":true,"wait_ms":200}),
+            json!({"terminal_id":terminal,"idempotency_key":"edit-1","action":edit(),"read":true,"wait_ms":200}),
         )
         .await;
     assert_eq!(receipt(&replay)["outcome"], "written");
@@ -144,7 +144,7 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
     let conflicting = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"edit-1","action":other}),
+            json!({"terminal_id":terminal,"idempotency_key":"edit-1","action":other}),
         )
         .await;
     assert!(
@@ -162,7 +162,7 @@ async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/bash --noprofile --norc","request_id":"sequence-readline","claim":true,"wait_for":"text","wait_text":["$"],"wait_ms":5000}),
+            json!({"program":"exec /bin/bash --noprofile --norc","idempotency_key":"sequence-readline","claim":true,"wait_for":"text","wait_text":["$"],"wait_ms":5000}),
         )
         .await;
     assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
@@ -176,7 +176,7 @@ async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
     let edited = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"draft","action":sequence,"observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":"draft","action":sequence,"read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     assert_eq!(receipt(&edited)["outcome"], "written", "{edited}");
@@ -190,7 +190,7 @@ async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
     let submitted = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":"enter","action":{"type":"key","key":"Enter"},"read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     let out = observation(&submitted);
@@ -272,7 +272,7 @@ async fn sequence_rejects_submission_keys_and_shapes_before_any_write() {
         let response = h
             .call(
                 "neige_terminal_input",
-                json!({"terminal_id":terminal,"request_id":"bad","action":action}),
+                json!({"terminal_id":terminal,"idempotency_key":"bad","action":action}),
             )
             .await;
         assert!(
@@ -287,11 +287,11 @@ async fn sequence_rejects_submission_keys_and_shapes_before_any_write() {
         "nothing was written"
     );
     assert!(!h.root.path().join("physical-lines").exists());
-    // The request_id is free: nothing was cached for the refused shapes.
+    // The idempotency_key is free: nothing was cached for the refused shapes.
     let ok = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"bad","action":steps(json!([{"type":"text","text":"ab"},{"type":"key","key":"Backspace"},{"type":"text","text":"c"}])),"observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":"bad","action":steps(json!([{"type":"text","text":"ab"},{"type":"key","key":"Backspace"},{"type":"text","text":"c"}])),"read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     assert_eq!(receipt(&ok)["outcome"], "written", "{ok}");
@@ -299,7 +299,7 @@ async fn sequence_rejects_submission_keys_and_shapes_before_any_write() {
     let entered = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":"enter","action":{"type":"key","key":"Enter"},"read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     assert!(has_line(observation(&entered), "COUNT:1:ac"), "{entered}");
@@ -326,7 +326,7 @@ async fn sequence_behind_a_stale_observation_is_refused_then_resent() {
     let response = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"request_id":"edit","action":edit()}),
+            json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"idempotency_key":"edit","action":edit()}),
         )
         .await;
     let stale = receipt(&response);
@@ -344,7 +344,7 @@ async fn sequence_behind_a_stale_observation_is_refused_then_resent() {
     let resent = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"edit","action":edit(),"allow_output_since_observation":true,"observe":true,"wait_ms":200}),
+            json!({"terminal_id":terminal,"idempotency_key":"edit","action":edit(),"allow_output_since_observation":true,"read":true,"wait_ms":200}),
         )
         .await;
     assert_eq!(receipt(&resent)["outcome"], "written", "{resent}");

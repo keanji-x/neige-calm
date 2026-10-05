@@ -116,7 +116,7 @@ mod tests {
         let signal = json!({"mode":"signal","outcome":"signal","waited_ms":812,"settled":true,
             "signal":{"seq":7,"event":"stop","message":null},"signal_at_ms":700,
             "repaint":{"outcome":"settled","waited_ms":112}});
-        let written = json!({"terminal_id":"t1","request_id":"r1","outcome":"written",
+        let written = json!({"terminal_id":"t1","idempotency_key":"r1","outcome":"written",
             "application_result":"unverified","control_id":"c-root",
             "observation":available(state(signal, json!(true), "observer", Value::Null))});
         let summary = receipt_summary("input", &written);

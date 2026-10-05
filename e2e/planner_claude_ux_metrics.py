@@ -52,7 +52,7 @@ OPEN_SUMMARY_METRIC_KEYS = ("open_with_wait", "open_wait_outcomes", "summary_pre
 TEXT_CONDITION_METRIC_KEYS = ("text_condition_requests", "signal_condition_outcomes")
 SUMMARY_METRIC_KEYS = (WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS + ROUND_TRIP_METRIC_KEYS
                        + OPEN_SUMMARY_METRIC_KEYS + TEXT_CONDITION_METRIC_KEYS)
-# The observe wait arguments every wait carrier accepts.
+# The read wait arguments every wait carrier accepts.
 WAIT_ARGUMENT_KEYS = ("wait_for", "wait_ms", "settle_ms", "signal_events", "repaint_ms", "wait_text",
                       "wait_text_absent")
 TEXT_CONDITION_KEYS = ("wait_text", "wait_text_absent")
@@ -100,11 +100,11 @@ def observation_signals(state):
 
 
 def requests_observation(call):
-    """True when a completed call returns an observation: observe and open always do (#1677: an open's
-    wait arguments run as its final observation), control/input with an observe=true readback."""
+    """True when a completed call returns an observation: read and open always do (#1677: an open's
+    wait arguments run as its final observation), control/input with an read=true readback."""
     args = call.get("arguments", {})
-    return call["tool"] in ("neige_terminal_open", "neige_terminal_observe") or (
-        call["tool"] in ("neige_terminal_control", "neige_terminal_input") and args.get("observe") is True)
+    return call["tool"] in ("neige_terminal_open", "neige_terminal_read") or (
+        call["tool"] in ("neige_terminal_control", "neige_terminal_input") and args.get("read") is True)
 
 
 def signal_metrics(terminal):
@@ -259,8 +259,8 @@ def condition_state(wait):
 def text_condition_metrics(terminal):
     """#1677 r16 counters, each read from a completed call's own arguments or result.
 
-    `text_condition_requests` counts observation-requesting calls (observe,
-    open, control/input with observe=true) whose arguments say `wait_for:
+    `text_condition_requests` counts observation-requesting calls (read,
+    open, control/input with read=true) whose arguments say `wait_for:
     "signal"` and carry `wait_text` or `wait_text_absent` (failed ones
     included). `signal_condition_outcomes` tallies, over the non-failed ones
     that returned an observation whose wait ended on a signal with a
@@ -309,10 +309,10 @@ def text_condition_metrics(terminal):
 def wait_metrics(terminal):
     """#1618 counters, each read from a completed call's own arguments or result.
 
-    A change wait is an `observe` call, or a control/input call requesting an
-    `observe=true` readback, whose arguments say `wait_for: "change"` (#1677:
+    A change wait is a `read` call, or a control/input call requesting an
+    `read=true` readback, whose arguments say `wait_for: "change"` (#1677:
     an `open` too, whose wait runs as its final observation). Outcomes are
-    read from the returned observation (`open`/`observe` result or readback
+    read from the returned observation (`open`/`read` result or readback
     `observation.state`); a failed call or unavailable readback returns no
     observation and therefore no outcome. A settled/unchanged outcome is not
     application completion.
@@ -367,7 +367,7 @@ def action_readback(call, data):
 
 
 def observed_state(call, data):
-    if call["tool"] in ("neige_terminal_open", "neige_terminal_observe"):
+    if call["tool"] in ("neige_terminal_open", "neige_terminal_read"):
         return data
     readback = action_readback(call, data)
     return readback["state"] if readback is not None and readback["status"] == "available" else None

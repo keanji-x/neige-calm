@@ -33,7 +33,7 @@ fn text_wait(patterns: Value) -> Value {
     json!({"wait_for":"text","wait_text":patterns,"wait_ms":5000})
 }
 fn open_args(program: &str, request: &str, extra: Value) -> Value {
-    let mut args = json!({"program":program,"request_id":request});
+    let mut args = json!({"program":program,"idempotency_key":request});
     for (key, value) in extra.as_object().unwrap() {
         args[key] = value.clone();
     }
@@ -210,7 +210,7 @@ async fn open_with_change_wait_on_the_default_shell_runs_the_wait() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"request_id":"shell-change","wait_for":"change","wait_ms":300}),
+            json!({"idempotency_key":"shell-change","wait_for":"change","wait_ms":300}),
         )
         .await;
     assert_eq!(opened["wait"]["mode"], "change", "{opened}");
@@ -230,7 +230,10 @@ async fn open_with_change_wait_on_the_default_shell_runs_the_wait() {
     );
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
     let plain = h
-        .ok("neige_terminal_open", json!({"request_id":"shell-plain"}))
+        .ok(
+            "neige_terminal_open",
+            json!({"idempotency_key":"shell-plain"}),
+        )
         .await;
     assert_eq!(
         plain["wait"],
@@ -287,7 +290,7 @@ async fn open_wait_argument_validation_matches_observe_and_creates_nothing() {
         (json!({"wait_for":"later"}), "unknown variant"),
     ] {
         let mut open = args.clone();
-        open["request_id"] = json!("invalid-wait");
+        open["idempotency_key"] = json!("invalid-wait");
         let response = h.call("neige_terminal_open", open).await;
         assert_eq!(response["error"]["code"], -32602, "{args}: {response}");
         assert!(
@@ -299,7 +302,7 @@ async fn open_wait_argument_validation_matches_observe_and_creates_nothing() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"request_id":"invalid-wait","wait_for":"elapsed","wait_ms":50}),
+            json!({"idempotency_key":"invalid-wait","wait_for":"elapsed","wait_ms":50}),
         )
         .await;
     assert_eq!(opened["wait"]["outcome"], "elapsed", "{opened}");

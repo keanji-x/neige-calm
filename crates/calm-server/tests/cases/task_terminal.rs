@@ -166,7 +166,7 @@ async fn spawn_viewer_running(h: &Harness, terminal: &str, script: &str) {
 pub(crate) async fn snapshot(h: &Harness, target: Value) -> Value {
     let mut args = target;
     args["wait_ms"] = json!(50);
-    h.ok("neige_terminal_observe", args).await
+    h.ok("neige_terminal_read", args).await
 }
 pub(crate) async fn stop(h: &Harness, w: &Worker) {
     h.state.terminal_renderer.drop_entry(&w.terminal).await;
@@ -178,7 +178,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
     for kind in ["terminal", "codex", "claude"] {
         let w = worker(&h, kind, &h.track, true).await;
         let resolved = h
-            .ok("neige_terminal_resolve", json!({"attempt_id":w.task}))
+            .ok("neige_terminal_show", json!({"attempt_id":w.task}))
             .await;
         assert_eq!(resolved["available"], true);
         assert_eq!(resolved["card_kind"], kind);
@@ -186,7 +186,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
         assert_eq!(resolved["worker_session_id"], w.session);
         let viewed = h
             .call(
-                "neige_terminal_observe",
+                "neige_terminal_read",
                 json!({"attempt_id":w.task,"wait_ms":50}),
             )
             .await;
@@ -198,7 +198,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
             json!({"attempt_id":w.task}),
             json!({"terminal_id":w.terminal}),
         ] {
-            let text = h.call("neige_terminal_observe", target).await;
+            let text = h.call("neige_terminal_read", target).await;
             let text_meta = assert_text_observation(&text);
             assert_eq!(text_meta["task"]["attempt_id"], w.task);
             assert_eq!(
@@ -207,14 +207,14 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
             );
         }
         if kind == "codex" {
-            // A codex task Worker is observe-only (#1784; codex_worker_terminal_input).
+            // A codex task Worker is read-only (#1784; codex_worker_terminal_input).
             stop(&h, &w).await;
             continue;
         }
         let claimed = h
             .ok(
                 "neige_terminal_control",
-                json!({"attempt_id":w.task,"action":"claim","observe":true,"wait_ms":50}),
+                json!({"attempt_id":w.task,"action":"claim","read":true,"wait_ms":50}),
             )
             .await;
         assert_eq!(claimed["observation"]["status"], "available");
@@ -223,10 +223,10 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
             w.task
         );
         let before = snapshot(&h, json!({"attempt_id":w.task})).await;
-        let typed=h.ok("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"text","action":{"type":"text","text":"hello"}})).await;
+        let typed=h.ok("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"idempotency_key":"text","action":{"type":"text","text":"hello"}})).await;
         assert_eq!(typed["outcome"], "written");
         let before = snapshot(&h, json!({"terminal_id":w.terminal})).await;
-        let entered=h.ok("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
+        let entered=h.ok("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"idempotency_key":"enter","action":{"type":"key","key":"Enter"}})).await;
         assert_eq!(entered["outcome"], "written");
         let after = h.observe_text(&w.terminal, "WORKER_REPLY:hello").await;
         assert_eq!(before["terminal_session_id"], after["terminal_session_id"]);
@@ -258,7 +258,7 @@ async fn foreign_track_task_and_terminal_are_both_refused() {
         json!({"attempt_id":w.task}),
         json!({"terminal_id":w.terminal}),
     ] {
-        let result = h.call("neige_terminal_observe", target).await;
+        let result = h.call("neige_terminal_read", target).await;
         assert!(result.get("error").is_some(), "{result}");
     }
     stop(&h, &w).await;
@@ -269,13 +269,13 @@ async fn task_without_a_viewer_reports_unavailable_without_spawning() {
     let h = Harness::start().await;
     let w = worker(&h, "codex", &h.track, false).await;
     let result = h
-        .ok("neige_terminal_resolve", json!({"attempt_id":w.task}))
+        .ok("neige_terminal_show", json!({"attempt_id":w.task}))
         .await;
     assert_eq!(result["available"], false);
     assert_eq!(result["controllable"], false);
     assert_eq!(result["terminal_id"], w.terminal);
     assert!(
-        h.call("neige_terminal_observe", json!({"attempt_id":w.task}))
+        h.call("neige_terminal_read", json!({"attempt_id":w.task}))
             .await
             .get("error")
             .is_some()
@@ -300,7 +300,7 @@ async fn selectors_are_exclusive_and_planner_cards_are_not_worker_terminals() {
         json!({"attempt_id":"x","terminal_id":"y"}),
         json!({"attempt_id":""}),
     ] {
-        let reply = h.call("neige_terminal_resolve", args).await;
+        let reply = h.call("neige_terminal_show", args).await;
         assert_eq!(reply["error"]["code"], -32602, "{reply}");
     }
     let planner = h
@@ -318,7 +318,7 @@ async fn selectors_are_exclusive_and_planner_cards_are_not_worker_terminals() {
         .unwrap()
         .unwrap();
     let reply = h
-        .call("neige_terminal_resolve", json!({"terminal_id":terminal.id}))
+        .call("neige_terminal_show", json!({"terminal_id":terminal.id}))
         .await;
     assert!(reply.get("error").is_some());
 }
@@ -347,7 +347,7 @@ async fn task_completion_revokes_control_but_preserves_current_output() {
     ] {
         let mut args = target;
         args["observation_id"] = before["observation_id"].clone();
-        args["request_id"] = json!("late");
+        args["idempotency_key"] = json!("late");
         args["action"] = json!({"type":"text","text":"wrong"});
         assert!(
             h.call("neige_terminal_input", args)
@@ -378,7 +378,7 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
     let before = waiters();
     let released = h.call(
         "neige_terminal_control",
-        json!({"attempt_id":w.task,"action":"release","observe":true,"wait_for":"change","wait_ms":10000}),
+        json!({"attempt_id":w.task,"action":"release","read":true,"wait_for":"change","wait_ms":10000}),
     );
     let finish = async {
         while waiters() == before {
@@ -440,7 +440,7 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
     let subscribed = waiters();
     let holder = h.call(
         "neige_terminal_input",
-        json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"hold","action":{"type":"text","text":"a"},"observe":true,"wait_for":"change","wait_ms":10000}),
+        json!({"attempt_id":w.task,"observation_id":before["observation_id"],"idempotency_key":"hold","action":{"type":"text","text":"a"},"read":true,"wait_for":"change","wait_ms":10000}),
     );
     let driver = async {
         let start = std::time::Instant::now();
@@ -452,7 +452,7 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
         // task is finished only once that input is waiting for the serial.
         let queued = h.call(
             "neige_terminal_input",
-            json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"queued","action":{"type":"text","text":"b"}}),
+            json!({"attempt_id":w.task,"observation_id":before["observation_id"],"idempotency_key":"queued","action":{"type":"text","text":"b"}}),
         );
         let service = h.interaction();
         let finish = async {
@@ -505,7 +505,7 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
     };
     let h = Harness::start().await;
-    // A codex task Worker is observe-only (#1784); it keeps the observation half.
+    // A codex task Worker is read-only (#1784); it keeps the observation half.
     for (kind, session_kind, provider) in [
         (
             "claude",
@@ -554,7 +554,7 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         .unwrap();
         tx.commit().await.unwrap();
         let resolved = h
-            .ok("neige_terminal_resolve", json!({"attempt_id":w.task}))
+            .ok("neige_terminal_show", json!({"attempt_id":w.task}))
             .await;
         assert_eq!(resolved["worker_session_id"], next);
         if writable {
@@ -566,10 +566,10 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         }
         let fresh = snapshot(&h, json!({"attempt_id":w.task})).await;
         assert_ne!(before["connection_id"], fresh["connection_id"], "{kind}");
-        let rejected=h.call("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"request_id":"old","action":{"type":"text","text":"stale"}})).await;
+        let rejected=h.call("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"idempotency_key":"old","action":{"type":"text","text":"stale"}})).await;
         assert!(rejected.get("error").is_some(), "{rejected}");
         if writable {
-            let accepted=h.ok("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":fresh["observation_id"],"request_id":"new","action":{"type":"text","text":"current"}})).await;
+            let accepted=h.ok("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":fresh["observation_id"],"idempotency_key":"new","action":{"type":"text","text":"current"}})).await;
             assert_eq!(accepted["outcome"], "written");
         }
         stop(&h, &w).await;
@@ -634,7 +634,7 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
         json!({"terminal_id":w.terminal}),
     ] {
         assert!(
-            h.call("neige_terminal_observe", target)
+            h.call("neige_terminal_read", target)
                 .await
                 .get("error")
                 .is_some()
@@ -664,7 +664,7 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
         json!({"terminal_id":old.terminal}),
     ] {
         assert!(
-            h.call("neige_terminal_resolve", target)
+            h.call("neige_terminal_show", target)
                 .await
                 .get("error")
                 .is_some()
@@ -680,7 +680,7 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
         .unwrap();
     assert!(
         h.call(
-            "neige_terminal_resolve",
+            "neige_terminal_show",
             json!({"terminal_id":restarted.terminal})
         )
         .await
@@ -697,7 +697,7 @@ async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
     let h = Harness::start().await;
     let w = worker(&h, "codex", &h.track, true).await;
     assert_eq!(
-        h.ok("neige_terminal_resolve", json!({"attempt_id":w.task}))
+        h.ok("neige_terminal_show", json!({"attempt_id":w.task}))
             .await["available"],
         true
     );
@@ -707,7 +707,7 @@ async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
         .await
         .unwrap();
     let result = h
-        .call("neige_terminal_resolve", json!({"terminal_id":w.terminal}))
+        .call("neige_terminal_show", json!({"terminal_id":w.terminal}))
         .await;
     stop(&h, &w).await;
     assert!(
@@ -776,7 +776,7 @@ async fn manual_codex_and_claude_workers_are_controllable_without_a_task() {
         tx.commit().await.unwrap();
         spawn_viewer(&h, &terminal.id).await;
         let resolved = h
-            .ok("neige_terminal_resolve", json!({"terminal_id":terminal.id}))
+            .ok("neige_terminal_show", json!({"terminal_id":terminal.id}))
             .await;
         assert_eq!(resolved["task"], Value::Null);
         assert_eq!(resolved["card_kind"], kind);

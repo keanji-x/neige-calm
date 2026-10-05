@@ -13,7 +13,7 @@ async fn planner_opens_visible_terminal_and_receives_confirmed_input() {
     let opened = h
         .call(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
+            json!({"program":"exec /bin/sh","idempotency_key":"open-1","title":"Planner terminal"}),
         )
         .await;
     assert!(opened.get("error").is_none(), "{opened}");
@@ -31,7 +31,7 @@ async fn planner_opens_visible_terminal_and_receives_confirmed_input() {
     let repeated = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
+            json!({"program":"exec /bin/sh","idempotency_key":"open-1","title":"Planner terminal"}),
         )
         .await;
     assert_eq!(repeated["terminal_id"], terminal);
@@ -42,7 +42,7 @@ async fn planner_opens_visible_terminal_and_receives_confirmed_input() {
     .await;
     let view = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -101,11 +101,11 @@ async fn planner_terminal_refuses_unowned_and_cross_track_input() {
     let open = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"no-owner"}),
+            json!({"program":"exec /bin/sh","idempotency_key":"no-owner"}),
         )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
-    let denied=h.call("neige_terminal_input",json!({"terminal_id":terminal,"observation_id":open["observation_id"],"request_id":"denied","action":{"type":"text","text":"bad"}})).await;
+    let denied=h.call("neige_terminal_input",json!({"terminal_id":terminal,"observation_id":open["observation_id"],"idempotency_key":"denied","action":{"type":"text","text":"bad"}})).await;
     assert!(denied.get("error").is_some());
     let own_track = h.state.repo.track_get(&h.track).await.unwrap().unwrap();
     let foreign_track = h
@@ -148,7 +148,7 @@ async fn planner_terminal_refuses_unowned_and_cross_track_input() {
     // Same database and live renderer, different authenticated Planner Track.
     h.token = foreign_token.expect("second Planner token");
     let foreign = h
-        .call("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .call("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert!(foreign.get("error").is_some(), "{foreign}");
     h.stop(&terminal).await;
@@ -165,7 +165,7 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
     let open = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"handoff"}),
+            json!({"program":"exec /bin/sh","idempotency_key":"handoff"}),
         )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
@@ -176,7 +176,7 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
     .await;
     let saved = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -237,7 +237,7 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
         .call(
             "neige_terminal_input",
             json!({"terminal_id":terminal,"observation_id":saved["observation_id"],
-        "request_id":"stale-owner","action":{"type":"text","text":"printf BAD"}}),
+        "idempotency_key":"stale-owner","action":{"type":"text","text":"printf BAD"}}),
         )
         .await;
     assert!(
@@ -246,7 +246,7 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
         "{refused}"
     );
     let view = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert!(
         !view["text"]
@@ -266,7 +266,7 @@ async fn repeated_input_request_never_reaches_the_terminal_twice() {
     let open = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"input-receipts"}),
+            json!({"program":"exec /bin/sh","idempotency_key":"input-receipts"}),
         )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
@@ -277,7 +277,7 @@ async fn repeated_input_request_never_reaches_the_terminal_twice() {
     .await;
     let view = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -329,7 +329,7 @@ async fn repeated_input_request_never_reaches_the_terminal_twice() {
     );
     let after = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -370,7 +370,7 @@ async fn detach_releases_receipts_and_old_observations_cannot_authorize_a_new_co
     let open = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"detach"}),
+            json!({"program":"exec /bin/sh","idempotency_key":"detach"}),
         )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
@@ -381,7 +381,7 @@ async fn detach_releases_receipts_and_old_observations_cannot_authorize_a_new_co
     .await;
     let old = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -399,7 +399,7 @@ async fn detach_releases_receipts_and_old_observations_cannot_authorize_a_new_co
     .await;
     let fresh = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -408,7 +408,7 @@ async fn detach_releases_receipts_and_old_observations_cannot_authorize_a_new_co
         .call(
             "neige_terminal_input",
             json!({"terminal_id":terminal,"observation_id":old["observation_id"],
-        "request_id":"one","action":{"type":"key","key":"Ctrl+U"}}),
+        "idempotency_key":"one","action":{"type":"key","key":"Ctrl+U"}}),
         )
         .await;
     assert!(stale.get("error").is_some());
@@ -430,7 +430,7 @@ async fn default_terminal_observations_authorize_shell_input_without_images() {
     let opened = h
         .call(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"text-default"}),
+            json!({"program":"exec /bin/sh","idempotency_key":"text-default"}),
         )
         .await;
     let terminal = assert_text_observation(&opened)["terminal_id"]
@@ -444,7 +444,7 @@ async fn default_terminal_observations_authorize_shell_input_without_images() {
     .await;
     let observed = h
         .call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":100}),
         )
         .await;
@@ -471,7 +471,7 @@ async fn default_terminal_observations_authorize_shell_input_without_images() {
         loop {
             let response = h
                 .call(
-                    "neige_terminal_observe",
+                    "neige_terminal_read",
                     json!({"terminal_id":terminal,"wait_ms":30}),
                 )
                 .await;
@@ -518,11 +518,73 @@ async fn opened_terminal_path_leads_with_the_kernel_bin_dir() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":program,"request_id":"kernel-path","wait_for":"text",
+            json!({"program":program,"idempotency_key":"kernel-path","wait_for":"text",
                 "wait_text":["KERNEL_BIN_LEADS","KERNEL_BIN_MISSING"],"wait_ms":5000}),
         )
         .await;
     let rows = opened["text"].as_array().unwrap();
     assert!(rows.iter().any(|row| row == "KERNEL_BIN_LEADS"), "{opened}");
     h.stop(opened["terminal_id"].as_str().unwrap()).await;
+}
+
+/// #2087 B1b: the replay key is `idempotency_key` and the readback flag is `read`. The retired
+/// spellings are refused by the closed input with the valid keys, never silently ignored, and the
+/// key stays required. Parsing precedes any terminal lookup, so no terminal is needed.
+#[tokio::test]
+async fn terminal_writes_refuse_the_retired_request_id_and_observe_keys() {
+    let h = Harness::start().await;
+    let action = json!({"type":"key","key":"Enter"});
+    for (tool, args, retired) in [
+        (
+            "neige_terminal_input",
+            json!({"terminal_id":"t1","request_id":"r1","action":action}),
+            "request_id",
+        ),
+        (
+            "neige_terminal_input",
+            json!({"terminal_id":"t1","idempotency_key":"r1","action":action,"observe":true}),
+            "observe",
+        ),
+        (
+            "neige_terminal_open",
+            json!({"request_id":"o1","program":"exec /bin/sh"}),
+            "request_id",
+        ),
+        (
+            "neige_terminal_control",
+            json!({"terminal_id":"t1","action":"claim","observe":true}),
+            "observe",
+        ),
+    ] {
+        let response = h.call(tool, args).await;
+        assert_eq!(response["error"]["code"], -32602, "{tool}: {response}");
+        let message = response["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("unknown field `{retired}`")),
+            "{tool}: {message}"
+        );
+        let renamed = if retired == "observe" {
+            "`read`"
+        } else {
+            "`idempotency_key`"
+        };
+        assert!(message.contains(renamed), "{tool}: {message}");
+    }
+    for (tool, args) in [
+        (
+            "neige_terminal_input",
+            json!({"terminal_id":"t1","action":action}),
+        ),
+        ("neige_terminal_open", json!({})),
+    ] {
+        let response = h.call(tool, args).await;
+        assert_eq!(response["error"]["code"], -32602, "{tool}: {response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("missing field `idempotency_key`"),
+            "{tool}: {response}"
+        );
+    }
 }

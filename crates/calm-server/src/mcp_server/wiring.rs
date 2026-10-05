@@ -231,7 +231,7 @@ mod tests {
             assert_eq!(descriptor.visible_to_roles, &[CardRole::Planner]);
             let read = matches!(
                 descriptor.name.as_str(),
-                "neige_terminal_resolve" | "neige_terminal_observe"
+                "neige_terminal_show" | "neige_terminal_read"
             );
             assert_eq!(
                 descriptor.annotations,

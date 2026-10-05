@@ -241,7 +241,7 @@ impl TerminalInteraction {
         .await?;
         ensure!(
             &current.binding == expected,
-            "terminal task/session binding changed; resolve and observe again"
+            "terminal task/session binding changed; show and read again"
         );
         if write {
             current.ensure_accepts_input()?;

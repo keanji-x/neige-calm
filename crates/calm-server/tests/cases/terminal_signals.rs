@@ -111,11 +111,11 @@ fn events_of(state: &Value) -> Vec<String> {
         .collect()
 }
 /// Open a claimed fake-claude terminal and return (open result, terminal id).
-async fn open_fake_claude(h: &Harness, request_id: &str) -> (Value, String) {
+async fn open_fake_claude(h: &Harness, idempotency_key: &str) -> (Value, String) {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":fake_claude_program(h),"request_id":request_id,"claim":true}),
+            json!({"program":fake_claude_program(h),"idempotency_key":idempotency_key,"claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -130,11 +130,11 @@ async fn open_fake_claude(h: &Harness, request_id: &str) -> (Value, String) {
     (opened, terminal)
 }
 /// Open a claimed repaint fake and return its terminal id.
-async fn open_fake_claude_repaint(h: &Harness, request_id: &str) -> String {
+async fn open_fake_claude_repaint(h: &Harness, idempotency_key: &str) -> String {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":fake_claude_repaint_program(h),"request_id":request_id,"claim":true}),
+            json!({"program":fake_claude_repaint_program(h),"idempotency_key":idempotency_key,"claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -173,7 +173,7 @@ async fn run_bridge(h: &Harness, card_id: &str, body: &str) {
     );
 }
 async fn submit(h: &Harness, terminal: &str, request: &str, text: &str, wait: Value) -> Value {
-    let mut args = json!({"terminal_id":terminal,"request_id":request,"action":{"type":"submit","text":text},"observe":true});
+    let mut args = json!({"terminal_id":terminal,"idempotency_key":request,"action":{"type":"submit","text":text},"read":true});
     for (key, value) in wait.as_object().unwrap() {
         args[key] = value.clone();
     }
@@ -247,12 +247,12 @@ async fn open_writes_hook_settings_injects_env_and_replays_idempotently() {
         "{command}"
     );
 
-    // Replay: same request_id → same terminal, control already held on this
+    // Replay: same idempotency_key → same terminal, control already held on this
     // connection → the current observation, no second claim, no error.
     let replayed = h
         .ok(
             "neige_terminal_open",
-            json!({"program":fake_claude_program(&h),"request_id":"hooks-open","claim":true}),
+            json!({"program":fake_claude_program(&h),"idempotency_key":"hooks-open","claim":true}),
         )
         .await;
     assert_eq!(replayed["terminal_id"], terminal);
@@ -354,7 +354,7 @@ async fn hook_post_for_a_terminal_card_lands_in_the_ring_and_never_projects_stat
     // Presentation: the signal is listed with its bounded message, the
     // connection baseline advances, and a second observation lists nothing.
     let view = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(view["signals"]["hooks_seen"], true, "{view}");
     assert_eq!(view["signals"]["last_seq"], before + 1);
@@ -370,7 +370,7 @@ async fn hook_post_for_a_terminal_card_lands_in_the_ring_and_never_projects_stat
     assert!(listed[0]["received_at_ms"].as_i64().unwrap() > 0);
     assert_eq!(view["wait"]["baseline_signal_seq"], before);
     let again = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(again["signals"]["since_previous_observation"], json!([]));
     assert_eq!(again["wait"]["baseline_signal_seq"], before + 1);
@@ -404,7 +404,7 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     let h = Harness::start().await;
     let (_, terminal) = open_fake_claude(&h, "hooks-wait").await;
     let before = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(before["signals"]["hooks_seen"], false);
     let baseline = before["signals"]["last_seq"].as_u64().unwrap();
@@ -455,7 +455,7 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     // at the deadline, so the wait is settled.
     let idle = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"signal","wait_ms":400}),
         )
         .await;
@@ -559,7 +559,7 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
             "budget above the limit",
         ),
     ] {
-        let response = h.call("neige_terminal_observe", args).await;
+        let response = h.call("neige_terminal_read", args).await;
         assert!(response.get("error").is_some(), "{why}: {response}");
     }
     h.stop(&terminal).await;
@@ -600,7 +600,7 @@ async fn signal_readback_waits_for_the_answer_painted_after_the_stop_hook() {
     assert_eq!(events_of(answered), vec!["stop"]);
     // The next observation sees nothing new: the readback was complete.
     let again = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(
         again["changed_since_previous_observation"], false,
@@ -770,38 +770,38 @@ async fn repaint_ms_is_refused_outside_signal_mode_on_every_carrier() {
     let h = Harness::start().await;
     let terminal = open_fake_claude_repaint(&h, "repaint-args").await;
     let view = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     for (tool, args, why) in [
         (
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"change","repaint_ms":0}),
-            "observe change",
+            "read change",
         ),
         (
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_for":"elapsed","repaint_ms":1500}),
-            "observe elapsed",
+            "read elapsed",
         ),
         (
             "neige_terminal_control",
-            json!({"terminal_id":terminal,"action":"claim","observe":true,"wait_for":"change","repaint_ms":100}),
+            json!({"terminal_id":terminal,"action":"claim","read":true,"wait_for":"change","repaint_ms":100}),
             "control change",
         ),
         (
             "neige_terminal_control",
             json!({"terminal_id":terminal,"action":"claim","repaint_ms":100}),
-            "control without observe",
+            "control without read",
         ),
         (
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"r-1","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","repaint_ms":100}),
+            json!({"terminal_id":terminal,"observation_id":view["observation_id"],"idempotency_key":"r-1","action":{"type":"key","key":"Enter"},"read":true,"wait_for":"change","repaint_ms":100}),
             "input change",
         ),
         (
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"r-2","action":{"type":"key","key":"Enter"},"repaint_ms":100}),
-            "input without observe",
+            json!({"terminal_id":terminal,"observation_id":view["observation_id"],"idempotency_key":"r-2","action":{"type":"key","key":"Enter"},"repaint_ms":100}),
+            "input without read",
         ),
     ] {
         let response = h.call(tool, args).await;
@@ -813,14 +813,14 @@ async fn repaint_ms_is_refused_outside_signal_mode_on_every_carrier() {
     // The same shape as the settle_ms refusal in elapsed mode.
     let settle = h
         .call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"settle_ms":100}),
         )
         .await;
     assert_eq!(settle["error"]["code"], -32602, "{settle}");
     // Nothing was written by the refused input calls.
     let after = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(
         after["changed_since_previous_observation"], false,
@@ -835,7 +835,7 @@ async fn readback_signal_baseline_is_read_before_the_physical_write() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":COUNT_PROBE,"request_id":"pre-write","claim":true}),
+            json!({"program":COUNT_PROBE,"idempotency_key":"pre-write","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -923,7 +923,7 @@ async fn submit_writes_text_and_cr_as_one_action_and_never_repeats() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":COUNT_PROBE,"request_id":"submit","claim":true}),
+            json!({"program":COUNT_PROBE,"idempotency_key":"submit","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -946,7 +946,7 @@ async fn submit_writes_text_and_cr_as_one_action_and_never_repeats() {
     let typed = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"text-1","action":{"type":"text","text":"HELD"},"observe":true,"wait_ms":300}),
+            json!({"terminal_id":terminal,"idempotency_key":"text-1","action":{"type":"text","text":"HELD"},"read":true,"wait_ms":300}),
         )
         .await;
     assert!(!has_line(state(&typed), "COUNT:2"), "{typed}");
@@ -958,11 +958,11 @@ async fn submit_writes_text_and_cr_as_one_action_and_never_repeats() {
     let entered = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"enter-2","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000}),
+            json!({"terminal_id":terminal,"idempotency_key":"enter-2","action":{"type":"key","key":"Enter"},"read":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     assert!(has_line(state(&entered), "COUNT:2:HELD"), "{entered}");
-    // Replaying the submit request_id never writes again.
+    // Replaying the submit idempotency_key never writes again.
     let replay = submit(&h, &terminal, "line-1", "PAYLOAD", json!({"wait_ms":200})).await;
     assert_eq!(receipt(&replay)["outcome"], "written");
     assert!(!has_line(state(&replay), "COUNT:3"), "{replay}");
@@ -979,14 +979,14 @@ async fn submit_writes_text_and_cr_as_one_action_and_never_repeats() {
         let response = h
             .call(
                 "neige_terminal_input",
-                json!({"terminal_id":terminal,"request_id":format!("bad-{why}"),"action":action}),
+                json!({"terminal_id":terminal,"idempotency_key":format!("bad-{why}"),"action":action}),
             )
             .await;
         assert!(response.get("error").is_some(), "{why}: {response}");
     }
     assert!(!has_line(
         &h.ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             json!({"terminal_id":terminal,"wait_ms":200})
         )
         .await,
@@ -1006,7 +1006,7 @@ async fn open_with_claim_reports_takeover_on_replay_instead_of_reclaiming() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"claimed","claim":true}),
+            json!({"program":"exec /bin/sh","idempotency_key":"claimed","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -1019,7 +1019,7 @@ async fn open_with_claim_reports_takeover_on_replay_instead_of_reclaiming() {
     let observer = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"unclaimed"}),
+            json!({"program":"exec /bin/sh","idempotency_key":"unclaimed"}),
         )
         .await;
     assert_eq!(observer["role"], "observer");
@@ -1093,7 +1093,7 @@ async fn open_with_claim_reports_takeover_on_replay_instead_of_reclaiming() {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let view = h
-                .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+                .ok("neige_terminal_read", json!({"terminal_id":terminal}))
                 .await;
             if view["role"] == "observer" {
                 break;
@@ -1109,7 +1109,7 @@ async fn open_with_claim_reports_takeover_on_replay_instead_of_reclaiming() {
     let replayed = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"claimed","claim":true}),
+            json!({"program":"exec /bin/sh","idempotency_key":"claimed","claim":true}),
         )
         .await;
     assert_eq!(replayed["terminal_id"], terminal);
@@ -1175,7 +1175,7 @@ async fn two_byte_identical_stop_bodies_from_two_bridge_invocations_get_seq_1_an
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":COUNT_PROBE,"request_id":"occurrence","claim":true}),
+            json!({"program":COUNT_PROBE,"idempotency_key":"occurrence","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -1193,7 +1193,7 @@ async fn two_byte_identical_stop_bodies_from_two_bridge_invocations_get_seq_1_an
         "a second invocation with an identical body is a second event"
     );
     let view = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     let listed = view["signals"]["since_previous_observation"]
         .as_array()
@@ -1371,7 +1371,7 @@ async fn open_with_claim_yields_to_a_human_who_claimed_inside_the_claim_window()
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"contended","claim":true}),
+            json!({"program":"exec /bin/sh","idempotency_key":"contended","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -1394,7 +1394,7 @@ async fn open_with_claim_yields_to_a_human_who_claimed_inside_the_claim_window()
         "the human keeps control"
     );
     let view = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(view["role"], "observer", "{view}");
     // A deliberate `control claim` keeps its takeover semantics.
@@ -1589,7 +1589,7 @@ async fn open_with_claim_replay_reports_takeover_before_the_owner_change_is_deli
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"held-replay","claim":true}),
+            json!({"program":"exec /bin/sh","idempotency_key":"held-replay","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -1604,14 +1604,14 @@ async fn open_with_claim_replay_reports_takeover_before_the_owner_change_is_deli
     let (pump, _incoming) = human_takeover(&entry, &terminal, user).await;
     // The Planner's cache still says owner: the takeover has not been applied.
     let stale = h
-        .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+        .ok("neige_terminal_read", json!({"terminal_id":terminal}))
         .await;
     assert_eq!(stale["role"], "owner", "delivery is held: {stale}");
 
     let replayed = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"held-replay","claim":true}),
+            json!({"program":"exec /bin/sh","idempotency_key":"held-replay","claim":true}),
         )
         .await;
     assert_eq!(replayed["terminal_id"], terminal);
@@ -1629,7 +1629,7 @@ async fn open_with_claim_replay_reports_takeover_before_the_owner_change_is_deli
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let view = h
-                .ok("neige_terminal_observe", json!({"terminal_id":terminal}))
+                .ok("neige_terminal_read", json!({"terminal_id":terminal}))
                 .await;
             if view["role"] == "observer" {
                 break;
@@ -1651,7 +1651,7 @@ async fn open_with_claim_replay_reports_takeover_before_the_owner_change_is_deli
     let replayed = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"held-replay","claim":true}),
+            json!({"program":"exec /bin/sh","idempotency_key":"held-replay","claim":true}),
         )
         .await;
     assert_eq!(replayed["claim"]["status"], "claimed", "{replayed}");
@@ -1713,7 +1713,7 @@ async fn open_with_claim_reports_a_takeover_folded_with_its_grant() {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":"exec /bin/sh","request_id":"folded","claim":true}),
+            json!({"program":"exec /bin/sh","idempotency_key":"folded","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -1985,18 +1985,23 @@ struct PtySession {
 
 /// `neige_terminal_open` (the production mint: card + terminal row + a
 /// `running` session with `terminal_run_id`), waited until the child runs.
-async fn open_sleeper(h: &Harness, request_id: &str) -> PtySession {
-    open_program(h, request_id, SLEEPER, true).await
+async fn open_sleeper(h: &Harness, idempotency_key: &str) -> PtySession {
+    open_program(h, idempotency_key, SLEEPER, true).await
 }
 
 /// `open_sleeper` for any `/bin/sh -c` program; `ready` waits for the READY
 /// line the program prints first (a program that prints nothing passes
 /// `false`).
-async fn open_program(h: &Harness, request_id: &str, program: &str, ready: bool) -> PtySession {
+async fn open_program(
+    h: &Harness,
+    idempotency_key: &str,
+    program: &str,
+    ready: bool,
+) -> PtySession {
     let opened = h
         .ok(
             "neige_terminal_open",
-            json!({"program":program,"request_id":request_id}),
+            json!({"program":program,"idempotency_key":idempotency_key}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -3106,7 +3111,7 @@ async fn one_shot_output_before_attach_is_unread() {
     let (opened, ()) = tokio::join!(
         h.ok(
             "neige_terminal_open",
-            json!({"program":"printf 'done\\n'; exit 0","request_id":"one-shot"}),
+            json!({"program":"printf 'done\\n'; exit 0","idempotency_key":"one-shot"}),
         ),
         async {
             let terminal = entered.await.expect("the open reached the attach hold");

@@ -16,16 +16,16 @@ impl WriteReceipts {
     /// was derived from and never recomputes them.
     pub(super) fn new(
         terminal: &str,
-        request_key: &str,
+        idempotency_key: &str,
         observation: Uuid,
         drift: Option<&Value>,
         steps: Option<usize>,
         release: bool,
     ) -> Self {
         let mut receipts = Self {
-            unknown: unknown_receipt(terminal, request_key, observation, drift),
-            written: acknowledged_receipt(terminal, request_key, observation, drift, true),
-            refused: acknowledged_receipt(terminal, request_key, observation, drift, false),
+            unknown: unknown_receipt(terminal, idempotency_key, observation, drift),
+            written: acknowledged_receipt(terminal, idempotency_key, observation, drift, true),
+            refused: acknowledged_receipt(terminal, idempotency_key, observation, drift, false),
         };
         if let Some(steps) = steps {
             receipts.each(|receipt| receipt["steps"] = json!(steps));
@@ -65,40 +65,40 @@ pub(super) fn merge(target: &mut Value, fields: Value) {
 /// The stale-observation result: the request was not written.
 pub(super) fn stale_receipt(
     terminal: &str,
-    request_key: &str,
+    idempotency_key: &str,
     observation: Uuid,
     observed_revision: u64,
     current_revision: u64,
     diff: &ScreenDiff,
 ) -> Value {
-    json!({"terminal_id":terminal,"request_id":request_key,"outcome":"stale_observation",
+    json!({"terminal_id":terminal,"idempotency_key":idempotency_key,"outcome":"stale_observation",
         "application_result":"unverified","observation_id_used":observation,
         "observed_revision":observed_revision,"current_revision":current_revision,
         "screen_diff":diff.to_json(observed_revision, current_revision),
-        "next":"inspect observation.state and screen_diff (that fresh observation is now the latest on this connection); if only status text changed, resend the same request_id with observation_id omitted and allow_output_since_observation=true; else act on the new state. The flag bypasses none of the control, surface, viewport or pending fences"})
+        "next":"inspect observation.state and screen_diff (that fresh observation is now the latest on this connection); if only status text changed, resend the same idempotency_key with observation_id omitted and allow_output_since_observation=true; else act on the new state. The flag bypasses none of the control, surface, viewport or pending fences"})
 }
 /// The control-unavailable result: nothing was written or cached.
 pub(super) fn control_unavailable_receipt(
     terminal: &str,
-    request_key: &str,
+    idempotency_key: &str,
     observation: Uuid,
     status: &str,
     reason: &str,
 ) -> Value {
-    json!({"terminal_id":terminal,"request_id":request_key,"outcome":"control_unavailable",
+    json!({"terminal_id":terminal,"idempotency_key":idempotency_key,"outcome":"control_unavailable",
         "application_result":"unverified","observation_id_used":observation,
         "reason":reason,"claim":{"status":status,"reason":reason},
-        "next":"nothing was written; read observation.state role/control_id; when free, observe and resend with claim=true"})
+        "next":"nothing was written; read observation.state role/control_id; when free, read and resend with claim=true"})
 }
 /// Every input receipt carries `application_result:"unverified"`: an acknowledgement says
 /// bytes reached the PTY, not what the application did with them.
 fn unknown_receipt(
     terminal: &str,
-    request_key: &str,
+    idempotency_key: &str,
     observation: Uuid,
     drift: Option<&Value>,
 ) -> Value {
-    let mut receipt = json!({"terminal_id":terminal,"request_id":request_key,"outcome":"unknown","repeat_input":false,
+    let mut receipt = json!({"terminal_id":terminal,"idempotency_key":idempotency_key,"outcome":"unknown","repeat_input":false,
         "application_result":"unverified","observation_id_used":observation,"output_since_observation":drift.is_some()});
     if let Some(drift) = drift {
         receipt["observation_drift"] = drift.clone();
@@ -107,13 +107,13 @@ fn unknown_receipt(
 }
 fn acknowledged_receipt(
     terminal: &str,
-    request_key: &str,
+    idempotency_key: &str,
     observation: Uuid,
     drift: Option<&Value>,
     written: bool,
 ) -> Value {
-    let mut receipt = json!({"terminal_id":terminal,"request_id":request_key,"outcome":if written{"written"}else{"refused"},
-        "application_result":"unverified","next":"observe the application result",
+    let mut receipt = json!({"terminal_id":terminal,"idempotency_key":idempotency_key,"outcome":if written{"written"}else{"refused"},
+        "application_result":"unverified","next":"read the application result",
         "observation_id_used":observation,"output_since_observation":drift.is_some()});
     if let Some(drift) = drift {
         receipt["observation_drift"] = drift.clone();
@@ -150,14 +150,14 @@ mod tests {
             assert_eq!(receipt["outcome"], outcome, "{receipt}");
             assert_eq!(receipt["application_result"], "unverified", "{receipt}");
             assert_eq!(receipt["terminal_id"], "t1");
-            assert_eq!(receipt["request_id"], "r1");
+            assert_eq!(receipt["idempotency_key"], "r1");
             assert_eq!(receipt["observation_id_used"], json!(observation));
             assert!(receipt.get("application_completed").is_none());
         }
         assert_eq!(unknown["repeat_input"], false);
         assert!(unknown.get("next").is_none());
         assert_eq!(unknown["output_since_observation"], false);
-        assert_eq!(written["next"], "observe the application result");
+        assert_eq!(written["next"], "read the application result");
         assert_eq!(refused["output_since_observation"], true);
         assert_eq!(refused["observation_drift"], drift);
         assert_eq!(
@@ -168,13 +168,13 @@ mod tests {
         assert_eq!(stale["outcome"], "stale_observation");
         assert_eq!(stale["application_result"], "unverified");
         assert_eq!(stale["terminal_id"], "t1");
-        assert_eq!(stale["request_id"], "r1");
+        assert_eq!(stale["idempotency_key"], "r1");
         assert_eq!(stale["observation_id_used"], json!(observation));
         assert_eq!(stale["observed_revision"], 3);
         assert_eq!(stale["current_revision"], 5);
         let next = stale["next"].as_str().unwrap();
         assert!(next.contains(
-            "resend the same request_id with observation_id omitted and allow_output_since_observation=true"
+            "resend the same idempotency_key with observation_id omitted and allow_output_since_observation=true"
         ));
         assert!(next.contains(
             "The flag bypasses none of the control, surface, viewport or pending fences"

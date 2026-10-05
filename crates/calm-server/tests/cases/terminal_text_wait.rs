@@ -37,7 +37,7 @@ fn revision(state: &Value) -> u64 {
 async fn open(h: &Harness, program: &str, request: &str) -> String {
     h.ok(
         "neige_terminal_open",
-        json!({"program":program,"request_id":request}),
+        json!({"program":program,"idempotency_key":request}),
     )
     .await["terminal_id"]
         .as_str()
@@ -92,7 +92,7 @@ async fn text_wait_matches_a_later_screen_and_settles() {
         &terminal,
         "go",
         h.call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             text_wait(
                 &terminal,
                 json!(["trust the files", "❯"]),
@@ -136,7 +136,7 @@ async fn text_wait_matches_a_later_screen_and_settles() {
     // No pattern on the screen: unmatched at the budget, `text` null.
     let unmatched = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             text_wait(&terminal, json!(["never painted"]), json!({"wait_ms":300})),
         )
         .await;
@@ -160,7 +160,7 @@ async fn text_wait_on_an_already_matching_screen_returns_after_settle() {
     h.observe_text(&terminal, "alpha again").await;
     let view = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             text_wait(
                 &terminal,
                 json!(["beta", "alpha"]),
@@ -180,7 +180,7 @@ async fn text_wait_on_an_already_matching_screen_returns_after_settle() {
     assert_eq!(view["changed_since_previous_observation"], false);
     let first_row = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             text_wait(
                 &terminal,
                 json!(["alpha"]),
@@ -208,7 +208,7 @@ async fn text_wait_ignores_a_match_that_vanishes_before_the_quiet_window() {
         &terminal,
         "go",
         h.call(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             text_wait(
                 &terminal,
                 json!(["READY"]),
@@ -236,7 +236,7 @@ async fn text_wait_reports_process_exit() {
     let terminal = open(&h, "sleep 0.3; exit 0", "text-exit").await;
     let view = h
         .ok(
-            "neige_terminal_observe",
+            "neige_terminal_read",
             text_wait(&terminal, json!(["never"]), json!({"wait_ms":5000})),
         )
         .await;
@@ -301,7 +301,7 @@ async fn text_wait_validation_and_readbacks_on_every_carrier() {
     ] {
         let mut observe = args.clone();
         observe["terminal_id"] = json!(terminal);
-        let response = h.call("neige_terminal_observe", observe).await;
+        let response = h.call("neige_terminal_read", observe).await;
         assert_eq!(response["error"]["code"], -32602, "{args}: {response}");
         assert!(
             error_text(&response).contains(expected),
@@ -313,7 +313,7 @@ async fn text_wait_validation_and_readbacks_on_every_carrier() {
         let mut control = args.clone();
         control["terminal_id"] = json!(terminal);
         control["action"] = json!("claim");
-        control["observe"] = json!(true);
+        control["read"] = json!(true);
         let response = h.call("neige_terminal_control", control).await;
         assert_eq!(
             response["error"]["code"], -32602,
@@ -325,9 +325,9 @@ async fn text_wait_validation_and_readbacks_on_every_carrier() {
         );
         let mut input = args.clone();
         input["terminal_id"] = json!(terminal);
-        input["request_id"] = json!("invalid");
+        input["idempotency_key"] = json!("invalid");
         input["action"] = json!({"type":"text","text":"BAD"});
-        input["observe"] = json!(true);
+        input["read"] = json!(true);
         let response = h.call("neige_terminal_input", input).await;
         assert_eq!(
             response["error"]["code"], -32602,
@@ -349,7 +349,7 @@ async fn text_wait_validation_and_readbacks_on_every_carrier() {
             .is_none(),
         "no control action ran"
     );
-    // Wait arguments without observe=true on action carriers.
+    // Wait arguments without read=true on action carriers.
     let no_observe = h
         .call(
             "neige_terminal_control",
@@ -357,13 +357,13 @@ async fn text_wait_validation_and_readbacks_on_every_carrier() {
         )
         .await;
     assert_eq!(no_observe["error"]["code"], -32602, "{no_observe}");
-    assert!(error_text(&no_observe).contains("wait_text/wait_text_absent need observe=true"));
+    assert!(error_text(&no_observe).contains("wait_text/wait_text_absent need read=true"));
     // Readbacks in text mode: claim, then a submit whose readback waits for
     // the program's echo line.
     let claimed = h
         .call(
             "neige_terminal_control",
-            json!({"terminal_id":terminal,"action":"claim","observe":true,"wait_for":"text","wait_text":["READY"],"settle_ms":0}),
+            json!({"terminal_id":terminal,"action":"claim","read":true,"wait_for":"text","wait_text":["READY"],"settle_ms":0}),
         )
         .await;
     assert_eq!(
@@ -376,7 +376,7 @@ async fn text_wait_validation_and_readbacks_on_every_carrier() {
     let sent = h
         .call(
             "neige_terminal_input",
-            json!({"terminal_id":terminal,"request_id":"line-1","action":{"type":"submit","text":"hello"},"observe":true,"wait_for":"text","wait_text":["COUNT:1:hello"],"wait_ms":5000}),
+            json!({"terminal_id":terminal,"idempotency_key":"line-1","action":{"type":"submit","text":"hello"},"read":true,"wait_for":"text","wait_text":["COUNT:1:hello"],"wait_ms":5000}),
         )
         .await;
     assert_eq!(receipt(&sent)["outcome"], "written", "{sent}");
