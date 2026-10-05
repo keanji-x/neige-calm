@@ -246,7 +246,6 @@ const HELP: &[CommandHelp] = &[
         "the tool to this session. Names are literal MCP names, so --prefix is no regex.",
         "At most 20 rows per page with next_cursor; pass it as --cursor for the next page.",
         "Describe prints one tool's MCP declaration plus cli and listed.",
-        "A client calls a neige.<object>.<action> tool as neige_<object>_<action>.",
         "Listing is not a grant; the tool's role gate decides.",
         "",
         "Options:",
@@ -397,7 +396,7 @@ fn root_help() -> String {
     writeln!(output, "  {:<20} {HELP_SUMMARY}", "help")
         .expect("writing help to a String cannot fail");
     output.push_str(concat!(
-        "\nEach command calls the tool neige.<object>.<action>; each option is --<input key>, with\n",
+        "\nEach command calls the tool neige_<object>_<action>; each option is --<input key>, with\n",
         "`_` written `-`, and a positional argument is also accepted as its --<key> option.\n",
         "\nOptions:\n",
         "      --json     Use JSON output where supported; otherwise emit errors as JSON\n",

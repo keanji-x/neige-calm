@@ -234,7 +234,7 @@ Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes
 `no_retired_tool_names_remain`, `kernel_tool_callables_are_injective_and_unhashed`,
 `unknown_tool_error_lists_the_sessions_tools`, `kernel_exit_codes_are_exactly_0_1_4`.
 
-Proposed (cheap, registry-driven, Appendix B):
+Added by the slices (registry-driven, Appendix B); the last one is still proposed (B4):
 
 - `served_tool_names_use_the_word_alphabet`: every name in `tools/list` matches `[A-Za-z0-9_]+`.
   B0 asserts it for kernel tools; B5 extends it to every plugin tool.
@@ -245,7 +245,7 @@ Proposed (cheap, registry-driven, Appendix B):
 - `plugin_ids_are_words`: every registered and built-in manifest id matches `[a-z0-9]{2,32}`.
 - `kernel_tool_params_use_the_vocabulary`: every input key, recursively, is snake_case (opaque
   payloads skipped, §4), and no top-level key is a retired name (`id`, `after`, `cancelled`,
-  `time_zone`, `request_id`, `select`).
+  `time_zone`, `request_id`, `select`, `until`).
 - `every_kernel_tool_refuses_unknown_arguments`: calls each registered kernel tool with an unknown
   key and asserts -32602 `<tool>: unknown argument …` naming the valid keys.
 
