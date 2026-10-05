@@ -1553,12 +1553,14 @@ pub(crate) fn harness_observation_from_event(
             pr_number,
             conclusion,
             snapshot,
+            failed_checks,
             ..
         } => Some(HarnessObservation::ForgePrChecks {
             track_id: track_id.clone(),
             pr_number: *pr_number,
             conclusion: conclusion.clone(),
             snapshot: snapshot.clone(),
+            failed_checks: failed_checks.clone(),
         }),
         Event::ForgeIssueClosed { issue_number, .. } => {
             Some(HarnessObservation::ForgeIssueClosed {

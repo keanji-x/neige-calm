@@ -237,6 +237,24 @@ pub struct ForgeChecksSnapshot {
     pub mergeable: String,
 }
 
+/// One check the checks read classified as failed, and where to read it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ForgeFailedCheck {
+    pub name: String,
+    #[serde(flatten)]
+    pub locator: ForgeCheckLocator,
+}
+
+/// A failed check's details URL, or its GraphQL node id when it has none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum ForgeCheckLocator {
+    Url { url: String },
+    Id { id: String },
+}
+
 /// What happened to one entry in the harness pending queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -701,6 +719,10 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         snapshot: Option<ForgeChecksSnapshot>,
+        /// The read's failed checks; absent on events recorded before #2170.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        failed_checks: Option<Vec<ForgeFailedCheck>>,
     },
     #[serde(rename = "forge.issue.read")]
     ForgeIssueRead {
@@ -1597,6 +1619,7 @@ mod scope_tests {
             pr_number: 1,
             conclusion: "success".into(),
             snapshot: None,
+            failed_checks: None,
         };
         assert_eq!(forge_pr_checks.kind_tag(), "forge.pr.checks");
 
@@ -2644,6 +2667,7 @@ mod scope_tests {
                 pr_number: 1,
                 conclusion: "success".into(),
                 snapshot: None,
+                failed_checks: None,
             },
             Event::ForgeIssueRead {
                 track_id: TrackId::from("track-1"),

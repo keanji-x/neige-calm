@@ -439,6 +439,10 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
                 serde_json::from_value(checks["snapshot"].clone())
                     .expect("production checks event carries exact-head snapshot"),
             ),
+            failed_checks: Some(
+                serde_json::from_value(checks["failed_checks"].clone())
+                    .expect("production checks event carries its failed checks"),
+            ),
         },
     )
     .await;

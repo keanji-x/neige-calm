@@ -363,10 +363,15 @@ async fn a_checks_wait_parks_until_ci_fails() {
     let event = cx.wait_for_event(Duration::from_secs(35)).await;
     assert_eq!(event.payload["snapshot"]["head_sha"], cx.head_sha());
     assert_eq!(event.payload["snapshot"]["mergeable"], "mergeable");
+    // #2170: the persisted event keeps the failed checks the wake and scorecard read.
     assert_eq!(
         event.payload,
         json!({ "track_id": cx.fx.track_id, "pr_number": cx.pr, "conclusion": "failure",
-            "snapshot": { "head_sha": cx.head_sha(), "mergeable": "mergeable" } })
+            "snapshot": { "head_sha": cx.head_sha(), "mergeable": "mergeable" },
+            "failed_checks": [
+                { "name": "test", "url": "https://github.invalid/shim/checks/1" },
+                { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1" }
+            ] })
     );
     assert_track_event(&event, &cx.fx.track_id);
 
@@ -479,6 +484,7 @@ async fn a_successful_checks_wait_records_exact_head() {
     assert_eq!(event.payload["conclusion"], "success");
     assert_eq!(event.payload["snapshot"]["head_sha"], cx.head_sha());
     assert_eq!(event.payload["snapshot"]["mergeable"], "mergeable");
+    assert_eq!(event.payload["failed_checks"], json!([]));
     let repeated = cx.call(51, "s-1").await;
     assert_eq!(
         repeated["result"]["structuredContent"]["result"]["event"]["failed_checks"],

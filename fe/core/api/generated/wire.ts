@@ -225,7 +225,11 @@ idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId
 /**
  * Absent only for historical events or operations frozen before snapshot capture.
  */
-snapshot?: ForgeChecksSnapshot, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, 
+snapshot?: ForgeChecksSnapshot, 
+/**
+ * The read's failed checks; absent on events recorded before #2170.
+ */
+failed_checks?: Array<ForgeFailedCheck>, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, 
 /**
  * #1727 S4: set by the kernel delivery path only; absent on legacy auto-commits.
  */
@@ -260,9 +264,19 @@ export type FolderConflict = { folder_id: number, area_id: AreaId, conflict_path
 export type FolderConflictKind = "equal" | "ancestor" | "descendant";
 
 /**
+ * A failed check's details URL, or its GraphQL node id when it has none.
+ */
+export type ForgeCheckLocator = { url: string, } | { id: string, };
+
+/**
  * Evidence captured by the checks read, never reconstructed from a later PR head.
  */
 export type ForgeChecksSnapshot = { head_sha: string, mergeable: string, };
+
+/**
+ * One check the checks read classified as failed, and where to read it.
+ */
+export type ForgeFailedCheck = { name: string, } & ({ url: string, } | { id: string, });
 
 /**
  * The PR a `forge.pr.merged` event merged. Rows written before #2016 also carry `phase` and

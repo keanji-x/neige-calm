@@ -724,6 +724,12 @@ export const forgePrChecksSchema = z.object({
     pr_number: z.number(),
     conclusion: z.string(),
     snapshot: z.object({ head_sha: z.string(), mergeable: z.string() }).optional(),
+    failed_checks: z
+      .array(z.intersection(
+        z.object({ name: z.string() }),
+        z.union([z.object({ url: z.string() }), z.object({ id: z.string() })]),
+      ))
+      .optional(),
   }),
 });
 

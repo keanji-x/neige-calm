@@ -23,6 +23,56 @@ fn checks_wake_includes_exact_snapshot_for_success_and_failure() {
     }
 }
 
+fn failed_lint_check() -> calm_types::event::ForgeFailedCheck {
+    calm_types::event::ForgeFailedCheck {
+        name: "lint".into(),
+        locator: calm_types::event::ForgeCheckLocator::Url {
+            url: "https://ci.example/lint".into(),
+        },
+    }
+}
+
+/// #2170: the wake names every failed check with its locator, read from the persisted payload.
+#[test]
+fn checks_wake_names_failed_checks_from_the_persisted_event() {
+    let track = TrackId::from("checks-track");
+    let event = Event::from_kind_and_payload(
+        "forge.pr.checks",
+        serde_json::json!({
+            "track_id": track, "pr_number": 42, "conclusion": "failure",
+            "snapshot": { "head_sha": "exact-head", "mergeable": "mergeable" },
+            "failed_checks": [
+                { "name": "lint", "url": "https://ci.example/lint" },
+                { "name": "legacy status", "id": "SC_kw1" }
+            ]
+        }),
+    )
+    .unwrap();
+    let text = harness_observation_from_event(&track, &event, None)
+        .unwrap()
+        .to_turn_text();
+    assert!(
+        text.ends_with(
+            "\nFailed checks: lint (https://ci.example/lint), legacy status (node id SC_kw1)."
+        ),
+        "{text}"
+    );
+
+    let passed = Event::from_kind_and_payload(
+        "forge.pr.checks",
+        serde_json::json!({
+            "track_id": track, "pr_number": 42, "conclusion": "success",
+            "snapshot": { "head_sha": "exact-head", "mergeable": "mergeable" },
+            "failed_checks": []
+        }),
+    )
+    .unwrap();
+    let text = harness_observation_from_event(&track, &passed, None)
+        .unwrap()
+        .to_turn_text();
+    assert!(!text.contains("Failed checks"), "{text}");
+}
+
 #[test]
 fn historical_checks_wake_does_not_invent_head_evidence() {
     let observation: HarnessObservation = serde_json::from_value(serde_json::json!({
@@ -230,6 +280,7 @@ fn dispatcher_filter_matches_push_kinds() {
         pr_number: 1,
         conclusion: "success".into(),
         snapshot: None,
+        failed_checks: None,
     })));
     assert!(filter.matches(&env(Event::ForgeIssueClosed {
         track_id: track.clone(),
@@ -1307,6 +1358,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             pr_number: 1,
             conclusion: "success".into(),
             snapshot: None,
+            failed_checks: None,
         },
         Event::ForgeIssueClosed {
             track_id: track.clone(),
@@ -1677,16 +1729,18 @@ fn harness_observation_from_event_mapping_pin() {
             &Event::ForgePrChecks {
                 track_id: TrackId::from("payload-track-ignored"),
                 pr_number: 1,
-                conclusion: "success".into(),
+                conclusion: "failure".into(),
                 snapshot: None,
+                failed_checks: Some(vec![failed_lint_check()]),
             },
             Some("impl-parser")
         ),
         Some(HarnessObservation::ForgePrChecks {
             track_id: track.clone(),
             pr_number: 1,
-            conclusion: "success".into(),
+            conclusion: "failure".into(),
             snapshot: None,
+            failed_checks: Some(vec![failed_lint_check()]),
         })
     );
     assert_eq!(
@@ -2146,6 +2200,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 pr_number: 1,
                 conclusion: "success".into(),
                 snapshot: None,
+                failed_checks: None,
             },
             ActorId::KernelDispatcher,
             true,

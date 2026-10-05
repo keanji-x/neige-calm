@@ -145,6 +145,9 @@ pub enum Observation {
         /// Historical pending queues may lack the entire snapshot, never individual fields.
         #[serde(skip_serializing_if = "Option::is_none")]
         snapshot: Option<crate::event::ForgeChecksSnapshot>,
+        /// Absent when the event predates #2170.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failed_checks: Option<Vec<crate::event::ForgeFailedCheck>>,
     },
     ForgeIssueClosed {
         track_id: TrackId,
@@ -431,25 +434,31 @@ impl Observation {
                 pr_number,
                 conclusion,
                 snapshot,
+                failed_checks,
                 ..
-            } => match snapshot {
-                Some(snapshot) => format!(
-                    include_str!("observation/forge-checks-snapshot.md"),
-                    snapshot.head_sha,
-                    snapshot.mergeable,
-                    pr_number = pr_number,
-                    conclusion = conclusion
-                )
-                .trim_end()
-                .to_owned(),
-                None => format!(
-                    include_str!("observation/forge-checks-historical.md"),
-                    pr_number = pr_number,
-                    conclusion = conclusion
-                )
-                .trim_end()
-                .to_owned(),
-            },
+            } => {
+                let text = match snapshot {
+                    Some(snapshot) => format!(
+                        include_str!("observation/forge-checks-snapshot.md"),
+                        snapshot.head_sha,
+                        snapshot.mergeable,
+                        pr_number = pr_number,
+                        conclusion = conclusion
+                    ),
+                    None => format!(
+                        include_str!("observation/forge-checks-historical.md"),
+                        pr_number = pr_number,
+                        conclusion = conclusion
+                    ),
+                };
+                let text = text.trim_end();
+                match failed_checks.as_deref() {
+                    Some(failed) if !failed.is_empty() => {
+                        format!("{text}\nFailed checks: {}.", failed_check_list(failed))
+                    }
+                    _ => text.to_owned(),
+                }
+            }
             Observation::ForgeIssueClosed { issue_number, .. } => {
                 format!("Forge issue #{issue_number} was closed. Re-read the track status.")
             }
@@ -581,6 +590,19 @@ fn gate_result_text(
             format!("Task {key} gate {verdict} (gate run {attempt}).")
         }
     }
+}
+
+/// `name (url)` per failed check; a check without a details URL shows its node id.
+fn failed_check_list(failed: &[crate::event::ForgeFailedCheck]) -> String {
+    use crate::event::ForgeCheckLocator;
+    failed
+        .iter()
+        .map(|check| match &check.locator {
+            ForgeCheckLocator::Url { url } => format!("{} ({url})", check.name),
+            ForgeCheckLocator::Id { id } => format!("{} (node id {id})", check.name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `; dirty: N paths: a, b, …` (first five, `…` beyond) when `reasons` names the porcelain status.

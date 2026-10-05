@@ -14,7 +14,8 @@ Columns:
   rejected      task.failed events the Planner wrote (neige_task_reject verdicts)
   gate_red      task.gate_result events with passed=false
   publish       forge.pr.opened events (one per published head)
-  ci_red        distinct heads whose forge.pr.checks concluded failure
+  ci_red        distinct heads whose forge.pr.checks concluded failure; --detail and --json also
+                name each failed check per head (events before #2170 did not record names)
   interventions the user's messages to the Planner after the kickoff message, plus ratify
                 decisions
   ratify        ratify requests (and how many were denied)
@@ -134,18 +135,22 @@ def events(db, track_id, kinds, start, end):
 
 
 def ci_red_heads(db, track_id, start, end):
-    """Heads whose checks concluded failure. Older events carry no head, so they take the head
-    of the last publish before them."""
+    """Heads whose checks concluded failure, each with its failed check names (None when the
+    events did not record them). Older events carry no head, so they take the head of the last
+    publish before them."""
     head = None
-    red = []
+    red = {}
     for kind, payload, _, _ in events(db, track_id, ["forge.pr.opened", "forge.pr.checks"], start, end):
         data = json.loads(payload)
         if kind == "forge.pr.opened":
             head = data["head_sha"]
         elif data["conclusion"] == "failure":
             failed = (data.get("snapshot") or {}).get("head_sha") or head or "unknown"
-            if failed not in red:
-                red.append(failed)
+            names = red.setdefault(failed, None)
+            if "failed_checks" in data:
+                names = names or []
+                names += [c["name"] for c in data["failed_checks"] if c["name"] not in names]
+                red[failed] = names
     return red
 
 
@@ -245,7 +250,7 @@ def scorecard(db, track_id):
         "gate_red": gate_red,
         "publish": publish,
         "ci_red": len(red_heads),
-        "ci_red_heads": red_heads,
+        "ci_red_heads": [{"head": h, "failed_checks": names} for h, names in red_heads.items()],
         "interventions": followups + len(resolved),
         "user_messages": followups,
         "ratify_requested": ratify_requested,
@@ -280,11 +285,16 @@ def print_table(cards):
         print("  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip())
 
 
+def red_head_text(red):
+    names = red["failed_checks"]
+    return red["head"][:9] + (" (checks not recorded)" if names is None else " (" + ", ".join(names) + ")")
+
+
 def print_detail(cards):
     for c in cards:
         print(f"\n== {c['track']} {c['title']}")
         print("terminal tasks: " + (", ".join(c["terminal_tasks"]) or "-"))
-        print("ci red heads:   " + (", ".join(h[:9] for h in c["ci_red_heads"]) or "-"))
+        print("ci red heads:   " + (", ".join(red_head_text(r) for r in c["ci_red_heads"]) or "-"))
         for hit in c["bypass_hits"]:
             print(f"bypass [{hit['source']}] {hit['command'][:160]}")
 

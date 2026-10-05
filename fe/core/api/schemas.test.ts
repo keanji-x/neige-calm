@@ -13,6 +13,16 @@ describe('core/api wire decode behavior', () => {
       expect(decodeWireEvent({ ev: 'forge.pr.checks', data: { ...data, snapshot } }).status).toBe('failed');
     }
   });
+  it('accepts failed checks with a URL or node id but rejects one without a locator', () => {
+    const data = {
+      track_id: 'track-01', pr_number: 1, conclusion: 'failure',
+      snapshot: { head_sha: 'exact-head', mergeable: 'mergeable' },
+    };
+    const failed_checks = [{ name: 'lint', url: 'https://ci.example/lint' }, { name: 'legacy status', id: 'SC_kw1' }];
+    expect(decodeWireEvent({ ev: 'forge.pr.checks', data: { ...data, failed_checks } }).status).toBe('ready');
+    expect(decodeWireEvent({ ev: 'forge.pr.checks', data: { ...data, failed_checks: [{ name: 'lint' }] } }).status)
+      .toBe('failed');
+  });
   it('returns unknown frames as decode data so callers can log and skip', () => {
     const result = decodeWireEvent({ ev: 'future.event', data: { version: 2 } });
     expect(result.status).toBe('failed');

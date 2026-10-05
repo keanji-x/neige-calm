@@ -1029,6 +1029,7 @@ golden_test!(
         pr_number: 1,
         conclusion: "success".into(),
         snapshot: None,
+        failed_checks: None,
     }
 );
 
@@ -1043,6 +1044,35 @@ golden_test!(
             head_sha: "exact-head".into(),
             mergeable: "mergeable".into(),
         }),
+        failed_checks: None,
+    }
+);
+
+golden_test!(
+    forge_pr_checks_failed,
+    "forge_pr_checks_failed.json",
+    Event::ForgePrChecks {
+        track_id: TrackId::from("track-01"),
+        pr_number: 1,
+        conclusion: "failure".into(),
+        snapshot: Some(calm_types::event::ForgeChecksSnapshot {
+            head_sha: "exact-head".into(),
+            mergeable: "mergeable".into(),
+        }),
+        failed_checks: Some(vec![
+            calm_types::event::ForgeFailedCheck {
+                name: "lint".into(),
+                locator: calm_types::event::ForgeCheckLocator::Url {
+                    url: "https://ci.example/lint".into(),
+                },
+            },
+            calm_types::event::ForgeFailedCheck {
+                name: "legacy status".into(),
+                locator: calm_types::event::ForgeCheckLocator::Id {
+                    id: "SC_kw1".into(),
+                },
+            },
+        ]),
     }
 );
 
@@ -1314,7 +1344,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 82,
+        files, 83,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
