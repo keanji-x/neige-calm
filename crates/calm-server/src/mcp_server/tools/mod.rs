@@ -448,9 +448,9 @@ mod tests {
     fn kernel_tool_actions_are_in_the_vocabulary() {
         const VERBS: &[&str] = &[
             "ls", "cat", "show", "status", "log", "diff", "find", "describe", "read", "write",
-            "commit", "tag", "rename", "add", "set", "rm", "capture", "notify", "input", "control",
-            "open", "close", "cancel", "publish", "request", "accept", "reject", "done", "fail",
-            "gc", "vacuum",
+            "commit", "tag", "rename", "add", "set", "rm", "capture", "notify", "send", "input",
+            "control", "open", "close", "cancel", "publish", "request", "accept", "reject", "done",
+            "fail", "gc", "vacuum",
         ];
         let word = regex::Regex::new(r"^[a-z0-9]+$").expect("word regex");
         let outside: Vec<String> = kernel_tool_names()
