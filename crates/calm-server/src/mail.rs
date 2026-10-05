@@ -282,7 +282,7 @@ pub async fn send(
                     track_id: recipient.id.clone(),
                     source: WAKE_SOURCE.into(),
                     key: mail_id.clone(),
-                    text: wake_line(&sender.title, &request.summary, &mail_id),
+                    text: wake_line(sender.id.as_str(), &sender.title, &request.summary, &mail_id),
                 };
                 let scope = EventScope::Track {
                     track: recipient.id,
@@ -299,9 +299,20 @@ pub async fn send(
     }
 }
 
-/// §4.5: the one line the recipient's Planner is woken with; no body, no hop.
-pub fn wake_line(sender_title: &str, summary: &str, mail_id: &str) -> String {
-    format!("\"{sender_title}\": {summary} — neige mail cat {mail_id}")
+/// §4.5: the one line the recipient's Planner is woken with; no body, no hop. A title's line
+/// breaks become one space; an untitled sender is named by its track id.
+pub fn wake_line(sender_id: &str, sender_title: &str, summary: &str, mail_id: &str) -> String {
+    let title = sender_title
+        .split(['\r', '\n'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let name = if title.trim().is_empty() {
+        sender_id
+    } else {
+        title.as_str()
+    };
+    format!("\"{name}\": {summary} — neige mail cat {mail_id}")
 }
 
 /// One mail row, from the caller Track's side: the other Track and its title.

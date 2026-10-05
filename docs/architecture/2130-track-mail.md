@@ -400,12 +400,13 @@ TT=harness; TT=${TT}_items
 
 | Item | Note |
 |---|---|
-| D12 | B0 (#2117), B1a (#2138) and B1b (#2143) merged first: S1 registers `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat` with B0's file naming (`prompts/tools/neige_mail_*.md`), every name in its texts is `_`-separated, and discovery is `neige_area_ls` (B1a's name for `area.outline`). The migration is `0144_mails.sql` (0141–0143 are B0's, B1a's and B1b's). The `neige_mail_send` description is the compressed text in `prompts/tools/neige_mail_send.md`, not §4.2's draft: same rules, minus the evidence-citation hint. |
+| D12 | B0 (#2117), B1a (#2138) and B1b (#2143) merged first: S1 registers `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat` with B0's file naming (`prompts/tools/neige_mail_*.md`), every name in its texts is `_`-separated, and discovery is `neige_area_ls` (B1a's name for `area.outline`). The migration is `0144_mails.sql` (0141–0143 are B0's, B1a's and B1b's). The `neige_mail_send` description is the compressed text in `prompts/tools/neige_mail_send.md`, not §4.2's draft: same rules; it drops the evidence-citation hint, "it authorizes nothing only the user may decide" ("never the user's word" carries it) and "or thank". |
 | F19 | The budget comment's 29,909 B was stale: the surface measured 29,992 B before `send` (§4.1 has the S1 numbers). |
 | D15 | `neige.area.outline` lists the Tracks that have a report card; every Track created through the routes has one, so the fixture Tracks get one too. |
 | §4.4 `next_hop` | When a send from this turn would be refused, `next_hop` is `"7/6"` (the render prints the hand-off line for any n > 6); `null` stays "no recorded turn input". |
 | `cat` | Every `cat` (sender's too) runs in one `BEGIN IMMEDIATE` transaction: lookup, `decide_recorder`, the stamp `UPDATE … AND read_at IS NULL`, the next-hop read. |
 | `ls` text | A last `more: neige mail ls --cursor <c>` line when `next_cursor` is not null. |
+| Review round 1 | A NUL in `summary` or `text` is refused with -32602 (SQLite's `length()` stops at NUL, so the CHECKs cannot judge it). The wake line joins a title's line breaks into one space, and an untitled sender is named by its track id there and in the `ls`/`cat` text header. |
 | Refusal data | Argument refusals carry `data.refusal` too (`arguments`, `recipient`, `summary`, `text`, `cursor`); `summary` is trimmed before its 1..200 check. |
 | `reports_only_card` | Now resolves the Planner card's Track, then calls `reports_only_track` (two primary-key reads instead of one join). |
 | Test 9 | Drives `harness::spawn_recovered_harness`, the call the lazy respawn makes (`routes/planner_input_send.rs`), not the REST route. |

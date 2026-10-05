@@ -7,10 +7,18 @@ use serde_json::Value;
 use super::{RenderError, compact, escape_control, required_array, required_str, shape};
 use crate::mail::MAX_HOP;
 
-/// `<mail_id>  <direction>  <state>  hop <n>/6  <title>`, every field on one line.
+/// `<mail_id>  <direction>  <state>  hop <n>/6  <title>`, every field on one line; an untitled
+/// Track is named by its track id.
 fn header(tool: &str, mail: &Value) -> Result<String, RenderError> {
-    let [id, direction, state, hop, title] = ["mail_id", "direction", "state", "hop", "title"]
-        .map(|field| required_str(mail, field, tool, "mail"));
+    let [id, direction, state, hop, title, track] =
+        ["mail_id", "direction", "state", "hop", "title", "track_id"]
+            .map(|field| required_str(mail, field, tool, "mail"));
+    let title = title?;
+    let title = if title.trim().is_empty() {
+        track
+    } else {
+        Ok(title)
+    };
     Ok(format!(
         "{}  {}  {}  hop {}  {}",
         escape_control(id?),

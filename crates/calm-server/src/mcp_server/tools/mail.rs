@@ -153,6 +153,16 @@ fn send_request(args: &Value) -> Result<SendRequest, RpcError> {
             ));
         }
     };
+    // SQLite's `length()` stops at a NUL, so the table's length CHECKs cannot judge such a value.
+    for key in ["summary", "text"] {
+        if text_argument(TOOL, object, key)?.is_some_and(|value| value.contains('\0')) {
+            return Err(invalid(
+                TOOL,
+                if key == "summary" { "summary" } else { "text" },
+                &format!("{key} must not contain NUL (U+0000)"),
+            ));
+        }
+    }
     let summary = text_argument(TOOL, object, "summary")?
         .map(|summary| summary.trim().to_string())
         .filter(|summary| {

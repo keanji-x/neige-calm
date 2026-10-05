@@ -92,6 +92,38 @@ async fn mail_send_wakes_the_recipient_planner_with_one_line() {
         "the body is never in the wake: {turn}"
     );
 
+    // The wake stays one line: a title's line breaks become one space (the `cat` header escapes
+    // them, as every text render does), and an untitled sender is named by its track id in both.
+    let multiline = w.add_planner(&w.area_id, "Weekly\r\nreview").await;
+    let untitled = w.add_planner(&w.area_id, "").await;
+    for (sender, name, shown) in [
+        (
+            &multiline,
+            "Weekly review".to_string(),
+            "Weekly\\r\\nreview".to_string(),
+        ),
+        (
+            &untitled,
+            untitled.track_id.to_string(),
+            untitled.track_id.to_string(),
+        ),
+    ] {
+        w.user_turn(sender, "tell N").await;
+        let (mail, _) = w.send_ok(sender, n, "s").await;
+        let text: String = sqlx::query_scalar(
+            "SELECT json_extract(payload, '$.text') FROM events \
+             WHERE kind = 'track.wake_requested' AND json_extract(payload, '$.key') = ?1",
+        )
+        .bind(&mail)
+        .fetch_one(w.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(text, format!("\"{name}\": s — neige mail cat {mail}"));
+        let (stdout, _, _) = w.neige(n, &["mail", "cat", &mail]).await;
+        let header = stdout.lines().next().unwrap_or_default();
+        assert!(header.ends_with(&format!("hop 1/6  {shown}")), "{header}");
+    }
+
     // The append failure path: the event insert aborts, so the row must roll back with it.
     sqlx::query(
         "CREATE TRIGGER mail_wake_append_fails BEFORE INSERT ON events \
@@ -108,8 +140,8 @@ async fn mail_send_wakes_the_recipient_planner_with_one_line() {
         .await
         .expect_err("the append failure fails the send");
     assert_eq!(error["code"], json!(-32603), "{error}");
-    assert_eq!(w.mail_rows().await, 1, "no row without its wake");
-    assert_eq!(w.wake_events().await, 1);
+    assert_eq!(w.mail_rows().await, 3, "no row without its wake");
+    assert_eq!(w.wake_events().await, 3);
 }
 
 /// Cat `mail_id` as `planner` and assert the next hop the last line names.
@@ -168,6 +200,52 @@ async fn mail_hop_follows_the_worked_example() {
     // Step 9: the user's reply restarts the chain.
     w.user_turn(a, "carry on").await;
     assert_eq!(w.send_ok(a, b, "m7").await.1, "1/6");
+}
+
+/// A NUL in the summary or text is refused as an argument (SQLite's `length()` stops at NUL, so
+/// the table CHECK would otherwise fail as an internal error); nothing is stored or woken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mail_send_refuses_nul_in_summary_and_text() {
+    let w = World::new(&["R", "N"]).await;
+    let (r, n) = (w.p(0), w.p(1));
+    w.user_turn(r, "ask N").await;
+    let to = n.track_id.as_str();
+    for (args, field) in [
+        (
+            json!({"track_id": to, "summary": "a\u{0}b", "text": "t"}),
+            "summary",
+        ),
+        (
+            json!({"track_id": to, "summary": "s", "text": "a\u{0}b"}),
+            "text",
+        ),
+        (
+            json!({"track_id": to, "summary": "\u{0}b", "text": "t"}),
+            "summary",
+        ),
+    ] {
+        let error = w.send(r, args).await.expect_err(field);
+        let (code, message) = refusal(&error, field);
+        assert_eq!(code, -32602, "{error}");
+        assert_eq!(
+            message,
+            format!("neige_mail_send: {field} must not contain NUL (U+0000)")
+        );
+    }
+    assert_eq!((w.mail_rows().await, w.wake_events().await), (0, 0));
+}
+
+/// §5: the next hop is the highest of the mails read this turn, not the last one read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mail_hop_takes_the_max_of_mixed_reads() {
+    let w = World::new(&["R", "N"]).await;
+    let (r, n) = (w.p(0), w.p(1));
+    let high = w.seed_mail(&r.track_id, &n.track_id, 4).await;
+    let low = w.seed_mail(&r.track_id, &n.track_id, 2).await;
+    w.task_turn(n).await;
+    cat_next(&w, n, &high, "next hop 5/6").await;
+    cat_next(&w, n, &low, "next hop 5/6").await;
+    assert_eq!(w.send_ok(n, r, "answer").await.1, "5/6");
 }
 
 /// Row 3 (M): a hop-6 send is allowed, the seventh is refused with the hand-off token and stores
@@ -434,6 +512,18 @@ async fn mail_send_refusals_follow_the_table() {
         .expect_err("reports-only caller");
     assert_eq!(error["code"], json!(-32403), "{error}");
     assert_eq!((w.mail_rows().await, w.wake_events().await), (rows, 0));
+    // `cat` of a mail neither to nor from the caller is refused and stamps nothing.
+    let (stdout, stderr, exit) = w.neige(r, &["mail", "cat", &not_mine, "--json"]).await;
+    assert_eq!((stdout.as_str(), exit), ("", 4), "{stderr}");
+    assert!(
+        stderr.contains(&format!("no mail {not_mine} to or from this track")),
+        "{stderr}"
+    );
+    let error = w
+        .call(r, "neige_mail_cat", json!({"mail_id": not_mine}))
+        .await;
+    assert_eq!(refusal(&error["error"], "unknown_mail").0, -32404);
+    assert_eq!(w.read_at(&not_mine).await, None);
 }
 
 /// Row 9: a Planner with no running harness is woken when its harness next starts: the lazy
