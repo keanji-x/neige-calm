@@ -64,7 +64,7 @@ async fn boot(max_open: u32) -> Boot {
     let roles = CardRoleCache::new();
     let tracks = TrackAreaCache::new();
     repo.seed_track_area_cache(&tracks).await.unwrap();
-    let state = AppState::from_parts(
+    let mut state = AppState::from_parts(
         repo_dyn.clone(),
         events.clone(),
         Arc::new(DaemonClient {
@@ -691,4 +691,24 @@ async fn rest_create_refuses_the_track_add_key_namespace() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
     assert_eq!(boot.track_count().await, before);
+}
+
+/// The MCP context only borrows the creator: once every `AppState` clone is gone, the creator and
+/// the route state it holds are gone too, so the binding forms no reference cycle.
+#[tokio::test]
+async fn track_creator_does_not_keep_the_state_alive() {
+    let boot = boot(16).await;
+    let weak = boot
+        .ctx
+        .track_creator
+        .get()
+        .expect("the creator is bound")
+        .clone();
+    assert!(weak.upgrade().is_some(), "the state owns the creator");
+    let Boot { app, .. } = boot;
+    drop(app);
+    assert!(
+        weak.upgrade().is_none(),
+        "the creator outlived every AppState: something holds it strongly"
+    );
 }

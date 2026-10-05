@@ -172,10 +172,14 @@ pub struct AppContext {
     pub plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
     /// Late-bound: MCP boot precedes runtime construction.
     pub operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
-    /// Late-bound: the keyed Track create `neige_track_add` runs, which holds the route state
-    /// built after this context; bound once by `AppState::bind_track_creator`.
-    pub track_creator:
-        Arc<tokio::sync::OnceCell<Arc<dyn crate::mcp_server::tools::track_add::TrackCreator>>>,
+    /// Late-bound: the keyed Track create `neige_track_add` runs, bound once by
+    /// `AppState::bind_track_creator`. Weak: the creator holds the route state, which holds this
+    /// context, so a strong handle here would keep the whole state alive; `AppState` owns it.
+    pub track_creator: Arc<
+        tokio::sync::OnceCell<
+            std::sync::Weak<dyn crate::mcp_server::tools::track_add::TrackCreator>,
+        >,
+    >,
     /// Late-bound (the Dispatcher is spawned after the MCP context): the scheduler's triggers.
     /// A running-task cancel pokes the worker reap through it; unbound (fixtures without a
     /// Dispatcher) means the reconcile sweep reaps instead.

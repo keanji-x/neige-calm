@@ -222,7 +222,7 @@ async fn track_add(
     let track_creator = ctx
         .track_creator
         .get()
-        .cloned()
+        .and_then(std::sync::Weak::upgrade)
         .ok_or_else(|| internal("no track creator is bound to this server"))?;
     let track = track_creator
         .add(request)
