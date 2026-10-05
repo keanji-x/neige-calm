@@ -72,6 +72,9 @@ mod task_recovery_reads;
 #[path = "cases/planner_result_loop.rs"]
 mod planner_result_loop;
 
+#[path = "cases/planner_plugin_instructions.rs"]
+mod planner_plugin_instructions;
+
 #[path = "cases/legacy_4140_rows.rs"]
 mod legacy_4140_rows;
 

@@ -14,12 +14,16 @@ use thiserror::Error;
 /// The wire key [`Manifest::config_schema`] serializes to; the error root path every `config_schema` violation is reported under.
 pub const CONFIG_SCHEMA_KEY: &str = "config_schema";
 
+/// Byte cap on [`Manifest::planner_instructions`].
+pub const MAX_PLANNER_INSTRUCTIONS_BYTES: usize = 2048;
+
 /// Top-level manifest blob loaded from `<install_path>/manifest.json`. Unknown fields are tolerated.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
     /// `1` — bindings spelled `workflows` (refused now, so only binding-less v1 files load); `2` —
-    /// `templates`; `3` — a `config_schema` with non-empty `required`. The bump is what makes an older
-    /// kernel refuse the file by version instead of silently ignoring the key.
+    /// `templates`; `3` — a `config_schema` with non-empty `required`; `4` — Track-bound agent tools;
+    /// `5` — [`Self::planner_instructions`]. The bump is what makes an older kernel refuse the file by
+    /// version instead of silently ignoring the key.
     pub manifest_version: u32,
 
     /// Reverse-DNS or slug, see `is_valid_plugin_id`. Stable across versions.
@@ -41,6 +45,11 @@ pub struct Manifest {
     /// Agent discovery/call scope, independent of the execution backend.
     #[serde(default, skip_serializing_if = "AgentToolsScope::is_enabled")]
     pub agent_tools_scope: AgentToolsScope,
+
+    /// Standing Planner documentation (#2104 K2), at most [`MAX_PLANNER_INSTRUCTIONS_BYTES`]; legal only
+    /// at `manifest_version` 5. Documentation only: it never enables or authorizes a tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_instructions: Option<String>,
 
     /// Remote streamable-HTTP MCP server config. Present iff `kind == McpHttp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -579,11 +588,11 @@ impl Manifest {
 
     /// Validate an already-deserialized manifest.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if !(1..=4).contains(&self.manifest_version) {
+        if !(1..=5).contains(&self.manifest_version) {
             return Err(ManifestError::invalid(
                 "manifest_version",
                 format!(
-                    "only manifest_version 1, 2, 3 or 4 is accepted, got {}",
+                    "only manifest_version 1, 2, 3, 4 or 5 is accepted, got {}",
                     self.manifest_version
                 ),
             ));
@@ -594,6 +603,24 @@ impl Manifest {
                 "manifest_version",
                 "Track-bound agent tools require manifest_version 4",
             ));
+        }
+
+        if let Some(text) = &self.planner_instructions {
+            if self.manifest_version < 5 {
+                return Err(ManifestError::invalid(
+                    "manifest_version",
+                    "`planner_instructions` requires manifest_version 5",
+                ));
+            }
+            if text.len() > MAX_PLANNER_INSTRUCTIONS_BYTES {
+                return Err(ManifestError::invalid(
+                    "planner_instructions",
+                    format!(
+                        "at most {MAX_PLANNER_INSTRUCTIONS_BYTES} bytes, got {}",
+                        text.len()
+                    ),
+                ));
+            }
         }
 
         // A manifest that actually declares a binding MUST say 2: a `templates[]` file read by an older
@@ -2266,7 +2293,7 @@ mod tests {
     #[test]
     fn bad_manifest_version_fails() {
         // Probed on both sides of the accepted range: a single sample above it would stay green under `>= 1`.
-        for version in ["0", "5", "99"] {
+        for version in ["0", "6", "99"] {
             let json = format!(
                 r#"{{
             "manifest_version": {version},

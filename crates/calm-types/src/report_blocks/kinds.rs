@@ -121,6 +121,12 @@ pub const LIVE_SOURCE_PATTERN: &str = "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-
 /// Shape check for a live `table`'s `source` (and a `chart.series` `source`): exactly two non-empty
 /// segments after the prefix. Existence is deliberately NOT checked: this crate has no registry.
 pub fn validate_live_source(source: &str) -> Result<(), String> {
+    parse_live_source(source).map(|_| ())
+}
+
+/// The `(plugin_id, overlay_kind)` a live `source` names; the one parser behind
+/// [`validate_live_source`] and [`super::live_refs`].
+pub fn parse_live_source(source: &str) -> Result<(&str, &str), String> {
     let Some(rest) = source.strip_prefix(LIVE_SOURCE_PREFIX) else {
         return Err(format!(
             "source: must start with `{LIVE_SOURCE_PREFIX}`, got `{source}`"
@@ -148,7 +154,7 @@ pub fn validate_live_source(source: &str) -> Result<(), String> {
             ));
         }
     }
-    Ok(())
+    Ok((plugin_id, kind))
 }
 
 pub const TASK_FIELDS: &[&str] = &[

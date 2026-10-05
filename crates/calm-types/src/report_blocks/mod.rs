@@ -4,6 +4,7 @@
 pub mod chart_series;
 pub mod fence;
 pub mod kinds;
+pub mod live_refs;
 pub mod native_view;
 pub mod tasks;
 

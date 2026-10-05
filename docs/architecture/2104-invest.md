@@ -393,7 +393,7 @@ once K2 and P1–P3 are deployed:
 
 ## 4. Slices
 
-**Order:** #2087 B0 → … → B5, then K1 ∥ K2 → P1 → P2 → P3 → C. K1 and K2 are inert until used. P1
+**Order:** #2087 B0 → K1 ∥ K2 → P1 → P2 → P3 → C (K2 needs none of the #2087 slices; K1 needs only B0's separator for its name; P2 needs B0 and K1/K2, not B5). K1 and K2 are inert until used. P1
 through C deploy after the verdict.
 
 **Gates:**

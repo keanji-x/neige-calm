@@ -18,6 +18,7 @@ pub(crate) mod gate_process;
 pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;
 pub mod planner_harness_start_adapter;
+pub(crate) mod planner_plugin_instructions;
 pub(crate) mod task_launch;
 mod task_prompt;
 pub mod task_verify_adapter;

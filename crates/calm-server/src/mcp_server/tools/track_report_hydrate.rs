@@ -13,10 +13,10 @@ use crate::report_series::hydrate::hydrate_chart_series;
 use crate::report_series::{Detail, resolved_at_text};
 use calm_types::report_blocks::kinds::LIVE_SOURCE_PREFIX;
 use calm_types::report_blocks::kinds::validate_inline_table_overlay;
-use calm_types::report_blocks::native_view::{LiveSlot, NativeView, RowCell, validate_unit};
+use calm_types::report_blocks::live_refs::view_live_slots;
+use calm_types::report_blocks::native_view::{LiveSlot, validate_unit};
 use calm_types::report_blocks::{KIND_CHART_SERIES, KIND_TABLE, KIND_VIEW};
 use calm_types::track_report::ReportBlock;
-use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolveMode {
@@ -116,26 +116,11 @@ pub(crate) async fn hydrated_block_index(
 fn is_overlay_block(block: &ReportBlock) -> bool {
     match block.kind.as_str() {
         KIND_TABLE => block.payload.get("source").is_some_and(Value::is_string),
-        KIND_VIEW => !view_slots(block).is_empty(),
+        KIND_VIEW => !view_live_slots(&block.payload).is_empty(),
         // Any other kind, including a retired kind an old report still stores, is listed without
         // `resolved`; the read never fails on it.
         _ => false,
     }
-}
-
-/// The live slots of a stored `view` template, in row and cell order.
-fn view_slots(block: &ReportBlock) -> Vec<LiveSlot> {
-    let Ok(view) = NativeView::deserialize(&block.payload) else {
-        return Vec::new();
-    };
-    view.rows
-        .into_iter()
-        .flat_map(|row| row.cells)
-        .filter_map(|cell| match cell {
-            RowCell::Live(slot) => Some(slot),
-            RowCell::Inline(_) => None,
-        })
-        .collect()
 }
 
 /// Exact Track/plugin/kind lookup; never resolve by plugin name alone.
@@ -166,7 +151,7 @@ fn hydrate_overlay(
     overlays: &[crate::model::Overlay],
 ) -> Value {
     if block.kind == KIND_VIEW {
-        return hydrate_live_slots(track_id, &view_slots(block), mode, overlays);
+        return hydrate_live_slots(track_id, &view_live_slots(&block.payload), mode, overlays);
     }
     let source = block
         .payload

@@ -34,6 +34,9 @@ use crate::mcp_server::wiring::{
 };
 use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 use crate::operation::codex_adapter::card_payload_get_tx;
+use crate::operation::planner_plugin_instructions::{
+    append_plugin_instructions, plugin_documents_track,
+};
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
 use crate::routes::cards::{MAX_PLANNER_INPUT_CHARS, card_scope, card_scope_tx};
@@ -434,17 +437,12 @@ pub(crate) async fn planner_instructions(
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     // Documentation follows the saved template; it never enables or authorizes tools.
     for component in crate::builtin_plugins::catalog() {
-        let manifest = component.manifest();
-        if track.plugin_scope.as_deref() == Some(manifest.id.as_str())
-            || manifest
-                .templates
-                .iter()
-                .any(|template| Some(template.id.as_str()) == track.template_id.as_deref())
-        {
+        if plugin_documents_track(component.manifest(), &track) {
             instructions.push_str("\n\n");
             instructions.push_str(component.instructions());
         }
     }
+    append_plugin_instructions(repo, plugin, &track, &mut instructions).await?;
     let card = repo
         .card_get(card_id)
         .await?

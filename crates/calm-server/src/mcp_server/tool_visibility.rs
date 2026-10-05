@@ -100,7 +100,16 @@ async fn resolve_plugin_scope_for_track(
         }
     };
     let plugin_host = ctx.plugin_host.get().cloned();
-    match resolve_track_owner_binding(&track, plugin_host.as_deref()).await {
+    plugin_scope_for_track_row(&track, plugin_host.as_deref()).await
+}
+
+/// [`plugin_scope_for_track`] for a Track row already in hand.
+pub(crate) async fn plugin_scope_for_track_row(
+    track: &crate::model::Track,
+    plugin_host: Option<&crate::plugin_host::PluginHost>,
+) -> TrackPluginScope {
+    let track_id = track.id.as_str();
+    match resolve_track_owner_binding(track, plugin_host).await {
         // Unbound track — historical union, routed through the shared resolver.
         TrackOwnerBinding::Unbound => TrackPluginScope::All,
         // Owner identity is the whole input here; `contract` is the planner's business.
