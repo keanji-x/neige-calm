@@ -2100,7 +2100,7 @@ function TrackRouteBody({
   const cardCreatePort: CardCreatePort = {
     createTerminal: (body, key) => trackMutations.createTerminal(track.id, body, key),
     createCodex: (body, key) => trackMutations.createCodex(track.id, body, key),
-    createCard: (body) => trackMutations.createCard(track.id, body),
+    createCard: (body, key) => trackMutations.createCard(track.id, body, key),
   };
 
   /* The create navigates to the new card, the same landing `onOpenCard` gives. `resent`: the held request goes again. */
@@ -2113,7 +2113,7 @@ function TrackRouteBody({
     setCreatingCard(true);
     void cardCreateFeedback
       .run(
-        Promise.resolve().then(() => sendCardCreate(cardCreatePort, cardRegistry, draft, keyed)).then((card) => {
+        Promise.resolve().then(() => sendCardCreate(cardCreatePort, draft, keyed)).then((card) => {
           if (keyed !== null) cardIntent.release(keyed);
           if (controller.signal.aborted) return;
           setCardDraft(null);
@@ -2138,7 +2138,7 @@ function TrackRouteBody({
     const draft: CardDraft = { entry, values };
     /* Read at click time from `<html data-theme>`, not `useTheme()`: subscribing
            would remount any live terminal on every theme toggle. A resent request keeps its first press's theme. */
-    const body = keyedCardBodyOf(draft, readHostThemeRgb());
+    const body = keyedCardBodyOf(draft, readHostThemeRgb(), cardRegistry);
     if (body === null) { runCardCreate(draft, null, false); return; }
     const resent = cardIntent.held !== null && sameCardDraft(cardIntent.held.draft, draft);
     runCardCreate(draft, cardIntent.request(draft, () => body), resent);

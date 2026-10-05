@@ -83,22 +83,15 @@ describe('plannerProviderOf', () => {
 describe('track create operation', () => {
   const theme = { fg: [1, 2, 3], bg: [4, 5, 6] } as const;
 
-  it('carries the draft key exactly when a first message is present', () => {
+  it('carries the draft key on every create, with or without a first message', () => {
     const keyed = createTrackOperation(
       { area_id: 'area', planner_provider: 'codex', theme, first_message: 'ship it' },
       'draft-key',
     );
     expect(keyed.headers).toEqual({ 'Idempotency-Key': 'draft-key' });
 
-    const messageLess = createTrackOperation({ area_id: 'area', planner_provider: 'codex', theme });
-    expect(messageLess.headers).toBeUndefined();
-  });
-
-  it('makes a message without a key invalid at both the type and runtime boundaries', () => {
-    expect(() => {
-      // @ts-expect-error first_message makes Idempotency-Key required.
-      createTrackOperation({ area_id: 'area', planner_provider: 'codex', theme, first_message: 'missing key' });
-    }).toThrow(/Idempotency-Key/);
+    const messageLess = createTrackOperation({ area_id: 'area', planner_provider: 'codex', theme }, 'draft-key');
+    expect(messageLess.headers).toEqual({ 'Idempotency-Key': 'draft-key' });
   });
 });
 
@@ -130,10 +123,11 @@ describe('card operations', () => {
 
   it('writes a runtime-less card through the generic create with its kind and payload', () => {
     const body = { kind: 'file-viewer', payload: { path: '/repo/notes.md' }, title: 'Notes' };
-    const operation = createCardOperation('w/1', body);
+    const operation = createCardOperation('w/1', body, 'intent-key');
     expect(operation.method).toBe('POST');
     expect(operation.path).toBe('/api/tracks/w%2F1/cards');
     expect(operation.body).toBe(body);
+    expect(operation.headers).toEqual({ 'Idempotency-Key': 'intent-key' });
   });
 });
 

@@ -24,8 +24,8 @@ test.afterEach(async ({ request }) => {
  * stored title but says this client decided the name. */
 test('creates a track from an Area group with no title, and persists it', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
-  /* Every create this page emits: the create carries no idempotency key, so a second POST is a
-       second track AND a second delivery of the same sentence. */
+  /* Every create this page emits. Each carries the draft's idempotency key, but a second POST under a
+       new key would be a second track AND a second delivery of the same sentence. */
   const creates: Request[] = [];
   page.on('request', (pending) => {
     if (pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/tracks') {

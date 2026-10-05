@@ -2,14 +2,13 @@ import { createContext, useContext, useEffect, useSyncExternalStore, type ReactN
 import { FOLLOW_INSTALLATION_DEFAULT, type ModelSelection } from '../../../../core/domain/conversation.ts';
 import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { Area } from '../../../../core/domain/area.ts';
-import type { NewTrackBodyWithFirstMessage, NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
+import type { NewTrackBody } from '../../../../core/domain/track.ts';
 import type { NewTrackFormState } from '../../features/area/new-track/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 
-export type TrackCreationRequest =
-  | Readonly<{ body: NewTrackBodyWithFirstMessage; key: string }>
-  | Readonly<{ body: NewTrackBodyWithoutFirstMessage; key?: never }>;
+/** One create's wire body and the key it is sent under on every attempt. */
+export type TrackCreationRequest = Readonly<{ body: NewTrackBody; key: string }>;
 
 export type NewTrackSession = Readonly<{
   area: Area;

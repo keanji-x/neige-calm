@@ -1866,5 +1866,20 @@
       "web/src/app/router/calendar-writes.test.tsx"
     ],
     "why_more_than_one": "casAttempts is the one compare-after-unknown rule for every CAS writer, so never treating a stale answer as a retry of an unknown attempt reddens its unit cases that read back (directly, after a refusal of the same attempt, and after a failed read-back) and each production path that meets its own landed write: the recipe save, the calendar edit and the calendar cancel. The first-409, changed-attempt, settled-attempt and genuine-concurrent-edit cases stay green, because they must be stale either way."
+  },
+  {
+    "mutation_id": "s2131-s4-failed-operation-read-as-unknown",
+    "defends": [
+      "oracle:INV-APP-119"
+    ],
+    "target": "core/domain/track.ts",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex d24d53b5d..7bb3c607c 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -658,7 +658,6 @@ export function createCardOperation(trackId: string, body: NewCardBody, idempote\n export const CARD_CREATE_FAILURES: FailureTable<WriteClass> = Object.freeze({\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n   ]),\n",
+    "expected_red": [
+      "a keyed card create reads a create that failed for good under its key as a final refusal with the server’s reason: no Try again, and the next press mints a new key"
+    ],
+    "selection_paths": [
+      "web/src/app/router/new-card.test.tsx"
+    ],
+    "why_more_than_one": "Measured in the exclusive worktree: reading `operation_failed` as unknown reddens only the case that answers a create with it, which then shows the fixed unknown state and a Try again under the spent key instead of the server's reason; every other card-create answer is matched by another rule and stays green."
   }
 ]

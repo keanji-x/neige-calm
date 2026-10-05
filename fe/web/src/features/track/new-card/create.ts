@@ -12,13 +12,15 @@ import type { NewCardValues } from './public.tsx';
 /** One add-card draft: its kind and the values typed into its form. */
 export type CardDraft = Readonly<{ entry: CardAddMenuEntry; values: NewCardValues }>;
 
-/** The body of a kind with a keyed atomic endpoint, built once per intent. */
-export type KeyedCardBody = Readonly<{ kind: 'terminal'; body: NewTerminalCardBody } | { kind: 'codex'; body: NewCodexCardBody }>;
+/** One draft's body on its kind's endpoint, built once per intent: an atomic worker endpoint, or the generic create. */
+export type KeyedCardBody = Readonly<
+  { kind: 'terminal'; body: NewTerminalCardBody } | { kind: 'codex'; body: NewCodexCardBody } | { kind: 'generic'; body: NewCardBody }
+>;
 
 export type CardCreatePort = Readonly<{
   createTerminal: (body: NewTerminalCardBody, idempotencyKey: string) => Promise<CardWire>;
   createCodex: (body: NewCodexCardBody, idempotencyKey: string) => Promise<CardWire>;
-  createCard: (body: NewCardBody) => Promise<CardWire>;
+  createCard: (body: NewCardBody, idempotencyKey: string) => Promise<CardWire>;
 }>;
 
 /* Empty is absent, not `""`: the kernel reads an empty `cwd` as "no directory given" but an empty `title` as a real,
@@ -35,35 +37,32 @@ export function sameCardDraft(held: CardDraft, next: CardDraft): boolean {
     && [...keys].every((key) => givenValue(held.values, key) === givenValue(next.values, key));
 }
 
-/** The body of a kind with a keyed atomic endpoint, or `null` for a kind that goes through the generic create. */
-export function keyedCardBodyOf({ entry, values }: CardDraft, theme: ThemeRgb): KeyedCardBody | null {
+/**
+ * A draft's body: terminal and Codex on their atomic endpoints, any other kind through the generic create with the
+ * entry's claimed kind; `null` for a kind the registry cannot create.
+ */
+export function keyedCardBodyOf({ entry, values }: CardDraft, theme: ThemeRgb, registry: CardRegistry): KeyedCardBody | null {
   const title = givenValue(values, 'title');
   const titled = title === undefined ? {} : { title };
   if (entry.type === 'terminal') return { kind: 'terminal', body: { theme, ...titled } };
-  if (entry.type !== 'codex') return null;
-  const cwd = givenValue(values, 'cwd');
-  return { kind: 'codex', body: { theme, ...titled, ...(cwd === undefined ? {} : { cwd }) } };
-}
-
-/**
- * Sends one attempt: a keyed request on its kind's own endpoint, under its key and the body built at the first press;
- * any other kind through the generic create with the entry's claimed kind (it takes no key yet, #2131 S4).
- */
-export function sendCardCreate(
-  port: CardCreatePort, registry: CardRegistry, { entry, values }: CardDraft,
-  keyed: Readonly<{ key: string; body: KeyedCardBody }> | null,
-): Promise<CardWire> {
-  if (keyed !== null) {
-    return keyed.body.kind === 'terminal'
-      ? port.createTerminal(keyed.body.body, keyed.key) : port.createCodex(keyed.body.body, keyed.key);
+  if (entry.type === 'codex') {
+    const cwd = givenValue(values, 'cwd');
+    return { kind: 'codex', body: { theme, ...titled, ...(cwd === undefined ? {} : { cwd }) } };
   }
   const registered = registry.get(entry.type);
   const strategy = registered?.create;
-  if (strategy?.mode !== 'generic' || registered?.claim?.mode !== 'exact') {
-    throw new Error(`CardCreateUnsupported(${entry.type})`);
-  }
-  const title = givenValue(values, 'title');
-  return port.createCard({ kind: registered.claim.kind, payload: strategy.buildPayload(values), ...(title === undefined ? {} : { title }) });
+  if (strategy?.mode !== 'generic' || registered?.claim?.mode !== 'exact') return null;
+  return { kind: 'generic', body: { kind: registered.claim.kind, payload: strategy.buildPayload(values), ...titled } };
+}
+
+/** Sends one attempt on its kind's endpoint, under its key and the body built at the first press. */
+export function sendCardCreate(
+  port: CardCreatePort, { entry }: CardDraft, keyed: Readonly<{ key: string; body: KeyedCardBody }> | null,
+): Promise<CardWire> {
+  if (keyed === null) throw new Error(`CardCreateUnsupported(${entry.type})`);
+  const { key, body } = keyed;
+  if (body.kind === 'terminal') return port.createTerminal(body.body, key);
+  return body.kind === 'codex' ? port.createCodex(body.body, key) : port.createCard(body.body, key);
 }
 
 /**

@@ -8,10 +8,10 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../features/report/recipe/body-editor.tsx', () => ({
-  RecipeBodyEditor: ({ value, label, onChange }: {
-    value: string; label: string; onChange: (next: string) => void;
+  RecipeBodyEditor: ({ value, label, readOnly, onChange }: {
+    value: string; label: string; readOnly?: boolean; onChange: (next: string) => void;
   }) => (
-    <textarea aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} />
+    <textarea aria-label={label} value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} />
   ),
 }));
 
@@ -62,6 +62,8 @@ type Options = Readonly<{
   put?: ApiTransportResponse | (() => Promise<ApiTransportResponse>);
   /** What `POST /api/track-recipes` answers — the create. */
   post?: ApiTransportResponse | (() => Promise<ApiTransportResponse>);
+  /** Per 0-based create attempt, in place of `post`: an answer, or `lost` for one that never arrived. */
+  postAnswers?: readonly (ApiTransportResponse | 'lost')[];
   /** The row `GET /api/track-recipes/{id}` answers with: what a lost save is read back through. */
   stored?: () => unknown;
   /** What `DELETE /api/track-recipes/{id}` answers. */
@@ -71,6 +73,7 @@ type Options = Readonly<{
 function harness(options: Options = {}) {
   const sent: ApiRequest[] = [];
   let listReads = 0;
+  let creates = 0;
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
@@ -87,6 +90,10 @@ function harness(options: Options = {}) {
           : OK(options.stored()));
       }
       if (request.method === 'POST' && request.path === '/api/track-recipes') {
+        const answer = options.postAnswers?.[creates];
+        creates += 1;
+        if (answer === 'lost') return Promise.reject(new Error('socket hang up'));
+        if (answer !== undefined) return Promise.resolve(answer);
         if (typeof options.post === 'function') return options.post();
         return Promise.resolve(options.post ?? { status: 200, statusText: 'OK', body: RECIPE });
       }
@@ -310,7 +317,7 @@ describe('creating a recipe', () => {
   });
 });
 
-/* #2131 S5: a save is a CAS write and a create sends no key yet; each failure is read through the recipe's tables. */
+/* #2131 S5: a save is a CAS write and a create is keyed (S4); each failure is read through the recipe's tables. */
 describe('a recipe write whose answer was lost', () => {
   const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('socket hang up'));
   const stale: ApiTransportResponse = {
@@ -406,7 +413,7 @@ describe('a recipe write whose answer was lost', () => {
     expect(await screen.findByText('track recipe body: unclosed fence')).toBeTruthy();
   });
 
-  it('does not create a recipe again after a create whose answer was lost, and reads the list again', async () => {
+  it('keeps Save off after a create whose answer was lost, offers Try again, and reads the list again', async () => {
     const user = userEvent.setup();
     const { sent, listReads } = atRecipes({ recipeList: () => OK([]), post: lost });
     await screen.findByText(/You have no recipes yet/);
@@ -414,8 +421,7 @@ describe('a recipe write whose answer was lost', () => {
     await composeAndSave(user);
 
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toBe('Creating the recipe is unconfirmed, so it is not sent again. Copy what you need, '
-      + 'then check the list: it shows the recipe if it was created.');
+    expect(alert.textContent).toBe('Creating the recipe is unconfirmed. Try again to check the same recipe.Try again');
     expect(alert.textContent).not.toMatch(RAW);
     expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', true);
     expect(screen.getByRole('textbox', { name: BODY_FIELD })).toHaveProperty('value', 'What the author typed.');
@@ -432,6 +438,70 @@ describe('a recipe write whose answer was lost', () => {
     await composeAndSave(user);
     expect((await screen.findByRole('alert')).textContent).toBe('track recipe title must not be empty');
     expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', false);
+  });
+});
+
+/* #2131 S4: one new recipe's save is one `Idempotency-Key`; the kernel answers a retry under it with the first recipe. */
+describe('a keyed recipe create', () => {
+  const keyOf = (request: ApiRequest | undefined) => request?.headers?.['Idempotency-Key'];
+  const creates = (sent: readonly ApiRequest[]) =>
+    sent.filter((request) => request.method === 'POST' && request.path === '/api/track-recipes');
+
+  it('resends a create whose answer was lost under the same key and body on Try again', async () => {
+    const user = userEvent.setup();
+    const { sent } = atRecipes({ recipeList: () => OK([]), postAnswers: ['lost', OK(CREATED)] });
+    await composeAndSave(user);
+    expect(await screen.findByText('Creating the recipe is unconfirmed. Try again to check the same recipe.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Canonicalised by the server.')).toBeTruthy();
+    const [first, second] = creates(sent);
+    expect(creates(sent)).toHaveLength(2);
+    expect(keyOf(first)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keyOf(second)).toBe(keyOf(first));
+    expect(second?.body).toEqual(first?.body);
+  });
+
+  /* The held draft is what Try again resends and what its success renders: anything typed meanwhile would be lost. */
+  it('locks the title and body while a create is unconfirmed, so Try again resends exactly what is on screen', async () => {
+    const user = userEvent.setup();
+    const { sent } = atRecipes({ recipeList: () => OK([]), postAnswers: ['lost', OK(CREATED)] });
+    await composeAndSave(user);
+    await screen.findByRole('button', { name: 'Try again' });
+    const field = screen.getByRole('textbox', { name: BODY_FIELD });
+    await user.type(field, ' And more.');
+    expect(field).toHaveProperty('value', 'What the author typed.');
+    const title = screen.getByRole('textbox', { name: 'Recipe title' });
+    await user.type(title, ' v2');
+    expect(title).toHaveProperty('value', 'Untitled recipe');
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Canonicalised by the server.')).toBeTruthy();
+    expect(creates(sent).map((request) => request.body)).toEqual([
+      { title: 'Untitled recipe', body: 'What the author typed.' }, { title: 'Untitled recipe', body: 'What the author typed.' },
+    ]);
+  });
+
+  it.each([
+    ['a create that failed for good under its key', { status: 500, statusText: 'Internal Server Error', body: {
+      error: 'operation failed: storage refused the row.', code: 'operation_failed',
+    } }, 'operation failed: storage refused the row.'],
+    ['a key bound to another recipe', { status: 409, statusText: 'Conflict', body: {
+      error: 'This key was already used for a different recipe.', code: 'idempotency_key_reused',
+    } }, 'This key was already used for a different recipe.'],
+  ] as const)('reads %s as final: the server’s reason, no Try again, and the next Save mints a new key', async (_name, answer, reason) => {
+    const user = userEvent.setup();
+    const { sent } = atRecipes({ recipeList: () => OK([]), postAnswers: [answer, OK(CREATED)] });
+    await composeAndSave(user);
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    // Not the "changed elsewhere" notice a revision conflict on a save gets.
+    expect(screen.queryByText(/changed somewhere else/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Canonicalised by the server.')).toBeTruthy();
+    expect(creates(sent)).toHaveLength(2);
+    expect(keyOf(creates(sent)[1])).not.toBe(keyOf(creates(sent)[0]));
   });
 });
 

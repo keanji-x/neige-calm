@@ -222,6 +222,10 @@ describe('a keyed card create', () => {
   const unprocessable: ApiTransportResponse = { status: 422, statusText: 'Unprocessable Entity', body: {
     error: 'The theme is missing.', code: 'unprocessable',
   } };
+  /* A create that failed for good after its commit; a retry under its key is answered the same. */
+  const failed: ApiTransportResponse = { status: 500, statusText: 'Internal Server Error', body: {
+    error: 'operation failed: the daemon did not start.', code: 'operation_failed',
+  } };
 
   async function fillTitle(title: string) {
     const field = await screen.findByRole('textbox', { name: 'Title' });
@@ -303,6 +307,7 @@ describe('a keyed card create', () => {
     ['an invalid key', invalid, 'The card request key is not valid.'],
     ['a refused body', unprocessable, 'The theme is missing.'],
     ['a create refused before it committed', conflict, 'The track is closed.'],
+    ['a create that failed for good under its key', failed, 'operation failed: the daemon did not start.'],
   ])('reads %s as a final refusal with the server’s reason: no Try again, and the next press mints a new key', async (_name, answer, reason) => {
     const { posts } = setup({ answers: [answer] });
     await pickKind('codex');
@@ -367,17 +372,25 @@ describe('a keyed card create', () => {
     expect(cards).toHaveLength(1);
   });
 
-  /* `POST /api/tracks/{id}/cards` takes no key yet (#2131 S4): a retry could make a second card, so none is offered. */
-  it('reads a plugin card create through the same table, unkeyed and with no Try again', async () => {
-    const { posts } = setup({ answers: ['lost'] });
+  /* #2131 S4: the generic create takes a key too, so a plugin card's Try again joins the card its first attempt made. */
+  it('resends a plugin card create whose answer was lost under the same key and body, and makes one card', async () => {
+    const { posts, cards } = setup({ answers: ['lost'] });
     await pickKind('file');
     await userEvent.click(await screen.findByRole('button', { name: 'File or folder' }));
     await userEvent.click(await screen.findByRole('option', { name: 'notes.md' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Create file' }));
-    await waitFor(() => {
-      expect(document.querySelector('[data-nc-new-card-error]')?.textContent).toBe('Creating the file card is unconfirmed.');
+    const banner = await waitFor(() => {
+      const shown = document.querySelector<HTMLElement>('[data-nc-new-card-error]');
+      expect(shown?.textContent).toContain('Creating the file card is unconfirmed.');
+      return shown!;
     });
-    expect(keyOf(posts()[0])).toBeUndefined();
-    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    await userEvent.click(within(banner).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => { expect(posts()).toHaveLength(2); });
+    const [first, second] = posts();
+    expect(first?.path).toBe('/api/tracks/w1/cards');
+    expect(keyOf(first)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keyOf(second)).toBe(keyOf(first));
+    expect(second?.body).toEqual(first?.body);
+    expect(cards).toHaveLength(1);
   });
 });

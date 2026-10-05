@@ -99,12 +99,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     // theme changes or template refresh must not silently change its payload.
     const request: TrackCreationRequest = replacementKey === undefined && current.request !== null
       ? current.request
-      : isBlankForKernel(draft.message) ? { body }
-        : { body: { ...body, first_message: draft.message }, key: attemptKey };
+      : { body: isBlankForKernel(draft.message) ? body : { ...body, first_message: draft.message }, key: attemptKey };
     store.update(areaId, { creating: true, request, error: null, canRetryAsNewTrack: false, folderConflict: null });
-    const creation = request.key === undefined
-      ? trackMutations.create(request.body)
-      : trackMutations.create(request.body, request.key);
+    const creation = trackMutations.create(request.body, request.key);
     void creation.then((track) => {
       // A late acknowledgement belongs to its draft; it never steals the
       // navigation the reader made while waiting. Returning offers Open track.

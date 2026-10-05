@@ -49,7 +49,7 @@ import {
   sortAreaTracksByRecent, trackActivityFrom, trackDetailOperation, trackRecipeOperation, trackRecipesOperation, trackTemplatesOperation,
   tracksInAreaOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody,
-  type NewTrackBodyWithFirstMessage, type NewTrackBodyWithoutFirstMessage, type OverlayWire,
+  type NewTrackBody, type OverlayWire,
   type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
@@ -595,7 +595,8 @@ export function useTrackRecipes(transport: ApiTransportPort, unauthorized: Unaut
 }
 
 export type TrackRecipeMutations = Readonly<{
-  create: (body: { title: string; body: string }) => Promise<TrackRecipe>;
+  /** Keyed per save intent: a retry under the key answers with the recipe its first attempt saved. */
+  create: (body: { title: string; body: string }, idempotencyKey: string) => Promise<TrackRecipe>;
   /**
    * Whole-document `PUT` gated on `if_revision`. Resolves with the STORED row, which may differ from the
    * bytes sent; rejects as `RECIPE_SAVE_FAILURES` reads it, a 409 being stale unless it answers a retry of a save
@@ -613,8 +614,8 @@ export function useTrackRecipeMutations(
   const [saves] = useState(() => recipeSaveAttempts());
   const invalidate = () => { void client.invalidateQueries({ queryKey: queryKeys.trackRecipes() }); };
   const create = useRecoveryMutation(transport, {
-    mutationFn: (body: { title: string; body: string }, transport: ApiTransportPort) => runOperation(
-      transport, createTrackRecipeOperation(body), unauthorized,
+    mutationFn: ({ body, key }: { body: { title: string; body: string }; key: string }, transport: ApiTransportPort) => runOperation(
+      transport, createTrackRecipeOperation(body, key), unauthorized,
     ),
     /* `onSettled`: a create whose answer was lost may have made the recipe, and the list is how the reader finds it. */
     onSettled: invalidate,
@@ -636,7 +637,7 @@ export function useTrackRecipeMutations(
     onSettled: invalidate,
   });
   return {
-    create: (body) => create.mutateAsync(body),
+    create: (body, key) => create.mutateAsync({ body, key }),
     save: (recipeId, body) => save.mutateAsync({ recipeId, body }),
     remove: async (recipeId) => { await remove.mutateAsync(recipeId); },
   };
@@ -786,23 +787,14 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
   };
 }
 
-type TrackCreateMutation = {
-  (body: NewTrackBodyWithoutFirstMessage): Promise<Track>;
-  (body: NewTrackBodyWithFirstMessage, idempotencyKey: string): Promise<Track>;
-};
-
-type TrackCreateVariables =
-  | Readonly<{ body: NewTrackBodyWithoutFirstMessage }>
-  | Readonly<{ body: NewTrackBodyWithFirstMessage; idempotencyKey: string }>;
-
 export type TrackMutations = Readonly<{
-  /** `idempotencyKey` is required by the kernel whenever `first_message` is present. Mint it ONCE per draft: a fresh key on a retry mints a second track. */
-  create: TrackCreateMutation;
+  /** Mint `idempotencyKey` ONCE per draft: a fresh key on a retry mints a second track. */
+  create: (body: NewTrackBody, idempotencyKey: string) => Promise<Track>;
   patch: (trackId: string, areaId: string, body: TrackPatchBody) => Promise<Track>;
   setPinned: (trackId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Track>;
   createTerminal: (trackId: string, body: NewTerminalCardBody, idempotencyKey: string) => Promise<CardWire>;
   createCodex: (trackId: string, body: NewCodexCardBody, idempotencyKey: string) => Promise<CardWire>;
-  createCard: (trackId: string, body: NewCardBody) => Promise<CardWire>;
+  createCard: (trackId: string, body: NewCardBody, idempotencyKey: string) => Promise<CardWire>;
   removeCard: (trackId: string, cardId: string, signal?: AbortSignal) => Promise<void>;
   remove: (trackId: string, areaId: string, signal?: AbortSignal) => Promise<void>;
   /** Dismiss one notification item by its kernel key. A `404` rejects too: `DISMISS_FAILURES` reads it as done. */
@@ -812,13 +804,8 @@ export type TrackMutations = Readonly<{
 export function useTrackMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackMutations {
   const client = useQueryClient();
   const create = useRecoveryMutation(transport, {
-    mutationFn: (variables: TrackCreateVariables, transport: ApiTransportPort) => runOperation(
-      transport,
-      'idempotencyKey' in variables
-        ? createTrackOperation(variables.body, variables.idempotencyKey)
-        : createTrackOperation(variables.body),
-      unauthorized,
-    ),
+    mutationFn: (variables: { body: NewTrackBody; idempotencyKey: string }, transport: ApiTransportPort) =>
+      runOperation(transport, createTrackOperation(variables.body, variables.idempotencyKey), unauthorized),
     onSuccess: (track, { body }) => {
       void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(track.area_id) });
       // Explicit `attach_folder` mints an area_folders row; drop any cached list so a later read cannot serve a stale empty array.
@@ -878,8 +865,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     onSuccess: addCardToDetail,
   });
   const createCard = useRecoveryMutation(transport, {
-    mutationFn: ({ trackId, body }: { trackId: string; body: NewCardBody }, transport: ApiTransportPort) =>
-      runOperation(transport, createCardOperation(trackId, body), unauthorized),
+    mutationFn: ({ trackId, body, key }: { trackId: string; body: NewCardBody; key: string }, transport: ApiTransportPort) =>
+      runOperation(transport, createCardOperation(trackId, body, key), unauthorized),
     onSuccess: addCardToDetail,
   });
   /* Delete drops the row from the cached detail before the refetch lands: leaving it on screen would keep
@@ -910,29 +897,12 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
   });
   const patchTrack = async (trackId: string, areaId: string, body: TrackPatchBody) =>
     toTrack(await patch.mutateAsync({ trackId, areaId, body }));
-  async function createTrack(body: NewTrackBodyWithoutFirstMessage): Promise<Track>;
-  async function createTrack(
-    body: NewTrackBodyWithFirstMessage,
-    idempotencyKey: string,
-  ): Promise<Track>;
-  async function createTrack(
-    body: NewTrackBodyWithoutFirstMessage | NewTrackBodyWithFirstMessage,
-    idempotencyKey?: string,
-  ): Promise<Track> {
-    if (body.first_message === undefined) {
-      return toTrack(await create.mutateAsync({ body }));
-    }
-    if (idempotencyKey === undefined) {
-      throw new TypeError('Idempotency-Key is required when first_message is present');
-    }
-    return toTrack(await create.mutateAsync({ body, idempotencyKey }));
-  }
   return {
-    create: createTrack,
+    create: async (body, idempotencyKey) => toTrack(await create.mutateAsync({ body, idempotencyKey })),
     patch: patchTrack,
     createTerminal: async (trackId, body, key) => createTerminal.mutateAsync({ trackId, body, key }),
     createCodex: async (trackId, body, key) => createCodex.mutateAsync({ trackId, body, key }),
-    createCard: async (trackId, body) => createCard.mutateAsync({ trackId, body }),
+    createCard: async (trackId, body, key) => createCard.mutateAsync({ trackId, body, key }),
     removeCard: async (trackId, cardId, signal) => {
       await removeCard.mutateAsync({ trackId, cardId, signal });
     },

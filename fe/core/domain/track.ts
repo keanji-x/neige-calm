@@ -353,17 +353,14 @@ export type NewTrackBody = Readonly<{
   recipe_id?: string;
   /**
    * The reader's first sentence, seeded to the planner by this create. Blank per `isBlankForKernel`
-   * omits the key; a sent value goes verbatim, untrimmed. Present ⇒ `Idempotency-Key` is required.
+   * omits the key; a sent value goes verbatim, untrimmed.
    */
   first_message?: string;
 }>;
 
-/** The two legal request-body shapes at the operation boundary. */
+/** A body before the reader's first sentence is added to it. */
 export type NewTrackBodyWithoutFirstMessage = Omit<NewTrackBody, 'first_message'> & Readonly<{
   first_message?: undefined;
-}>;
-export type NewTrackBodyWithFirstMessage = Omit<NewTrackBody, 'first_message'> & Readonly<{
-  first_message: string;
 }>;
 
 /** A selectable starting point for a new track. `input_schema` is present exactly when a running trusted plugin is bound and the template takes input. */
@@ -404,10 +401,14 @@ export function trackRecipeOperation(recipeId: string): ApiOperation<TrackRecipe
   return { method: 'GET', path: `/api/track-recipes/${encodeURIComponent(recipeId)}`, responseSchema: trackRecipeSchema };
 }
 
+/** `POST /api/track-recipes`, keyed per save intent: a retry under the key answers with the recipe the first attempt saved. */
 export function createTrackRecipeOperation(
   body: Readonly<{ title: string; body: string }>,
+  idempotencyKey: string,
 ): ApiOperation<TrackRecipe> {
-  return { method: 'POST', path: '/api/track-recipes', body, responseSchema: trackRecipeSchema };
+  return {
+    method: 'POST', path: '/api/track-recipes', body, headers: { 'Idempotency-Key': idempotencyKey }, responseSchema: trackRecipeSchema,
+  };
 }
 
 /**
@@ -435,19 +436,25 @@ export function deleteTrackRecipeOperation(recipeId: string): ApiOperation<undef
 }
 
 /**
- * What a failed `POST /api/track-recipes` says: 400 (an empty title, a body that would not parse), 403 (not the user),
- * 413 and 422 are answered before anything is stored. Anything else may have made the recipe, and the create sends no key
- * yet, so it is never sent again on its own: the recipe list, read again once the write settles, shows it if it was made.
+ * What a failed `POST /api/track-recipes` says: 400 (an empty title, a body that would not parse, a malformed key), 403
+ * (not the user), 413 and 422 are answered before anything is stored; a key bound to another body
+ * (`idempotency_key_reused`) or a create that failed for good under its key (`operation_failed`) can never store this
+ * one. All are final, so the next save mints a new key. Anything else may have made the recipe: the key is kept, and Try
+ * again resends the same key and body, which the kernel answers with the recipe the first attempt made (#2131).
  */
 export const RECIPE_CREATE_FAILURES: FailureTable<WriteFailure> = Object.freeze({
-  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 413, 422]), is: 'refused' as const })]),
+  rules: Object.freeze([
+    Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),
+    Object.freeze({ code: 'operation_failed', is: 'refused' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 413, 422]), is: 'refused' as const }),
+  ]),
   unauthorized: 'refused',
   otherwise: 'unknown',
 });
 
 export const RECIPE_CREATE_TEXT: WriteText = Object.freeze({
   refused: 'The recipe was not created.',
-  unknown: 'Creating the recipe is unconfirmed, so it is not sent again. Copy what you need, then check the list: it shows the recipe if it was created.',
+  unknown: 'Creating the recipe is unconfirmed. Try again to check the same recipe.',
 });
 
 /**
@@ -502,26 +509,16 @@ export function trackDetailOperation(trackId: string): ApiOperation<TrackDetailW
 }
 
 /**
- * `POST /api/tracks`. The kernel requires `Idempotency-Key` whenever `first_message` is present;
- * mint it per draft, not per call, or a retry mints a second track holding the same message.
+ * `POST /api/tracks`, keyed per draft on every create, with or without `first_message` (#2131): a retry under the key
+ * answers with the track the first attempt made, where an unkeyed one would make a second track.
  */
-export function createTrackOperation(body: NewTrackBodyWithoutFirstMessage): ApiOperation<TrackWire>;
-export function createTrackOperation(
-  body: NewTrackBodyWithFirstMessage,
-  idempotencyKey: string,
-): ApiOperation<TrackWire>;
-export function createTrackOperation(body: NewTrackBody, idempotencyKey?: string): ApiOperation<TrackWire> {
-  if (body.first_message !== undefined && idempotencyKey === undefined) {
-    throw new TypeError('Idempotency-Key is required when first_message is present');
-  }
+export function createTrackOperation(body: NewTrackBody, idempotencyKey: string): ApiOperation<TrackWire> {
   return {
     method: 'POST',
     path: '/api/tracks',
     body,
+    headers: { 'Idempotency-Key': idempotencyKey },
     responseSchema: trackWireSchema,
-    ...(body.first_message === undefined || idempotencyKey === undefined
-      ? {}
-      : { headers: { 'Idempotency-Key': idempotencyKey } }),
   };
 }
 
@@ -640,25 +637,28 @@ export type NewCardBody = Readonly<{
   sort?: number | null;
 }>;
 
-export function createCardOperation(trackId: string, body: NewCardBody): ApiOperation<CardWire> {
+/** `POST /api/tracks/:id/cards`, keyed per add-card intent like the terminal create. */
+export function createCardOperation(trackId: string, body: NewCardBody, idempotencyKey: string): ApiOperation<CardWire> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/cards`,
     body,
+    headers: { 'Idempotency-Key': idempotencyKey },
     responseSchema: cardWireSchema,
   };
 }
 
 /**
  * What a failed card create says: 400, 403, 404 and 422 refuse the body, the track or the plugin before anything is
- * made; a key bound to another body (`idempotency_key_reused`) can never make this one; and `conflict` on the keyed
- * routes is only a create the kernel refused before its transaction committed (a Pending-phase failure, which a retry
- * under the key replays). All are final, so the next intent mints a new key. Anything else may have made the card, so
- * a keyed create keeps its key for Try again.
+ * made; a key bound to another body (`idempotency_key_reused`) can never make this one; `conflict` is only a create the
+ * kernel refused before its transaction committed (a Pending-phase failure, which a retry under the key replays); and
+ * `operation_failed` is a create that failed for good after its commit, which a retry under the key replays too. All
+ * are final, so the next intent mints a new key. Anything else may have made the card: the key is kept for Try again.
  */
 export const CARD_CREATE_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),
+    Object.freeze({ code: 'operation_failed', is: 'refused' as const }),
     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),
     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),
   ]),

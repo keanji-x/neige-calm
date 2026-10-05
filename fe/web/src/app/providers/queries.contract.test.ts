@@ -76,11 +76,11 @@ describe('writes never queue an offline submission, in either build', () => {
   const cases: [string, (writes: ReturnType<typeof useWrites>) => Promise<unknown>][] = [
     ['area create', ({ area }) => area.create({ name: 'Offline area', color: '#123456' }, 'offline-area')],
     ['area update', ({ area }) => area.update('c1', { name: 'Offline rename' })],
-    ['track create', ({ track }) => track.create({ area_id: 'c1', planner_provider: 'codex', theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['track create', ({ track }) => track.create({ area_id: 'c1', planner_provider: 'codex', theme: { fg: [0, 0, 0], bg: [255, 255, 255] } }, 'offline-track')],
     ['terminal create', ({ track }) => track.createTerminal('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } }, 'offline-terminal')],
     ['codex create', ({ track }) => track.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } }, 'offline-codex')],
-    ['card create', ({ track }) => track.createCard('w1', { kind: 'note', title: 'Offline note', payload: {} })],
-    ['recipe create', ({ recipe }) => recipe.create({ title: 'Offline recipe', body: '' })],
+    ['card create', ({ track }) => track.createCard('w1', { kind: 'note', title: 'Offline note', payload: {} }, 'offline-card')],
+    ['recipe create', ({ recipe }) => recipe.create({ title: 'Offline recipe', body: '' }, 'offline-recipe')],
     ['recipe save', ({ recipe }) => recipe.save('recipe-1', { title: 'Offline recipe', body: '', if_revision: 1 })],
     ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key', { model: null, reasoning_effort: null })],
     ['Today ensure', ({ today }) => today.ensure()],
@@ -705,7 +705,7 @@ describe('track detail mutation cache writes', () => {
     const { client, result } = mounted(transport);
     client.setQueryData(queryKeys.trackDetail('w1'), detail);
 
-    await act(() => result.current.createCard('w1', { kind: 'file-viewer', payload: { path: '/x' } }));
+    await act(() => result.current.createCard('w1', { kind: 'file-viewer', payload: { path: '/x' } }, 'card-key'));
 
     expect(client.getQueryData<typeof detail>(queryKeys.trackDetail('w1'))?.cards.map((card) => card.id))
       .toEqual(['card-a', 'card-b', 'card-new']);
@@ -729,25 +729,6 @@ describe('track detail mutation cache writes', () => {
 });
 
 describe('track create folders cache', () => {
-  it('does not loosen the keyed-create requirement at the provider boundary', async () => {
-    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    const send = vi.fn<ApiTransportPort['send']>();
-    const transport: ApiTransportPort = { send };
-    const wrapper = ({ children }: { children: ReactNode }) =>
-      createElement(QueryClientProvider, { client }, children);
-    const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper });
-
-    await expect(
-      result.current.create({
-        area_id: 'c1',
-        theme: { fg: [1, 2, 3], bg: [4, 5, 6] },
-        // @ts-expect-error first_message makes Idempotency-Key required here too.
-        first_message: 'missing key',
-      }),
-    ).rejects.toThrow(/Idempotency-Key/);
-    expect(send).not.toHaveBeenCalled();
-  });
-
   it('drops a successful empty folders cache after attach_folder create', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     client.setQueryData(queryKeys.areaFolders('c1'), []);
@@ -766,7 +747,7 @@ describe('track create folders cache', () => {
       cwd: '/tmp/x',
       theme: { fg: [1, 2, 3], bg: [4, 5, 6] },
       attach_folder: true,
-    }));
+    }, 'draft-key'));
     expect(client.getQueryData(queryKeys.areaFolders('c1'))).toBeUndefined();
   });
 });

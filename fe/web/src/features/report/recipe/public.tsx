@@ -20,7 +20,8 @@ export type { RecipeEditorTheme };
 
 /**
  * What a write attempt came back as. `conflict` is its own state because the editor stays in edit mode holding the draft.
- * `failed` may be pressed again; `unconfirmed` is a create that may have made the recipe, so Save stays off for its draft.
+ * `failed` may be pressed again; `unconfirmed` is a create that may have made the recipe, so Save stays off for its draft
+ * and Try again resends that draft, which goes under the same key (#2131).
  */
 export type RecipeWriteOutcome =
   | Readonly<{ kind: 'saved'; recipe: TrackRecipe }>
@@ -154,17 +155,19 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const [unconfirmed, setUnconfirmed] = useState(false);
+  /* The draft whose create is unconfirmed: Save stays off, and Try again resends it, whatever was typed since. */
+  const [unconfirmed, setUnconfirmed] = useState<RecipeDraft | null>(null);
   /* Through the shared confirm/feedback primitive rather than `onDelete().then(onClose)`: a rejected delete has to be said. */
   const deletion = useDeleteConfirm(async () => { await onDelete?.(); }, writeFailureText(DELETE_FAILURES, DELETE_TEXT), onClose);
 
-  async function save(): Promise<void> {
+  async function save(draft: RecipeDraft = { title, body, if_revision: current?.revision ?? null }): Promise<void> {
     if (saving) return;
     setSaving(true);
     setConflict(false);
     setFailure(null);
-    const outcome = await onWrite({ title, body, if_revision: current?.revision ?? null });
+    const outcome = await onWrite(draft);
     setSaving(false);
+    setUnconfirmed(outcome.kind === 'unconfirmed' ? draft : null);
     if (outcome.kind === 'conflict') {
       // The draft stays: `title`/`body` are untouched on this path on purpose.
       setConflict(true);
@@ -172,7 +175,6 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
     }
     if (outcome.kind === 'failed' || outcome.kind === 'unconfirmed') {
       setFailure(outcome.message);
-      setUnconfirmed(outcome.kind === 'unconfirmed');
       return;
     }
     /* Reseed `title`/`body` from the stored row, or the next save would re-send the pre-normalization bytes. */
@@ -198,7 +200,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
                   variant="primary"
                   size="sm"
                   label={saving ? 'Saving…' : 'Save'}
-                  isDisabled={saving || unconfirmed || title.trim() === ''}
+                  isDisabled={saving || unconfirmed !== null || title.trim() === ''}
                   onClick={() => { void save(); }}
                 />
                 <Button
@@ -237,7 +239,8 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
       </header>
 
       {conflict && <Banner status="warning" title={CONFLICT_NOTICE} />}
-      {failure !== null && <Banner status="error" title={failure} />}
+      {failure !== null && <Banner status="error" title={failure} endContent={unconfirmed === null ? undefined
+        : <Button label="Try again" variant="ghost" isDisabled={saving} onClick={() => { void save(unconfirmed); }} />} />}
       {deletion.feedback.error !== null && <Banner status="error" title={deletion.feedback.error} />}
 
       {editing
@@ -247,7 +250,9 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
               label="Recipe title"
               value={title}
               onChange={(next: string) => setTitle(next)}
-              isDisabled={saving}
+              /* Locked while a create is unconfirmed: Try again resends the held draft and renders its result, so
+                 the draft on screen must be that draft. */
+              isDisabled={saving || unconfirmed !== null}
             />
             <p className={styles.bodyLabel} id={`${fieldId}-body-hint`}>
               Body — Markdown. Each <code>neige-block</code> task fence becomes one task.
@@ -260,6 +265,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
                 value={body}
                 theme={theme}
                 label={BODY_FIELD_LABEL}
+                readOnly={unconfirmed !== null}
                 onChange={(next: string) => setBody(next)}
               />
             </div>

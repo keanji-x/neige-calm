@@ -10,12 +10,14 @@ import { useMemo } from 'react';
 /** Light or dark, resolved by `app/theme` and injected: `features/**` may not import `app/**`. */
 export type RecipeEditorTheme = 'light' | 'dark';
 
-export function RecipeBodyEditor({ id, value, theme, label, onChange }: Readonly<{
+export function RecipeBodyEditor({ id, value, theme, label, readOnly, onChange }: Readonly<{
   id: string;
   value: string;
   theme: RecipeEditorTheme;
   /** The editable's accessible name, carried as an attribute: CodeMirror's `contenteditable` has no control for a `<label for>`. */
   label: string;
+  /** Shown but not editable: the text is held by a write whose outcome is unknown. */
+  readOnly: boolean;
   onChange: (next: string) => void;
 }>) {
   const extensions = useMemo(() => {
@@ -34,6 +36,7 @@ export function RecipeBodyEditor({ id, value, theme, label, onChange }: Readonly
       theme={theme === 'dark' ? githubDark : githubLight}
       extensions={extensions}
       basicSetup={{ lineNumbers: true, foldGutter: false }}
+      readOnly={readOnly}
       onChange={onChange}
     />
   );
