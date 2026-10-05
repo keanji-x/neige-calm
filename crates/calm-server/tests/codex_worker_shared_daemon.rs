@@ -1641,11 +1641,11 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     calm_server::decision_sink::CardDecisionSink::from_app_context(&boot.ctx)
         .commit_worker_task_report(
             &identity,
-            Event::TaskCompleted {
-                idempotency_key: attempt_id.clone(),
+            calm_server::decision_sink::WorkerTaskReport::Completed {
+                attempt_id: attempt_id.clone(),
                 result: json!({"viewer":"unavailable","work":"complete"}),
                 artifacts: vec![],
-                agent_message: None,
+                commit_message: calm_server::decision_sink::DeliveryMessage::Kernel,
             },
         )
         .await

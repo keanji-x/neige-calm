@@ -186,7 +186,7 @@ const HELP: &[CommandHelp] = &[
     command_help!(
         emit::TOOL_TASK_DONE,
         "Report the successful outcome of a worker execution",
-        "Usage: neige task done --attempt-id <id> [--result <json-or-text>] [--artifacts <path>]... [--json]",
+        "Usage: neige task done --attempt-id <id> [--result <json-or-text>] [--artifacts <path>]... [--commit-message <text>] [--json]",
         "",
         "Returns report_received; delivery, verification and Planner acceptance are separate.",
         "Stop changing the workspace and end your turn after reporting.",
@@ -195,6 +195,7 @@ const HELP: &[CommandHelp] = &[
         "      --attempt-id <id>        The task attempt_id handed to you",
         "      --result <json-or-text>  Optional result as JSON or plain text",
         "      --artifacts <path>       Attach an artifact path; may be repeated",
+        "      --commit-message <text>  Full message of the commit the kernel makes of your checkout",
         "      --json                   Emit errors as JSON",
         "  -h, --help                   Print help",
     ),

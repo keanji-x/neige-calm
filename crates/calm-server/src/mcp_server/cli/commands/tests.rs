@@ -439,6 +439,24 @@ fn task_completed_keeps_plain_text_result_as_a_string() {
     );
 }
 
+/// #2139: `--commit-message` is the tool's `commit_message`, passed as written (newlines and
+/// trailer-shaped lines included); the kernel, not the CLI, validates it.
+#[test]
+fn task_done_maps_commit_message() {
+    let message = "fix(forge): x\n\nOWNERSHIP-CHANGE: fe/a.ts — why (#1)\n";
+    assert_eq!(
+        tool_args(&[
+            "task",
+            "done",
+            "--attempt-id",
+            "k1",
+            "--commit-message",
+            message
+        ]),
+        json!({ "attempt_id": "k1", "commit_message": message })
+    );
+}
+
 #[test]
 fn task_failed_requires_reason() {
     assert_eq!(

@@ -22,7 +22,7 @@ use crate::db::sqlite::{
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
-use crate::git_candidate::commit_message::DeliveryMessage;
+use crate::git_candidate::commit_message::{CommitMessage, DeliveryMessage};
 use crate::git_candidate::delivery::{
     AttemptOutcome, delivery_latest_for_attempt_tx, insert_initial_delivery_tx,
 };
@@ -33,10 +33,13 @@ use crate::proc_identity::read_boot_id;
 
 /// How the release that ends an attempt commits it. (A track or area delete and a superseded
 /// stuck owner only flip the row: `super::release_workspace_lease_tx`.)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ReleaseDelivery {
-    /// The attempt ended this way: commit it.
+    /// The attempt ended this way: commit it with the kernel's text.
     Commit(AttemptOutcome),
+    /// The attempt completed and its worker supplied the commit message (#2139): the only way a
+    /// worker message reaches a delivery row.
+    CommitWorkerMessage(CommitMessage),
     /// Commit it with the outcome its terminal `tasks.status` says (the reaper's race-lost arm,
     /// the cleanup after a kill, a timeout flip that marked no live session).
     CommitAsTaskEnded,
@@ -79,6 +82,7 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
     let card_id = card_id.to_string();
     let envelopes = write_in_tx_typed(repo, move |tx| {
         let card_id = card_id.clone();
+        let delivery = delivery.clone();
         Box::pin(async move {
             let events = release_workspace_lease_for_card_tx(tx, &card_id, delivery).await?;
             append_workspace_events_tx(tx, events).await
@@ -142,19 +146,17 @@ async fn release_lease_tx(
     {
         return Ok(events);
     }
-    let outcome = match delivery {
-        ReleaseDelivery::Commit(outcome) => outcome,
-        ReleaseDelivery::CommitAsTaskEnded => ended_outcome_tx(tx, &attempt_id).await?,
+    let (outcome, message) = match delivery {
+        ReleaseDelivery::Commit(outcome) => (outcome, DeliveryMessage::Kernel),
+        ReleaseDelivery::CommitWorkerMessage(message) => {
+            (AttemptOutcome::Completed, DeliveryMessage::Worker(message))
+        }
+        ReleaseDelivery::CommitAsTaskEnded => (
+            ended_outcome_tx(tx, &attempt_id).await?,
+            DeliveryMessage::Kernel,
+        ),
     };
-    insert_initial_delivery_tx(
-        tx,
-        &attempt_id,
-        lease,
-        outcome,
-        DeliveryMessage::Kernel,
-        now_ms(),
-    )
-    .await?;
+    insert_initial_delivery_tx(tx, &attempt_id, lease, outcome, message, now_ms()).await?;
     Ok(events)
 }
 

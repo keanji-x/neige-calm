@@ -1,7 +1,11 @@
 //! Terminal report admission, under the same write transaction as its effects.
 use crate::db::sqlite::{TaskReporter, status_detail_class, task_get_tx};
 use crate::error::{CalmError, Result};
+use crate::event::{ArtifactRef, Event};
+use crate::git_candidate::commit_message::DeliveryMessage;
+use crate::git_candidate::delivery::AttemptOutcome;
 use crate::model::TaskStatus;
+use crate::operation::workspace_lease::ReleaseDelivery;
 
 pub(super) const REPEATED: &str = "worker report: recorded outcome already admitted";
 
@@ -65,5 +69,67 @@ pub(super) async fn admit_worker_report_tx(
             row.status,
             row.status_detail.as_deref().unwrap_or("no detail")
         ))),
+    }
+}
+
+/// How a worker says its attempt ended. Only a completion carries a commit message (#2139), so a
+/// worker message on a failed attempt has no representation.
+#[derive(Clone, Debug)]
+pub enum WorkerTaskReport {
+    /// `neige_task_done`.
+    Completed {
+        attempt_id: String,
+        result: serde_json::Value,
+        artifacts: Vec<ArtifactRef>,
+        commit_message: DeliveryMessage,
+    },
+    /// `neige_task_fail`.
+    Failed { attempt_id: String, reason: String },
+}
+
+impl WorkerTaskReport {
+    pub(super) fn attempt_id(&self) -> &str {
+        match self {
+            WorkerTaskReport::Completed { attempt_id, .. }
+            | WorkerTaskReport::Failed { attempt_id, .. } => attempt_id,
+        }
+    }
+
+    /// The event the report emits: `task.completed` or `task.failed`.
+    pub fn event(&self) -> Event {
+        match self {
+            WorkerTaskReport::Completed {
+                attempt_id,
+                result,
+                artifacts,
+                ..
+            } => Event::TaskCompleted {
+                idempotency_key: attempt_id.clone(),
+                result: result.clone(),
+                artifacts: artifacts.clone(),
+                agent_message: None,
+            },
+            WorkerTaskReport::Failed { attempt_id, reason } => Event::TaskFailed {
+                idempotency_key: attempt_id.clone(),
+                reason: reason.clone(),
+                details: None,
+                agent_message: None,
+            },
+        }
+    }
+
+    /// How the release in the report transaction commits the attempt (#1830 S2 D7).
+    pub(super) fn release_delivery(&self) -> ReleaseDelivery {
+        match self {
+            WorkerTaskReport::Completed {
+                commit_message: DeliveryMessage::Kernel,
+                ..
+            } => ReleaseDelivery::Commit(AttemptOutcome::Completed),
+            WorkerTaskReport::Completed {
+                commit_message: DeliveryMessage::Worker(message),
+                ..
+            } => ReleaseDelivery::CommitWorkerMessage(message.clone()),
+            WorkerTaskReport::Failed { .. } => ReleaseDelivery::Commit(AttemptOutcome::Failed),
+        }
     }
 }

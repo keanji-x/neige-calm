@@ -1,5 +1,5 @@
 use super::*;
-use crate::decision_sink::CardDecisionSink;
+use crate::decision_sink::{CardDecisionSink, DeliveryMessage, WorkerTaskReport};
 use crate::mcp_server::{AppContext, ToolCallIdentity};
 use crate::operation::{OperationCompletionBus, OperationRuntime, Phase};
 use crate::state::{DaemonClient, WriteContext};
@@ -202,23 +202,21 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
         sqlite_pool: crate::db::Repo::sqlite_pool(harness.repo.as_ref()),
     });
-    let event = if expected == crate::model::TaskStatus::Failed {
-        Event::TaskFailed {
-            idempotency_key: task.id.clone(),
+    let report = if expected == crate::model::TaskStatus::Failed {
+        WorkerTaskReport::Failed {
+            attempt_id: task.id.clone(),
             reason: "useful failed notes retained".into(),
-            details: None,
-            agent_message: None,
         }
     } else {
-        Event::TaskCompleted {
-            idempotency_key: task.id.clone(),
+        WorkerTaskReport::Completed {
+            attempt_id: task.id.clone(),
             result: json!({"notes":"completed-notes.txt"}),
             artifacts: vec![],
-            agent_message: None,
+            commit_message: DeliveryMessage::Kernel,
         }
     };
     CardDecisionSink::from_app_context(&context)
-        .commit_worker_task_report(&identity, event)
+        .commit_worker_task_report(&identity, report)
         .await
         .unwrap();
     assert_eq!(

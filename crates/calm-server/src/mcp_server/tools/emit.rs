@@ -1,9 +1,8 @@
 //! Worker outcome tools (`neige_task_done`, `neige_task_fail`). Every emitted event's scope is
 //! anchored on the caller's card.
 
-use crate::decision_sink::CardDecisionSink;
+use crate::decision_sink::{CardDecisionSink, CommitMessage, DeliveryMessage, WorkerTaskReport};
 use crate::error::CalmError;
-use crate::event::Event;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -49,7 +48,8 @@ fn task_done_descriptor() -> ToolDescriptor {
             "properties": {
                 "attempt_id": { "type": "string", "minLength": 1 },
                 "result": {},
-                "artifacts": { "type": "array" }
+                "artifacts": { "type": "array" },
+                "commit_message": { "type": "string" }
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -66,6 +66,7 @@ async fn task_done(
     require_role(&identity, CardRole::Worker)?;
 
     let attempt_id = required_attempt_id(&args, "task_done")?;
+    let commit_message = commit_message_arg(&args)?;
     let result = args.get("result").cloned().unwrap_or(Value::Null);
     let artifacts_val = args
         .get("artifacts")
@@ -74,15 +75,30 @@ async fn task_done(
     let artifacts: Vec<crate::event::ArtifactRef> = serde_json::from_value(artifacts_val)
         .map_err(|e| RpcError::invalid_params(format!("task_done: invalid artifacts: {e}")))?;
 
-    let event = Event::TaskCompleted {
-        idempotency_key: attempt_id.clone(),
+    let report = WorkerTaskReport::Completed {
+        attempt_id: attempt_id.clone(),
         result,
         artifacts,
-        agent_message: None,
+        commit_message,
     };
-    commit_worker_task_report_for_identity(&ctx, &identity, event).await?;
+    commit_worker_task_report_for_identity(&ctx, &identity, report).await?;
     submit_reported_delivery(&ctx, &identity, &attempt_id).await;
     Ok(json!({ "status": "report_received" }))
+}
+
+/// `commit_message` (#2139), parsed before the report transaction: an invalid one refuses the
+/// whole report and writes nothing, so the still-running attempt can report again. Absent means
+/// the kernel's own text.
+fn commit_message_arg(args: &Value) -> Result<DeliveryMessage, RpcError> {
+    match args.get("commit_message") {
+        None => Ok(DeliveryMessage::Kernel),
+        Some(Value::String(text)) => CommitMessage::parse(text)
+            .map(DeliveryMessage::Worker)
+            .map_err(|error| RpcError::invalid_params(format!("task_done: {error}"))),
+        Some(_) => Err(RpcError::invalid_params(
+            "task_done: commit_message must be a string",
+        )),
+    }
 }
 
 /// The report transaction wrote the attempt's first delivery row (#1830 S2 D7, a kernel-delivery
@@ -140,13 +156,11 @@ async fn task_fail(
         .ok_or_else(|| RpcError::invalid_params("task_fail: missing `reason` (non-empty)"))?
         .to_string();
 
-    let event = Event::TaskFailed {
-        idempotency_key: attempt_id.clone(),
+    let report = WorkerTaskReport::Failed {
+        attempt_id: attempt_id.clone(),
         reason,
-        details: None,
-        agent_message: None,
     };
-    commit_worker_task_report_for_identity(&ctx, &identity, event).await?;
+    commit_worker_task_report_for_identity(&ctx, &identity, report).await?;
     submit_reported_delivery(&ctx, &identity, &attempt_id).await;
     Ok(json!({ "status": "report_received" }))
 }
@@ -165,11 +179,11 @@ pub(crate) fn required_attempt_id(args: &Value, tool: &str) -> Result<String, Rp
 async fn commit_worker_task_report_for_identity(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
-    event: Event,
+    report: WorkerTaskReport,
 ) -> Result<(), RpcError> {
-    let kind_tag = event.kind_tag();
+    let kind_tag = report.event().kind_tag();
     let result = CardDecisionSink::from_app_context(ctx)
-        .commit_worker_task_report(identity, event)
+        .commit_worker_task_report(identity, report)
         .await;
 
     match result {

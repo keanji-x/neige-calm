@@ -17,7 +17,9 @@ use crate::task_recovery::{current, declare};
 use calm_server::db::sqlite::{
     card_create_with_id_tx, session_set_handle_state_tx, session_start_runtime_tx,
 };
-use calm_server::decision_sink::CardDecisionSink;
+use calm_server::decision_sink::{
+    CardDecisionSink, CommitMessage, DeliveryMessage, WorkerTaskReport,
+};
 use calm_server::dispatcher::{Dispatcher, TaskFailurePushTestHook};
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus};
@@ -513,14 +515,36 @@ impl Fx {
     /// The report transaction alone — no forge submission — the state a kernel that died right
     /// after `neige_task_done`'s transaction leaves behind (no crash seam: 5.1.16).
     pub(super) async fn report_only(&self, worker: &ToolCallIdentity, task_id: &str) {
+        self.report_only_as(worker, task_id, DeliveryMessage::Kernel)
+            .await;
+    }
+
+    /// [`Self::report_only`] of a done report that carried `message` (#2139).
+    pub(super) async fn report_only_with_message(
+        &self,
+        worker: &ToolCallIdentity,
+        task_id: &str,
+        message: &str,
+    ) {
+        let message = CommitMessage::parse(message).unwrap();
+        self.report_only_as(worker, task_id, DeliveryMessage::Worker(message))
+            .await;
+    }
+
+    async fn report_only_as(
+        &self,
+        worker: &ToolCallIdentity,
+        task_id: &str,
+        commit_message: DeliveryMessage,
+    ) {
         CardDecisionSink::from_app_context(&self.boot.ctx)
             .commit_worker_task_report(
                 worker,
-                Event::TaskCompleted {
-                    idempotency_key: task_id.to_string(),
+                WorkerTaskReport::Completed {
+                    attempt_id: task_id.to_string(),
                     result: json!({"ok": true}),
                     artifacts: Vec::new(),
-                    agent_message: None,
+                    commit_message,
                 },
             )
             .await

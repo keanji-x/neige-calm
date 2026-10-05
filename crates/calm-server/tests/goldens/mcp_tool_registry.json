@@ -933,7 +933,7 @@
   },
   {
     "name": "neige_task_done",
-    "description_sha256": "e91d54b4498724ccf4c720a1928a2b3342f01472491849c497f5a1a563315d7c",
+    "description_sha256": "4a89098b9d1bc6cd378b4f9771957201df9dda3f6b6498d37c194ff9483257bc",
     "input_schema": {
       "properties": {
         "artifacts": {
@@ -941,6 +941,9 @@
         },
         "attempt_id": {
           "minLength": 1,
+          "type": "string"
+        },
+        "commit_message": {
           "type": "string"
         },
         "result": {}

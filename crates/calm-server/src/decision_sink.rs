@@ -2,14 +2,16 @@
 
 mod worker_report;
 
+pub use worker_report::WorkerTaskReport;
+
 use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
-use crate::git_candidate::delivery::AttemptOutcome;
+pub use crate::git_candidate::commit_message::{CommitMessage, DeliveryMessage};
 use crate::ids::{AreaId, CardId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, CardRole, Track};
-use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
+use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
@@ -60,7 +62,7 @@ impl CardDecisionSink {
     pub async fn commit_worker_task_report(
         &self,
         identity: &ToolCallIdentity,
-        event: Event,
+        report: WorkerTaskReport,
     ) -> Result<(), CalmError> {
         let actor = identity.to_actor_id();
         let card_id_str = identity.card_id.clone();
@@ -101,7 +103,7 @@ impl CardDecisionSink {
             &self.events,
             &self.write,
             move |tx| {
-                let event = event.clone();
+                let report = report.clone();
                 let actor = actor.clone();
                 let scope = scope.clone();
                 let track_id = track_id.clone();
@@ -109,95 +111,85 @@ impl CardDecisionSink {
                 Box::pin(async move {
                     // Admission, task CAS and report event share one transaction; same-outcome repeats roll back as idempotent success.
                     let now = crate::model::now_ms();
+                    let task_id = report.attempt_id().to_string();
                     // The failure branch keeps the worker's own `reason` beside the `worker-reported` classifier.
-                    let flip = match &event {
-                        Event::TaskCompleted {
-                            idempotency_key, ..
-                        } => Some((idempotency_key.clone(), None)),
-                        Event::TaskFailed {
-                            idempotency_key,
-                            reason,
-                            ..
-                        } => Some((idempotency_key.clone(), Some(reason.clone()))),
-                        _ => None,
+                    let failure_reason = match &report {
+                        WorkerTaskReport::Completed { .. } => None,
+                        WorkerTaskReport::Failed { reason, .. } => Some(reason.clone()),
                     };
-                    let mut released = Vec::new();
-                    if let Some((task_id, failure_reason)) = flip {
-                        let success = failure_reason.is_none();
-                        // Unstamped-row ownership proof: the REPORTING card must be the card the task's worker-spawn operation created. The card payload's `idempotency_key` is NOT proof — payloads are patchable via `PATCH /api/cards/{id}`.
-                        let reporter = crate::db::sqlite::TaskReporter::Card {
-                            card_id: worker_card_id.as_str(),
-                            owns_key: crate::db::sqlite::worker_op_targets_card_tx(
-                                tx,
-                                &task_id,
-                                &worker_card_id,
-                            )
-                            .await?,
-                        };
-                        if worker_report::admit_worker_report_tx(
+                    let success = failure_reason.is_none();
+                    // Unstamped-row ownership proof: the REPORTING card must be the card the task's worker-spawn operation created. The card payload's `idempotency_key` is NOT proof — payloads are patchable via `PATCH /api/cards/{id}`.
+                    let reporter = crate::db::sqlite::TaskReporter::Card {
+                        card_id: worker_card_id.as_str(),
+                        owns_key: crate::db::sqlite::worker_op_targets_card_tx(
+                            tx,
+                            &task_id,
+                            &worker_card_id,
+                        )
+                        .await?,
+                    };
+                    if worker_report::admit_worker_report_tx(
+                        tx,
+                        &task_id,
+                        track_id.as_str(),
+                        reporter,
+                        success,
+                    )
+                    .await?
+                    {
+                        return Err(CalmError::Conflict(worker_report::REPEATED.into()));
+                    }
+                    let rows = if success {
+                        match crate::db::sqlite::task_report_success_from_worker_tx(
                             tx,
                             &task_id,
                             track_id.as_str(),
                             reporter,
-                            success,
+                            now,
                         )
                         .await?
                         {
-                            return Err(CalmError::Conflict(worker_report::REPEATED.into()));
+                            crate::db::sqlite::SuccessReportFlip::Done => 1,
+                            // Gated row handed to the gate runner.
+                            crate::db::sqlite::SuccessReportFlip::Verifying => 1,
+                            crate::db::sqlite::SuccessReportFlip::None => 0,
                         }
-                        let rows = if success {
-                            match crate::db::sqlite::task_report_success_from_worker_tx(
-                                tx,
-                                &task_id,
-                                track_id.as_str(),
-                                reporter,
-                                now,
-                            )
+                    } else {
+                        crate::db::sqlite::task_fail_from_worker_tx(
+                            tx,
+                            &task_id,
+                            track_id.as_str(),
+                            reporter,
+                            &crate::db::sqlite::status_detail_with_reason(
+                                "worker-reported",
+                                failure_reason.as_deref().unwrap_or_default(),
+                            ),
+                            now,
+                        )
+                        .await?
+                    };
+                    if rows == 0
+                        && crate::db::sqlite::task_get_tx(tx, &task_id)
                             .await?
-                            {
-                                crate::db::sqlite::SuccessReportFlip::Done => 1,
-                                // Gated row handed to the gate runner.
-                                crate::db::sqlite::SuccessReportFlip::Verifying => 1,
-                                crate::db::sqlite::SuccessReportFlip::None => 0,
-                            }
-                        } else {
-                            crate::db::sqlite::task_fail_from_worker_tx(
-                                tx,
-                                &task_id,
-                                track_id.as_str(),
-                                reporter,
-                                &crate::db::sqlite::status_detail_with_reason(
-                                    "worker-reported",
-                                    failure_reason.as_deref().unwrap_or_default(),
-                                ),
-                                now,
-                            )
-                            .await?
-                        };
-                        if rows == 0
-                            && crate::db::sqlite::task_get_tx(tx, &task_id)
-                                .await?
-                                .is_some()
-                        {
-                            return Err(CalmError::Conflict(format!(
-                                "task {task_id}: admitted report did not advance the task"
-                            )));
-                        }
-                        // #1830 S2 D7: the lease is released in this transaction, and the first delivery row
-                        // (commit the track's checkout as this attempt ended) lands with it when the card's
-                        // lease is a kernel-delivery lease. A REPEATED report never reaches here, so a second
-                        // report never writes a second row; a crash can no longer leave the lease `held`.
-                        let delivery = if success {
-                            ReleaseDelivery::Commit(AttemptOutcome::Completed)
-                        } else {
-                            ReleaseDelivery::Commit(AttemptOutcome::Failed)
-                        };
-                        released =
-                            release_workspace_lease_for_card_tx(tx, &worker_card_id, delivery)
-                                .await?;
+                            .is_some()
+                    {
+                        return Err(CalmError::Conflict(format!(
+                            "task {task_id}: admitted report did not advance the task"
+                        )));
                     }
+                    // #1830 S2 D7: the lease is released in this transaction, and the first delivery row
+                    // (commit the track's checkout as this attempt ended, with the worker's message on a
+                    // completion that carries one) lands with it when the card's lease is a
+                    // kernel-delivery lease. A REPEATED report never reaches here, so a second report
+                    // never writes a second row; a crash can no longer leave the lease `held`.
+                    let released = release_workspace_lease_for_card_tx(
+                        tx,
+                        &worker_card_id,
+                        report.release_delivery(),
+                    )
+                    .await?;
 
-                    let mut events = vec![(actor, scope, event)];
+                    let mut events = vec![(actor, scope, report.event())];
                     events.extend(released);
                     Ok(((), events))
                 })
@@ -723,11 +715,11 @@ mod tests {
 
         sink.commit_worker_task_report(
             &identity,
-            Event::TaskCompleted {
-                idempotency_key: "worker-report-preserve".into(),
+            WorkerTaskReport::Completed {
+                attempt_id: "worker-report-preserve".into(),
                 result: Value::Null,
                 artifacts: Vec::new(),
-                agent_message: None,
+                commit_message: DeliveryMessage::Kernel,
             },
         )
         .await

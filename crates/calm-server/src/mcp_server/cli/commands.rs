@@ -234,6 +234,7 @@ pub(crate) const COMMANDS: &[Command] = &[
             opt("--attempt-id", "attempt_id", OptValue::Text, true),
             opt("--result", "result", OptValue::JsonOrText, false),
             opt("--artifacts", "artifacts", OptValue::TextList, false),
+            opt("--commit-message", "commit_message", OptValue::Text, false),
         ],
         confirm: None,
         render: Render::Raw,

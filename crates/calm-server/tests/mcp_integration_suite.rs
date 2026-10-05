@@ -84,6 +84,8 @@ mod candidate_upstream;
 mod gate_binding;
 #[path = "cases/git_delivery.rs"]
 mod git_delivery;
+#[path = "cases/git_delivery_commit_message.rs"]
+mod git_delivery_commit_message;
 #[path = "cases/lease_git_env.rs"]
 mod lease_git_env;
 #[path = "cases/track_catch_up.rs"]
