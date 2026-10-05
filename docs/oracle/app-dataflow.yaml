@@ -690,9 +690,9 @@
   why: >
     #2131：内核已对卡片创建接受 key，同 key 同 body 的重试会接上首次请求存下的操作（返回同一张卡），而无 key 或按次换 key
     的重试在应答丢失后会再建一张终端/Codex 卡及其 PTY；body 变了则被 409 `idempotency_key_reused` 拒绝。
-  source: fe/web/src/app/providers/idempotency-key.ts:25-45; fe/web/src/app/router/public.tsx:2165-2245;
+  source: fe/web/src/app/providers/idempotency-key.ts:25-45; fe/web/src/app/router/public.tsx:2165-2246;
     fe/web/src/app/shell/public.tsx:98-100,247-256
-  authoritative_test: fe/web/src/app/router/new-card.test.tsx:209-333; fe/web/src/app/shell/area-editor-flow.test.tsx:169-199
+  authoritative_test: fe/web/src/app/router/new-card.test.tsx:207-335; fe/web/src/app/shell/area-editor-flow.test.tsx:169-199
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit

@@ -1807,5 +1807,22 @@
       "tools/ownership/squash.test.ts"
     ],
     "why_more_than_one": "Measured in the exclusive lease worktree: disabling only the source-path binding produced exactly this one red and 39 green tests in the selected file; any additional red would indicate unrelated ownership behavior moved."
+  },
+  {
+    "mutation_id": "s2131-card-key-per-attempt",
+    "defends": [
+      "oracle:INV-APP-119"
+    ],
+    "target": "web/src/app/providers/idempotency-key.ts",
+    "patch": "diff --git a/web/src/app/providers/idempotency-key.ts b/web/src/app/providers/idempotency-key.ts\nindex 6232d6350..e2fa9b015 100644\n--- a/web/src/app/providers/idempotency-key.ts\n+++ b/web/src/app/providers/idempotency-key.ts\n@@ -38,7 +38,7 @@ export function useKeyedIntent<Draft, Body>(sameDraft: (held: Draft, next: Draft\n   const mint = (draft: Draft, build: () => Body) => Object.freeze({ key: mintIdempotencyKey(), draft, body: build() });\n   return {\n     held,\n-    request: (draft: Draft, build: () => Body) => hold(held !== null && sameDraft(held.draft, draft) ? held : mint(draft, build)),\n+    request: (draft: Draft, build: () => Body) => hold(mint(draft, build)),\n     restart: (draft: Draft, build: () => Body) => hold(mint(draft, build)),\n     release: (request: KeyedRequest<Draft, Body>) => { setHeld((current) => (current === request ? null : current)); },\n   };\n",
+    "expected_red": [
+      "a keyed card create keeps the key when Create is pressed again on the same draft, and mints a new one for a changed draft",
+      "AppShell Area editor flow retries a lost create confirmation with the same identity and payload after reopening"
+    ],
+    "selection_paths": [
+      "web/src/app/router/new-card.test.tsx",
+      "web/src/app/shell/area-editor-flow.test.tsx"
+    ],
+    "why_more_than_one": "useKeyedIntent is the one keyed-create lifecycle for card and Area create, so minting on every press reddens the two cases that press again on an unknown outcome through it: the card form's second Create of the same draft and Area's Try again after reopening. Card Try again resends the held request directly and stays green, as do the cases whose next press is meant to mint."
   }
 ]
