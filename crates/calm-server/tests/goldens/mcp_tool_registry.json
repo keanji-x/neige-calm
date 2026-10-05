@@ -593,7 +593,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "ff14f422c6d0de8f3e0a163b03d672f6ec6469e3c88da979afbc1d502c0bc72a",
+    "description_sha256": "589c88525ff8bd68182b7ba85a09a4a718f790eb2fd83cd9f7ff4ae82799380c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -837,7 +837,7 @@
   },
   {
     "name": "neige_source_capture",
-    "description_sha256": "a2cadf622d6799ad9b256aef10a9f101ec2000175deec30af672a3820aafda68",
+    "description_sha256": "e358e9b31cc02586947226700e4451de88f83de6f8f9f418787fb9db8125d957",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1045,7 +1045,7 @@
   },
   {
     "name": "neige_task_ls",
-    "description_sha256": "9f55a1de6c2ea058dedd7df8ac7f6c06439c0cefc864c91e10b31f48e80c3178",
+    "description_sha256": "b4f6c2b911a1464daad190f050d788e259ec7fdb62708d582a1f8350953c7767",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1200,7 +1200,7 @@
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "ceaaf6e1dce376bda07a484cdbd3ab0439b3abea692f06e4abd68326faaddbed",
+    "description_sha256": "ba071f83646b427fe0e048bd769bcc1058dda4b9398347b2e764568bb8525a8d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1466,7 +1466,7 @@
   },
   {
     "name": "neige_terminal_read",
-    "description_sha256": "b6fc1264535dbf2691d46504b27753a70fa9a253eb6c97c8c672a34a9d88420e",
+    "description_sha256": "80d23b45300434498860c93cd7eb4c9a3923db023434436085f3e6e6b627162d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1567,6 +1567,46 @@
       "destructiveHint": false,
       "openWorldHint": true,
       "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige_track_add",
+    "description_sha256": "e20898c7129e7f734e9cf632c534871f6517e8d130fe34be3702c86538ab68b6",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotency_key": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "recipe_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipe_id",
+        "title",
+        "idempotency_key",
+        "text",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
     },
     "visible_to_roles": [
       "planner"
