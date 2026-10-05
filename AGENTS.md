@@ -138,6 +138,9 @@ not run workspace-wide `nextest` by default; the broad suite belongs to CI.
 # Every change, including docs-only: the CI lint job's text gates
 scripts/local-ratchet-gates.sh
 
+# Every Rust change: package-wide goldens, registries and source scans
+scripts/local-contract-gates.sh
+
 # Rust: select the affected package and test-name filter
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   cargo nextest run --locked \
