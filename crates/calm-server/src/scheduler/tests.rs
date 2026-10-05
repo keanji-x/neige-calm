@@ -100,8 +100,8 @@ fn canceled_and_failed_deps_never_satisfy() {
     assert!(compute_ready(&tasks, CheckoutOccupancy::Free).is_empty());
 }
 
-/// #1830 S2 D5: a codex/claude task in the track's checkout is ready only while the track is
-/// idle (the claim tx then lets one of them win); terminal and child-track tasks are not held.
+/// #1830 S2 D5, #2139 R2: a codex, claude or terminal task in the track's checkout is ready only
+/// while the track is idle (the claim tx then lets one of them win); child-track tasks are not held.
 #[test]
 fn in_tree_tasks_are_ready_only_while_the_track_is_idle() {
     let mut terminal = task("c-terminal", TaskStatus::Pending, &[], 0);
@@ -123,8 +123,53 @@ fn in_tree_tasks_are_ready_only_while_the_track_is_idle() {
     );
     assert_eq!(
         keys(&compute_ready(&tasks, CheckoutOccupancy::Busy)),
-        vec!["c-terminal", "e-child"],
+        vec!["e-child"],
         "a busy track admits no in-tree task"
+    );
+}
+
+/// #2139 R2: a terminal task queues for the checkout by its access, like a codex task: one that
+/// changes the checkout waits while a codex task holds it, and a read-only one joins read-only
+/// codex tasks.
+#[test]
+fn a_terminal_task_queues_for_the_checkout_by_its_access() {
+    let mut writer = task("t-writer", TaskStatus::Pending, &[], 0);
+    writer.kind = TaskKind::Terminal;
+    let mut reader_terminal = reader("t-reader");
+    reader_terminal.kind = TaskKind::Terminal;
+    let waits = |tasks: &[Task], occupancy| {
+        crate::db::sqlite::checkout_admission(tasks, occupancy)
+            .into_iter()
+            .map(|(task, wait)| (task.key.clone(), wait))
+            .collect::<Vec<_>>()
+    };
+    let in_use = Some(crate::db::sqlite::CheckoutWait::InUse);
+    for occupancy in [CheckoutOccupancy::Busy, CheckoutOccupancy::Readers] {
+        assert_eq!(
+            waits(std::slice::from_ref(&writer), occupancy),
+            vec![("t-writer".to_string(), in_use)],
+            "{occupancy:?}: a terminal task that changes the checkout waits for it"
+        );
+    }
+    assert_eq!(
+        waits(
+            std::slice::from_ref(&reader_terminal),
+            CheckoutOccupancy::Readers
+        ),
+        vec![("t-reader".to_string(), None)],
+        "a read-only terminal task runs beside read-only codex tasks"
+    );
+    assert_eq!(
+        waits(
+            std::slice::from_ref(&reader_terminal),
+            CheckoutOccupancy::Busy
+        ),
+        vec![("t-reader".to_string(), in_use)],
+        "a read-only terminal task waits while a codex task changes the checkout"
+    );
+    assert_eq!(
+        waits(std::slice::from_ref(&writer), CheckoutOccupancy::Free),
+        vec![("t-writer".to_string(), None)]
     );
 }
 

@@ -105,9 +105,9 @@ pub enum CheckoutWait {
 
 /// The one admission rule over a track's tasks in scheduler order (`priority DESC, created_at_ms
 /// ASC, key ASC`): every `pending` task whose dependencies are all `done`, with `None` when it may
-/// be dispatched now and else why it waits. A terminal or child-track task never waits for the
-/// checkout. A checkout task waits when `occupancy` does not admit its access; once a task that
-/// changes the checkout waits, every later read-only task waits behind it.
+/// be dispatched now and else why it waits. A child-track task never waits for the checkout. A
+/// checkout task (codex, claude or terminal) waits when `occupancy` does not admit its access;
+/// once a task that changes the checkout waits, every later read-only task waits behind it.
 ///
 /// Every admitted task is offered and its claim transaction re-runs this rule against the
 /// occupancy apart from itself, so one claim that fails does not hold the others.

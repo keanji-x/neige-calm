@@ -330,7 +330,8 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
 }
 
 /// #1830 S2 D5: a codex task waiting for another one in the track's checkout reads `trackBusy`,
-/// the same sentence on the report read and on the recovery view; a terminal task is not held.
+/// the same sentence on the report read and on the recovery view; #2139 R2: so does a terminal
+/// task.
 #[tokio::test]
 async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
     let boot = boot().await;
@@ -369,7 +370,11 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
         reason["message"],
         "Waiting for the track's checkout: another task is using it"
     );
-    assert!(pending_reason("c").is_null(), "a terminal task is not held");
+    assert_eq!(
+        pending_reason("c"),
+        reason,
+        "a terminal task waits for the checkout too"
+    );
     assert_eq!(
         serde_json::to_value(view).unwrap()["current"]["blocking_reason"],
         reason["message"]

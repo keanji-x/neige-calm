@@ -211,7 +211,8 @@ pub(crate) fn explicit_terminal_cwd(cwd: Option<String>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// Resolve a terminal card's cwd: whatever the caller named, else the track's workspace.
+/// Resolve a terminal card's cwd: whatever the caller named, else the track's `agent_cwd()` (its
+/// worktree on an attached track, #2139 R2), where its codex and claude tasks run too.
 /// Read inside the transaction that writes the terminal row so the path cannot move between read and write; an empty stored path is refused rather than falling back.
 pub(crate) async fn terminal_cwd_or_track_workspace(
     tx: &mut Tx<'_>,
@@ -222,12 +223,13 @@ pub(crate) async fn terminal_cwd_or_track_workspace(
         return Ok(cwd);
     }
     let workspace = crate::db::sqlite::track_workspace_read_tx(tx, track_id).await?;
-    if workspace.path.trim().is_empty() {
+    let cwd = workspace.agent_cwd();
+    if cwd.trim().is_empty() {
         return Err(CalmError::Internal(format!(
             "track {track_id} has no workspace path; refusing to open a terminal in the server's cwd"
         )));
     }
-    Ok(workspace.path)
+    Ok(cwd.to_string())
 }
 
 #[async_trait]

@@ -315,3 +315,29 @@ pub(crate) async fn attach_track_worktree(
         .await
         .expect("make the track worktree")
 }
+
+/// A one-commit git repository at `path`: the fixture checkout an attached track's worktree is
+/// made from (never the neige-calm checkout).
+pub(crate) fn init_fixture_git_repo(path: &std::path::Path) {
+    std::fs::create_dir_all(path).expect("create the fixture repo dir");
+    std::fs::write(path.join("README.md"), "initial\n").expect("write the fixture file");
+    for args in [
+        &["init"][..],
+        &["config", "user.email", "fixture@example.test"],
+        &["config", "user.name", "Fixture"],
+        &["add", "README.md"],
+        &["commit", "-m", "initial"],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed in {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

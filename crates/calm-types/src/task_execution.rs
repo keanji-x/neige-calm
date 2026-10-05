@@ -4,10 +4,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use utoipa::ToSchema;
 
-/// #1830 S2 D5: whether a task runs in its track's checkout — a codex or claude task that is not
-/// on the child-track route. Such tasks share the checkout, so a task that changes it runs alone.
+/// #1830 S2 D5, #2139 R2: whether a task runs in its track's checkout — a codex, claude or terminal
+/// task that is not on the child-track route. Such tasks share the checkout, so a task that changes
+/// it runs alone.
 pub fn runs_in_track_checkout(kind: &str, spawn: &str) -> bool {
-    matches!(kind, "codex" | "claude") && spawn != crate::task_recovery::TASK_CHILD_TRACK_ROUTE
+    matches!(kind, "codex" | "claude" | "terminal")
+        && spawn != crate::task_recovery::TASK_CHILD_TRACK_ROUTE
 }
 
 /// #1917: what a task declares it does to the track's checkout (`tasks.access`, the task block's

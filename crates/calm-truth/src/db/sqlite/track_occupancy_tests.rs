@@ -1,5 +1,5 @@
 //! #1917: [`checkout_occupancy`] counts each in-flight in-tree task and each active lease with its
-//! own access.
+//! own access. #2139 R2: terminal tasks are in-tree tasks too.
 
 use super::workspace_lease_lookup_tests::seed_track;
 use super::{CheckoutOccupancy, SqlxRepo, checkout_occupancy};
@@ -48,12 +48,6 @@ async fn in_flight_tasks_count_with_their_own_access() {
         occupancy(&repo, &track_id, "").await,
         CheckoutOccupancy::Free
     );
-    task(&repo, &track_id, "shell", "terminal", "read_write").await;
-    assert_eq!(
-        occupancy(&repo, &track_id, "").await,
-        CheckoutOccupancy::Free,
-        "a terminal task does not use the checkout"
-    );
     task(&repo, &track_id, "review", "claude", "read_only").await;
     assert_eq!(
         occupancy(&repo, &track_id, "").await,
@@ -85,6 +79,48 @@ async fn active_leases_count_with_their_own_access() {
     lease(&repo, &track_id, "writer", "read_write").await;
     assert_eq!(
         occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Busy
+    );
+}
+
+/// #2139 R2: a terminal task runs in the track's checkout, so an in-flight one occupies it with
+/// its access like a codex task (a codex task then waits for it); on the child-track route it
+/// does not.
+#[tokio::test]
+async fn an_in_flight_terminal_task_occupies_the_checkout() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
+    let track_id = seed_track(&repo).await;
+    let child = task(&repo, &track_id, "child", "terminal", "read_write").await;
+    sqlx::query("UPDATE tasks SET spawn = ?1 WHERE id = ?2")
+        .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
+        .bind(&child)
+        .execute(repo.pool())
+        .await
+        .expect("route the task to a child track");
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Free,
+        "a child-track terminal task runs in its child's workspace"
+    );
+    let reader = task(&repo, &track_id, "look", "terminal", "read_only").await;
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Readers,
+        "a read-only terminal task occupies the checkout as a reader"
+    );
+    let shell = task(&repo, &track_id, "shell", "terminal", "read_write").await;
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Busy,
+        "a terminal task that changes the checkout holds it alone"
+    );
+    assert_eq!(
+        occupancy(&repo, &track_id, &shell).await,
+        CheckoutOccupancy::Readers,
+        "the asking attempt is not counted"
+    );
+    assert_eq!(
+        occupancy(&repo, &track_id, &reader).await,
         CheckoutOccupancy::Busy
     );
 }

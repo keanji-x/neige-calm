@@ -395,15 +395,9 @@ async fn an_attached_track_registers_one_worktree_and_one_branch() {
     );
 }
 
-/// T4 (D5 status term): while `a` runs, an independent ready `b` is not claimed, and the report
-/// read says why (`trackBusy`, #1830 S2b).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_track_runs_one_worker_at_a_time() {
-    let w = world().await;
-    let fx = &w.fx;
-    let worker = fx.new_worker("a", AgentProvider::Codex).await;
-    fx.running_task("a", "codex", &worker.card_id, json!({}))
-        .await;
+/// Declare an independent ready codex `b` and run a pass: `b` stays `pending`, and the report read
+/// says it waits for the checkout (`trackBusy`, #1830 S2b).
+async fn assert_an_independent_codex_task_waits(fx: &Fx) {
     declare_task(fx, "b", json!({})).await;
     fx.scheduler()
         .schedule_track(fx.boot.track_id.clone())
@@ -427,6 +421,35 @@ async fn a_track_runs_one_worker_at_a_time() {
         ),
         "{reason:?}"
     );
+}
+
+/// T4 (D5 status term): while `a` runs, an independent ready `b` is not claimed, and the report
+/// read says why (`trackBusy`, #1830 S2b).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_track_runs_one_worker_at_a_time() {
+    let w = world().await;
+    let fx = &w.fx;
+    let worker = fx.new_worker("a", AgentProvider::Codex).await;
+    fx.running_task("a", "codex", &worker.card_id, json!({}))
+        .await;
+    assert_an_independent_codex_task_waits(fx).await;
+}
+
+/// #2139 R2: a running terminal task holds the checkout like a codex worker: an independent ready
+/// codex `b` is not claimed, and the report read says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_running_terminal_task_holds_the_checkout() {
+    let w = world().await;
+    let fx = &w.fx;
+    let worker = fx.new_worker("a", AgentProvider::Codex).await;
+    fx.running_task(
+        "a",
+        "terminal",
+        &worker.card_id,
+        json!({"goal": null, "command": "sleep 60"}),
+    )
+    .await;
+    assert_an_independent_codex_task_waits(fx).await;
 }
 
 /// T4b (D5 delivery term): `a` (ungated, so `done`) reports, and a `pre-commit` hook

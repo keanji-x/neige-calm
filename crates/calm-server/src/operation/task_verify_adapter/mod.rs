@@ -439,13 +439,13 @@ impl ProviderAdapter for TaskVerifyAdapter {
             .map_err(|e| CalmError::Internal(format!("task {} gate_json: {e}", task.id)))?;
 
         // Successful workers release their lease before the gate starts, retaining files.
-        let track: Option<(String, String)> =
-            sqlx::query_as("SELECT workspace_path, area_id FROM tracks WHERE id = ?1")
+        let area_id: Option<String> =
+            sqlx::query_scalar("SELECT area_id FROM tracks WHERE id = ?1")
                 .bind(&task.track_id)
                 .fetch_optional(&mut **tx)
                 .await?;
-        let (track_cwd, area_id) =
-            track.ok_or_else(|| CalmError::Conflict(format!("track {} is gone", task.track_id)))?;
+        let area_id = area_id
+            .ok_or_else(|| CalmError::Conflict(format!("track {} is gone", task.track_id)))?;
         let cwd = if let Some(cwd) = gate.cwd.as_ref().filter(|c| !c.trim().is_empty()) {
             cwd.clone()
         } else if let Some(card_id) = task.worker_card_id.as_deref() {
@@ -482,11 +482,15 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 )));
             }
         } else {
-            // Legacy/unbound tasks retain their declaration defaults.
-            task.cwd
-                .clone()
-                .filter(|c| !c.trim().is_empty())
-                .unwrap_or(track_cwd)
+            // Legacy/unbound tasks retain their declaration defaults; the track default is where
+            // its tasks run, `agent_cwd()` (#2139 R2).
+            match task.cwd.clone().filter(|c| !c.trim().is_empty()) {
+                Some(cwd) => cwd,
+                None => crate::db::sqlite::track_workspace_read_tx(tx, &task.track_id)
+                    .await?
+                    .agent_cwd()
+                    .to_string(),
+            }
         };
         if cwd.trim().is_empty() {
             return Err(CalmError::BadRequest(format!(

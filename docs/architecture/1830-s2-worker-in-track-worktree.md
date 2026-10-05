@@ -180,6 +180,7 @@ Verified at 2bd0ce8eb (S1 head) by reading the code, or by the query or command 
   gate fallback stay (moving the terminal would add an uncommitted writer to the worker tree).
   Children of managed parents work and children of attached parents are refused (D1). The
   Planner needs no writable gitdir (G16).
+  Closed by #2139: all three use `agent_cwd()`; terminal tasks join D5's one-writer rule.
 - **D15 Sandboxes do not change** (G17). The gain is 1 worktree and 1 branch per attached track
   and none per attempt, which is what #1815's E2BIG counts.
 

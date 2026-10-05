@@ -164,7 +164,9 @@ async fn terminal_worker_env_disables_claude_auto_memory() {
     assert_eq!(stored["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1", "{stored}");
 }
 
-/// The task row carries `cwd: None` because that is the shape production sends.
+/// The task row carries `cwd: None` because that is the shape production sends. A track with no
+/// worktree (managed, or attached before #1830) keeps its workspace path: `agent_cwd()` reads only
+/// the worktree, not the kind.
 #[tokio::test]
 async fn terminal_worker_without_cwd_lands_in_the_track_workspace() {
     let harness = terminal_worker_harness().await;
@@ -201,6 +203,94 @@ async fn terminal_worker_with_an_explicit_cwd_keeps_it() {
         .await
         .unwrap();
     assert_eq!(stored, "/tmp");
+}
+
+/// An attached track with its #1830 track worktree, made from a fixture repo.
+async fn worktree_harness(tmp: &std::path::Path) -> (TerminalWorkerHarness, String) {
+    let checkout = tmp.join("checkout");
+    crate::test_support::init_fixture_git_repo(&checkout);
+    let harness = terminal_worker_harness_with_workspace(checkout.to_str().unwrap()).await;
+    let worktree = crate::test_support::attach_track_worktree(
+        harness.repo.pool(),
+        &harness.track_id,
+        &checkout,
+    )
+    .await;
+    (harness, worktree.to_str().unwrap().to_string())
+}
+
+async fn terminal_cwd(harness: &TerminalWorkerHarness, output: &TxOutput) -> String {
+    let card_id = output.output_string("card_id", "test").unwrap();
+    sqlx::query_scalar("SELECT cwd FROM terminals WHERE card_id = ?1")
+        .bind(&card_id)
+        .fetch_one(harness.repo.pool())
+        .await
+        .unwrap()
+}
+
+/// #2139 R2: a terminal task with no cwd runs where the track's codex and claude tasks run, the
+/// track worktree, never the user's checkout; a named cwd still wins.
+#[tokio::test]
+async fn terminal_worker_without_cwd_lands_in_the_track_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (harness, worktree) = worktree_harness(tmp.path()).await;
+
+    let output = prepare_terminal_worker_with_cwd(&harness, "no-cwd", None).await;
+    assert_eq!(terminal_cwd(&harness, &output).await, worktree);
+    assert_eq!(output.data["cwd"], worktree.as_str());
+
+    let output = prepare_terminal_worker_with_cwd(&harness, "named", Some("/tmp".into())).await;
+    assert_eq!(terminal_cwd(&harness, &output).await, "/tmp");
+}
+
+/// #2139 R2: `neige_terminal_open` and UI terminal cards (`terminal-create`) with no cwd open in
+/// the track worktree too.
+#[tokio::test]
+async fn terminal_open_without_cwd_lands_in_the_track_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (harness, worktree) = worktree_harness(tmp.path()).await;
+    let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
+    let adapter = TerminalAdapter::new(route_repo, CardRoleCache::new(), TrackAreaCache::new());
+    let payload = serde_json::to_value(TerminalCreateOperationPayload {
+        actor: ActorId::KernelDispatcher,
+        worker_session_id: None,
+        planner_hooks: false,
+        request: normalize_terminal_create_request(TerminalCreateRequestPayload {
+            track_id: harness.track_id.clone(),
+            title: None,
+            sort: None,
+            program: String::new(),
+            cwd: String::new(),
+            env: Value::Null,
+            theme: RequestTheme::default_dark(),
+        }),
+    })
+    .unwrap();
+    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let op_id = op_repo
+        .insert_operation(
+            "terminal-create",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some("op-open".into()),
+                payload_hash: "hash-open".into(),
+            },
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    let op = op_repo
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|op| op.id == op_id)
+        .unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(terminal_cwd(&harness, &output).await, worktree);
 }
 
 #[tokio::test]

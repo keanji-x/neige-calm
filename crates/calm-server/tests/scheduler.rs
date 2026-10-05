@@ -1406,10 +1406,11 @@ async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
     assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 
-/// #1830 S2 D5: only codex/claude tasks in the track's checkout run one at a time; terminal tasks
-/// are not held by a running one.
+/// #1830 S2 D5, #2139 R2: terminal tasks run in the track's checkout one writer at a time, like
+/// codex tasks. The pass offers both (the checkout was free when it read it); the second claim's
+/// transaction re-checks the checkout and refuses.
 #[tokio::test]
-async fn terminal_tasks_run_side_by_side() {
+async fn terminal_tasks_run_one_writer_at_a_time() {
     let boot = boot().await;
     seed_projected_task(
         &boot,
@@ -1431,7 +1432,8 @@ async fn terminal_tasks_run_side_by_side() {
 
     scheduler.schedule_track(boot.track_id.clone()).await;
     assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Running);
-    assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Running);
+    assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Pending);
+    assert_eq!(operation_count(&boot, "terminal-worker").await, 1);
 }
 
 /// The scheduling gate: a closed track claims nothing; the same task is claimed once it reopens.
@@ -3924,6 +3926,56 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
 }
 
 async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonitor {
+    seed_frozen_context_fixture_of(boot, key, FixtureTaskKind::Terminal).await
+}
+
+/// What a frozen-context fixture task is: a terminal task, or a read-only codex task (tasks that
+/// share the checkout, so many can be in flight at once, #2139 R2).
+#[derive(Clone, Copy)]
+enum FixtureTaskKind {
+    Terminal,
+    Reader,
+}
+
+impl FixtureTaskKind {
+    fn declaration(self, key: &str, contract: &str) -> Value {
+        match self {
+            FixtureTaskKind::Terminal => {
+                json!({"key": key, "kind": "terminal", "command": contract})
+            }
+            FixtureTaskKind::Reader => {
+                json!({"key": key, "kind": "codex", "goal": contract, "access": "read_only"})
+            }
+        }
+    }
+
+    fn row(self, boot: &Boot, key: &str) -> Task {
+        match self {
+            FixtureTaskKind::Terminal => plan_task(&boot.track_id, key, TaskKind::Terminal, &[]),
+            FixtureTaskKind::Reader => {
+                let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
+                task.access = calm_server::model::TaskAccess::ReadOnly;
+                task
+            }
+        }
+    }
+
+    fn adapter(self, boot: &Boot) -> Arc<dyn ProviderAdapter> {
+        Arc::new(CardSpawnAdapter {
+            kind: match self {
+                FixtureTaskKind::Terminal => "terminal-worker",
+                FixtureTaskKind::Reader => "codex-worker",
+            },
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })
+    }
+}
+
+async fn seed_frozen_context_fixture_of(
+    boot: &Boot,
+    key: &str,
+    fixture: FixtureTaskKind,
+) -> TaskContextMonitor {
     let report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 3,
@@ -3933,7 +3985,7 @@ async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonit
             id: "b_1000".into(),
             kind: "task".into(),
             rev: 3,
-            payload: json!({"key": key, "kind": "terminal", "command": "original contract"}),
+            payload: fixture.declaration(key, "original contract"),
         }]),
     };
     let pool = boot.repo.sqlite_pool().unwrap();
@@ -3947,16 +3999,10 @@ async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonit
     .execute(&pool)
     .await
     .unwrap();
-    let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
+    let task = fixture.row(boot, key);
     let task_id = task.id.clone();
     seed_task(boot, task).await;
-    let (_runtime, scheduler) = build_scheduler(
-        boot,
-        vec![Arc::new(CardSpawnAdapter {
-            kind: "terminal-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-        })],
-    );
+    let (_runtime, scheduler) = build_scheduler(boot, vec![fixture.adapter(boot)]);
     scheduler.schedule_track(boot.track_id.clone()).await;
     let claimed = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_ne!(
@@ -6019,7 +6065,9 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
 #[tokio::test]
 async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     let boot = boot().await;
-    let monitor = seed_frozen_context_fixture(&boot, "fanout-00").await;
+    // Read-only codex tasks: 65 in flight at once is a state only readers reach (#2139 R2).
+    let reader = FixtureTaskKind::Reader;
+    let monitor = seed_frozen_context_fixture_of(&boot, "fanout-00", reader).await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let frozen_json: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
@@ -6039,13 +6087,13 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
             id: format!("b_a{index:03}"),
             kind: "task".into(),
             rev: 1,
-            payload: json!({
-                "key": key, "kind": "terminal", "command": "true",
-                "refs": [format!("neige://wave/{}#b_1000", boot.track_id)]
-            }),
+            payload: {
+                let mut declaration = reader.declaration(&key, "true");
+                declaration["refs"] = json!([format!("neige://wave/{}#b_1000", boot.track_id)]);
+                declaration
+            },
         });
-        let task = plan_task(&boot.track_id, &key, TaskKind::Terminal, &[]);
-        seed_task(&boot, task).await;
+        seed_task(&boot, reader.row(&boot, &key)).await;
     }
     report.doc_rev += 1;
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
@@ -6053,13 +6101,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         .execute(&pool)
         .await
         .unwrap();
-    let (_runtime, scheduler) = build_scheduler(
-        &boot,
-        vec![Arc::new(CardSpawnAdapter {
-            kind: "terminal-worker",
-            card_id: boot.worker_card_id.to_string(),
-        })],
-    );
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![reader.adapter(&boot)]);
     scheduler.schedule_track(boot.track_id.clone()).await;
     let claimed: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM tasks WHERE track_id = ?1 AND status != 'pending' ",
@@ -6086,7 +6128,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         id: "b_ca900".into(),
         kind: "task".into(),
         rev: 1,
-        payload: json!({"key": "sweep-cap", "kind": "terminal", "command": "true"}),
+        payload: reader.declaration("sweep-cap", "true"),
     });
     report.doc_rev += 1;
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
@@ -6094,7 +6136,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         .execute(&pool)
         .await
         .unwrap();
-    let cap_task = plan_task(&boot.track_id, "sweep-cap", TaskKind::Terminal, &[]);
+    let cap_task = reader.row(&boot, "sweep-cap");
     let cap_id = cap_task.id.clone();
     seed_task(&boot, cap_task).await;
     scheduler.schedule_track(boot.track_id.clone()).await;
