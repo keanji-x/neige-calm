@@ -67,8 +67,10 @@ repository, `git for-each-ref refs/neige/candidates/028f636ee14544b49761938e3178
     matching `OWNERSHIP-CHANGE: <path> — … (#N)` line in its own message. The check is line-based,
     not a git-trailer parse.
   - **R-body** (`:151-168`): every such line in any commit must appear verbatim in the PR body.
-  - **R-squash** (`:204-249`): after the push to main, the original PR commits are audited again,
-    and the squash message must preserve every line.
+  - **R-squash** (`:204-249`): on a push to main, only a final commit that changes frozen paths is
+    audited (`:217`). Its original PR commits must pass R-commit and authorize every final frozen
+    path. The squash message must then preserve each source `OWNERSHIP-CHANGE` line whose path
+    that line's own source commit changed (`:235`); other lines are not required.
   - The workflow also runs on `pull_request: edited`, so a corrected body re-runs the audit.
 
 ## 3. Decision 1: the carrier
@@ -91,7 +93,9 @@ directions.
 Contract:
 
 - `neige_task_done` gains an optional `commit_message: string`. The CLI mirror is
-  `neige task done … [--commit-message <text>]`. The `every_option_is_its_schema_key` test pins it.
+  `neige task done … [--commit-message <text>]`. `task_done_maps_commit_message` pins the CLI
+  mapping. `every_option_is_its_schema_key` only proves each CLI option is a schema property; it
+  does not fail when a schema property lacks a CLI option.
 - In Rust, the value is `DeliveryMessage` in `git_candidate`:
   `enum DeliveryMessage { Kernel, Worker(CommitMessage) }`. `Kernel` means "no message supplied;
   the kernel writes its fixed text". That is a domain state, not a hidden missing value. Failed and
@@ -100,15 +104,22 @@ Contract:
 - `emit.rs` parses the field **before** the sink. An invalid message refuses the whole report with
   `invalid_params`, and nothing is written. The worker corrects the message and reports again. The
   attempt is still running, so the retry is admitted.
-- The `DeliveryMessage` travels as a parameter:
-  `commit_worker_task_report(identity, event, message)`, then
-  `ReleaseDelivery::Commit(outcome, message)`, then
-  `insert_initial_delivery_tx(…, outcome, message, now)`. It does **not** go on `task.completed`.
-  That event has three other producers without a message, so the field would have to be
-  optional there.
-  The delivery row owns the commit, and the commit itself is the readable record.
-- Every other `ReleaseDelivery::Commit` caller passes `DeliveryMessage::Kernel`. The 0144 CHECK
-  refuses a supplied message with any other outcome (§6), so a wrong combination fails loudly.
+- The message travels only on the completed path, so a worker message on a failed attempt has no
+  Rust representation:
+  - `commit_worker_task_report(identity, report: WorkerTaskReport)`. `WorkerTaskReport` is
+    `Completed { attempt_id, result, artifacts, message: DeliveryMessage }` or
+    `Failed { attempt_id, reason }`, and the sink builds `task.completed` / `task.failed` from it.
+    Today the sink takes any `Event` and matches on it; its callers pass only these two.
+  - The sink maps `Completed` to `ReleaseDelivery::Commit(Completed)` for `Kernel` and to the new
+    `ReleaseDelivery::CommitWorkerMessage(CommitMessage)` for `Worker(m)`. `Commit(outcome)` keeps
+    meaning "the kernel text", so every other caller is unchanged. `ReleaseDelivery` loses `Copy`
+    (`release.rs:35`) because `CommitMessage` owns a `String`; each caller passes it by value once.
+  - `release_lease_tx` derives `(outcome, DeliveryMessage)` from the `ReleaseDelivery` and calls
+    `insert_initial_delivery_tx(…, outcome, message, now)`. The 0145 CHECK (§7) backs this
+    internal row writer.
+- It does **not** go on `task.completed`. That event has three other producers without a message,
+  so the field would have to be optional there. The delivery row owns the commit, and the commit
+  itself is the readable record.
 - `delivery_message(row)`: `Worker(m)` returns `m` verbatim. `Kernel` returns today's
   `neige: attempt {a} {outcome} (delivery {d})`, byte for byte.
 - Tool description (`prompts/tools/neige_task_done.md`) and worker contract line 3
@@ -172,7 +183,7 @@ The kernel validates only what carriage needs. The bytes must go safely through 
 ## 5. Decision 3: failed, canceled, interrupted and spawn-failed attempts
 
 Their commits carry the kernel text, exactly as today. `neige_task_fail` gains nothing, and the
-0144 CHECK allows a message only on `outcome = 'completed'`.
+0145 CHECK allows a message only on `outcome IS 'completed'`.
 
 - Can the ownership check still fail on them? Yes, when a non-completed attempt changed a readonly
   path and left the change. Not observed: 0 of 16 kernel commits in this repository's candidate
@@ -199,15 +210,15 @@ Their commits carry the kernel text, exactly as today. `neige_task_fail` gains n
 
 ## 7. Decision 5: migration, triggers and 4140 compatibility
 
-`crates/calm-truth/migrations/0144_task_git_delivery_commit_message.sql`. The number is assigned
-last, at rebase time.
+`crates/calm-truth/migrations/0145_task_git_delivery_commit_message.sql`. The number is assigned
+last, at rebase time (`0144_crud_verbs.sql` landed first).
 
 ```sql
 -- #2139 R1 — the commit message a worker supplied with neige_task_done; NULL = the kernel's own
 -- one-line text (every non-completed attempt, a done report without one, every row before this
 -- migration). Written once by the release that ends the attempt.
 ALTER TABLE task_git_deliveries ADD COLUMN commit_message TEXT NULL
-  CHECK (commit_message IS NULL OR (outcome = 'completed'
+  CHECK (commit_message IS NULL OR (outcome IS 'completed'
     AND length(CAST(commit_message AS BLOB)) BETWEEN 1 AND 16384));
 
 -- The 0113 immutability trigger names its columns, so it does not cover this one.
@@ -223,8 +234,10 @@ BEGIN SELECT RAISE(ABORT, 'git delivery commit message is immutable'); END;
 - **Outcome-immutable trigger (0122):** unaffected. The CHECK reads `outcome` only at INSERT, or at
   an UPDATE that the triggers already forbid.
 - A column CHECK that references `outcome` in `ADD COLUMN` was checked on SQLite 3.40.1: existing
-  rows pass, and a message with `outcome='failed'` is refused. The migration test re-checks this on
-  the bundled `libsqlite3-sys`.
+  rows pass, and a message with `outcome='failed'` is refused. The CHECK uses `IS`, not `=`:
+  `NULL = 'completed'` is NULL, and a NULL CHECK passes, so `=` would let a message through on a
+  NULL outcome (a scratch DB accepted it). The migration test re-checks this on the bundled
+  `libsqlite3-sys`, including the NULL-outcome case.
 - **4140 rows** read as NULL, which is `Kernel`, which produces today's exact text. An unsettled
   pre-upgrade row with no operation rebuilds byte-identical argv. One with an operation uses its
   frozen payload. No backfill and no compatibility branch: NULL means the same thing on old rows
@@ -234,7 +247,7 @@ BEGIN SELECT RAISE(ABORT, 'git delivery commit message is immutable'); END;
 **DB check for the orchestrator** (read-only, on the 4140 DB, `sqlite3 -readonly <db>`):
 
 ```sql
-SELECT MAX(version) FROM _sqlx_migrations;                  -- expect 143
+SELECT MAX(version) FROM _sqlx_migrations;                  -- expect 140 (4140 production)
 SELECT sqlite_version();
 SELECT name FROM pragma_table_info('task_git_deliveries')
  WHERE name = 'commit_message';                             -- expect no row
@@ -267,8 +280,8 @@ re-weigh §5).
 
 | Slice | Content | Size | Tier |
 |---|---|---|---|
-| **D1: carry and persist** | 0144 migration and `head_schema_fixture` entry. New `git_candidate/commit_message.rs` (`CommitMessage::parse`, `DeliveryMessage`). `DeliveryRow.commit_message` read and write. `insert_initial_delivery_tx(…, message, …)`. `delivery_message` match. `ReleaseDelivery::Commit(outcome, message)` swept across every caller (production callers pass `Kernel`) | ~450 lines, about half tests | L2 (migration) |
-| **D2: worker surface** | `neige_task_done` schema property and parse in `emit.rs` before the sink. `commit_worker_task_report(…, message)`. CLI `--commit-message` and the help usage line. `neige_task_done.md` and `worker/head-{mcp,cli}.md`. Goldens: `mcp_tool_registry.json`, `worker_prompt_{mcp,cli}.txt`. Integration tests | ~350 lines | L2 (worker authority contract) |
+| **D1: carry and persist** | 0145 migration and `head_schema_fixture` entry. New `git_candidate/commit_message.rs` (`CommitMessage::parse`, `DeliveryMessage`). `DeliveryRow.commit_message` read and write. `insert_initial_delivery_tx(…, message, …)`. `delivery_message` match. `ReleaseDelivery::CommitWorkerMessage(CommitMessage)` | ~450 lines, about half tests | L2 (migration) |
+| **D2: worker surface** | `neige_task_done` schema property and parse in `emit.rs` before the sink. `commit_worker_task_report(identity, WorkerTaskReport)`. CLI `--commit-message` and the help usage line. `neige_task_done.md` and `worker/head-{mcp,cli}.md`. Goldens: `mcp_tool_registry.json`, `worker_prompt_{mcp,cli}.txt`. Integration tests | ~350 lines | L2 (worker authority contract) |
 
 D2 depends on D1. Neither depends on slices A, B or C. For the PR-body path, C is complementary
 but not required.
@@ -282,10 +295,12 @@ D1 (`git_candidate/tests.rs`, migration cases):
   guards the 4140 rows.
 - `delivery_payload_semantic_hash_is_stable` (`:1860`), extended: a row with a worker message
   builds equal argv and an equal hash twice.
-- `commit_message_is_completed_only_and_immutable`: the INSERT with `failed` is refused, an
-  `UPDATE … SET commit_message` aborts, and both settlement UPDATEs on a messaged row succeed.
-- `pre_2139_unsettled_row_rebuilds_identical_argv`: a 0143-schema row is migrated, read back as
-  `Kernel`, and gives argv equal to the pre-upgrade builder's.
+- `commit_message_is_completed_only_and_immutable`: the INSERT with `failed` is refused, and so is
+  the INSERT with a NULL outcome. An `UPDATE … SET commit_message` aborts, and both settlement
+  UPDATEs on a messaged row succeed.
+- `pre_2139_unsettled_row_rebuilds_identical_argv`: a row written at the 4140 production schema
+  (migrations through 0140) is migrated to head, read back as `Kernel`, and gives argv equal to the
+  pre-upgrade builder's text.
 - `commit_message_parse_boundaries`: 16 384 bytes accepted and 16 385 refused; NUL, ESC, DEL and
   whitespace-only refused; `\t\n\r` and multi-byte UTF-8 accepted.
 
@@ -303,14 +318,25 @@ D2 (`tests/cases/git_delivery.rs` over the real MCP socket via `support/done_del
 - `failed_attempt_commits_with_the_kernel_message`: non-completed attempts are unchanged.
 - `task_done_maps_commit_message`, plus the existing `every_option_is_its_schema_key`.
 
-**Mutation verification** (exclusive worktree, production code only):
-- D1-M1: `delivery_message` ignores `Worker`. Predicted red: exactly
-  `delivery_message_is_the_stored_worker_message`.
-- D1-M2: drop the NUL refusal. Predicted red: exactly `commit_message_parse_boundaries`.
-- D2-M3: `emit.rs` passes `DeliveryMessage::Kernel`. Predicted red: exactly the three D2
-  message-carrying integration tests.
-- D2-M4: parse after the sink transaction instead of before it. Predicted red: exactly
-  `invalid_commit_message_refuses_the_report_before_any_write`.
+**Mutation verification** (exclusive worktree, production code only). D1 and D2 ship in one PR,
+so each prediction is the complete red set over both slices' tests:
+- D1-M1: `delivery_message` ignores `Worker` (returns the kernel text). Predicted red, exactly:
+  `delivery_message_is_the_stored_worker_message`,
+  `worker_commit_message_is_the_candidate_commit_message`,
+  `crash_before_submission_commits_the_worker_message`,
+  `duplicate_completion_keeps_the_first_commit_message`.
+- D1-M2: drop the NUL arm of `CommitMessage::parse` (NUL then meets the generic control-character
+  refusal, with a different text). Predicted red, exactly: `commit_message_parse_boundaries`,
+  `invalid_commit_message_refuses_the_report_before_any_write` (it sends a NUL and asserts the
+  NUL refusal text).
+- D2-M3: `emit.rs` passes `DeliveryMessage::Kernel` for every done report. Predicted red, exactly:
+  `worker_commit_message_is_the_candidate_commit_message`,
+  `duplicate_completion_keeps_the_first_commit_message`,
+  `invalid_commit_message_refuses_the_report_before_any_write` (its corrected retry stores the
+  message). `crash_before_submission_commits_the_worker_message` stays green: it writes the report
+  through the sink directly, the state a crash after the report transaction leaves.
+- D2-M4: `emit.rs` skips the parse refusal and passes `Kernel` on invalid input. Predicted red,
+  exactly: `invalid_commit_message_refuses_the_report_before_any_write`.
 
 **Gates for each slice:**
 - `scripts/local-ratchet-gates.sh`, after `git add -N` for new files. It includes the prose,
