@@ -12,7 +12,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     role_gated_write_annotations,
 };
-use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track};
+use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track_row};
 use crate::mcp_server::tools::write_args::parse_write_args;
 use crate::model::{Card, CardRole, Track};
 use crate::session_projection_repo::AgentProvider;
@@ -265,7 +265,8 @@ async fn authorize_creator<'a>(
     creator: &Track,
 ) -> Result<&'a sqlx::SqlitePool, RpcError> {
     // MUTATION-K1-5: the scope check.
-    let scope = plugin_scope_for_track(ctx, Some(creator.id.as_str())).await;
+    let plugin_host = ctx.plugin_host.get().cloned();
+    let scope = plugin_scope_for_track_row(creator, plugin_host.as_deref()).await;
     if scope != TrackPluginScope::All {
         return Err(forbidden(format!(
             "Track {} is bound to a plugin; only an unbound Track may add Tracks",

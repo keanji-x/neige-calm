@@ -735,3 +735,26 @@ async fn track_add_refuses_while_the_creators_provider_is_unavailable() {
     assert_eq!(error.code, -32503, "{error:?}");
     assert_eq!(boot.track_count().await, before);
 }
+
+/// A closed creator adds nothing: the refusal is state (-32409), and no Track is created.
+#[tokio::test]
+async fn track_add_refuses_closed_creator() {
+    let boot = boot(16).await;
+    let (creator, planner) = boot.user_track("portfolio").await;
+    let (status, closed) = send(
+        boot.app.clone(),
+        "PATCH",
+        &format!("/api/tracks/{creator}"),
+        Some(json!({ "closed": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    let before = boot.track_count().await;
+    let error = boot
+        .add(&planner, boot.args("k1"))
+        .await
+        .expect_err("a closed Track adds none");
+    assert_eq!(error.code, -32409, "{error:?}");
+    assert!(error.message.contains("closed"), "{error:?}");
+    assert_eq!(boot.track_count().await, before);
+}
