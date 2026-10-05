@@ -512,7 +512,7 @@ pub(crate) async fn ensure_clean_tree(path: &Path) -> Result<()> {
         return Ok(());
     }
     Err(CalmError::Conflict(format!(
-        "refused: {TRACK_WORKTREE_DIRTY}: {} uncommitted path(s). Commit them with git.commit or \
+        "refused: {TRACK_WORKTREE_DIRTY}: {} uncommitted path(s). Commit them with git_commit or \
          undo them, then declare it again under a new key: {}",
         dirty.len(),
         dirty.join(", ")

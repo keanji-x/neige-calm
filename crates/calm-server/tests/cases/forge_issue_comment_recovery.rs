@@ -16,9 +16,9 @@ async fn git_forge_issue_comment_crash_recovers_without_reposting() {
         let fx = boot_fixture().await;
         let state = shim_state_dir(&fx.origin_repo);
         let block = ShimBlock::new(&state, "issue_comment");
-        let response = call_tool(&fx, 30, "plugin_dev.neige.git-forge_gh.issue.comment",
+        let response = call_tool(&fx, 30, "plugin_gitforge_gh_issue_comment",
             json!({"repo":fx.origin_repo.to_string_lossy(),"issue":810,"body":"Recovery update","idem":"recovery-1"})).await;
-        assert_tool_succeeded(&response, "gh.issue.comment");
+        assert_tool_succeeded(&response, "gh_issue_comment");
         let op_id = op_id_from_response(&response);
         wait_for_counter(&state.join("issue_comment_count"), 1).await;
         wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
@@ -74,10 +74,10 @@ async fn git_forge_issue_comment_recovery_does_not_borrow_another_caller() {
     let second = boot_fixture().await;
     assert_ne!(first.track_id, second.track_id);
     assert_ne!(first.worker_card_id, second.worker_card_id);
-    let tool = "plugin_dev.neige.git-forge_gh.issue.comment";
+    let tool = "plugin_gitforge_gh_issue_comment";
     let args = json!({"repo":first.origin_repo.to_string_lossy(),"issue":810,"body":"Identical update","idem":"plan-1"});
     let first_response = call_tool(&first, 30, tool, args.clone()).await;
-    assert_tool_succeeded(&first_response, "gh.issue.comment");
+    assert_tool_succeeded(&first_response, "gh_issue_comment");
     wait_for_operation_phase(
         &first.repo,
         &op_id_from_response(&first_response),
@@ -90,7 +90,7 @@ async fn git_forge_issue_comment_recovery_does_not_borrow_another_caller() {
     // B reaches gh but dies before posting. A's complete comment already exists.
     let block = ShimBlock::new(&state, "issue_comment_before");
     let second_response = call_tool(&second, 31, tool, args).await;
-    assert_tool_succeeded(&second_response, "gh.issue.comment");
+    assert_tool_succeeded(&second_response, "gh_issue_comment");
     let op_id = op_id_from_response(&second_response);
     wait_for_operation_phase(&second.repo, &op_id, "parked").await;
     let process = parked_process_group_guard(&second.repo, &op_id).await;

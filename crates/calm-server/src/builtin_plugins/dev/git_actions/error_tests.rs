@@ -7,7 +7,7 @@ fn rejects_unknown_tool() {
 
 #[test]
 fn rejects_missing_required_arg() {
-    let err = lower("git.commit", &json!({ "message": "m" }))
+    let err = lower("git_commit", &json!({ "message": "m" }))
         .expect_err("missing required argument rejected");
     assert!(err.contains("idem"));
 }

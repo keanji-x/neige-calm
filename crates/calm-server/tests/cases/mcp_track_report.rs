@@ -159,7 +159,7 @@ pub(crate) async fn boot_at(db_url: &str) -> Boot {
 }
 
 pub(crate) async fn boot_development() -> Boot {
-    const ID: &str = "dev.neige.git-forge";
+    const ID: &str = "gitforge";
     let boot = boot_with_scope("sqlite::memory:", Some(ID)).await;
     let host = Arc::new(calm_server::plugin_host::PluginHost::new_full(
         Arc::new(calm_server::plugin_host::PluginRegistry::empty().with_builtins()),

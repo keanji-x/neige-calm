@@ -66,7 +66,7 @@ async fn boot() -> Boot {
         calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
     ));
     plugin_host.reconcile_builtins().await.unwrap();
-    plugin_host.enable("dev.neige.git-forge").await.unwrap();
+    plugin_host.enable("gitforge").await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -599,7 +599,7 @@ async fn dev_create_captures_method_without_tasks() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     assert_eq!(body["template_id"], DEV);
-    assert_eq!(body["plugin_scope"], "dev.neige.git-forge");
+    assert_eq!(body["plugin_scope"], "gitforge");
     let track_id = body["id"].as_str().expect("track id");
     assert!(
         planner_harness_ops_for_track(&boot.repo, track_id).await >= 1,
@@ -623,7 +623,7 @@ async fn dev_create_captures_method_without_tasks() {
     let context = &planner["payload"]["template_context"];
     assert_eq!(context["title"], "Development");
     assert_eq!(context["body"], payload.body);
-    assert!(context["body"].as_str().unwrap().contains("gh.issue.view"));
+    assert!(context["body"].as_str().unwrap().contains("gh_issue_view"));
     assert!(
         context["body"]
             .as_str()
@@ -1052,7 +1052,7 @@ async fn plugin_declared_non_template_id_is_rejected() {
         .await;
     let _trust = crate::support::forge_env::EnvGuard::set(
         "NEIGE_TRUSTED_FORGE_PLUGINS",
-        "test.template-owner,dev.neige.git-forge",
+        "test.template-owner,gitforge",
     );
     let boot = boot_with_trusted_plugin(&[NOT_A_TEMPLATE, SMALL_CHANGE]).await;
 
@@ -1544,7 +1544,7 @@ async fn dev_create_without_issue_preserves_binding_and_optional_input() {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         assert_eq!(body["template_id"], "dev");
-        assert_eq!(body["plugin_scope"], "dev.neige.git-forge");
+        assert_eq!(body["plugin_scope"], "gitforge");
         assert_eq!(body["template_input"], input.unwrap_or(Value::Null));
         let id = body["id"].as_str().unwrap();
         let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{id}")).await;

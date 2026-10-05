@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-const DEV: &str = "dev.neige.git-forge";
+const DEV: &str = "gitforge";
 const PUBLISH: &str = "neige_dev_publish";
 
 async fn fixture() -> (CardBoot, Arc<PluginHost>) {
@@ -186,7 +186,7 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
     assert!(
         !stopped
             .iter()
-            .any(|name| name.starts_with("plugin_dev.neige.git-forge_"))
+            .any(|name| name.starts_with("plugin_gitforge_"))
     );
 }
 

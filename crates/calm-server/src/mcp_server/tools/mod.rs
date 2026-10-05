@@ -344,12 +344,78 @@ mod tests {
         );
     }
 
-    /// #2087 §2: a served kernel name is in the provider alphabet `[A-Za-z0-9_]`, so no client
-    /// respells it and the model sees exactly the name prompts and help print.
+    /// The plugin names `tools/list` serves: every built-in, every repository manifest under
+    /// `plugins/` and a connector whose id and upstream tool names carry `.` and `-`, all running.
+    fn served_plugin_tool_names() -> Vec<String> {
+        use crate::mcp_server::tool_visibility::{ToolDiscoveryScope, TrackPluginScope};
+        use crate::plugin_host::Manifest;
+        use serde_json::json;
+
+        let mut manifests: Vec<Manifest> = crate::builtin_plugins::catalog()
+            .iter()
+            .map(|builtin| builtin.manifest().clone())
+            .collect();
+        let plugins = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        for entry in std::fs::read_dir(&plugins).expect("read plugins/") {
+            let path = entry.expect("plugins/ entry").path().join("manifest.json");
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let manifest = Manifest::parse(&text)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                if !manifests.iter().any(|m| m.id == manifest.id) {
+                    manifests.push(manifest);
+                }
+            }
+        }
+        let mut connector = Manifest::parse(
+            &json!({
+                "manifest_version": 1, "kind": "mcp-http", "id": "mcp-wis.burg",
+                "version": "0.1.0", "min_kernel_version": "0.0.1", "display_name": "Fixture",
+                "mcp_http": { "url": "https://mcp.example.com/mcp", "tools_all": true },
+            })
+            .to_string(),
+        )
+        .expect("connector manifest");
+        let block = connector.mcp_http.clone().expect("mcp_http");
+        connector.exposes_tools = crate::plugin_host::connector::materialize_http_tools(
+            &connector.id,
+            &block,
+            &[
+                json!({ "name": "foo.bar" }),
+                json!({ "name": "get-report-detail" }),
+            ],
+        );
+        manifests.push(connector);
+        let running: std::collections::BTreeSet<String> =
+            manifests.iter().map(|m| m.id.clone()).collect();
+        // Each plugin as its own bound Track sees it, so `bound-track` tools are served too.
+        let names: Vec<String> = manifests
+            .iter()
+            .flat_map(|manifest| {
+                crate::mcp_server::transport::plugin_tool_descriptors_from(
+                    manifests.clone(),
+                    &running,
+                    &ToolDiscoveryScope::Track(&TrackPluginScope::Only(manifest.id.clone())),
+                )
+            })
+            .map(|descriptor| descriptor.name)
+            .collect();
+        assert!(
+            names.contains(&"plugin_mcp_wis_burg_foo_bar".to_string())
+                && names.contains(&"plugin_gitforge_gh_pr_checks".to_string())
+                && names.len() >= 20,
+            "anti-vacuity: {names:?}"
+        );
+        names
+    }
+
+    /// #2087 §2/§6: every served name, kernel and plugin tools alike, is in the provider alphabet
+    /// `[A-Za-z0-9_]`, so no client respells it and the model sees exactly the name prompts and
+    /// help print.
     #[test]
     fn served_tool_names_use_the_word_alphabet() {
         let outside: Vec<String> = kernel_tool_names()
             .into_iter()
+            .chain(served_plugin_tool_names())
             .filter(|name| {
                 name.is_empty()
                     || !name
@@ -359,7 +425,7 @@ mod tests {
             .collect();
         assert!(
             outside.is_empty(),
-            "served kernel tool names outside [A-Za-z0-9_]: {outside:?}"
+            "served tool names outside [A-Za-z0-9_]: {outside:?}"
         );
     }
 

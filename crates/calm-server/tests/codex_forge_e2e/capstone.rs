@@ -55,10 +55,10 @@ pub(super) fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str
          Inspect, implement, publish, review, merge, close the issue, then close the track.\n\
          Environment: every gh.* tool's repo argument is exactly {repo_gitdir}. Embed that literal in worker goals. Base branch main has SHA {base_sha}.\n\
          Copy the bound template gate's exact cmd to every task; no no_gate_reason. Declare tasks in dependency order: inspect-issue, then implement-change.\n\
-         implement-change edits src/lib.rs as the issue requires, calls the git.commit MCP tool with a message and nonempty idem, and reports its branch with neige_task_done. Workers must not push or open a PR and must use MCP for git.\n\
-         After implement-change is Done and its delivery settled, YOU the Planner must call neige_dev_publish with title, body and a stable idempotency_key. Use the returned pr_number, head_sha and branch. Call gh.pr.checks for that PR. Do not create an open-pr worker task.\n\
-         Then declare review-pr with literal repo, pr_number, base_sha and head_sha: it must call gh.pr.diff, review against the issue, and report approved or changes_requested.\n\
-         Declare merge only after the review task exists and merge only after approval and successful checks. Its gh.pr.merge must pass expected_head_sha equal to the reviewed head. It then calls gh.issue.close for #{issue_number} at the same repo.\n\
+         implement-change edits src/lib.rs as the issue requires, calls the git_commit MCP tool with a message and nonempty idem, and reports its branch with neige_task_done. Workers must not push or open a PR and must use MCP for git.\n\
+         After implement-change is Done and its delivery settled, YOU the Planner must call neige_dev_publish with title, body and a stable idempotency_key. Use the returned pr_number, head_sha and branch. Call gh_pr_checks for that PR. Do not create an open-pr worker task.\n\
+         Then declare review-pr with literal repo, pr_number, base_sha and head_sha: it must call gh_pr_diff, review against the issue, and report approved or changes_requested.\n\
+         Declare merge only after the review task exists and merge only after approval and successful checks. Its gh_pr_merge must pass expected_head_sha equal to the reviewed head. It then calls gh_issue_close for #{issue_number} at the same repo.\n\
          After merge completes and the issue closes, call neige_track_close. If review cannot converge, close the track with a reason; do not request ratification."
     )
 }
@@ -279,26 +279,26 @@ pub(super) async fn capstone_oracle(
     let merge_keys = forge_action_idem_keys_containing(fx, ":gh.pr.merge:").await;
     assert!(
         !merge_keys.is_empty(),
-        "expected a parked forge-action gh.pr.merge operation row"
+        "expected a parked forge-action gh_pr_merge operation row"
     );
     let merge_suffix = format!(":gh.pr.merge:{repo_gitdir}:{pr_number}:{merged_head}");
     for key in &merge_keys {
         assert!(
             key.ends_with(&merge_suffix),
-            "every gh.pr.merge forge-action op must carry the WITH-sha idem key \
+            "every gh_pr_merge forge-action op must carry the WITH-sha idem key \
              (expected suffix {merge_suffix}): {merge_keys:?}"
         );
     }
     let close_keys = forge_action_idem_keys_containing(fx, ":gh.issue.close:").await;
     assert!(
         !close_keys.is_empty(),
-        "expected a parked forge-action gh.issue.close operation row"
+        "expected a parked forge-action gh_issue_close operation row"
     );
     let close_suffix = format!(":gh.issue.close:{repo_gitdir}:{CAPSTONE_ISSUE_NUMBER}");
     for key in &close_keys {
         assert!(
             key.ends_with(&close_suffix),
-            "every gh.issue.close forge-action op must target the goal issue at the \
+            "every gh_issue_close forge-action op must target the goal issue at the \
              steered repo selector (expected suffix {close_suffix}): {close_keys:?}"
         );
     }

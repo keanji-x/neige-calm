@@ -117,8 +117,9 @@ A `builtin` backend is trusted code compiled into the kernel. It shares the
 plugin registry, configuration and enable/disable lifecycle without a child
 process, plugin token or supervisor. New code arrives through a release;
 runtime enablement remains dynamic. Disk and remote
-installation cannot replace a compiled identity. Development preserves the
-`dev.neige.git-forge` identity for existing Track bindings and configuration.
+installation cannot replace a compiled identity. Development is `gitforge` and
+Calendar is `calendar`; migration 0148 moved their rows, Track bindings and
+stored names from `dev.neige.git-forge` and `dev.neige.calendar` (#2087 B5).
 
 `agent_tools_scope` declares agent visibility separately from the backend.
 Version 4 is required for `bound-track`; older manifests keep existing enabled

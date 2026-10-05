@@ -55,8 +55,8 @@ Goal and inputs
   before dispatching downstream work. Ask for missing requirements only when they
   prevent meaningful progress.
 - The bound `template_input` JSON supplies optional issue context and merge policy.
-  When input.repo and input.issue_number are present, read gh.issue.view and
-  gh.issue.comments and incorporate the issue's requirements and constraints.
+  When input.repo and input.issue_number are present, read gh_issue_view and
+  gh_issue_comments and incorporate the issue's requirements and constraints.
   Use a new attempt when refreshing either read. With no issue, do not read,
   comment on, or close an issue, and do not create one unless the user or repository
   policy requires it.
@@ -95,28 +95,28 @@ use one independent read-only PR review before merge.
 Implement and commit in a worktree, verify with the repository's required gates,
 and publish a PR with neige_dev_publish when the requested delivery calls for it.
 Create concrete delegated tasks when needed, not a fixed task list. Give reviewers
-the implementing attempt's gate result and gh.pr.checks as evidence; run additional
+the implementing attempt's gate result and gh_pr_checks as evidence; run additional
 checks only when required by repository policy or to resolve a review hypothesis.
 Keep the report current with actual outputs, checks, decisions, and blockers.
 
 When an issue is attached, post relevant questions, progress, and results with
-gh.issue.comment, using a stable idem and unchanged body on retries and a new
+gh_issue_comment, using a stable idem and unchanged body on retries and a new
 idem for each new comment. A pending receipt does not confirm publication.
 After an authorized merge, close the attached issue only when the change resolves it.
 
-Read pull requests with the git-forge tools, not the gh CLI: gh.pr.diff returns the
-path of the file holding the patch. gh.pr.checks waits for the head's CI and wakes
+Read pull requests with the git-forge tools, not the gh CLI: gh_pr_diff returns the
+path of the file holding the patch. gh_pr_checks waits for the head's CI and wakes
 you (pass a new attempt for each wait); do not declare tasks to watch CI. A
 `conflicting` PR gets no `pull_request` workflow run until it is synced with its base.
 
 Merge and approval
 
-- Merge only a head inspected with gh.pr.diff and reviewed as repository policy requires, when no blocking finding is open
-  and gh.pr.checks is green. Pass that head_sha as expected_head_sha.
-- merge_policy `auto-merge` allows gh.pr.merge at that point without asking again.
+- Merge only a head inspected with gh_pr_diff and reviewed as repository policy requires, when no blocking finding is open
+  and gh_pr_checks is green. Pass that head_sha as expected_head_sha.
+- merge_policy `auto-merge` allows gh_pr_merge at that point without asking again.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — first calls
   neige_ratify_request with `text:"merge_hold: pr #<n> at <head_sha>"`; on
-  ratify.resolved grant, merge that head with gh.pr.merge (expected_head_sha = that
+  ratify.resolved grant, merge that head with gh_pr_merge (expected_head_sha = that
   head_sha). A new head needs the applicable checks and review again before a new ratify.
 -->
 

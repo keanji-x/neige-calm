@@ -101,14 +101,14 @@ impl Scheduler {
         };
         if delivery.settlement.is_none() {
             let mut op = runtime
-                .find_by_kind_and_idempotency(FORGE_ACTION_KIND, &delivery.forge_idempotency_key)
+                .find_by_kind_and_idempotency(FORGE_ACTION_KIND, &delivery.submitted_forge_key())
                 .await?;
             if op.is_none() {
                 self.resume_git_deliveries(&task.track_id).await?;
                 op = runtime
                     .find_by_kind_and_idempotency(
                         FORGE_ACTION_KIND,
-                        &delivery.forge_idempotency_key,
+                        &delivery.submitted_forge_key(),
                     )
                     .await?;
             }
@@ -276,7 +276,7 @@ impl Scheduler {
             return Ok(());
         };
         let Some(op) = runtime
-            .find_by_kind_and_idempotency(FORGE_ACTION_KIND, &delivery.forge_idempotency_key)
+            .find_by_kind_and_idempotency(FORGE_ACTION_KIND, &delivery.submitted_forge_key())
             .await?
         else {
             return Ok(());

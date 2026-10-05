@@ -96,6 +96,19 @@ pub enum HostError {
         held_by: String,
     },
 
+    /// The plugin would serve a minted name a running plugin already serves (#2087 §6): its id
+    /// mints the same `plugin_<id>_` prefix (`a-b` and `a.b`), or one of its tools mints the same
+    /// `plugin_<id>_<tool>` (`a` + `b_c` and `a-b` + `c`). The second to start is refused before
+    /// any spawn or token mint, and a connector's materialized tools are checked again.
+    #[error(
+        "plugin `{plugin_id}` mints `{minted}`, which running plugin `{held_by}` already mints"
+    )]
+    MintedNameConflict {
+        plugin_id: String,
+        held_by: String,
+        minted: String,
+    },
+
     /// A non-`app` connector could not be brought up. No child process and no supervisor behind it: terminal until an operator re-enables, and `reason` is the only diagnostic (it lands in `PluginRuntimeStatus::Unavailable`).
     #[error("connector `{plugin_id}` is unavailable: {reason}")]
     ConnectorUnavailable { plugin_id: String, reason: String },

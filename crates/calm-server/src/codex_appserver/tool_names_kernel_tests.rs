@@ -1,6 +1,6 @@
 use provider::codex::tool_names::{
     CODEX_MCP_DELIMITER, CODEX_MCP_PREFIX, CODEX_QUALIFIED_NAME_CAP, codex_sanitized,
-    model_tool_key,
+    strip_codex_qualifier,
 };
 
 /// Codex hashes a callable that is too long or that collides after sanitizing; a kernel tool
@@ -32,7 +32,7 @@ fn kernel_tool_callables_are_injective_and_unhashed() {
                 "`{qualified}` is {} bytes; Codex hashes over {CODEX_QUALIFIED_NAME_CAP}",
                 qualified.len()
             );
-            assert_eq!(model_tool_key(&qualified), *callable);
+            assert_eq!(strip_codex_qualifier(&qualified), callable.as_str());
         }
     }
 }
@@ -76,11 +76,9 @@ fn served_tool_names_fit_the_codex_cap() {
         .map(|descriptor| descriptor.name)
         .filter(|name| !name.starts_with(crate::plugin_results::PLUGIN_TOOL_PREFIX));
     for name in kernel.chain(native) {
+        assert_eq!(codex_sanitized(&name), name, "Codex would respell `{name}`");
         for server in crate::shared_codex_home::EXPECTED_MCP_SERVERS {
-            let qualified = format!(
-                "{CODEX_MCP_PREFIX}{server}{CODEX_MCP_DELIMITER}{}",
-                codex_sanitized(&name)
-            );
+            let qualified = format!("{CODEX_MCP_PREFIX}{server}{CODEX_MCP_DELIMITER}{name}");
             assert!(
                 qualified.len() <= CODEX_QUALIFIED_NAME_CAP,
                 "`{qualified}` is {} bytes; Codex hashes over {CODEX_QUALIFIED_NAME_CAP}",

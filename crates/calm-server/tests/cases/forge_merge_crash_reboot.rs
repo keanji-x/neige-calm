@@ -34,8 +34,8 @@ use support::mcp::send_tool_call_without_reply;
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep};
 
-const PLUGIN_ID: &str = "dev.neige.git-forge";
-const PR_MERGE_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.merge";
+const PLUGIN_ID: &str = "gitforge";
+const PR_MERGE_TOOL: &str = "plugin_gitforge_gh_pr_merge";
 const CRASH_POINT: &str = "forge-pre-fence-commit:forge.pr.merged";
 const PRE_GO_CRASH_POINT: &str = "forge-pre-go-token:forge.pr.merged";
 

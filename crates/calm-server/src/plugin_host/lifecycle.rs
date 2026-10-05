@@ -138,6 +138,14 @@ impl PluginHost {
                 prev.id, prev.version
             )));
         }
+        // A new plugin's id is one word (#2087 §6); the boot loader still admits the installed
+        // external ids that carry `.` or `-`, and their rows keep reload and enable (§9).
+        if !super::manifest::is_word_plugin_id(&manifest.id) {
+            return Err(CalmError::PluginInstall(format!(
+                "manifest id `{}` must be one word: ^[a-z0-9]{{2,32}}$ (no `.`, `-` or `_`)",
+                manifest.id
+            )));
+        }
 
         // The install path the registry remembers is the in-plugins-dir target, not the user-supplied source.
         let install_dir = self.plugins_dir.join(&manifest.id);
@@ -333,7 +341,7 @@ pub(crate) fn spawn_error_to_calm(e: HostError) -> CalmError {
             "plugin requires kernel >= {}, this kernel is {}",
             k.required, k.actual,
         )),
-        conflict @ HostError::TemplateConflict { .. } => {
+        conflict @ (HostError::TemplateConflict { .. } | HostError::MintedNameConflict { .. }) => {
             CalmError::PluginConflict(conflict.to_string())
         }
         // Not a kernel fault: 503 carries the reason and the row stays `enabled`, so a re-enable is the whole recovery.

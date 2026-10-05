@@ -13,16 +13,16 @@ mod issue;
 
 pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
     match tool {
-        "git.worktree.add" => lower_git_worktree_add(args),
-        "git.commit" => lower_git_commit(args),
-        "gh.pr.list" => lower_gh_pr_list(args),
-        "gh.pr.diff" => lower_gh_pr_diff(args),
-        "gh.pr.checks" => lower_gh_pr_checks(args),
-        "gh.pr.merge" => lower_gh_pr_merge(args),
-        "gh.issue.view" => lower_gh_issue_view(args),
-        "gh.issue.close" => lower_gh_issue_close(args),
-        "gh.issue.comment" => Err("issue comments require trusted forge caller metadata".into()),
-        "gh.issue.comments" => issue::comments(args),
+        "git_worktree_add" => lower_git_worktree_add(args),
+        "git_commit" => lower_git_commit(args),
+        "gh_pr_list" => lower_gh_pr_list(args),
+        "gh_pr_diff" => lower_gh_pr_diff(args),
+        "gh_pr_checks" => lower_gh_pr_checks(args),
+        "gh_pr_merge" => lower_gh_pr_merge(args),
+        "gh_issue_view" => lower_gh_issue_view(args),
+        "gh_issue_close" => lower_gh_issue_close(args),
+        "gh_issue_comment" => Err("issue comments require trusted forge caller metadata".into()),
+        "gh_issue_comments" => issue::comments(args),
         _ => Err(format!("unknown git-forge tool `{tool}`")),
     }
 }
@@ -38,7 +38,7 @@ pub fn lower_for_caller(
         return Err("forge caller plugin does not match development plugin".into());
     }
     match tool {
-        "gh.issue.comment" => issue::comment(args, caller),
+        "gh_issue_comment" => issue::comment(args, caller),
         _ => lower(tool, args),
     }
 }

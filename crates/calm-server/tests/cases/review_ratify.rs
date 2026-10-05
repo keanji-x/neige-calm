@@ -115,7 +115,7 @@ async fn boot() -> Boot {
             sort: None,
             cwd: String::new(),
             template_id: None,
-            plugin_scope: Some("dev.neige.git-forge".into()),
+            plugin_scope: Some("gitforge".into()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -161,7 +161,7 @@ async fn boot() -> Boot {
         calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
     ));
     host.reconcile_builtins().await.unwrap();
-    host.enable("dev.neige.git-forge").await.unwrap();
+    host.enable("gitforge").await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),

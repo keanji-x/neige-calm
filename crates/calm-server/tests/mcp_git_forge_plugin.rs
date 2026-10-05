@@ -38,10 +38,10 @@ use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use tokio::time::{Instant, sleep};
 
-const PLUGIN_ID: &str = "dev.neige.git-forge";
-const WORKTREE_TOOL: &str = "plugin_dev.neige.git-forge_git.worktree.add";
-const COMMIT_TOOL: &str = "plugin_dev.neige.git-forge_git.commit";
-const PR_CREATE_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.create";
+const PLUGIN_ID: &str = "gitforge";
+const WORKTREE_TOOL: &str = "plugin_gitforge_git_worktree_add";
+const COMMIT_TOOL: &str = "plugin_gitforge_git_commit";
+const PR_CREATE_TOOL: &str = "plugin_gitforge_gh_pr_create";
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
@@ -101,16 +101,16 @@ fn real_manifest_parses() {
     assert_eq!(
         tool_names,
         vec![
-            "git.worktree.add",
-            "git.commit",
-            "gh.pr.list",
-            "gh.pr.diff",
-            "gh.pr.checks",
-            "gh.pr.merge",
-            "gh.issue.view",
-            "gh.issue.close",
-            "gh.issue.comment",
-            "gh.issue.comments",
+            "git_worktree_add",
+            "git_commit",
+            "gh_pr_list",
+            "gh_pr_diff",
+            "gh_pr_checks",
+            "gh_pr_merge",
+            "gh_issue_view",
+            "gh_issue_close",
+            "gh_issue_comment",
+            "gh_issue_comments",
         ]
     );
 }
@@ -275,10 +275,10 @@ async fn real_git_forge_plugin_lowers_through_forge_action_seam() {
     assert_eq!(
         forge_event_count(&fx.repo).await,
         before_commit_events + 1,
-        "git.commit must persist one worktree.committed event row"
+        "git_commit must persist one worktree.committed event row"
     );
     let commit_rows = event_rows(&fx.repo, "worktree.committed").await;
-    assert_eq!(commit_rows.len(), 1, "git.commit must persist one event");
+    assert_eq!(commit_rows.len(), 1, "git_commit must persist one event");
     assert_worktree_committed_event(&commit_rows[0], &fx.track_id, &fx.card_id, "wt-x");
 
     let commit_key = scoped_idem_key(PLUGIN_ID, &fx.track_id, &fx.card_id, "git.commit:step-1");

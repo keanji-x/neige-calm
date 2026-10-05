@@ -69,10 +69,51 @@ impl Recorded {
 /// The prefix of every minted plugin tool name.
 pub const PLUGIN_TOOL_PREFIX: &str = "plugin_";
 
-/// The one minting of a plugin tool's registry name: `plugin_<id>_<tool>`. Plugin ids exclude `_`,
-/// so the `_` after the id is an unambiguous id↔tool boundary.
+/// The one minting of a plugin tool's registry name: `plugin_<id>_<tool>`, with every character of
+/// `<id>` and `<tool>` outside `[A-Za-z0-9_]` written `_` (#2087 §6), so Codex and Claude show the
+/// model this very name. Minting is not injective: routing maps a minted name back to its raw
+/// `(id, tool)` pair by exact lookup, and registration refuses two tools or two ids that would
+/// mint one name.
 pub fn registry_name(plugin_id: &str, tool_name: &str) -> String {
-    format!("{PLUGIN_TOOL_PREFIX}{plugin_id}_{tool_name}")
+    format!(
+        "{PLUGIN_TOOL_PREFIX}{}_{}",
+        minted_segment(plugin_id),
+        minted_segment(tool_name)
+    )
+}
+
+/// One segment of a minted name: every character outside `[A-Za-z0-9_]` becomes `_`.
+pub fn minted_segment(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// The first pair of distinct tools that mint one name under `plugin_id`, if any.
+pub fn minted_name_collision<'a>(
+    plugin_id: &str,
+    tools: impl IntoIterator<Item = &'a str>,
+) -> Option<(String, String, String)> {
+    let mut seen: std::collections::BTreeMap<String, &str> = std::collections::BTreeMap::new();
+    for tool in tools {
+        let minted = registry_name(plugin_id, tool);
+        match seen.get(&minted) {
+            Some(first) if *first != tool => {
+                return Some(((*first).to_string(), tool.to_string(), minted));
+            }
+            Some(_) => {}
+            None => {
+                seen.insert(minted, tool);
+            }
+        }
+    }
+    None
 }
 
 /// Canonical text of a `tools/call` `arguments` value: `serde_json` compact serialization (keys sorted; `1` and `1.0` differ; no Unicode normalization).
@@ -317,8 +358,8 @@ impl PluginResults {
     }
 
     /// Distinct `(plugin_id, tool_name)` pairs with a live entry in this
-    /// track, sorted — the candidate pool for resolving a sanitized tool
-    /// spelling.
+    /// track, sorted — the candidate pool `neige_source_capture` resolves a
+    /// minted name against.
     pub fn recorded_tools(&self, track_id: &str) -> Vec<(String, String)> {
         let now = (self.now)();
         let mut inner = self.lock();

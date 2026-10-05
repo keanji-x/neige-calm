@@ -4,11 +4,7 @@ use super::*;
 async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratification() {
     let boot = boot().await;
     boot.state.plugin.reconcile_builtins().await.unwrap();
-    boot.state
-        .plugin
-        .enable("dev.neige.git-forge")
-        .await
-        .unwrap();
+    boot.state.plugin.enable("gitforge").await.unwrap();
     let (status, created) = request_json(&boot.app, "POST", "/api/tracks".into(), &boot.cookie, Some(json!({
         "planner_provider": "codex",
         "area_id": boot.area_id, "title": "Check repository", "template_id": "dev",

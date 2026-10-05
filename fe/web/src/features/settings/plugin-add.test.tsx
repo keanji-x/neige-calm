@@ -25,7 +25,7 @@ describe('Add a plugin from JSON', () => {
     expect(screen.queryByLabelText('Name')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
     expect(p.onInstallConnector).toHaveBeenCalledWith(expect.objectContaining({ display_name: 'Docs', tool_mode: 'all', headers: { Authorization: 'Bearer sk-private-value' } }));
-    expect(vi.mocked(p.onInstallConnector).mock.calls[0]?.[0].id).toMatch(/^mcp-docs-/);
+    expect(vi.mocked(p.onInstallConnector).mock.calls[0]?.[0].id).toMatch(/^docs[0-9a-f]{8}$/);
     expect(p.onCheckConnector).not.toHaveBeenCalled();
     expect(p.onInstalled).toHaveBeenCalledOnce();
   });

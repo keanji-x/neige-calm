@@ -19,8 +19,8 @@ use crate::mcp_track_report::{
 
 const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
-const REGISTRY_NAME: &str = "plugin_dev.echo_do.thing";
-const SANITIZED_NAME: &str = "plugin_dev_echo_do_thing";
+/// The minted name of `dev.echo` / `do.thing` (#2087 §6), the only spelling besides the qualified one.
+const REGISTRY_NAME: &str = "plugin_dev_echo_do_thing";
 /// The name the model's tool list actually shows for [`REGISTRY_NAME`].
 const QUALIFIED_NAME: &str = "mcp__neige__plugin_dev_echo_do_thing";
 const COLLIDING_PLUGIN_ID: &str = "dev";
@@ -58,7 +58,7 @@ pub(crate) fn record(
 /// A plugin host whose registry exposes [`REGISTRY_NAME`], a second `dev.echo` tool and the
 /// colliding plugin, running nothing: the track-visible universe the refusal consults.
 const OTHER_TOOL_NAME: &str = "other.thing";
-const OTHER_REGISTRY_NAME: &str = "plugin_dev.echo_other.thing";
+const OTHER_REGISTRY_NAME: &str = "plugin_dev_echo_other_thing";
 
 fn install_registry(boot: &Boot) {
     let manifest = |id: &str, tools: &[&str]| {
@@ -178,7 +178,7 @@ async fn capture_call_stores_the_joined_text_blocks_and_anchors() {
 }
 
 #[tokio::test]
-async fn capture_resolves_the_sanitized_spelling_and_defaults_to_the_latest_call() {
+async fn capture_resolves_the_minted_name_and_defaults_to_the_latest_call() {
     let boot = boot().await;
     record(
         &boot,
@@ -197,7 +197,7 @@ async fn capture_resolves_the_sanitized_spelling_and_defaults_to_the_latest_call
     let receipt = capture(
         &boot,
         json!({
-            "call": { "tool": SANITIZED_NAME },
+            "call": { "tool": REGISTRY_NAME },
             "provenance": "summary",
             "title": "Latest",
         }),
@@ -211,7 +211,7 @@ async fn capture_resolves_the_sanitized_spelling_and_defaults_to_the_latest_call
     let receipt = capture(
         &boot,
         json!({
-            "call": { "tool": SANITIZED_NAME, "args": null },
+            "call": { "tool": REGISTRY_NAME, "args": null },
             "provenance": "summary",
             "title": "Latest again",
         }),
@@ -223,7 +223,7 @@ async fn capture_resolves_the_sanitized_spelling_and_defaults_to_the_latest_call
     let receipt = capture(
         &boot,
         json!({
-            "call": { "tool": SANITIZED_NAME, "args": { "id": 1 } },
+            "call": { "tool": REGISTRY_NAME, "args": { "id": 1 } },
             "provenance": "summary",
             "title": "Older",
         }),
@@ -293,7 +293,8 @@ async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
     for probe in [
         "mcp__plugin_dev_echo_do_thing",
         "mcp____plugin_dev_echo_do_thing",
-        "plugin_dev.echo_other",
+        "plugin_dev.echo_do.thing",
+        "plugin_dev_echo_other",
         "mcp__neige__plugin_dev_echo_other",
     ] {
         let err = capture(
@@ -315,7 +316,7 @@ async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
 }
 
 /// A tool a visible plugin exposes but nobody in this track called keeps the "no recorded
-/// result" sentence, in every spelling.
+/// result" sentence, bare or qualified.
 #[tokio::test]
 async fn capture_names_a_known_tool_without_a_record_as_no_record() {
     let boot = boot().await;
@@ -327,7 +328,7 @@ async fn capture_names_a_known_tool_without_a_record_as_no_record() {
         &json!({}),
         &ok_result(&["other"]),
     );
-    for probe in [REGISTRY_NAME, SANITIZED_NAME, QUALIFIED_NAME] {
+    for probe in [REGISTRY_NAME, QUALIFIED_NAME] {
         let err = capture(
             &boot,
             json!({ "call": { "tool": probe }, "provenance": "summary", "title": "x" }),
@@ -404,8 +405,11 @@ async fn omitted_args_take_the_latest_completion_not_the_last_lookup() {
     assert_eq!(latest["body_sha256"], sha256_hex(b"B"));
 }
 
+/// `dev` / `echo.do.thing` and `dev.echo` / `do.thing` mint one name. The host refuses to run two
+/// such plugins, but the ring can still hold both records; the name is refused, naming both raw
+/// pairs, and never routes to one of them.
 #[tokio::test]
-async fn capture_refuses_an_ambiguous_sanitized_spelling_and_lists_candidates() {
+async fn capture_refuses_a_name_two_recorded_tools_mint() {
     let boot = boot().await;
     record(&boot, PLUGIN_ID, TOOL_NAME, &json!({}), &ok_result(&["a"]));
     record(
@@ -415,31 +419,17 @@ async fn capture_refuses_an_ambiguous_sanitized_spelling_and_lists_candidates() 
         &json!({}),
         &ok_result(&["b"]),
     );
-    let err = capture(
-        &boot,
-        json!({
-            "call": { "tool": SANITIZED_NAME },
-            "provenance": "summary",
-            "title": "x",
-        }),
-    )
-    .await
-    .unwrap_err();
-    assert_invalid_params(&err, "ambiguous");
-    assert!(err.message.contains(REGISTRY_NAME), "{err}");
-    assert!(err.message.contains("plugin_dev_echo.do.thing"), "{err}");
-    // The exact registry name still resolves.
-    let receipt = capture(
-        &boot,
-        json!({
-            "call": { "tool": "plugin_dev_echo.do.thing" },
-            "provenance": "summary",
-            "title": "x",
-        }),
-    )
-    .await
-    .expect("exact name");
-    assert_eq!(receipt["body_sha256"], sha256_hex(b"b"));
+    for probe in [REGISTRY_NAME, QUALIFIED_NAME] {
+        let err = capture(
+            &boot,
+            json!({ "call": { "tool": probe }, "provenance": "summary", "title": "x" }),
+        )
+        .await
+        .unwrap_err();
+        assert_invalid_params(&err, "is ambiguous; it names");
+        assert!(err.message.contains("dev.echo/do.thing"), "{err}");
+        assert!(err.message.contains("dev/echo.do.thing"), "{err}");
+    }
 }
 
 #[tokio::test]
@@ -470,11 +460,11 @@ async fn capture_refuses_error_no_text_and_too_large_records() {
     );
 
     for (tool, needle) in [
-        ("plugin_dev.echo_err", "isError"),
-        ("plugin_dev.echo_empty", "no text block"),
-        ("plugin_dev.echo_huge", "size limit"),
-        ("plugin_dev.echo_bigargs", "size limit"),
-        ("plugin_dev.echo_overbody", "at most"),
+        ("plugin_dev_echo_err", "isError"),
+        ("plugin_dev_echo_empty", "no text block"),
+        ("plugin_dev_echo_huge", "size limit"),
+        ("plugin_dev_echo_bigargs", "size limit"),
+        ("plugin_dev_echo_overbody", "at most"),
     ] {
         let err = capture(
             &boot,

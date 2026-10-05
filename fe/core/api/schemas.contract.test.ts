@@ -155,7 +155,7 @@ describe('wireEventSchema', () => {
         pinned_at: null,
         cwd: '/repo',
         template_id: 'issue-development',
-        plugin_scope: 'dev.neige.git-forge',
+        plugin_scope: 'gitforge',
         template_input: templateInput,
         closed_at: null,
         created_at: 1,

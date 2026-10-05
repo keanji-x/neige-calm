@@ -1770,6 +1770,56 @@ async fn delivery_tables_cascade_on_track_delete() {
 // Delivery rows and the payload.
 // ---------------------------------------------------------------------------
 
+/// #2087 B5: a delivery recorded before the built-in rename keeps the old id prefix in its
+/// immutable `forge_idempotency_key`. Migration 0148 moves the prefix of the Operation's key, and
+/// the key a lookup or a resubmit computes for the row is that moved key, so the dedup wall and
+/// the gate's lookup both still find the one Operation.
+#[tokio::test]
+async fn a_delivery_from_before_the_rename_finds_its_moved_operation() {
+    let fx = db_fixture().await;
+    let row = fx.insert_delivery("attempt-1").await;
+    let old_key = format!(
+        "dev.neige.git-forge:{}:{}:git.commit:d:{}", // retired-name: rejection input
+        fx.track_id, fx.card_id, row.delivery_id
+    );
+    sqlx::query(
+        "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
+         target_type, target_json, payload_json, phase, created_at_ms, updated_at_ms) \
+         VALUES ('op-1', ?1, ?2, ?3, 'h', 'card', '{}', '{}', 'succeeded', 1, 1)",
+    )
+    .bind(&row.operation_key)
+    .bind(crate::operation::forge_action_adapter::FORGE_ACTION_KIND)
+    .bind(&old_key)
+    .execute(fx.repo.pool())
+    .await
+    .unwrap();
+    let migration = calm_truth::MIGRATOR
+        .iter()
+        .find(|m| m.description == "plugin names")
+        .expect("the #2087 B5 migration is embedded");
+    sqlx::raw_sql(&migration.sql)
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+
+    let computed = row.submitted_forge_key();
+    assert_eq!(
+        computed,
+        format!(
+            "gitforge:{}:{}:git.commit:d:{}",
+            fx.track_id, fx.card_id, row.delivery_id
+        )
+    );
+    let found: Option<String> =
+        sqlx::query_scalar("SELECT id FROM operations WHERE kind = ?1 AND idempotency_key = ?2")
+            .bind(crate::operation::forge_action_adapter::FORGE_ACTION_KIND)
+            .bind(&computed)
+            .fetch_optional(fx.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(found.as_deref(), Some("op-1"));
+}
+
 /// The initial row: `ordinal = 1`, fresh ids, the forge idempotency key spelled through the
 /// plugin id constant; the readers find it by attempt, by id, and as unsettled with or without
 /// a forge Operation under its key; the lease is read back in any state.
@@ -1781,7 +1831,7 @@ async fn initial_delivery_row_and_readers() {
     assert_eq!(
         row.forge_idempotency_key,
         format!(
-            "dev.neige.git-forge:{}:{}:git.commit:d:{}",
+            "gitforge:{}:{}:git.commit:d:{}",
             fx.track_id, fx.card_id, row.delivery_id
         )
     );

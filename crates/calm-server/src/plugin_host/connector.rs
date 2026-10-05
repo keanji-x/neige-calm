@@ -302,6 +302,20 @@ fn push_http_tool(
 }
 
 /// The `cli-query` half: the manifest IS the catalog, so nothing can be "allowlisted but missing"; a rejected name is warned about and skipped, never fatal.
+/// Refuses a tool set two of whose names mint one `plugin_<id>_<tool>` (`foo.bar` and `foo_bar`):
+/// the second would be unreachable and its calls would land on the first.
+pub fn refuse_minted_collisions(plugin_id: &str, tools: &[ExposedTool]) -> Result<(), String> {
+    match crate::plugin_results::minted_name_collision(
+        plugin_id,
+        tools.iter().map(|tool| tool.name.as_str()),
+    ) {
+        Some((first, second, minted)) => Err(format!(
+            "tools `{first}` and `{second}` both mint `{minted}`; rename one upstream"
+        )),
+        None => Ok(()),
+    }
+}
+
 pub fn materialize_cli_tools(plugin_id: &str, block: &CliQueryBlock) -> Vec<ExposedTool> {
     let mut out = Vec::new();
     for tool in &block.tools {

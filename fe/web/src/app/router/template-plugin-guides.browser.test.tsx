@@ -24,7 +24,7 @@ function mount(issueGuides?: Promise<ApiTransportResponse>) {
     ]));
     if (request.path.endsWith('/dev/plugin-guides') && issueGuides !== undefined) return issueGuides;
     if (request.path.endsWith('/plugin-guides')) return Promise.resolve(ok(request.path.includes('/dev/')
-      ? [{ id: 'dev.neige.git-forge', name: 'development' }] : []));
+      ? [{ id: 'gitforge', name: 'development' }] : []));
     if (request.path.startsWith('/api/track-templates/')) return Promise.resolve(ok({
       id: request.path.split('/').at(-1), title: 'Template', description: null, instructions: null, body: '# Method',
     }));
@@ -77,7 +77,7 @@ it('does not revive a default guide when its read finishes after switching templ
   await expect.poll(() => requests.some(request => request.path.endsWith('/dev/plugin-guides'))).toBe(true);
   await page.getByRole('button', { name: /^Template:/ }).click();
   await page.getByRole('menuitem', { name: /^No template/ }).click();
-  resolve({ status: 200, statusText: 'OK', body: [{ id: 'dev.neige.git-forge', name: 'development' }] });
+  resolve({ status: 200, statusText: 'OK', body: [{ id: 'gitforge', name: 'development' }] });
   await expect.element(page.getByLabelText('development, included by template')).not.toBeInTheDocument();
   await expect.element(page.getByRole('button', { name: /^Template: No template/ })).toBeVisible();
 });

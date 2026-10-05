@@ -159,7 +159,7 @@ async fn patch_plugin_scope_is_ignored_not_present() {
             sort: None,
             cwd: "/tmp/1110-s4-patch".into(),
             template_id: Some("dev".into()),
-            plugin_scope: Some("dev.neige.git-forge".into()),
+            plugin_scope: Some("gitforge".into()),
             template_input: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -169,7 +169,7 @@ async fn patch_plugin_scope_is_ignored_not_present() {
     let track_id = track.id.to_string();
     assert_eq!(
         stored_plugin_scope(&boot.repo, &track_id).await.as_deref(),
-        Some("dev.neige.git-forge")
+        Some("gitforge")
     );
 
     let (status, body) = json_request(
@@ -184,10 +184,10 @@ async fn patch_plugin_scope_is_ignored_not_present() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["title"], "still scoped");
-    assert_eq!(body["plugin_scope"], "dev.neige.git-forge");
+    assert_eq!(body["plugin_scope"], "gitforge");
     assert_eq!(
         stored_plugin_scope(&boot.repo, &track_id).await.as_deref(),
-        Some("dev.neige.git-forge"),
+        Some("gitforge"),
         "INV-1110-004: PATCH must not change plugin_scope"
     );
 }
@@ -205,7 +205,7 @@ async fn create_rejects_client_supplied_plugin_scope() {
             "title": "client plugin_scope",
             "cwd": attached_repo_fixture("1110-s4-create-scope"),
             "attach_folder": true,
-            "plugin_scope": "dev.neige.git-forge",
+            "plugin_scope": "gitforge",
             "theme": theme(),
         })),
     )

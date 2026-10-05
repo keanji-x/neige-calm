@@ -31,7 +31,7 @@ fn run_wait(reads: &[Option<&str>]) -> (String, usize) {
             None => write_read(dir.path(), &format!("fail.{n}"), ""),
         }
     }
-    let payload = lower("gh.pr.checks", &json!({ "repo": "owner/repo", "pr": 42 }))
+    let payload = lower("gh_pr_checks", &json!({ "repo": "owner/repo", "pr": 42 }))
         .expect("lower gh pr checks");
     let mut argv: Vec<String> = serde_json::from_value(payload["argv"].clone()).expect("argv");
     assert_eq!(argv[6], PR_CHECKS_POLL_SECS.to_string(), "{argv:?}");

@@ -31,7 +31,7 @@ use tower::ServiceExt;
 
 const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
 
-const CONNECTOR_ID: &str = "mcp-wisburg";
+const CONNECTOR_ID: &str = "wisburg";
 const SECRET_NAME: &str = "WISBURG_API_KEY";
 const SECRET_VALUE: &str = "sk-super-secret-do-not-leak-8213";
 /// Underscores on purpose: the id↔tool boundary is `_`.
@@ -1254,7 +1254,7 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
 
 // `cli-query` execution: the connector under test is a script the test writes and pins by absolute path.
 
-const CLI_ID: &str = "cli-longbridge";
+const CLI_ID: &str = "longbridge";
 const CLI_TOOL: &str = "quote";
 
 /// Write an executable script and return its absolute path.
@@ -3203,7 +3203,7 @@ async fn seed_row(b: &Boot, id: &str) {
 // Configuration reaching a `cli-query` connector: the script echoes its argv and environment,
 // so what is asserted is what the CHILD received.
 
-const CLI_CONFIG_ID: &str = "cli-configured";
+const CLI_CONFIG_ID: &str = "cliconfigured";
 
 /// Install a `cli-query` connector that consumes configuration two ways: an argv slot
 /// (`{{config.endpoint}}`) and an env key (`config_env`). `required` decides the manifest
@@ -3480,7 +3480,7 @@ async fn a_cli_connector_whose_config_store_is_unreadable_lands_unavailable() {
 // Configuration reaching an `mcp-http` connector's url, and the origin lock keyed connectors
 // get for it. What is asserted is the request the STUB received.
 
-const HTTP_CONFIG_ID: &str = "mcp-configured";
+const HTTP_CONFIG_ID: &str = "mcpconfigured";
 
 /// Write an `mcp-http` connector whose url carries `{{config.*}}` slots; `keyed` is the ONLY
 /// difference between the two halves of the tiering pair.
@@ -3818,7 +3818,7 @@ async fn every_connector_kind_spawns_through_the_shared_config_gate() {
             "app" => APP_ID,
             "mcp-http" => CONNECTOR_ID,
             "cli-query" => CLI_CONFIG_ID,
-            "builtin" => "dev.neige.git-forge",
+            "builtin" => "gitforge",
             other => panic!(
                 "#1284 §4.7: no spawn fixture for `kind: {other}`. Every kind's spawn \
                  path must go through `config_for_spawn_or_unavailable`; add a fixture \
@@ -3927,7 +3927,7 @@ async fn compiled_dev_starts_after_remote_boot_budget_is_exhausted() {
     ));
     host.reconcile_builtins().await.unwrap();
     b.repo
-        .plugin_update_enabled("dev.neige.git-forge", true)
+        .plugin_update_enabled("gitforge", true)
         .await
         .unwrap();
 
@@ -3969,12 +3969,12 @@ async fn compiled_dev_starts_after_remote_boot_budget_is_exhausted() {
         "with a {budget:?} budget and {N} hung connectors at least one must be \
          refused BY the budget — otherwise this test never exercised it"
     );
-    let dev = host.status("dev.neige.git-forge").await.unwrap();
+    let dev = host.status("gitforge").await.unwrap();
     assert_eq!(dev.status, PluginRuntimeStatus::Running, "{dev:?}");
     assert_eq!(dev.pid, None);
     assert!(
         b.repo
-            .plugin_get_by_id("dev.neige.git-forge")
+            .plugin_get_by_id("gitforge")
             .await
             .unwrap()
             .unwrap()

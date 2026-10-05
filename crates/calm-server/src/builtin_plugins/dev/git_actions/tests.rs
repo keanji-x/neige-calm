@@ -13,17 +13,17 @@ fn rejects_removed_gh_pr_create() {
         card_id: "card-1".into(),
     };
     for result in [
-        lower("gh.pr.create", &args),
-        lower_for_caller("gh.pr.create", &args, &caller),
+        lower("gh_pr_create", &args),
+        lower_for_caller("gh_pr_create", &args, &caller),
     ] {
-        assert_eq!(result.unwrap_err(), "unknown git-forge tool `gh.pr.create`");
+        assert_eq!(result.unwrap_err(), "unknown git-forge tool `gh_pr_create`");
     }
 }
 
 #[test]
 fn lowers_git_worktree_add() {
     let payload = lower(
-        "git.worktree.add",
+        "git_worktree_add",
         &json!({ "target": "/tmp/wt", "branch": "wt-x" }),
     )
     .expect("lower worktree add");
@@ -59,7 +59,7 @@ fn lowers_git_commit() {
     let expected_commit_script = format!("{FORGE_SHELL_PRELUDE}\n{GIT_COMMIT_SCRIPT}");
     let expected_output_probe_script = git_commit_output_probe_script();
     let payload = lower(
-        "git.commit",
+        "git_commit",
         &json!({
             "message": "neige: worker card-1 @ track track-1",
             "idem": "step-1",
@@ -115,7 +115,7 @@ fn lowers_git_commit() {
     for needle in ["worktree.committed", "neige: worker "] {
         assert!(
             rendered.contains(needle),
-            "git.commit lowering missing needle {needle:?}: {rendered}"
+            "git_commit lowering missing needle {needle:?}: {rendered}"
         );
     }
 }
@@ -123,7 +123,7 @@ fn lowers_git_commit() {
 #[test]
 fn lowers_git_commit_with_runtime_branch_default() {
     let payload = lower(
-        "git.commit",
+        "git_commit",
         &json!({
             "message": "neige: worker card-1 @ track track-1",
             "idem": "step-1"
@@ -150,7 +150,7 @@ fn lowers_git_commit_with_runtime_branch_default() {
 #[test]
 fn git_commit_lowering_uses_shared_scripts_as_drift_lock() {
     let payload = lower(
-        "git.commit",
+        "git_commit",
         &json!({
             "message": "neige: worker card-1 @ track track-1",
             "idem": "step-1",
@@ -206,7 +206,7 @@ fn git_commit_output_probe_json_escapes_branch_argument() {
 #[test]
 fn lowers_gh_pr_list() {
     let payload = lower(
-        "gh.pr.list",
+        "gh_pr_list",
         &json!({
             "repo": "owner/repo",
             "base": "main",
@@ -281,7 +281,7 @@ fn lowers_gh_pr_list() {
 #[test]
 fn lowers_gh_pr_diff() {
     let payload = lower(
-        "gh.pr.diff",
+        "gh_pr_diff",
         &json!({
             "repo": "owner/repo",
             "pr": "42",
@@ -324,7 +324,7 @@ fn lowers_gh_pr_diff() {
 #[test]
 fn lowers_gh_pr_checks() {
     let payload = lower(
-        "gh.pr.checks",
+        "gh_pr_checks",
         &json!({
             "repo": "owner/repo",
             "pr": 42
@@ -332,7 +332,7 @@ fn lowers_gh_pr_checks() {
     )
     .expect("lower gh pr checks");
     let attempt_payload = lower(
-        "gh.pr.checks",
+        "gh_pr_checks",
         &json!({
             "repo": "owner/repo",
             "pr": 42,
@@ -431,7 +431,7 @@ fn lowers_gh_pr_checks() {
 #[test]
 fn lowers_gh_pr_merge() {
     let payload = lower(
-        "gh.pr.merge",
+        "gh_pr_merge",
         &json!({
             "repo": "owner/repo",
             "pr": 42
@@ -490,7 +490,7 @@ fn lowers_gh_pr_merge() {
     assert_supported_event_kind(&payload);
 
     let payload = lower(
-        "gh.pr.merge",
+        "gh_pr_merge",
         &json!({
             "repo": "owner/repo",
             "pr": 42,
@@ -613,7 +613,7 @@ fn pr_merge_head_match_probe_checks_state_and_head() {
 #[test]
 fn lowers_gh_issue_view() {
     let payload = lower(
-        "gh.issue.view",
+        "gh_issue_view",
         &json!({
             "repo": "owner/repo",
             "issue": "808"
@@ -656,7 +656,7 @@ fn lowers_gh_issue_view() {
 fn lowers_gh_issue_close() {
     let expected_probe_script = "out=$(gh issue view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
     let payload = lower(
-        "gh.issue.close",
+        "gh_issue_close",
         &json!({
             "repo": "owner/repo",
             "issue": 808

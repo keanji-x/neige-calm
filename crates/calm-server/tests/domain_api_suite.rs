@@ -49,6 +49,8 @@ mod neige_tool_name_migration;
 mod openapi;
 #[path = "cases/payload_validation.rs"]
 mod payload_validation;
+#[path = "cases/plugin_names_migration.rs"]
+mod plugin_names_migration;
 #[path = "cases/preview_gateway.rs"]
 mod preview_gateway;
 #[path = "cases/repo.rs"]

@@ -1,6 +1,6 @@
-//! Which plugin tools a Track can see, in any spelling the model may send.
+//! Which plugin tools a Track can see, by minted name, bare or `mcp__<server>__`-qualified.
 use super::*;
-use crate::codex_appserver::tool_names::model_tool_key;
+use crate::codex_appserver::tool_names::strip_codex_qualifier;
 
 /// The plugin ids `scope` allows, whatever their running state.
 fn in_scope_plugin_ids(
@@ -44,6 +44,5 @@ pub(crate) async fn names_track_visible_plugin_tool(
     let registry = host.registry();
     let visible =
         visible_plugin_tools_from(registry, &in_scope_plugin_ids(registry, &scope), &scope);
-    let key = model_tool_key(requested);
-    visible.iter().any(|name| model_tool_key(name) == key)
+    visible.contains(strip_codex_qualifier(requested))
 }

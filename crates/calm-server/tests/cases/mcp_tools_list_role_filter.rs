@@ -106,18 +106,18 @@ fn removed_aliases_and_retired_shims_are_not_registered() {
         "neige.task.report_failure", // retired-name: rejection input
         "neige_task_complete",
         "neige_task_report_success",
-        "neige_plan_list",         // retired-name: rejection input
-        "neige_plan_cancel",       // retired-name: rejection input
-        "neige_source_list",       // retired-name: rejection input
-        "neige_area_outline",      // retired-name: rejection input
-        "neige_report_backlinks",  // retired-name: rejection input
-        "neige_report_kinds",      // retired-name: rejection input
-        "neige_track_state",       // retired-name: rejection input
-        "neige_workspace_reports", // retired-name: rejection input
-        "neige_workspace_report",  // retired-name: rejection input
-        "neige_workspace_changes", // retired-name: rejection input
-        "neige_workspace_edits",   // retired-name: rejection input
-        "plugin.dev.neige.git-forge_gh.pr.checks",
+        "neige_plan_list",                         // retired-name: rejection input
+        "neige_plan_cancel",                       // retired-name: rejection input
+        "neige_source_list",                       // retired-name: rejection input
+        "neige_area_outline",                      // retired-name: rejection input
+        "neige_report_backlinks",                  // retired-name: rejection input
+        "neige_report_kinds",                      // retired-name: rejection input
+        "neige_track_state",                       // retired-name: rejection input
+        "neige_workspace_reports",                 // retired-name: rejection input
+        "neige_workspace_report",                  // retired-name: rejection input
+        "neige_workspace_changes",                 // retired-name: rejection input
+        "neige_workspace_edits",                   // retired-name: rejection input
+        "plugin.dev.neige.git-forge_gh.pr.checks", // retired-name: rejection input
     ] {
         assert!(
             registry.lookup(removed).is_none(),

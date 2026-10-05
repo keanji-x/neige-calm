@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
-use crate::codex_appserver::tool_names::model_tool_key;
+use crate::codex_appserver::tool_names::strip_codex_qualifier;
 use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -31,10 +31,8 @@ const NO_RECORD: &str = "no recorded result for this call in this track \
 
 /// A `call.tool` no visible plugin exposes is a different fact from a known tool with no entry.
 const UNKNOWN_TOOL_NAME: &str = concat!(
-    "unknown tool name: accepted spellings are the registry name (plugin_<id>_<tool>), ",
-    "its Codex-sanitized form (each character of <id> or <tool> outside [A-Za-z0-9_], ",
-    "such as . or -, becomes _) or the Codex-qualified form ",
-    "(mcp__<server>__plugin_<id>_<tool>)"
+    "unknown tool name: accepted spellings are the registry name (plugin_<id>_<tool>) ",
+    "and its qualified form (mcp__<server>__plugin_<id>_<tool>)"
 );
 
 /// Appended to both refusals above; bounded by the ring (≤ 64 per track).
@@ -268,8 +266,9 @@ async fn capture_call(
     Ok(receipt)
 }
 
-/// Candidates are only tools with a live entry in this track: an exact registry name wins; otherwise the
-/// [`model_tool_key`] must match exactly one of them.
+/// Candidates are only tools with a live entry in this track. Every served name is minted in
+/// `[A-Za-z0-9_]`, so no client respells it: the request, without an `mcp__<server>__` qualifier,
+/// must equal one recorded tool's minted name.
 async fn resolve_recorded_tool(
     ctx: &Arc<AppContext>,
     track_id: &str,
@@ -277,16 +276,11 @@ async fn resolve_recorded_tool(
     tool: &str,
 ) -> Result<(String, String), RpcError> {
     let recorded = ctx.plugin_results.recorded_tools(track_id);
-    if let Some(exact) = recorded.iter().find(|(plugin_id, tool_name)| {
-        crate::plugin_results::registry_name(plugin_id, tool_name) == requested
-    }) {
-        return Ok(exact.clone());
-    }
-    let key = model_tool_key(requested);
+    let name = strip_codex_qualifier(requested);
     let hits: Vec<&(String, String)> = recorded
         .iter()
         .filter(|(plugin_id, tool_name)| {
-            model_tool_key(&crate::plugin_results::registry_name(plugin_id, tool_name)) == key
+            crate::plugin_results::registry_name(plugin_id, tool_name) == name
         })
         .collect();
     match hits.as_slice() {
@@ -310,14 +304,13 @@ async fn resolve_recorded_tool(
             )))
         }
         several => {
+            // Two recorded `(id, tool)` pairs that mint one name; named by their raw pairs.
             let names: Vec<String> = several
                 .iter()
-                .map(|(plugin_id, tool_name)| {
-                    crate::plugin_results::registry_name(plugin_id, tool_name)
-                })
+                .map(|(plugin_id, tool_name)| format!("{plugin_id}/{tool_name}"))
                 .collect();
             Err(RpcError::invalid_params(format!(
-                "{tool}: `call.tool` {requested:?} is ambiguous; use one exact registry name: {}",
+                "{tool}: `call.tool` {requested:?} is ambiguous; it names {}",
                 names.join(", ")
             )))
         }

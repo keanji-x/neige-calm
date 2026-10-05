@@ -30,11 +30,13 @@ use tokio::time::{Instant, sleep};
 const TOOLCALL_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-toolcall");
 const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
-const EXPOSED_NAME: &str = "plugin_dev.echo_do.thing";
-const SECRET_NAME: &str = "plugin_dev.echo_secret";
+const EXPOSED_NAME: &str = "plugin_dev_echo_do_thing";
+const SECRET_NAME: &str = "plugin_dev_echo_secret";
+/// An id that is a prefix of [`PLUGIN_ID`]'s minted segment, with a tool that mints a near miss
+/// (two plugins minting one name are refused at spawn, #2087 §6).
 const COLLIDING_PLUGIN_ID: &str = "dev";
-const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
-const COLLIDING_EXPOSED_NAME: &str = "plugin_dev_echo.do.thing";
+const COLLIDING_TOOL_NAME: &str = "echo.do.thing.v2";
+const COLLIDING_EXPOSED_NAME: &str = "plugin_dev_echo_do_thing_v2";
 // A trusted plugin owning a template, plus a track bound to that template. NOT the shipped
 // git-forge manifest: the id merely reuses the default trusted id so no env mutation is needed.
 const TEMPLATE_ID: &str = "tool-visibility-flow";
@@ -57,7 +59,7 @@ struct Fixture {
     bound_track_id: String,
     /// Plugin id from `NEIGE_TRUSTED_FORGE_PLUGINS` — the running trusted stub that owns [`TEMPLATE_ID`].
     trusted_plugin_id: String,
-    /// `plugin_<trusted_plugin_id>_wf.tool`.
+    /// `plugin_<trusted_plugin_id>_wf_tool`.
     trusted_exposed_name: String,
     /// Worker card token/thread minted in the template-bound track.
     bound_raw_token: String,
@@ -477,7 +479,7 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, DAEMON_TOKEN).await;
 
-    let unknown_plugin_tool = "plugin_dev.echo_no.such.tool";
+    let unknown_plugin_tool = "plugin_dev_echo_no_such_tool";
     let unknown_bare_tool = "no.such.tool";
     // EXPOSED_NAME exists but is out of the bound track's scope.
     let names = [EXPOSED_NAME, unknown_plugin_tool, unknown_bare_tool];
@@ -811,7 +813,8 @@ async fn boot_fixture() -> Fixture {
     )
     .await;
 
-    let trusted_exposed_name = format!("plugin_{trusted_plugin_id}_{TRUSTED_TOOL_NAME}");
+    let trusted_exposed_name =
+        calm_server::plugin_results::registry_name(&trusted_plugin_id, TRUSTED_TOOL_NAME);
     let plugin_host = boot_plugin_host(
         repo.clone(),
         plugins_dir.clone(),
@@ -874,7 +877,7 @@ async fn boot_fixture() -> Fixture {
     }
 }
 
-/// First id from `NEIGE_TRUSTED_FORGE_PLUGINS`, defaulting to `dev.neige.git-forge`, so the
+/// First id from `NEIGE_TRUSTED_FORGE_PLUGINS`, defaulting to `gitforge`, so the
 /// fixture's trusted stub is trusted without mutating process env.
 fn configured_trusted_plugin_id() -> String {
     std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS")
@@ -886,7 +889,7 @@ fn configured_trusted_plugin_id() -> String {
                 .find(|id| !id.is_empty())
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| "dev.neige.git-forge".to_string())
+        .unwrap_or_else(|| "gitforge".to_string())
 }
 
 /// Mint a card in `role` (+ MCP token + attributed codex thread) in `track_id`.
@@ -991,7 +994,7 @@ async fn boot_plugin_host(
             "command": "bin/stub",
             "env": {
                 "STUB_TOOLCALL_MODE": "card",
-                "STUB_TOOLCALL_STRUCTURED_JSON": r#"{"echo":"through-kernel-colliding","tool":"echo.do.thing"}"#
+                "STUB_TOOLCALL_STRUCTURED_JSON": r#"{"echo":"through-kernel-colliding","tool":"echo.do.thing.v2"}"#
             }
         },
         "exposes_tools": [

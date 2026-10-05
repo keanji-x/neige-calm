@@ -25,7 +25,7 @@ use tokio::time::{Instant, sleep};
 const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
 const CRASH_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-crash");
 
-const ID: &str = "test.lock";
+const ID: &str = "testlock";
 
 struct Fx {
     host: Arc<PluginHost>,
@@ -1728,7 +1728,7 @@ async fn a1_unknown_id_is_still_404_when_that_id_is_busy() {
         ..Default::default()
     })
     .await;
-    const GHOST: &str = "test.never.installed";
+    const GHOST: &str = "testneverinstalled";
     let _held = fx
         .host
         .try_lock_lifecycle(GHOST)
@@ -1753,9 +1753,9 @@ async fn a1_unknown_id_is_still_404_when_that_id_is_busy() {
 
 #[tokio::test]
 async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
-    const APP: &str = "test.disabled.app";
-    const CONNECTOR: &str = "test.disabled.connector";
-    const GHOST: &str = "test.disabled.ghost";
+    const APP: &str = "testdisabledapp";
+    const CONNECTOR: &str = "testdisabledconnector";
+    const GHOST: &str = "testdisabledghost";
 
     let tmp = tempfile::tempdir().unwrap();
     let plugins_dir = tmp.path().join("plugins");
@@ -1958,8 +1958,8 @@ fn the_app_autospawn_wall_is_the_documented_one() {
 
 #[tokio::test]
 async fn two_wedged_app_plugins_cost_two_walls_not_one() {
-    const A: &str = "test.lock.two.a";
-    const B: &str = "test.lock.two.b";
+    const A: &str = "testlocktwoa";
+    const B: &str = "testlocktwob";
     /// Small enough for a fast test, large enough that 1 × and 2 × cannot be told apart by scheduling noise.
     const WALL: Duration = Duration::from_millis(500);
 

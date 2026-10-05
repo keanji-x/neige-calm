@@ -3,7 +3,7 @@ pub mod git_actions;
 pub mod publish;
 mod publish_scripts;
 
-pub(crate) const PLUGIN_ID: &str = "dev.neige.git-forge";
+pub(crate) const PLUGIN_ID: &str = "gitforge";
 
 pub(super) fn component() -> super::BuiltinPlugin {
     let mut native = crate::mcp_server::registry::ToolRegistry::new();

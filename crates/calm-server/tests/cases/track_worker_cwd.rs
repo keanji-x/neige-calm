@@ -308,7 +308,7 @@ async fn a_dirty_worktree_refuses_the_worker_and_lists_the_files() {
         "no worker card"
     );
 
-    // The Planner's `git.commit` (`git add -A` + commit in its cwd, the track worktree).
+    // The Planner's `git_commit` (`git add -A` + commit in its cwd, the track worktree).
     git(&fx.worktree, &["add", "-A"]);
     git(&fx.worktree, &["commit", "-q", "-m", "planner edits"]);
     let committed = git(&fx.worktree, &["rev-parse", "HEAD"]);

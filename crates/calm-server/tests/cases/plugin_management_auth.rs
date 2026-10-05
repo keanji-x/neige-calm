@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-const ID: &str = "test.management-auth";
+const ID: &str = "testmanagementauth";
 
 struct Fixture {
     app: Router,
@@ -301,7 +301,7 @@ async fn connector_install_requires_owner_and_writes_no_credential() {
     let fx = Fixture::new().await;
     let body = json!({"source": {
         "kind": "mcp_http",
-        "id": "test.connector-auth",
+        "id": "testconnectorauth",
         "display_name": "Connector fixture",
         "url": "https://mcp.example.test/mcp",
         "api_key": "sk-must-never-reach-disk",
@@ -311,7 +311,7 @@ async fn connector_install_requires_owner_and_writes_no_credential() {
         .await;
     assert!(
         fx.repo
-            .plugin_get_by_id("test.connector-auth")
+            .plugin_get_by_id("testconnectorauth")
             .await
             .unwrap()
             .is_none()
@@ -329,7 +329,7 @@ async fn connector_install_requires_owner_and_writes_no_credential() {
     assert!(
         fx.root
             .path()
-            .join("plugins/test.connector-auth/secrets.json")
+            .join("plugins/testconnectorauth/secrets.json")
             .is_file()
     );
 }
@@ -340,7 +340,7 @@ async fn mcp_setup_check_requires_owner_without_side_effects() {
     fx.assert_rejected(
         "/api/plugins/mcp/check",
         json!({
-            "id": "test.check-auth", "display_name": "Check", "url": "http://127.0.0.1:1/mcp",
+            "id": "testcheckauth", "display_name": "Check", "url": "http://127.0.0.1:1/mcp",
             "headers": {"Authorization": "Bearer sk-private-header"}, "tools_all": true
         }),
     )

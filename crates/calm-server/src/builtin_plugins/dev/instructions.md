@@ -2,7 +2,7 @@
 
 The development plugin supports Git worktrees, validation and pull requests through the kernel's recorded operations. This guide does not enable the plugin or grant tool permissions. The kernel checks enablement, Track scope and role for every call.
 
-Its tools are named `plugin_dev.neige.git-forge_<name>` (e.g. `plugin_dev.neige.git-forge_gh.pr.checks`); list them with `neige tool ls --prefix plugin_dev.neige.git-forge_`.
+Its tools are named `plugin_gitforge_<name>` (e.g. `plugin_gitforge_gh_pr_checks`); list them with `neige tool ls --prefix plugin_gitforge_`.
 
 To deliver an attached Git Track, use `neige_dev_publish`. It pushes a completed task's candidate and opens the PR, or gives the open PR the new title and body. Report-only work does not need a PR.
 
@@ -10,11 +10,11 @@ When the PR conflicts or the upstream moved on, catch the Track up with a codex 
 
 The selected template determines when review and user ratification are required; read its working method and acceptance conditions.
 
-Read issue requirements with `gh.issue.view`, and read the discussion with
-`gh.issue.comments`. Pass a new `attempt` to either tool when refreshing; reuse
+Read issue requirements with `gh_issue_view`, and read the discussion with
+`gh_issue_comments`. Pass a new `attempt` to either tool when refreshing; reuse
 the attempt on retries.
 
-Use `gh.issue.comment` to post a progress update, question, or result. Pass `repo`,
+Use `gh_issue_comment` to post a progress update, question, or result. Pass `repo`,
 `issue`, Markdown `body`, and a stable `idem` for that logical comment. Reuse
 the same idem and body on retries; use a new idem for another comment. The kernel
 records and parks the write before running gh. A pending receipt is not proof

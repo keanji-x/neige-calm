@@ -1567,7 +1567,7 @@ mod tests {
         let wcc = seeded_wcc();
         let event = Event::TrackWakeRequested {
             track_id: TrackId::from("w"),
-            source: "dev.neige.calendar".into(),
+            source: "calendar".into(),
             key: "entry".into(),
             text: "due".into(),
         };

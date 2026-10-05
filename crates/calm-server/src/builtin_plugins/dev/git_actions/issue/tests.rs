@@ -3,7 +3,7 @@ use crate::builtin_plugins::dev::git_actions::lower_for_caller;
 
 fn caller() -> ForgeCallerScope {
     ForgeCallerScope {
-        plugin_id: "dev.neige.git-forge".into(),
+        plugin_id: "gitforge".into(),
         track_id: "track-a".into(),
         card_id: "card-a".into(),
     }
@@ -19,7 +19,7 @@ fn args() -> Value {
 
 #[test]
 fn issue_comment_is_parked_and_body_sensitive() {
-    let original = lower("gh.issue.comment", &args()).unwrap();
+    let original = lower("gh_issue_comment", &args()).unwrap();
     assert_eq!(original["parked"], true);
     assert_eq!(
         &original["argv"].as_array().unwrap()[..7],
@@ -37,17 +37,17 @@ fn issue_comment_is_parked_and_body_sensitive() {
     );
     let posted = original["argv"][7].as_str().unwrap();
     assert!(posted.starts_with("A progress update\n\n<!-- neige:issue-comment:"));
-    assert_eq!(original, lower("gh.issue.comment", &args()).unwrap());
+    assert_eq!(original, lower("gh_issue_comment", &args()).unwrap());
     let mut changed = args();
     changed["body"] = json!("Different update");
-    let other = lower("gh.issue.comment", &changed).unwrap();
+    let other = lower("gh_issue_comment", &changed).unwrap();
     assert_eq!(original["idem_key"], other["idem_key"]);
     assert_ne!(original["context"], other["context"]);
     assert_ne!(original["probe"], other["probe"]);
     changed["idem"] = json!("update-2");
     assert_ne!(
         original["idem_key"],
-        lower("gh.issue.comment", &changed).unwrap()["idem_key"]
+        lower("gh_issue_comment", &changed).unwrap()["idem_key"]
     );
 }
 
@@ -56,26 +56,26 @@ fn issue_comment_rejects_invalid_arguments() {
     for field in ["repo", "issue", "body", "idem"] {
         let mut input = args();
         input.as_object_mut().unwrap().remove(field);
-        assert!(lower("gh.issue.comment", &input).is_err(), "{field}");
+        assert!(lower("gh_issue_comment", &input).is_err(), "{field}");
     }
     for field in ["repo", "body", "idem"] {
         for bad in [json!(" \n\t"), Value::Null, json!(42)] {
             let mut input = args();
             input[field] = bad;
-            assert!(lower("gh.issue.comment", &input).is_err(), "{field}");
+            assert!(lower("gh_issue_comment", &input).is_err(), "{field}");
         }
     }
     for issue in [json!(0), json!(-1), json!(1.5), Value::Null] {
         let mut input = args();
         input["issue"] = issue;
-        assert!(lower("gh.issue.comment", &input).is_err());
-        assert!(lower("gh.issue.comments", &input).is_err());
+        assert!(lower("gh_issue_comment", &input).is_err());
+        assert!(lower("gh_issue_comments", &input).is_err());
     }
 }
 
 #[test]
 fn issue_discussion_and_body_reads_can_refresh() {
-    for tool in ["gh.issue.comments", "gh.issue.view"] {
+    for tool in ["gh_issue_comments", "gh_issue_view"] {
         let original = lower(tool, &args()).unwrap();
         assert_eq!(original["parked"], false);
         assert_eq!(original["probe"], Value::Null);
@@ -102,7 +102,7 @@ fn issue_comment_probe_matches_exact_body_and_preserves_unknown() {
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut input = args();
     input["body"] = json!("Quotes \" \\ newline\n$(touch forbidden) `touch forbidden` 你好");
-    let payload = lower("gh.issue.comment", &input).unwrap();
+    let payload = lower("gh_issue_comment", &input).unwrap();
     let posted = payload["argv"][7].as_str().unwrap();
     let probe = payload["probe"]["probe_argv"].as_array().unwrap();
     let run = |data: Value| {
@@ -137,23 +137,23 @@ fn issue_comment_probe_matches_exact_body_and_preserves_unknown() {
 
 #[test]
 fn issue_comment_recovery_identity_binds_each_caller() {
-    let original = lower_for_caller("gh.issue.comment", &args(), &caller()).unwrap();
+    let original = lower_for_caller("gh_issue_comment", &args(), &caller()).unwrap();
     for field in ["track", "card"] {
         let mut other = caller();
         match field {
             "track" => other.track_id = "track-b".into(),
             _ => other.card_id = "card-b".into(),
         }
-        let changed = lower_for_caller("gh.issue.comment", &args(), &other).unwrap();
+        let changed = lower_for_caller("gh_issue_comment", &args(), &other).unwrap();
         assert_eq!(original["idem_key"], changed["idem_key"]);
         assert_ne!(original["argv"][7], changed["argv"][7]);
         assert_ne!(original["probe"], changed["probe"]);
     }
-    assert!(crate::builtin_plugins::dev::git_actions::lower("gh.issue.comment", &args()).is_err());
+    assert!(crate::builtin_plugins::dev::git_actions::lower("gh_issue_comment", &args()).is_err());
     let mut invalid = caller();
     invalid.card_id.clear();
-    assert!(lower_for_caller("gh.issue.comment", &args(), &invalid).is_err());
+    assert!(lower_for_caller("gh_issue_comment", &args(), &invalid).is_err());
     invalid = caller();
     invalid.plugin_id = "another.plugin".into();
-    assert!(lower_for_caller("gh.issue.comment", &args(), &invalid).is_err());
+    assert!(lower_for_caller("gh_issue_comment", &args(), &invalid).is_err());
 }

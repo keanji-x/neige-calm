@@ -42,9 +42,10 @@ use crate::support::mcp::call_tool_via_socket;
 const SERIES_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-series");
 const PLUGIN_ID: &str = "dev.wisburg";
 const TOOL_NAME: &str = "get-article-detail";
-const EXPOSED_NAME: &str = "plugin_dev.wisburg_get-article-detail";
-/// The spelling Codex shows the model for [`EXPOSED_NAME`].
-const SANITIZED_NAME: &str = "plugin_dev_wisburg_get_article_detail";
+/// The minted name of `dev.wisburg` / `get-article-detail` (#2087 §6): already Codex's spelling.
+const EXPOSED_NAME: &str = "plugin_dev_wisburg_get_article_detail";
+/// A tool whose raw name carries `.`; it is served as `plugin_dev_wisburg_foo_bar`.
+const DOTTED_TOOL: &str = "foo.bar";
 const KNOWN_REPLY: &str = include_str!("../fixtures/source_capture/reply.json");
 
 struct Fixture {
@@ -262,7 +263,10 @@ async fn boot() -> Fixture {
                 "command": "bin/stub",
                 "env": { "STUB_SERIES_DIR": control_dir.display().to_string() }
             },
-            "exposes_tools": [ { "name": TOOL_NAME, "description": "article detail" } ],
+            "exposes_tools": [
+                { "name": TOOL_NAME, "description": "article detail" },
+                { "name": DOTTED_TOOL, "description": "a dotted upstream name" }
+            ],
             "permissions": {}
         })
         .to_string(),
@@ -463,6 +467,38 @@ fn plugin_result(frame: &Value) -> &Value {
     &frame["result"]
 }
 
+/// #2087 §6: the kernel serves `foo.bar` as `plugin_dev_wisburg_foo_bar`, routes the minted name
+/// by exact lookup and sends the plugin its raw upstream name.
+#[tokio::test]
+async fn a_plugin_tool_with_a_dot_is_called_upstream_by_its_raw_name() {
+    let fx = boot().await;
+    let host = fx.ctx.plugin_host.get().expect("plugin host").clone();
+    let manifest = host.registry().get(PLUGIN_ID).expect("manifest");
+    let minted: Vec<String> = manifest
+        .exposes_tools
+        .iter()
+        .map(|tool| calm_server::plugin_results::registry_name(PLUGIN_ID, &tool.name))
+        .collect();
+    assert_eq!(minted, [EXPOSED_NAME, "plugin_dev_wisburg_foo_bar"]);
+
+    let frame = fx
+        .planner_call(50, "plugin_dev_wisburg_foo_bar", json!({ "id": 7 }))
+        .await;
+    plugin_result(&frame);
+    let calls = std::fs::read_to_string(fx.control_dir.join("calls.jsonl")).expect("calls log");
+    let last: Value = serde_json::from_str(calls.lines().last().expect("one call")).unwrap();
+    assert_eq!(last["name"], DOTTED_TOOL, "{last}");
+    assert_eq!(last["arguments"], json!({ "id": 7 }));
+
+    // The raw spelling is not a served name and routes nowhere.
+    let raw = fx
+        .planner_call(51, "plugin_dev.wisburg_foo.bar", json!({ "id": 7 }))
+        .await;
+    assert!(raw.get("error").is_some(), "{raw}");
+    let calls_after = std::fs::read_to_string(fx.control_dir.join("calls.jsonl")).unwrap();
+    assert_eq!(calls_after.lines().count(), calls.lines().count());
+}
+
 #[tokio::test]
 async fn i1_captured_body_sha256_equals_the_proxied_text_blocks() {
     let fx = boot().await;
@@ -477,7 +513,7 @@ async fn i1_captured_body_sha256_equals_the_proxied_text_blocks() {
         .capture(
             11,
             json!({
-                "call": { "tool": SANITIZED_NAME, "args": args },
+                "call": { "tool": EXPOSED_NAME, "args": args },
                 "provenance": "full_text",
                 "title": "ECB September path",
                 "published_at": "2026-09-14",

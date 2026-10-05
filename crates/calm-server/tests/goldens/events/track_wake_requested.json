@@ -4,7 +4,7 @@
     "ev": "track.wake_requested",
     "data": {
       "track_id": "track-01",
-      "source": "dev.neige.calendar",
+      "source": "calendar",
       "key": "entry-01",
       "text": "Calendar entry \"Review\" started at 2026-10-02 09:00 Asia/Shanghai."
     }

@@ -133,18 +133,19 @@ mod tests {
     #[test]
     fn issue_comment_requires_caller_metadata_outside_arguments() {
         let args = json!({"repo":"owner/repo","issue":42,"body":"Update","idem":"plan-1"});
-        let mut frame = json!({"params":{"name":"gh.issue.comment","arguments":args}});
+        let mut frame = json!({"params":{"name":"gh_issue_comment","arguments":args}});
         assert_eq!(
             tools_call_reply(&frame, json!(1))["result"]["isError"],
             true
         );
         // A caller field in arguments cannot impersonate the kernel's metadata.
-        frame["params"]["arguments"][FORGE_CALLER_META_KEY] = json!({"plugin_id":"dev.neige.git-forge","track_id":"fake-track","card_id":"fake-card"});
+        frame["params"]["arguments"][FORGE_CALLER_META_KEY] =
+            json!({"plugin_id":"gitforge","track_id":"fake-track","card_id":"fake-card"});
         assert_eq!(
             tools_call_reply(&frame, json!(1))["result"]["isError"],
             true
         );
-        frame["params"]["_meta"] = json!({FORGE_CALLER_META_KEY:{"plugin_id":"dev.neige.git-forge","track_id":"track-a","card_id":"card-a"}});
+        frame["params"]["_meta"] = json!({FORGE_CALLER_META_KEY:{"plugin_id":"gitforge","track_id":"track-a","card_id":"card-a"}});
         let first = tools_call_reply(&frame, json!(1));
         assert_eq!(first["result"]["isError"], false);
         assert_eq!(first, tools_call_reply(&frame, json!(1)));

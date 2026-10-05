@@ -1,13 +1,13 @@
 {
   "manifest_version": 4,
-  "id": "dev.neige.git-forge",
+  "id": "gitforge",
   "version": "0.1.0",
   "min_kernel_version": "0.0.1",
   "display_name": "development",
   "description": "Develop GitHub issues using Git worktrees, validation and pull requests. Use neige_dev_publish to publish; kernel permissions and plugin enablement still apply.",
   "exposes_tools": [
     {
-      "name": "git.worktree.add",
+      "name": "git_worktree_add",
       "description": "Lower git worktree add into a forge action",
       "kind": "forge-action",
       "input_schema": {
@@ -34,7 +34,7 @@
       }
     },
     {
-      "name": "git.commit",
+      "name": "git_commit",
       "description": "Lower git commit into a forge action",
       "kind": "forge-action",
       "input_schema": {
@@ -66,7 +66,7 @@
       }
     },
     {
-      "name": "gh.pr.list",
+      "name": "gh_pr_list",
       "description": "Lower GitHub pull request overlap scans into a forge action",
       "kind": "forge-action",
       "input_schema": {
@@ -97,7 +97,7 @@
       }
     },
     {
-      "name": "gh.pr.diff",
+      "name": "gh_pr_diff",
       "description": "Read a GitHub pull request diff. The call waits and returns result.event.artifact_path, the file holding the full patch",
       "kind": "forge-action",
       "input_schema": {
@@ -133,7 +133,7 @@
       }
     },
     {
-      "name": "gh.pr.checks",
+      "name": "gh_pr_checks",
       "description": "Park this call to wait for a pull request's checks on its current head. Returns a pending receipt; the kernel wakes you with forge.pr.checks naming the exact head_sha, CI conclusion and mergeable when every check has finished or as soon as any check fails, when the PR is conflicting, when the head moves, or after about 15-20 minutes. While pending, repeating the same call returns the same receipt and adds no information. After the wake, repeat the same call to read the recorded result, including all failed check names and job URLs or IDs. Use a new attempt for each new wait.",
       "kind": "forge-action",
       "input_schema": {
@@ -166,7 +166,7 @@
       }
     },
     {
-      "name": "gh.pr.merge",
+      "name": "gh_pr_merge",
       "description": "Lower GitHub pull request merges into a forge action",
       "kind": "forge-action",
       "input_schema": {
@@ -198,7 +198,7 @@
       }
     },
     {
-      "name": "gh.issue.view",
+      "name": "gh_issue_view",
       "description": "Lower GitHub issue views into a forge action",
       "kind": "forge-action",
       "input_schema": {
@@ -231,7 +231,7 @@
       }
     },
     {
-      "name": "gh.issue.close",
+      "name": "gh_issue_close",
       "description": "Lower GitHub issue closes into a forge action",
       "kind": "forge-action",
       "input_schema": {
@@ -259,7 +259,7 @@
       }
     },
     {
-      "name": "gh.issue.comment",
+      "name": "gh_issue_comment",
       "description": "Post an issue comment through the kernel. Reuse idem and body on retries; use a new idem for another comment.",
       "kind": "forge-action",
       "input_schema": {
@@ -301,7 +301,7 @@
       }
     },
     {
-      "name": "gh.issue.comments",
+      "name": "gh_issue_comments",
       "description": "Read issue discussion as JSON; use a new attempt to refresh.",
       "kind": "forge-action",
       "input_schema": {
@@ -360,7 +360,7 @@
           "auto-merge"
         ],
         "default": "hold-for-ratify",
-        "description": "hold-for-ratify (default when absent): ratify.request before gh.pr.merge; auto-merge: merge after review and green checks without asking again"
+        "description": "hold-for-ratify (default when absent): ratify.request before gh_pr_merge; auto-merge: merge after review and green checks without asking again"
       },
       "notes": {
         "type": "string",

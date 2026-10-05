@@ -11,7 +11,12 @@ describe('MCP JSON configuration', () => {
     if (result.kind !== 'ready') throw new Error('expected ready');
     expect(result.draft).toMatchObject({ display_name: 'Docs & Search', tool_mode: 'all',
       headers: { Authorization: 'Bearer sk-private-value', 'X-Tenant': 'tenant-team' } });
-    expect(result.draft.id).toMatch(/^[a-z0-9][a-z0-9._-]*$/);
+    expect(result.draft.id).toMatch(/^[a-z0-9]{2,32}$/);
+    expect(result.draft.id).toBe(`docssearch${result.draft.id.slice(-8)}`);
+    const long = parseMcpConfig(JSON.stringify({ mcpServers: { [`My-${'Server.'.repeat(15)}`]: {
+      type: 'http', url: 'https://example.com/mcp' } } }));
+    if (long.kind !== 'ready') throw new Error('expected ready');
+    expect(long.draft.id).toMatch(/^myserverserverserverserv[0-9a-f]{8}$/);
     expect(parseMcpConfig(JSON.stringify({ mcpServers: { 'Docs & Search': {
       headers: { Authorization: 'Bearer another-credential', 'X-Tenant': 'other' },
       url: 'https://example.com/mcp', type: 'http',

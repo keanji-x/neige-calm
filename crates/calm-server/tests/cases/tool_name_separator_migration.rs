@@ -46,12 +46,14 @@ const KEPT: &[&str] = &["Read", "mcp__calm__plugin_dev_x_unknown", "neige_track_
 /// Every migration from 0134 through version `last`, in order; `expected` names them, so a drifted
 /// chain is red. 0136 only creates tables and an index, 0138 only adds a column, 0139 only creates
 /// a table, which the fixture's schema already has, and 0140 only renames template ids; none holds
-/// a tool name.
+/// a tool name. 0145 and 0147 only add columns (0147 also an index) and 0146 only creates tables,
+/// likewise.
 pub(super) async fn run_the_chain_through(f: &Fx, last: i64, expected: &[&str]) {
     let chain: Vec<_> = calm_truth::MIGRATOR
         .iter()
         .filter(|m| {
-            (134..=last).contains(&m.version) && !matches!(m.version, 136 | 138 | 139 | 140)
+            (134..=last).contains(&m.version)
+                && !matches!(m.version, 136 | 138 | 139 | 140 | 145 | 146 | 147)
         })
         .collect();
     assert_eq!(

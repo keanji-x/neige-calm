@@ -147,6 +147,25 @@ pub(crate) fn delivery_idem_key(delivery_id: &str) -> String {
     format!("git.commit:d:{delivery_id}")
 }
 
+/// The operations key a delivery's forge action is submitted under, computed from the delivery's
+/// identity and today's plugin id. The stored `forge_idempotency_key` is immutable and a row
+/// written before #2087 B5 carries the old built-in id, so a lookup computes the key here instead.
+pub(crate) fn submitted_forge_key(track_id: &str, card_id: &str, delivery_id: &str) -> String {
+    crate::mcp_server::transport::forge_idempotency_key(
+        GIT_FORGE_PLUGIN_ID,
+        track_id,
+        card_id,
+        &delivery_idem_key(delivery_id),
+    )
+}
+
+impl DeliveryRow {
+    /// [`submitted_forge_key`] of this row.
+    pub(crate) fn submitted_forge_key(&self) -> String {
+        submitted_forge_key(&self.track_id, &self.card_id, &self.delivery_id)
+    }
+}
+
 /// `refs/neige/candidates/<track>/<card>/<delivery_id>` — the ref the delivery script pins.
 pub(crate) fn candidate_ref_name(track_id: &str, card_id: &str, delivery_id: &str) -> String {
     format!("refs/neige/candidates/{track_id}/{card_id}/{delivery_id}")
@@ -311,10 +330,7 @@ pub(crate) async fn insert_initial_delivery_tx(
         lease_id: lease.lease_id.clone(),
         ordinal: 1,
         operation_key: new_id(),
-        forge_idempotency_key: format!(
-            "{GIT_FORGE_PLUGIN_ID}:{track_id}:{card_id}:{}",
-            delivery_idem_key(&delivery_id)
-        ),
+        forge_idempotency_key: submitted_forge_key(track_id, card_id, &delivery_id),
         outcome: Some(outcome),
         commit_message,
         created_at_ms: now_ms,

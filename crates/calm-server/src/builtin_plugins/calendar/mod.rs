@@ -7,7 +7,7 @@ mod tests;
 mod tools;
 mod wake;
 
-pub const PLUGIN_ID: &str = "dev.neige.calendar";
+pub const PLUGIN_ID: &str = "calendar";
 pub(super) fn component() -> super::BuiltinPlugin {
     let mut native = crate::mcp_server::registry::ToolRegistry::new();
     tools::register(&mut native);

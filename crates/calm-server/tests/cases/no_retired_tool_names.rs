@@ -32,6 +32,14 @@ const RETIRED_TERMINAL_NAME: &str = r"\bneige_terminal_(?:observe|resolve)\b";
 const RETIRED_CRUD_NAME: &str =
     r"\bneige_(?:calendar_(?:create|list|update)|preview_(?:register|unregister)|task_verdict)\b";
 
+/// #2087 B5: the built-in plugin ids are `calendar` and `gitforge`, and git-forge's tool names are
+/// `_`-separated. A dotted git-forge tool name followed by `:` is an `idem_key` literal, which
+/// keeps its bytes so the dedup wall holds.
+const RETIRED_PLUGIN_NAME: &str = concat!(
+    r"dev\.neige\.(?:calendar|git-forge)(?:[^A-Za-z0-9\-]|$)|(?:^|[^A-Za-z0-9_.\-])(?:git\.worktree\.add|git\.commit|",
+    r"gh\.pr\.(?:list|diff|checks|merge)|gh\.issue\.(?:view|close|comments?))(?:[^:A-Za-z0-9_\-]|$)"
+);
+
 /// The retired MCP server key as a client spells it, assembled from two literals so this file does
 /// not carry the token it hunts.
 fn retired_server_key() -> String {
@@ -42,8 +50,8 @@ fn retired_server_key() -> String {
 const REJECTION_INPUT_MARKER: &str = "// retired-name: rejection input";
 
 /// The closed allowlist: released migrations and the #2003 and #2087 migrations (one directory,
-/// byte-frozen once released), the migrations' tests, and the design document that records the
-/// old names.
+/// byte-frozen once released), the migrations' tests, a golden of an event written before #2016,
+/// and the design document that records the old names.
 fn allowlisted(path: &str) -> bool {
     path.starts_with("crates/calm-truth/migrations/")
         || path == "crates/calm-server/tests/cases/neige_tool_name_migration.rs"
@@ -51,6 +59,10 @@ fn allowlisted(path: &str) -> bool {
         || path == "crates/calm-server/tests/cases/tool_verbs_migration.rs"
         || path == "crates/calm-server/tests/cases/terminal_verbs_migration.rs"
         || path == "crates/calm-server/tests/cases/crud_verbs_migration.rs"
+        || path == "crates/calm-server/tests/cases/plugin_names_migration.rs"
+        || path == "crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs"
+        || path == "crates/calm-truth/src/db/sqlite/track_template_rename_migration_tests.rs"
+        || path == "crates/calm-server/tests/goldens/events/forge_pr_merged.historical_subject.json"
         || path == "docs/architecture/2003-cli-mcp-naming.md"
 }
 
@@ -85,13 +97,14 @@ fn tracked_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn patterns() -> [regex::Regex; 6] {
+fn patterns() -> [regex::Regex; 7] {
     [
         regex::Regex::new(RETIRED_TOOL_NAME).expect("tool-name regex"),
         regex::Regex::new(RETIRED_DOTTED_KERNEL_NAME).expect("dotted-name regex"),
         regex::Regex::new(RETIRED_VIEW_NAME).expect("view-name regex"),
         regex::Regex::new(RETIRED_TERMINAL_NAME).expect("terminal-name regex"),
         regex::Regex::new(RETIRED_CRUD_NAME).expect("crud-name regex"),
+        regex::Regex::new(RETIRED_PLUGIN_NAME).expect("plugin-name regex"),
         regex::Regex::new(&retired_server_key()).expect("server-key regex"),
     ]
 }
@@ -137,6 +150,11 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "\"neige_preview_register\"",                // retired-name: rejection input
         "prompts/tools/neige_preview_unregister.md", // retired-name: rejection input
         "call neige_task_verdict",                   // retired-name: rejection input
+        "dev.neige.calendar",                        // retired-name: rejection input
+        "`plugin_dev.neige.git-forge_gh.pr.checks`", // retired-name: rejection input
+        "read gh.issue.view and",                    // retired-name: rejection input
+        "\"gh.pr.checks\" =>",                       // retired-name: rejection input
+        "with git.commit.",                          // retired-name: rejection input
         concat!("mcp__", "calm__neige_report_read"),
         concat!("allowed: mcp__", "calm Edit"),
     ] {
@@ -148,7 +166,7 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "neige.overlay.delete",
         "neige.card.create",
         "neige.event.subscribe",
-        "dev.neige.calendar",
+        "calendar",
         "neige.worker.service",
         "neige.track: path not available",
         "calm.db",
@@ -178,7 +196,11 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "my_neige_task_verdict",
         "a task verdict",
         "xneige.track.cat",
-        "dev.neige.git-forge",
+        "gitforge",
+        "plugin_gitforge_gh_pr_checks",
+        "format!(\"gh.pr.checks:{repo}:{pr}\")",
+        "\"git.commit:d:{delivery_id}\"",
+        "dev-neige-market",
         "mcp__neige__neige_track_show",
         "calm.css",
         "calm.theme",

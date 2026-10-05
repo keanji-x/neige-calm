@@ -1,7 +1,7 @@
 use super::*;
 
 fn setup_body(url: &str) -> Value {
-    json!({"id": "test.json-mcp", "display_name": "JSON MCP", "url": url,
+    json!({"id": "testjsonmcp", "display_name": "JSON MCP", "url": url,
         "tools_all": true, "headers": {"Authorization": format!("Bearer {SECRET_VALUE}"), "X-Tenant": "tenant-team"}})
 }
 
@@ -66,7 +66,7 @@ async fn mcp_setup_headers_stay_private_and_survive_install_and_restart() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{installed}");
     assert!(!installed.to_string().contains(SECRET_VALUE));
-    let path = b.plugins_dir.join("test.json-mcp");
+    let path = b.plugins_dir.join("testjsonmcp");
     let manifest = std::fs::read_to_string(path.join("manifest.json")).unwrap();
     assert!(!manifest.contains(SECRET_VALUE));
     let secrets = std::fs::read_to_string(path.join("secrets.json")).unwrap();
@@ -79,14 +79,14 @@ async fn mcp_setup_headers_stay_private_and_survive_install_and_restart() {
             & 0o777,
         0o600
     );
-    let (status, enabled) = post_json(&state, "/api/plugins/test.json-mcp/enable", json!({})).await;
+    let (status, enabled) = post_json(&state, "/api/plugins/testjsonmcp/enable", json!({})).await;
     assert_eq!(status, StatusCode::OK, "{enabled}");
     let host2 = b.host();
     host2.autospawn_enabled().await;
-    assert!(host2.running_plugin_ids().await.contains("test.json-mcp"));
+    assert!(host2.running_plugin_ids().await.contains("testjsonmcp"));
     let public = host2
         .registry()
-        .get("test.json-mcp")
+        .get("testjsonmcp")
         .unwrap()
         .to_json()
         .to_string();
@@ -132,7 +132,7 @@ async fn mcp_setup_check_rejects_bad_headers_and_auth_failures_without_writes() 
         let (status, failed) = post_json(&state, "/api/plugins/mcp/check", body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{failed}");
     }
-    assert!(!b.plugins_dir.join("test.json-mcp").exists());
+    assert!(!b.plugins_dir.join("testjsonmcp").exists());
 }
 
 async fn assert_header_values_refused(values: &[&str]) {
@@ -157,7 +157,7 @@ async fn assert_header_values_refused(values: &[&str]) {
             StatusCode::BAD_REQUEST,
             "same validation before persisting: {installed}"
         );
-        assert!(!b.plugins_dir.join("test.json-mcp").exists());
+        assert!(!b.plugins_dir.join("testjsonmcp").exists());
     }
     assert!(
         stub.methods().is_empty(),

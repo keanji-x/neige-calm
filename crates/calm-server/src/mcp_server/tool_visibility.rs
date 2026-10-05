@@ -298,7 +298,7 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let bound_track = make_track(repo.as_ref(), Some("dev.neige.git-forge")).await;
+        let bound_track = make_track(repo.as_ref(), Some("gitforge")).await;
         let unbound_track = make_track(repo.as_ref(), None).await;
         let ctx = app_context(repo, None);
 
@@ -322,7 +322,7 @@ mod tests {
                     .find(|id| !id.is_empty())
                     .map(str::to_string)
             })
-            .unwrap_or_else(|| "dev.neige.git-forge".to_string())
+            .unwrap_or_else(|| "gitforge".to_string())
     }
 
     fn untrusted_plugin_id() -> String {

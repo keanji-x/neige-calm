@@ -167,7 +167,7 @@ async fn events_since_skips_retired_workflow_registered_without_error() {
         r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES (
              'workflow.registered',
-             '{"pluginId":"dev.neige.git-forge","workflowId":"issue-development"}',
+             '{"pluginId":"gitforge","workflowId":"issue-development"}',
              'kernel',
              0,
              9

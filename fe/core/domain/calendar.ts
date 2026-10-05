@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 import { casAttempts, readWriteFailure, type FailureTable, type Landed, type WriteFailure, type WriteText } from './failure-class.js';
 
-export const CALENDAR_PLUGIN_ID = 'dev.neige.calendar';
+export const CALENDAR_PLUGIN_ID = 'calendar';
 export const CALENDAR_WEEKDAYS = Object.freeze(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const);
 export const calendarScheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('all_day'), date: z.string() }),

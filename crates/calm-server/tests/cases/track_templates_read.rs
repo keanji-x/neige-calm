@@ -42,7 +42,7 @@ fn trusted_plugin_id() -> String {
                 .find(|id| !id.is_empty())
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| "dev.neige.git-forge".to_string())
+        .unwrap_or_else(|| "gitforge".to_string())
 }
 
 /// A stub value no other file spells, so the response provably came from the registry rather than a constant.
@@ -440,10 +440,7 @@ async fn template_plugin_guides_are_read_only_and_independent_of_enablement() {
             .await
             .unwrap();
         for (id, expected) in [
-            (
-                DEV,
-                json!([{"id":"dev.neige.git-forge","name":"development"}]),
-            ),
+            (DEV, json!([{"id":"gitforge","name":"development"}])),
             (SMALL_CHANGE, json!([])),
         ] {
             let before = db_digest(&boot.repo).await;

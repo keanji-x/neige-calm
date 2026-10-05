@@ -1,4 +1,4 @@
-//! #1830 T5: a Planner's `git.commit` forge action runs in its track worktree, so the commit
+//! #1830 T5: a Planner's `git_commit` forge action runs in its track worktree, so the commit
 //! lands on `neige/track-<id>` and the user's checkout is untouched. The track is minted by the
 //! real create route over the fixture's repository and caches; the call goes through the real MCP
 //! socket to the real git-forge plugin. #1830 S3 C3: neither that commit nor its probe shows the
@@ -204,7 +204,7 @@ fn token_recorder(out: &Path) -> String {
     )
 }
 
-/// The Planner's `git.commit` of `plan.md` through the socket; the op must fail or succeed as
+/// The Planner's `git_commit` of `plan.md` through the socket; the op must fail or succeed as
 /// `is_error` says, and the file `seen` must hold only `unset` lines, at least one.
 async fn commit_and_check_tokens(
     fx: &Fixture,
@@ -237,7 +237,7 @@ async fn commit_and_check_tokens(
 }
 
 /// #1830 S3 C3 (D4) — the kernel holds `GH_TOKEN`; a `pre-commit` hook fails the Planner's
-/// `git.commit`, so its probe runs `git status`, which runs the repository's `core.fsmonitor`.
+/// `git_commit`, so its probe runs `git status`, which runs the repository's `core.fsmonitor`.
 /// Neither the action nor the probe shows that code the token.
 #[tokio::test]
 async fn planner_git_commit_and_its_probe_never_show_repository_code_a_github_token() {
@@ -274,7 +274,7 @@ async fn planner_git_commit_and_its_probe_never_show_repository_code_a_github_to
 }
 
 /// #1830 S3 C4 (D4) — a `pre-commit` hook stashes the change and fails the Planner's
-/// `git.commit`: the probe finds a clean tree (landed), so the output probe runs `git log` on a
+/// `git_commit`: the probe finds a clean tree (landed), so the output probe runs `git log` on a
 /// signed HEAD under `log.showSignature`, which runs the repository's `gpg.program`. It never
 /// sees the kernel's `GH_TOKEN`.
 #[tokio::test]

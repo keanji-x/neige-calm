@@ -66,15 +66,15 @@ use tokio::sync::OnceCell;
 use tokio::time::{Instant, sleep, timeout};
 use tower::ServiceExt;
 
-const PLUGIN_ID: &str = "dev.neige.git-forge";
-const COMMIT_TOOL: &str = "plugin_dev.neige.git-forge_git.commit";
-const PR_LIST_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.list";
+const PLUGIN_ID: &str = "gitforge";
+const COMMIT_TOOL: &str = "plugin_gitforge_git_commit";
+const PR_LIST_TOOL: &str = "plugin_gitforge_gh_pr_list";
 const PUBLISH_TOOL: &str = "neige_dev_publish";
-const PR_DIFF_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.diff";
-const PR_CHECKS_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.checks";
-const PR_MERGE_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.merge";
-const ISSUE_VIEW_TOOL: &str = "plugin_dev.neige.git-forge_gh.issue.view";
-const ISSUE_CLOSE_TOOL: &str = "plugin_dev.neige.git-forge_gh.issue.close";
+const PR_DIFF_TOOL: &str = "plugin_gitforge_gh_pr_diff";
+const PR_CHECKS_TOOL: &str = "plugin_gitforge_gh_pr_checks";
+const PR_MERGE_TOOL: &str = "plugin_gitforge_gh_pr_merge";
+const ISSUE_VIEW_TOOL: &str = "plugin_gitforge_gh_issue_view";
+const ISSUE_CLOSE_TOOL: &str = "plugin_gitforge_gh_issue_close";
 const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PLANNER_SESSION_ID: &str = "forge-template-planner-session";
 
@@ -494,13 +494,13 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         json!({ "repo": repo_arg, "issue": 810 }),
     )
     .await;
-    assert_tool_succeeded(&issue_view_resp, "gh.issue.view");
+    assert_tool_succeeded(&issue_view_resp, "gh_issue_view");
     let issue_view_op_id = op_id_from_response(&issue_view_resp);
     wait_for_operation_phase(&fx.repo, &issue_view_op_id, "succeeded").await;
     let issue_body = "# Issue 810\n\nFake issue body for dev ingestion.\n";
     assert_eq!(
         issue_view_resp["result"]["structuredContent"]["result"]["stdout"], issue_body,
-        "gh.issue.view must return the issue body inline"
+        "gh_issue_view must return the issue body inline"
     );
     let issue_read_rows = wait_for_event_count(&fx.repo, "forge.issue.read", 1).await;
     let issue_read = issue_read_rows[0].clone();
@@ -528,7 +528,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         json!({ "repo": repo_arg, "base": base, "head": head }),
     )
     .await;
-    assert_tool_succeeded(&scan_resp, "gh.pr.list");
+    assert_tool_succeeded(&scan_resp, "gh_pr_list");
     let scan = wait_for_event_count(&fx.repo, "forge.scan.completed", 1).await;
     assert_track_event(&scan[0], &fx.track_id);
     assert_eq!(scan[0].payload["overlapping_prs"], json!([]));
@@ -541,7 +541,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         json!({ "message": "e2e feature", "idem": "slice-810-e2e-commit", "branch": head }),
     )
     .await;
-    assert_tool_succeeded(&commit_resp, "git.commit");
+    assert_tool_succeeded(&commit_resp, "git_commit");
     let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
     let base_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "origin/main"]);
 
@@ -567,12 +567,12 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         }),
     )
     .await;
-    assert_tool_succeeded(&diff_resp, "gh.pr.diff");
+    assert_tool_succeeded(&diff_resp, "gh_pr_diff");
     assert!(
         diff_resp["result"]["structuredContent"]["result"]
             .get("stdout")
             .is_none(),
-        "gh.pr.diff must not inline patch stdout"
+        "gh_pr_diff must not inline patch stdout"
     );
     let diff_rows = wait_for_event_count(&fx.repo, "forge.pr.diff.read", 1).await;
     let diff = diff_rows[0].clone();
@@ -615,7 +615,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     assert_eq!(
         checks_rows.len(),
         1,
-        "gh.pr.checks must persist exactly one forge.pr.checks event"
+        "gh_pr_checks must persist exactly one forge.pr.checks event"
     );
     let checks = checks_rows[0].clone();
     assert_track_event(&checks, &fx.track_id);
@@ -632,7 +632,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         }),
     )
     .await;
-    assert_tool_succeeded(&merge_resp, "gh.pr.merge");
+    assert_tool_succeeded(&merge_resp, "gh_pr_merge");
     let merged_rows = wait_for_event_count(&fx.repo, "forge.pr.merged", 1).await;
     let merged = merged_rows[0].clone();
     assert_track_event(&merged, &fx.track_id);
@@ -650,7 +650,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         json!({ "repo": repo_arg, "issue": 810 }),
     )
     .await;
-    assert_tool_succeeded(&issue_resp, "gh.issue.close");
+    assert_tool_succeeded(&issue_resp, "gh_issue_close");
     let issue_rows = wait_for_event_count(&fx.repo, "forge.issue.closed", 1).await;
     let issue_closed = issue_rows[0].clone();
     assert_track_event(&issue_closed, &fx.track_id);
@@ -709,7 +709,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
         }),
     )
     .await;
-    assert_tool_succeeded(&commit_resp, "git.commit");
+    assert_tool_succeeded(&commit_resp, "git_commit");
     let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
 
     let create_resp =
@@ -732,7 +732,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
         }),
     )
     .await;
-    assert_tool_succeeded(&merge_resp, "gh.pr.merge");
+    assert_tool_succeeded(&merge_resp, "gh_pr_merge");
     let op_id = op_id_from_response(&merge_resp);
     wait_for_counter(&state.join("pr_merge_count"), 1).await;
     wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
@@ -822,7 +822,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
         }),
     )
     .await;
-    assert_tool_succeeded(&commit_resp, "git.commit");
+    assert_tool_succeeded(&commit_resp, "git_commit");
 
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
@@ -968,7 +968,7 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
         json!({ "repo": repo_arg, "issue": issue_number }),
     )
     .await;
-    assert_tool_succeeded(&issue_resp, "gh.issue.close");
+    assert_tool_succeeded(&issue_resp, "gh_issue_close");
     let op_id = op_id_from_response(&issue_resp);
     wait_for_counter(&state.join("issue_close_count"), 1).await;
     wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
@@ -1222,7 +1222,7 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
         }),
     )
     .await;
-    assert_tool_succeeded(&merge_resp, "gh.pr.merge");
+    assert_tool_succeeded(&merge_resp, "gh_pr_merge");
     let op_id = op_id_from_response(&merge_resp);
     wait_for_counter(&state.join("pr_merge_count"), 1).await;
     wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
@@ -2026,7 +2026,7 @@ async fn drive_pr_to_diff(
         json!({ "repo": repo_arg, "issue": issue_number }),
     )
     .await;
-    assert_tool_succeeded(&issue_view_resp, "gh.issue.view");
+    assert_tool_succeeded(&issue_view_resp, "gh_issue_view");
 
     stage_git_change(&fx.lease_abs, filename, contents);
     let commit_resp = call_tool(
@@ -2036,7 +2036,7 @@ async fn drive_pr_to_diff(
         json!({ "message": title, "idem": format!("{head}-commit"), "branch": head }),
     )
     .await;
-    assert_tool_succeeded(&commit_resp, "git.commit");
+    assert_tool_succeeded(&commit_resp, "git_commit");
     let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
     let base_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "origin/main"]);
 
@@ -2061,7 +2061,7 @@ async fn drive_pr_to_diff(
         }),
     )
     .await;
-    assert_tool_succeeded(&diff_resp, "gh.pr.diff");
+    assert_tool_succeeded(&diff_resp, "gh_pr_diff");
     let diff = wait_for_event_matching(&fx.repo, "forge.pr.diff.read", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["pr_number"] == json!(pr_number)
@@ -2077,7 +2077,7 @@ async fn drive_pr_to_diff(
     }
 }
 
-/// Run `gh.pr.checks` and return its event row. The call parks and the event lands with the
+/// Run `gh_pr_checks` and return its event row. The call parks and the event lands with the
 /// op's completion; an unsettled checks op would keep the track-global teardown fence armed.
 async fn run_pr_checks(fx: &Fixture, id: i64, repo_arg: &str, pr_number: u64) -> EventRow {
     let checks_resp = call_tool(
@@ -2109,7 +2109,7 @@ async fn merge_reviewed_pr(fx: &Fixture, id_base: i64, pr: &ForgePrRun) -> Event
         }),
     )
     .await;
-    assert_tool_succeeded(&merge_resp, "gh.pr.merge");
+    assert_tool_succeeded(&merge_resp, "gh_pr_merge");
     let merged = wait_for_event_matching(&fx.repo, "forge.pr.merged", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["subject"]["pr_number"] == json!(pr.pr_number)
@@ -2127,7 +2127,7 @@ async fn close_issue(fx: &Fixture, id: i64, repo_arg: &str, issue_number: u64) -
         json!({ "repo": repo_arg, "issue": issue_number }),
     )
     .await;
-    assert_tool_succeeded(&issue_resp, "gh.issue.close");
+    assert_tool_succeeded(&issue_resp, "gh_issue_close");
     wait_for_event_matching(&fx.repo, "forge.issue.closed", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["issue_number"] == json!(issue_number)

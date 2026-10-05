@@ -237,7 +237,7 @@ fn dispatcher_filter_matches_push_kinds() {
     })));
     assert!(filter.matches(&env(Event::TrackWakeRequested {
         track_id: track.clone(),
-        source: "dev.neige.calendar".into(),
+        source: "calendar".into(),
         key: "entry".into(),
         text: "due".into(),
     })));
@@ -1707,7 +1707,7 @@ fn harness_observation_from_event_mapping_pin() {
         &track,
         &Event::TrackWakeRequested {
             track_id: TrackId::from("payload-track-ignored"),
-            source: "dev.neige.calendar".into(),
+            source: "calendar".into(),
             key: "entry-1".into(),
             text: "Calendar entry is due.".into(),
         },
@@ -1717,7 +1717,7 @@ fn harness_observation_from_event_mapping_pin() {
     assert!(wake.is_hard_fire());
     assert_eq!(
         wake.to_turn_text(),
-        "Wake from dev.neige.calendar (entry-1): Calendar entry is due."
+        "Wake from calendar (entry-1): Calendar entry is due."
     );
     assert_eq!(
         harness_observation_from_event(
@@ -2163,7 +2163,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
         row(
             Event::TrackWakeRequested {
                 track_id: track.clone(),
-                source: "dev.neige.calendar".into(),
+                source: "calendar".into(),
                 key: "entry".into(),
                 text: "due".into(),
             },

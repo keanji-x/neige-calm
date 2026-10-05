@@ -205,7 +205,7 @@ async fn publish_refuses_a_commit_made_after_the_last_attempt() {
     let w = development_world().await;
     let fx = &w.fx;
     let c = done_candidate(fx, "a").await;
-    // The Planner's `git.commit` (`git add -A` + commit in its cwd, the track worktree).
+    // The Planner's `git_commit` (`git add -A` + commit in its cwd, the track worktree).
     std::fs::write(fx.worktree.join("planner.txt"), "unverified\n").unwrap();
     git(&fx.worktree, &["add", "-A"]);
     git(&fx.worktree, &["commit", "-q", "-m", "planner edit"]);

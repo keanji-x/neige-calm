@@ -1,4 +1,4 @@
-//! #1965, #2058: `gh.pr.checks` folds gh's rollup with its real `--jq` filter, then waits on the
+//! #1965, #2058: `gh_pr_checks` folds gh's rollup with its real `--jq` filter, then waits on the
 //! PR's current head and wakes the Planner when the checks settle, the PR conflicts, the head
 //! moves, or the parked deadline passes.
 use super::*;
@@ -89,12 +89,12 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
 
     // The deadline snapshot is the lowered output probe: one read, never the waiting script.
     let payload = lower(
-        "gh.pr.checks",
+        "gh_pr_checks",
         &json!({ "repo": repo_arg, "pr": pr_number, "attempt": "t1" }),
     )
-    .expect("lower gh.pr.checks");
+    .expect("lower gh_pr_checks");
     let read: Vec<String> = serde_json::from_value(payload["probe"]["output_probe_argv"].clone())
-        .expect("gh.pr.checks output probe argv");
+        .expect("gh_pr_checks output probe argv");
     assert_eq!(
         read[0], "sh",
         "the output probe validates a paginated read: {read:?}"
@@ -633,7 +633,7 @@ impl ChecksFixture {
 
 /// The standard parked-forge receipt, shared by every forge tool.
 fn assert_receipt(resp: &Value) -> String {
-    assert_tool_succeeded(resp, "gh.pr.checks");
+    assert_tool_succeeded(resp, "gh_pr_checks");
     let receipt = &resp["result"]["structuredContent"];
     let keys: BTreeSet<&str> = receipt
         .as_object()
@@ -663,7 +663,7 @@ pub(super) fn assert_receipt_or_settled(resp: &Value) -> String {
     if answer["parked"] == json!(true) {
         return assert_receipt(resp);
     }
-    assert_tool_succeeded(resp, "gh.pr.checks");
+    assert_tool_succeeded(resp, "gh_pr_checks");
     assert_eq!(answer["result"]["event_kind"], "forge.pr.checks", "{resp}");
     answer["op_id"].as_str().expect("result op_id").to_string()
 }

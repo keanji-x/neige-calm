@@ -200,7 +200,7 @@ async fn install_lists_and_details_round_trip() {
     let (state, _tmp, plugins_dir) = boot_state().await;
     // Source path lives outside plugins_dir so install must materialize a copy/link into plugins_dir/<id>.
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.install");
+    let src_dir = write_stub_plugin(src_root.path(), "testinstall");
 
     let resp = post_json(
         app(state.clone()),
@@ -212,12 +212,12 @@ async fn install_lists_and_details_round_trip() {
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED, "install should 201");
     let body = body_to_json(resp).await;
-    assert_eq!(body["id"], "test.install");
+    assert_eq!(body["id"], "testinstall");
     assert_eq!(body["enabled"], false);
     assert_eq!(body["state"], "disabled");
 
     assert!(
-        plugins_dir.join("test.install").exists(),
+        plugins_dir.join("testinstall").exists(),
         "plugins_dir entry should exist"
     );
 
@@ -226,13 +226,13 @@ async fn install_lists_and_details_round_trip() {
     let list = body_to_json(resp).await;
     let arr = list.as_array().expect("list should be array");
     assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["id"], "test.install");
+    assert_eq!(arr[0]["id"], "testinstall");
     assert_eq!(arr[0]["manifest_name"], "Echo Stub");
 
-    let resp = get_path(app(state.clone()), "/api/plugins/test.install").await;
+    let resp = get_path(app(state.clone()), "/api/plugins/testinstall").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let det = body_to_json(resp).await;
-    assert_eq!(det["id"], "test.install");
+    assert_eq!(det["id"], "testinstall");
     assert!(det["manifest"]["views"].is_array());
 }
 
@@ -240,7 +240,7 @@ async fn install_lists_and_details_round_trip() {
 async fn enable_transitions_to_running() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.enable");
+    let src_dir = write_stub_plugin(src_root.path(), "testenable");
 
     let resp = post_json(
         app(state.clone()),
@@ -252,7 +252,7 @@ async fn enable_transitions_to_running() {
 
     let resp = post_json(
         app(state.clone()),
-        "/api/plugins/test.enable/enable",
+        "/api/plugins/testenable/enable",
         json!({}),
     )
     .await;
@@ -261,12 +261,12 @@ async fn enable_transitions_to_running() {
     assert_eq!(det["enabled"], true);
 
     // The state can be `spawning` momentarily; poll until `running`.
-    let det = wait_for_state(&state, "test.enable", "running", Duration::from_secs(3)).await;
+    let det = wait_for_state(&state, "testenable", "running", Duration::from_secs(3)).await;
     assert_eq!(det["enabled"], true);
 
     let _ = post_json(
         app(state.clone()),
-        "/api/plugins/test.enable/disable",
+        "/api/plugins/testenable/disable",
         json!({}),
     )
     .await;
@@ -276,7 +276,7 @@ async fn enable_transitions_to_running() {
 async fn disable_transitions_to_disabled() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.disable");
+    let src_dir = write_stub_plugin(src_root.path(), "testdisable");
     post_json(
         app(state.clone()),
         "/api/plugins/install",
@@ -285,15 +285,15 @@ async fn disable_transitions_to_disabled() {
     .await;
     post_json(
         app(state.clone()),
-        "/api/plugins/test.disable/enable",
+        "/api/plugins/testdisable/enable",
         json!({}),
     )
     .await;
-    wait_for_state(&state, "test.disable", "running", Duration::from_secs(3)).await;
+    wait_for_state(&state, "testdisable", "running", Duration::from_secs(3)).await;
 
     let resp = post_json(
         app(state.clone()),
-        "/api/plugins/test.disable/disable",
+        "/api/plugins/testdisable/disable",
         json!({}),
     )
     .await;
@@ -307,22 +307,17 @@ async fn disable_transitions_to_disabled() {
 async fn log_tail_returns_stub_stderr() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.log");
+    let src_dir = write_stub_plugin(src_root.path(), "testlog");
     post_json(
         app(state.clone()),
         "/api/plugins/install",
         json!({ "source": { "kind": "local_path", "path": src_dir.to_string_lossy() } }),
     )
     .await;
-    post_json(
-        app(state.clone()),
-        "/api/plugins/test.log/enable",
-        json!({}),
-    )
-    .await;
-    wait_for_state(&state, "test.log", "running", Duration::from_secs(3)).await;
+    post_json(app(state.clone()), "/api/plugins/testlog/enable", json!({})).await;
+    wait_for_state(&state, "testlog", "running", Duration::from_secs(3)).await;
 
-    let resp = get_path(app(state.clone()), "/api/plugins/test.log/log?n=10").await;
+    let resp = get_path(app(state.clone()), "/api/plugins/testlog/log?n=10").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let lines = body_to_json(resp).await;
     let arr = lines.as_array().expect("array");
@@ -335,7 +330,7 @@ async fn log_tail_returns_stub_stderr() {
 
     let _ = post_json(
         app(state.clone()),
-        "/api/plugins/test.log/disable",
+        "/api/plugins/testlog/disable",
         json!({}),
     )
     .await;
@@ -345,7 +340,7 @@ async fn log_tail_returns_stub_stderr() {
 async fn uninstall_cascades_satellites() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.uninstall");
+    let src_dir = write_stub_plugin(src_root.path(), "testuninstall");
     post_json(
         app(state.clone()),
         "/api/plugins/install",
@@ -355,13 +350,13 @@ async fn uninstall_cascades_satellites() {
 
     state
         .repo
-        .plugin_kv_set("test.uninstall", "foo", &json!("bar"))
+        .plugin_kv_set("testuninstall", "foo", &json!("bar"))
         .await
         .unwrap();
     state
         .raw_repo()
         .overlay_upsert(NewOverlay {
-            plugin_id: "test.uninstall".into(),
+            plugin_id: "testuninstall".into(),
             entity_kind: "track".into(),
             entity_id: "w1".into(),
             kind: "status".into(),
@@ -370,23 +365,23 @@ async fn uninstall_cascades_satellites() {
         .await
         .unwrap();
 
-    let resp = delete_path(app(state.clone()), "/api/plugins/test.uninstall").await;
+    let resp = delete_path(app(state.clone()), "/api/plugins/testuninstall").await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    let resp = get_path(app(state.clone()), "/api/plugins/test.uninstall").await;
+    let resp = get_path(app(state.clone()), "/api/plugins/testuninstall").await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     assert!(
         state
             .repo
-            .plugin_token_get("test.uninstall")
+            .plugin_token_get("testuninstall")
             .await
             .unwrap()
             .is_none()
     );
     let kv = state
         .repo
-        .plugin_kv_list("test.uninstall", "")
+        .plugin_kv_list("testuninstall", "")
         .await
         .unwrap();
     assert!(kv.is_empty(), "kv should be empty after uninstall");
@@ -401,7 +396,7 @@ async fn uninstall_cascades_satellites() {
 async fn views_catalog_lists_enabled_plugin_views() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.views");
+    let src_dir = write_stub_plugin(src_root.path(), "testviews");
 
     let resp = get_path(app(state.clone()), "/api/plugins/views").await;
     let arr = body_to_json(resp).await;
@@ -423,17 +418,17 @@ async fn views_catalog_lists_enabled_plugin_views() {
 
     post_json(
         app(state.clone()),
-        "/api/plugins/test.views/enable",
+        "/api/plugins/testviews/enable",
         json!({}),
     )
     .await;
-    wait_for_state(&state, "test.views", "running", Duration::from_secs(3)).await;
+    wait_for_state(&state, "testviews", "running", Duration::from_secs(3)).await;
 
     let resp = get_path(app(state.clone()), "/api/plugins/views").await;
     let arr = body_to_json(resp).await;
     let entries = arr.as_array().expect("array");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["resource_uri"], "ui://test.views/main");
+    assert_eq!(entries[0]["resource_uri"], "ui://testviews/main");
     assert_eq!(entries[0]["scope"], "card");
     assert_eq!(entries[0]["default_size"]["w"], 4);
     assert!(entries[0].get("plugin_id").is_none());
@@ -441,7 +436,7 @@ async fn views_catalog_lists_enabled_plugin_views() {
 
     let _ = post_json(
         app(state.clone()),
-        "/api/plugins/test.views/disable",
+        "/api/plugins/testviews/disable",
         json!({}),
     )
     .await;
@@ -451,7 +446,7 @@ async fn views_catalog_lists_enabled_plugin_views() {
 async fn install_rejects_track_scope_manifest() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_bad_scope_plugin(src_root.path(), "test.badscope");
+    let src_dir = write_bad_scope_plugin(src_root.path(), "testbadscope");
 
     let resp = post_json(
         app(state.clone()),
@@ -471,7 +466,7 @@ async fn install_rejects_track_scope_manifest() {
 async fn install_twice_returns_409() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.dup");
+    let src_dir = write_stub_plugin(src_root.path(), "testdup");
 
     let resp = post_json(
         app(state.clone()),
@@ -490,6 +485,56 @@ async fn install_twice_returns_409() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body = body_to_text(resp).await;
     assert!(body.contains("already installed"), "got: {body}");
+}
+
+/// #2087 §6: every built-in manifest id, and every id the install route accepts for a new plugin,
+/// is one word. `dev.new-plugin` is refused before a tree or a row is written; `newplugin` installs.
+#[tokio::test]
+async fn plugin_ids_are_words() {
+    let word = |id: &str| {
+        (2..=32).contains(&id.len()) && id.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9'))
+    };
+    let mut builtins: Vec<String> = calm_server::builtin_plugins::catalog()
+        .iter()
+        .map(|component| component.manifest().id.clone())
+        .collect();
+    builtins.sort();
+    assert_eq!(builtins, ["calendar", "gitforge"], "the built-in catalog");
+    assert!(builtins.iter().all(|id| word(id)), "{builtins:?}");
+
+    let (state, _tmp, plugins_dir, repo) = boot_state_with_repo().await;
+    let src_root = tempfile::tempdir().unwrap();
+    let dotted = write_stub_plugin(src_root.path(), "dev.new-plugin");
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": dotted.to_string_lossy() } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_to_text(resp).await;
+    assert!(
+        body.contains("manifest id `dev.new-plugin` must be one word: ^[a-z0-9]{2,32}$"),
+        "got: {body}"
+    );
+    assert!(!plugins_dir.join("dev.new-plugin").exists());
+    assert!(
+        repo.plugin_get_by_id("dev.new-plugin")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let src = write_stub_plugin(src_root.path(), "newplugin");
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": src.to_string_lossy() } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_to_json(resp).await;
+    assert!(word(body["id"].as_str().unwrap()), "{body}");
 }
 
 #[tokio::test]
@@ -571,10 +616,10 @@ async fn patch_config_writes_user_config() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir =
-        write_stub_plugin_with_config(src_root.path(), "test.config", stub_config_schema());
+        write_stub_plugin_with_config(src_root.path(), "testconfig", stub_config_schema());
     install(&state, &src_dir).await;
 
-    let resp = patch_config(&state, "test.config", json!({ "theme": "light" })).await;
+    let resp = patch_config(&state, "testconfig", json!({ "theme": "light" })).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let det = body_to_json(resp).await;
     assert_eq!(det["user_config"]["theme"], "light");
@@ -585,15 +630,15 @@ async fn patch_config_writes_user_config() {
 async fn patch_config_on_a_plugin_without_a_schema_is_400() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.noschema");
+    let src_dir = write_stub_plugin(src_root.path(), "testnoschema");
     install(&state, &src_dir).await;
 
-    let resp = patch_config(&state, "test.noschema", json!({ "theme": "dark" })).await;
+    let resp = patch_config(&state, "testnoschema", json!({ "theme": "dark" })).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = body_to_text(resp).await;
     assert!(body.contains("config_schema"), "got: {body}");
 
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.noschema").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testnoschema").await).await;
     assert_eq!(det["user_config"], json!({}), "got {det:?}");
 }
 
@@ -608,14 +653,13 @@ async fn patch_config_unknown_id_is_still_404() {
 async fn patch_config_leaves_absent_keys_alone_and_deletes_on_explicit_null() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir =
-        write_stub_plugin_with_config(src_root.path(), "test.patch", stub_config_schema());
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testpatch", stub_config_schema());
     install(&state, &src_dir).await;
 
     let det = body_to_json(
         patch_config(
             &state,
-            "test.patch",
+            "testpatch",
             json!({ "theme": "light", "label": "a" }),
         )
         .await,
@@ -626,23 +670,21 @@ async fn patch_config_leaves_absent_keys_alone_and_deletes_on_explicit_null() {
         json!({ "theme": "light", "label": "a" })
     );
 
-    let det = body_to_json(patch_config(&state, "test.patch", json!({ "label": "b" })).await).await;
+    let det = body_to_json(patch_config(&state, "testpatch", json!({ "label": "b" })).await).await;
     assert_eq!(
         det["user_config"],
         json!({ "theme": "light", "label": "b" }),
         "an absent key must keep its stored value, not be dropped"
     );
 
-    let det =
-        body_to_json(patch_config(&state, "test.patch", json!({ "theme": null })).await).await;
+    let det = body_to_json(patch_config(&state, "testpatch", json!({ "theme": null })).await).await;
     assert_eq!(det["user_config"], json!({ "label": "b" }));
     assert_eq!(
         det["effective_config"]["theme"], "dark",
         "a cleared key falls back to its default, not to absent"
     );
 
-    let det =
-        body_to_json(patch_config(&state, "test.patch", json!({ "label": null })).await).await;
+    let det = body_to_json(patch_config(&state, "testpatch", json!({ "label": null })).await).await;
     assert_eq!(det["user_config"], json!({}));
     assert!(
         det["effective_config"].get("label").is_none(),
@@ -655,7 +697,7 @@ async fn patch_config_leaves_absent_keys_alone_and_deletes_on_explicit_null() {
 async fn patch_config_rejects_values_that_violate_the_schema() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin_with_config(src_root.path(), "test.bad", stub_config_schema());
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testbad", stub_config_schema());
     install(&state, &src_dir).await;
 
     let cases = [
@@ -673,7 +715,7 @@ async fn patch_config_rejects_values_that_violate_the_schema() {
         ),
     ];
     for (label, body, expected_path) in cases {
-        let resp = patch_config(&state, "test.bad", body).await;
+        let resp = patch_config(&state, "testbad", body).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{label}");
         let text = body_to_text(resp).await;
         assert!(
@@ -687,17 +729,12 @@ async fn patch_config_rejects_values_that_violate_the_schema() {
         );
     }
 
-    let resp = patch_config(
-        &state,
-        "test.bad",
-        json!({ "retries": 3, "theme": "light" }),
-    )
-    .await;
+    let resp = patch_config(&state, "testbad", json!({ "retries": 3, "theme": "light" })).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let resp = patch_config(&state, "test.bad", json!({ "theme": "neon" })).await;
+    let resp = patch_config(&state, "testbad", json!({ "theme": "neon" })).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.bad").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testbad").await).await;
     assert_eq!(det["user_config"]["theme"], "light");
 }
 
@@ -714,12 +751,12 @@ async fn the_byte_cap_is_measured_on_the_merged_config_not_the_request_body() {
         },
         "additionalProperties": false
     });
-    let src_dir = write_stub_plugin_with_config(src_root.path(), "test.cap", two_strings);
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testcap", two_strings);
     install(&state, &src_dir).await;
 
     let chunk = "x".repeat(5000);
 
-    let resp = patch_config(&state, "test.cap", json!({ "a": chunk })).await;
+    let resp = patch_config(&state, "testcap", json!({ "a": chunk })).await;
     assert_eq!(
         resp.status(),
         StatusCode::OK,
@@ -727,7 +764,7 @@ async fn the_byte_cap_is_measured_on_the_merged_config_not_the_request_body() {
         body_to_text(resp).await
     );
 
-    let resp = patch_config(&state, "test.cap", json!({ "b": chunk.clone() })).await;
+    let resp = patch_config(&state, "testcap", json!({ "b": chunk.clone() })).await;
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
@@ -736,17 +773,14 @@ async fn the_byte_cap_is_measured_on_the_merged_config_not_the_request_body() {
     let text = body_to_text(resp).await;
     assert!(text.contains("8192"), "got: {text}");
 
-    let row = repo.plugin_get_by_id("test.cap").await.unwrap().unwrap();
+    let row = repo.plugin_get_by_id("testcap").await.unwrap().unwrap();
     assert_eq!(row.user_config.as_object().unwrap().len(), 1);
 
     // Reverse: a row already over the cap (only a direct write can produce one) still accepts a patch that shrinks it.
-    repo.plugin_update_user_config(
-        "test.cap",
-        json!({ "a": chunk.clone(), "b": chunk.clone() }),
-    )
-    .await
-    .unwrap();
-    let resp = patch_config(&state, "test.cap", json!({ "b": "small" })).await;
+    repo.plugin_update_user_config("testcap", json!({ "a": chunk.clone(), "b": chunk.clone() }))
+        .await
+        .unwrap();
+    let resp = patch_config(&state, "testcap", json!({ "b": "small" })).await;
     assert_eq!(
         resp.status(),
         StatusCode::OK,
@@ -760,7 +794,7 @@ async fn the_byte_cap_is_measured_on_the_merged_config_not_the_request_body() {
         "and the untouched key kept its value"
     );
 
-    let det = body_to_json(patch_config(&state, "test.cap", json!({ "a": null })).await).await;
+    let det = body_to_json(patch_config(&state, "testcap", json!({ "a": null })).await).await;
     assert_eq!(det["user_config"], json!({ "b": "small" }));
 }
 
@@ -771,7 +805,7 @@ async fn patch_config_does_not_enforce_required_keys() {
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin_with_config(
         src_root.path(),
-        "test.required",
+        "testrequired",
         json!({
             "type": "object",
             "properties": {
@@ -789,7 +823,7 @@ async fn patch_config_does_not_enforce_required_keys() {
     std::fs::write(&path, serde_json::to_string_pretty(&m).unwrap()).unwrap();
     install(&state, &src_dir).await;
 
-    let resp = patch_config(&state, "test.required", json!({ "token": "t" })).await;
+    let resp = patch_config(&state, "testrequired", json!({ "token": "t" })).await;
     assert_eq!(
         resp.status(),
         StatusCode::OK,
@@ -804,14 +838,13 @@ async fn patch_config_does_not_enforce_required_keys() {
     assert_eq!(det["effective_config"]["region"], "eu");
 
     let det =
-        body_to_json(patch_config(&state, "test.required", json!({ "secondary": "s" })).await)
-            .await;
+        body_to_json(patch_config(&state, "testrequired", json!({ "secondary": "s" })).await).await;
     assert_eq!(
         det["user_config"],
         json!({ "token": "t", "secondary": "s" })
     );
 
-    let resp = patch_config(&state, "test.required", json!({ "token": null })).await;
+    let resp = patch_config(&state, "testrequired", json!({ "token": null })).await;
     assert_eq!(
         resp.status(),
         StatusCode::OK,
@@ -824,7 +857,7 @@ async fn patch_config_does_not_enforce_required_keys() {
         "and it really is gone from what would be in force: {det:?}"
     );
 
-    let resp = patch_config(&state, "test.required", json!({ "token": 7 })).await;
+    let resp = patch_config(&state, "testrequired", json!({ "token": 7 })).await;
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
@@ -837,29 +870,29 @@ async fn patch_config_judges_key_names_before_null_means_delete() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir =
-        write_stub_plugin_with_config(src_root.path(), "test.ghostnull", stub_config_schema());
+        write_stub_plugin_with_config(src_root.path(), "testghostnull", stub_config_schema());
     install(&state, &src_dir).await;
 
-    let resp = patch_config(&state, "test.ghostnull", json!({ "ghost": null })).await;
+    let resp = patch_config(&state, "testghostnull", json!({ "ghost": null })).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let text = body_to_text(resp).await;
     assert!(text.contains("config.ghost"), "got: {text}");
 
     let resp = patch_config(
         &state,
-        "test.ghostnull",
+        "testghostnull",
         json!({ "label": "keep", "ghost": null }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.ghostnull").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testghostnull").await).await;
     assert_eq!(det["user_config"], json!({}), "nothing was written");
 
     let det =
-        body_to_json(patch_config(&state, "test.ghostnull", json!({ "label": "x" })).await).await;
+        body_to_json(patch_config(&state, "testghostnull", json!({ "label": "x" })).await).await;
     assert_eq!(det["user_config"], json!({ "label": "x" }));
     let det =
-        body_to_json(patch_config(&state, "test.ghostnull", json!({ "label": null })).await).await;
+        body_to_json(patch_config(&state, "testghostnull", json!({ "label": null })).await).await;
     assert_eq!(det["user_config"], json!({}));
 }
 
@@ -875,13 +908,13 @@ async fn a_stored_key_the_schema_no_longer_declares_does_not_lock_the_operator_o
         },
         "additionalProperties": false
     });
-    let src_dir = write_stub_plugin_with_config(src_root.path(), "test.narrow", wide);
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testnarrow", wide);
     install(&state, &src_dir).await;
 
     let det = body_to_json(
         patch_config(
             &state,
-            "test.narrow",
+            "testnarrow",
             json!({ "keep": "a", "old": "residue" }),
         )
         .await,
@@ -900,27 +933,27 @@ async fn a_stored_key_the_schema_no_longer_declares_does_not_lock_the_operator_o
     std::fs::write(&path, serde_json::to_string_pretty(&m).unwrap()).unwrap();
     let resp = post_json(
         app(state.clone()),
-        "/api/plugins/test.narrow/reload",
+        "/api/plugins/testnarrow/reload",
         json!({}),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "reload failed");
 
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.narrow").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testnarrow").await).await;
     assert_eq!(det["user_config"]["old"], "residue");
     assert!(
         det["effective_config"].get("old").is_none(),
         "…but nothing runs with it: {det:?}"
     );
 
-    let resp = patch_config(&state, "test.narrow", json!({ "keep": "b" })).await;
+    let resp = patch_config(&state, "testnarrow", json!({ "keep": "b" })).await;
     assert_eq!(
         resp.status(),
         StatusCode::OK,
         "an invisible key must not reject a legal request: {}",
         body_to_text(resp).await
     );
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.narrow").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testnarrow").await).await;
     assert_eq!(
         det["user_config"],
         json!({ "keep": "b", "old": "residue" }),
@@ -943,12 +976,12 @@ async fn a_stored_key_the_schema_no_longer_declares_does_not_lock_the_operator_o
     std::fs::write(&path, serde_json::to_string_pretty(&m).unwrap()).unwrap();
     let resp = post_json(
         app(state.clone()),
-        "/api/plugins/test.narrow/reload",
+        "/api/plugins/testnarrow/reload",
         json!({}),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "re-widening reload failed");
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.narrow").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testnarrow").await).await;
     assert_eq!(
         det["effective_config"]["old"], "residue",
         "the operator's value survived the narrow/widen round trip: {det:?}"
@@ -963,13 +996,13 @@ async fn a_stored_key_the_schema_no_longer_declares_does_not_lock_the_operator_o
     std::fs::write(&path, serde_json::to_string_pretty(&m).unwrap()).unwrap();
     let resp = post_json(
         app(state.clone()),
-        "/api/plugins/test.narrow/reload",
+        "/api/plugins/testnarrow/reload",
         json!({}),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "re-narrowing reload failed");
 
-    let resp = patch_config(&state, "test.narrow", json!({ "old": "again" })).await;
+    let resp = patch_config(&state, "testnarrow", json!({ "old": "again" })).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert!(
         body_to_text(resp).await.contains("config.old"),
@@ -984,15 +1017,11 @@ async fn a_manifest_blob_written_by_an_older_kernel_still_has_a_config_surface()
     let (state, _tmp, _plugins_dir, repo) = boot_state_with_repo().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir =
-        write_stub_plugin_with_config(src_root.path(), "test.upgrade", stub_config_schema());
+        write_stub_plugin_with_config(src_root.path(), "testupgrade", stub_config_schema());
     install(&state, &src_dir).await;
 
     // Rewrite the persisted blob to what an older kernel would have stored.
-    let row = repo
-        .plugin_get_by_id("test.upgrade")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = repo.plugin_get_by_id("testupgrade").await.unwrap().unwrap();
     let mut blob = row.manifest.clone();
     assert!(
         blob.as_object_mut()
@@ -1001,7 +1030,7 @@ async fn a_manifest_blob_written_by_an_older_kernel_still_has_a_config_surface()
             .is_some(),
         "fixture precondition: the blob carried the schema"
     );
-    repo.plugin_update_manifest("test.upgrade", blob)
+    repo.plugin_update_manifest("testupgrade", blob)
         .await
         .unwrap();
 
@@ -1010,12 +1039,12 @@ async fn a_manifest_blob_written_by_an_older_kernel_still_has_a_config_surface()
         .as_array()
         .unwrap()
         .iter()
-        .find(|r| r["id"] == "test.upgrade")
+        .find(|r| r["id"] == "testupgrade")
         .unwrap()
         .clone();
     assert_eq!(row["has_config"], json!(true), "got {row:?}");
 
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.upgrade").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testupgrade").await).await;
     assert_eq!(det["effective_config"], json!({ "theme": "dark" }));
     assert!(
         det["manifest"].get("config_schema").is_none(),
@@ -1029,14 +1058,14 @@ async fn a_manifest_blob_written_by_an_older_kernel_still_has_a_config_surface()
          answer in this response: {det:?}"
     );
 
-    let resp = patch_config(&state, "test.upgrade", json!({ "theme": "light" })).await;
+    let resp = patch_config(&state, "testupgrade", json!({ "theme": "light" })).await;
     assert_eq!(
         resp.status(),
         StatusCode::OK,
         "an upgraded install must not need a manual reload: {}",
         body_to_text(resp).await
     );
-    let resp = patch_config(&state, "test.upgrade", json!({ "theme": "neon" })).await;
+    let resp = patch_config(&state, "testupgrade", json!({ "theme": "neon" })).await;
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
@@ -1052,16 +1081,16 @@ async fn a_row_whose_manifest_is_not_in_the_registry_is_refused_explicitly() {
 
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin_with_config(src_root.path(), "test.gap", stub_config_schema());
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testgap", stub_config_schema());
     install(&state, &src_dir).await;
 
     // Reproduce the window: drop the registry entry, keep the row.
     let cs = calm_server::state::CodexShellState::from_ref(&state);
-    let guard = cs.plugin.try_lock_lifecycle("test.gap").expect("lock free");
+    let guard = cs.plugin.try_lock_lifecycle("testgap").expect("lock free");
     assert!(cs.plugin.registry_remove(&guard).is_some());
     drop(guard);
 
-    let resp = patch_config(&state, "test.gap", json!({ "theme": "light" })).await;
+    let resp = patch_config(&state, "testgap", json!({ "theme": "light" })).await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body = body_to_json(resp).await;
     assert_eq!(
@@ -1084,11 +1113,11 @@ async fn a_row_whose_manifest_is_not_in_the_registry_is_refused_explicitly() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|r| r["id"] == "test.gap")
+        .find(|r| r["id"] == "testgap")
         .unwrap()
         .clone();
     assert_eq!(row["has_config"], json!(false), "got {row:?}");
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.gap").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testgap").await).await;
     assert_eq!(det["effective_config"], json!({}));
     assert!(
         det.get("config_schema").is_none(),
@@ -1103,21 +1132,21 @@ async fn a_registry_gap_answers_409_even_for_a_plugin_that_declares_no_schema() 
 
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.gapnoschema");
+    let src_dir = write_stub_plugin(src_root.path(), "testgapnoschema");
     install(&state, &src_dir).await;
 
-    let resp = patch_config(&state, "test.gapnoschema", json!({ "x": 1 })).await;
+    let resp = patch_config(&state, "testgapnoschema", json!({ "x": 1 })).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     let cs = calm_server::state::CodexShellState::from_ref(&state);
     let guard = cs
         .plugin
-        .try_lock_lifecycle("test.gapnoschema")
+        .try_lock_lifecycle("testgapnoschema")
         .expect("lock free");
     assert!(cs.plugin.registry_remove(&guard).is_some());
     drop(guard);
 
-    let resp = patch_config(&state, "test.gapnoschema", json!({ "x": 1 })).await;
+    let resp = patch_config(&state, "testgapnoschema", json!({ "x": 1 })).await;
     assert_eq!(
         resp.status(),
         StatusCode::CONFLICT,
@@ -1135,13 +1164,13 @@ async fn patch_config_refuses_to_overwrite_a_non_object_user_config() {
     let (state, _tmp, _plugins_dir, repo) = boot_state_with_repo().await;
     let src_root = tempfile::tempdir().unwrap();
     let src_dir =
-        write_stub_plugin_with_config(src_root.path(), "test.corrupt", stub_config_schema());
+        write_stub_plugin_with_config(src_root.path(), "testcorrupt", stub_config_schema());
     install(&state, &src_dir).await;
-    repo.plugin_update_user_config("test.corrupt", json!("theme=light"))
+    repo.plugin_update_user_config("testcorrupt", json!("theme=light"))
         .await
         .unwrap();
 
-    let resp = patch_config(&state, "test.corrupt", json!({ "theme": "light" })).await;
+    let resp = patch_config(&state, "testcorrupt", json!({ "theme": "light" })).await;
     assert_eq!(
         resp.status(),
         StatusCode::CONFLICT,
@@ -1163,16 +1192,12 @@ async fn patch_config_refuses_to_overwrite_a_non_object_user_config() {
         "and it must not echo the corrupt value back: {text}"
     );
 
-    let row = repo
-        .plugin_get_by_id("test.corrupt")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = repo.plugin_get_by_id("testcorrupt").await.unwrap().unwrap();
     assert_eq!(row.user_config, json!("theme=light"));
 
     let resp = patch_config_query(
         &state,
-        "test.corrupt",
+        "testcorrupt",
         "?reset=true",
         json!({ "theme": "light" }),
     )
@@ -1186,7 +1211,7 @@ async fn patch_config_refuses_to_overwrite_a_non_object_user_config() {
     let det = body_to_json(resp).await;
     assert_eq!(det["user_config"], json!({ "theme": "light" }));
 
-    let resp = patch_config(&state, "test.corrupt", json!({ "label": "x" })).await;
+    let resp = patch_config(&state, "testcorrupt", json!({ "label": "x" })).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let det = body_to_json(resp).await;
     assert_eq!(
@@ -1199,14 +1224,13 @@ async fn patch_config_refuses_to_overwrite_a_non_object_user_config() {
 async fn reset_is_destructive_only_when_the_operator_asks_for_it() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir =
-        write_stub_plugin_with_config(src_root.path(), "test.reset", stub_config_schema());
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testreset", stub_config_schema());
     install(&state, &src_dir).await;
 
     let det = body_to_json(
         patch_config(
             &state,
-            "test.reset",
+            "testreset",
             json!({ "theme": "light", "label": "a" }),
         )
         .await,
@@ -1217,7 +1241,7 @@ async fn reset_is_destructive_only_when_the_operator_asks_for_it() {
         json!({ "theme": "light", "label": "a" })
     );
 
-    let det = body_to_json(patch_config(&state, "test.reset", json!({})).await).await;
+    let det = body_to_json(patch_config(&state, "testreset", json!({})).await).await;
     assert_eq!(
         det["user_config"],
         json!({ "theme": "light", "label": "a" }),
@@ -1225,8 +1249,7 @@ async fn reset_is_destructive_only_when_the_operator_asks_for_it() {
     );
 
     let det =
-        body_to_json(patch_config_query(&state, "test.reset", "?reset=true", json!({})).await)
-            .await;
+        body_to_json(patch_config_query(&state, "testreset", "?reset=true", json!({})).await).await;
     assert_eq!(det["user_config"], json!({}));
     assert_eq!(
         det["effective_config"]["theme"], "dark",
@@ -1242,7 +1265,7 @@ async fn residue_cannot_grow_the_stored_config_without_bound() {
     let src_root = tempfile::tempdir().unwrap();
     let src_dir = write_stub_plugin_with_config(
         src_root.path(),
-        "test.grow",
+        "testgrow",
         json!({
             "type": "object",
             "properties": { "k0": { "type": "string" } },
@@ -1275,14 +1298,14 @@ async fn residue_cannot_grow_the_stored_config_without_bound() {
             std::fs::write(&manifest_path, serde_json::to_string_pretty(&m).unwrap()).unwrap();
             let resp = post_json(
                 app(state.clone()),
-                "/api/plugins/test.grow/reload",
+                "/api/plugins/testgrow/reload",
                 json!({}),
             )
             .await;
             assert_eq!(resp.status(), StatusCode::OK, "reload failed on {round}");
         }
 
-        let resp = patch_config(&state, "test.grow", one(&key, &chunk)).await;
+        let resp = patch_config(&state, "testgrow", one(&key, &chunk)).await;
         if resp.status() == StatusCode::BAD_REQUEST {
             let body = body_to_json(resp).await;
             refusal = Some((
@@ -1300,7 +1323,7 @@ async fn residue_cannot_grow_the_stored_config_without_bound() {
         );
         if round >= 1 {
             let det =
-                body_to_json(get_path(app(state.clone()), "/api/plugins/test.grow").await).await;
+                body_to_json(get_path(app(state.clone()), "/api/plugins/testgrow").await).await;
             let bytes = det["user_config"].to_string().len();
             assert!(
                 bytes > 8192,
@@ -1325,7 +1348,7 @@ async fn residue_cannot_grow_the_stored_config_without_bound() {
     );
 
     let key = format!("k{round}");
-    let resp = patch_config_query(&state, "test.grow", "?reset=true", one(&key, &chunk)).await;
+    let resp = patch_config_query(&state, "testgrow", "?reset=true", one(&key, &chunk)).await;
     assert_eq!(
         resp.status(),
         StatusCode::OK,
@@ -1346,19 +1369,16 @@ async fn a_config_write_refuses_while_another_lifecycle_operation_holds_the_plug
 
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin_with_config(src_root.path(), "test.busy", stub_config_schema());
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testbusy", stub_config_schema());
     install(&state, &src_dir).await;
     let det =
-        body_to_json(patch_config(&state, "test.busy", json!({ "label": "before" })).await).await;
+        body_to_json(patch_config(&state, "testbusy", json!({ "label": "before" })).await).await;
     assert_eq!(det["user_config"], json!({ "label": "before" }));
 
     let cs = calm_server::state::CodexShellState::from_ref(&state);
-    let guard = cs
-        .plugin
-        .try_lock_lifecycle("test.busy")
-        .expect("lock free");
+    let guard = cs.plugin.try_lock_lifecycle("testbusy").expect("lock free");
 
-    let resp = patch_config(&state, "test.busy", json!({ "label": "during" })).await;
+    let resp = patch_config(&state, "testbusy", json!({ "label": "during" })).await;
     assert_eq!(
         resp.status(),
         StatusCode::CONFLICT,
@@ -1370,11 +1390,11 @@ async fn a_config_write_refuses_while_another_lifecycle_operation_holds_the_plug
         "the §2.4 three-state table already owns this cell — no new code: {body}"
     );
 
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.busy").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testbusy").await).await;
     assert_eq!(det["user_config"], json!({ "label": "before" }));
 
     drop(guard);
-    let resp = patch_config(&state, "test.busy", json!({ "label": "during" })).await;
+    let resp = patch_config(&state, "testbusy", json!({ "label": "during" })).await;
     assert_eq!(
         resp.status(),
         StatusCode::OK,
@@ -1391,20 +1411,20 @@ async fn a_config_write_refuses_while_another_lifecycle_operation_holds_the_plug
 async fn patch_config_rejects_a_non_object_body_and_accepts_an_empty_one() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin_with_config(src_root.path(), "test.body", stub_config_schema());
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testbody", stub_config_schema());
     install(&state, &src_dir).await;
     let det =
-        body_to_json(patch_config(&state, "test.body", json!({ "label": "keep" })).await).await;
+        body_to_json(patch_config(&state, "testbody", json!({ "label": "keep" })).await).await;
     assert_eq!(det["user_config"], json!({ "label": "keep" }));
 
     for body in [json!(["not", "an", "object"]), json!("nope"), json!(7)] {
-        let resp = patch_config(&state, "test.body", body.clone()).await;
+        let resp = patch_config(&state, "testbody", body.clone()).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "body {body}");
         let text = body_to_text(resp).await;
         assert!(text.contains("must be a JSON object"), "got: {text}");
     }
 
-    let resp = patch_config(&state, "test.body", json!({})).await;
+    let resp = patch_config(&state, "testbody", json!({})).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let det = body_to_json(resp).await;
     assert_eq!(
@@ -1418,14 +1438,10 @@ async fn patch_config_rejects_a_non_object_body_and_accepts_an_empty_one() {
 async fn patch_config_on_a_plugin_without_a_schema_is_400_even_for_an_empty_body() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    install(
-        &state,
-        &write_stub_plugin(src_root.path(), "test.noschema2"),
-    )
-    .await;
+    install(&state, &write_stub_plugin(src_root.path(), "testnoschema2")).await;
 
     for body in [json!({}), json!({ "theme": null })] {
-        let resp = patch_config(&state, "test.noschema2", body.clone()).await;
+        let resp = patch_config(&state, "testnoschema2", body.clone()).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "body {body}");
         assert!(body_to_text(resp).await.contains("config_schema"));
     }
@@ -1437,10 +1453,10 @@ async fn list_reports_has_config_per_plugin() {
     let src_root = tempfile::tempdir().unwrap();
     install(
         &state,
-        &write_stub_plugin_with_config(src_root.path(), "test.with", stub_config_schema()),
+        &write_stub_plugin_with_config(src_root.path(), "testwith", stub_config_schema()),
     )
     .await;
-    install(&state, &write_stub_plugin(src_root.path(), "test.without")).await;
+    install(&state, &write_stub_plugin(src_root.path(), "testwithout")).await;
 
     let rows = body_to_json(get_path(app(state.clone()), "/api/plugins").await).await;
     let rows = rows.as_array().expect("list is an array");
@@ -1450,13 +1466,13 @@ async fn list_reports_has_config_per_plugin() {
             .unwrap_or_else(|| panic!("row {id} missing from {rows:?}"))
             .clone()
     };
-    assert_eq!(find("test.with")["has_config"], json!(true));
-    assert_eq!(find("test.without")["has_config"], json!(false));
+    assert_eq!(find("testwith")["has_config"], json!(true));
+    assert_eq!(find("testwithout")["has_config"], json!(false));
 
-    let with = body_to_json(get_path(app(state.clone()), "/api/plugins/test.with").await).await;
+    let with = body_to_json(get_path(app(state.clone()), "/api/plugins/testwith").await).await;
     assert_eq!(with["config_schema"], stub_config_schema());
     let without =
-        body_to_json(get_path(app(state.clone()), "/api/plugins/test.without").await).await;
+        body_to_json(get_path(app(state.clone()), "/api/plugins/testwithout").await).await;
     assert!(
         without.get("config_schema").is_none(),
         "no schema declared ⇒ none published: {without:?}"
@@ -1467,14 +1483,14 @@ async fn list_reports_has_config_per_plugin() {
 async fn detail_carries_effective_config_without_persisting_defaults() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin_with_config(src_root.path(), "test.eff", stub_config_schema());
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testeff", stub_config_schema());
     install(&state, &src_dir).await;
 
-    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/test.eff").await).await;
+    let det = body_to_json(get_path(app(state.clone()), "/api/plugins/testeff").await).await;
     assert_eq!(det["user_config"], json!({}), "nothing persisted yet");
     assert_eq!(det["effective_config"], json!({ "theme": "dark" }));
 
-    let det = body_to_json(patch_config(&state, "test.eff", json!({ "retries": 2 })).await).await;
+    let det = body_to_json(patch_config(&state, "testeff", json!({ "retries": 2 })).await).await;
     assert_eq!(det["user_config"], json!({ "retries": 2 }));
     assert_eq!(
         det["effective_config"],
@@ -1482,7 +1498,7 @@ async fn detail_carries_effective_config_without_persisting_defaults() {
     );
 }
 
-const GHOST: &str = "test.no.such.plugin";
+const GHOST: &str = "testnosuchplugin";
 
 #[tokio::test]
 async fn enable_unknown_id_returns_404() {
@@ -1548,7 +1564,7 @@ async fn reload_unknown_id_returns_404_not_manifest_read_error() {
 async fn reload_disabled_plugin_does_not_spawn() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.reload.disabled");
+    let src_dir = write_stub_plugin(src_root.path(), "testreloaddisabled");
     let resp = post_json(
         app(state.clone()),
         "/api/plugins/install",
@@ -1557,13 +1573,13 @@ async fn reload_disabled_plugin_does_not_spawn() {
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert!(
-        state.plugin.status("test.reload.disabled").await.is_none(),
+        state.plugin.status("testreloaddisabled").await.is_none(),
         "freshly installed plugin must not be running"
     );
 
     let resp = post_json(
         app(state.clone()),
-        "/api/plugins/test.reload.disabled/reload",
+        "/api/plugins/testreloaddisabled/reload",
         json!({}),
     )
     .await;
@@ -1632,7 +1648,7 @@ async fn connector_install_writes_manifest_secrets_and_marker() {
     let resp = post_json(
         app(state.clone()),
         "/api/plugins/install",
-        connector_body("test.zhibao", json!({})),
+        connector_body("testzhibao", json!({})),
     )
     .await;
     assert_eq!(
@@ -1641,7 +1657,7 @@ async fn connector_install_writes_manifest_secrets_and_marker() {
         "connector install should 201"
     );
     let body = body_to_json(resp).await;
-    assert_eq!(body["id"], "test.zhibao");
+    assert_eq!(body["id"], "testzhibao");
     assert_eq!(body["enabled"], false, "install never enables");
     assert_eq!(body["manifest"]["kind"], "mcp-http");
     assert_eq!(
@@ -1661,7 +1677,7 @@ async fn connector_install_writes_manifest_secrets_and_marker() {
         "the install response must not echo the credential: {body}"
     );
 
-    let dir = plugins_dir.join("test.zhibao");
+    let dir = plugins_dir.join("testzhibao");
     let secrets = dir.join("secrets.json");
     assert!(dir.join("manifest.json").is_file(), "manifest.json written");
     assert!(secrets.is_file(), "secrets.json written");
@@ -1697,7 +1713,7 @@ async fn connector_install_writes_manifest_secrets_and_marker() {
 
     let arr = body_to_json(get_path(app(state.clone()), "/api/plugins").await).await;
     assert_eq!(arr.as_array().unwrap().len(), 1);
-    assert_eq!(arr[0]["id"], "test.zhibao");
+    assert_eq!(arr[0]["id"], "testzhibao");
     assert_eq!(arr[0]["manifest_name"], "Zhibao");
 }
 
@@ -1707,8 +1723,8 @@ async fn connector_install_preserves_explicit_empty_and_named_allowlists() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
 
     for (id, allow) in [
-        ("test.none", json!([])),
-        ("test.named", json!(["search", "fetch-detail"])),
+        ("testnone", json!([])),
+        ("testnamed", json!(["search", "fetch-detail"])),
     ] {
         let resp = post_json(
             app(state.clone()),
@@ -1728,15 +1744,11 @@ async fn connector_install_rejects_null_or_invalid_named_tool_lists() {
     let (state, _tmp, plugins_dir) = boot_state().await;
     for (id, allow, expected) in [
         (
-            "test.null-tools",
+            "testnulltools",
             Value::Null,
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
-        (
-            "test.bad-tool",
-            json!(["two words"]),
-            StatusCode::BAD_REQUEST,
-        ),
+        ("testbadtool", json!(["two words"]), StatusCode::BAD_REQUEST),
     ] {
         let resp = post_json(
             app(state.clone()),
@@ -1755,7 +1767,7 @@ async fn connector_install_rejects_retired_query_placement_without_writing_a_tre
     let resp = post_json(
         app(state.clone()),
         "/api/plugins/install",
-        connector_body("test.retired", json!({ "api_key_in": "query:api_key" })),
+        connector_body("testretired", json!({ "api_key_in": "query:api_key" })),
     )
     .await;
     assert_eq!(
@@ -1764,7 +1776,7 @@ async fn connector_install_rejects_retired_query_placement_without_writing_a_tre
         "`query:<name>` was retired by #1194 and must not be reachable from the UI"
     );
     assert!(
-        !plugins_dir.join("test.retired").exists(),
+        !plugins_dir.join("testretired").exists(),
         "a refused install must leave nothing on disk"
     );
 }
@@ -1775,12 +1787,12 @@ async fn connector_install_rejects_a_non_http_url_without_writing_a_tree() {
     let resp = post_json(
         app(state.clone()),
         "/api/plugins/install",
-        connector_body("test.badurl", json!({ "url": "file:///etc/passwd" })),
+        connector_body("testbadurl", json!({ "url": "file:///etc/passwd" })),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert!(
-        !plugins_dir.join("test.badurl").exists(),
+        !plugins_dir.join("testbadurl").exists(),
         "a refused install must leave nothing on disk"
     );
 }
@@ -1791,7 +1803,7 @@ async fn connector_reinstall_conflicts_without_touching_the_installed_tree() {
     let resp = post_json(
         app(state.clone()),
         "/api/plugins/install",
-        connector_body("test.dup", json!({})),
+        connector_body("testdup", json!({})),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -1800,14 +1812,14 @@ async fn connector_reinstall_conflicts_without_touching_the_installed_tree() {
         app(state.clone()),
         "/api/plugins/install",
         connector_body(
-            "test.dup",
+            "testdup",
             json!({ "api_key": "sk-second-attempt-credential" }),
         ),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CONFLICT, "duplicate id is a 409");
 
-    let secrets = plugins_dir.join("test.dup").join("secrets.json");
+    let secrets = plugins_dir.join("testdup").join("secrets.json");
     assert_eq!(
         serde_json::from_str::<Value>(&std::fs::read_to_string(&secrets).unwrap()).unwrap()["api_key"],
         TEST_KEY,
@@ -1818,14 +1830,14 @@ async fn connector_reinstall_conflicts_without_touching_the_installed_tree() {
 #[tokio::test]
 async fn connector_install_refuses_a_directory_the_kernel_did_not_write() {
     let (state, _tmp, plugins_dir) = boot_state().await;
-    let dir = plugins_dir.join("test.occupied");
+    let dir = plugins_dir.join("testoccupied");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("work.txt"), "operator's own file").unwrap();
 
     let resp = post_json(
         app(state.clone()),
         "/api/plugins/install",
-        connector_body("test.occupied", json!({})),
+        connector_body("testoccupied", json!({})),
     )
     .await;
     assert_eq!(
@@ -1846,14 +1858,14 @@ async fn uninstall_removes_a_kernel_written_connector_tree() {
     let resp = post_json(
         app(state.clone()),
         "/api/plugins/install",
-        connector_body("test.gone", json!({})),
+        connector_body("testgone", json!({})),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let dir = plugins_dir.join("test.gone");
+    let dir = plugins_dir.join("testgone");
     assert!(dir.join("secrets.json").is_file());
 
-    let resp = delete_path(app(state.clone()), "/api/plugins/test.gone").await;
+    let resp = delete_path(app(state.clone()), "/api/plugins/testgone").await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     assert!(
         !dir.exists(),
@@ -1865,7 +1877,7 @@ async fn uninstall_removes_a_kernel_written_connector_tree() {
 async fn uninstall_leaves_an_operator_supplied_tree_in_place() {
     let (state, _tmp, plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.operator");
+    let src_dir = write_stub_plugin(src_root.path(), "testoperator");
 
     let resp = post_json(
         app(state.clone()),
@@ -1875,14 +1887,14 @@ async fn uninstall_leaves_an_operator_supplied_tree_in_place() {
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    let resp = delete_path(app(state.clone()), "/api/plugins/test.operator").await;
+    let resp = delete_path(app(state.clone()), "/api/plugins/testoperator").await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     assert!(
         src_dir.join("manifest.json").is_file(),
         "uninstall must never delete a directory the operator supplied"
     );
     assert!(
-        std::fs::symlink_metadata(plugins_dir.join("test.operator")).is_ok(),
+        std::fs::symlink_metadata(plugins_dir.join("testoperator")).is_ok(),
         "and the link into plugins_dir is left alone too, as before #1480"
     );
 }
@@ -1892,7 +1904,7 @@ async fn uninstall_leaves_an_operator_supplied_tree_in_place() {
 async fn local_path_install_refuses_a_source_carrying_the_managed_marker() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
     let src_root = tempfile::tempdir().unwrap();
-    let src_dir = write_stub_plugin(src_root.path(), "test.marked");
+    let src_dir = write_stub_plugin(src_root.path(), "testmarked");
     std::fs::write(src_dir.join(".neige-managed.json"), "{}").unwrap();
 
     let resp = post_json(
@@ -1915,14 +1927,14 @@ async fn reinstalling_without_a_credential_does_not_inherit_the_previous_secret(
     let resp = post_json(
         app(state.clone()),
         "/api/plugins/install",
-        connector_body("test.rotate", json!({})),
+        connector_body("testrotate", json!({})),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let resp = delete_path(app(state.clone()), "/api/plugins/test.rotate").await;
+    let resp = delete_path(app(state.clone()), "/api/plugins/testrotate").await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    let mut body = connector_body("test.rotate", json!({}));
+    let mut body = connector_body("testrotate", json!({}));
     body["source"]["api_key"] = Value::Null;
     body["source"]["api_key_in"] = Value::Null;
     let resp = post_json(app(state.clone()), "/api/plugins/install", body).await;
@@ -1932,7 +1944,7 @@ async fn reinstalling_without_a_credential_does_not_inherit_the_previous_secret(
         "keyless connector is legal"
     );
 
-    let dir = plugins_dir.join("test.rotate");
+    let dir = plugins_dir.join("testrotate");
     assert!(
         !dir.join("secrets.json").exists(),
         "a keyless install must not leave the previous credential readable"
@@ -1949,7 +1961,7 @@ async fn reinstalling_without_a_credential_does_not_inherit_the_previous_secret(
 async fn disabled_install_and_uninstall_publish_completed_catalog_changes() {
     let (state, _tmp, _plugins_dir, repo) = boot_state_with_repo().await;
     let source = tempfile::tempdir().unwrap();
-    let dir = write_stub_plugin(source.path(), "test.catalog-change");
+    let dir = write_stub_plugin(source.path(), "testcatalogchange");
     let installed = post_json(
         app(state.clone()),
         "/api/plugins/install",
@@ -1961,23 +1973,23 @@ async fn disabled_install_and_uninstall_publish_completed_catalog_changes() {
     assert_eq!(installed.status(), StatusCode::CREATED);
     let events = repo.events_since(0, i64::MAX).await.unwrap();
     let installed_event = events.iter().rfind(|(_,_,_,event)| matches!(event,
-        calm_server::event::Event::PluginState { id, state, .. } if id == "test.catalog-change" && state == "disabled")).expect("a disabled install must notify other clients").0;
+        calm_server::event::Event::PluginState { id, state, .. } if id == "testcatalogchange" && state == "disabled")).expect("a disabled install must notify other clients").0;
     assert!(
-        repo.plugin_get_by_id("test.catalog-change")
+        repo.plugin_get_by_id("testcatalogchange")
             .await
             .unwrap()
             .is_some()
     );
-    let removed = delete_path(app(state), "/api/plugins/test.catalog-change").await;
+    let removed = delete_path(app(state), "/api/plugins/testcatalogchange").await;
     assert_eq!(removed.status(), StatusCode::NO_CONTENT);
     assert!(
-        repo.plugin_get_by_id("test.catalog-change")
+        repo.plugin_get_by_id("testcatalogchange")
             .await
             .unwrap()
             .is_none()
     );
     let events = repo.events_since(installed_event, i64::MAX).await.unwrap();
     assert!(events.iter().any(|(_,_,_,event)| matches!(event,
-        calm_server::event::Event::PluginState { id, state, .. } if id == "test.catalog-change" && state == "disabled")),
+        calm_server::event::Event::PluginState { id, state, .. } if id == "testcatalogchange" && state == "disabled")),
         "an already-disabled uninstall must notify clients after removing the row");
 }

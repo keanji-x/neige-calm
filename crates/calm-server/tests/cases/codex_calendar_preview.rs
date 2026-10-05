@@ -40,10 +40,10 @@ async fn real_planner_creates_calendar_commitment() {
         .await
         .unwrap();
     fx.plugin_host.reconcile_builtins().await.unwrap();
-    fx.plugin_host.enable("dev.neige.calendar").await.unwrap();
+    fx.plugin_host.enable("calendar").await.unwrap();
     assert!(
         fx.repo
-            .plugin_kv_list("dev.neige.calendar", "entry:")
+            .plugin_kv_list("calendar", "entry:")
             .await
             .unwrap()
             .is_empty()
@@ -52,11 +52,7 @@ async fn real_planner_creates_calendar_commitment() {
     let deadline = Instant::now() + planner_planning_budget();
     let (entry, calls) =
         loop {
-            let entries = fx
-                .repo
-                .plugin_kv_list("dev.neige.calendar", "entry:")
-                .await
-                .unwrap();
+            let entries = fx.repo.plugin_kv_list("calendar", "entry:").await.unwrap();
             let rows = support::agent_diag::planner_transcript_rows(&fx.repo)
                 .await
                 .unwrap();
@@ -125,11 +121,7 @@ async fn real_planner_creates_calendar_commitment() {
         .await
         .expect("live Planner harness");
     wait_for_planner_turn_settled(&fx, &harness, planner_planning_budget()).await;
-    let final_entries = fx
-        .repo
-        .plugin_kv_list("dev.neige.calendar", "entry:")
-        .await
-        .unwrap();
+    let final_entries = fx.repo.plugin_kv_list("calendar", "entry:").await.unwrap();
     assert_eq!(final_entries.len(), 1);
     assert_eq!(final_entries[0].1, entry);
     eprintln!("CALENDAR_PLANNER_ENTRY={entry}");
@@ -157,7 +149,7 @@ async fn real_planner_creates_calendar_commitment() {
         "Planner must reply after verifying the saved task"
     );
     shutdown_planner_harness_if_registered(&fx).await;
-    fx.plugin_host.stop("dev.neige.calendar").await.unwrap();
+    fx.plugin_host.stop("calendar").await.unwrap();
     fx.plugin_host.stop(PLUGIN_ID).await.unwrap();
     shutdown_shared_codex(&fx.shared).await;
 }

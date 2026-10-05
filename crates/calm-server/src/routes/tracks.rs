@@ -3860,7 +3860,7 @@ mod tests {
         fn plugin(input_schema: Option<Value>) -> Manifest {
             let mut v = json!({
                 "manifest_version": 2,
-                "id": "dev.neige.git-forge",
+                "id": "gitforge",
                 "version": "1.0.0",
                 "min_kernel_version": "0.0.1",
                 "display_name": "Git Forge",

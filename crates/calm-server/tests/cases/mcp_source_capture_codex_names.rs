@@ -1,6 +1,7 @@
-//! #2003 §3.2: the callable names the deployed `codex-cli 0.159.2` actually minted for the raw
-//! names below (captured from its Responses request), fed to `neige_source_capture`. Codex sends
-//! the raw name on `tools/call`; only `call.tool` here ever receives a Codex spelling.
+//! #2003 §3.2: the callable names the deployed `codex-cli 0.159.2` actually minted for the served
+//! names below (captured from its Responses request), fed to `neige_source_capture`. Served names
+//! are in `[A-Za-z0-9_]` (#2087 B5), so Codex only cuts and hashes a name over its byte cap or two
+//! equal names; the captures were made under the `-` spelling, which sanitizes to the same name.
 
 #![cfg(unix)]
 
@@ -9,7 +10,8 @@ use serde_json::json;
 use crate::mcp_source_capture::{assert_invalid_params, capture, ok_result, record};
 use crate::mcp_track_report::boot;
 
-const FORGE: &str = "dev.neige.git-forge";
+/// An installed external id of the legacy shape: it mints `plugin_dev_neige_git_forge_<tool>`.
+const FORGE: &str = "dev-neige-git-forge";
 
 /// Codex cut these to 104 bytes and appended `_` + 12 hex: one per raw tool `x` × 91, 92, 93,
 /// 101, 102, 113 and 173 (raw names of 118 to 200 bytes).
@@ -24,8 +26,8 @@ const TRUNCATED_CALLABLES: [&str; 7] = [
 ];
 const HASHED_RAW_TOOL_LENGTHS: [usize; 7] = [91, 92, 93, 101, 102, 113, 173];
 
-/// `plugin_dev.x-y_t` and `plugin_dev.x.y_t` both sanitize to `plugin_dev_x_y_t`, so Codex
-/// hash-suffixed both.
+/// `dev.x-y` and `dev.x.y` both mint `plugin_dev_x_y_t`; the host refuses to run both, and Codex
+/// hash-suffixed both callables when it was served the two raw spellings.
 const COLLIDING_CALLABLES: [&str; 2] = [
     "plugin_dev_x_y_t_7a37e287c14a",
     "plugin_dev_x_y_t_ec721b457ce9",
@@ -34,7 +36,7 @@ const COLLIDING_CALLABLES: [&str; 2] = [
 /// The longest raw tool Codex left unhashed: 117 bytes, its callable is the sanitized raw name.
 const UNHASHED_TOOL_LENGTH: usize = 90;
 
-/// A hashed callable resolves to no tool and is refused as unknown, listing the raw names that
+/// A hashed callable resolves to no tool and is refused as unknown, listing the minted names that
 /// do have a record; it never routes to a recorded tool. Unhashed callables still resolve.
 #[tokio::test]
 async fn hashed_codex_callables_fail_explicitly() {
@@ -52,11 +54,11 @@ async fn hashed_codex_callables_fail_explicitly() {
             &json!({}),
             &ok_result(&[&format!("body-{len}")]),
         );
-        raw_names.push(format!("plugin_{FORGE}_{tool}"));
+        raw_names.push(format!("plugin_dev_neige_git_forge_{tool}"));
     }
     for plugin in ["dev.x-y", "dev.x.y"] {
         record(&boot, plugin, "t", &json!({}), &ok_result(&[plugin]));
-        raw_names.push(format!("plugin_{plugin}_t"));
+        raw_names.push("plugin_dev_x_y_t".to_string());
     }
 
     for bare in TRUNCATED_CALLABLES.iter().chain(COLLIDING_CALLABLES.iter()) {
@@ -93,9 +95,6 @@ async fn hashed_codex_callables_fail_explicitly() {
         )
         .await
         .expect("an unhashed callable resolves");
-        assert_eq!(
-            receipt["matched_call"]["tool"],
-            format!("plugin_{FORGE}_{}", "x".repeat(UNHASHED_TOOL_LENGTH))
-        );
+        assert_eq!(receipt["matched_call"]["tool"], unhashed);
     }
 }

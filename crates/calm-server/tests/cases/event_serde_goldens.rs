@@ -487,7 +487,7 @@ golden_test!(
     "track_wake_requested.json",
     Event::TrackWakeRequested {
         track_id: TrackId::from("track-01"),
-        source: "dev.neige.calendar".into(),
+        source: "calendar".into(),
         key: "entry-01".into(),
         text: "Calendar entry \"Review\" started at 2026-10-02 09:00 Asia/Shanghai.".into(),
     }

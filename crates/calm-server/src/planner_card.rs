@@ -515,7 +515,7 @@ mod tests {
         for (text, expected) in [
             ("see neige_task_ls.", vec!["neige_task_ls"]),
             ("xneige_task_ls", vec![]),
-            ("dev.neige.git-forge", vec![]),
+            ("gitforge", vec![]),
             ("neige.kv.set", vec![]),
             ("neige_terminal_*", vec![]),
             ("neige_task_ls2", vec!["neige_task_ls2"]),

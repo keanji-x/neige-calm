@@ -39,8 +39,8 @@ pub use waits::*;
 
 pub const DEFAULT_PROXY: &str = "http://127.0.0.1:2080";
 pub const FORGE_BIN: &str = env!("CARGO_BIN_EXE_git-forge");
-pub const PLUGIN_ID: &str = "dev.neige.git-forge";
-pub const COMMIT_TOOL: &str = "plugin_dev.neige.git-forge_git.commit";
+pub const PLUGIN_ID: &str = "gitforge";
+pub const COMMIT_TOOL: &str = "plugin_gitforge_git_commit";
 pub const TASK_KEY: &str = "forge-e2e";
 pub const PLANNER_SESSION_ID: &str = "codex-forge-e2e-planner-session";
 /// The GitHub repository the fixture checkout's origin names; the local bare origin serves it.
@@ -186,7 +186,7 @@ Acceptance: `FORGE_E2E.md` exists at the repository root with exactly that conte
 
 pub fn forge_delivery_goal() -> String {
     r#"Goal: In your leased git worktree, create FORGE_E2E.md with exactly the single line forge-e2e-ok.
-Call plugin_dev.neige.git-forge_git.commit with {"message":"forge-e2e worker commit","idem":"forge-e2e-worker-commit"}.
+Call plugin_gitforge_git_commit with {"message":"forge-e2e worker commit","idem":"forge-e2e-worker-commit"}.
 Then call neige_task_done with your attempt_id, reporting the commit and branch.
 Use MCP for git. Do not push, open or merge a PR, or close an issue.
 Acceptance: the file is committed and the task reports its delivery."#.to_string()

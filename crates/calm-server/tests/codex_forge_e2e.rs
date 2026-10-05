@@ -38,7 +38,7 @@ use support::planner_turn::*;
 use tokio::time::{Instant, sleep};
 
 const PUBLISH_TOOL: &str = "neige_dev_publish";
-const PR_CHECKS_TOOL: &str = "plugin_dev.neige.git-forge_gh.pr.checks";
+const PR_CHECKS_TOOL: &str = "plugin_gitforge_gh_pr_checks";
 /// The d2 test's source issue. Purely an environment fact: the gh shim keeps
 /// per-repo issue state keyed by number, and any number works.
 const D2_ISSUE_NUMBER: u64 = 840;
@@ -120,7 +120,7 @@ async fn real_codex_worker_delivers_candidate_then_scripted_planner_publishes() 
     let worker_cwd = PathBuf::from(output_string(output, "cwd"));
     let worker_card_id = output_string(output, "card_id");
 
-    // The real worker discovers and calls git.commit before reporting its delivery.
+    // The real worker discovers and calls git_commit before reporting its delivery.
     let (s5_id, s5) = wait_for_first_worktree_committed_event(&fx, &task_id, budget).await;
     assert_eq!(s5.actor, ActorId::KernelDispatcher);
     assert_eq!(s5.scope_kind, "card");
@@ -264,7 +264,7 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
-// The only possible emitter of `forge.pr.merged` / `forge.issue.closed` is the real planner's own `tools/call`: scripted setup stops at `neige_dev_publish`/`gh.pr.checks`.
+// The only possible emitter of `forge.pr.merged` / `forge.issue.closed` is the real planner's own `tools/call`: scripted setup stops at `neige_dev_publish`/`gh_pr_checks`.
 // The op idem-key checks pin the caller card only; scripted setup uses the same planner thread, so they cannot discriminate scripted-vs-autonomous.
 #[tokio::test]
 async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descriptor() {
@@ -359,7 +359,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         json!({ "repo": repo_arg, "pr": pr_number }),
     )
     .await;
-    assert_forge_tool_accepted(&checks_resp, "gh.pr.checks");
+    assert_forge_tool_accepted(&checks_resp, "gh_pr_checks");
     let (checks_id, _, checks) = wait_for_track_forge_event(
         &fx,
         "forge.pr.checks",
@@ -488,12 +488,12 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     let merge_keys = forge_action_idem_keys_containing(&fx, ":gh.pr.merge:").await;
     assert!(
         !merge_keys.is_empty(),
-        "expected a parked forge-action gh.pr.merge operation row"
+        "expected a parked forge-action gh_pr_merge operation row"
     );
     for key in &merge_keys {
         assert_eq!(
             key, &expected_merge_key,
-            "every gh.pr.merge forge-action op must carry the with-sha idempotency key: {merge_keys:?}"
+            "every gh_pr_merge forge-action op must carry the with-sha idempotency key: {merge_keys:?}"
         );
     }
 
@@ -541,12 +541,12 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     let close_keys = forge_action_idem_keys_containing(&fx, ":gh.issue.close:").await;
     assert!(
         !close_keys.is_empty(),
-        "expected a parked forge-action gh.issue.close operation row"
+        "expected a parked forge-action gh_issue_close operation row"
     );
     for key in &close_keys {
         assert_eq!(
             key, &expected_close_key,
-            "every gh.issue.close forge-action op must target the goal issue from the planner seat: {close_keys:?}"
+            "every gh_issue_close forge-action op must target the goal issue from the planner seat: {close_keys:?}"
         );
     }
 
@@ -768,7 +768,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     )
     .await;
 
-    // S8 — a real reviewer worker reads the merge-base diff via gh.pr.diff; zero `forge.pr.diff.read` fails the run. The event is card-anonymous, so exact reviewer attribution is tolerated.
+    // S8 — a real reviewer worker reads the merge-base diff via gh_pr_diff; zero `forge.pr.diff.read` fails the run. The event is card-anonymous, so exact reviewer attribution is tolerated.
     let (diff_id, diff_actor, diff_read) = wait_capstone_event(
         &fx,
         "forge.pr.diff.read",

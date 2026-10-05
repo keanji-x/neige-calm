@@ -436,7 +436,7 @@ async fn extend_plugin_tool_descriptors(
 }
 
 /// Discovery mints `plugin_<id>_<tool>` names with [`crate::plugin_results::registry_name`]; `plugin_tool_route` is its inverse.
-fn plugin_tool_descriptors_from(
+pub(crate) fn plugin_tool_descriptors_from(
     manifests: Vec<crate::plugin_host::Manifest>,
     running_ids: &BTreeSet<String>,
     scope: &ToolDiscoveryScope<'_>,
@@ -665,30 +665,27 @@ async fn dispatch_plugin_tools_call(
     }
 }
 
-/// Inverse of [`plugin_tool_descriptors_from`]: resolve a minted `plugin_<id>_<tool>` name back to its owner.
+/// Inverse of [`plugin_tool_descriptors_from`]: the exact lookup of a minted name among the running
+/// plugins' minted names, giving back the raw `(id, tool)` pair; dispatch sends the plugin its raw
+/// upstream tool name. Minting is not injective, so a name two pairs mint is refused, not guessed.
 fn plugin_tool_route(
     registry: &crate::plugin_host::PluginRegistry,
     name: &str,
     running_ids: &BTreeSet<String>,
 ) -> Result<Option<(String, String, Option<ToolKind>)>, RpcError> {
-    let Some(rest) = name.strip_prefix(crate::plugin_results::PLUGIN_TOOL_PREFIX) else {
+    if !name.starts_with(crate::plugin_results::PLUGIN_TOOL_PREFIX) {
         return Ok(None);
-    };
+    }
 
     let mut candidates = Vec::new();
     for manifest in registry.list() {
-        let plugin_id = manifest.id;
-        if !running_ids.contains(&plugin_id) {
+        if !running_ids.contains(&manifest.id) {
             continue;
         }
-        let prefix = format!("{plugin_id}_");
-        if let Some(tool_name) = rest.strip_prefix(&prefix)
-            && let Some(entry) = manifest
-                .exposes_tools
-                .iter()
-                .find(|entry| entry.name == tool_name)
-        {
-            candidates.push((plugin_id, tool_name.to_string(), entry.kind));
+        for entry in &manifest.exposes_tools {
+            if crate::plugin_results::registry_name(&manifest.id, &entry.name) == name {
+                candidates.push((manifest.id.clone(), entry.name.clone(), entry.kind));
+            }
         }
     }
 
@@ -699,12 +696,11 @@ fn plugin_tool_route(
             Ok(Some((plugin_id, tool_name, kind)))
         }
         _ => {
-            // Unreachable by construction (plugin ids cannot contain `_`); kept as defense-in-depth.
+            // Spawn refuses a plugin that would mint a running plugin's name, so this is defence
+            // in depth (a registry built without that fence); the raw pairs are named.
             let mut matches = candidates
                 .into_iter()
-                .map(|(plugin_id, tool_name, _kind)| {
-                    crate::plugin_results::registry_name(&plugin_id, &tool_name)
-                })
+                .map(|(plugin_id, tool_name, _kind)| format!("{plugin_id}/{tool_name}"))
                 .collect::<Vec<_>>();
             matches.sort();
             Err(RpcError::custom(
@@ -808,6 +804,17 @@ pub(crate) async fn submit_forge_action(
     .await
 }
 
+/// The operations dedup key of one forge action, `<plugin_id>:<track>:<card>:<idem_key>`; every
+/// submit and every lookup of a submitted action computes it here.
+pub(crate) fn forge_idempotency_key(
+    plugin_id: &str,
+    track_id: &str,
+    card_id: &str,
+    idem_key: &str,
+) -> String {
+    format!("{plugin_id}:{track_id}:{card_id}:{idem_key}")
+}
+
 /// `submit_forge_action` with the caller's `operation_key`: a kernel delivery re-submits its persisted key.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn submit_forge_action_with_key(
@@ -823,7 +830,7 @@ pub(crate) async fn submit_forge_action_with_key(
     validate_plugin_forge_payload(&payload)?;
 
     let parked = payload.parked;
-    let idempotency_key = format!("{plugin_id}:{track_id}:{card_id}:{}", payload.idem_key);
+    let idempotency_key = forge_idempotency_key(plugin_id, &track_id, &card_id, &payload.idem_key);
     let result_path = forge_result_path(gate_logs_dir, &idempotency_key)?;
     let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
 
@@ -1203,6 +1210,7 @@ fn mcp_error_result_with_structured(message: String, structured: Value) -> Value
 mod connector_tool_routing_tests {
     use super::*;
     use crate::plugin_host::{Manifest, PluginRegistry};
+    use crate::plugin_results::registry_name;
 
     const CONNECTOR_ID: &str = "mcp-wisburg";
     /// Underscores, not hyphens: the tool name must contain `_`, the character the `plugin_<id>_<tool>` boundary is built on.
@@ -1284,11 +1292,11 @@ mod connector_tool_routing_tests {
         .collect();
 
         assert!(
-            names.contains(&format!("plugin_{CONNECTOR_ID}_{UNDERSCORE_TOOL}")),
+            names.contains(&registry_name(CONNECTOR_ID, UNDERSCORE_TOOL)),
             "allowlisted connector tool must be discoverable: {names:?}"
         );
         assert!(
-            names.contains(&format!("plugin_{CONNECTOR_ID}_{OTHER_TOOL}")),
+            names.contains(&registry_name(CONNECTOR_ID, OTHER_TOOL)),
             "second allowlisted tool must be discoverable: {names:?}"
         );
         assert!(
@@ -1320,11 +1328,11 @@ mod connector_tool_routing_tests {
         );
     }
 
-    /// `entry is Found(e)` iff `route(plugin_{id}_{tool}) == Some((id, tool, e.kind))`.
+    /// `entry is Found(e)` iff `route(registry_name(id, tool)) == Some((id, tool, e.kind))`.
     #[test]
     fn tool_entry_matches_tool_route() {
         let sibling = "mcp";
-        let near_miss = format!("wisburg_{UNDERSCORE_TOOL}");
+        let near_miss = format!("wisburg2_{UNDERSCORE_TOOL}");
         let registry = PluginRegistry::from_manifests([
             (
                 materialized_connector(
@@ -1371,7 +1379,7 @@ mod connector_tool_routing_tests {
         for running in &running_sets {
             for (id, tool) in &pairs {
                 let entry = plugin_tool_entry(&registry, running, id, tool);
-                let minted = format!("plugin_{id}_{tool}");
+                let minted = registry_name(id, tool);
                 let route = plugin_tool_route(&registry, &minted, running)
                     .unwrap_or_else(|e| panic!("{minted}: {e:?}"));
                 match entry {
@@ -1401,7 +1409,8 @@ mod connector_tool_routing_tests {
             &[UNDERSCORE_TOOL, OTHER_TOOL],
             &[UNDERSCORE_TOOL, OTHER_TOOL],
         )]);
-        let minted = format!("plugin_{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
+        let minted = registry_name(CONNECTOR_ID, UNDERSCORE_TOOL);
+        assert_eq!(minted, "plugin_mcp_wisburg_list_institutional_reports");
         let route = plugin_tool_route(&registry, &minted, &running(&[CONNECTOR_ID]))
             .expect("route resolution must not be ambiguous")
             .expect("minted name must route");
@@ -1411,53 +1420,120 @@ mod connector_tool_routing_tests {
         assert!(route.2.is_none(), "connector tools must carry kind: None");
     }
 
-    /// A sibling connector whose id is a strict PREFIX cannot collide: ids exclude `_`, so every minted name has exactly one possible split.
+    /// `mcp` + `wisburg_<tool>` and `mcp-wisburg` + `<tool>` mint one name. Spawn refuses the
+    /// second of them; a registry built without that fence still never guesses: routing refuses the
+    /// name, naming both raw pairs, and each pair's tool routes when it runs alone.
     #[test]
-    fn prefix_sibling_connector_cannot_shadow_the_route() {
+    fn a_name_two_plugins_mint_is_refused_at_routing() {
         let sibling = "mcp";
         let near_miss = format!("wisburg_{UNDERSCORE_TOOL}");
-        let sibling_manifest =
-            materialized_connector_schemaless(sibling, &[&near_miss], &[&near_miss]);
-        assert_eq!(
-            sibling_manifest.exposes_tools.len(),
-            1,
-            "sibling tool must materialize"
-        );
-        assert!(
-            sibling_manifest.exposes_tools[0].input_schema.is_none(),
-            "sibling upstream carries no `inputSchema` — keep this fixture \
-             byte-identical to the pre-#1196 one"
-        );
         let registry = PluginRegistry::from_manifests([
             (
                 materialized_connector(CONNECTOR_ID, &[UNDERSCORE_TOOL], &[UNDERSCORE_TOOL]),
                 None,
             ),
-            (sibling_manifest, None),
+            (
+                materialized_connector_schemaless(sibling, &[&near_miss], &[&near_miss]),
+                None,
+            ),
         ]);
+        let minted = registry_name(CONNECTOR_ID, UNDERSCORE_TOOL);
+        assert_eq!(minted, registry_name(sibling, &near_miss));
 
-        let minted = format!("plugin_{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
-        let sibling_minted = format!("plugin_{sibling}_{near_miss}");
-        assert_ne!(
-            minted, sibling_minted,
-            "the `_` boundary must keep these distinct"
+        let err = plugin_tool_route(&registry, &minted, &running(&[CONNECTOR_ID, sibling]))
+            .expect_err("two raw pairs mint one name");
+        assert_eq!(
+            err.message,
+            format!(
+                "ambiguous plugin tool `{minted}` matches mcp-wisburg/{UNDERSCORE_TOOL}, mcp/{near_miss}"
+            )
         );
+        let alone = plugin_tool_route(&registry, &minted, &running(&[sibling]))
+            .expect("one running owner")
+            .expect("routes");
+        assert_eq!(
+            (alone.0.as_str(), alone.1.as_str()),
+            (sibling, near_miss.as_str())
+        );
+    }
 
-        let running = running(&[CONNECTOR_ID, sibling]);
-        let route = plugin_tool_route(&registry, &minted, &running)
-            .expect("must not be ambiguous")
-            .expect("must route");
+    /// #2087 §6: a connector tool named `foo.bar` is served as `plugin_<id>_foo_bar`, and the
+    /// route hands dispatch the raw upstream name `foo.bar`.
+    #[test]
+    fn a_dotted_connector_tool_is_minted_with_underscores_and_routes_to_its_raw_name() {
+        let registry = registry_after_materialization(&[(
+            CONNECTOR_ID,
+            &["foo.bar", "get-report"],
+            &["foo.bar", "get-report"],
+        )]);
+        let names: Vec<String> = plugin_tool_descriptors_from(
+            registry.list(),
+            &running(&[CONNECTOR_ID]),
+            &ToolDiscoveryScope::Track(&TrackPluginScope::All),
+        )
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "plugin_mcp_wisburg_foo_bar",
+                "plugin_mcp_wisburg_get_report"
+            ]
+        );
+        let route = plugin_tool_route(
+            &registry,
+            "plugin_mcp_wisburg_foo_bar",
+            &running(&[CONNECTOR_ID]),
+        )
+        .expect("unambiguous")
+        .expect("routes");
         assert_eq!(
             (route.0.as_str(), route.1.as_str()),
-            (CONNECTOR_ID, UNDERSCORE_TOOL)
+            (CONNECTOR_ID, "foo.bar")
+        );
+        for raw in ["plugin_mcp-wisburg_foo.bar", "plugin_mcp_wisburg_foo.bar"] {
+            assert_eq!(
+                plugin_tool_route(&registry, raw, &running(&[CONNECTOR_ID])).expect("no error"),
+                None,
+                "{raw} is not a served name"
+            );
+        }
+    }
+
+    /// #2087 §6: tools that mint one name are refused, in a manifest and in a connector's
+    /// materialized set, and so is a second running plugin whose id mints the same prefix.
+    #[test]
+    fn minted_tool_names_refuse_collisions() {
+        let manifest = json!({
+            "manifest_version": 1, "id": "dupe", "version": "0.1.0",
+            "min_kernel_version": "0.0.1", "display_name": "Dupe",
+            "entrypoint": { "command": "bin/stub" },
+            "exposes_tools": [ { "name": "foo.bar" }, { "name": "foo_bar" } ],
+        });
+        let err = Manifest::parse(&manifest.to_string()).expect_err("colliding tools");
+        assert!(
+            err.to_string()
+                .contains("tools `foo.bar` and `foo_bar` both mint `plugin_dupe_foo_bar`"),
+            "{err}"
         );
 
-        let sibling_route = plugin_tool_route(&registry, &sibling_minted, &running)
-            .expect("must not be ambiguous")
-            .expect("must route");
+        let block = connector_manifest(CONNECTOR_ID, &[])
+            .mcp_http
+            .expect("block");
+        let mut block = block;
+        block.tools_all = true;
+        let tools = crate::plugin_host::connector::materialize_http_tools(
+            CONNECTOR_ID,
+            &block,
+            &[json!({ "name": "foo-bar" }), json!({ "name": "foo.bar" })],
+        );
         assert_eq!(
-            (sibling_route.0.as_str(), sibling_route.1.as_str()),
-            (sibling, near_miss.as_str())
+            crate::plugin_host::connector::refuse_minted_collisions(CONNECTOR_ID, &tools),
+            Err(
+                "tools `foo-bar` and `foo.bar` both mint `plugin_mcp_wisburg_foo_bar`; rename one upstream"
+                    .to_string()
+            )
         );
     }
 }

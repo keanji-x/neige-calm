@@ -2,7 +2,8 @@
 
 Status: normative for every new or changed kernel tool, `neige` command and native plugin tool.
 Appendices A–B are the plan that brings the current surface into line; Appendix C records the
-owner's decisions (2026-10-04; revised the same day to the `_` separator, C9). Builds on #2003 (`docs/architecture/2003-cli-mcp-naming.md`: brand, grammar,
+owner's decisions (2026-10-04; revised the same day to the `_` separator, C9; B5 descoped
+2026-10-05, C10). Builds on #2003 (`docs/architecture/2003-cli-mcp-naming.md`: brand, grammar,
 mechanical CLI) and #2053 (Worker report actions). Verified at `24102733a` (2026-10-04). Issue: #2087.
 
 ## 1. Principles
@@ -181,25 +182,28 @@ Agent-facing JSON-RPC codes, one meaning each:
 
 ## 6. Plugins
 
-- **Plugin id:** one word, `[a-z0-9]+`, 2–32 bytes, for **every** plugin. The manifest validator
-  enforces it. The seven installed ids all contain `.` or `-` today and are renamed (slice B5):
+- **Plugin id:** one word, `[a-z0-9]+`, 2–32 bytes. The two built-ins are words (slice B5,
+  migration 0148), and the install route refuses any other id for a new plugin. The five
+  installed external ids are grandfathered (Appendix C, item 10): the boot loader still accepts
+  them, and their rows keep reload and enable, until each plugin is reinstalled under a word.
 
-  | Today | New |
+  | Plugin | Id |
   |---|---|
-  | `dev.neige.calendar` | `calendar` |
-  | `dev.neige.git-forge` | `gitforge` |
-  | `dev-neige-market` | `market` |
-  | `dev-neige-barra` | `barra` |
-  | `dev-neige-paper-trading` | `papertrading` |
-  | `cli-longbridge` | `longbridge` |
-  | `mcp-wisburg-mcp-server-49abefc5` | `wisburg` |
+  | Calendar (built-in) | `calendar` (was `dev.neige.calendar`) |
+  | Development (built-in) | `gitforge` (was `dev.neige.git-forge`) |
+  | Market, Barra, Paper trading | `dev-neige-market`, `dev-neige-barra`, `dev-neige-paper-trading` (kept) |
+  | Longbridge, Wisburg | `cli-longbridge`, `mcp-wisburg-mcp-server-49abefc5` (kept) |
 
-- **Minted name:** `plugin_<id>_<tool>`, where `<tool>` is the manifest tool name with every
-  character outside `[A-Za-z0-9_]` written `_`. Registering a manifest refuses two tools whose
-  minted names are equal. One minting function owns the minted name, and discovery, routing
-  (today `transport.rs:674` compares the suffix with the raw manifest name) and recorded plugin
-  results all use it; routing looks the minted name up and dispatch sends the plugin its original
-  upstream name.
+- **Minted name:** `plugin_<id>_<tool>`, where both `<id>` and `<tool>` have every character
+  outside `[A-Za-z0-9_]` written `_` (`plugin_dev_neige_market_market_quote`), so Codex and Claude
+  show the model the same name. `plugin_results::registry_name` is the one minting function;
+  discovery, the ambiguity message, recorded results and `source_capture` use it, and migration
+  0148 respelled stored transcript names the same way. Routing looks the minted name up among the
+  running plugins' minted names and dispatch sends the plugin its original upstream name. Minting
+  is not injective, so it is fenced: a manifest (or a connector's materialized tool set) whose
+  tools mint one name is refused, and a plugin whose id mints the same `plugin_<id>_` prefix as a
+  running one (`a-b`, `a.b`) is refused at spawn. A name two plugins still mint is refused at
+  routing, naming both raw pairs.
 - **Native tool names** (manifest-authored) are written in the minted form already:
   `<object>_<verb>` with §3's verbs and §4's parameters, so nothing is rewritten. A tool that wraps
   a known CLI mirrors that CLI's words instead (`gh_pr_list`, `git_worktree_add`). A connector
@@ -234,7 +238,8 @@ Adding or changing a tool or command:
 7. Regenerate goldens and keep the Planner byte budget. Run the tests below. One recorded
    exception (#2130, owner): `neige_mail_send` must be listed to be discoverable, so S1 trimmed
    restated schema facts from eight Planner descriptions (164 B) and raised
-   `planner_tool_surface_fits_its_byte_budget`'s cap by the remaining 430 B, to 30,430 B.
+   `planner_tool_surface_fits_its_byte_budget`'s cap by the remaining 430 B, to 30,430 B. B5 lowered it
+   to the measured 30,398 B.
 
 Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes it to §2's
 `neige_<word>_<word>`), `every_option_is_its_schema_key`, `prompt_neige_mentions_name_served_commands` (H8),
@@ -243,13 +248,18 @@ Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes
 
 Added by the slices (registry-driven, Appendix B); the last one is still proposed (B4):
 
-- `served_tool_names_use_the_word_alphabet`: every name in `tools/list` matches `[A-Za-z0-9_]+`.
-  B0 asserts it for kernel tools; B5 extends it to every plugin tool.
+- `served_tool_names_use_the_word_alphabet`: every name in `tools/list` matches `[A-Za-z0-9_]+`,
+  kernel and plugin tools alike (B5 adds the built-ins, the repository manifests and a connector
+  whose id and tools carry `.` and `-`).
 - `served_tool_names_fit_the_codex_cap`: the `mcp__neige__` form of every kernel and native
   plugin tool is within 128 bytes. Connector tools are exempt (§9).
 - `kernel_tool_actions_are_in_the_vocabulary`: every action is one §3 verb (added in B1c, once
   every retired verb is gone).
-- `plugin_ids_are_words`: every registered and built-in manifest id matches `[a-z0-9]{2,32}`.
+- `plugin_ids_are_words`: every built-in manifest id, and every id the install route accepts for
+  a new plugin, matches `[a-z0-9]{2,32}` (installed external ids are grandfathered, §9).
+- `minted_tool_names_refuse_collisions` and `a_connector_tool_with_a_dot_is_called_upstream_by_its_raw_name`
+  (B5): colliding tools and ids are refused, and `foo.bar` is served as `plugin_<id>_foo_bar` and
+  called upstream as `foo.bar`.
 - `kernel_tool_params_use_the_vocabulary`: every input key, recursively, is snake_case (opaque
   payloads skipped, §4), and no top-level key is a retired name (`id`, `after`, `cancelled`,
   `time_zone`, `request_id`, `select`, `until`).
@@ -270,8 +280,15 @@ Added by the slices (registry-driven, Appendix B); the last one is still propose
   native tools only.
 - `report_commit`'s nested `ops[].id` is a bare block id; renaming it to `block_id` changes the
   report op contract without an observed pain (kept).
-- Native plugin tools repeat their id as the first word (`plugin_market_market_quote`,
-  `plugin_barra_barra_series`). Dropping it would rename recipe-named tools (cut, Appendix B).
+- KNOWN GAP (B5 descope, Appendix C item 10): the five installed external plugin ids keep `.` or
+  `-` (`dev-neige-market`, `dev-neige-barra`, `dev-neige-paper-trading`, `cli-longbridge`,
+  `mcp-wisburg-mcp-server-49abefc5`). Renaming one moves its directory under
+  `~/.config/neige-calm/plugins` and rewrites the report CRDT cards and `report_sources` that name
+  it, so each keeps its id until it is reinstalled under a word. Their minted names are already
+  in the word alphabet. Recipe bodies are rewritten only for the built-in names; on 4140 no recipe
+  names a minted external tool.
+- Native plugin tools repeat their id's last word as the first word
+  (`plugin_dev_neige_market_market_quote`, `plugin_dev_neige_barra_barra_series`). Dropping it would rename recipe-named tools (cut, Appendix B).
 
 ## Appendix A — Conformance table (proposal)
 
@@ -336,7 +353,7 @@ guide budget (7,489 / 7,500 B) before and after; trim wording, never raise a cap
 | B2 | Parameters and paging: `cursor` everywhere (string), `report_read` `blocks`/`sections`/`detail`, `ratify_request` `text`, outputs `timezone`, plus the parameter vocabulary test | `after` with two types; one selection spelled two ways | `workspace_log` pages with a string cursor; `fe` wire regenerated with `npm run gen:api` | New `kernel_tool_params_use_the_vocabulary`; mutation: rename `cursor` back to `after` on one tool → red |
 | B3 | Results: snake_case report outputs; `{reports: […]}` with `track_id`/`updated_at` | `docRev` beside `updated_at` | CLI `--json` and MCP agree; refusal texts say `doc_rev` | New `report_tool_results_are_snake_case` over real `read`/`write`/`commit`/`find` calls (recursion skips `payload`); mutation: restore `docRev` → red |
 | B4 | Errors and exits: transport-level unknown-key refusal for every kernel tool, codes per §5, tool-name prefixes, forwarder exits 3 (transport) and 2 (non-UTF-8 argument) | silent unknown keys; overloaded codes | Every kernel tool refuses `{"zz": 1}` with its valid keys | New `every_kernel_tool_refuses_unknown_arguments`; mutation: skip the check for one tool → red; existing `kernel_exit_codes_are_exactly_0_1_4` plus a forwarder twin |
-| B5 | Plugin ids and minted names: the seven ids of §6 become words in the manifests (repo and installed), kernel references and one migration over every table that stores a plugin id or a minted plugin name (plugins, plugin_kv, plugin_tokens, report sources, scopes and bindings, transcript `plugin_<id>_…` names, recipes; count each on 4140 first); native manifest tool names respelled `_` (`gh.pr.checks` → `gh_pr_checks`); the validator takes `[a-z0-9]{2,32}` and refuses colliding minted names; one minting function for discovery, routing and recorded results (§6); `source_capture` then drops its sanitized-spelling fallback and keeps only stripping the `mcp__<server>__` qualifier | ids in three shapes; `-` and `.` rewritten by Codex but not by Claude | Every served plugin name passes `served_tool_names_use_the_word_alphabet`; a connector tool named `foo.bar` is served as `…_foo_bar` and called upstream as `foo.bar`; nothing on 4140 still holds an old id | New `plugin_ids_are_words`; mutation: restore one old built-in id → red |
+| B5 | Plugin ids and minted names, descoped (Appendix C, item 10): the two built-in ids become words (`calendar`, `gitforge`) in the manifests, kernel references, `fe` and one migration (0148: `plugins` row copy with `plugin_kv`/`plugin_tokens`, `tracks.plugin_scope`, the `operations.idempotency_key` prefix, transcript `plugin_<id>_…` names respelled as minted, recipes); git-forge's tool names respelled `_` (`gh.pr.checks` → `gh_pr_checks`) with its `idem_key` literals unchanged; every plugin tool name minted in `[A-Za-z0-9_]` by one function for discovery, routing and recorded results (§6); colliding minted tools and ids refused; the install route takes only `[a-z0-9]{2,32}` for a new id; `source_capture` drops its sanitized-spelling fallback and keeps only stripping the `mcp__<server>__` qualifier | ids in three shapes; `-` and `.` rewritten by Codex but not by Claude | Every served plugin name passes `served_tool_names_use_the_word_alphabet`; a connector tool named `foo.bar` is served as `…_foo_bar` and called upstream as `foo.bar`; nothing on 4140 holds an old built-in id outside history | New `plugin_ids_are_words`; mutation: restore `dev.neige.calendar` as the built-in id → red; mutation: route by the raw tool name → the `foo.bar` dispatch test red |
 
 **Approved scope (owner, 2026-10-04):** B0, B1 (B1a–B1c) and B2 first, then B5. Each slice that
 renames stored names adds its own migration: a merged migration is frozen, and main deploys between
@@ -373,3 +390,8 @@ host-callback codes; `limit` on paged tools.
    the Claude and OpenAI APIs refuse it. With one-word segments and `_` between them, the name in
    prompts, docs and help is the name the model sees, and it still splits into the CLI command.
    The `neige_` prefix stays, so a kernel tool is recognizable in any text. Slice B0.
+10. **B5 descope (2026-10-05).** Only the two built-in ids are renamed (`dev.neige.calendar` →
+    `calendar`, `dev.neige.git-forge` → `gitforge`), and the kernel mints every plugin tool name in
+    `[A-Za-z0-9_]`, so Codex and Claude show the model the same name. The five installed external
+    plugins keep their ids: renaming them needs filesystem moves and a report-CRDT rewrite. New
+    plugins must use one-word ids (§6, §9).

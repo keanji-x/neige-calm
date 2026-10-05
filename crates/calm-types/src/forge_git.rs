@@ -9,7 +9,7 @@
 /// `core.sshCommand`) or the network: git runs without a GitHub token (it keeps HOME, the
 /// proxies and the ssh agent a push may need), and gh runs from `/`, outside any repository,
 /// without the ssh keys. Prepended by the argv builders of the scripts that call them: every
-/// script of the plugin's `git.commit` (action, probe and output probe: `status` runs
+/// script of the plugin's `git_commit` (action, probe and output probe: `status` runs
 /// `core.fsmonitor` and clean filters, `log` runs `gpg.program` under `log.showSignature`), the
 /// delivery action and the publish scripts. The delivery probes and the provenance function run
 /// only `rev-parse`, `merge-base --is-ancestor` and `worktree list`, which run no repository

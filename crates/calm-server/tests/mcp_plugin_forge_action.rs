@@ -37,7 +37,7 @@ use tokio::time::{Instant, sleep};
 const FORGE_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-forge-action");
 const PLUGIN_ID: &str = "dev.neige.stub-forge";
 const TOOL_NAME: &str = "forge.scan";
-const EXPOSED_NAME: &str = "plugin_dev.neige.stub-forge_forge.scan";
+const EXPOSED_NAME: &str = "plugin_dev_neige_stub_forge_forge_scan";
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 

@@ -14,12 +14,13 @@ function object(value: unknown): value is Record<string, unknown> {
 function invalid(error: string): McpConfigResult { return { kind: 'invalid', error }; }
 function unresolved(value: string): boolean { return /\$\{|\{\{/.test(value); }
 
-/** Identity excludes header values: rotating a key must not rename a plugin. */
+/** Identity excludes header values: rotating a key must not rename a plugin. A plugin id is one
+ * word, `[a-z0-9]{2,32}` (#2087): at most 24 slug characters, then 8 hex of the hash. */
 function idOf(name: string, endpoint: string): string {
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'server';
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'server';
   let hash = 2166136261;
   for (const char of `${name}\n${endpoint}`) hash = Math.imul(hash ^ char.codePointAt(0)!, 16777619);
-  return `mcp-${slug}-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  return `${slug}${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 export function parseMcpConfig(raw: string, selectedName?: string): McpConfigResult {

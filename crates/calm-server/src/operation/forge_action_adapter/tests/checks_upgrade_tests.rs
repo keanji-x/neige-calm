@@ -16,7 +16,7 @@ fn historical_payload(fx: &ForgeRuntimeFixture) -> PluginForgePayload {
 fn current_payload() -> PluginForgePayload {
     serde_json::from_value(
         lower(
-            "gh.pr.checks",
+            "gh_pr_checks",
             &json!({
                 "repo": "owner/repo", "pr": 42, "attempt": "upgrade"
             }),
@@ -156,7 +156,7 @@ async fn checks_upgrade_rejects_different_parameters_and_scopes() {
     let numeric_op = submit(&fx, numeric_attempt).await;
     fx.runtime.wait(&numeric_op).await.unwrap();
     let collision = lower(
-        "gh.pr.checks",
+        "gh_pr_checks",
         &json!({
             "repo": "owner/repo:42", "pr": 43
         }),
@@ -210,7 +210,7 @@ async fn checks_upgrade_rejects_different_parameters_and_scopes() {
         json!({"repo":"owner/repo", "pr":42, "attempt":"new-attempt"}),
     ] {
         let mut payload: PluginForgePayload =
-            serde_json::from_value(lower("gh.pr.checks", &args).unwrap()).unwrap();
+            serde_json::from_value(lower("gh_pr_checks", &args).unwrap()).unwrap();
         payload.argv = vec!["/bin/false".into()];
         let new_op = submit(&fx, payload).await;
         assert_ne!(new_op, op_id);

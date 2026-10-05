@@ -2807,7 +2807,7 @@ mod tests {
                     .find(|id| !id.is_empty())
                     .map(str::to_string)
             })
-            .unwrap_or_else(|| "dev.neige.git-forge".to_string())
+            .unwrap_or_else(|| "gitforge".to_string())
     }
 
     fn untrusted_plugin_id(trusted_plugin_id: &str) -> String {

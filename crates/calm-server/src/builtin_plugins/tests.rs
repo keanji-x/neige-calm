@@ -9,7 +9,7 @@ use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 
-const ID: &str = "dev.neige.git-forge";
+const ID: &str = "gitforge";
 const NATIVE: [&str; 1] = ["neige_dev_publish"];
 struct Fixture {
     repo: Arc<SqlxRepo>,
@@ -195,9 +195,7 @@ async fn builtin_discovery_matches_native_and_git_call_scope() {
             );
         }
         assert_eq!(
-            names
-                .iter()
-                .any(|n| n.starts_with("plugin_dev.neige.git-forge_")),
+            names.iter().any(|n| n.starts_with("plugin_gitforge_")),
             scope == Some(ID)
         );
     }
@@ -205,7 +203,11 @@ async fn builtin_discovery_matches_native_and_git_call_scope() {
     let identity = fx.identity(&track);
     fx.host.disable(ID).await.unwrap();
     let names = fx.tool_names(&identity).await;
-    assert!(names.iter().all(|n| !NATIVE.contains(&n.as_str()) && !n.starts_with("plugin_dev.neige.git-forge_")));
+    assert!(
+        names
+            .iter()
+            .all(|n| !NATIVE.contains(&n.as_str()) && !n.starts_with("plugin_gitforge_"))
+    );
 }
 
 #[tokio::test]
@@ -375,4 +377,20 @@ async fn builtin_legacy_issue_documentation_preserves_snapshot_and_authority() {
             .iter()
             .any(|name| NATIVE.contains(&name.as_str()))
     );
+}
+
+/// #2087 B5: each compiled id constant names its own manifest, and both are one word, so the
+/// kv namespace, the Track scope and the `plugins` row a built-in writes are the row
+/// `reconcile_builtins` keeps.
+#[test]
+fn builtin_plugin_ids_are_their_manifest_ids_and_words() {
+    for id in [calendar::PLUGIN_ID, dev::PLUGIN_ID] {
+        let component = get(id).unwrap_or_else(|| panic!("`{id}` names no compiled manifest"));
+        assert_eq!(component.manifest().id, id);
+        assert!(
+            crate::plugin_host::manifest::is_word_plugin_id(id),
+            "`{id}` is not one word"
+        );
+    }
+    assert_eq!(catalog().len(), 2, "every built-in is checked above");
 }

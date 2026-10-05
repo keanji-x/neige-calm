@@ -1,7 +1,7 @@
-//! How Codex spells an MCP tool to the model. The kernel owns raw tool names only; this adapter
-//! owns the Codex spelling, which only `neige_source_capture`'s `call.tool` ever receives.
-//! Kernel tool names are minted in Codex's alphabet already (#2087 §2), so only a plugin name that
-//! still carries `.` or `-` (until #2087 B5) is respelled.
+//! How Codex spells an MCP tool to the model. Every name the kernel serves, kernel and plugin tools
+//! alike, is minted in `[A-Za-z0-9_]` (#2087 §2, §6), so Codex respells none of them; this module
+//! keeps the measured Codex rules the kernel tests check served names against, and the
+//! `mcp__<server>__` qualifier `neige_source_capture` strips from a `call.tool`.
 //!
 //! Measured on the deployed `codex-cli 0.159.2` (#2003 §3.2, not the stale `external/codex`):
 //! - The model sees one Responses `namespace` tool `mcp__<server key>`. Each function in it is the
@@ -14,7 +14,8 @@
 //! KNOWN GAP (#2003 K1): a hash-suffixed callable cannot be reduced without copying Codex's
 //! internals, so it resolves to no tool and the caller gets the explicit unknown-name refusal.
 
-/// codex-mcp's sanitizing: every char outside `[A-Za-z0-9_]` becomes `_`.
+/// codex-mcp's sanitizing: every char outside `[A-Za-z0-9_]` becomes `_`. Served names are its
+/// fixed points; the kernel tests assert that, so no production path calls it.
 pub fn codex_sanitized(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -34,13 +35,10 @@ pub const CODEX_MCP_DELIMITER: &str = "__";
 /// The byte cap Codex 0.159.2 applies to `mcp__<server>__<callable>`.
 pub const CODEX_QUALIFIED_NAME_CAP: usize = 128;
 
-/// The one key every spelling of a registry tool reduces to. A registry name starts with
-/// `plugin_` or the kernel prefix, never `mcp__`, so stripping cannot mis-read one.
-pub fn model_tool_key(name: &str) -> String {
-    codex_sanitized(strip_codex_qualifier(name))
-}
-
-fn strip_codex_qualifier(name: &str) -> &str {
+/// The served name inside `mcp__<server>__<name>`; any other string is returned as it is. A
+/// registry name starts with `plugin_` or the kernel prefix, never `mcp__`, so stripping cannot
+/// mis-read one.
+pub fn strip_codex_qualifier(name: &str) -> &str {
     match name
         .strip_prefix(CODEX_MCP_PREFIX)
         .and_then(|rest| rest.split_once(CODEX_MCP_DELIMITER))
@@ -54,24 +52,34 @@ fn strip_codex_qualifier(name: &str) -> &str {
 mod tests {
     use super::*;
 
-    const TRUSTED: &str = "plugin_dev.neige.git-forge_wf.tool";
-
     #[test]
     fn codex_sanitized_matches_the_responses_api_alphabet() {
         assert_eq!(
-            codex_sanitized(TRUSTED),
-            "plugin_dev_neige_git_forge_wf_tool"
+            codex_sanitized("plugin_dev.x-y_wf.tool"),
+            "plugin_dev_x_y_wf_tool"
         );
         assert_eq!(codex_sanitized("a_b9Z"), "a_b9Z");
         assert_eq!(codex_sanitized("é-x"), "__x");
     }
 
     #[test]
-    fn model_tool_key_strips_only_a_delimited_non_empty_server_segment() {
-        assert_eq!(model_tool_key("mcp__neige__plugin_a_b"), "plugin_a_b");
-        assert_eq!(model_tool_key("mcp__neige__plugin_a-b_c"), "plugin_a_b_c");
-        assert_eq!(model_tool_key("mcp__plugin_a_b"), "mcp__plugin_a_b");
-        assert_eq!(model_tool_key("mcp____plugin_a_b"), "mcp____plugin_a_b");
-        assert_eq!(model_tool_key(TRUSTED), codex_sanitized(TRUSTED));
+    fn strip_codex_qualifier_strips_only_a_delimited_non_empty_server_segment() {
+        assert_eq!(
+            strip_codex_qualifier("mcp__neige__plugin_a_b"),
+            "plugin_a_b"
+        );
+        assert_eq!(
+            strip_codex_qualifier("mcp__neige__plugin_a-b_c"),
+            "plugin_a-b_c"
+        );
+        assert_eq!(strip_codex_qualifier("mcp__plugin_a_b"), "mcp__plugin_a_b");
+        assert_eq!(
+            strip_codex_qualifier("mcp____plugin_a_b"),
+            "mcp____plugin_a_b"
+        );
+        assert_eq!(
+            strip_codex_qualifier("plugin_gitforge_gh_pr_checks"),
+            "plugin_gitforge_gh_pr_checks"
+        );
     }
 }

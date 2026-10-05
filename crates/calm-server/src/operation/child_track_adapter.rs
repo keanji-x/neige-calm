@@ -1790,7 +1790,7 @@ mod tests {
                 configured.to_string()
             }
             Some(configured) => format!("{configured},{INHERITED_PLUGIN_ID}"),
-            None => format!("dev.neige.git-forge,{INHERITED_PLUGIN_ID}"),
+            None => format!("gitforge,{INHERITED_PLUGIN_ID}"),
         };
         unsafe { std::env::set_var("NEIGE_TRUSTED_FORGE_PLUGINS", &combined) };
         assert!(

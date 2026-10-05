@@ -258,7 +258,7 @@ pub(super) fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
          {} Implementation, the \
          pull request, and its review are already complete for this track; their results \
          arrive as observations. Once the review approves the pull request, execute the \
-         merge step yourself with the MCP forge tools (gh.pr.merge, then gh.issue.close \
+         merge step yourself with the MCP forge tools (gh_pr_merge, then gh_issue_close \
          for issue #{issue_number}); do not dispatch further tasks.",
         gh_selector_fact(repo_gitdir)
     )
