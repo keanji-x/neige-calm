@@ -3,7 +3,7 @@
 # covers-every-X checks, byte budgets and source scans. A targeted `-p <pkg> <filter>`
 # run does not select them, so without this script CI is the first to catch them.
 # The set is fixed, not derived from the diff. Name patterns select most of it, so a new
-# `*golden*` or `*invariant*` test joins on its own. Every selected test is pure: no
+# `*golden*` or `*invariant*` test in one of these binaries joins on its own. Every selected test is pure: no
 # process spawn except `git ls-files`, no long timers.
 # Usage: scripts/local-contract-gates.sh [--list]
 #   --list prints the selected tests instead of running them.
@@ -36,10 +36,11 @@ filters=(
   'test(/golden|invariant|covers_(every|exactly|all)_|cover_exactly_|fits_its_byte_budget/)'
   'test(/every_root_test_file_is_in_this_suite/)'
   'test(/^(mcp_server::tools::tests|codex_appserver::tool_names_kernel_tests)::/)'
+  'test(/^mcp_server::wiring::tests::terminal_policy_/)'
   'test(/^mcp_server::cli::commands::tests::(every_|help_documents_|prompt_|task_report_surfaces_)/)'
   'test(/^templates::tests::builtin_directory_and_roster_are_the_same_set$/)'
   'test(/^routes::codex::tests::every_codex_worker_hook_is_registered/)'
-  'test(/^(no_retired_tool_names|handle_state_writers|planner_attachments_guarded_surface|openapi|track_write_point_registry)::/)'
+  'test(/^(no_retired_tool_names|handle_state_writers|planner_attachments_guarded_surface|openapi|track_write_point_registry|head_schema_fixture)::/)'
   'test(/^events_pruner::no_other_suite_seeds_/)'
   'test(/^bounded_track_tree_sql::every_recursive_parent_track_cte_/)'
   'test(/^no_wildcard_wait_in_the_supervisor_host$/)'
