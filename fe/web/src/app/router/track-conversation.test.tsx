@@ -5,7 +5,7 @@
 import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import { SEND_RETRIES } from '../../../../core/domain/conversation-delivery.ts';
 import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,7 +17,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { MAX_ATTACHMENTS_PER_MESSAGE, trackConversationCardId } from '../../../../core/domain/conversation.ts';
+import { CONVERSATION_CREATE_TEXT, MAX_ATTACHMENTS_PER_MESSAGE, trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
 import { DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
@@ -1445,6 +1445,23 @@ describe('track conversations', () => {
     expect(Array.from(drawerElement().querySelectorAll('[data-nc-attachments] img')).some((image) => image.getAttribute('src')?.endsWith(draftImageId))).toBe(true);
   });
 
+  /* #2131 S7: Regenerate is a send. Its failure is the outbox's, read through SEND_FAILURES, never the action's own text. */
+  it('regenerate whose answer is lost: says only that delivery is unconfirmed', async () => {
+    const user = harnessMessage(91, 'userMessage', { content: [{ text: 'Original prompt' }] });
+    const terminal = { ...harnessMessage(93, '', {}), item_type: null, turn_id: 'turn', method: 'turn/completed',
+      params: JSON.stringify({ id: 'turn', status: 'completed', error: null }) };
+    setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) return ok([user, harnessMessage(92, 'agentMessage', { text: 'Answer' }), terminal]);
+      if (request.path.endsWith('/planner/input')) throw new Error('socket hang up');
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate response' }));
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => expect(within(alert).getByText('Delivery is unconfirmed.')).toBeTruthy());
+    expect(drawerElement().textContent).not.toMatch(/Transport request failed|socket hang up|timed out|connection/i);
+  });
+
   /* Edit (#1923): the turn's message comes back to the composer, and Send replaces the turn in one keyed request
      (#2043): `POST …/planner/input` naming `replaces_turn`, which the server answers as one commit. */
   const REWIND_IMAGE = { id: ATTACHMENT_ID, contentType: 'image/png', size: 4,
@@ -2862,6 +2879,85 @@ describe('track conversations', () => {
     await write('refused words');
     expect((await screen.findByRole('alert')).textContent).toContain('That message was refused.');
     expect(screen.getByRole('complementary', { name: 'Untitled' })).toBeTruthy();
+  });
+
+  /* #2131 S7: a create's failure reads through its table. A lost answer is the create's fixed unconfirmed state, a press
+     that sent nothing its refusal; neither shows transport text or speaks of the connection, which is the global
+     indicator's. The draft keeps its words and its Try again. */
+  describe('[#2131 S7] a conversation create that fails', () => {
+    const RAW_OR_CONNECTIVITY = /Transport request failed|timed out|schema|offline|reconnect|connection|Nothing was sent|连接/i;
+    /** The draft's footer says exactly `text`, beside its remedy, and nothing raw. */
+    const says = async (text: string) => {
+      await waitFor(() => expect(within(screen.getByRole('alert')).getByText(text, { exact: true })).toBeTruthy());
+      expect(screen.getByRole('alert').textContent).not.toMatch(RAW_OR_CONNECTIVITY);
+    };
+    const lostCreate = (request: ApiRequest) => {
+      if (request.method === 'POST' && request.path === CONVERSATIONS) throw new Error('socket hang up');
+      return undefined;
+    };
+
+    it('a lost answer: says the create is unconfirmed and keeps the words and Try again', async () => {
+      setup(lostCreate);
+      await screen.findByRole('button', { name: 'Conversation Planner chat' });
+      await openDraft();
+      await write('words whose answer is lost');
+      await screen.findByRole('button', { name: 'Try again' });
+      await says(CONVERSATION_CREATE_TEXT.unknown);
+      expect(screen.getByText('words whose answer is lost')).toBeTruthy();
+    });
+
+    it('offline at the press: says the conversation was not started, and sends nothing', async () => {
+      const { requests } = setup();
+      await screen.findByRole('button', { name: 'Conversation Planner chat' });
+      await openDraft();
+      onlineManager.setOnline(false);
+      try {
+        await write('words typed offline');
+        await says(CONVERSATION_CREATE_TEXT.refused);
+        expect(creates(requests, CONVERSATIONS)).toHaveLength(0);
+        expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+      } finally { onlineManager.setOnline(true); }
+    });
+
+    it('offline after a lost answer: stays unconfirmed, since the first attempt may have started it', async () => {
+      const { requests } = setup(lostCreate);
+      await screen.findByRole('button', { name: 'Conversation Planner chat' });
+      await openDraft();
+      await write('words sent once');
+      const retry = await screen.findByRole('button', { name: 'Try again' });
+      onlineManager.setOnline(false);
+      try {
+        fireEvent.click(retry);
+        await says(CONVERSATION_CREATE_TEXT.unknown);
+        expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+      } finally { onlineManager.setOnline(true); }
+    });
+
+    it('not admitted at the press (bundled recovery not connected): refused, with nothing sent', async () => {
+      const access = new RecoveryAccess(); access.change('connected');
+      const { requests } = setup(undefined, undefined, access);
+      await screen.findByRole('button', { name: 'Conversation Planner chat' });
+      await openDraft();
+      act(() => { access.change('offline'); });
+      await write('words not admitted');
+      await says(CONVERSATION_CREATE_TEXT.refused);
+      expect(creates(requests, CONVERSATIONS)).toHaveLength(0);
+    });
+
+    it('the recovery state changes while the create is out: unconfirmed, never "connection changed"', async () => {
+      const access = new RecoveryAccess(); access.change('connected');
+      let answer!: (response: ApiTransportResponse) => void;
+      const { requests } = setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
+        ? new Promise<ApiTransportResponse>((resolve) => { answer = resolve; }) : undefined, undefined, access);
+      await screen.findByRole('button', { name: 'Conversation Planner chat' });
+      await openDraft();
+      await write('words in flight');
+      await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+      act(() => { access.change('offline'); });
+      await act(async () => { answer(created(derivedRow('w1', creates(requests, CONVERSATIONS)[0]))); await Promise.resolve(); });
+      await says(CONVERSATION_CREATE_TEXT.unknown);
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    });
   });
 });
 

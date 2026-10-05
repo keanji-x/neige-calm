@@ -7,30 +7,35 @@ import { useState } from '../../../ui/state/public.ts';
 import styles from './meta.module.css';
 
 export type CopyResponseAction = Readonly<{ id: string; text: string; run: () => Promise<void> }>;
-/** `id` names the response it acts on; `run` settles once the action is handed on, and any failure is the caller's to show. */
+/**
+ * `id` names the response it acts on; `run` settles once the action is handed on, and any failure is the caller's to show:
+ * Regenerate is a send, whose failure the outbox reads through its table and shows above the composer.
+ */
 export type ResponseAction = Readonly<{ id: string; run: () => Promise<void> }>;
 /** Edit answers at once (the message moves to the composer); its replace and any failure are the caller's. */
 export type EditAction = Readonly<{ id: string; run: () => void }>;
 
 type ActionView = { readonly key: string; active: boolean };
-type ActionResult = Readonly<{ view: ActionView; kind: 'pending' | 'done' | 'failed'; error: string | null }>;
+type ActionResult = Readonly<{ view: ActionView; kind: 'pending' | 'done' | 'failed' }>;
 
-/** One run at a time per view; a completion speaks only while its run is still the latest one. */
+/**
+ * One run at a time per view; a completion speaks only while its run is still the latest one. A failure is only a
+ * state: its rejection's text is never shown.
+ */
 function useFencedAction(key: string | null) {
   const view = useMemo<ActionView | null>(() => key === null ? null : { key, active: false }, [key]);
   const [result, setResult] = useState<ActionResult | null>(null);
-  const perform = async (run: () => Promise<void>, fallback: string | null = null) => {
+  const perform = async (run: () => Promise<void>) => {
     if (view === null || view.active) return;
     view.active = true;
-    const started: ActionResult = { view, kind: 'pending', error: null };
+    const started: ActionResult = { view, kind: 'pending' };
     const settle = (next: ActionResult) => setResult((current) => current === started ? next : current);
     setResult(started);
     try {
       await run();
-      settle({ view, kind: 'done', error: null });
-    } catch (reason) {
-      settle({ view, kind: 'failed',
-        error: reason instanceof Error && reason.message.trim() !== '' ? reason.message : fallback });
+      settle({ view, kind: 'done' });
+    } catch {
+      settle({ view, kind: 'failed' });
     } finally { view.active = false; }
   };
   return { feedback: result?.view === view ? result : null, perform };
@@ -102,10 +107,10 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
       </div>
       <div className={styles.actions} role="group" aria-label="Response actions">
         <IconButton label={copyAction === null ? 'Copy response (not available yet)' : feedback === null || feedback.kind === 'pending' ? 'Copy response'
-          : feedback.kind === 'done' ? 'Copied response' : `Copy failed: ${feedback.error}`}
+          : feedback.kind === 'done' ? 'Copied response' : 'Could not copy response'}
           icon={<ActionIcon kind={feedback?.kind === 'done' ? 'copied' : 'copy'} />} className={styles.action}
           variant="ghost" size="sm" isDisabled={copyAction === null || feedback?.kind === 'pending'}
-          onClick={() => { if (copyAction !== null) void copy.perform(copyAction.run, 'Could not copy response.'); }} />
+          onClick={() => { if (copyAction !== null) void copy.perform(copyAction.run); }} />
         <IconButton label={editAction === null ? 'Edit message (not available now)' : 'Edit message'}
           tooltip="Edit this message. Files are not reverted."
           icon={<ActionIcon kind="edit" />}

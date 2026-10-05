@@ -8,7 +8,7 @@ import {
 
 import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
-  CONVERSATION_STATE_SOURCE, conversationCreateFailure,
+  CONVERSATION_CREATE_TEXT, CONVERSATION_STATE_SOURCE, conversationCreateFailure,
   createSerialWriter, createTrackConversationOperation, sendPlannerInputOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
@@ -201,10 +201,29 @@ describe('track conversations', () => {
     [{ kind: 'http', status: 409, code: 'conflict', message: 'card already exists' }, 'exists'],
     [{ kind: 'http', status: 404, code: 'not_found', message: 'track not found' }, 'gone'],
     [{ kind: 'http', status: 400, code: 'bad_request', message: 'text must not be blank' }, 'blocked'],
-    [{ kind: 'http', status: 503, code: 'service_unavailable', message: 'try later' }, 'unavailable'],
+    [{ kind: 'http', status: 503, code: 'service_unavailable', message: 'try later' }, 'retry'],
     [{ kind: 'transport', message: 'request failed' }, 'retry'],
   ] as const)('classifies conversation create failure %o as %s', (failure, expected) => {
     expect(conversationCreateFailure(failure).kind).toBe(expected);
+  });
+
+  /* #2131 S7: the draft's sentence is the class's. An ambiguous create says only that it is unconfirmed; any other
+     answer says the server's reason, or the refusal when it gave none. No transport text, no connection sentence. */
+  it.each([
+    [{ kind: 'transport', message: 'Transport request failed' }, CONVERSATION_CREATE_TEXT.unknown],
+    [{ kind: 'decode', message: 'API response did not match its schema' }, CONVERSATION_CREATE_TEXT.unknown],
+    [null, CONVERSATION_CREATE_TEXT.unknown],
+    [{ kind: 'unauthorized', status: 401, code: 'unauthorized', message: 'signed out' }, CONVERSATION_CREATE_TEXT.unknown],
+    [{ kind: 'http', status: 500, code: 'internal', message: 'db exploded' }, CONVERSATION_CREATE_TEXT.unknown],
+    [{ kind: 'http', status: 503, code: 'service_unavailable', message: 'try later' }, CONVERSATION_CREATE_TEXT.unknown],
+    [{ kind: 'http', status: 409, code: 'idempotency_key_concurrent', message: 'in flight' }, CONVERSATION_CREATE_TEXT.unknown],
+    [{ kind: 'http', status: 400, code: 'bad_request', message: 'text must not be blank' }, 'text must not be blank'],
+    [{ kind: 'http', status: 400, code: 'bad_request', message: '' }, CONVERSATION_CREATE_TEXT.refused],
+    [{ kind: 'http', status: 409, code: 'conflict', message: 'card already exists' }, 'card already exists'],
+    [{ kind: 'http', status: 409, code: 'idempotency_key_reused', message: 'key reused' }, 'key reused'],
+    [{ kind: 'http', status: 409, code: 'idempotency_key_exhausted', message: 'key exhausted' }, 'key exhausted'],
+  ] as const)('says %o as %s', (failure, text) => {
+    expect(conversationCreateFailure(failure).message).toBe(text);
   });
 
   it('leaves the track title absent rather than inventing one, and names the row Assistant', () => {

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
+import { CONVERSATION_CREATE_TEXT, trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
@@ -219,14 +219,14 @@ describe('degraded workspace reads stay usable', () => {
     await userEvent.type(field, 'Keep my offline conversation');
     act(() => onlineManager.setOnline(false));
     await userEvent.keyboard('{Enter}');
-    expect((await within(drawer).findByRole('alert')).textContent).toContain('Nothing was sent.');
+    expect((await within(drawer).findByRole('alert')).textContent).toContain(CONVERSATION_CREATE_TEXT.refused);
     const retry = await within(drawer).findByRole('button', { name: 'Try again' });
     await waitFor(() => expect(retry.hasAttribute('disabled')).toBe(false));
     expect(within(drawer).getByText('Keep my offline conversation')).toBeTruthy();
     expect(creates).toEqual([]);
     await userEvent.type(within(drawer).getByRole('combobox', { name: 'Message' }), 'Revised offline conversation');
     await userEvent.keyboard('{Enter}');
-    expect((await within(drawer).findByRole('alert')).textContent).toContain('Nothing was sent.');
+    expect((await within(drawer).findByRole('alert')).textContent).toContain(CONVERSATION_CREATE_TEXT.refused);
     expect((await within(drawer).findByRole('button', { name: 'Try again' })).hasAttribute('disabled')).toBe(false);
     expect(within(drawer).getByText('Revised offline conversation')).toBeTruthy();
     await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
@@ -279,7 +279,8 @@ describe('degraded workspace reads stay usable', () => {
     expect(creates).toHaveLength(1);
     act(() => onlineManager.setOnline(false));
     await userEvent.type(within(drawer).getByRole('combobox', { name: 'Message' }), 'Edited offline intent{Enter}');
-    expect((await within(drawer).findByRole('alert')).textContent).toContain('Nothing was sent.');
+    /* Nothing was sent now, but the first create may have landed: still unconfirmed, never "not started" (#2131 S7). */
+    expect((await within(drawer).findByRole('alert')).textContent).toContain(CONVERSATION_CREATE_TEXT.unknown);
     expect(within(drawer).getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false);
     await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
     revealLanding = true;
@@ -319,7 +320,7 @@ describe('degraded workspace reads stay usable', () => {
       onlineManager.setOnline(false);
       await Promise.resolve();
     });
-    expect((await within(drawer).findByRole('alert')).textContent).toContain('Nothing was sent.');
+    expect((await within(drawer).findByRole('alert')).textContent).toContain(CONVERSATION_CREATE_TEXT.refused);
     expect(within(drawer).getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false);
     expect(creates).toHaveLength(0);
     await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));

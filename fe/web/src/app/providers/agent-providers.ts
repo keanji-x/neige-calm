@@ -6,7 +6,10 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { agentProvidersOperation, type ProviderAvailability } from '../../../../core/domain/agent-providers.ts';
+import {
+  agentProvidersOperation, RECHECK_FAILURES, RECHECK_TEXT, type ProviderAvailability,
+} from '../../../../core/domain/agent-providers.ts';
+import { readWriteFailure } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
 import { queryKeys, runOperation } from './queries.ts';
 
@@ -37,7 +40,7 @@ export function useAgentProvidersRecheck(transport: ApiTransportPort, unauthoriz
       void client.invalidateQueries({ queryKey: queryKeys.modelCatalogPrefix() }).catch(() => undefined);
       setState({ rechecking: false, error: null });
     }, (failure: unknown) => {
-      setState({ rechecking: false, error: failure instanceof Error ? failure.message : 'The recheck failed.' });
+      setState({ rechecking: false, error: readWriteFailure(failure, RECHECK_FAILURES, RECHECK_TEXT).text });
     });
   };
   return { recheck, rechecking: state.rechecking, error: state.error };

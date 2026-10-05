@@ -82,7 +82,7 @@ import {
 import type { ReportSourceLinkTarget } from '../../../../core/domain/report-source.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
-  conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
+  CONVERSATION_CREATE_TEXT, conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
   isConversationMessage, kernelQueuesInput, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES,
   serverItemHighWater,
   trackConversationCardId,
@@ -228,10 +228,6 @@ function tombstoneHides(wroteAt: number | undefined, rev: number): boolean {
 /* A stable identity for "no queue page", so the memo below is not recomputed on
    every render by a fresh array literal. */
 const EMPTY_PENDING_QUEUE: readonly PendingQueueEntry[] = Object.freeze([]);
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message !== '' ? error.message : fallback;
-}
 
 /** Everything about the open conversation that does *not* come from its turns. */
 type ConversationFacts = Readonly<{
@@ -1023,6 +1019,11 @@ function useConversationPane(
 
   const UNCONFIRMED = 'Could not check whether the last attempt went through. Try again in a moment.';
 
+  /* A press that sent nothing is refused (#2131), unless an earlier attempt under this key, `sentText`, may have
+     created the conversation: then it stays unconfirmed. Why nothing went out is the global indicator's to say. */
+  const notSentText = (sentText: string | null): string =>
+    sentText === null ? CONVERSATION_CREATE_TEXT.refused : CONVERSATION_CREATE_TEXT.unknown;
+
   /* Re-read the list and adopt this draft's OWN row (by derived id), never "the
        list grew". Three answers: `'unknown'` is the re-read itself failing, and
        treating it as `'absent'` would mint a new key over an attempt that may have
@@ -1056,7 +1057,7 @@ function useConversationPane(
       return true;
     }
     if (onlineManager.isOnline()) return false;
-    amendDraft(attempt, { text, error: new NotSentError().message, remedy: 'retry' });
+    amendDraft(attempt, { text, error: notSentText(attempt.sentText), remedy: 'retry' });
     return true;
   };
 
@@ -1065,8 +1066,8 @@ function useConversationPane(
       const admitted = admitTransport(transport);
       const checkpoint = admitted.recovery?.checkpoint();
       return () => { try { checkpoint?.(); return true; } catch { return false; } };
-    } catch (error) {
-      amendDraft(attempt, { error: errorMessage(error, 'Connection is not ready. Try again after reconnecting.'), remedy: 'retry' });
+    } catch {
+      amendDraft(attempt, { error: notSentText(attempt.sentText), remedy: 'retry' });
       return null;
     }
   };
@@ -1110,20 +1111,20 @@ function useConversationPane(
           }
           attempt = rekeyDraft(attempt, mintIdempotencyKey());
         }
-        if (!current()) { amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' }); return; }
+        if (!current()) { amendDraft(attempt, { error: notSentText(attempt.sentText), remedy: 'retry' }); return; }
         if (refuseOfflineDraft(attempt, text)) return;
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
         const created = await create(text, attempt.key, attempt.model, attempt.side);
         if (current()) adopt(attempt, created);
-        else amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
+        else amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
       } catch (error: unknown) {
         if (error instanceof NotSentError) {
           // Marking a request optimistically must not invent dispatch when the
           // mutation's later guard refused it. Keep any earlier unknown send.
           registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
-          amendDraft(attempt, { error: error.message, remedy: 'retry' });
+          amendDraft(attempt, { error: notSentText(previouslySentText), remedy: 'retry' });
         } else {
           attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt, current);
         }
@@ -1142,12 +1143,10 @@ function useConversationPane(
     current: () => boolean,
   ): Promise<ConversationDraft> {
     if (!current()) {
-      amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
+      amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
       return attempt;
     }
-    const failure = error instanceof ApiError
-      ? conversationCreateFailure(error.failure)
-      : { kind: 'retry' as const, message: errorMessage(error, 'Could not start the conversation.') };
+    const failure = conversationCreateFailure(error instanceof ApiError ? error.failure : null);
     const message = failure.message;
     switch (failure.kind) {
       case 'gone':
@@ -1174,10 +1173,9 @@ function useConversationPane(
         if (landing === 'unknown') amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
         return attempt;
       }
-      case 'unavailable':
       case 'retry':
-        /* Both are ambiguous: on this endpoint a 503 is usually raised after the card
-                 is minted, so the look for this key's card is not skipped. */
+        /* Ambiguous (a 503 included: on this endpoint it is raised after the card is
+                 minted), so the look for this key's card is not skipped. */
         amendDraft(attempt, { error: message });
         if (await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current) !== 'landed') {
           amendDraft(attempt, { remedy: 'retry' });
@@ -1207,20 +1205,20 @@ function useConversationPane(
           return;
         }
         attempt = rekeyDraft(attempt, mintIdempotencyKey());
-        if (!current()) { amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' }); return; }
+        if (!current()) { amendDraft(attempt, { error: notSentText(attempt.sentText), remedy: 'retry' }); return; }
         if (refuseOfflineDraft(attempt, text)) return;
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
         const created = await create(text, attempt.key, attempt.model, attempt.side);
         if (current()) adopt(attempt, created);
-        else amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
+        else amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
       } catch (error: unknown) {
         if (error instanceof NotSentError) {
           // Marking a request optimistically must not invent dispatch when the
           // mutation's later guard refused it. Keep any earlier unknown send.
           registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
-          amendDraft(attempt, { error: error.message, remedy: 'retry' });
+          amendDraft(attempt, { error: notSentText(previouslySentText), remedy: 'retry' });
         } else {
           attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt, current);
         }

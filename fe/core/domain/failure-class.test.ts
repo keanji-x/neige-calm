@@ -17,6 +17,7 @@ import {
   PLUGIN_RELOAD_BEFORE_STOP, PLUGIN_RELOAD_FAILURES, PLUGIN_TOGGLE_FAILURES, PLUGIN_UNINSTALL_FAILURES,
 } from './plugins.js';
 import { SETTINGS_FAILURES } from './settings.js';
+import { RECHECK_FAILURES } from './agent-providers.js';
 import { LAUNCHPAD_ENSURE_FAILURES, REPORT_RESET_FAILURES } from './today.js';
 import { CARD_CREATE_FAILURES, TRACK_CREATE_FAILURES, TRACK_PATCH_FAILURES } from './track.js';
 
@@ -56,7 +57,8 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
   ]],
   ['POST /tracks/{id}/conversations', CONVERSATION_CREATE_FAILURES, [
     [http(409, 'idempotency_key_exhausted'), 'exhausted'], [http(404, 'not_found'), 'gone'],
-    [http(503, 'service_unavailable'), 'unavailable'], [http(400, 'bad_request'), 'blocked'],
+    /* Raised after the card is minted: as ambiguous as a lost answer (#2131 S7). */
+    [http(503, 'service_unavailable'), 'retry'], [http(400, 'bad_request'), 'blocked'],
     [http(409, 'idempotency_key_reused'), 'stale-payload'], [http(409, 'idempotency_key_concurrent'), 'retry'],
     /* Told apart by the code alone: the wording of a `conflict` decides nothing. */
     [http(409, 'conflict', 'Idempotency-Key already used with different payload'), 'exists'],
@@ -218,6 +220,12 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     /* The handler answers only 500; a 4xx is the extractor's, before anything was stored. */
     [http(400), 'refused'], [http(413), 'refused'], [http(415), 'refused'], [http(422), 'refused'], [unauthorized, 'refused'],
     [http(500, 'db_error'), 'unknown'], [http(503), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  /* #2131 S7: a read-only probe; an answered failure carries the server's reason, a lost one a fixed sentence. */
+  ['GET /agent-providers?refresh=true', RECHECK_FAILURES, [
+    [http(400), 'refused'], [http(404), 'refused'], [http(500, 'internal'), 'refused'], [http(503), 'refused'],
+    [http(599), 'refused'], [unauthorized, 'refused'],
+    [http(399), 'unknown'], [http(600), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
 ];
 

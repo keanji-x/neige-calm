@@ -5,10 +5,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { RECHECK_TEXT } from '../../../../core/domain/agent-providers.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
@@ -38,11 +39,13 @@ function answer(claude: Readonly<{ status: string; reason: string | null }>) {
   ];
 }
 
-function renderPlanners() {
+/** `recheck` answers `refresh=true` in place of the ready answer. */
+function renderPlanners(recheck?: () => Promise<ApiTransportResponse>) {
   const sent: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     send(request): Promise<ApiTransportResponse> {
       sent.push(request);
+      if (recheck !== undefined && request.path === '/api/agent-providers?refresh=true') return recheck();
       const body = request.path === '/api/agent-providers'
         ? answer({ status: 'unavailable', reason: LOGGED_OUT })
         : request.path === '/api/agent-providers?refresh=true'
@@ -93,4 +96,22 @@ it('lists each provider with its status and reason, and Recheck replaces the ans
   expect(sent.filter((request) => request.path === '/api/agent-providers?refresh=true')).toHaveLength(1);
   /* The recheck re-fetched the Claude CLI's model list on the server (#1822). */
   expect(client.getQueryState(claudeCatalog)?.isInvalidated).toBe(true);
+});
+
+/* #2131 S7: Recheck is a probe; a lost answer shows a fixed sentence, never transport text, and the answer stays. */
+describe('a failed Recheck', () => {
+  const RAW_OR_CONNECTIVITY = /Transport request failed|timed out|schema|offline|reconnect|connection/i;
+  it.each([
+    ['a lost answer', () => Promise.reject(new Error('socket hang up')), RECHECK_TEXT.unknown],
+    ['an unreadable answer', () => Promise.resolve({ status: 200, statusText: 'OK', body: { not: 'a list' } }), RECHECK_TEXT.unknown],
+    ['an answered failure', () => Promise.resolve({ status: 500, statusText: 'Server Error', body: { error: 'checks are wedged', code: 'internal' } }),
+      'checks are wedged'],
+  ] as const)('shows %s as its sentence and keeps the previous answer', async (_name, reply, text) => {
+    renderPlanners(reply);
+    await screen.findByText(LOGGED_OUT);
+    await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(text);
+    expect(screen.getByRole('alert').textContent).not.toMatch(RAW_OR_CONNECTIVITY);
+    expect(screen.getByText(LOGGED_OUT)).toBeTruthy();
+  });
 });

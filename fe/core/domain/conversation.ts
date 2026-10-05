@@ -10,7 +10,7 @@ import {
   TASK_ACCEPT_TOOL, TASK_REJECT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
   MAIL_SEND_TOOL,
 } from '../keys/mcp-tools.js';
-import { classifyFailure, type FailureTable, type WriteFailure } from './failure-class.js';
+import { classifyFailure, refusedText, type FailureTable, type WriteFailure, type WriteText } from './failure-class.js';
 import { sha256Hex } from './sha256.js';
 
 /** A frozen discussion source; does not name a provider session. */
@@ -729,7 +729,10 @@ export function trackConversationCardId(trackId: string, idempotencyKey: string)
 /** What a failed create means for the draft; a 409 here is four distinguishable situations. */
 export type ConversationCreateFailure = Readonly<
   | {
-    /** Ambiguous: the attempt may have committed. Keep the key and the text, re-read the list. */
+    /**
+     * Ambiguous: the attempt may have committed. Keep the key and the text, re-read the list. A 503 is one too: on this
+     * endpoint every 503 comes after the card was minted.
+     */
     kind: 'retry';
     message: string;
   }
@@ -741,14 +744,6 @@ export type ConversationCreateFailure = Readonly<
   | {
     /** Refused before anything could commit, so the key is unspent; a 400 is a refusal of the body itself. */
     kind: 'blocked';
-    message: string;
-  }
-  | {
-    /**
-     * A 503 says the *service* could not do the work; on this endpoint every 503 comes after the
-     * card was minted, so it is exactly as ambiguous as `'retry'` and resolved the same way.
-     */
-    kind: 'unavailable';
     message: string;
   }
   | {
@@ -770,7 +765,7 @@ export type ConversationCreateFailure = Readonly<
 
 /**
  * What a failed create means for the draft; a 409 is told apart by its `code`. A lost or unreadable
- * answer may have been served, so it is `retry`, as is a concurrent create under the same key.
+ * answer may have been served, so it is `retry`, as is a concurrent create under the same key and a 503.
  */
 export const CONVERSATION_CREATE_FAILURES: FailureTable<ConversationCreateFailure['kind']> = Object.freeze({
   rules: Object.freeze([
@@ -779,8 +774,6 @@ export const CONVERSATION_CREATE_FAILURES: FailureTable<ConversationCreateFailur
     Object.freeze({ code: 'idempotency_key_reused', is: 'stale-payload' as const }),
     Object.freeze({ code: 'idempotency_key_concurrent', is: 'retry' as const }),
     Object.freeze({ status: Object.freeze([404]), is: 'gone' as const }),
-    /* Its own kind for its own sentence, but not its own resolution. */
-    Object.freeze({ status: Object.freeze([503]), is: 'unavailable' as const }),
     Object.freeze({ status: Object.freeze([400]), is: 'blocked' as const }),
     Object.freeze({ status: Object.freeze([409]), is: 'exists' as const }),
   ]),
@@ -788,8 +781,19 @@ export const CONVERSATION_CREATE_FAILURES: FailureTable<ConversationCreateFailur
   otherwise: 'retry',
 });
 
-export function conversationCreateFailure(failure: ApiFailure): ConversationCreateFailure {
-  return { kind: classifyFailure(failure, CONVERSATION_CREATE_FAILURES), message: failure.message };
+/** A create refused (when the server gave no reason) and one whose outcome is unknown; the draft keeps its words either way. */
+export const CONVERSATION_CREATE_TEXT: WriteText = Object.freeze({
+  refused: 'The conversation was not started.',
+  unknown: 'Starting the conversation is unconfirmed. Try again to check the same conversation.',
+});
+
+/**
+ * What a failed create (`null`: no answer was read) means for the draft, with its sentence: `retry` says only that it is
+ * unconfirmed, every other kind the server's reason. No transport text shows; the connection is the global indicator's.
+ */
+export function conversationCreateFailure(failure: ApiFailure | null): ConversationCreateFailure {
+  const kind = classifyFailure(failure, CONVERSATION_CREATE_FAILURES);
+  return { kind, message: kind === 'retry' ? CONVERSATION_CREATE_TEXT.unknown : refusedText(failure, CONVERSATION_CREATE_TEXT.refused) };
 }
 
 const DIFF_PREFIX = '## Track state changes since your last turn';

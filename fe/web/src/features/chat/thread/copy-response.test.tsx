@@ -18,12 +18,13 @@ it('copies the visible response Markdown only after a deliberate click', async (
   await screen.findByRole('button', { name: 'Copied response' });
   expect(copyText).toHaveBeenCalledExactlyOnceWith(text);
 });
-it('reports rejected copy without fabricating success', async () => {
+it('reports rejected copy without fabricating success, in a fixed sentence and never the rejection text', async () => {
   render(<ThreadStatusNotice heading="Completed" clock={{ elapsedMs: null, timestamp: null }}
     copyAction={{ id: 'a', text: 'text', run: () => Promise.reject(new Error('Permission denied')) }} />);
   fireEvent.click(screen.getByRole('button', { name: 'Copy response' }));
-  await screen.findByRole('button', { name: 'Copy failed: Permission denied' });
+  await screen.findByRole('button', { name: 'Could not copy response' });
   expect(screen.queryByRole('button', { name: 'Copied response' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /Permission denied/ })).toBeNull();
 });
 it('ignores old copy completion when the response changes', async () => {
   let resolve!: () => void;
