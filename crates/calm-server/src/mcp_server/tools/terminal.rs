@@ -465,7 +465,7 @@ async fn call(
             };
             if wait.tests_text() && args.scroll_offset > 0 {
                 return Err(RpcError::invalid_params(
-                    "wait_for=text or text conditions observe the live viewport; scroll_offset must be 0",
+                    "wait_for=text or text conditions read the live viewport; scroll_offset must be 0",
                 ));
             }
             let wait = wait.plan()?;

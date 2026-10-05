@@ -218,7 +218,7 @@ impl TerminalInteraction {
         // A text wait is tested on the live viewport and returns that same viewport.
         ensure!(
             !wait.tests_text() || offset == 0,
-            "wait_for=text or text conditions observe the live viewport; scroll_offset must be 0"
+            "wait_for=text or text conditions read the live viewport; scroll_offset must be 0"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let client = self.client(identity, &resolved.binding).await?;
