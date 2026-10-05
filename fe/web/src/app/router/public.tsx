@@ -1507,7 +1507,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const trackMutations = useTrackMutations(transport, unauthorized);
   const deletion = useDeleteConfirm((trackId, signal) => {
     const track = workspace.tracks.find((candidate) => candidate.id === trackId);
-    if (track === undefined) throw new Error('This track is no longer available.');
+    if (track === undefined) return Promise.resolve(); /* Gone from the workspace: already deleted, the intent holds. */
     return trackMutations.remove(track.id, track.areaId, signal);
   }, writeFailureText(DELETE_FAILURES, DELETE_TEXT));
   /* The launchpad resolve is a READ. `POST /api/today/launchpad/ensure` submits a

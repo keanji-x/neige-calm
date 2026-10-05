@@ -115,8 +115,8 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
   ]],
   ['PATCH /tracks/{id}', TRACK_PATCH_FAILURES, [
     [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
-    [http(409, 'conflict'), 'refused'], [unauthorized, 'refused'],
-    [http(413), 'unknown'], [http(500, 'db_error'), 'unknown'], [http(503), 'unknown'],
+    [http(409, 'conflict'), 'refused'], [http(413), 'refused'], [http(422), 'refused'], [unauthorized, 'refused'],
+    [http(500, 'db_error'), 'unknown'], [http(503), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   ['POST a card', CARD_CREATE_FAILURES, [

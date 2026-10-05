@@ -509,11 +509,11 @@ export function updateTrackOperation(trackId: string, body: TrackPatchBody): Api
 
 /**
  * What a failed `PATCH /api/tracks/{id}` (rename, pin, close, reopen) says. It sets a value, so a retry is safe: 400, 403,
- * 404 and 409 (a child track reopened under a closed parent) are answered before anything is stored; anything else may
- * have stored it.
+ * 404, 409 (a child track reopened under a closed parent), 413 and 422 are answered before anything is stored; anything
+ * else may have stored it.
  */
 export const TRACK_PATCH_FAILURES: FailureTable<WriteClass> = Object.freeze({
-  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 409]), is: 'refused' as const })]),
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 409, 413, 422]), is: 'refused' as const })]),
   unauthorized: 'refused',
   otherwise: 'unknown',
 });
