@@ -3,6 +3,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../../../core/domain/failure-class.ts';
 import type { PluginDetail } from '../../../../core/domain/plugins.ts';
 import { PluginConfigPane, type PluginConfigPaneProps } from './plugin-config.tsx';
 
@@ -25,6 +26,9 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
+
+/** A rejection as the hooks carry it: the kernel's `ErrorBody` answer. */
+const answered = (status: number, code: string, message: string) => new ApiError({ kind: 'http', status, code, message, body: { error: message, code } });
 
 /** The kernel's subset: four property types, `enum` only on a string. */
 const CONFIG_SCHEMA = {
@@ -64,7 +68,7 @@ function props(overrides: Partial<PluginConfigPaneProps> = {}): PluginConfigPane
     onBack: vi.fn(),
     onSave: vi.fn().mockResolvedValue({ ok: true }),
     onApplyRestart: vi.fn().mockResolvedValue({
-      saved: true, restart: { failure: null, state: 'running' },
+      saved: true, restart: { rejection: null, state: 'running' },
     }),
     ...overrides,
   };
@@ -193,7 +197,7 @@ describe('a refused write, as something to act on', () => {
   it('puts a schema violation on the control it is about', async () => {
     const onSave = vi.fn().mockResolvedValue({
       ok: false,
-      failure: { code: 'bad_request', message: 'config.retries: expected integer, found a string' },
+      error: answered(400, 'bad_request', 'config.retries: expected integer, found a string'),
     });
     render(<PluginConfigPane {...props({ onSave })} />);
     await userEvent.type(screen.getByLabelText('token'), 'abc');
@@ -204,15 +208,15 @@ describe('a refused write, as something to act on', () => {
     expect(alert.closest('li')).toBe(screen.getByLabelText('retries').closest('li'));
   });
 
-  it('says a busy lock saved nothing', async () => {
+  it('shows a busy lock in the kernel’s words on the pane', async () => {
     const onSave = vi.fn().mockResolvedValue({
       ok: false,
-      failure: { code: 'plugin_busy', message: 'plugin `git-forge` is busy' },
+      error: answered(409, 'plugin_busy', 'plugin `git-forge` is busy'),
     });
     render(<PluginConfigPane {...props({ onSave })} />);
     await userEvent.type(screen.getByLabelText('token'), 'abc');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    const alert = await verdict(/nothing was saved/);
+    const alert = await verdict('plugin `git-forge` is busy');
     expect(alert.getAttribute('role')).toBe('alert');
     expect(alert.closest('li')).toBeNull();
   });
@@ -221,7 +225,7 @@ describe('a refused write, as something to act on', () => {
     const onSave = vi.fn()
       .mockResolvedValueOnce({
         ok: false,
-        failure: { code: 'plugin_config_corrupt', message: 'stored user_config is not a JSON object' },
+        error: answered(409, 'plugin_config_corrupt', 'stored user_config is not a JSON object'),
       })
       .mockResolvedValue({ ok: true });
     render(<PluginConfigPane {...props({ onSave })} />);
@@ -247,7 +251,7 @@ describe('a refused write, as something to act on', () => {
 describe('Apply & restart, and the three ways it ends (§2.4)', () => {
   it('saves and restarts in one press, and confirms only when something runs it', async () => {
     const onApplyRestart = vi.fn().mockResolvedValue({
-      saved: true, restart: { failure: null, state: 'running' },
+      saved: true, restart: { rejection: null, state: 'running' },
     });
     render(<PluginConfigPane {...props({ onApplyRestart })} />);
     await userEvent.type(screen.getByLabelText('token'), 'abc');
@@ -259,7 +263,7 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
 
   it('restarts with no pending edit, so an earlier Save can be applied', async () => {
     const onApplyRestart = vi.fn().mockResolvedValue({
-      saved: true, restart: { failure: null, state: 'running' },
+      saved: true, restart: { rejection: null, state: 'running' },
     });
     render(<PluginConfigPane {...props({ onApplyRestart })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));
@@ -269,17 +273,14 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
   it('says the configuration is safe when the restart was refused as busy', async () => {
     const onApplyRestart = vi.fn().mockResolvedValue({
       saved: true,
-      restart: {
-        failure: { code: 'plugin_busy', message: 'plugin `git-forge` is busy' },
-        state: 'running',
-      },
+      restart: { rejection: { error: answered(409, 'plugin_busy', 'plugin `git-forge` is busy') }, state: 'running' },
     });
     render(<PluginConfigPane {...props({ onApplyRestart })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));
-    const status = await verdict(/restart could not run/);
+    const status = await verdict(/restart did not run/);
     expect(status.textContent).toMatch(/saved/i);
     expect(status.textContent).toMatch(/still running its previous configuration/);
-    expect(status.textContent).toMatch(/again in a moment/);
+    expect(status.textContent).toContain('plugin `git-forge` is busy');
   });
 
   it('reproduces last_error when the plugin did not come up', async () => {
@@ -287,7 +288,7 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
     const onApplyRestart = vi.fn().mockResolvedValue({
       saved: true,
       restart: {
-        failure: { code: 'bad_request', message: 'reload failed' },
+        rejection: { error: answered(400, 'bad_request', 'reload failed') },
         state: 'unavailable',
         lastError: reason,
       },
@@ -303,7 +304,7 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
     const onApplyRestart = vi.fn().mockResolvedValue({
       saved: true,
       restart: {
-        failure: { code: 'bad_request', message: 'spawn failed: No such file or directory' },
+        rejection: { error: answered(400, 'plugin_install', 'spawn failed: No such file or directory') },
         state: 'installed',
       },
     });
@@ -316,7 +317,7 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
   it('reports a write that failed on the way to the restart as a write failure', async () => {
     const onApplyRestart = vi.fn().mockResolvedValue({
       saved: false,
-      failure: { code: 'bad_request', message: 'config.token: expected string, found a number' },
+      error: answered(400, 'bad_request', 'config.token: expected string, found a number'),
     });
     render(<PluginConfigPane {...props({ onApplyRestart })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));

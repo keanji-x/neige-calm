@@ -10,8 +10,9 @@ import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
 import { VisuallyHidden as AstryxVisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useEffect, useRef, type ReactNode } from 'react';
 
+import { writeFailureText } from '../../../../core/domain/failure-class.ts';
 import {
-  HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch,
+  HTTPS_PROXY_KEY, HTTP_PROXY_KEY, SETTINGS_FAILURES, SETTINGS_TEXT, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -122,7 +123,7 @@ export type NetworkPaneProps = Readonly<{
   /** `undefined` means "still loading" — never render an empty form for it. */
   settings: Readonly<Record<string, string>> | undefined;
   loadError: string | null;
-  /** Commits one key. The returned promise is the row's status: this pane follows it per field. */
+  /** Commits one key. The returned promise is the row's status: this pane follows it per field and reads a rejection through `SETTINGS_FAILURES`. */
   onSave: (patch: SettingsPatch) => void | Promise<void>;
   onRetryLoad: () => void;
   /** Tests shorten the confirmation window; production uses the default. */
@@ -247,7 +248,8 @@ export function NetworkPane({
       .then(() => { settle({ phase: 'saved', at: Date.now(), value }); })
       .catch((error: unknown) => {
         /* Clearing `sent` on failure is what lets the reader retry with refocus + Enter. */
-        settle({ phase: 'failed', message: error instanceof Error ? error.message : 'Save failed.', value });
+        const message = writeFailureText(SETTINGS_FAILURES, SETTINGS_TEXT)(error);
+        settle(message === null ? { phase: 'saved', at: Date.now(), value } : { phase: 'failed', message, value });
       });
   };
 

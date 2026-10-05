@@ -25,6 +25,7 @@ it('a restart interrupted during readback cannot confirm the old running state',
   await waitFor(() => expect(requests).toHaveLength(2));
   act(() => access.invalidate('paused')); finish(response);
   const outcome = await result;
-  expect(outcome).toMatchObject({ saved: true, restart: { state: 'unknown', failure: { code: 'transport_failure' } } });
+  expect(outcome).toMatchObject({ saved: true, restart: { state: 'unknown' } });
+  expect(outcome.saved && outcome.restart.rejection?.error).toBeInstanceOf(Error);
   expect(requests.filter(request => request.method === 'POST')).toHaveLength(1);
 });

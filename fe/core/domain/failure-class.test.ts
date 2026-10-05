@@ -9,8 +9,14 @@ import { PLANNER_INTERRUPT_FAILURES } from './conversation-stop.js';
 import { AREA_CREATE_FAILURES, AREA_PATCH_FAILURES } from './area.js';
 import { DISMISS_FAILURES } from './activity.js';
 import {
-  ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, refusedText, writeFailureText, type FailureTable,
+  ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, refusedText, writeClassOf, writeFailureText,
+  type FailureTable,
 } from './failure-class.js';
+import {
+  PLUGIN_CONFIG_FAILURES, PLUGIN_CONFIG_RESET_OFFERS, PLUGIN_INSTALL_FAILURES, PLUGIN_INSTALL_RETRY_FAILURES,
+  PLUGIN_RELOAD_FAILURES, PLUGIN_TOGGLE_FAILURES, PLUGIN_UNINSTALL_FAILURES,
+} from './plugins.js';
+import { SETTINGS_FAILURES } from './settings.js';
 import { LAUNCHPAD_ENSURE_FAILURES, REPORT_RESET_FAILURES } from './today.js';
 import { CARD_CREATE_FAILURES, TRACK_CREATE_FAILURES, TRACK_PATCH_FAILURES } from './track.js';
 
@@ -159,6 +165,54 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(409, 'conflict'), 'unknown'], [http(500), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
+  /* #2131 S6: Settings. `plugin_busy` touched nothing: a refusal with the kernel's reason. */
+  ['POST /plugins/{id}/enable|disable', PLUGIN_TOGGLE_FAILURES, [
+    [http(400, 'bad_request'), 'refused'], [http(404, 'not_found'), 'refused'], [http(409, 'plugin_busy'), 'refused'],
+    [http(409, 'plugin_conflict'), 'refused'], [http(422, 'plugin_kernel_too_old'), 'refused'],
+    [http(503, 'service_unavailable'), 'refused'], [unauthorized, 'refused'],
+    /* An enable of a running plugin answers 500 (#2132); any 500 may follow a partial change. */
+    [http(500, 'internal'), 'unknown'], [http(403), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['DELETE /plugins/{id}', PLUGIN_UNINSTALL_FAILURES, [
+    [http(404, 'not_found'), 'done'],
+    [http(400, 'bad_request'), 'refused'], [http(409, 'plugin_busy'), 'refused'], [http(403), 'refused'], [unauthorized, 'refused'],
+    [http(500, 'internal'), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /plugins/install, first attempt', PLUGIN_INSTALL_FAILURES, [
+    [http(400, 'plugin_install'), 'refused'], [http(409, 'plugin_conflict'), 'refused'], [http(409, 'plugin_busy'), 'refused'],
+    [http(413), 'refused'], [http(415), 'refused'], [http(422, 'plugin_kernel_too_old'), 'refused'], [unauthorized, 'refused'],
+    [http(404), 'unknown'], [http(500, 'internal'), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /plugins/install, after an unknown answer', PLUGIN_INSTALL_RETRY_FAILURES, [
+    /* "Already installed": the earlier attempt landed. Only that code; a busy 409 is still a refusal. */
+    [http(409, 'plugin_conflict'), 'done'], [http(409, 'plugin_busy'), 'refused'],
+    [http(400, 'plugin_install'), 'refused'], [http(422), 'refused'], [unauthorized, 'refused'],
+    [http(500, 'internal'), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['PATCH /plugins/{id}/config', PLUGIN_CONFIG_FAILURES, [
+    [http(400, 'bad_request'), 'refused'], [http(400, 'plugin_config_too_large'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [http(409, 'plugin_busy'), 'refused'], [http(409, 'plugin_manifest_unloaded'), 'refused'],
+    [http(409, 'plugin_config_corrupt'), 'refused'], [http(413), 'refused'], [http(415), 'refused'], [http(422), 'refused'],
+    [unauthorized, 'refused'],
+    [http(500, 'db_error'), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['PATCH /plugins/{id}/config, the reset offer', PLUGIN_CONFIG_RESET_OFFERS, [
+    [http(409, 'plugin_config_corrupt'), 'reset'], [http(400, 'plugin_config_too_large'), 'reset'],
+    [http(409, 'plugin_manifest_unloaded'), 'none'], [http(400, 'bad_request'), 'none'], [http(409, 'plugin_busy'), 'none'],
+    [unauthorized, 'none'], [transport, 'none'], [decode, 'none'], [null, 'none'],
+  ]],
+  ['POST /plugins/{id}/reload', PLUGIN_RELOAD_FAILURES, [
+    [http(400, 'plugin_install'), 'refused'], [http(404, 'not_found'), 'refused'], [http(409, 'plugin_busy'), 'refused'],
+    [http(409, 'plugin_conflict'), 'refused'], [http(422, 'plugin_kernel_too_old'), 'refused'],
+    [http(503, 'service_unavailable'), 'refused'], [unauthorized, 'refused'],
+    [http(500, 'internal'), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['PUT /settings', SETTINGS_FAILURES, [
+    /* The handler answers only 500; a 4xx is the extractor's, before anything was stored. */
+    [http(400), 'refused'], [http(413), 'refused'], [http(415), 'refused'], [http(422), 'refused'], [unauthorized, 'refused'],
+    [http(500, 'db_error'), 'unknown'], [http(503), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
 ];
 
 describe.each(cases)('classifying a failed %s', (_route, table, expected) => {
@@ -237,6 +291,15 @@ describe('writeFailureText', () => {
     new ApiError(http(500, 'db_error', 'database is locked')), new Error('anything else'), 'not an error',
   ])('shows the fixed unknown state for %o', (error) => {
     expect(read(error)).toBe(DELETE_TEXT.unknown);
+  });
+});
+
+describe('writeClassOf', () => {
+  it('reads a rejection through the table, and a write that was not sent as refused', () => {
+    expect(writeClassOf(new ApiError(http(404, 'not_found')), DELETE_FAILURES)).toBe('done');
+    expect(writeClassOf(new ApiError(transport), DELETE_FAILURES)).toBe('unknown');
+    expect(writeClassOf(new Error('anything else'), DELETE_FAILURES)).toBe('unknown');
+    expect(writeClassOf(new NotSentError(), DELETE_FAILURES)).toBe('refused');
   });
 });
 

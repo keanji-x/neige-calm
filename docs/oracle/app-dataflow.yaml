@@ -817,3 +817,21 @@
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
+- id: INV-APP-120
+  kind: invariant
+  family: app-write-failures
+  statement: >
+    Settings 的每个写（插件启停、移除、安装、配置保存、Apply & restart、Network 的 `PUT /api/settings`）的失败必须经其路由的失败表读出：
+    被拒绝显示内核的原因（含 409 `plugin_busy`），结果未知显示该写的固定句子，不得显示传输原文或谈论连接；移除答 404、
+    以及同一草稿在结果未知之后再次安装答 409 `plugin_conflict`（already installed）都是 done；首次安装的 `plugin_conflict` 仍是拒绝。
+  why: >
+    #2131 S6：应答丢失时各窗格曾显示 "Transport request failed" 或 "check the connection"；安装在应答丢失后重试会因自己的安装
+    得到 409 "already installed" 并显示为失败；重复的移除答 404 也显示为失败。连接状态只归全局指示器。
+  source: fe/core/domain/plugins.ts:44-136; fe/core/domain/settings.ts:22-32; fe/web/src/features/settings/plugin-add.tsx:83-98
+  authoritative_test: fe/web/src/app/shell/settings-write-failures.contract.test.tsx:89-225
+  owner_slice: features/settings
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated

@@ -2,13 +2,14 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginAddPane, type PluginAddPaneProps } from './plugin-add.tsx';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
 import type { ConnectorCheckResult } from '../../../../core/domain/plugins.ts';
 
 afterEach(cleanup);
 function props(overrides: Partial<PluginAddPaneProps> = {}): PluginAddPaneProps {
   return { pending: false, onBack: vi.fn(),
     onCheckConnector: vi.fn(() => Promise.resolve({ ok: true as const, tools: ['search'] })),
-    onInstallConnector: vi.fn(() => Promise.resolve(null)), onInstallLocalPath: vi.fn(() => Promise.resolve(null)),
+    onInstallConnector: vi.fn(() => Promise.resolve()), onInstallLocalPath: vi.fn(() => Promise.resolve()),
     onInstalled: vi.fn(), ...overrides };
 }
 const config = JSON.stringify({ mcpServers: { Docs: { url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer sk-private-value' } } } });
@@ -71,7 +72,9 @@ describe('Add a plugin from JSON', () => {
     expect(p.onInstallConnector).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://second.test', tool_mode: 'selected', tools: 'search, fetch' }));
   });
   it('retains the draft after an install refusal', async () => {
-    const p = props({ onInstallConnector: () => Promise.resolve('already installed') });
+    const p = props({ onInstallConnector: () => Promise.reject(new ApiError({
+      kind: 'http', status: 409, code: 'plugin_conflict', message: 'plugin `docs` already installed', body: {},
+    })) });
     render(<PluginAddPane {...p} />); paste();
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
     expect((await screen.findByRole('alert')).textContent).toContain('already installed');

@@ -111,7 +111,7 @@ test('does not replay an offline settings edit over another client and refreshes
     await expect(mine).toHaveValue(proxy(1));
     await context.setOffline(true);
     await mine.fill(proxy(2)); await mine.press('Tab');
-    await expect(myRow.getByText('Nothing was sent.')).toBeVisible();
+    await expect(myRow.getByText('It was not saved.')).toBeVisible();
     const theirs = other.getByLabel('HTTP proxy', { exact: true });
     await theirs.fill(proxy(3)); await theirs.press('Tab');
     await expect.poll(async () => (await (await request.get('/api/settings')).json() as { settings: Record<string, string> }).settings.http_proxy).toBe(proxy(3));

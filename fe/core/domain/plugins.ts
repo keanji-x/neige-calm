@@ -2,8 +2,12 @@
 
 import { z } from 'zod';
 
-import type { ApiOperation } from '../api/types.js';
+import type { ApiFailure, ApiOperation } from '../api/types.js';
 import type { McpCheckResult } from '../api/generated/wire.js';
+import {
+  NotSentError, classifyFailure, refusalText, writeFailureOf,
+  type FailureTable, type WriteClass, type WriteText,
+} from './failure-class.js';
 
 /**
  * The kernel's wire-name set for a plugin's runtime state. `unavailable` is a connector's normal
@@ -36,6 +40,102 @@ export type PluginListItem = z.infer<typeof pluginListItemSchema>;
 export function pluginsOperation(): ApiOperation<PluginListItem[]> {
   return { method: 'GET', path: '/api/plugins', responseSchema: z.array(pluginListItemSchema) };
 }
+
+/*
+ * What a failed plugin write means (#2131), read through `writeFailureText`: a refusal shows the kernel's reason at
+ * the plugin, `done` shows nothing, `unknown` shows the write's fixed sentence. 409 `plugin_busy` touched nothing and
+ * is a refusal like any other. Every write re-reads the list (and the configuration pane its plugin) when it settles.
+ */
+
+/**
+ * `POST /api/plugins/{id}/enable|disable`. Refusals: 400 (an always-on built-in, or a kind that cannot), 404, 409
+ * `plugin_busy` or `plugin_conflict`, 422 (kernel too old), and 503 (enabled, but a connector is unavailable or a
+ * required key is missing). A 500 may follow a partial change, including the one an enable of a running plugin
+ * answers (#2132), so it is `unknown`.
+ */
+export const PLUGIN_TOGGLE_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 404, 409, 422, 503]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const PLUGIN_TOGGLE_TEXT: WriteText = Object.freeze({
+  refused: 'The plugin was not changed.',
+  unknown: 'The change is unconfirmed. The switch shows what is in effect.',
+});
+
+/** `DELETE /api/plugins/{id}`: the shape of `DELETE_FAILURES` (404 is `done`), plus 400 for a built-in. */
+export const PLUGIN_UNINSTALL_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([404]), is: 'done' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 409]), is: 'refused' as const }),
+  ]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+/**
+ * `POST /api/plugins/install`, a first attempt. Refusals: 400 `plugin_install` (and the extractor's 4xx), 409
+ * `plugin_conflict` (the id is already installed) or `plugin_busy`, 422. A retry after an `unknown` answer reads
+ * {@link PLUGIN_INSTALL_RETRY_FAILURES} instead.
+ */
+export const PLUGIN_INSTALL_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 409, 413, 415, 422]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+/** The same install after an `unknown` answer: "already installed" is the earlier attempt having landed, so `done`. */
+export const PLUGIN_INSTALL_RETRY_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([409]), code: 'plugin_conflict', is: 'done' as const }),
+    Object.freeze({ status: Object.freeze([400, 409, 413, 415, 422]), is: 'refused' as const }),
+  ]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const PLUGIN_INSTALL_TEXT: WriteText = Object.freeze({
+  refused: 'The plugin was not added.',
+  unknown: 'The add is unconfirmed. Adding the plugin again is safe.',
+});
+
+/**
+ * `PATCH /api/plugins/{id}/config`, a merge patch that is safe to repeat. Refusals: 400 (a schema violation, or
+ * `plugin_config_too_large`), 404, 409 (`plugin_busy`, `plugin_manifest_unloaded`, `plugin_config_corrupt`), and
+ * the extractor's 413/415/422.
+ */
+export const PLUGIN_CONFIG_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 404, 409, 413, 415, 422]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const PLUGIN_CONFIG_TEXT: WriteText = Object.freeze({
+  refused: 'Nothing was saved.',
+  unknown: 'The save is unconfirmed. Saving again is safe.',
+});
+
+/** The two config refusals whose stated exit is `?reset=true`; the message text is never read for it. */
+export const PLUGIN_CONFIG_RESET_OFFERS: FailureTable<'reset' | 'none'> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([409]), code: 'plugin_config_corrupt', is: 'reset' as const }),
+    Object.freeze({ status: Object.freeze([400]), code: 'plugin_config_too_large', is: 'reset' as const }),
+  ]),
+  unauthorized: 'none',
+  otherwise: 'none',
+});
+
+/**
+ * `POST /api/plugins/{id}/reload`. Refusals: 404 and 409 `plugin_busy` before anything stopped; 400 (the manifest),
+ * 409 `plugin_conflict`, 422 and 503 after the stop. A 500 may have stopped it or not, so it is `unknown`. Which of
+ * these left the plugin where is read back from its state by {@link reloadOutcome}.
+ */
+export const PLUGIN_RELOAD_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 404, 409, 422, 503]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
 
 /** Enable / disable, as one operation taking the target state. */
 export function setPluginEnabledOperation(id: string, enabled: boolean): ApiOperation<{ id: string; enabled: boolean }> {
@@ -140,6 +240,14 @@ export function installConnectorOperation(draft: ConnectorInstallDraft): ApiOper
     },
     responseSchema: installedPluginSchema,
   };
+}
+
+/**
+ * `POST /api/plugins/mcp/check` is a read-only probe, outside the write tables: an answered failure is the kernel's
+ * account of the upstream server (400/502 `mcp_setup_failed`); anything else is this fixed sentence.
+ */
+export function connectorCheckFailureText(failure: ApiFailure | null): string {
+  return failure?.kind === 'http' && failure.message !== '' ? failure.message : 'The connection check could not finish. Try again.';
 }
 
 /** Check is a transient POST; its body must never become a query key/cache. */
@@ -336,28 +444,26 @@ export function configPatchFrom(
   return patch;
 }
 
-/** A kernel refusal reduced to `code` and the sentence the kernel wrote; transport failures get a code too. */
-export type PluginApiFailure = Readonly<{ code: string; message: string }>;
-
-/** What one Save did; the refusal is carried unclassified, the wording lives in `configWriteError`. */
+/** What one Save did; a failure carries the write's rejection as thrown, read by `configWriteError`. */
 export type PluginConfigSaveResult =
   | Readonly<{ ok: true }>
-  | Readonly<{ ok: false; failure: PluginApiFailure }>;
+  | Readonly<{ ok: false; error: unknown }>;
 
 /** The facts read after a restart attempt; `reloadOutcome` is the only place they become a sentence. */
 export type PluginRestartFacts = Readonly<{
-  failure: PluginApiFailure | null;
+  /** The reload's rejection as thrown, or `null` when it answered 2xx. */
+  rejection: Readonly<{ error: unknown }> | null;
   state: PluginState;
   lastError?: string;
 }>;
 
 /** What one Apply & restart did: never got past the write, or restarted and left the plugin somewhere. */
 export type PluginConfigApplyResult =
-  | Readonly<{ saved: false; failure: PluginApiFailure }>
+  | Readonly<{ saved: false; error: unknown }>
   | Readonly<{ saved: true; restart: PluginRestartFacts }>;
 
 export type PluginConfigWriteError = Readonly<{
-  /** The sentence to show; the kernel's own wording wherever it wrote a usable one. */
+  /** The sentence to show; the kernel's own wording wherever it refused. */
   message: string;
   /** The declared key the kernel's message named, when this form renders it; `null` puts the message on the pane. */
   fieldKey: string | null;
@@ -378,35 +484,23 @@ function fieldViolationOf(
 }
 
 /**
- * A rejected `PATCH /config`, as something an operator can act on. A schema violation goes on the
- * field; `plugin_busy` wrote nothing; `plugin_config_corrupt` and `plugin_config_too_large` both
- * take the `?reset=true` offer, which cannot be recovered from the message text.
+ * A rejected `PATCH /config`, read through {@link PLUGIN_CONFIG_FAILURES}: an unknown outcome is the fixed sentence;
+ * a refusal is the kernel's reason, on the field a schema violation names, with the `?reset=true` offer where
+ * {@link PLUGIN_CONFIG_RESET_OFFERS} says it is the exit.
  */
-export function configWriteError(
-  failure: PluginApiFailure,
-  fields: readonly PluginConfigField[],
-): PluginConfigWriteError {
-  const violation = fieldViolationOf(failure.message, fields);
-  if (violation !== null) {
-    return { message: violation.reason, fieldKey: violation.key, offersReset: false };
-  }
-  if (failure.code === 'plugin_busy') {
-    return {
-      message: 'Another operation is using this plugin right now, so nothing was saved. Try again in a moment.',
-      fieldKey: null,
-      offersReset: false,
-    };
-  }
-  return {
-    message: failure.message,
-    fieldKey: null,
-    offersReset: failure.code === 'plugin_config_corrupt' || failure.code === 'plugin_config_too_large',
-  };
+export function configWriteError(error: unknown, fields: readonly PluginConfigField[]): PluginConfigWriteError {
+  const failure = writeFailureOf(error);
+  const refusal = refusalText(failure, PLUGIN_CONFIG_FAILURES, PLUGIN_CONFIG_TEXT.refused);
+  if (refusal === null) return { message: PLUGIN_CONFIG_TEXT.unknown, fieldKey: null, offersReset: false };
+  const violation = fieldViolationOf(refusal, fields);
+  if (violation !== null) return { message: violation.reason, fieldKey: violation.key, offersReset: false };
+  const offersReset = !(failure instanceof NotSentError) && classifyFailure(failure, PLUGIN_CONFIG_RESET_OFFERS) === 'reset';
+  return { message: refusal, fieldKey: null, offersReset };
 }
 
-/** What a reload attempt actually did; `unknown` is the ending where nothing observed the plugin. */
+/** What a reload attempt actually did; `unknown` is the ending where nothing confirmed the restart. */
 export type PluginReloadOutcomeKind =
-  | 'applied' | 'starting' | 'busy' | 'unavailable' | 'stopped' | 'idle' | 'unknown';
+  | 'applied' | 'starting' | 'refused' | 'unavailable' | 'stopped' | 'idle' | 'unknown';
 
 export type PluginReloadOutcome = Readonly<{
   kind: PluginReloadOutcomeKind;
@@ -416,20 +510,20 @@ export type PluginReloadOutcome = Readonly<{
 }>;
 
 /**
- * The status code is not the verdict: a reload stops the plugin before re-reading anything, a
- * connector whose bring-up fails ends in `unavailable` + `last_error`, and `plugin_busy` touched
- * nothing. `plugin_busy` is judged first, `unavailable` before the generic failure, `unknown` after both.
+ * The status code is not the verdict: a reload stops the plugin before re-reading anything, a connector whose
+ * bring-up fails ends in `unavailable` + `last_error`, and a refusal before the stop (`plugin_busy`) touched nothing.
+ * The rejection is read through {@link PLUGIN_RELOAD_FAILURES}; the plugin's state read back afterwards says where
+ * a refusal left it.
  */
 export function reloadOutcome(facts: PluginRestartFacts): PluginReloadOutcome {
-  const { failure, state, lastError } = facts;
-  if (failure?.code === 'plugin_busy') {
+  const { rejection, state, lastError } = facts;
+  const refusal = rejection === null ? null : refusalText(writeFailureOf(rejection.error), PLUGIN_RELOAD_FAILURES, '');
+  if (refusal !== null && state === 'running') {
     return {
-      kind: 'busy',
+      kind: 'refused',
       tone: 'warning',
-      message: 'Configuration saved. The restart could not run because another operation is using '
-        + 'this plugin, so it is still running its previous configuration — try Apply & restart again '
-        + 'in a moment.',
-      };
+      message: `Configuration saved. The restart did not run, so the plugin is still running its previous configuration. ${refusal}`.trim(),
+    };
   }
   if (state === 'unavailable') {
     /* `last_error` verbatim: it is the kernel's only account of why a bring-up failed. */
@@ -441,20 +535,20 @@ export function reloadOutcome(facts: PluginRestartFacts): PluginReloadOutcome {
         : `Configuration saved. The plugin did not come up with it: ${lastError}`,
     };
   }
-  if (failure?.code === 'transport_failure' && state === 'unknown') {
-    /* Nothing observed the plugin at all, so neither "stopped" nor "still up" is stated. */
+  if (rejection !== null && refusal === null) {
+    /* Nothing confirmed what the restart did, so neither "stopped" nor "still up" is stated. */
     return {
       kind: 'unknown',
       tone: 'warning',
-      message: 'Configuration saved. The restart request could not be delivered, so this plugin\'s '
-        + 'current state is unknown — check the connection and reload this screen to see where it is.',
+      message: 'Configuration saved. The restart is unconfirmed, so this plugin\'s current state is unknown. '
+        + 'Reload this screen to see where it is.',
     };
   }
-  if (failure !== null || state === 'crashed') {
+  if (refusal !== null || state === 'crashed') {
     return {
       kind: 'stopped',
       tone: 'warning',
-      message: `The plugin has stopped and did not start with the new configuration. ${failure?.message ?? lastError ?? ''}`.trim(),
+      message: `The plugin has stopped and did not start with the new configuration. ${refusal ?? lastError ?? ''}`.trim(),
     };
   }
   if (state === 'spawning' || state === 'installing') {

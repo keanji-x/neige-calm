@@ -50,13 +50,6 @@ type Phase =
 
 const IDLE: Phase = Object.freeze({ phase: 'idle' });
 
-/** A write that never reached the kernel: nothing was saved and nothing was restarted. */
-const UNREACHED: PluginConfigWriteError = Object.freeze({
-  message: 'The request did not reach the workspace. Check the connection and try again.',
-  fieldKey: null,
-  offersReset: false,
-});
-
 export function PluginConfigPane({
   pluginId, pluginName, enabled, detail, loadError, onRetryLoad, onBack, onSave, onApplyRestart,
 }: PluginConfigPaneProps) {
@@ -109,9 +102,9 @@ export function PluginConfigPane({
       .then((result) => {
         settle(result.ok
           ? { phase: 'saved' }
-          : { phase: 'failed', error: configWriteError(result.failure, fields) });
+          : { phase: 'failed', error: configWriteError(result.error, fields) });
       })
-      .catch(() => { settle({ phase: 'failed', error: UNREACHED }); });
+      .catch((error: unknown) => { settle({ phase: 'failed', error: configWriteError(error, fields) }); });
   };
 
   const applyRestart = (reset: boolean) => {
@@ -120,9 +113,9 @@ export function PluginConfigPane({
       .then((result) => {
         settle(result.saved
           ? { phase: 'restarted', outcome: reloadOutcome(result.restart) }
-          : { phase: 'failed', error: configWriteError(result.failure, fields) });
+          : { phase: 'failed', error: configWriteError(result.error, fields) });
       })
-      .catch(() => { settle({ phase: 'failed', error: UNREACHED }); });
+      .catch((error: unknown) => { settle({ phase: 'failed', error: configWriteError(error, fields) }); });
   };
 
   const fieldError = phase.phase === 'failed' ? phase.error : null;

@@ -148,10 +148,10 @@ describe('Settings states', () => {
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge:3128');
     await act(async () => { await userEvent.tab(); });
     const row = screen.getByLabelText('HTTP proxy').closest('li');
-    expect(row?.textContent).toContain('PUT /api/settings failed');
+    expect(row?.textContent).toContain('The save is unconfirmed.');
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://edge:3128');
     expect(screen.getByLabelText('HTTPS proxy').closest('li')?.textContent)
-      .not.toContain('PUT /api/settings failed');
+      .not.toContain('The save is unconfirmed.');
   });
 
   it('confirms the commit on its own row and then retires the notice', async () => {
@@ -197,8 +197,8 @@ describe('Settings network commits, per row', () => {
 
     const httpsRow = screen.getByLabelText('HTTPS proxy').closest('li');
     const httpRow = screen.getByLabelText('HTTP proxy').closest('li');
-    expect(httpRow?.textContent).toContain('A failed');
-    expect(httpsRow?.textContent).not.toContain('A failed');
+    expect(httpRow?.textContent).toContain('The save is unconfirmed.');
+    expect(httpsRow?.textContent).not.toContain('The save is unconfirmed.');
   });
 
   it('does not confirm a commit that has not resolved', async () => {
@@ -232,7 +232,7 @@ describe('Settings network commits, per row', () => {
     await act(async () => { flights[0]?.reject(new Error('stale failure')); await Promise.resolve(); });
 
     const httpRow = field.closest('li');
-    expect(httpRow?.textContent).not.toContain('stale failure');
+    expect(httpRow?.textContent).not.toContain('The save is unconfirmed.');
     expect(httpRow?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
   });
 
@@ -261,7 +261,7 @@ describe('Settings network commits, per row', () => {
     const field = screen.getByLabelText('HTTP proxy');
     await userEvent.type(field, 'http://a:1');
     await act(async () => { await userEvent.tab(); });
-    expect(field.closest('li')?.textContent).toContain('unreachable');
+    expect(field.closest('li')?.textContent).toContain('The save is unconfirmed.');
 
     await act(async () => { await userEvent.type(field, '{Enter}'); });
     expect(onSave).toHaveBeenCalledTimes(2);
@@ -358,7 +358,7 @@ describe('Settings network commits, per row', () => {
     await userEvent.clear(field);
     await userEvent.type(field, 'X');
     await act(async () => { await userEvent.tab(); });
-    expect(field.closest('li')?.textContent).toContain('unreachable');
+    expect(field.closest('li')?.textContent).toContain('The save is unconfirmed.');
 
     view.unmount();
     expect(onSave).toHaveBeenCalledTimes(1);
@@ -370,11 +370,11 @@ describe('Settings network commits, per row', () => {
     const field = screen.getByLabelText('HTTP proxy');
     await userEvent.type(field, 'X');
     await act(async () => { await userEvent.tab(); });
-    expect(field.closest('li')?.textContent).toContain('unreachable');
+    expect(field.closest('li')?.textContent).toContain('The save is unconfirmed.');
 
     await userEvent.type(field, 'Y');            // moves away — verdict withdrawn
     await userEvent.keyboard('{Backspace}');     // …and back to exactly X
-    expect(field.closest('li')?.textContent).not.toContain('unreachable');
+    expect(field.closest('li')?.textContent).not.toContain('The save is unconfirmed.');
   });
 
   it('keeps a reference the server never echoes from silencing a later edit', async () => {

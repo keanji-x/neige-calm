@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import { ApiError, NotSentError } from './failure-class.js';
 import {
-  EMPTY_CONNECTOR_DRAFT, configDraftFrom, configFieldsOf, configPatchFrom, configWriteError,
-  connectorDraftError, installConnectorOperation, installLocalPathOperation, toolsAllowOf,
+  EMPTY_CONNECTOR_DRAFT, PLUGIN_CONFIG_TEXT, configDraftFrom, configFieldsOf, configPatchFrom, configWriteError,
+  connectorCheckFailureText, connectorDraftError, installConnectorOperation, installLocalPathOperation, toolsAllowOf,
   patchPluginConfigOperation, pluginDetailSchema, pluginListItemSchema, reloadOutcome,
   reloadPluginOperation, storedConfigOf, uninstallPluginOperation,
   type ConnectorInstallDraft,
@@ -205,14 +206,15 @@ describe('the operations', () => {
   });
 });
 
+/** A rejection as the hooks carry it: the kernel's `ErrorBody` answer, or a lost one. */
+const answered = (status: number, code: string, message: string) => new ApiError({ kind: 'http', status, code, message, body: { error: message, code } });
+const lost = new ApiError({ kind: 'transport', message: 'Transport request failed' });
+
 describe('configWriteError', () => {
   const fields = configFieldsOf(schema());
 
   it('puts a schema violation on the field the kernel named', () => {
-    const error = configWriteError(
-      { code: 'bad_request', message: 'config.retries: expected integer, found a string' },
-      fields,
-    );
+    const error = configWriteError(answered(400, 'bad_request', 'config.retries: expected integer, found a string'), fields);
     expect(error.fieldKey).toBe('retries');
     expect(error.message).toBe('expected integer, found a string');
   });
@@ -222,146 +224,131 @@ describe('configWriteError', () => {
       type: 'object',
       properties: { token: { type: 'string' }, token_extra: { type: 'string' } },
     });
-    expect(configWriteError(
-      { code: 'bad_request', message: 'config.token_extra: expected string, found a number' },
-      pair,
-    ).fieldKey).toBe('token_extra');
-    expect(configWriteError(
-      { code: 'bad_request', message: 'config.token: expected string, found a number' },
-      pair,
-    ).fieldKey).toBe('token');
+    expect(configWriteError(answered(400, 'bad_request', 'config.token_extra: expected string, found a number'), pair).fieldKey)
+      .toBe('token_extra');
+    expect(configWriteError(answered(400, 'bad_request', 'config.token: expected string, found a number'), pair).fieldKey)
+      .toBe('token');
   });
 
   it('offers the reset for the byte-cap refusal too, without reading the prose', () => {
     const tooLarge = configWriteError(
-      {
-        code: 'plugin_config_too_large',
-        message: 'config: storing this patch would make plugin `git-forge`\'s user_config 40000 '
-          + 'bytes, over the 32768-byte cap. Resend this request with `?reset=true`',
-      },
+      answered(400, 'plugin_config_too_large', 'config: storing this patch would make plugin `git-forge`\'s user_config 40000 '
+        + 'bytes, over the 32768-byte cap. Resend this request with `?reset=true`'),
       fields,
     );
     expect(tooLarge.offersReset).toBe(true);
     expect(tooLarge.fieldKey).toBeNull();
     expect(tooLarge.message).toContain('32768');
 
-    expect(configWriteError(
-      { code: 'bad_request', message: 'something mentioning ?reset=true in passing' },
-      fields,
-    ).offersReset).toBe(false);
+    expect(configWriteError(answered(400, 'bad_request', 'something mentioning ?reset=true in passing'), fields).offersReset)
+      .toBe(false);
   });
 
   it('keeps a violation of an undeclared key off the form', () => {
     const error = configWriteError(
-      { code: 'bad_request', message: 'config.ghost: unknown field (schema declares additionalProperties: false)' },
-      fields,
+      answered(400, 'bad_request', 'config.ghost: unknown field (schema declares additionalProperties: false)'), fields,
     );
     expect(error.fieldKey).toBeNull();
     expect(error.message).toContain('unknown field');
   });
 
-  it('says nothing was saved when the lock was held', () => {
-    const error = configWriteError({ code: 'plugin_busy', message: 'plugin `git-forge` is busy' }, fields);
-    expect(error.fieldKey).toBeNull();
-    expect(error.offersReset).toBe(false);
-    expect(error.message).toMatch(/nothing was saved/);
-    expect(error.message).toMatch(/try again/i);
+  it('shows a held lock in the kernel’s words, as a refusal like any other', () => {
+    const error = configWriteError(answered(409, 'plugin_busy', 'plugin `git-forge` is busy'), fields);
+    expect(error).toEqual({ message: 'plugin `git-forge` is busy', fieldKey: null, offersReset: false });
   });
 
   it('offers the reset only for the refusal whose exit it is', () => {
-    const corrupt = configWriteError(
-      { code: 'plugin_config_corrupt', message: 'stored user_config is not a JSON object' },
-      fields,
-    );
+    const corrupt = configWriteError(answered(409, 'plugin_config_corrupt', 'stored user_config is not a JSON object'), fields);
     expect(corrupt.offersReset).toBe(true);
     expect(corrupt.message).toContain('not a JSON object');
 
     const unloaded = configWriteError(
-      { code: 'plugin_manifest_unloaded', message: 'manifest is not loaded in the kernel registry; reload the plugin' },
-      fields,
+      answered(409, 'plugin_manifest_unloaded', 'manifest is not loaded in the kernel registry; reload the plugin'), fields,
     );
     expect(unloaded.offersReset).toBe(false);
     expect(unloaded.message).toContain('reload the plugin');
   });
+
+  it('shows the fixed sentence for an outcome it cannot know, and the fixed refusal for a write not sent', () => {
+    for (const error of [lost, answered(500, 'db_error', 'database error: locked'), new Error('stale intent')]) {
+      expect(configWriteError(error, fields)).toEqual({ message: PLUGIN_CONFIG_TEXT.unknown, fieldKey: null, offersReset: false });
+    }
+    expect(configWriteError(new NotSentError(), fields).message).toBe(PLUGIN_CONFIG_TEXT.refused);
+  });
 });
 
 describe('reloadOutcome (#1284 §2.4)', () => {
-  it('reports a held lock as saved-but-not-restarted', () => {
-    const outcome = reloadOutcome({
-      failure: { code: 'plugin_busy', message: 'plugin `git-forge` is busy' },
-      state: 'running',
-    });
-    expect(outcome.kind).toBe('busy');
+  it('reports a refusal before the stop as saved-but-not-restarted, in the kernel’s words', () => {
+    const outcome = reloadOutcome({ rejection: { error: answered(409, 'plugin_busy', 'plugin `git-forge` is busy') }, state: 'running' });
+    expect(outcome.kind).toBe('refused');
     expect(outcome.tone).toBe('warning');
     expect(outcome.message).toMatch(/saved/i);
     expect(outcome.message).toMatch(/previous configuration/);
+    expect(outcome.message).toContain('plugin `git-forge` is busy');
   });
 
   it('carries last_error verbatim when the plugin landed in unavailable', () => {
     /* `unavailable` is a connector's normal terminal state, not a kernel error; `last_error` is the only diagnostic. */
     const reason = 'mcp-http: connect to https://api.example.com failed: connection refused';
-    const outcome = reloadOutcome({
-      failure: { code: 'bad_request', message: 'reload failed' },
-      state: 'unavailable',
-      lastError: reason,
-    });
+    const outcome = reloadOutcome({ rejection: { error: answered(400, 'bad_request', 'reload failed') }, state: 'unavailable', lastError: reason });
     expect(outcome.kind).toBe('unavailable');
     expect(outcome.message).toContain(reason);
   });
 
   it('reads unavailable off the state even when the reload answered 200', () => {
-    const outcome = reloadOutcome({ failure: null, state: 'unavailable', lastError: 'upstream said no' });
+    const outcome = reloadOutcome({ rejection: null, state: 'unavailable', lastError: 'upstream said no' });
     expect(outcome.kind).toBe('unavailable');
     expect(outcome.message).toContain('upstream said no');
   });
 
-  it('says an app that did not come back has stopped', () => {
+  it('says an app the kernel refused after the stop has stopped', () => {
     const outcome = reloadOutcome({
-      failure: { code: 'bad_request', message: 'spawn failed: No such file or directory' },
-      state: 'installed',
+      rejection: { error: answered(400, 'plugin_install', 'spawn failed: No such file or directory') }, state: 'installed',
     });
     expect(outcome.kind).toBe('stopped');
     expect(outcome.message).toMatch(/stopped/);
     expect(outcome.message).toContain('spawn failed: No such file or directory');
+    expect(reloadOutcome({ rejection: { error: answered(400, 'plugin_install', 'bad manifest') }, state: 'unknown' }).kind).toBe('stopped');
   });
 
   it('confirms only when something is actually running the new configuration', () => {
-    expect(reloadOutcome({ failure: null, state: 'running' })).toMatchObject({
+    expect(reloadOutcome({ rejection: null, state: 'running' })).toMatchObject({
       kind: 'applied', tone: 'success',
     });
-    expect(reloadOutcome({ failure: null, state: 'spawning' })).toMatchObject({
+    expect(reloadOutcome({ rejection: null, state: 'spawning' })).toMatchObject({
       kind: 'starting', tone: 'success',
     });
-    const idle = reloadOutcome({ failure: null, state: 'disabled' });
+    const idle = reloadOutcome({ rejection: null, state: 'disabled' });
     expect(idle.kind).toBe('idle');
     expect(idle.tone).toBe('warning');
     expect(idle.message).toMatch(/enable/i);
   });
 
-  it('says the state is unknown when the request never left the browser', () => {
-    const outcome = reloadOutcome({
-      failure: { code: 'transport_failure', message: 'The request could not be completed.' },
-      state: 'unknown',
-    });
-    expect(outcome.kind).toBe('unknown');
-    expect(outcome.tone).toBe('warning');
-    expect(outcome.message).toMatch(/unknown/);
-    expect(outcome.message).not.toMatch(/has stopped/);
-    expect(outcome.message).toMatch(/saved/i);
-  });
-
-  it('still reports a stop when the kernel answered and the plugin is down', () => {
-    const outcome = reloadOutcome({
-      failure: { code: 'internal', message: 'spawn failed' },
-      state: 'unknown',
-    });
-    expect(outcome.kind).toBe('stopped');
+  it('says the state is unknown when nothing confirmed the restart, never naming the connection', () => {
+    for (const error of [lost, answered(500, 'internal', 'stop failed: timeout'), new Error('stale intent')]) {
+      const outcome = reloadOutcome({ rejection: { error }, state: 'unknown' });
+      expect(outcome.kind).toBe('unknown');
+      expect(outcome.tone).toBe('warning');
+      expect(outcome.message).toMatch(/unknown/);
+      expect(outcome.message).toMatch(/saved/i);
+      expect(outcome.message).not.toMatch(/has stopped|connection|Transport request failed|stop failed/);
+    }
   });
 
   it('paints unavailable as a warning rather than an error', () => {
-    expect(reloadOutcome({ failure: null, state: 'unavailable', lastError: 'upstream said no' }).tone)
+    expect(reloadOutcome({ rejection: null, state: 'unavailable', lastError: 'upstream said no' }).tone)
       .toBe('warning');
-    expect(reloadOutcome({ failure: null, state: 'unavailable' }).tone).toBe('warning');
+    expect(reloadOutcome({ rejection: null, state: 'unavailable' }).tone).toBe('warning');
+  });
+});
+
+describe('connectorCheckFailureText', () => {
+  it('shows the kernel’s account of the upstream server, else a fixed sentence', () => {
+    expect(connectorCheckFailureText({ kind: 'http', status: 502, code: 'mcp_setup_failed', message: 'HTTP 401: authentication failed' }))
+      .toBe('HTTP 401: authentication failed');
+    for (const failure of [lost.failure, { kind: 'decode' as const, message: 'API response did not match its schema' }, null]) {
+      expect(connectorCheckFailureText(failure)).toBe('The connection check could not finish. Try again.');
+    }
   });
 });
 

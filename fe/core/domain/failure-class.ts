@@ -98,10 +98,15 @@ export type WriteText = Readonly<{ refused: string; unknown: string }>;
  */
 export function writeFailureText(table: FailureTable<WriteClass>, text: WriteText): (error: unknown) => string | null {
   return (error) => {
-    const failure = writeFailureOf(error);
-    if (!(failure instanceof NotSentError) && classifyFailure(failure, table) === 'done') return null;
-    return refusalText(failure, table, text.refused) ?? text.unknown;
+    if (writeClassOf(error, table) === 'done') return null;
+    return refusalText(writeFailureOf(error), table, text.refused) ?? text.unknown;
   };
+}
+
+/** What a failed write's rejection means on the route `table` describes; a write that was not sent is refused. */
+export function writeClassOf(error: unknown, table: FailureTable<WriteClass>): WriteClass {
+  const failure = writeFailureOf(error);
+  return failure instanceof NotSentError ? 'refused' : classifyFailure(failure, table);
 }
 
 /**

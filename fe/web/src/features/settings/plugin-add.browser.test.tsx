@@ -8,7 +8,7 @@ afterEach(cleanup);
 function props(): PluginAddPaneProps {
   return { pending: false, onBack: vi.fn(), onInstalled: vi.fn(),
     onCheckConnector: vi.fn(() => Promise.resolve({ ok: true as const, tools: ['search', 'fetch'] })),
-    onInstallConnector: vi.fn(() => Promise.resolve(null)), onInstallLocalPath: vi.fn(() => Promise.resolve(null)) };
+    onInstallConnector: vi.fn(() => Promise.resolve()), onInstallLocalPath: vi.fn(() => Promise.resolve()) };
 }
 describe('MCP JSON setup', () => {
   it('pastes, checks and adds a server with all tools', async () => {

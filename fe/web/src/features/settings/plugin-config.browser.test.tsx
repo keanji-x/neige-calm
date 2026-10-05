@@ -14,7 +14,7 @@ it.each(['light', 'dark'] as const)('keeps one focus edge on text and numeric co
       user_config: { title: 'Example', retries: 3 }, effective_config: { title: 'Example', retries: 3 } }}
     loadError={null} onRetryLoad={() => {}} onBack={() => {}}
     onSave={() => Promise.resolve({ ok: true })}
-    onApplyRestart={() => Promise.resolve({ saved: true, restart: { failure: null, state: 'running' } })} />);
+    onApplyRestart={() => Promise.resolve({ saved: true, restart: { rejection: null, state: 'running' } })} />);
   for (const width of [1080, 390]) {
     await page.viewport(width, 844);
     for (const name of ['title', 'retries']) {
