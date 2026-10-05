@@ -138,9 +138,9 @@ impl PluginHost {
                 prev.id, prev.version
             )));
         }
-        // A new plugin's id is one word (#2087 §6); the boot loader still admits the installed
-        // external ids that carry `.` or `-`, and their rows keep reload and enable (§9).
-        if !super::manifest::is_word_plugin_id(&manifest.id) {
+        // A new plugin's id is one word (#2087 §6), or one of the five grandfathered external ids
+        // that carry `.` or `-` (§9).
+        if !super::manifest::is_installable_plugin_id(&manifest.id) {
             return Err(CalmError::PluginInstall(format!(
                 "manifest id `{}` must be one word: ^[a-z0-9]{{2,32}}$ (no `.`, `-` or `_`)",
                 manifest.id

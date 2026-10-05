@@ -185,7 +185,8 @@ Agent-facing JSON-RPC codes, one meaning each:
 - **Plugin id:** one word, `[a-z0-9]+`, 2–32 bytes. The two built-ins are words (slice B5,
   migration 0148), and the install route refuses any other id for a new plugin. The five
   installed external ids are grandfathered (Appendix C, item 10): the boot loader still accepts
-  them, and their rows keep reload and enable, until each plugin is reinstalled under a word.
+  them, their rows keep reload and enable, and the install route still accepts them
+  (`LEGACY_PLUGIN_IDS`, §9), so a fresh host or a reinstall keeps working.
 
   | Plugin | Id |
   |---|---|
@@ -284,9 +285,15 @@ Added by the slices (registry-driven, Appendix B); the last one is still propose
   `-` (`dev-neige-market`, `dev-neige-barra`, `dev-neige-paper-trading`, `cli-longbridge`,
   `mcp-wisburg-mcp-server-49abefc5`). Renaming one moves its directory under
   `~/.config/neige-calm/plugins` and rewrites the report CRDT cards and `report_sources` that name
-  it, so each keeps its id until it is reinstalled under a word. Their minted names are already
-  in the word alphabet. Recipe bodies are rewritten only for the built-in names; on 4140 no recipe
+  it, so each keeps its id until it is reinstalled under a word. The five are the closed
+  `plugin_host::manifest::LEGACY_PLUGIN_IDS`, which the install route accepts besides a word, so
+  the repository's `plugins/market`, `plugins/barra` and `plugins/paper-trading` still install on
+  a fresh host; the list is never extended. Their minted names are already in the word alphabet. Recipe bodies are rewritten only for the built-in names; on 4140 no recipe
   names a minted external tool.
+- A call to a minted name that two installed but not running plugins both mint answers the
+  ambiguity error, naming both, before the scope and role checks (the disabled-plugin lookup in
+  `dispatch_plugin_tools_call`), so it can reveal that a plugin is installed. Spawn-time refusal
+  covers running plugins only, so this stays reachable, but only with a deliberately colliding id.
 - Native plugin tools repeat their id's last word as the first word
   (`plugin_dev_neige_market_market_quote`, `plugin_dev_neige_barra_barra_series`). Dropping it would rename recipe-named tools (cut, Appendix B).
 

@@ -1595,6 +1595,23 @@ pub fn is_word_plugin_id(s: &str) -> bool {
     (2..=32).contains(&s.len()) && s.bytes().all(is_lower_alnum)
 }
 
+/// The five external plugin ids installed before #2087, which carry `.` or `-`. They are
+/// grandfathered: a fresh host, or an uninstall and reinstall, still installs each under its id,
+/// since renaming one moves its directory and rewrites the report cards that name it (§9). Closed
+/// and never extended: every other new plugin takes a word.
+pub const LEGACY_PLUGIN_IDS: [&str; 5] = [
+    "dev-neige-market",
+    "dev-neige-barra",
+    "dev-neige-paper-trading",
+    "cli-longbridge",
+    "mcp-wisburg-mcp-server-49abefc5",
+];
+
+/// The install route's id rule: a word, or one of the [`LEGACY_PLUGIN_IDS`].
+pub fn is_installable_plugin_id(s: &str) -> bool {
+    is_word_plugin_id(s) || LEGACY_PLUGIN_IDS.contains(&s)
+}
+
 /// `^[a-z0-9][a-z0-9.-]{1,63}$` — total 2..=64 chars; head is alphanumeric.
 fn is_valid_plugin_id(s: &str) -> bool {
     let bytes = s.as_bytes();

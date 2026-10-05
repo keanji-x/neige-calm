@@ -488,7 +488,8 @@ async fn install_twice_returns_409() {
 }
 
 /// #2087 §6: every built-in manifest id, and every id the install route accepts for a new plugin,
-/// is one word. `dev.new-plugin` is refused before a tree or a row is written; `newplugin` installs.
+/// is one word or a grandfathered legacy id. `dev.new-plugin` is refused before a tree or a row is
+/// written; `newplugin` installs, and so does a fresh `dev-neige-market` (§9's closed list).
 #[tokio::test]
 async fn plugin_ids_are_words() {
     let word = |id: &str| {
@@ -535,6 +536,22 @@ async fn plugin_ids_are_words() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_to_json(resp).await;
     assert!(word(body["id"].as_str().unwrap()), "{body}");
+
+    let legacy = write_stub_plugin(src_root.path(), "dev-neige-market");
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": legacy.to_string_lossy() } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(body_to_json(resp).await["id"], "dev-neige-market");
+    assert!(
+        calm_server::plugin_host::manifest::LEGACY_PLUGIN_IDS
+            .iter()
+            .all(|id| !word(id)),
+        "the legacy list holds only ids that are not words"
+    );
 }
 
 #[tokio::test]

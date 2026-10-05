@@ -15,6 +15,8 @@ use crate::terminal_renderer::TerminalRendererRegistry;
 
 #[cfg(test)]
 mod checks_upgrade_tests;
+#[cfg(test)]
+mod comment_rename_tests;
 
 #[test]
 fn frozen_forge_six_shape_defaults_new_optional_fields() {

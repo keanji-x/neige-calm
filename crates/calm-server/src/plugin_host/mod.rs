@@ -1375,15 +1375,16 @@ impl PluginHost {
         };
 
         let tools = connector::materialize_http_tools(id, block, &upstream);
-        if let Err(reason) = self.refuse_minted_collisions(id, &tools) {
-            return self.connector_unavailable(lifecycle, guard, reason).await;
-        }
         let tool_count = tools.len();
+        let published = match self.claim_minted_names(lifecycle, tools) {
+            Ok(published) => published,
+            Err(reason) => return self.connector_unavailable(lifecycle, guard, reason).await,
+        };
 
         // Materialization, then the live insert: the ORDER is the invariant, and each block stamps the tick as its LAST action.
 
-        // Field-level mutation, and a NO-OP if the id is not in the registry; abandoning the spawn is the right answer to 'the registry does not know this id' however we got there.
-        if !self.registry.set_exposes_tools(lifecycle, tools) {
+        // The publication is field-level, and a NO-OP if the id is not in the registry; abandoning the spawn is the right answer to 'the registry does not know this id' however we got there.
+        if !published {
             let reason = format!(
                 "plugin `{id}` left the registry while its connector was starting \
                  (uninstalled or reloaded mid-spawn); abandoning spawn"
@@ -1494,13 +1495,14 @@ impl PluginHost {
         };
 
         let tools = connector::materialize_cli_tools(id, block);
-        if let Err(reason) = self.refuse_minted_collisions(id, &tools) {
-            return self.connector_unavailable(lifecycle, guard, reason).await;
-        }
         let tool_count = tools.len();
+        let published = match self.claim_minted_names(lifecycle, tools) {
+            Ok(published) => published,
+            Err(reason) => return self.connector_unavailable(lifecycle, guard, reason).await,
+        };
 
         // Materialization, then the live insert: the ORDER is the invariant.
-        if !self.registry.set_exposes_tools(lifecycle, tools) {
+        if !published {
             let reason = format!(
                 "plugin `{id}` left the registry while its connector was starting \
                  (uninstalled or reloaded mid-spawn); abandoning spawn"
@@ -1575,18 +1577,29 @@ impl PluginHost {
             .copied()
     }
 
-    /// A connector's materialized tools mint distinct names, none a running plugin already mints.
-    fn refuse_minted_collisions(
+    /// Refuse a connector's materialized tools when they collide, else publish them, under the one
+    /// table lock that admission's minted-name check also holds. The check and the publication are
+    /// one step, so two concurrent spawns cannot each pass against the other's still-empty catalog
+    /// (#2087 B5). `Ok(false)`: the id left the registry mid-spawn and nothing was published.
+    fn claim_minted_names(
         &self,
-        id: &str,
-        tools: &[manifest::ExposedTool],
-    ) -> Result<(), String> {
-        connector::refuse_minted_collisions(id, tools)?;
-        let holders = self.lock_table().template_holder_ids();
-        match find_minted_name_conflict(id, tools, &holders, self.registry.list()) {
-            Some(conflict) => Err(conflict.to_string()),
-            None => Ok(()),
+        lifecycle: &LifecycleGuard,
+        tools: Vec<manifest::ExposedTool>,
+    ) -> Result<bool, String> {
+        let id = lifecycle.id();
+        connector::refuse_minted_collisions(id, &tools)?;
+        let table = self.lock_table();
+        if let Some(conflict) = find_minted_name_conflict(
+            id,
+            &tools,
+            &table.template_holder_ids(),
+            self.registry.list(),
+        ) {
+            return Err(conflict.to_string());
         }
+        let published = self.registry.set_exposes_tools(lifecycle, tools);
+        drop(table);
+        Ok(published)
     }
 
     /// Shared connector failure exit: swap the reservation for a live `Unavailable` entry, emit it, return a typed error.

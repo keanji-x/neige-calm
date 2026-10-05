@@ -4,6 +4,12 @@ use crate::plugin_host::forge_caller::ForgeCallerScope;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+/// The plugin id the comment marker encodes. Posted markers, and the forge-action payload hashes
+/// stored over their probes, carry the pre-#2087 id; a marker over today's id would find neither,
+/// so a retry after the rename would be `idempotency_key_reused` and recovery would repost. Only
+/// the marker is frozen: `lower_for_caller` still authorizes the caller against `PLUGIN_ID`.
+const COMMENT_MARKER_PLUGIN_ID: &str = "dev.neige.git-forge"; // retired-name: rejection input
+
 const COMMENT_PROBE: &str = "out=$(gh issue view \"$1\" --repo \"$2\" --json comments --jq \"$3\") || exit 3; case \"$out\" in true) exit 0 ;; false) exit 1 ;; *) exit 3 ;; esac";
 
 fn issue_number(args: &Value) -> Result<u64, String> {
@@ -27,7 +33,11 @@ pub(super) fn comment(args: &Value, caller: &ForgeCallerScope) -> Result<Value, 
     let issue = issue_number(args)?;
     let body = nonblank(args, "body")?;
     let idem = nonblank(args, "idem")?;
-    let encoded = serde_json::to_vec(&json!([caller, repo, issue, idem, body]))
+    let marker_caller = ForgeCallerScope {
+        plugin_id: COMMENT_MARKER_PLUGIN_ID.into(),
+        ..caller.clone()
+    };
+    let encoded = serde_json::to_vec(&json!([marker_caller, repo, issue, idem, body]))
         .map_err(|e| format!("encode comment identity: {e}"))?;
     let marker = format!("{:x}", Sha256::digest(encoded));
     let posted = format!("{body}\n\n<!-- neige:issue-comment:{marker} -->");

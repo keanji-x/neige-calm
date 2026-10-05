@@ -157,3 +157,19 @@ fn issue_comment_recovery_identity_binds_each_caller() {
     invalid.plugin_id = "another.plugin".into();
     assert!(lower_for_caller("gh_issue_comment", &args(), &invalid).is_err());
 }
+
+/// #2087 B5: the marker of a comment is the one origin/main posted before the built-in rename
+/// (`sha256` of `[caller, repo, issue, idem, body]` with the caller's pre-rename plugin id), so a
+/// retry finds its stored payload hash and crash recovery finds the comment already posted.
+#[test]
+fn issue_comment_marker_is_the_pre_rename_marker() {
+    let payload = lower("gh_issue_comment", &args()).unwrap();
+    let marker = "<!-- neige:issue-comment:\
+                  96aea7e63cfd56dc8674828ea69aa331e9810b97473b22a04841263ae7b28bfe -->";
+    assert_eq!(
+        payload["argv"][7],
+        json!(format!("A progress update\n\n{marker}"))
+    );
+    let query = payload["probe"]["probe_argv"][6].as_str().unwrap();
+    assert!(query.contains(marker), "{query}");
+}

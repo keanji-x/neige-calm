@@ -2,6 +2,8 @@
 mod actor_wiring;
 #[path = "cases/connector_host.rs"]
 mod connector_host;
+#[path = "cases/minted_name_claims.rs"]
+mod minted_name_claims;
 #[path = "cases/plugin_auth.rs"]
 mod plugin_auth;
 #[path = "cases/plugin_config_delivery.rs"]
