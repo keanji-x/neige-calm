@@ -262,7 +262,8 @@ describe('the recipe editor', () => {
     await user.click(await screen.findByRole('button', { name: 'Delete' }));
     await user.click(await screen.findByRole('button', { name: 'Delete recipe' }));
 
-    expect(await screen.findByText('Storage is offline.')).toBeTruthy();
+    /* A 500 may follow a delete that happened: the fixed unknown state, not the server's words (#2131). */
+    expect(await screen.findByText('The delete is unconfirmed.')).toBeTruthy();
     // Still on the recipe: nothing was destroyed, so nothing was left behind.
     expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
   });

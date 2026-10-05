@@ -3,7 +3,7 @@
 import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
-import type { FailureTable } from './failure-class.js';
+import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
 
 export const areaKindSchema = z.enum(['user', 'system']);
 export type AreaKind = z.infer<typeof areaKindSchema>;
@@ -121,6 +121,11 @@ export const AREA_CREATE_FAILURES: FailureTable<AreaCreateFailure> = Object.free
   otherwise: 'unconfirmed',
 });
 
+/** A refused create, and one whose outcome is unknown: the kept key makes the next Create check the same area. */
+export const AREA_CREATE_TEXT: WriteText = Object.freeze({
+  refused: 'The area was not created.', unknown: 'Creation could not be confirmed. Try again to safely check the same area.',
+});
+
 /** One key identifies one exact creation intent, including every retry. */
 export function createAreaOperation(body: NewAreaBody, idempotencyKey: string): ApiOperation<AreaWire> {
   return { method: 'POST', path: '/api/areas', body, headers: { 'Idempotency-Key': idempotencyKey }, responseSchema: areaWireSchema };
@@ -129,6 +134,15 @@ export function createAreaOperation(body: NewAreaBody, idempotencyKey: string): 
 export function updateAreaOperation(areaId: string, body: AreaPatchBody): ApiOperation<AreaWire> {
   return { method: 'PATCH', path: `/api/areas/${encodeURIComponent(areaId)}`, body, responseSchema: areaWireSchema };
 }
+
+/** What a failed `PATCH /api/areas/{id}` says: it sets values, so 400, 404, 413 and 422 store nothing; anything else may have. */
+export const AREA_PATCH_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 404, 413, 422]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const AREA_PATCH_TEXT: WriteText = Object.freeze({ refused: 'The area was not updated.', unknown: 'The area update is unconfirmed.' });
 
 export function deleteAreaOperation(areaId: string): ApiOperation<undefined> {
   return { method: 'DELETE', path: `/api/areas/${encodeURIComponent(areaId)}`, responseSchema: z.undefined() };

@@ -46,7 +46,7 @@ function renderTasks(
         onRenameTrack={vi.fn()}
         onReopenTrack={vi.fn()}
         onCloseTrack={vi.fn()}
-        onDeleteTrack={vi.fn()}
+        onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
       />
     </div>,
   );

@@ -9,7 +9,7 @@ import { useConversationEdit } from '../conversations/edit.ts';
 import { useConversationOutbox, useRunReads } from '../conversations/outbox.ts';
 import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
 import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
-import { refusalText } from '../../../../core/domain/failure-class.ts';
+import { ApiError, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, writeFailureOf, writeFailureText } from '../../../../core/domain/failure-class.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -32,7 +32,7 @@ import {
   NO_UPLOAD, type AttachmentStore, type UploadAttachment, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
 import {
-  trackOverlayPayload, plannerProviderOf, toTrack, trackActivityFrom, trackDisplayTitle,
+  CARD_CREATE_FAILURES, cardCreateText, trackOverlayPayload, plannerProviderOf, toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import { cardActivityOf, type CardActivity } from '../../../../core/domain/activity.ts';
@@ -46,7 +46,7 @@ import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import footerStyles from './composer-footer.module.css';
 import { TodayCalendarTasks } from './calendar.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
-import { nameTodaySummaryConversation } from '../../../../core/domain/today.ts';
+import { LAUNCHPAD_ENSURE_FAILURES, LAUNCHPAD_ENSURE_TEXT, REPORT_RESET_FAILURES, REPORT_RESET_TEXT, nameTodaySummaryConversation } from '../../../../core/domain/today.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { TrackPage, type TrackInputNotification } from '../../features/track/page/public.tsx';
 import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
@@ -98,7 +98,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, OfflineSubmissionError, harnessItemsQueryOptions, writeFailureOf,
+  harnessItemsQueryOptions,
   modelCatalogQueryOptions, serverVersionOperation, runOperation,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
@@ -1055,7 +1055,7 @@ function useConversationPane(
       return true;
     }
     if (onlineManager.isOnline()) return false;
-    amendDraft(attempt, { text, error: new OfflineSubmissionError().message, remedy: 'retry' });
+    amendDraft(attempt, { text, error: new NotSentError().message, remedy: 'retry' });
     return true;
   };
 
@@ -1118,7 +1118,7 @@ function useConversationPane(
         if (current()) adopt(attempt, created);
         else amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
       } catch (error: unknown) {
-        if (error instanceof OfflineSubmissionError) {
+        if (error instanceof NotSentError) {
           // Marking a request optimistically must not invent dispatch when the
           // mutation's later guard refused it. Keep any earlier unknown send.
           registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
@@ -1215,7 +1215,7 @@ function useConversationPane(
         if (current()) adopt(attempt, created);
         else amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
       } catch (error: unknown) {
-        if (error instanceof OfflineSubmissionError) {
+        if (error instanceof NotSentError) {
           // Marking a request optimistically must not invent dispatch when the
           // mutation's later guard refused it. Keep any earlier unknown send.
           registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
@@ -1509,7 +1509,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     const track = workspace.tracks.find((candidate) => candidate.id === trackId);
     if (track === undefined) throw new Error('This track is no longer available.');
     return trackMutations.remove(track.id, track.areaId, signal);
-  });
+  }, writeFailureText(DELETE_FAILURES, DELETE_TEXT));
   /* The launchpad resolve is a READ. `POST /api/today/launchpad/ensure` submits a
        harness start and waits on it, so it is never on the page-load path; `null`
        is the empty state, and every failure is rendered as one. */
@@ -1523,7 +1523,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   /* Reset, `POST /api/today/launchpad/report/reset`; destructive, so it goes
        through `useDeleteConfirm`, keyed by the launchpad track id. */
   const reportReset = useTodayReportResetMutation(transport, unauthorized);
-  const resetConfirm = useDeleteConfirm(() => reportReset.reset());
+  const resetConfirm = useDeleteConfirm(() => reportReset.reset(), writeFailureText(REPORT_RESET_FAILURES, REPORT_RESET_TEXT));
+  const ensureFeedback = useOperationFeedback();
   /* The launchpad track's own conversations, by the same rule the track route uses. */
   const launchpadConversationsQuery = useQuery({
     ...trackConversationsQueryOptions(transport, conversationTrackId, unauthorized),
@@ -1585,16 +1586,16 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     if (conversationTrackId !== '') {
       /* `ensure` can materialise the launchpad and still fail its harness start; a
                retry then must not ask `ensure` to create it again. */
-      launchpadEnsure.clearFailure();
+      ensureFeedback.clear();
       chat.startConversation();
       return;
     }
-    void launchpadEnsure.ensure().then((prepared) => {
+    void ensureFeedback.run(launchpadEnsure.ensure().then((prepared) => {
       /* The ensure response owns the track id, so the draft can be scoped
          without inventing one while the read-only resolve catches up. */
       setPreparedLaunchpadTrackId(prepared.track_id);
       setConversationStartRequested(true);
-    }).catch(() => undefined);
+    }), writeFailureText(LAUNCHPAD_ENSURE_FAILURES, LAUNCHPAD_ENSURE_TEXT));
   };
 
   useEffect(() => {
@@ -1608,9 +1609,9 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     ? null
     : launchpadEnsure.pending
       ? <PanelEmpty>Preparing Today assistant…</PanelEmpty>
-      : launchpadEnsure.failure !== null
+      : ensureFeedback.error !== null
         ? <ErrorBox
-            message={`Today assistant could not be started: ${launchpadEnsure.failure.message}`}
+            message={ensureFeedback.error}
             onRetry={startTodayConversation}
           />
         : conversationTrackId === ''
@@ -1715,7 +1716,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
         ? undefined
         : launchpadEnsure.pending
           ? undefined
-          : conversationTrackId === '' || launchpadEnsure.failure !== null
+          : conversationTrackId === '' || ensureFeedback.error !== null
             ? <PanelAction
                 label="Start a conversation with Today"
                 onClick={startTodayConversation}
@@ -2104,7 +2105,7 @@ function TrackRouteBody({
    * `knownCard` effect bounces `?card=<deleted>` off the URL, and a `go()` here
    * would race it. */
   const cardDeletion = useDeleteConfirm(
-    (cardId, signal) => trackMutations.removeCard(track.id, cardId, signal),
+    (cardId, signal) => trackMutations.removeCard(track.id, cardId, signal), writeFailureText(DELETE_FAILURES, DELETE_TEXT),
   );
 
   /* Adding a card: the menu is the registry's own list, so this route only decides
@@ -2181,7 +2182,7 @@ function TrackRouteBody({
           setCardDraft(null);
           goSameTrack(track.id, { card: card.id });
         }),
-        `Could not create the ${entry.label} card.`,
+        writeFailureText(CARD_CREATE_FAILURES, cardCreateText(entry.label)),
         () => controller.signal.aborted,
       )
       .finally(() => {
@@ -2382,10 +2383,8 @@ function TrackRouteBody({
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
       onReopenTrack={() => trackMutations.patch(track.id, track.areaId, { closed: false }).then(() => undefined)}
       onCloseTrack={() => trackMutations.patch(track.id, track.areaId, { closed: true }).then(() => undefined)}
-      onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {
-        if (signal.aborted) return;
-        go({ name: 'today' });
-      })}
+      onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal)}
+      onTrackDeleted={() => go({ name: 'today' })}
     />
     </TrackStage>
     {/* Keyed by kind: switching kinds is a different form, and a shared mount

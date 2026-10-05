@@ -3,6 +3,7 @@ import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../../../../core/domain/failure-class.ts';
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../../core/domain/track.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
@@ -259,6 +260,23 @@ describe('TrackPage header', () => {
     expect(screen.getByRole('button', { name: 'Dismiss: Needs your answer: Ship now? See the PR.' })).toBeTruthy();
   });
 
+  /* #2131: the dismissal's own table reads its failure. A 404 means the track is gone with its notification: done. */
+  it.each([
+    ['a lost answer', new ApiError({ kind: 'transport', message: 'Transport request failed' }), 'Dismissing the notification is unconfirmed.'],
+    ['an unreadable answer', new ApiError({ kind: 'decode', message: 'API response did not match its schema' }), 'Dismissing the notification is unconfirmed.'],
+    ['a refusal', new ApiError({ kind: 'http', status: 403, code: 'forbidden', message: 'not yours to dismiss' }), 'not yours to dismiss'],
+    ['a 404', new ApiError({ kind: 'http', status: 404, code: 'not_found', message: 'track not found' }), null],
+  ] as const)('reads %s through the dismissal’s table', async (_name, error, shown) => {
+    renderPage({
+      inputNotifications: [{ key: 'ask:notify:3', kind: 'ask', atMs: 1, text: 'Ship now?' }],
+      onDismiss: vi.fn(() => Promise.reject(error)),
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss: Needs your answer: Ship now?' }));
+    await act(async () => { await new Promise((done) => { setTimeout(done, 10); }); });
+    if (shown === null) expect(screen.queryByRole('alert')).toBeNull();
+    else expect((await screen.findByRole('alert')).textContent).toBe(shown);
+  });
+
   it('reopens a collapsed center when another notification arrives', async () => {
     const ask: TrackInputNotification = {
       key: 'ask:notify:1', kind: 'ask', text: 'Which branch?', atMs: 1,
@@ -283,7 +301,7 @@ describe('TrackPage header', () => {
             onRenameTrack={vi.fn()}
             onReopenTrack={vi.fn()}
             onCloseTrack={vi.fn()}
-            onDeleteTrack={vi.fn()}
+            onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
           />
         </>
       );
@@ -714,7 +732,7 @@ describe('TrackPage card inventory', () => {
     const props = {
       mobilePanelObscured: false,
       track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [], openableCards: new Set(['k1']),
-      canReopenTrack: false, canCloseTrack: false, onRenameTrack: vi.fn(), onReopenTrack: vi.fn(), onCloseTrack: vi.fn(), onDeleteTrack: vi.fn(),
+      canReopenTrack: false, canCloseTrack: false, onRenameTrack: vi.fn(), onReopenTrack: vi.fn(), onCloseTrack: vi.fn(), onDeleteTrack: vi.fn(), onTrackDeleted: vi.fn(),
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
@@ -770,7 +788,7 @@ describe('TrackPage card inventory', () => {
       onRenameTrack={vi.fn()}
       onReopenTrack={vi.fn()}
       onCloseTrack={vi.fn()}
-      onDeleteTrack={vi.fn()}
+      onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
     />);
     expect(container.textContent).toContain('notes');
     expect(screen.getAllByText('notes').length).toBe(1);

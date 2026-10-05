@@ -283,8 +283,8 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     });
     await userEvent.click(await screen.findByRole('button', { name: 'Start a conversation with Today' }));
 
-    expect((await screen.findByRole('alert')).textContent)
-      .toContain('Today assistant could not be started: harness start failed');
+    /* A failed start is unknown, said in the fixed words and never the server's (#2131). */
+    expect((await screen.findByRole('alert')).textContent).toContain('Starting Today assistant is unconfirmed.');
     await waitFor(() => {
       expect(requests.map((request) => request.path)).toContain(LAUNCHPAD_CONVERSATIONS);
     });

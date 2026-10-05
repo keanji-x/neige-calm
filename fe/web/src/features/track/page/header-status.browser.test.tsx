@@ -242,7 +242,7 @@ describe('the track closed status in the page header', () => {
         onRenameTrack={vi.fn()}
         onReopenTrack={() => { setClosed(false); }}
         onCloseTrack={() => { setClosed(true); }}
-        onDeleteTrack={vi.fn()}
+        onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
       />
     );
   }

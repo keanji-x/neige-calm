@@ -6,6 +6,7 @@ import { Button } from '@astryxdesign/core/Button';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { useId } from 'react';
 
+import { DELETE_FAILURES, DELETE_TEXT, writeFailureText } from '../../../../../core/domain/failure-class.ts';
 import type { TrackRecipe } from '../../../../../core/domain/track.ts';
 import { ErrorBox } from '../../../ui/error-box/public.tsx';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
@@ -150,7 +151,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
   const [conflict, setConflict] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   /* Through the shared confirm/feedback primitive rather than `onDelete().then(onClose)`: a rejected delete has to be said. */
-  const deletion = useDeleteConfirm(async () => { await onDelete?.(); }, onClose);
+  const deletion = useDeleteConfirm(async () => { await onDelete?.(); }, writeFailureText(DELETE_FAILURES, DELETE_TEXT), onClose);
 
   async function save(): Promise<void> {
     if (saving) return;

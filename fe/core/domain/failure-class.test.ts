@@ -6,9 +6,13 @@ import {
 } from './conversation.js';
 import { SEND_FAILURES } from './conversation-delivery.js';
 import { PLANNER_INTERRUPT_FAILURES } from './conversation-stop.js';
-import { AREA_CREATE_FAILURES } from './area.js';
-import { TRACK_CREATE_FAILURES } from './track.js';
-import { classifyFailure, NotSentError, refusalText, type FailureTable } from './failure-class.js';
+import { AREA_CREATE_FAILURES, AREA_PATCH_FAILURES } from './area.js';
+import { DISMISS_FAILURES } from './activity.js';
+import {
+  ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, refusedText, writeFailureText, type FailureTable,
+} from './failure-class.js';
+import { LAUNCHPAD_ENSURE_FAILURES, REPORT_RESET_FAILURES } from './today.js';
+import { CARD_CREATE_FAILURES, TRACK_CREATE_FAILURES, TRACK_PATCH_FAILURES } from './track.js';
 
 const http = (status: number, code = 'http_error', message = 'answered'): ApiFailure =>
   ({ kind: 'http', status, code, message, body: { error: message, code } });
@@ -100,6 +104,55 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(408), 'unconfirmed'], [http(500, 'internal'), 'unconfirmed'], [http(503, 'service_unavailable'), 'unconfirmed'],
     [transport, 'unconfirmed'], [decode, 'unconfirmed'], [null, 'unconfirmed'],
   ]],
+  /* #2131: the non-chat writes. */
+  ['DELETE by id (track, area, card, recipe)', DELETE_FAILURES, [
+    /* The row is gone: what a retry after an unknown answer meets. */
+    [http(404, 'not_found'), 'done'],
+    [http(403, 'forbidden'), 'refused'], [http(409, 'conflict'), 'refused'], [http(409, 'terminal_disposal'), 'refused'],
+    [unauthorized, 'refused'],
+    [http(400), 'unknown'], [http(500, 'db_error'), 'unknown'], [http(503), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['PATCH /tracks/{id}', TRACK_PATCH_FAILURES, [
+    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [http(409, 'conflict'), 'refused'], [unauthorized, 'refused'],
+    [http(413), 'unknown'], [http(500, 'db_error'), 'unknown'], [http(503), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST a card', CARD_CREATE_FAILURES, [
+    [http(400, 'bad_request'), 'refused'], [http(403, 'plugin_permission'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [http(422, 'not_a_card_tool'), 'refused'], [unauthorized, 'refused'],
+    [http(409, 'conflict'), 'unknown'], [http(500), 'unknown'], [http(502, 'tool_call_failed'), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['PATCH /areas/{id}', AREA_PATCH_FAILURES, [
+    [http(400, 'bad_request'), 'refused'], [http(404, 'not_found'), 'refused'], [http(413), 'refused'],
+    [http(422), 'refused'], [unauthorized, 'refused'],
+    /* The server sends no 429; one would not be an answer this route documents. */
+    [http(403), 'unknown'], [http(429), 'unknown'], [http(500, 'db_error'), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /tracks/{id}/activity/dismissals', DISMISS_FAILURES, [
+    /* The track is gone, and its notification with it. */
+    [http(404, 'not_found'), 'done'],
+    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(422), 'refused'],
+    [unauthorized, 'refused'],
+    [http(409), 'unknown'], [http(500), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /today/launchpad/ensure', LAUNCHPAD_ENSURE_FAILURES, [
+    [http(403, 'forbidden'), 'refused'], [unauthorized, 'refused'],
+    /* A failed assistant start answers 500 after the launchpad may have been made. */
+    [http(400), 'unknown'], [http(404), 'unknown'], [http(500, 'internal'), 'unknown'], [http(503), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /today/launchpad/report/reset', REPORT_RESET_FAILURES, [
+    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [unauthorized, 'refused'],
+    /* A revision race with a writer: the reset may be tried again. */
+    [http(409, 'conflict'), 'unknown'], [http(500), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
 ];
 
 describe.each(cases)('classifying a failed %s', (_route, table, expected) => {
@@ -153,5 +206,39 @@ describe('refusalText', () => {
     expect(text({ kind: 'transport', message: 'Request timed out.' })).toBeNull();
     expect(text(http(500, 'internal', 'model store unavailable'))).toBeNull();
     expect(text(null)).toBeNull();
+  });
+});
+
+describe('writeFailureText', () => {
+  const read = writeFailureText(DELETE_FAILURES, DELETE_TEXT);
+
+  it('reads an answer that proves the intent holds as done: no sentence', () => {
+    expect(read(new ApiError(http(404, 'not_found', 'track not found')))).toBeNull();
+  });
+
+  it('shows a refusal in the server’s words, or the fixed refusal when it gave none', () => {
+    expect(read(new ApiError(http(409, 'conflict', 'a managed track cannot be deleted')))).toBe('a managed track cannot be deleted');
+    expect(read(new ApiError({ kind: 'http', status: 403, code: 'forbidden', message: '' }))).toBe(DELETE_TEXT.refused);
+  });
+
+  it('reads a write that was not sent as refused, never as done or unknown', () => {
+    expect(read(new NotSentError())).toBe(DELETE_TEXT.refused);
+  });
+
+  /* The raw failure text a lost, timed-out or unreadable answer carries is never shown. */
+  it.each([
+    new ApiError(transport), new ApiError({ kind: 'transport', message: 'Request timed out.' }), new ApiError(decode),
+    new ApiError(http(500, 'db_error', 'database is locked')), new Error('anything else'), 'not an error',
+  ])('shows the fixed unknown state for %o', (error) => {
+    expect(read(error)).toBe(DELETE_TEXT.unknown);
+  });
+});
+
+describe('refusedText', () => {
+  it('is the server’s reason, or the fixed refusal when it gave none or nothing was sent', () => {
+    expect(refusedText(http(429, 'rate_limited', 'slow down'), 'Not created.')).toBe('slow down');
+    expect(refusedText({ kind: 'http', status: 400, code: 'bad_request', message: '' }, 'Not created.')).toBe('Not created.');
+    expect(refusedText(new NotSentError(new Error('offline')), 'Not created.')).toBe('Not created.');
+    expect(refusedText(null, 'Not created.')).toBe('Not created.');
   });
 });

@@ -9,8 +9,8 @@ import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { Track } from '../../../../core/domain/track.ts';
-import { AREA_CREATE_FAILURES, visibleAreas } from '../../../../core/domain/area.ts';
-import { classifyFailure } from '../../../../core/domain/failure-class.ts';
+import { AREA_CREATE_FAILURES, AREA_CREATE_TEXT, AREA_PATCH_FAILURES, AREA_PATCH_TEXT, visibleAreas } from '../../../../core/domain/area.ts';
+import { ApiError, classifyFailure, NotSentError, refusedText, writeFailureOf, writeFailureText } from '../../../../core/domain/failure-class.ts';
 import type { Area, NewAreaBody } from '../../../../core/domain/area.ts';
 import {
   AreaEditorForm, type AreaEditorPatch, type AreaEditorValues,
@@ -20,7 +20,7 @@ import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
 import {
-  ApiError, AreaCreatePreflightError, OfflineSubmissionError, useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
+  AreaCreatePreflightError, useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
 } from '../providers/queries.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useRouteCardId, useRouteFilePath, useTrackPanelNavigation } from '../router/navigation.ts';
@@ -76,7 +76,6 @@ export function useMobileHeaderTitleHost(): HTMLElement | null {
 
 type AreaCreateRequest = Readonly<{ body: NewAreaBody; key: string }>;
 
-const UNCONFIRMED_AREA = 'Creation could not be confirmed. Try again to safely check the same area.';
 
 type AreaEditorTarget = Readonly<{ kind: 'create' }> | Readonly<{ kind: 'edit'; area: Area }>;
 
@@ -219,7 +218,7 @@ export function AppShell({
   };
 
   const requestCreateArea = () => {
-    setAreaEditorError(areaCreateRequest === null ? null : UNCONFIRMED_AREA);
+    setAreaEditorError(areaCreateRequest === null ? null : AREA_CREATE_TEXT.unknown);
     setAreaEditorTarget({ kind: 'create' });
   };
   const requestEditArea = (area: Area) => {
@@ -271,17 +270,19 @@ export function AppShell({
       if (target.kind === 'create') setAreaCreateRequest(null);
       setAreaEditorTarget(null);
     }).catch((failure: unknown) => {
+      if (target.kind === 'edit') { setAreaEditorError(writeFailureText(AREA_PATCH_FAILURES, AREA_PATCH_TEXT)(failure)); return; }
       const kind = classifyFailure(failure instanceof ApiError ? failure.failure : null, AREA_CREATE_FAILURES);
       // A refusal that never left the browser, or an answer `AREA_CREATE_FAILURES` reads as one.
-      const rejected = failure instanceof AreaCreatePreflightError || failure instanceof OfflineSubmissionError
+      const rejected = failure instanceof AreaCreatePreflightError || failure instanceof NotSentError
         || kind === 'rejected';
       // A refused retry says nothing about an earlier unconfirmed POST; a spent key ends the request.
       const unconfirmed = target.kind === 'create' && kind !== 'key-spent'
         && (areaCreateRequest !== null || !rejected);
       if (target.kind === 'create' && !unconfirmed) setAreaCreateRequest(null);
-      const reason = failure instanceof Error ? failure.message
-        : `Could not ${target.kind === 'create' ? 'create' : 'update'} the area.`;
-      setAreaEditorError(unconfirmed ? `${reason} ${UNCONFIRMED_AREA}` : reason);
+      // This attempt's own words only when it was answered or stopped before sending; an unknown answer is the fixed state.
+      const said = failure instanceof AreaCreatePreflightError ? failure.message
+        : rejected || kind === 'key-spent' ? refusedText(writeFailureOf(failure), AREA_CREATE_TEXT.refused) : null;
+      setAreaEditorError(said === null ? AREA_CREATE_TEXT.unknown : unconfirmed ? `${said} ${AREA_CREATE_TEXT.unknown}` : said);
     }).finally(() => { setAreaEditorPending(false); });
   };
 

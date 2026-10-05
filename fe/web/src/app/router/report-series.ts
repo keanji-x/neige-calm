@@ -8,7 +8,8 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ReportBlock } from '../../../../core/domain/report.ts';
 import type { SeriesResolution } from '../../../../core/domain/report-series.ts';
-import { ApiError, trackReportSeriesQueryOptions, type SeriesRead } from '../providers/queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { trackReportSeriesQueryOptions, type SeriesRead } from '../providers/queries.ts';
 
 export type SeriesResolver = (blockId: string, rev: number) => SeriesResolution | undefined;
 

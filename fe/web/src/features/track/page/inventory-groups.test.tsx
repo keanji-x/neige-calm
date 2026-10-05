@@ -12,7 +12,7 @@ function task(blockId: string, status: string): ReportTaskRow {
 it('shows working tasks and discloses completed tasks with their original actions', () => {
   const onOpenTask = vi.fn();
   const view = render(<TrackPage track={track()} tasks={[task('finished-a', 'done'), task('active-a', 'running'), task('finished-b', 'done')]}
-    cards={[]} openableCards={new Set()} mobilePanelObscured={false} canReopenTrack={false} canCloseTrack={false} onRenameTrack={vi.fn()} onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onOpenTask={onOpenTask} />);
+    cards={[]} openableCards={new Set()} mobilePanelObscured={false} canReopenTrack={false} canCloseTrack={false} onRenameTrack={vi.fn()} onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} onOpenTask={onOpenTask} />);
   const working = view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="working"]')!;
   const completed = view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="done"]')!;
   expect(working.open).toBe(true);
@@ -31,7 +31,7 @@ it('exposes problem groups and keeps explanations in the task description', () =
     task('choose-layout', 'blocked'),
   ]} cards={[]} openableCards={new Set()} mobilePanelObscured={false}
     canReopenTrack={false} canCloseTrack={false} onRenameTrack={vi.fn()}
-    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onOpenTask={onOpenTask} />);
+    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} onOpenTask={onOpenTask} />);
   expect(view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="failed"]')?.open).toBe(true);
   expect(view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="attention"]')?.open).toBe(true);
   expect(screen.queryByText('Gate exited with code 1', { exact: true })).toBeNull();
@@ -44,7 +44,7 @@ it('keeps a failure without additional detail in one compact status line', () =>
   render(<TrackPage track={track()} tasks={[task('verify', 'failed')]}
     cards={[]} openableCards={new Set()} mobilePanelObscured={false}
     canReopenTrack={false} canCloseTrack={false} onRenameTrack={vi.fn()}
-    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} />);
+    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} />);
   expect(screen.getAllByText('failed')).toHaveLength(1);
 });
 
@@ -54,7 +54,7 @@ it('shows a label-only failed execution without inventing an explanation', () =>
     statusDetail: null, workerCardId: null, blockingReason: null,
   } }]} cards={[]} openableCards={new Set()} mobilePanelObscured={false}
     canReopenTrack={false} canCloseTrack={false} onRenameTrack={vi.fn()}
-    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} />);
+    onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} />);
   const row = view.container.querySelector('[data-nc-row="verify"]')!;
   expect(row.querySelectorAll('[aria-hidden="true"]')).toHaveLength(1);
   expect(screen.getAllByText('failed')).toHaveLength(1);

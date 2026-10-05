@@ -3,6 +3,7 @@
 
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
+import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
 import {
   parse, type NormalizedBlock, type NormalizedInline,
 } from '../markdown/public.js';
@@ -33,6 +34,7 @@ export type ActivityItem = Readonly<{
  * Dismiss one item: the kernel stores its key and the projector drops it, so the row goes when the
  * overlay's `overlay.set` lands; there is no optimistic removal. `204` is the answer, idempotent;
  * `404` means the track is gone. The same source happening again is a new key and shows again.
+ * Its failures read through {@link DISMISS_FAILURES}.
  */
 export function dismissActivityItemOperation(trackId: string, key: string): ApiOperation<undefined> {
   return {
@@ -42,6 +44,23 @@ export function dismissActivityItemOperation(trackId: string, key: string): ApiO
     responseSchema: z.undefined(),
   };
 }
+
+/**
+ * What a failed dismissal says. It is idempotent, and a 404 means the track is gone and its notification with it: the
+ * intent holds, so it is `done`. 400, 403 and 422 refuse it before anything is stored; anything else may have stored it.
+ */
+export const DISMISS_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([404]), is: 'done' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 422]), is: 'refused' as const }),
+  ]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const DISMISS_TEXT: WriteText = Object.freeze({
+  refused: 'The notification was not dismissed.', unknown: 'Dismissing the notification is unconfirmed.',
+});
 
 function inlinePlainText(nodes: readonly NormalizedInline[]): string {
   return nodes.map((node): string => {

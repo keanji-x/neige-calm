@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ReportBlock } from '../../../../core/domain/report.ts';
-import { ApiError, trackPreviewsQueryOptions, TRACK_PREVIEWS_POLL_MS } from '../providers/queries.ts';
+import { trackPreviewsQueryOptions, TRACK_PREVIEWS_POLL_MS } from '../providers/queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { previewResolutionOf, useReportPreviewResolver } from './report-preview.ts';
 
 afterEach(cleanup);

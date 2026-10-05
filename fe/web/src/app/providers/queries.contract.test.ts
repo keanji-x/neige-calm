@@ -13,11 +13,12 @@ import {
   readTrackReport, TRACK_REPORT_CARD_KIND, type TaskVerdict,
 } from '../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/track.ts';
+import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import {
-  ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
+  areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
   trackOverlaysQueryOptions,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
-  useTodayLaunchpadEnsureMutation, useTrackConversationMutations, useTrackRecipeMutations,
+  useTodayLaunchpadEnsureMutation, useTodayReportResetMutation, useTrackConversationMutations, useTrackRecipeMutations,
   seriesRefetchInterval, trackReportSeriesQueryOptions, trackSourceQueryOptions, type SeriesRead,
 } from './queries.ts';
 
@@ -61,7 +62,7 @@ describe('Area creation capability', () => {
   );
 });
 
-describe('interactive writes never queue an offline submission', () => {
+describe('writes never queue an offline submission, in either build', () => {
   function useWrites(transport: ApiTransportPort) {
     return {
       area: useAreaMutations(transport, unauthorized),
@@ -69,6 +70,7 @@ describe('interactive writes never queue an offline submission', () => {
       recipe: useTrackRecipeMutations(transport, unauthorized),
       conversation: useTrackConversationMutations(transport, 'w1', unauthorized),
       today: useTodayLaunchpadEnsureMutation(transport, unauthorized),
+      reset: useTodayReportResetMutation(transport, unauthorized),
     };
   }
   const cases: [string, (writes: ReturnType<typeof useWrites>) => Promise<unknown>][] = [
@@ -82,6 +84,16 @@ describe('interactive writes never queue an offline submission', () => {
     ['recipe save', ({ recipe }) => recipe.save('recipe-1', { title: 'Offline recipe', body: '', if_revision: 1 })],
     ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key', { model: null, reasoning_effort: null })],
     ['Today ensure', ({ today }) => today.ensure()],
+    /* The writes that never had a guard of their own: in the web build they used to pause offline and fire on reconnect (#2131). */
+    ['track rename', ({ track }) => track.patch('w1', 'c1', { title: 'Offline rename' })],
+    ['track pin', ({ track }) => track.setPinned('w1', 'c1', true, 1)],
+    ['track close', ({ track }) => track.patch('w1', 'c1', { closed: true })],
+    ['track delete', ({ track }) => track.remove('w1', 'c1')],
+    ['card delete', ({ track }) => track.removeCard('w1', 'card-1')],
+    ['area delete', ({ area }) => area.remove('c1')],
+    ['recipe delete', ({ recipe }) => recipe.remove('recipe-1')],
+    ['notification dismiss', ({ track }) => track.dismissActivityItem('w1', 'ask:1')],
+    ['Today reset', ({ reset }) => reset.reset()],
   ];
   it.each(cases)('rejects %s before dispatch and does not replay it on reconnect', async (_name, submit) => {
     const send = vi.fn(() => Promise.resolve(ok({})));
@@ -92,13 +104,14 @@ describe('interactive writes never queue an offline submission', () => {
     act(() => onlineManager.setOnline(false));
     const rejected = vi.fn<(error: unknown) => void>();
     act(() => { void submit(result.current).catch(rejected); });
-    await waitFor(() => expect(rejected).toHaveBeenCalledOnce());
-    const failure = rejected.mock.calls[0]?.[0];
-    expect(failure).toBeInstanceOf(ApiError);
-    expect(failure instanceof ApiError ? failure.message : '').toMatch(/offline.*reconnect/i);
-    expect(client.getMutationCache().getAll().some((mutation) => mutation.state.isPaused)).toBe(false);
+    await act(async () => { await Promise.resolve(); });
     await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
     expect(send).not.toHaveBeenCalled();
+    await waitFor(() => expect(rejected).toHaveBeenCalledOnce());
+    /* Refused, not unknown: nothing was sent. Why is the connection indicator's to say, never the write's. */
+    const failure = rejected.mock.calls[0]?.[0];
+    expect(failure).toBeInstanceOf(NotSentError);
+    expect(failure instanceof Error ? failure.message : '').not.toMatch(/offline|reconnect|connection/i);
   });
 });
 

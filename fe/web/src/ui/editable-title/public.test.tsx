@@ -7,24 +7,25 @@ import { EditableTitle } from './public.tsx';
 
 afterEach(cleanup);
 
-it('keeps the rejected draft in edit mode and reports the rename failure', async () => {
+it('keeps the rejected draft in edit mode and reports the owner’s reading of the failure', async () => {
   render(<EditableTitle
     value="Old name"
     editLabel="Rename track"
     inputLabel="Track title"
-    onCommit={() => Promise.reject(new Error('Rename was rejected.'))}
+    onCommit={() => Promise.reject(new Error('Transport request failed'))}
+    readCommitFailure={() => 'The rename is unconfirmed.'}
   />);
   await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
   await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
   await userEvent.type(screen.getByRole('textbox', { name: 'Track title' }), 'My unsaved name{Enter}');
-  expect((await screen.findByRole('alert')).textContent).toContain('Rename was rejected.');
+  expect((await screen.findByRole('alert')).textContent).toBe('The rename is unconfirmed.');
   expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Track title' }).value).toBe('My unsaved name');
 });
 
 it('submits only once when Enter is followed by blur while the rename is pending', async () => {
   let resolve: () => void = () => undefined;
   const onCommit = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
-  render(<><EditableTitle value="Old" editLabel="Rename track" inputLabel="Track title" onCommit={onCommit} />
+  render(<><EditableTitle value="Old" editLabel="Rename track" inputLabel="Track title" onCommit={onCommit} readCommitFailure={() => 'failed'} />
     <button type="button">Elsewhere</button></>);
   await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
   await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
@@ -37,7 +38,7 @@ it('submits only once when Enter is followed by blur while the rename is pending
 it('does not pull focus back after Tab leaves an Enter commit that is still pending', async () => {
   let resolve: () => void = () => undefined;
   const onCommit = () => new Promise<void>((done) => { resolve = done; });
-  render(<><EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={onCommit} />
+  render(<><EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={onCommit} readCommitFailure={() => 'failed'} />
     <button type="button">Next</button></>);
   await userEvent.click(screen.getByRole('button', { name: 'Rename' }));
   await userEvent.clear(screen.getByRole('textbox', { name: 'Title' }));
@@ -52,7 +53,7 @@ it('does not pull focus back after Tab leaves an Enter commit that is still pend
 
 it('lets blur leave edit mode after a rejected rename without retrying it', async () => {
   const onCommit = vi.fn(() => Promise.reject(new Error('No permission')));
-  render(<><EditableTitle value="Old" editLabel="Rename track" inputLabel="Track title" onCommit={onCommit} />
+  render(<><EditableTitle value="Old" editLabel="Rename track" inputLabel="Track title" onCommit={onCommit} readCommitFailure={() => 'failed'} />
     <button type="button">Elsewhere</button></>);
   await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
   await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
@@ -64,7 +65,7 @@ it('lets blur leave edit mode after a rejected rename without retrying it', asyn
 });
 
 it.each(['Enter', 'Escape'])('returns focus to the title after %s', async (key) => {
-  render(<EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={() => undefined} />);
+  render(<EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={() => undefined} readCommitFailure={() => 'failed'} />);
   await userEvent.click(screen.getByRole('button', { name: 'Rename' }));
   fireEvent.keyDown(screen.getByRole('textbox', { name: 'Title' }), { key });
   const title = await screen.findByRole('button', { name: 'Rename' });
@@ -72,7 +73,7 @@ it.each(['Enter', 'Escape'])('returns focus to the title after %s', async (key) 
 });
 
 it('lets Tab move away after blur commits a changed title', async () => {
-  render(<><EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={() => undefined} />
+  render(<><EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={() => undefined} readCommitFailure={() => 'failed'} />
     <button type="button">Next</button></>);
   await userEvent.click(screen.getByRole('button', { name: 'Rename' }));
   await userEvent.clear(screen.getByRole('textbox', { name: 'Title' }));
@@ -89,7 +90,7 @@ it('shows the placeholder for a blank name and still opens an empty box', async 
     placeholder="Untitled track"
     editLabel="Rename track"
     inputLabel="Track title"
-    onCommit={() => undefined}
+    onCommit={() => undefined} readCommitFailure={() => 'failed'}
   />);
   const title = screen.getByRole('button', { name: 'Rename track' });
   expect(title.textContent).toBe('Untitled track');
@@ -99,7 +100,7 @@ it('shows the placeholder for a blank name and still opens an empty box', async 
 
 it('swallows an empty commit by default, and sends it under emptyCommit=clear', async () => {
   const cancels = vi.fn();
-  render(<EditableTitle value="Old" editLabel="Rename area" inputLabel="Area name" onCommit={cancels} />);
+  render(<EditableTitle value="Old" editLabel="Rename area" inputLabel="Area name" onCommit={cancels} readCommitFailure={() => 'failed'} />);
   await userEvent.click(screen.getByRole('button', { name: 'Rename area' }));
   await userEvent.clear(screen.getByRole('textbox', { name: 'Area name' }));
   fireEvent.keyDown(screen.getByRole('textbox', { name: 'Area name' }), { key: 'Enter' });
@@ -114,6 +115,7 @@ it('swallows an empty commit by default, and sends it under emptyCommit=clear', 
     editLabel="Rename track"
     inputLabel="Track title"
     onCommit={clears}
+    readCommitFailure={() => 'failed'}
   />);
   await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
   await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
@@ -131,7 +133,7 @@ it('writes nothing when an already-blank title is committed blank', async () => 
     emptyCommit="clear"
     editLabel="Rename track"
     inputLabel="Track title"
-    onCommit={onCommit}
+    onCommit={onCommit} readCommitFailure={() => 'failed'}
   />);
   await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
   fireEvent.keyDown(screen.getByRole('textbox', { name: 'Track title' }), { key: 'Enter' });
@@ -140,7 +142,7 @@ it('writes nothing when an already-blank title is committed blank', async () => 
 });
 
 it('suppresses the synthesized click after Enter accepts an unchanged title', async () => {
-  render(<EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={() => undefined} />);
+  render(<EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={() => undefined} readCommitFailure={() => 'failed'} />);
   await userEvent.click(screen.getByRole('button', { name: 'Rename' }));
   fireEvent.keyDown(screen.getByRole('textbox', { name: 'Title' }), { key: 'Enter' });
   const title = await screen.findByRole('button', { name: 'Rename' });

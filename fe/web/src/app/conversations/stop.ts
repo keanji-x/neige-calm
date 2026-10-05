@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
 import { stopFailureFeedback, type ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
-import { writeFailureOf } from '../providers/queries.ts';
+import { writeFailureOf } from '../../../../core/domain/failure-class.ts';
 
 type StopLease = { historyKnown: boolean; newestRowId: number };
 type StopView = { cardId: string; request: StopLease | null; canStop: boolean };

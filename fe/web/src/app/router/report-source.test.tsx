@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { SOURCE_PANEL_COPY } from '../../features/report/source/public.tsx';
-import { ApiError } from '../providers/queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { sourceResolutionOf } from './report-source.tsx';

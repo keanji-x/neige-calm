@@ -14,6 +14,8 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ISSUE_INPUT_BODY, ISSUE_INPUT_SCHEMA } from '../../features/area/new-track/template-input-fixture.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 
+/** The fixed unknown state of a create whose answer was lost (#2131): never the transport's text. */
+const UNCONFIRMED_TRACK = 'The track creation is unconfirmed. Try again to check the same track.';
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 afterEach(() => { cleanup(); onlineManager.setOnline(true); delete document.documentElement.dataset.theme; });
@@ -298,7 +300,7 @@ describe('New track model selection', () => {
     expect(await screen.findByRole('button', { name: 'Model: GPT-5' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Reasoning effort: high' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await screen.findByText('Transport request failed');
+    await screen.findByText(UNCONFIRMED_TRACK);
     const original = createdTrackRequests(sent)[0];
     expect(original?.body).toMatchObject({ model: 'gpt-5', reasoning_effort: 'high',
       first_message: 'Use these settings from the first turn' });
@@ -530,11 +532,14 @@ describe('Track creation drafts survive navigation', () => {
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Keep original intent');
     document.documentElement.dataset.theme = 'light';
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await screen.findByText('Transport request failed');
+    await screen.findByText(UNCONFIRMED_TRACK);
     const original = createdTrackRequests(sent)[0];
     if (rejection === 'offline') act(() => onlineManager.setOnline(false));
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await waitFor(() => expect(within(screen.getByRole('main')).getByRole('alert').textContent).not.toContain('Transport request failed'));
+    /* Offline is refused before sending and leaves the earlier create unconfirmed, so its fixed state stays. */
+    if (rejection === 'offline') await act(async () => { await new Promise((done) => { setTimeout(done, 20); }); });
+    else await waitFor(() => expect(within(screen.getByRole('main')).getByRole('alert').textContent).not.toContain(UNCONFIRMED_TRACK));
+    expect(within(screen.getByRole('main')).getByRole('alert').textContent).not.toMatch(/Transport request failed|offline|reconnect/i);
     expect(screen.getByLabelText(TASK_LABEL).getAttribute('contenteditable')).toBe('false');
     expect(screen.queryByRole('button', { name: 'Create in Work' })).toBeNull();
     act(() => onlineManager.setOnline(true));
@@ -577,7 +582,7 @@ describe('Track creation drafts survive navigation', () => {
     await userEvent.type(screen.getByLabelText(TASK_LABEL), '  Create once  ');
     document.documentElement.dataset.theme = 'light';
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await screen.findByText('Transport request failed');
+    await screen.findByText(UNCONFIRMED_TRACK);
     const first = createdTrackRequests(sent)[0];
     expect(first?.body).toMatchObject({ theme: { fg: [42, 47, 58] } });
     await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));

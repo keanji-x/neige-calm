@@ -1,6 +1,7 @@
 import { loginOperation, type SessionIdentity } from '../../../../core/api/auth.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
-import { ApiError, runOperation } from '../providers/queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { runOperation } from '../providers/queries.ts';
 import type { RecoverySession } from '../../systems/recovery/session.ts';
 
 /** Login treats rejected credentials as an expected result and does not broadcast its 401. */

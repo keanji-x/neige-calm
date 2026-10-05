@@ -11,10 +11,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 
 import { createPortal } from 'react-dom';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 
-import { notificationPlainText } from '../../../../../core/domain/activity.ts';
+import { DISMISS_FAILURES, DISMISS_TEXT, notificationPlainText } from '../../../../../core/domain/activity.ts';
+import { DELETE_FAILURES, DELETE_TEXT, writeFailureText } from '../../../../../core/domain/failure-class.ts';
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import {
-  UNTITLED_TRACK_LABEL, trackActivityState, trackDisplayTitle, type CardWire, type Track,
+  TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, UNTITLED_TRACK_LABEL, trackActivityState, trackDisplayTitle, type CardWire, type Track,
 } from '../../../../../core/domain/track.ts';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { DELETE_TRACK_COPY } from '../../../ui/confirm-dialog/copy.ts';
@@ -131,6 +132,8 @@ export type TrackPageProps = Readonly<{
   onReopenTrack: () => void | Promise<void>;
   onCloseTrack: () => void | Promise<void>;
   onDeleteTrack: (signal: AbortSignal) => void | Promise<void>;
+  /** After a delete that holds, the server's answer or a 404 to a retry alike. */
+  onTrackDeleted: () => void;
 }>;
 
 /** The view model's module under `key`, by key rather than by index. Missing is an error rather than an empty page. */
@@ -150,7 +153,7 @@ export function TrackPage({
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
-  canReopenTrack, canCloseTrack, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack,
+  canReopenTrack, canCloseTrack, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack, onTrackDeleted,
 }: TrackPageProps) {
   const compactViewport = useCompactViewport();
   const headerActionsHost = compactViewport ? mobileHeaderActionsHost : null;
@@ -190,7 +193,7 @@ export function TrackPage({
     }
   }, [mobileHeaderTitleHost, titleContainer, titleInHeader]);
 
-  const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
+  const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal), writeFailureText(DELETE_FAILURES, DELETE_TEXT), onTrackDeleted);
   const closedFeedback = useOperationFeedback();
   const dismissFeedback = useOperationFeedback();
   const [closedPending, setClosedPending] = useState(false);
@@ -235,7 +238,7 @@ export function TrackPage({
     setClosedPending(true);
     const done = await closedFeedback.run(
       Promise.resolve().then(() => (action === 'close' ? onCloseTrack() : onReopenTrack())),
-      `Could not ${action} this track.`,
+      writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT[action]),
     );
     if (!done) {
       closedPendingRef.current = null;
@@ -413,7 +416,8 @@ export function TrackPage({
           else if (!titleContainer.contains(event.relatedTarget)) lastFocusedTitleRef.current = null;
         }}>
         <h1 className={styles.titleHeading}><EditableTitle value={track.title} placeholder={UNTITLED_TRACK_LABEL}
-          displayContent={<TrackTitle track={track} />} emptyCommit="clear" onCommit={onRenameTrack} editLabel="Rename track" inputLabel="Track title"
+          displayContent={<TrackTitle track={track} />} emptyCommit="clear" onCommit={onRenameTrack}
+          readCommitFailure={writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.rename)} editLabel="Rename track" inputLabel="Track title"
           className={styles.title} isPageTitle titleRef={titleReadControlRef}
           readView={titleInHeader && mobileTitleReadView !== undefined ? (controls) => <MobileTitleReadView
             controls={controls} host={mobileTitleReadHost} view={mobileTitleReadView} register={registerMobileTitleEdit} /> : undefined} /></h1>
@@ -619,7 +623,7 @@ export function TrackPage({
                         aria-label={`Dismiss: ${NOTIFICATION_LABEL[notification.kind]}: ${notificationGist(notification.text)}`}
                         title="Dismiss"
                         onClick={() => {
-                          void dismissFeedback.run(onDismiss(notification.key), 'Could not dismiss this notification.');
+                          void dismissFeedback.run(onDismiss(notification.key), writeFailureText(DISMISS_FAILURES, DISMISS_TEXT));
                         }}
                       ><Icon name="close" size="sm" /></button>
                     )}

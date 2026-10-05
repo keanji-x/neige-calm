@@ -9,7 +9,8 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { PreviewResolution, ReportBlock, TrackPreviews } from '../../../../core/domain/report.ts';
 import type { PreviewViewportStore } from '../../features/report/preview/public.tsx';
-import { ApiError, trackPreviewsQueryOptions } from '../providers/queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { trackPreviewsQueryOptions } from '../providers/queries.ts';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 export type PreviewResolver = (key: string) => PreviewResolution;

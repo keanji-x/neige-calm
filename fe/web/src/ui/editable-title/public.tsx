@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 
 import { useState } from '../state/public.ts';
-import { OperationFeedback, useOperationFeedback } from '../operation-feedback/public.tsx';
+import { OperationFeedback, useOperationFeedback, type FailureReading } from '../operation-feedback/public.tsx';
 import styles from './editable-title.module.css';
 
 export type EditableTitleProps = Readonly<{
@@ -14,6 +14,8 @@ export type EditableTitleProps = Readonly<{
   /** `'cancel'` (default) writes nothing for an empty commit; `'clear'` writes the empty name, which is how a track hands naming back to the planner agent. */
   emptyCommit?: 'cancel' | 'clear';
   onCommit: (next: string) => void | Promise<void>;
+  /** What a failed commit says, from the owner's failure table; the editor stays open on it. */
+  readCommitFailure: FailureReading;
   editLabel: string;
   inputLabel: string;
   /** Visible read-mode text; the stored value still owns the edit draft. */
@@ -33,7 +35,7 @@ export type EditableTitleProps = Readonly<{
 const CLICK_SUPPRESS_MS = 300;
 
 export function EditableTitle({
-  value, placeholder, emptyCommit = 'cancel', onCommit, editLabel, inputLabel,
+  value, placeholder, emptyCommit = 'cancel', onCommit, readCommitFailure, editLabel, inputLabel,
   className, isPageTitle, titleRef, readView, displayContent,
 }: EditableTitleProps) {
   const [editing, setEditing] = useState(false);
@@ -64,7 +66,7 @@ export function EditableTitle({
       return;
     }
     pending.current = true;
-    void feedback.run(Promise.resolve().then(() => onCommit(next)), 'Could not rename this item.').then((saved) => {
+    void feedback.run(Promise.resolve().then(() => onCommit(next)), readCommitFailure).then((saved) => {
       if (saved) {
         setEditing(false);
         if (restoreFocus && inputRef.current?.contains(document.activeElement)) restoreTitleFocus();
@@ -72,7 +74,7 @@ export function EditableTitle({
     }).finally(() => {
       pending.current = false;
     });
-  }, [draft, emptyCommit, feedback, onCommit, restoreTitleFocus, value]);
+  }, [draft, emptyCommit, feedback, onCommit, readCommitFailure, restoreTitleFocus, value]);
 
   const attachTitle = (node: HTMLButtonElement | null) => {
     localTitleRef.current = node;

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ApiError } from '../providers/queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { useConversationStop } from './stop.ts';
 
 afterEach(cleanup);

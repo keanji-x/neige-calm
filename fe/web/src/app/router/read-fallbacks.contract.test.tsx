@@ -158,7 +158,7 @@ describe('degraded workspace reads stay usable', () => {
     act(() => onlineManager.setOnline(false));
     await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
     const dialog = screen.getByRole('dialog', { name: 'New area' });
-    expect((await within(dialog).findByRole('alert')).textContent).toMatch(/offline.*reconnect/i);
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('The area was not created.');
     expect(within(dialog).getByRole<HTMLInputElement>('textbox', { name: 'Name' }).value).toBe('Offline draft');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull();
@@ -219,14 +219,14 @@ describe('degraded workspace reads stay usable', () => {
     await userEvent.type(field, 'Keep my offline conversation');
     act(() => onlineManager.setOnline(false));
     await userEvent.keyboard('{Enter}');
-    expect((await within(drawer).findByRole('alert')).textContent).toMatch(/offline/i);
+    expect((await within(drawer).findByRole('alert')).textContent).toContain('Nothing was sent.');
     const retry = await within(drawer).findByRole('button', { name: 'Try again' });
     await waitFor(() => expect(retry.hasAttribute('disabled')).toBe(false));
     expect(within(drawer).getByText('Keep my offline conversation')).toBeTruthy();
     expect(creates).toEqual([]);
     await userEvent.type(within(drawer).getByRole('combobox', { name: 'Message' }), 'Revised offline conversation');
     await userEvent.keyboard('{Enter}');
-    expect((await within(drawer).findByRole('alert')).textContent).toMatch(/offline/i);
+    expect((await within(drawer).findByRole('alert')).textContent).toContain('Nothing was sent.');
     expect((await within(drawer).findByRole('button', { name: 'Try again' })).hasAttribute('disabled')).toBe(false);
     expect(within(drawer).getByText('Revised offline conversation')).toBeTruthy();
     await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
@@ -279,7 +279,7 @@ describe('degraded workspace reads stay usable', () => {
     expect(creates).toHaveLength(1);
     act(() => onlineManager.setOnline(false));
     await userEvent.type(within(drawer).getByRole('combobox', { name: 'Message' }), 'Edited offline intent{Enter}');
-    expect((await within(drawer).findByRole('alert')).textContent).toMatch(/offline/i);
+    expect((await within(drawer).findByRole('alert')).textContent).toContain('Nothing was sent.');
     expect(within(drawer).getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false);
     await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
     revealLanding = true;
@@ -319,7 +319,7 @@ describe('degraded workspace reads stay usable', () => {
       onlineManager.setOnline(false);
       await Promise.resolve();
     });
-    expect((await within(drawer).findByRole('alert')).textContent).toMatch(/offline/i);
+    expect((await within(drawer).findByRole('alert')).textContent).toContain('Nothing was sent.');
     expect(within(drawer).getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false);
     expect(creates).toHaveLength(0);
     await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));

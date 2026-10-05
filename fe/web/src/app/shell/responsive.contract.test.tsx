@@ -45,7 +45,6 @@ vi.mock('../providers/queries.ts', () => ({
   useTrackMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
   // Blank-only is a working state, so the rail contract needs nothing more.
   useTrackTemplates: () => ({ templates: [], error: null, loaded: true, refetch: vi.fn() }),
-  ApiError: class ApiError extends Error {},
 }));
 /* A partial mock: `pathFor`, which the dock's selection rule reads the route
  * table from, stays the real one. */

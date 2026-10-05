@@ -1007,7 +1007,7 @@
       "oracle:INV-APP-116"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\nindex 3fb5295..10cb738 100644\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -722,7 +722,7 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau\n       });\n     },\n     // A lost response can follow a committed creation; the retained creation key makes the next POST safe.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useRecoveryMutation(transport, {\n     ...INTERACTIVE_WRITE_OPTIONS,\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\nindex 3fb5295..10cb738 100644\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -735,7 +735,7 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau\n       });\n     },\n     // A lost response can follow a committed creation; the retained creation key makes the next POST safe.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useRecoveryMutation(transport, {\n     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }, transport: ApiTransportPort) =>\n",
     "expected_red": [
       "delete mutation wiring invalidates Areas after a failed POST that may already have committed"
     ],

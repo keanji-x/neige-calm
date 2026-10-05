@@ -10,7 +10,7 @@ import {
   activityStateOf, type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 import { visibleAreas, type Area } from './area.js';
-import type { FailureTable } from './failure-class.js';
+import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
 
 /**
  * `cwd` and the `*_at` columns may be absent from the OpenAPI `required` set; the decoder supplies
@@ -498,9 +498,32 @@ export const TRACK_CREATE_FAILURES: FailureTable<TrackCreateFailure> = Object.fr
   otherwise: 'unconfirmed',
 });
 
+/** A refused create, and one whose outcome is unknown: the request and its key are kept, so a retry cannot mint a second track. */
+export const TRACK_CREATE_TEXT: WriteText = Object.freeze({
+  refused: 'The track was not created.', unknown: 'The track creation is unconfirmed. Try again to check the same track.',
+});
+
 export function updateTrackOperation(trackId: string, body: TrackPatchBody): ApiOperation<TrackWire> {
   return { method: 'PATCH', path: `/api/tracks/${encodeURIComponent(trackId)}`, body, responseSchema: trackWireSchema };
 }
+
+/**
+ * What a failed `PATCH /api/tracks/{id}` (rename, pin, close, reopen) says. It sets a value, so a retry is safe: 400, 403,
+ * 404 and 409 (a child track reopened under a closed parent) are answered before anything is stored; anything else may
+ * have stored it.
+ */
+export const TRACK_PATCH_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 409]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const TRACK_PATCH_TEXT = Object.freeze({
+  rename: Object.freeze({ refused: 'The track was not renamed.', unknown: 'The rename is unconfirmed.' }),
+  pin: Object.freeze({ refused: 'The pin was not changed.', unknown: 'The pin change is unconfirmed.' }),
+  close: Object.freeze({ refused: 'The track was not closed.', unknown: 'Closing the track is unconfirmed.' }),
+  reopen: Object.freeze({ refused: 'The track was not reopened.', unknown: 'Reopening the track is unconfirmed.' }),
+}) satisfies Readonly<Record<string, WriteText>>;
 
 export function deleteTrackOperation(trackId: string): ApiOperation<undefined> {
   return { method: 'DELETE', path: `/api/tracks/${encodeURIComponent(trackId)}`, responseSchema: z.undefined() };
@@ -563,6 +586,20 @@ export function createCardOperation(trackId: string, body: NewCardBody): ApiOper
     body,
     responseSchema: cardWireSchema,
   };
+}
+
+/**
+ * What a failed card create says: 400, 403, 404 and 422 refuse the body, the track or the plugin before anything is
+ * made; anything else may have made the card.
+ */
+export const CARD_CREATE_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export function cardCreateText(label: string): WriteText {
+  return { refused: `The ${label} card was not created.`, unknown: `Creating the ${label} card is unconfirmed.` };
 }
 
 /** The kernel refuses this for a card it owns (`deletable === false`). */

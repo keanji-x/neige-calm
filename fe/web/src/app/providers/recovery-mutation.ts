@@ -1,4 +1,4 @@
-import { useMutation, type UseMutationOptions, type UseMutationResult, type MutationFunctionContext } from '@tanstack/react-query';
+import { onlineManager, useMutation, type UseMutationOptions, type UseMutationResult, type MutationFunctionContext } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { NotSentError } from '../../../../core/domain/failure-class.ts';
 
@@ -16,7 +16,7 @@ export function admitTransport(transport: ApiTransportPort): ApiTransportPort {
 
 export function useRecoveryMutation<TData, TError = Error, TVariables = void, TContext = unknown>(
   transport: ApiTransportPort,
-  options: Omit<UseMutationOptions<TData, TError, TVariables, TContext>, 'mutationFn'> & {
+  options: Omit<UseMutationOptions<TData, TError, TVariables, TContext>, 'mutationFn' | 'networkMode' | 'retry'> & {
     mutationFn(variables: TVariables, admitted: ApiTransportPort, context: MutationFunctionContext): Promise<TData>;
     /** Local intent resources only; release never commits a response or touches server cache. */
     acquireLocal?: (variables: TVariables) => () => void;
@@ -29,9 +29,11 @@ export function useRecoveryMutation<TData, TError = Error, TVariables = void, TC
   };
   const mutation = useMutation<TData, TError, Intent, TContext>({
     ...queryOptions,
-    // No paused mutation or retry is allowed to turn yesterday's intent into a new write.
-    networkMode: __NC_BUNDLED__ ? 'always' : options.networkMode, retry: __NC_BUNDLED__ ? false : options.retry,
+    // In both builds: no paused mutation or retry is allowed to turn yesterday's intent into a new write.
+    networkMode: 'always', retry: false,
     mutationFn: (intent, context: MutationFunctionContext) => {
+      // Offline, a write is refused before it is sent, up to the moment it would be: the indicator says why, not the write.
+      if (!onlineManager.isOnline()) throw new NotSentError();
       intent.transport.recovery?.checkpoint()();
       return options.mutationFn(intent.variables, intent.transport, context);
     },

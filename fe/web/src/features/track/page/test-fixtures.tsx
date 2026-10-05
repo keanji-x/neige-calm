@@ -66,6 +66,7 @@ export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResul
     onReopenTrack: vi.fn(),
     onCloseTrack: vi.fn(),
     onDeleteTrack: vi.fn(),
+    onTrackDeleted: vi.fn(),
     ...overrides,
   };
   return render(<PanelHost props={props} />);

@@ -106,7 +106,8 @@ describe('adding a card from the CARDS module', () => {
     setup({ createFails: true });
     await pickKind('terminal');
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('the kernel refused this card');
+    /* A 500 may follow a card that was made: the fixed unknown state, not the server's words (#2131). */
+    expect(alert.textContent).toBe('Creating the terminal card is unconfirmed.');
     // No dialog was opened for this kind, so the message cannot have come from `NewCardForm`.
     expect(screen.queryByRole('dialog')).toBeNull();
   });

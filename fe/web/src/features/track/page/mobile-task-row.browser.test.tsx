@@ -50,7 +50,7 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
         onRenameTrack={vi.fn()}
         onReopenTrack={vi.fn()}
         onCloseTrack={vi.fn()}
-        onDeleteTrack={vi.fn()}
+        onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
       />,
     );
 

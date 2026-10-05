@@ -246,7 +246,7 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/area.ts:159-189; fe/web/src/app/router/new-track-route.tsx:103-114
+  source: fe/core/domain/area.ts:173-203; fe/web/src/app/router/new-track-route.tsx:103-114
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:783-796
   owner_slice: features/track/create
   intentional_omission: false

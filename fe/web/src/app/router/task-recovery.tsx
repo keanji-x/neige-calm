@@ -4,7 +4,8 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { taskAttemptsOperation, type TaskRecoveryView } from '../../../../core/domain/task-recovery.ts';
 import { TaskRecoveryDetails } from '../../features/report/task/recovery.tsx';
-import { ApiError, queryKeys, runOperation } from '../providers/queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { queryKeys, runOperation } from '../providers/queries.ts';
 import { hasReadFailure } from '../providers/query-read-feedback.ts';
 import { currentTaskExecution } from '../../../../core/domain/task-execution.ts';
 

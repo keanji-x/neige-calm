@@ -2,30 +2,35 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 import { useState } from '../state/public.ts';
 
+/**
+ * How the caller's write reads a rejection: the sentence to show at the object, or `null` when the answer proves the
+ * intent already holds, which counts as success. The caller builds it from the write's failure table; this primitive
+ * never reads an error itself.
+ */
+export type FailureReading = (reason: unknown) => string | null;
+
 export type OperationFeedbackState = Readonly<{
   error: string | null;
   clear: () => void;
-  run: (operation: Promise<unknown>, fallback: string, ignore?: () => boolean) => Promise<boolean>;
+  run: (operation: Promise<unknown>, read: FailureReading, ignore?: () => boolean) => Promise<boolean>;
 }>;
 
-function messageOf(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim() !== '' ? error.message : fallback;
-}
-
-/** One handled rejection path for rename/delete writes across every surface. */
+/** The one non-chat write runner: every rename, pin, close, dismiss and delete settles here. */
 export function useOperationFeedback(): OperationFeedbackState {
   const [error, setError] = useState<string | null>(null);
   return {
     error,
     clear: () => setError(null),
-    run: async (operation, fallback, ignore) => {
+    run: async (operation, read, ignore) => {
       setError(null);
       try {
         await operation;
         return true;
       } catch (reason) {
         if (ignore?.()) return false;
-        setError(messageOf(reason, fallback));
+        const text = read(reason);
+        if (text === null) return true;
+        setError(text);
         return false;
       }
     },
@@ -42,6 +47,7 @@ export function OperationFeedback({ feedback, children }: {
 
 export function useDeleteConfirm(
   perform: (id: string, signal: AbortSignal) => void | Promise<void>,
+  read: FailureReading,
   onDone?: () => void,
 ) {
   const [target, setTarget] = useState<string | null>(null);
@@ -62,7 +68,7 @@ export function useDeleteConfirm(
       const controller = new AbortController();
       active.current = controller;
       setPending(true);
-      void feedback.run(Promise.resolve().then(() => perform(target, controller.signal)), 'Could not delete this item.', () => controller.signal.aborted)
+      void feedback.run(Promise.resolve().then(() => perform(target, controller.signal)), read, () => controller.signal.aborted)
         .then((deleted) => {
           if (active.current !== controller) return;
           if (deleted) onDone?.();

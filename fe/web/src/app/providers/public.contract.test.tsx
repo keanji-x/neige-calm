@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import type { ApiFailure } from '../../../../core/api/types.ts';
-import { ApiError } from './queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { retryUnless401 } from './public.tsx';
 
 describe('app/providers contracts', () => {

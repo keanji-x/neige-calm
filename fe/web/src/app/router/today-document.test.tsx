@@ -64,7 +64,7 @@ type Case = Readonly<{
   body: string;
   detail?: DetailMode;
   /** What the report reset answers; a 200 by default. */
-  reset?: ApiTransportResponse;
+  reset?: ApiTransportResponse | 'lost';
 }>;
 
 function renderToday({ resolve, body, detail = 'seeded', reset }: Case) {
@@ -76,6 +76,7 @@ function renderToday({ resolve, body, detail = 'seeded', reset }: Case) {
     send: (request) => {
       requests.push(request);
       if (request.path === '/api/today/launchpad/report/reset') {
+        if (reset === 'lost') return Promise.reject(new Error('socket hang up'));
         return Promise.resolve(reset ?? ok({ track_id: 'lp', report_has_noninitial_content: false }));
       }
       if (request.path === '/api/today/launchpad') return Promise.resolve(resolve);
@@ -313,9 +314,30 @@ describe('#1343 the document’s Reset control', () => {
     await userEvent.click(await screen.findByRole('button', { name: RESET }));
     await userEvent.click(await screen.findByRole('button', { name: CONFIRM }));
     const alerts = await screen.findAllByRole('alert');
-    expect(alerts.some((alert) => alert.textContent?.includes('it exploded'))).toBe(true);
+    expect(alerts.some((alert) => alert.textContent?.includes('The report reset is unconfirmed.'))).toBe(true);
     expect(screen.getByText('今天合了两个 PR。')).toBeTruthy();
     expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
+  });
+
+  /* #2131: a lost answer is the fixed unknown state, never transport text, and the document is read again because the
+     reset may have happened. A refusal is the server's own reason. */
+  it('shows a lost reset as unconfirmed and reads the document again', async () => {
+    const { requests } = renderToday({ resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n', reset: 'lost' });
+    await userEvent.click(await screen.findByRole('button', { name: RESET }));
+    const readsBefore = requests.filter((request) => request.path === '/api/tracks/lp').length;
+    await userEvent.click(await screen.findByRole('button', { name: CONFIRM }));
+    const texts = () => screen.getAllByRole('alert').map((alert) => alert.textContent ?? '');
+    await waitFor(() => expect(texts()).toContainEqual(expect.stringContaining('The report reset is unconfirmed.')));
+    expect(texts().join(' ')).not.toMatch(/Transport request failed|offline|connection/i);
+    await waitFor(() => expect(requests.filter((request) => request.path === '/api/tracks/lp').length).toBeGreaterThan(readsBefore));
+  });
+
+  it('shows a refused reset in the server’s words', async () => {
+    renderToday({ resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n', reset: refuse(400, 'bad_request', 'the report is not prose') });
+    await userEvent.click(await screen.findByRole('button', { name: RESET }));
+    await userEvent.click(await screen.findByRole('button', { name: CONFIRM }));
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.some((alert) => alert.textContent?.includes('the report is not prose'))).toBe(true);
   });
 });
 

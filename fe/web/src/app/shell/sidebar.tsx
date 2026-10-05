@@ -4,7 +4,10 @@ import { useEffect, useRef } from 'react';
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu } from '@astryxdesign/core/DropdownMenu';
 
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
-import { hasFailed, isWorking, needsUserAttention, sortAreaTracksByRecent, userVisibleTracks, type Track } from '../../../../core/domain/track.ts';
+import { DELETE_FAILURES, DELETE_TEXT, writeFailureText } from '../../../../core/domain/failure-class.ts';
+import {
+  TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, hasFailed, isWorking, needsUserAttention, sortAreaTracksByRecent, userVisibleTracks, type Track,
+} from '../../../../core/domain/track.ts';
 import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -75,8 +78,8 @@ export function Sidebar({
   const areaDisclosureRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingAreaFocusRef = useRef<string | null>(null);
   const pendingOptionsFocusRef = useRef(false);
-  const trackConfirm = useDeleteConfirm(onDeleteTrack);
-  const areaConfirm = useDeleteConfirm(onDeleteArea, () => onGo({ name: 'today' }));
+  const trackConfirm = useDeleteConfirm(onDeleteTrack, writeFailureText(DELETE_FAILURES, DELETE_TEXT));
+  const areaConfirm = useDeleteConfirm(onDeleteArea, writeFailureText(DELETE_FAILURES, DELETE_TEXT), () => onGo({ name: 'today' }));
   const writeFeedback = useOperationFeedback();
 
   const userAreas = visibleAreas(areas);
@@ -172,7 +175,7 @@ export function Sidebar({
     onGo,
     nowMs,
     onSetPinned: (trackId: string, next: boolean) => {
-      void writeFeedback.run(Promise.resolve(onSetPinned(trackId, next)), 'Could not update the track.');
+      void writeFeedback.run(Promise.resolve(onSetPinned(trackId, next)), writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.pin));
     },
     onDelete: trackConfirm.request,
   };

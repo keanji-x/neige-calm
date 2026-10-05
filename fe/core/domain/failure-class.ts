@@ -29,34 +29,93 @@ function matches(rule: FailureRule<string>, failure: HttpFailure): boolean {
   return statusMatches && (code === undefined || failure.code === code);
 }
 
-/** The one classifier for a failed chat write: what `failure` means on the route `table` describes. */
+/** The one classifier for a failed write: what `failure` means on the route `table` describes. */
 export function classifyFailure<C extends string>(failure: ApiFailure | null, table: FailureTable<C>): C {
   if (failure === null || failure.kind === 'transport' || failure.kind === 'decode') return table.otherwise;
   if (failure.kind === 'unauthorized') return table.unauthorized;
   return table.rules.find((rule) => matches(rule, failure))?.is ?? table.otherwise;
 }
 
+/** A failed request as a rejected promise carries it: the `ApiFailure` survives for the tables to read. */
+export class ApiError extends Error {
+  readonly failure: ApiFailure;
+
+  constructor(failure: ApiFailure) {
+    super(failure.message);
+    this.name = 'ApiError';
+    this.failure = failure;
+  }
+}
+
 /**
- * A write stopped where it is admitted, before anything left the browser (the bundled build offline or syncing): nothing
- * was sent, so on every route it reads as a refusal, never as an unknown outcome (#2068).
+ * A write stopped where it is admitted, before anything left the browser (offline, or the bundled build syncing):
+ * nothing was sent, so on every route it reads as a refusal, never as an unknown outcome (#2068). Why it was stopped is
+ * the global connection indicator's to say, never the write's.
  */
 export class NotSentError extends Error {
-  constructor(cause: unknown) {
+  constructor(cause?: unknown) {
     super(cause instanceof Error ? cause.message : 'Nothing was sent.', { cause });
     this.name = 'NotSentError';
   }
 }
 
-/** What a failed model, interrupt or upload write says: `refused`, nothing was stored; `unknown`, it may have been. */
+/** A failed write's error as the tables read it: the answer's failure, a write not sent, or `null`. */
+export function writeFailureOf(error: unknown): ApiFailure | NotSentError | null {
+  return error instanceof ApiError ? error.failure : error instanceof NotSentError ? error : null;
+}
+
+/** What a failed write says: `refused`, nothing was stored; `unknown`, it may have been. */
 export type WriteFailure = 'refused' | 'unknown';
 
+/** A write's failure classes: also `done`, an answer that proves the intent already holds (a DELETE answered 404). */
+export type WriteClass = WriteFailure | 'done';
+
 /**
- * The sentence for a failed write on the route `table` describes, or `null` when it may have been stored: a refusal is
- * the server's own reason, or `refused` when it gave none, and a write that was not sent reads `refused` too. An
- * unknown outcome is the caller's fixed state, which never speaks of the connection: that is the global indicator's.
+ * The sentence for a refused write on the route `table` describes, or `null` when it was not refused: a refusal is the
+ * server's own reason, or `refused` when it gave none, and a write that was not sent reads `refused` too. An unknown
+ * outcome is the caller's fixed state, which never speaks of the connection: that is the global indicator's.
  */
-export function refusalText(failure: ApiFailure | NotSentError | null, table: FailureTable<WriteFailure>, refused: string): string | null {
-  if (failure instanceof NotSentError) return refused;
-  if (classifyFailure(failure, table) === 'unknown') return null;
-  return failure !== null && failure.message !== '' ? failure.message : refused;
+export function refusalText(failure: ApiFailure | NotSentError | null, table: FailureTable<WriteClass>, refused: string): string | null {
+  if (!(failure instanceof NotSentError) && classifyFailure(failure, table) !== 'refused') return null;
+  return refusedText(failure, refused);
 }
+
+/**
+ * The words of a write its own table already read as refused: the server's reason, or `refused` when it gave none or
+ * nothing was sent. For a route whose classes are its own (a create's key handling); every other route reads through
+ * {@link refusalText}.
+ */
+export function refusedText(failure: ApiFailure | NotSentError | null, refused: string): string {
+  return failure === null || failure instanceof NotSentError || failure.message === '' ? refused : failure.message;
+}
+
+/** One write's fixed sentences: when it was refused without a reason, and when its outcome is unknown. */
+export type WriteText = Readonly<{ refused: string; unknown: string }>;
+
+/**
+ * How the non-chat write runner reads one write's rejection: `null` when the answer proves the intent already holds
+ * (`done`, shown as success), else the sentence shown at the object. Only the class picks it; no transport text shows.
+ */
+export function writeFailureText(table: FailureTable<WriteClass>, text: WriteText): (error: unknown) => string | null {
+  return (error) => {
+    const failure = writeFailureOf(error);
+    if (!(failure instanceof NotSentError) && classifyFailure(failure, table) === 'done') return null;
+    return refusalText(failure, table, text.refused) ?? text.unknown;
+  };
+}
+
+/**
+ * Every delete by id (track, area, card, recipe). A 404 is `done`: the row is gone, which is what a retry after an
+ * unknown answer meets. 403 and 409 are refusals with the server's reason (a system area, a managed track, a card that
+ * cannot be disposed); anything else may have deleted it.
+ */
+export const DELETE_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([404]), is: 'done' as const }),
+    Object.freeze({ status: Object.freeze([403, 409]), is: 'refused' as const }),
+  ]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const DELETE_TEXT: WriteText = Object.freeze({ refused: 'It was not deleted.', unknown: 'The delete is unconfirmed.' });

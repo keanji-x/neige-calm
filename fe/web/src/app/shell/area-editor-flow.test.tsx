@@ -8,7 +8,8 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { AREA_PALETTE } from '../../features/area/palette.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { AppShell } from './public.tsx';
-import { ApiError, AreaCreatePreflightError } from '../providers/queries.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { AreaCreatePreflightError } from '../providers/queries.ts';
 
 const harness = vi.hoisted(() => ({
   compact: false,
@@ -322,7 +323,8 @@ describe('AppShell Area editor flow', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'New area' }));
     await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Still here');
     await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Area write failed');
+    /* An unknown answer is the fixed state, never the error's own text (#2131). */
+    expect((await screen.findByRole('alert')).textContent).toBe('Creation could not be confirmed. Try again to safely check the same area.');
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ }).value).toBe('Still here');
   });
 

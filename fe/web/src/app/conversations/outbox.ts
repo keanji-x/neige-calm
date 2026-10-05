@@ -12,7 +12,7 @@ import {
 } from '../../../../core/domain/conversation-outbox.ts';
 import { withRefill } from '../../../../core/domain/conversation-composer.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
-import { ApiError, OfflineSubmissionError } from '../providers/queries.ts';
+import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useState } from '../../ui/state/public.ts';
@@ -132,7 +132,7 @@ export function useConversationOutbox({
     return retryUnknownSend(
       (attempt) => {
         const admitted = attempt === 0 ? admittedAtPress : admitRetry();
-        return admitted === null ? Promise.reject(new OfflineSubmissionError())
+        return admitted === null ? Promise.reject(new NotSentError())
           : send(echo.text, attachments.map((attachment) => attachment.id), key, replaces?.turnId ?? null, admitted,
             () => { answeredRead = nextRead(); });
       },

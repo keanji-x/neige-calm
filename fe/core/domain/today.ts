@@ -6,6 +6,7 @@
 import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
+import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
 import { trackConversationCardId, type Conversation } from './conversation.js';
 
 export const todayLaunchpadSchema = z.object({
@@ -38,6 +39,20 @@ export function todayLaunchpadEnsureOperation(): ApiOperation<TodayLaunchpadEnsu
   };
 }
 
+/**
+ * What a failed ensure says. It is get-or-create and starts the assistant under a fixed key, so a retry is safe; only a
+ * 403 refuses it. Every other answer, a 500 from the assistant's start included, leaves the start unknown.
+ */
+export const LAUNCHPAD_ENSURE_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([403]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const LAUNCHPAD_ENSURE_TEXT: WriteText = Object.freeze({
+  refused: 'Today assistant was not started.', unknown: 'Starting Today assistant is unconfirmed.',
+});
+
 export const todayReportResetSchema = z.object({
   /** The launchpad track whose report was restored. */
   track_id: z.string(),
@@ -61,6 +76,20 @@ export function nameTodaySummaryConversation(trackId: string, row: Conversation)
   }
   return { ...row, title: TODAY_SUMMARY_CONVERSATION_TITLE };
 }
+
+/**
+ * What a failed reset says. The server reads the current revision itself, so a retry is safe: 400 (a report that is not
+ * prose), 403 and 404 refuse it. A 409 is a revision race with a writer, and it and anything else leave it unknown.
+ */
+export const REPORT_RESET_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const REPORT_RESET_TEXT: WriteText = Object.freeze({
+  refused: 'Today’s report was not reset.', unknown: 'The report reset is unconfirmed.',
+});
 
 /**
  * Put today's report back to its canonical empty state. It sends no document, and there must
