@@ -149,7 +149,9 @@ def ci_red_heads(db, track_id, start, end):
             names = red.setdefault(failed, None)
             if "failed_checks" in data:
                 names = names or []
-                names += [c["name"] for c in data["failed_checks"] if c["name"] not in names]
+                for check in data["failed_checks"]:
+                    if check["name"] not in names:
+                        names.append(check["name"])
                 red[failed] = names
     return red
 

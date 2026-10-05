@@ -19,7 +19,9 @@ describe('core/api wire decode behavior', () => {
       snapshot: { head_sha: 'exact-head', mergeable: 'mergeable' },
     };
     const failed_checks = [{ name: 'lint', url: 'https://ci.example/lint' }, { name: 'legacy status', id: 'SC_kw1' }];
-    expect(decodeWireEvent({ ev: 'forge.pr.checks', data: { ...data, failed_checks } }).status).toBe('ready');
+    const decoded = decodeWireEvent({ ev: 'forge.pr.checks', data: { ...data, failed_checks } });
+    expect(decoded.status).toBe('ready');
+    if (decoded.status === 'ready') expect(decoded.value).toEqual({ ev: 'forge.pr.checks', data: { ...data, failed_checks } });
     expect(decodeWireEvent({ ev: 'forge.pr.checks', data: { ...data, failed_checks: [{ name: 'lint' }] } }).status)
       .toBe('failed');
   });
