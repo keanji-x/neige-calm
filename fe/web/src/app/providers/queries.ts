@@ -709,6 +709,11 @@ export type AreaMutations = Readonly<{
   remove: (areaId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
+/** A delete answered done (404, `DELETE_FAILURES`): the row is gone, so its cache entry goes as on success. */
+function deleteDone(error: unknown): boolean {
+  return error instanceof ApiError && classifyFailure(error.failure, DELETE_FAILURES) === 'done';
+}
+
 export function useAreaMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): AreaMutations {
   const client = useQueryClient();
   const create = useRecoveryMutation(transport, {
@@ -757,9 +762,10 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
   const remove = useRecoveryMutation(transport, {
     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>
       runOperation(transport, { ...deleteAreaOperation(areaId), signal }, unauthorized),
-    onSuccess: (_result, { areaId }) => {
-      // The area is gone; its track list can never resolve again.
-      client.removeQueries({ queryKey: queryKeys.tracksInArea(areaId) });
+    // The area is gone, also when the delete was answered done; its track list can never resolve again.
+    onSuccess: (_result, { areaId }) => { client.removeQueries({ queryKey: queryKeys.tracksInArea(areaId) }); },
+    onError: (error, { areaId }) => {
+      if (deleteDone(error)) client.removeQueries({ queryKey: queryKeys.tracksInArea(areaId) });
     },
     // Abort only ends the client wait: the server may already have committed.
     onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
@@ -833,6 +839,9 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     onSuccess: (_result, variables) => {
       client.removeQueries({ queryKey: queryKeys.trackDetail(variables.trackId) });
     },
+    onError: (error, variables) => {
+      if (deleteDone(error)) client.removeQueries({ queryKey: queryKeys.trackDetail(variables.trackId) });
+    },
     // Reconcile both list-derived surfaces even if abort raced a committed DELETE.
     onSettled: (_result, _error, variables) => {
       void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(variables.areaId) });
@@ -878,9 +887,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     mutationFn: ({ cardId, signal }: { trackId: string; cardId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>
       runOperation(transport, { ...deleteCardOperation(cardId), signal }, unauthorized),
     onSuccess: dropCard,
-    onError: (error, variables) => {
-      if (error instanceof ApiError && classifyFailure(error.failure, DELETE_FAILURES) === 'done') dropCard(undefined, variables);
-    },
+    onError: (error, variables) => { if (deleteDone(error)) dropCard(undefined, variables); },
     onSettled: (_result, _error, { trackId }) => {
       void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
       cancelThenInvalidate(client, queryKeys.overlaysByKind('track'));

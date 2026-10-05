@@ -599,12 +599,15 @@ export function createCardOperation(trackId: string, body: NewCardBody): ApiOper
 
 /**
  * What a failed card create says: 400, 403, 404 and 422 refuse the body, the track or the plugin before anything is
- * made, and a key bound to another body (`idempotency_key_reused`) can never make this one: both are final, so the next
- * intent mints a new key. Anything else may have made the card, so a keyed create keeps its key for Try again.
+ * made; a key bound to another body (`idempotency_key_reused`) can never make this one; and `conflict` on the keyed
+ * routes is only a create the kernel refused before its transaction committed (a Pending-phase failure, which a retry
+ * under the key replays). All are final, so the next intent mints a new key. Anything else may have made the card, so
+ * a keyed create keeps its key for Try again.
  */
 export const CARD_CREATE_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),
+    Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),
     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),
   ]),
   unauthorized: 'refused',

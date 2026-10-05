@@ -124,8 +124,10 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(422, 'not_a_card_tool'), 'refused'], [unauthorized, 'refused'],
     /* A key bound to another body, or one the server cannot store: final, the next intent mints a new key (#2131 S2). */
     [http(409, 'idempotency_key_reused'), 'refused'], [http(400, 'idempotency_key_invalid'), 'refused'],
-    /* A stored failed create replayed under its key, a 5xx, a lost answer: the card may exist, so the key is kept. */
-    [http(409, 'conflict'), 'unknown'], [http(409, 'idempotency_key_concurrent'), 'unknown'],
+    /* A create the kernel refused before its transaction committed (a Pending-phase failure, replayed under its key). */
+    [http(409, 'conflict'), 'refused'],
+    /* A 5xx or a lost answer: the card may exist, so the key is kept. */
+    [http(409, 'idempotency_key_concurrent'), 'unknown'],
     [http(500), 'unknown'], [http(502, 'tool_call_failed'), 'unknown'], [http(503, 'service_unavailable'), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],

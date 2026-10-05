@@ -28,18 +28,18 @@ export type KeyedRequest<Draft, Body> = Readonly<{ key: string; draft: Draft; bo
 /**
  * One keyed create's intent (#2131): the request held from its first press until its outcome is final. `request` for a
  * draft `sameDraft` reads as the held one's gives the held key and body (built once, at the first press), so a retry
- * after a lost answer joins what the first attempt made; any other draft, and every `restart`, is a new intent under a
- * new key. `release` drops a request whose outcome is final (made, or refused), so the next press mints a new key; a
- * newer held request is kept.
+ * after a lost answer joins what the first attempt made; any other draft is a new intent under a new key. `release`
+ * drops a request whose outcome is final (made, or refused), so the next press mints a new key; a newer one is kept.
  */
 export function useKeyedIntent<Draft, Body>(sameDraft: (held: Draft, next: Draft) => boolean) {
   const [held, setHeld] = useState<KeyedRequest<Draft, Body> | null>(null);
-  const hold = (request: KeyedRequest<Draft, Body>) => { setHeld(request); return request; };
-  const mint = (draft: Draft, build: () => Body) => Object.freeze({ key: mintIdempotencyKey(), draft, body: build() });
   return {
     held,
-    request: (draft: Draft, build: () => Body) => hold(held !== null && sameDraft(held.draft, draft) ? held : mint(draft, build)),
-    restart: (draft: Draft, build: () => Body) => hold(mint(draft, build)),
+    request: (draft: Draft, build: () => Body): KeyedRequest<Draft, Body> => {
+      const next = held !== null && sameDraft(held.draft, draft) ? held : Object.freeze({ key: mintIdempotencyKey(), draft, body: build() });
+      setHeld(next);
+      return next;
+    },
     release: (request: KeyedRequest<Draft, Body>) => { setHeld((current) => (current === request ? null : current)); },
   };
 }

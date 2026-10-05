@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -119,6 +119,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  onlineManager.setOnline(true);
 });
 
 describe('adding a card from the CARDS module', () => {
@@ -214,6 +215,10 @@ describe('a keyed card create', () => {
   const invalid: ApiTransportResponse = { status: 400, statusText: 'Bad Request', body: {
     error: 'The card request key is not valid.', code: 'idempotency_key_invalid',
   } };
+  /* Only a create the kernel refused before committing anything answers `conflict` on these routes. */
+  const conflict: ApiTransportResponse = { status: 409, statusText: 'Conflict', body: {
+    error: 'The track is closed.', code: 'conflict',
+  } };
   const unprocessable: ApiTransportResponse = { status: 422, statusText: 'Unprocessable Entity', body: {
     error: 'The theme is missing.', code: 'unprocessable',
   } };
@@ -297,6 +302,7 @@ describe('a keyed card create', () => {
     ['a reused key', reused, 'This card request was already used for a different card.'],
     ['an invalid key', invalid, 'The card request key is not valid.'],
     ['a refused body', unprocessable, 'The theme is missing.'],
+    ['a create refused before it committed', conflict, 'The track is closed.'],
   ])('reads %s as a final refusal with the server’s reason: no Try again, and the next press mints a new key', async (_name, answer, reason) => {
     const { posts } = setup({ answers: [answer] });
     await pickKind('codex');
@@ -310,13 +316,55 @@ describe('a keyed card create', () => {
     expect(keyOf(posts()[1])).not.toBe(keyOf(posts()[0]));
   });
 
-  it('starts a new intent, under a new key, when a kind is picked again', async () => {
-    const { posts } = setup({ answers: ['lost'] });
+  /* Picking the same fieldless kind again is the natural retry: it continues the held intent, as Try again does. */
+  it('resends the held key and body when the same fieldless kind is picked again', async () => {
+    const { posts, cards } = setup({ answers: ['lost'] });
     await pickKind('terminal');
     await screen.findByRole('button', { name: 'Try again' });
     await pickKind('terminal');
     await waitFor(() => { expect(posts()).toHaveLength(2); });
+    expect(keyOf(posts()[1])).toBe(keyOf(posts()[0]));
+    expect(posts()[1]?.body).toEqual(posts()[0]?.body);
+    expect(cards).toHaveLength(1);
+  });
+
+  it('starts a new intent, under a new key, when a different kind is picked', async () => {
+    const { posts } = setup({ answers: ['lost'] });
+    await pickKind('terminal');
+    await screen.findByRole('button', { name: 'Try again' });
+    await pickKind('codex');
+    await userEvent.click(await screen.findByRole('button', { name: 'Create codex' }));
+    await waitFor(() => { expect(posts()).toHaveLength(2); });
+    expect(posts()[1]?.path).toBe('/api/tracks/w1/codex-cards');
     expect(keyOf(posts()[1])).not.toBe(keyOf(posts()[0]));
+  });
+
+  /* Offline, a press is refused before anything is sent (`NotSentError`). */
+  it('drops a fresh intent that could not be sent: a refusal with no Try again', async () => {
+    const { posts } = setup();
+    await screen.findByRole('button', { name: 'Add card' });
+    onlineManager.setOnline(false);
+    await pickKind('terminal');
+    expect((await screen.findByRole('alert')).textContent).toBe('The terminal card was not created.');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('keeps an unknown intent whose Try again could not be sent, and resends its key once back online', async () => {
+    const { posts, cards } = setup({ answers: ['lost'] });
+    await pickKind('terminal');
+    await screen.findByRole('button', { name: 'Try again' });
+    onlineManager.setOnline(false);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => { expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeNull(); });
+    expect(alert.textContent).toContain('Creating the terminal card is unconfirmed.');
+    expect(posts()).toHaveLength(1);
+    onlineManager.setOnline(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => { expect(posts()).toHaveLength(2); });
+    expect(keyOf(posts()[1])).toBe(keyOf(posts()[0]));
+    expect(cards).toHaveLength(1);
   });
 
   /* `POST /api/tracks/{id}/cards` takes no key yet (#2131 S4): a retry could make a second card, so none is offered. */

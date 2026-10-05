@@ -589,6 +589,34 @@ describe('delete mutation wiring', () => {
 /* Both mutations write `['track', trackId]` directly: a terminal card left on screen for a round-trip
  * keeps a PTY attached to a torn-down card, and the board can only draw a card the cache already holds.
  * Nothing observes the key, so the queued invalidation cannot refetch — the assertions read the write. */
+/* #2131: a DELETE answered 404 is done (`DELETE_FAILURES`), so it drops what a success drops: the area's track list, the
+ * track's detail. The settle-time invalidation does not touch either key, so only the done drop can clear it. */
+describe('a delete answered done drops its cache entry like a success', () => {
+  const notFound = (): Promise<ApiTransportResponse> =>
+    Promise.resolve({ status: 404, statusText: 'Not Found', body: { error: 'gone', code: 'not_found' } });
+  const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('socket hang up'));
+  const wrapper = (client: QueryClient) => ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+
+  it.each([['done', notFound, false], ['unknown', lost, true]] as const)('area delete answered %s', async (_name, answer, kept) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.tracksInArea('c1'), [baseTrackWire]);
+    const transport: ApiTransportPort = { send: (request) => (request.method === 'GET' ? new Promise(() => undefined) : answer()) };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), { wrapper: wrapper(client) });
+    await act(() => expect(result.current.remove('c1')).rejects.toBeInstanceOf(ApiError));
+    expect(client.getQueryData(queryKeys.tracksInArea('c1')) !== undefined).toBe(kept);
+  });
+
+  it.each([['done', notFound, false], ['unknown', lost, true]] as const)('track delete answered %s', async (_name, answer, kept) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.trackDetail('w1'), { track: baseTrackWire, can_reopen: false, can_close: true, cards: [], overlays: [] });
+    const transport: ApiTransportPort = { send: (request) => (request.method === 'GET' ? new Promise(() => undefined) : answer()) };
+    const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper: wrapper(client) });
+    await act(() => expect(result.current.remove('w1', 'c1')).rejects.toBeInstanceOf(ApiError));
+    expect(client.getQueryData(queryKeys.trackDetail('w1')) !== undefined).toBe(kept);
+  });
+});
+
 describe('track detail mutation cache writes', () => {
   const cardWire = (id: string) => ({
     id, track_id: 'w1', kind: 'terminal', title: null, sort: 1, payload: {},

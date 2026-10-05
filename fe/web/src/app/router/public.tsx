@@ -9,7 +9,7 @@ import { useConversationEdit } from '../conversations/edit.ts';
 import { useConversationOutbox, useRunReads } from '../conversations/outbox.ts';
 import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
 import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
-import { ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, writeFailureOf, writeFailureText } from '../../../../core/domain/failure-class.ts';
+import { ApiError, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, writeFailureOf, writeFailureText } from '../../../../core/domain/failure-class.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -32,8 +32,8 @@ import {
   NO_UPLOAD, type AttachmentStore, type UploadAttachment, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
 import {
-  CARD_CREATE_FAILURES, cardCreateText, trackOverlayPayload, plannerProviderOf, toTrack, trackActivityFrom, trackDisplayTitle,
-  type NewCodexCardBody, type NewTerminalCardBody, type ThemeRgb, type Track, type TrackActivity, type TrackDetailWire,
+  trackOverlayPayload, plannerProviderOf, toTrack, trackActivityFrom, trackDisplayTitle,
+  type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import { cardActivityOf, type CardActivity } from '../../../../core/domain/activity.ts';
 import type {
@@ -51,6 +51,10 @@ import { TrackRow } from '../../features/track/row/public.tsx';
 import { TrackPage, type TrackInputNotification } from '../../features/track/page/public.tsx';
 import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
 import { AddCardMenu, NewCardForm, type NewCardValues } from '../../features/track/new-card/public.tsx';
+import {
+  cardCreateEnded, cardCreateFailureText, keyedCardBodyOf, sameCardDraft, sendCardCreate,
+  type CardCreatePort, type CardDraft, type KeyedCardBody,
+} from '../../features/track/new-card/create.ts';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
@@ -1882,35 +1886,6 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
   }));
 }
 
-/* One add-card draft: its kind and the values typed into its form. */
-type CardDraft = Readonly<{ entry: CardAddMenuEntry; values: NewCardValues }>;
-type KeyedCardBody = Readonly<{ kind: 'terminal'; body: NewTerminalCardBody } | { kind: 'codex'; body: NewCodexCardBody }>;
-type KeyedCardRequest = KeyedRequest<CardDraft, KeyedCardBody>;
-
-/* Empty is absent, not `""`: the kernel reads an empty `cwd` as "no directory given" but an empty `title` as a real,
-   blank title. */
-function givenValue(values: NewCardValues, key: string): string | undefined {
-  const value = (values[key] ?? '').trim();
-  return value === '' ? undefined : value;
-}
-
-/** Two drafts are one intent when they would send the same values. */
-function sameCardDraft(held: CardDraft, next: CardDraft): boolean {
-  const keys = new Set([...Object.keys(held.values), ...Object.keys(next.values)]);
-  return held.entry.type === next.entry.type
-    && [...keys].every((key) => givenValue(held.values, key) === givenValue(next.values, key));
-}
-
-/** The body of a kind with a keyed atomic endpoint, or `null` for a kind that goes through the generic create. */
-function keyedCardBodyOf({ entry, values }: CardDraft, theme: ThemeRgb): KeyedCardBody | null {
-  const title = givenValue(values, 'title');
-  const titled = title === undefined ? {} : { title };
-  if (entry.type === 'terminal') return { kind: 'terminal', body: { theme, ...titled } };
-  if (entry.type !== 'codex') return null;
-  const cwd = givenValue(values, 'cwd');
-  return { kind: 'codex', body: { theme, ...titled, ...(cwd === undefined ? {} : { cwd }) } };
-}
-
 function TrackRouteBody({
   transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence,
 }: {
@@ -2162,55 +2137,36 @@ function TrackRouteBody({
   const activeCardCreate = useRef<AbortController | null>(null);
   useEffect(() => () => { activeCardCreate.current?.abort(); }, []);
 
-  /* One add-card intent is one `Idempotency-Key` (#2131): Try again, and a Create of the same draft, resend the held key
-   * and body, so a retry after a lost answer joins the card the first attempt made. A final outcome releases it; a
-   * changed draft, or a new pick from the menu, is a new intent. The plugin create takes no key yet (#2131 S4). */
+  /* One add-card intent is one `Idempotency-Key` (#2131): Try again, a Create of the same draft and a pick of the same
+   * fieldless kind resend the held key and body, so a retry after a lost answer joins the card the first attempt made.
+   * A final outcome releases it; another draft is a new intent. The policy is `new-card/create.ts`; this only wires it. */
   const cardIntent = useKeyedIntent<CardDraft, KeyedCardBody>(sameCardDraft);
-
-  const sendCardCreate = ({ entry, values }: CardDraft, keyed: KeyedCardRequest | null) => {
-    if (keyed !== null) {
-      return keyed.body.kind === 'terminal'
-        ? trackMutations.createTerminal(track.id, keyed.body.body, keyed.key)
-        : trackMutations.createCodex(track.id, keyed.body.body, keyed.key);
-    }
-    const registered = cardRegistry.get(entry.type);
-    const strategy = registered?.create;
-    if (strategy?.mode !== 'generic' || registered?.claim?.mode !== 'exact') {
-      throw new Error(`CardCreateUnsupported(${entry.type})`);
-    }
-    const title = givenValue(values, 'title');
-    return trackMutations.createCard(track.id, {
-      kind: registered.claim.kind,
-      payload: strategy.buildPayload(values),
-      ...(title === undefined ? {} : { title }),
-    });
+  const cardCreatePort: CardCreatePort = {
+    createTerminal: (body, key) => trackMutations.createTerminal(track.id, body, key),
+    createCodex: (body, key) => trackMutations.createCodex(track.id, body, key),
+    createCard: (body) => trackMutations.createCard(track.id, body),
   };
 
-  /* The create navigates to the new card, the same landing `onOpenCard` gives. `resent`: the held request goes again
-     after an unknown outcome, which a press that sends nothing leaves as it was. */
-  const runCardCreate = (draft: CardDraft, keyed: KeyedCardRequest | null, resent: boolean) => {
+  /* The create navigates to the new card, the same landing `onOpenCard` gives. `resent`: the held request goes again. */
+  const runCardCreate = (draft: CardDraft, keyed: KeyedRequest<CardDraft, KeyedCardBody> | null, resent: boolean) => {
     /* Only the newest gesture may own the landing: a superseded attempt is aborted so
            it neither steers nor clears a busy state that now belongs to the newer attempt. */
     activeCardCreate.current?.abort();
     const controller = new AbortController();
     activeCardCreate.current = controller;
     setCreatingCard(true);
-    const text = cardCreateText(draft.entry.label);
-    const read = writeFailureText(CARD_CREATE_FAILURES, text);
     void cardCreateFeedback
       .run(
-        Promise.resolve().then(() => sendCardCreate(draft, keyed)).then((card) => {
+        Promise.resolve().then(() => sendCardCreate(cardCreatePort, cardRegistry, draft, keyed)).then((card) => {
           if (keyed !== null) cardIntent.release(keyed);
           if (controller.signal.aborted) return;
           setCardDraft(null);
           goSameTrack(track.id, { card: card.id });
         }, (error: unknown) => {
-          const final = error instanceof NotSentError ? !resent
-            : classifyFailure(error instanceof ApiError ? error.failure : null, CARD_CREATE_FAILURES) !== 'unknown';
-          if (keyed !== null && final) cardIntent.release(keyed);
+          if (keyed !== null && cardCreateEnded(error, resent)) cardIntent.release(keyed);
           throw error;
         }),
-        (error) => (resent && error instanceof NotSentError ? text.unknown : read(error)),
+        cardCreateFailureText(draft.entry.label, resent),
         () => controller.signal.aborted,
       )
       .finally(() => {
@@ -2222,16 +2178,14 @@ function TrackRouteBody({
       });
   };
 
-  /* `picked`: a pick from the menu, always a new intent; a Create in the form continues the held one for the same draft. */
-  const submitNewCard = (entry: CardAddMenuEntry, values: NewCardValues, picked = false) => {
+  const submitNewCard = (entry: CardAddMenuEntry, values: NewCardValues) => {
     const draft: CardDraft = { entry, values };
     /* Read at click time from `<html data-theme>`, not `useTheme()`: subscribing
            would remount any live terminal on every theme toggle. A resent request keeps its first press's theme. */
     const body = keyedCardBodyOf(draft, readHostThemeRgb());
     if (body === null) { runCardCreate(draft, null, false); return; }
-    const held = cardIntent.held;
-    const resent = !picked && held !== null && sameCardDraft(held.draft, draft);
-    runCardCreate(draft, picked ? cardIntent.restart(draft, () => body) : cardIntent.request(draft, () => body), resent);
+    const resent = cardIntent.held !== null && sameCardDraft(cardIntent.held.draft, draft);
+    runCardCreate(draft, cardIntent.request(draft, () => body), resent);
   };
   const heldCardCreate = cardIntent.held;
   const retryCardCreate = heldCardCreate === null || creatingCard ? null
@@ -2240,8 +2194,7 @@ function TrackRouteBody({
   /* A kind with nothing to ask is created on the spot; one with fields opens the form. */
   const pickCardKind = (entry: CardAddMenuEntry) => {
     cardCreateFeedback.clear();
-    if (cardIntent.held !== null) cardIntent.release(cardIntent.held);
-    if (entry.fields.length === 0) submitNewCard(entry, {}, true);
+    if (entry.fields.length === 0) submitNewCard(entry, {});
     else setCardDraft(entry);
   };
   const backlinksQuery = useQuery(trackBacklinksQueryOptions(transport, track.id, unauthorized));
