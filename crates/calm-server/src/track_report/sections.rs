@@ -45,7 +45,7 @@ fn check_section_read(
     let SectionRead::Seen(seen) = read else {
         return Err(CalmError::BadRequest(format!(
             "section `{name}` has not been read by this session — read it first \
-             (neige_report_read {{ select: {{ sections: [\"{name}\"] }} }}), then retry"
+             (neige_report_read {{ sections: [\"{name}\"] }}), then retry"
         )));
     };
     let now: Vec<(String, u32)> = current
@@ -54,8 +54,8 @@ fn check_section_read(
         .collect();
     if *seen != now {
         return Err(CalmError::Conflict(format!(
-            "section `{name}` changed since this session read it — re-read it (select: \
-             {{ sections: [\"{name}\"] }}), merge, and retry"
+            "section `{name}` changed since this session read it — re-read it \
+             (sections: [\"{name}\"]), merge, and retry"
         )));
     }
     Ok(())

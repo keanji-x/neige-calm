@@ -1,6 +1,6 @@
 //! `neige_track_cat { blocks }` (#1874, `neige track cat <report> --blocks`): chosen blocks of a report,
 //! own (`report.md`) or same-area (`area/reports/<name>.md`), exactly as `neige_report_read`'s
-//! `select.blocks` text. Block ids come from `neige_area_ls`, the Planner's id source.
+//! `blocks` text. Block ids come from `neige_area_ls`, the Planner's id source.
 
 use super::*;
 use calm_server::mcp_server::tools::report_links::TOOL_AREA_LS;
@@ -49,7 +49,7 @@ async fn select_text(boot: &Boot, side: &Side, blocks: &[&str]) -> String {
         boot,
         TOOL_REPORT_READ,
         planner(side),
-        json!({ "select": { "blocks": blocks } }),
+        json!({ "blocks": blocks }),
     )
     .await
     .expect("neige_report_read");
@@ -87,7 +87,7 @@ async fn blocks_of_another_same_area_report_come_back_in_document_order_with_mar
 }
 
 /// One report, one output: the own `report.md`, the same report through `area/reports/` and the
-/// report's own `neige_report_read` select all print the same bytes.
+/// report's own `neige_report_read` blocks all print the same bytes.
 #[tokio::test]
 async fn blocks_text_equals_calm_report_read_select_on_every_report_path() {
     let boot = boot(&[(0, "认证 方案"), (0, "登录 排查")]).await;
@@ -151,7 +151,7 @@ async fn blocks_text_equals_calm_report_read_select_on_every_report_path() {
             .await
             .unwrap(),
         select_text(&boot, other, &chosen).await,
-        "another track's blocks read exactly as that track's own select"
+        "another track's blocks read exactly as that track's own report_read"
     );
 }
 
@@ -275,7 +275,7 @@ async fn ambiguous_and_cross_area_names_are_still_refused_with_blocks() {
 }
 
 /// #1877: `sections` (`neige track cat <report> --sections`) prints whole H1 sections, byte-equal to
-/// `neige_report_read { select: { sections } }` on every report path, with one shared refusal.
+/// `neige_report_read { sections }` on every report path, with one shared refusal.
 #[tokio::test]
 async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
     let boot = boot(&[(0, "认证 方案")]).await;
@@ -291,10 +291,10 @@ async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
         &boot,
         TOOL_REPORT_READ,
         planner(own),
-        json!({ "select": { "sections": sections } }),
+        json!({ "sections": sections }),
     )
     .await
-    .expect("select.sections")["text"]
+    .expect("sections")["text"]
         .as_str()
         .expect("text")
         .to_string();

@@ -247,5 +247,6 @@ pub(crate) async fn creation_identity(
     .bind(track_id)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|(owner,identity,time_zone)|serde_json::json!({"owner":owner,"identity":identity,"time_zone":time_zone})))
+    // The stored column stays `report_time_zone`; the tool output names it `timezone` (§4).
+    Ok(row.map(|(owner,identity,timezone)|serde_json::json!({"owner":owner,"identity":identity,"timezone":timezone})))
 }

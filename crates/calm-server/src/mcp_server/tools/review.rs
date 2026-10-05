@@ -8,6 +8,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role, role_gated_write_annotations,
 };
+use crate::mcp_server::tools::write_args::refuse_unknown_keys;
 use crate::model::{CardRole, Track};
 use crate::ratify_state::ratify_request_pending_tx;
 use serde::Deserialize;
@@ -43,9 +44,9 @@ fn ratify_request_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "required": ["reason"],
+            "required": ["text"],
             "properties": {
-                "reason": { "type": "string", "minLength": 1 }
+                "text": { "type": "string", "minLength": 1 }
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -53,9 +54,11 @@ fn ratify_request_descriptor() -> ToolDescriptor {
     }
 }
 
+/// `text` is the question shown to the person (§4); the stored `ratify.requested` keeps its
+/// `reason` field, so the boundary maps one onto the other.
 #[derive(Clone, Debug, Deserialize)]
 struct RatifyRequestArgs {
-    reason: String,
+    text: String,
 }
 
 async fn ratify_request(
@@ -64,11 +67,12 @@ async fn ratify_request(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
+    refuse_unknown_keys(&args, TOOL_RATIFY_REQUEST, &["text"])?;
     let args: RatifyRequestArgs = serde_json::from_value(args)
         .map_err(|e| RpcError::invalid_params(format!("ratify_request: invalid args: {e}")))?;
-    if args.reason.trim().is_empty() {
+    if args.text.trim().is_empty() {
         return Err(RpcError::invalid_params(
-            "ratify_request: reason must not be empty",
+            "ratify_request: text must not be empty",
         ));
     }
 
@@ -79,7 +83,7 @@ async fn ratify_request(
         area: track.area_id.clone(),
     };
     let track_id = track.id.clone();
-    let reason = args.reason;
+    let reason = args.text;
 
     let result =
         write_with_actor_events_typed::<(), _>(ctx.repo.as_ref(), None, &ctx.events, &ctx.write, {

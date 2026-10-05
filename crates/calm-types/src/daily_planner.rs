@@ -7,7 +7,7 @@ use utoipa::ToSchema;
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ReportChangesPage {
     pub date: String,
-    pub time_zone: String,
+    pub timezone: String,
     pub through_event_id: i64,
     pub changes: Vec<ReportChange>,
     #[schema(required = true, nullable = true)]
@@ -53,8 +53,9 @@ pub struct ReportEditEntry {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ReportEditsPage {
     pub edits: Vec<ReportEditEntry>,
+    // Opaque: the last event id in decimal, passed back as `cursor`.
     #[schema(required = true, nullable = true)]
-    pub next_cursor: Option<i64>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Serialize, ToSchema, TS)]

@@ -248,9 +248,9 @@ async fn call_tool(
 
 async fn request_ratification(
     boot: &Boot,
-    reason: &str,
+    text: &str,
 ) -> Result<Value, calm_server::plugin_host::mcp::RpcError> {
-    call_tool(boot, TOOL_RATIFY_REQUEST, json!({ "reason": reason })).await
+    call_tool(boot, TOOL_RATIFY_REQUEST, json!({ "text": text })).await
 }
 
 async fn events_for_track(boot: &Boot, kinds: &[&str]) -> Vec<Event> {
@@ -307,6 +307,40 @@ async fn activity_items(boot: &Boot) -> Vec<calm_server::track_activity::Activit
         calm_server::track_activity::Recompute::Unchanged(p)
         | calm_server::track_activity::Recompute::Written(p) => p.items,
     }
+}
+
+/// #2087 B2: the question is `text` (§4); the stored `ratify.requested` keeps its `reason` field.
+/// The retired `reason` argument is refused with the valid keys and records nothing.
+#[tokio::test]
+async fn ratify_request_takes_text_and_refuses_the_retired_reason() {
+    let boot = boot().await;
+    for args in [
+        json!({ "reason": "merge_hold: pr #1" }),
+        json!({ "text": "merge_hold: pr #1", "reason": "merge_hold: pr #1" }),
+    ] {
+        let err = call_tool(&boot, TOOL_RATIFY_REQUEST, args.clone())
+            .await
+            .expect_err("the retired reason must be refused");
+        assert_eq!(err.code, -32602, "{args}");
+        assert_eq!(
+            err.message, "neige_ratify_request: unknown argument `reason`; valid: `text`",
+            "{args}"
+        );
+    }
+    assert!(
+        events_for_track(&boot, &["ratify.requested"])
+            .await
+            .is_empty()
+    );
+    request_ratification(&boot, "Merge pr #1 now?")
+        .await
+        .expect("text asks");
+    let events = events_for_track(&boot, &["ratify.requested"]).await;
+    assert!(
+        matches!(events.as_slice(), [Event::RatifyRequested { reason, .. }] if reason == "Merge pr #1 now?"),
+        "{events:?}"
+    );
+    assert_eq!(activity_items(&boot).await[0].text, "Merge pr #1 now?");
 }
 
 #[tokio::test]

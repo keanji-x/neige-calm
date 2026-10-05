@@ -8,8 +8,8 @@ describe('daily Planner date and evidence contracts', () => {
   it('keeps all reads side effect free and snapshot cursors explicit', () => {
     expect(dailyTrackOperation().method).toBe('GET');
     expect(dailyTrackOperation('2026-10-04').path).toBe('/api/today/daily?date=2026-10-04');
-    expect(reportChangesOperation('2026-10-03', { after: 'a/b', through: 42 }).path).toBe('/api/today/report-changes?date=2026-10-03&after=a%2Fb&through_event_id=42');
-    expect(reportEditsOperation('2026-10-03', 'a/b', 42, 20).path).toContain('track_id=a%2Fb&through_event_id=42&after=20');
+    expect(reportChangesOperation('2026-10-03', { cursor: 'a/b', through: 42 }).path).toBe('/api/today/report-changes?date=2026-10-03&cursor=a%2Fb&through_event_id=42');
+    expect(reportEditsOperation('2026-10-03', 'a/b', 42, '20').path).toContain('track_id=a%2Fb&through_event_id=42&cursor=20');
     expect(dailyTrackOperation().responseSchema.safeParse([]).success).toBe(false);
   });
 });

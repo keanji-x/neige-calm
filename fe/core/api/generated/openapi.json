@@ -4655,9 +4655,9 @@
             }
           },
           {
-            "name": "after",
+            "name": "cursor",
             "in": "query",
-            "description": "Last Track id",
+            "description": "The previous page's next_cursor",
             "required": false,
             "schema": {
               "type": "string"
@@ -4724,13 +4724,12 @@
             }
           },
           {
-            "name": "after",
+            "name": "cursor",
             "in": "query",
-            "description": "Last event id",
+            "description": "The previous page's next_cursor",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
             }
           },
           {
@@ -10877,7 +10876,7 @@
         "type": "object",
         "required": [
           "date",
-          "time_zone",
+          "timezone",
           "through_event_id",
           "changes",
           "next_cursor"
@@ -10902,7 +10901,7 @@
             "type": "integer",
             "format": "int64"
           },
-          "time_zone": {
+          "timezone": {
             "type": "string"
           }
         }
@@ -10974,10 +10973,9 @@
           },
           "next_cursor": {
             "type": [
-              "integer",
+              "string",
               "null"
-            ],
-            "format": "int64"
+            ]
           }
         }
       },

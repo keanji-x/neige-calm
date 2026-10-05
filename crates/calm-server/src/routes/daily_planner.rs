@@ -56,7 +56,7 @@ fn pool(state: &RouteState) -> Result<&sqlx::SqlitePool> {
 }
 
 #[utoipa::path(get,path="/api/today/report-changes",tag="tracks",
-    params(("date"=String,Query,description="YYYY-MM-DD in Asia/Shanghai"),("after"=Option<String>,Query,description="Last Track id"),("through_event_id"=Option<i64>,Query,description="Snapshot cursor from the first page")),
+    params(("date"=String,Query,description="YYYY-MM-DD in Asia/Shanghai"),("cursor"=Option<String>,Query,description="The previous page's next_cursor"),("through_event_id"=Option<i64>,Query,description="Snapshot cursor from the first page")),
     responses((status=200,body=ReportChangesPage,description="Report changes, including net reverts"),(status=400,body=ErrorBody,description="Invalid date or cursor")))]
 pub(crate) async fn report_changes(
     State(state): State<RouteState>,
@@ -68,7 +68,7 @@ pub(crate) async fn report_changes(
 }
 
 #[utoipa::path(get,path="/api/today/report-edits",tag="tracks",
-    params(("date"=String,Query,description="YYYY-MM-DD"),("track_id"=String,Query,description="Track id"),("after"=Option<i64>,Query,description="Last event id"),("through_event_id"=i64,Query,description="Snapshot cursor from report changes")),
+    params(("date"=String,Query,description="YYYY-MM-DD"),("track_id"=String,Query,description="Track id"),("cursor"=Option<String>,Query,description="The previous page's next_cursor"),("through_event_id"=i64,Query,description="Snapshot cursor from report changes")),
     responses((status=200,body=ReportEditsPage,description="Individual report edits in event order"),(status=400,body=ErrorBody,description="Invalid date or cursor")))]
 pub(crate) async fn report_edits(
     State(state): State<RouteState>,

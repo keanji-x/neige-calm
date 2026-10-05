@@ -176,7 +176,7 @@ pub fn marked_blocks_text<'a>(blocks: impl IntoIterator<Item = &'a ReportBlock>)
     text
 }
 
-/// The `select: { blocks }` text: exactly the blocks `ids` names, in document order, each preceded by
+/// The `blocks` read's text: exactly the blocks `ids` names, in document order, each preceded by
 /// its marker line. `Err` carries the first id that names no block of `blocks`.
 pub fn selected_blocks_text<'a>(
     blocks: &[ReportBlock],

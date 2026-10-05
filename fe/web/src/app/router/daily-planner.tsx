@@ -36,16 +36,16 @@ function DailyReportChanges({ date, transport, unauthorized, onOpenTrack }: Read
 }>) {
   const [open, setOpen] = useState(false);
   const changes = useInfiniteQuery({ queryKey: ['daily-report-changes', date], enabled: open,
-    initialPageParam: undefined as Readonly<{ after: string; through: number }> | undefined,
+    initialPageParam: undefined as Readonly<{ cursor: string; through: number }> | undefined,
     queryFn: ({ pageParam }) => runOperation(transport, reportChangesOperation(date, pageParam), unauthorized),
-    getNextPageParam: (last) => last.next_cursor === null ? undefined : { after: last.next_cursor, through: last.through_event_id },
+    getNextPageParam: (last) => last.next_cursor === null ? undefined : { cursor: last.next_cursor, through: last.through_event_id },
   });
   return <ReportDetails title="Report changes" meta={date} layout="appendix" onToggle={setOpen}>
     {changes.isPending && open && <p role="status">Loading report changes…</p>}
     {changes.isError && <ErrorBox message={changes.error.message} onRetry={() => { void changes.refetch(); }} />}
     {!changes.isError && changes.data?.pages[0]?.changes.length === 0 && <p>No report changes recorded for visible Tracks on this day.</p>}
     {changes.data?.pages.flatMap((page) => page.changes.map((change) => <ReportChangeItem key={change.track_id} change={change}
-      date={date} timeZone={page.time_zone} through={page.through_event_id} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />))}
+      date={date} timeZone={page.timezone} through={page.through_event_id} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />))}
     {changes.hasNextPage && <button type="button" disabled={changes.isFetchingNextPage} onClick={() => { void changes.fetchNextPage(); }}>Load more reports</button>}
   </ReportDetails>;
 }
@@ -56,7 +56,7 @@ function ReportChangeItem({ change, date, timeZone, through, transport, unauthor
 }>) {
   const [open, setOpen] = useState(false);
   const edits = useInfiniteQuery({ queryKey: ['daily-report-edits', date, change.track_id, through], enabled: open,
-    initialPageParam: undefined as number | undefined,
+    initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => runOperation(transport, reportEditsOperation(date, change.track_id, through, pageParam), unauthorized),
     getNextPageParam: (last) => last.next_cursor ?? undefined,
   });

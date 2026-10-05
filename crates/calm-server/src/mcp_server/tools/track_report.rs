@@ -10,6 +10,7 @@ use crate::mcp_server::result::ToolResult;
 use crate::mcp_server::tools::report_links::unknown_block;
 use crate::mcp_server::tools::track_file::Selection;
 use crate::mcp_server::tools::track_report_hydrate::{hydrated_block_index, parse_resolve_arg};
+use crate::mcp_server::tools::write_args::refuse_unknown_keys;
 use crate::model::{Card, CardRole, Track};
 use crate::track_report::TrackReportPayload;
 use crate::track_report_read::{
@@ -85,27 +86,9 @@ fn read_descriptor() -> ToolDescriptor {
         input_schema: json!({
             "type": "object",
             "properties": {
-                "select": {
-                    "oneOf": [
-                        { "type": "string", "enum": ["full", "index"] },
-                        {
-                            "type": "object",
-                            "required": ["blocks"],
-                            "properties": {
-                                "blocks": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
-                            },
-                            "additionalProperties": false
-                        },
-                        {
-                            "type": "object",
-                            "required": ["sections"],
-                            "properties": {
-                                "sections": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
-                            },
-                            "additionalProperties": false
-                        }
-                    ]
-                },
+                "blocks": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                "sections": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                "detail": { "type": "string", "enum": ["full", "index"] },
                 "with_markers": { "type": "boolean" },
                 "resolve": {
                     "type": "object",
@@ -125,7 +108,8 @@ pub(crate) async fn report_read(
 ) -> Result<Value, RpcError> {
     // Assistant reads too: this is the read every agent report write is anchored by (#1883).
     require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
-    let select = parse_select_arg(&args, "neige_report_read")?;
+    refuse_unknown_keys(&args, TOOL_REPORT_READ, READ_KEYS)?;
+    let select = parse_select_arg(&args, TOOL_REPORT_READ)?;
     let with_markers = match args.get("with_markers") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -202,24 +186,34 @@ enum ReadSelect {
     Part(Selection),
 }
 
+/// The closed input of `neige_report_read` (§4).
+const READ_KEYS: &[&str] = &["blocks", "sections", "detail", "with_markers", "resolve"];
+
+/// Top-level `blocks` / `sections` (the names `neige_track_cat` uses) choose the parts, and
+/// `detail` how much: `full` (the default) returns text, `index` only the anchors and no text.
 fn parse_select_arg(args: &Value, tool: &str) -> Result<ReadSelect, RpcError> {
-    const SHAPE: &str = "must be \"full\", \"index\", { \"blocks\": [block id, …] } or \
-                         { \"sections\": [H1 text, …] } if provided";
-    match args.get("select") {
-        None | Some(Value::Null) => Ok(ReadSelect::Full),
-        Some(Value::String(mode)) if mode == "full" => Ok(ReadSelect::Full),
-        Some(Value::String(mode)) if mode == "index" => Ok(ReadSelect::Index),
-        Some(Value::Object(map)) if map.len() == 1 => {
-            match Selection::parse(map, &format!("{tool}: `select`"))? {
-                Some(selection) => Ok(ReadSelect::Part(selection)),
-                None => Err(RpcError::invalid_params(format!(
-                    "{tool}: `select` {SHAPE}"
-                ))),
-            }
+    let Some(map) = args.as_object() else {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: arguments must be an object"
+        )));
+    };
+    let index = match map.get("detail") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(detail)) if detail == "full" => false,
+        Some(Value::String(detail)) if detail == "index" => true,
+        Some(_) => {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `detail` must be \"full\" or \"index\" if provided"
+            )));
         }
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "{tool}: `select` {SHAPE}"
+    };
+    match (Selection::parse(map, tool)?, index) {
+        (Some(_), true) => Err(RpcError::invalid_params(format!(
+            "{tool}: `detail: \"index\"` returns no text; drop `blocks` / `sections` or the detail"
         ))),
+        (Some(selection), false) => Ok(ReadSelect::Part(selection)),
+        (None, true) => Ok(ReadSelect::Index),
+        (None, false) => Ok(ReadSelect::Full),
     }
 }
 
@@ -300,34 +294,34 @@ mod tests {
     fn parse_select_arg_accepts_the_three_forms_and_refuses_the_rest() {
         let parse = |args: Value| parse_select_arg(&args, "t");
         assert_eq!(parse(json!({})).unwrap(), ReadSelect::Full);
-        assert_eq!(parse(json!({"select": null})).unwrap(), ReadSelect::Full);
-        assert_eq!(parse(json!({"select": "full"})).unwrap(), ReadSelect::Full);
+        assert_eq!(parse(json!({"detail": null})).unwrap(), ReadSelect::Full);
+        assert_eq!(parse(json!({"detail": "full"})).unwrap(), ReadSelect::Full);
         assert_eq!(
-            parse(json!({"select": "index"})).unwrap(),
+            parse(json!({"detail": "index"})).unwrap(),
             ReadSelect::Index
         );
         assert_eq!(
-            parse(json!({"select": {"blocks": ["b_2", "b_1"]}})).unwrap(),
+            parse(json!({"blocks": ["b_2", "b_1"]})).unwrap(),
             ReadSelect::Part(Selection::Blocks(vec!["b_2".into(), "b_1".into()]))
         );
         assert_eq!(
-            parse(json!({"select": {"sections": ["B", "A"]}})).unwrap(),
+            parse(json!({"sections": ["B", "A"], "detail": "full"})).unwrap(),
             ReadSelect::Part(Selection::Sections(vec!["B".into(), "A".into()]))
         );
-        for bad in [
-            json!({"select": "all"}),
-            json!({"select": 1}),
-            json!({"select": {}}),
-            json!({"select": {"blocks": []}}),
-            json!({"select": {"blocks": "b_1"}}),
-            json!({"select": {"blocks": [1]}}),
-            json!({"select": {"blocks": ["b_1"], "with_markers": true}}),
-            json!({"select": {"blocks": ["b_1"], "sections": ["A"]}}),
-            json!({"select": {"sections": []}}),
+        for (bad, names) in [
+            (json!({"detail": "all"}), "detail"),
+            (json!({"detail": 1}), "detail"),
+            (json!({"blocks": []}), "blocks"),
+            (json!({"blocks": "b_1"}), "blocks"),
+            (json!({"blocks": [1]}), "blocks"),
+            (json!({"blocks": ["b_1"], "sections": ["A"]}), "blocks"),
+            (json!({"sections": []}), "sections"),
+            (json!({"blocks": ["b_1"], "detail": "index"}), "detail"),
+            (json!(7), "object"),
         ] {
             let err = parse(bad.clone()).expect_err("must be refused");
             assert_eq!(err.code, RpcError::INVALID_PARAMS, "{bad}");
-            assert!(err.message.contains("select"), "{bad}: {}", err.message);
+            assert!(err.message.contains(names), "{bad}: {}", err.message);
         }
     }
 

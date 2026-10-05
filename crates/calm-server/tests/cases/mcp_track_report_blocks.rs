@@ -852,7 +852,7 @@ async fn write_markdown_needs_a_whole_read_at_the_current_doc_rev() {
     )
     .await
     .expect("assistant appends");
-    read(&boot, json!({ "select": { "sections": ["First"] } })).await;
+    read(&boot, json!({ "sections": ["First"] })).await;
     let partial = write("# First\n\nonly\n")
         .await
         .expect_err("a partial read at a newer docRev must not anchor a rewrite");

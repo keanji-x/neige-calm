@@ -1,1 +1,1 @@
-Grant required. List reports; page with after.
+Grant required. List reports; page with cursor.

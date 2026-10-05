@@ -1853,8 +1853,9 @@ impl SharedCodexAppServer {
         // keep offering the dotted names it listed. v5: the view tools took their Unix verbs
         // (#2087 B1a), and a daemon from before would keep offering the old names. v6: the
         // terminal's anchored read is `read` (#2087 B1b), with renamed tools and parameters. v7:
-        // calendar and preview use add/ls/set/rm and a verdict is accept/reject (#2087 B1c).
-        h.update(b"env-schema-v7:2087|");
+        // calendar and preview use add/ls/set/rm and a verdict is accept/reject (#2087 B1c). v8: the
+        // parameters are one vocabulary (`cursor`, `blocks`/`sections`/`detail`, `text`) (#2087 B2).
+        h.update(b"env-schema-v8:2087|");
         // The daemon loads `[mcp_servers.<key>]` at spawn, so an adopted daemon from before a key
         // rename would keep serving the old key (#2003).
         h.update(crate::mcp_server::wiring::MCP_SERVER_KEY.as_bytes());
@@ -4978,7 +4979,7 @@ mod tests {
             SharedCodexAppServer::compute_env_signature(ingest, None, None, Path::new("/k/bin"));
         assert_ne!(
             salted, pre_salt,
-            "compute_env_signature must be salted (env-schema-v7:2087)"
+            "compute_env_signature must be salted (env-schema-v8:2087)"
         );
     }
 
@@ -5067,6 +5068,28 @@ mod tests {
         assert_ne!(
             SharedCodexAppServer::compute_env_signature(ingest, None, None, bin),
             pre_crud_verbs
+        );
+    }
+
+    /// A daemon adopted from before the parameter vocabulary lists `after`, `select` and the
+    /// ratify `reason`; its signature (salt v7) must not match, so the first boot replaces it.
+    #[test]
+    fn env_signature_replaces_a_daemon_from_before_the_parameter_vocabulary() {
+        let (ingest, bin) = ("http://127.0.0.1:8765", Path::new("/k/bin"));
+        let mut h = Sha256::new();
+        h.update(b"env-schema-v7:2087|");
+        h.update(crate::mcp_server::wiring::MCP_SERVER_KEY.as_bytes());
+        h.update(b"|");
+        h.update(bin.as_os_str().as_encoded_bytes());
+        h.update(b"|");
+        h.update(ingest.as_bytes());
+        h.update(b"|");
+        h.update(b"|");
+        let pre_vocabulary = hex::encode(h.finalize())[..16].to_string();
+
+        assert_ne!(
+            SharedCodexAppServer::compute_env_signature(ingest, None, None, bin),
+            pre_vocabulary
         );
     }
 

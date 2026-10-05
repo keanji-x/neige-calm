@@ -5,6 +5,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolRegistry, read_only_annotations,
 };
 use crate::mcp_server::result::ToolResult;
+use crate::mcp_server::tools::write_args::refuse_unknown_keys;
 use crate::model::CardRole;
 use crate::workspace_reports::{self, ReportChangesQuery, ReportEditsQuery};
 use serde::Deserialize;
@@ -21,7 +22,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             TOOL_WORKSPACE_LS,
             include_str!("../../../prompts/tools/neige_workspace_ls.md"),
-            json!({"type":"object","properties":{"after":{"type":"string"}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"cursor":{"type":"string"}},"additionalProperties":false}),
         ),
         (
             TOOL_WORKSPACE_CAT,
@@ -31,16 +32,27 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             TOOL_WORKSPACE_DIFF,
             include_str!("../../../prompts/tools/neige_workspace_diff.md"),
-            json!({"type":"object","required":["date"],"properties":{"date":{"type":"string"},"after":{"type":"string"},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
+            json!({"type":"object","required":["date"],"properties":{"date":{"type":"string"},"cursor":{"type":"string"},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
         ),
         (
             TOOL_WORKSPACE_LOG,
             include_str!("../../../prompts/tools/neige_workspace_log.md"),
-            json!({"type":"object","required":["date","track_id","through_event_id"],"properties":{"date":{"type":"string"},"track_id":{"type":"string"},"after":{"type":"integer","minimum":0},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
+            json!({"type":"object","required":["date","track_id","through_event_id"],"properties":{"date":{"type":"string"},"track_id":{"type":"string"},"cursor":{"type":"string"},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
         ),
     ] {
+        // Closed input (§4): the schema's own keys are the valid ones, so a retired key such as
+        // `after` is refused naming them.
+        let keys: Arc<[String]> = schema["properties"]
+            .as_object()
+            .expect("workspace schemas declare properties")
+            .keys()
+            .cloned()
+            .collect();
         let handler: ToolHandler = Arc::new(move |ctx, identity, args| {
+            let keys = keys.clone();
             Box::pin(async move {
+                let valid: Vec<&str> = keys.iter().map(String::as_str).collect();
+                refuse_unknown_keys(&args, name, &valid)?;
                 dispatch(ctx, identity, args, name)
                     .await
                     .map(ToolResult::structured)
@@ -62,7 +74,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ListArgs {
-    after: Option<String>,
+    cursor: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,12 +101,12 @@ async fn dispatch(
 "SELECT t.id,t.title,a.id,a.name,t.closed_at FROM tracks t JOIN areas a ON a.id=t.area_id ",
 "WHERE a.kind='user' AND (?1 IS NULL OR t.id>?1) ORDER BY t.id LIMIT ?2",
 ))
-                .bind(args.after).bind((workspace_reports::PAGE_SIZE+1) as i64).fetch_all(pool).await.map_err(|e|RpcError::internal(e.to_string()))?;
+                .bind(args.cursor).bind((workspace_reports::PAGE_SIZE+1) as i64).fetch_all(pool).await.map_err(|e|RpcError::internal(e.to_string()))?;
             let next_cursor = (rows.len() > workspace_reports::PAGE_SIZE)
                 .then(|| rows[workspace_reports::PAGE_SIZE - 1].0.clone());
             rows.truncate(workspace_reports::PAGE_SIZE);
             Ok(
-                json!({"reports":rows.into_iter().map(|(track_id,title,area_id,area_name,closed_at)|json!({"track_id":track_id,"title":title,"area_id":area_id,"area_name":area_name,"closed_at":closed_at})).collect::<Vec<_>>(),"next_cursor":next_cursor,"time_zone":zone.name()}),
+                json!({"reports":rows.into_iter().map(|(track_id,title,area_id,area_name,closed_at)|json!({"track_id":track_id,"title":title,"area_id":area_id,"area_name":area_name,"closed_at":closed_at})).collect::<Vec<_>>(),"next_cursor":next_cursor,"timezone":zone.name()}),
             )
         }
         TOOL_WORKSPACE_CAT => {

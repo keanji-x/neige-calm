@@ -494,16 +494,16 @@
   },
   {
     "name": "neige_ratify_request",
-    "description_sha256": "6adcae81595eea2e9a027704a77c2cf532b74f989865682be689836bd5a2b823",
+    "description_sha256": "ada9c58440c39d1e7f4e8c649ff5f61c7e789fd2396e2dd9246c8b47bf766d96",
     "input_schema": {
       "properties": {
-        "reason": {
+        "text": {
           "minLength": 1,
           "type": "string"
         }
       },
       "required": [
-        "reason"
+        "text"
       ],
       "type": "object"
     },
@@ -518,7 +518,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "821b43cb190ebabb2a057709a024b45ce5fa2b244bcdc10b46f3bac0f1849502",
+    "description_sha256": "ff14f422c6d0de8f3e0a163b03d672f6ec6469e3c88da979afbc1d502c0bc72a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -645,9 +645,23 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "115ad3a627340fa4d2f1055506e2c760d6da9a6da8ad117b454132a98e0242b3",
+    "description_sha256": "63bdccd8856ecebb38bebe654d1f65a5e7ac944ce4b5affb291da538f2df56ca",
     "input_schema": {
       "properties": {
+        "blocks": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "detail": {
+          "enum": [
+            "full",
+            "index"
+          ],
+          "type": "string"
+        },
         "resolve": {
           "additionalProperties": {
             "enum": [
@@ -658,48 +672,12 @@
           },
           "type": "object"
         },
-        "select": {
-          "oneOf": [
-            {
-              "enum": [
-                "full",
-                "index"
-              ],
-              "type": "string"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "blocks": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "minItems": 1,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "blocks"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "sections": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "minItems": 1,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sections"
-              ],
-              "type": "object"
-            }
-          ]
+        "sections": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
         },
         "with_markers": {
           "type": "boolean"
@@ -1518,11 +1496,11 @@
   },
   {
     "name": "neige_track_cat",
-    "description_sha256": "7b4bb8151233aa52c9c57c206616c287b4ba4bb48853752e3b44f9f899515552",
+    "description_sha256": "132603fae84b07e49577f575c24f72c894a560da3ef6e1c74fa1632cfde2f330",
     "input_schema": {
       "properties": {
         "blocks": {
-          "description": "Report paths only: print just these blocks, as neige_report_read select.blocks does.",
+          "description": "Report paths only: print just these blocks, as neige_report_read blocks does.",
           "items": {
             "type": "string"
           },
@@ -1533,7 +1511,7 @@
           "type": "string"
         },
         "sections": {
-          "description": "Report paths only: print just these H1 sections, as select.sections does.",
+          "description": "Report paths only: print just these H1 sections, as neige_report_read sections does.",
           "items": {
             "type": "string"
           },
@@ -1696,7 +1674,7 @@
   },
   {
     "name": "neige_track_status",
-    "description_sha256": "b7a7a23e473c6816f535e17c2f1814cf71c81db94dde92b30ef225dd02f94995",
+    "description_sha256": "1d00a8579c0109ef5dec79f5ac95a5d89bf382983064aea431c802cac6bd2145",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -1757,11 +1735,11 @@
   },
   {
     "name": "neige_workspace_diff",
-    "description_sha256": "20170c02dd967538243e11a617f5ec7bfd69a80b5efb51c0b11291e2d1e0695e",
+    "description_sha256": "47ef066261878808f0400449a083e5a538f91b712c33d879381950dae3c4cf26",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "after": {
+        "cursor": {
           "type": "string"
         },
         "date": {
@@ -1786,13 +1764,12 @@
   },
   {
     "name": "neige_workspace_log",
-    "description_sha256": "c17a67a42b4ea5ed73590857ed069e82b999d2f29e560776550bc50c48a7588e",
+    "description_sha256": "508e57127e27f356a7bb10c24ab00c65658537fac1b4bdfb5ef0a8d2c0bcefa1",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "after": {
-          "minimum": 0,
-          "type": "integer"
+        "cursor": {
+          "type": "string"
         },
         "date": {
           "type": "string"
@@ -1821,11 +1798,11 @@
   },
   {
     "name": "neige_workspace_ls",
-    "description_sha256": "9de81ae1f93d28e8df6269d9d5cbd473c556b5c5a12457ba7f22b9e99158423e",
+    "description_sha256": "30fa9840544c36128809bfc4e31defb9ec4424f9c743b263896a78da2130eeb5",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "after": {
+        "cursor": {
           "type": "string"
         }
       },

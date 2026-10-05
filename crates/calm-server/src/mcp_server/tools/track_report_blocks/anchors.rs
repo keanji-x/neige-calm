@@ -59,7 +59,7 @@ pub(super) fn block_anchor(
         .ok_or_else(|| {
             RpcError::invalid_params(format!(
                 "{at}: block `{id}` has not been read by this session — read it first \
-                 (neige_report_read {{ select: {{ blocks: [\"{id}\"] }} }})"
+                 (neige_report_read {{ blocks: [\"{id}\"] }})"
             ))
         })
 }

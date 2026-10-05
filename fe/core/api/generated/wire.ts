@@ -416,13 +416,13 @@ export type ReportBlock = { id: string, kind: string, rev: number, payload: unkn
 
 export type ReportChange = { track_id: string, track_title: string, area_id: string, area_name: string, edit_count: number, first_event_id: number, last_event_id: number, summary_before: string, summary_after: string, patch: string, patch_truncated: boolean, };
 
-export type ReportChangesPage = { date: string, time_zone: string, through_event_id: number, changes: Array<ReportChange>, next_cursor: string | null, };
+export type ReportChangesPage = { date: string, timezone: string, through_event_id: number, changes: Array<ReportChange>, next_cursor: string | null, };
 
 export type ReportEdit = { track_id: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, };
 
 export type ReportEditEntry = { event_id: number, at: number, edit: ReportEdit, };
 
-export type ReportEditsPage = { edits: Array<ReportEditEntry>, next_cursor: number | null, };
+export type ReportEditsPage = { edits: Array<ReportEditEntry>, next_cursor: string | null, };
 
 /**
  * One D3.0 sample of a checkout: HEAD, the porcelain status lines, and the lease-provenance observation.

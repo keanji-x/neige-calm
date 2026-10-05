@@ -356,6 +356,87 @@ mod tests {
         );
     }
 
+    /// #2087 §4/§8: every input key of every kernel tool, recursively through `properties`,
+    /// `items` and `oneOf`/`anyOf`/`allOf`, is snake_case (an opaque `payload` is skipped), and no
+    /// top-level key is a retired name. `until` stays legal nested (a recurrence's last day), and so
+    /// does `report_commit`'s `ops[].id` (a block id, §9).
+    #[test]
+    fn kernel_tool_params_use_the_vocabulary() {
+        const RETIRED_TOP_LEVEL: &[&str] = &[
+            "id",
+            "after",
+            "cancelled",
+            "time_zone",
+            "request_id",
+            "select",
+            "until",
+        ];
+        fn snake(key: &str) -> bool {
+            key.split('_').all(|word| {
+                word.bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                    && word
+                        .bytes()
+                        .next()
+                        .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            }) && key.starts_with(|c: char| c.is_ascii_lowercase())
+        }
+        fn walk(schema: &Value, path: &str, top: bool, out: &mut Vec<String>, keys: &mut usize) {
+            let Some(object) = schema.as_object() else {
+                return;
+            };
+            if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+                for (key, child) in properties {
+                    *keys += 1;
+                    if !snake(key) {
+                        out.push(format!("{path}.{key}: not snake_case"));
+                    }
+                    if top && RETIRED_TOP_LEVEL.contains(&key.as_str()) {
+                        out.push(format!("{path}.{key}: retired top-level name"));
+                    }
+                    if key != "payload" {
+                        walk(child, &format!("{path}.{key}"), false, out, keys);
+                    }
+                }
+            }
+            if let Some(items) = object.get("items") {
+                walk(items, &format!("{path}[]"), false, out, keys);
+            }
+            for keyword in ["oneOf", "anyOf", "allOf"] {
+                for (index, branch) in object
+                    .get(keyword)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    walk(branch, &format!("{path}|{keyword}{index}"), top, out, keys);
+                }
+            }
+        }
+        let registry = build_default_registry();
+        let names = kernel_tool_names();
+        let (mut off, mut keys) = (Vec::new(), 0);
+        for descriptor in registry
+            .descriptors()
+            .into_iter()
+            .filter(|descriptor| names.contains(&descriptor.name))
+        {
+            walk(
+                &descriptor.input_schema,
+                &descriptor.name,
+                true,
+                &mut off,
+                &mut keys,
+            );
+        }
+        assert!(keys >= 100, "anti-vacuity: only {keys} input keys walked");
+        assert!(
+            off.is_empty(),
+            "kernel tool inputs outside the §4 vocabulary: {off:#?}"
+        );
+    }
+
     /// #2087 §3/§8: a kernel tool's action is one verb of the closed vocabulary, written out here
     /// so a new verb needs `docs/conventions/agent-commands.md` §3 changed first, and its object is
     /// one word.

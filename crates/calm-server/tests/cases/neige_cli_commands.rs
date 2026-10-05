@@ -946,11 +946,11 @@ async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions()
             .collect();
         expected.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         let mut rows = Vec::new();
-        let mut after: Option<String> = None;
+        let mut next: Option<String> = None;
         loop {
             let mut args = vec!["tool", "ls", "--all", "--json"];
-            if let Some(cursor) = after.as_deref() {
-                args.extend(["--after", cursor]);
+            if let Some(cursor) = next.as_deref() {
+                args.extend(["--cursor", cursor]);
             }
             let (stdout, stderr, exit) = cli(&boot, &args).await;
             assert_eq!((stderr, exit), (String::new(), 0));
@@ -961,8 +961,8 @@ async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions()
             rows.extend(batch.iter().cloned());
             match page["next_cursor"].as_str() {
                 Some(cursor) => {
-                    assert_ne!(after.as_deref(), Some(cursor));
-                    after = Some(cursor.into());
+                    assert_ne!(next.as_deref(), Some(cursor));
+                    next = Some(cursor.into());
                 }
                 None => break,
             }

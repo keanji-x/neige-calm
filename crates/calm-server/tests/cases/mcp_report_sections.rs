@@ -68,14 +68,9 @@ async fn section_blocks(boot: &Boot, heading: &str) -> Vec<(String, u64)> {
 }
 
 async fn read_sections(boot: &Boot, who: ToolCallIdentity, sections: &[&str]) -> String {
-    call_tool(
-        boot,
-        TOOL_REPORT_READ,
-        who,
-        json!({ "select": { "sections": sections } }),
-    )
-    .await
-    .expect("read sections")["text"]
+    call_tool(boot, TOOL_REPORT_READ, who, json!({ "sections": sections }))
+        .await
+        .expect("read sections")["text"]
         .as_str()
         .expect("text")
         .to_string()

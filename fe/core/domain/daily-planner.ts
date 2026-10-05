@@ -11,7 +11,7 @@ export const reportChangeSchema = z.object({
 });
 export type ReportChange = z.infer<typeof reportChangeSchema>;
 const reportChangesSchema = z.object({
-  date: z.string(), time_zone: z.string(), through_event_id: z.number(),
+  date: z.string(), timezone: z.string(), through_event_id: z.number(),
   changes: z.array(reportChangeSchema), next_cursor: z.string().nullable(),
 });
 export type ReportChangesPage = z.infer<typeof reportChangesSchema>;
@@ -19,7 +19,7 @@ const reportEditsSchema = z.object({
   edits: z.array(z.object({ event_id: z.number(), at: z.number(), edit: z.object({
     track_id: z.string(), edit_id: z.string(), summary_before: z.string(), summary_after: z.string(),
     body_before: z.string(), body_after: z.string(),
-  }) })), next_cursor: z.number().nullable(),
+  }) })), next_cursor: z.string().nullable(),
 });
 export type ReportEditsPage = z.infer<typeof reportEditsSchema>;
 export type ReportEditEntry = ReportEditsPage['edits'][number];
@@ -27,12 +27,12 @@ export type ReportEditEntry = ReportEditsPage['edits'][number];
 export function dailyTrackOperation(date?: string): ApiOperation<DailyTrack | null> {
   return { method: 'GET', path: `/api/today/daily${date === undefined ? '' : `?date=${encodeURIComponent(date)}`}`, responseSchema: dailyTrackSchema.nullable() };
 }
-export function reportChangesOperation(date: string, cursor?: Readonly<{ after: string; through: number }>): ApiOperation<ReportChangesPage> {
-  const suffix = cursor === undefined ? '' : `&after=${encodeURIComponent(cursor.after)}&through_event_id=${cursor.through}`;
+export function reportChangesOperation(date: string, page?: Readonly<{ cursor: string; through: number }>): ApiOperation<ReportChangesPage> {
+  const suffix = page === undefined ? '' : `&cursor=${encodeURIComponent(page.cursor)}&through_event_id=${page.through}`;
   return { method: 'GET', path: `/api/today/report-changes?date=${encodeURIComponent(date)}${suffix}`, responseSchema: reportChangesSchema };
 }
-export function reportEditsOperation(date: string, trackId: string, through: number, after?: number): ApiOperation<ReportEditsPage> {
-  const suffix = after === undefined ? '' : `&after=${after}`;
+export function reportEditsOperation(date: string, trackId: string, through: number, cursor?: string): ApiOperation<ReportEditsPage> {
+  const suffix = cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`;
   return { method: 'GET', path: `/api/today/report-edits?date=${encodeURIComponent(date)}&track_id=${encodeURIComponent(trackId)}&through_event_id=${through}${suffix}`, responseSchema: reportEditsSchema };
 }
 

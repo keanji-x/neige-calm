@@ -3,7 +3,7 @@ use crate::daily_planner::TIME_ZONE;
 use crate::daily_planner::tests::{fixture, foreign_track};
 use axum::extract::FromRef;
 
-async fn event(
+pub(crate) async fn event(
     pool: &SqlitePool,
     track: &crate::model::Track,
     at: i64,
@@ -100,7 +100,7 @@ async fn report_day_changes_include_reverts_closed_tracks_and_exact_date_edges()
         repo.pool(),
         &ReportChangesQuery {
             date: "2026-10-03".into(),
-            after: None,
+            cursor: None,
             through_event_id: None,
         },
         TIME_ZONE,
@@ -114,13 +114,13 @@ async fn report_day_changes_include_reverts_closed_tracks_and_exact_date_edges()
     assert_eq!(row.last_event_id, last);
     assert_eq!(row.patch, "");
     assert!(!row.patch_truncated);
-    assert_eq!(page.time_zone, "Asia/Shanghai");
+    assert_eq!(page.timezone, "Asia/Shanghai");
     let edits = edits(
         repo.pool(),
         &ReportEditsQuery {
             date: page.date,
             track_id: track.id.to_string(),
-            after: None,
+            cursor: None,
             through_event_id: page.through_event_id,
         },
         TIME_ZONE,
@@ -145,7 +145,7 @@ async fn report_edit_pagination_pins_a_snapshot_and_reports_malformed_data() {
         repo.pool(),
         &ReportChangesQuery {
             date: "2026-10-03".into(),
-            after: None,
+            cursor: None,
             through_event_id: None,
         },
         TIME_ZONE,
@@ -156,7 +156,7 @@ async fn report_edit_pagination_pins_a_snapshot_and_reports_malformed_data() {
     let query = ReportEditsQuery {
         date: page.date,
         track_id: track.id.to_string(),
-        after: None,
+        cursor: None,
         through_event_id: page.through_event_id,
     };
     let first = edits(repo.pool(), &query, TIME_ZONE).await.unwrap();
@@ -164,7 +164,7 @@ async fn report_edit_pagination_pins_a_snapshot_and_reports_malformed_data() {
     let second = edits(
         repo.pool(),
         &ReportEditsQuery {
-            after: first.next_cursor,
+            cursor: first.next_cursor,
             ..query
         },
         TIME_ZONE,
@@ -183,7 +183,7 @@ async fn report_edit_pagination_pins_a_snapshot_and_reports_malformed_data() {
             repo.pool(),
             &ReportChangesQuery {
                 date: "2026-10-03".into(),
-                after: None,
+                cursor: None,
                 through_event_id: Some(page.through_event_id)
             },
             TIME_ZONE
@@ -212,7 +212,7 @@ async fn report_group_pages_cover_every_track_and_exclude_later_edits() {
         repo.pool(),
         &ReportChangesQuery {
             date: "2026-10-03".into(),
-            after: None,
+            cursor: None,
             through_event_id: None,
         },
         TIME_ZONE,
@@ -226,7 +226,7 @@ async fn report_group_pages_cover_every_track_and_exclude_later_edits() {
         repo.pool(),
         &ReportChangesQuery {
             date: first.date.clone(),
-            after: first.next_cursor,
+            cursor: first.next_cursor,
             through_event_id: Some(first.through_event_id),
         },
         TIME_ZONE,

@@ -23,7 +23,7 @@ const INPUT_MAX_BYTES: usize = 256;
 enum Query {
     List {
         prefix: String,
-        after: Option<String>,
+        cursor: Option<String>,
     },
     Describe {
         name: String,
@@ -50,7 +50,7 @@ fn tool_name(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_whitespace)
 }
 
-const LS_USAGE: &str = "neige tool ls (--prefix PREFIX | --all) [--after NAME]";
+const LS_USAGE: &str = "neige tool ls (--prefix PREFIX | --all) [--cursor CURSOR]";
 const DESCRIBE_USAGE: &str = "neige tool describe --name NAME";
 
 fn parse(argv: &[String]) -> Result<(Query, bool), String> {
@@ -71,7 +71,7 @@ fn parse(argv: &[String]) -> Result<(Query, bool), String> {
         Some("describe") => Err(format!("use `{DESCRIBE_USAGE}`")),
         Some("ls") => {
             let mut prefix = None;
-            let mut after = None;
+            let mut cursor = None;
             let mut index = 2;
             while index < args.len() {
                 match args[index] {
@@ -86,22 +86,22 @@ fn parse(argv: &[String]) -> Result<(Query, bool), String> {
                         prefix = Some(args[index + 1].to_string());
                         index += 2;
                     }
-                    "--after"
-                        if after.is_none()
+                    "--cursor"
+                        if cursor.is_none()
                             && args.get(index + 1).is_some_and(|value| tool_name(value)) =>
                     {
-                        after = Some(args[index + 1].to_string());
+                        cursor = Some(args[index + 1].to_string());
                         index += 2;
                     }
                     _ => {
                         return Err(format!(
-                            "use `{LS_USAGE}`: a literal --prefix or explicit --all, with optional --after"
+                            "use `{LS_USAGE}`: a literal --prefix or explicit --all, with optional --cursor"
                         ));
                     }
                 }
             }
             prefix
-                .map(|prefix| (Query::List { prefix, after }, json))
+                .map(|prefix| (Query::List { prefix, cursor }, json))
                 .ok_or_else(|| format!("tool ls requires --prefix or --all; use `{LS_USAGE}`"))
         }
         Some(action) => Err(format!(
@@ -157,18 +157,18 @@ fn select(query: Query, entries: Vec<Entry>) -> Result<Value, String> {
             }
             Ok(value)
         }
-        Query::List { prefix, after } => {
-            if after
+        Query::List { prefix, cursor } => {
+            if cursor
                 .as_ref()
                 .is_some_and(|name| !name.starts_with(&prefix))
             {
-                return Err("--after must belong to the requested prefix".into());
+                return Err("--cursor must be a next_cursor of the requested prefix".into());
             }
             let rows: Vec<(String, Value)> = entries
                 .iter()
                 .filter(|entry| {
                     entry.tool.name.starts_with(&prefix)
-                        && after.as_ref().is_none_or(|last| entry.tool.name > *last)
+                        && cursor.as_ref().is_none_or(|last| entry.tool.name > *last)
                 })
                 .map(|entry| (entry.tool.name.clone(), row(entry)))
                 .collect();
@@ -304,13 +304,13 @@ mod tests {
             .map(|index| format!("plugin_{}.tool{index:02}", "x".repeat(180)))
             .collect();
         let entries = listed(&names);
-        let mut after = None;
+        let mut cursor = None;
         let mut seen = Vec::new();
         loop {
             let page = select(
                 Query::List {
                     prefix: "plugin_".into(),
-                    after: after.clone(),
+                    cursor: cursor.clone(),
                 },
                 entries.clone(),
             )
@@ -321,8 +321,8 @@ mod tests {
             seen.extend(batch);
             match page["next_cursor"].as_str() {
                 Some(next) => {
-                    assert_ne!(after.as_deref(), Some(next));
-                    after = Some(next.into());
+                    assert_ne!(cursor.as_deref(), Some(next));
+                    cursor = Some(next.into());
                 }
                 None => break,
             }
@@ -361,7 +361,7 @@ mod tests {
                 break;
             };
             argv.truncate(4);
-            argv.extend(["--after".into(), cursor.into()]);
+            argv.extend(["--cursor".into(), cursor.into()]);
         }
         assert_eq!(seen, names);
     }
@@ -411,7 +411,7 @@ mod tests {
         let page = select(
             Query::List {
                 prefix: "neige_track_".into(),
-                after: None,
+                cursor: None,
             },
             entries(planner, &registry),
         )

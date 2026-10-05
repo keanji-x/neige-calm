@@ -1910,7 +1910,7 @@ async fn call_review_tool(
 
 async fn request_ratification(fx: &Fixture, reason: &str) -> EventRow {
     let before = event_rows(&fx.repo, "ratify.requested").await.len();
-    let resp = call_review_tool(fx, TOOL_RATIFY_REQUEST, json!({ "reason": reason }))
+    let resp = call_review_tool(fx, TOOL_RATIFY_REQUEST, json!({ "text": reason }))
         .await
         .expect("neige_ratify_request succeeds");
     assert_eq!(resp["ok"], true, "ratify.request response: {resp}");

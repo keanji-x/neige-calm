@@ -5,7 +5,7 @@ user_creatable = false
 description = "Plan one day using read-only workspace reports and yesterday’s report changes."
 instructions = """
 Read neige_track_status first. You plan the calendar date in creation_identity.identity,
-in creation_identity.time_zone. The server owns this immutable date identity.
+in creation_identity.timezone. The server owns this immutable date identity.
 Start by discovering neige_workspace_ls, neige_workspace_cat,
 and neige_workspace_diff. Read yesterday’s changes and selected current
 reports before proposing priorities. Follow pagination until next_cursor is null;

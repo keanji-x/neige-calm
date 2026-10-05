@@ -76,13 +76,13 @@ fn cat_descriptor() -> ToolDescriptor {
                     "type": "array",
                     "items": { "type": "string" },
                     "minItems": 1,
-                    "description": "Report paths only: print just these blocks, as neige_report_read select.blocks does."
+                    "description": "Report paths only: print just these blocks, as neige_report_read blocks does."
                 },
                 "sections": {
                     "type": "array",
                     "items": { "type": "string" },
                     "minItems": 1,
-                    "description": "Report paths only: print just these H1 sections, as select.sections does."
+                    "description": "Report paths only: print just these H1 sections, as neige_report_read sections does."
                 }
             }
         }),
@@ -224,7 +224,7 @@ fn guide_cat(name: &str) -> Result<Value, RpcError> {
     markdown_content((*text).to_string())
 }
 
-/// A partial report read, the same on every report path and in `neige_report_read`'s `select`:
+/// A partial report read, the same on every report path and in `neige_report_read`:
 /// chosen blocks (#1874) or chosen H1 sections (#1877).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Selection {
@@ -321,7 +321,7 @@ async fn own_report(
     }
 }
 
-/// A report narrowed to `ids`: the exact `text` of `neige_report_read { select: { blocks: ids } }`.
+/// A report narrowed to `ids`: the exact `text` of `neige_report_read { blocks: ids }`.
 /// An unknown id is refused with the report's blocks as `<id>  <heading>` lines.
 pub(crate) fn report_blocks_content(
     blocks: &[ReportBlock],

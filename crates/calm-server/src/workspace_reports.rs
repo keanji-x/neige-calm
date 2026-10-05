@@ -17,7 +17,8 @@ pub const PATCH_LINES: usize = 500;
 #[serde(deny_unknown_fields)]
 pub struct ReportChangesQuery {
     pub date: String,
-    pub after: Option<String>,
+    /// The previous page's `next_cursor`, an opaque string (the last Track id).
+    pub cursor: Option<String>,
     pub through_event_id: Option<i64>,
 }
 
@@ -26,8 +27,26 @@ pub struct ReportChangesQuery {
 pub struct ReportEditsQuery {
     pub date: String,
     pub track_id: String,
-    pub after: Option<i64>,
+    /// The previous page's `next_cursor`, an opaque string (the last event id in decimal).
+    pub cursor: Option<String>,
     pub through_event_id: i64,
+}
+
+/// An edits cursor is the decimal event id `edits` minted as `next_cursor`; anything else is refused.
+fn event_cursor(cursor: Option<&str>) -> Result<i64> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    cursor
+        .bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then(|| cursor.parse::<i64>().ok())
+        .flatten()
+        .ok_or_else(|| {
+            CalmError::BadRequest(format!(
+                "cursor `{cursor}` is not a next_cursor of this list; pass next_cursor unchanged"
+            ))
+        })
 }
 
 pub fn parse_date(date: &str) -> Result<NaiveDate> {
@@ -74,7 +93,7 @@ pub async fn changes(
     zone: Tz,
 ) -> Result<ReportChangesPage> {
     let (start, end) = day_window(parse_date(&query.date)?, zone)?;
-    if query.after.is_some() && query.through_event_id.is_none() {
+    if query.cursor.is_some() && query.through_event_id.is_none() {
         return Err(CalmError::BadRequest(
             "continuation requires through_event_id".into(),
         ));
@@ -106,7 +125,7 @@ pub async fn changes(
         FROM edits JOIN tracks t ON t.id=edits.track_id JOIN areas a ON a.id=t.area_id
         JOIN events first ON first.id=edits.first_event_id JOIN events last ON last.id=edits.last_event_id
         WHERE (?4 IS NULL OR t.id>?4) ORDER BY t.id LIMIT ?5
-    "#).bind(start).bind(end).bind(through).bind(&query.after)
+    "#).bind(start).bind(end).bind(through).bind(&query.cursor)
         .bind((PAGE_SIZE+1) as i64).fetch_all(&mut *tx).await?;
     tx.commit().await?;
     let next_cursor = (rows.len() > PAGE_SIZE).then(|| rows[PAGE_SIZE - 1].track_id.clone());
@@ -144,7 +163,7 @@ pub async fn changes(
         .collect::<Result<Vec<_>>>()?;
     Ok(ReportChangesPage {
         date: query.date.clone(),
-        time_zone: zone.name().into(),
+        timezone: zone.name().into(),
         through_event_id: through,
         changes,
         next_cursor,
@@ -157,10 +176,10 @@ pub async fn edits(
     zone: Tz,
 ) -> Result<ReportEditsPage> {
     let (start, end) = day_window(parse_date(&query.date)?, zone)?;
-    let after = query.after.unwrap_or(0);
-    if after < 0 || query.through_event_id < 0 {
+    let after = event_cursor(query.cursor.as_deref())?;
+    if query.through_event_id < 0 {
         return Err(CalmError::BadRequest(
-            "event cursors cannot be negative".into(),
+            "through_event_id cannot be negative".into(),
         ));
     }
     let mut rows:Vec<(i64,i64,String)> = sqlx::query_as(r#"
@@ -169,7 +188,7 @@ pub async fn edits(
         AND e.at>=?2 AND e.at<?3 AND e.id>?4 AND e.id<=?5 ORDER BY e.id LIMIT ?6
     "#).bind(&query.track_id).bind(start).bind(end).bind(after).bind(query.through_event_id)
         .bind((PAGE_SIZE+1) as i64).fetch_all(pool).await?;
-    let next_cursor = (rows.len() > PAGE_SIZE).then(|| rows[PAGE_SIZE - 1].0);
+    let next_cursor = (rows.len() > PAGE_SIZE).then(|| rows[PAGE_SIZE - 1].0.to_string());
     rows.truncate(PAGE_SIZE);
     let edits = rows
         .into_iter()
@@ -187,4 +206,4 @@ pub async fn edits(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

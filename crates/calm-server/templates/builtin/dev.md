@@ -115,7 +115,7 @@ Merge and approval
   and gh.pr.checks is green. Pass that head_sha as expected_head_sha.
 - merge_policy `auto-merge` allows gh.pr.merge at that point without asking again.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — first calls
-  neige_ratify_request with `reason:"merge_hold: pr #<n> at <head_sha>"`; on
+  neige_ratify_request with `text:"merge_hold: pr #<n> at <head_sha>"`; on
   ratify.resolved grant, merge that head with gh.pr.merge (expected_head_sha = that
   head_sha). A new head needs the applicable checks and review again before a new ratify.
 -->

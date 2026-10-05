@@ -119,7 +119,7 @@ fn find_maps_path_name_and_tag_each_at_most_once() {
     );
 }
 
-/// #1874: `--blocks` is the comma-separated CLI spelling of `select: { blocks }`; the pieces reach the
+/// #1874: `--blocks` is the comma-separated CLI spelling of `neige_report_read`'s `blocks`; the pieces reach the
 /// tool verbatim (an empty piece is the tool's to refuse).
 #[test]
 fn cat_blocks_sends_the_comma_separated_ids_as_an_array() {

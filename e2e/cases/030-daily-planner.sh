@@ -40,7 +40,7 @@ if (rows.some(row => row.id === "daily-planner")) throw new Error("kernel templa
   printf '%s' "$API_BODY" | node -e '
 const page = JSON.parse(require("fs").readFileSync(0, "utf8"));
 if (!Array.isArray(page.changes) || !Number.isInteger(page.through_event_id)
-    || page.next_cursor !== null || page.time_zone !== "Asia/Shanghai") {
+    || page.next_cursor !== null || page.timezone !== "Asia/Shanghai") {
   throw new Error("report history page does not declare its snapshot");
 }
 ' || fail "report history snapshot is invalid"
