@@ -64,6 +64,7 @@ Track 可以只完成一次，例如修复一个 issue；也可以经历多轮�
 - Node.js 22.12 或更高版本与 npm
 - 已安装并完成认证的 OpenAI Codex CLI
 - 可选：已配置并登录的 Claude Planner，详见 [Planner 配置](docs/neige-app-config.md#enable-a-claude-planner)
+- 可选，用于把 Track 发布为 PR：服务端 `PATH` 上需要已登录的 [GitHub CLI](https://cli.github.com/)（`gh`）与 `jq`。开发插件的 forge 工具会调用 `gh`，其中读取 PR checks 还会调用 `jq`
 
 克隆并准备环境：
 

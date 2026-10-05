@@ -325,12 +325,12 @@ to explicit report actions.
 | calm.track.log | neige.track.log | `neige track log [path] [--limit] [--include-empty]` |
 | calm.track.ls | neige.track.ls | `neige track ls [path] [-l]` |
 | calm.track.publish / rename | neige.track.publish / rename | — |
-| calm.track.state | neige.track.state | `neige track state` |
+| calm.track.state | neige.track.status | `neige track status` |
 | calm.user.notify | neige.user.notify | — |
 | calm.dispatch_request, calm.plan.upsert | **removed** (retired shims) | — |
 | calm.get_track_state, calm.update_task_meta, calm.task_completed, calm.task_failed | **removed** (aliases) | — |
 | MCP server key `calm` | `neige` | Codex sees `mcp__neige`; Claude sees `mcp__neige__neige_…` |
-| `neige tools names|describe` | `neige tool list|describe` | CLI-only meta command, like `help` |
+| `neige tools names|describe` | `neige tool ls|describe` | CLI-only meta command, like `help` |
 
 The result is 38 tools (39 minus `calm.review.round`, which #2017 removed), all of the form `neige.[a-z]+.[a-z]+(_[a-z]+)*`, plus the plugin manifest tools.
 
@@ -342,7 +342,7 @@ The result is 38 tools (39 minus `calm.review.round`, which #2017 removed), all 
   shell use serves it better. It is never a permission (rule 4).
 - **The CLI is an argv front-end** over `call_registered_tool` and the shared renderer. A tool gets
   a CLI command, through a row in `COMMANDS`, only for one of three reasons:
-  1. a shell-native view (`track ls/cat/show/diff/log/state`, `report find/tag`);
+  1. a shell-native view (`track ls/cat/show/diff/log/status`, `report find/tag`);
   2. a Worker report in CLI mode (`task report-success/report-failure`);
   3. lifecycle or maintenance that needs a `--force` confirm (`track close`, `admin gc/vacuum`).
 - **Mechanics (rule 3):**
@@ -355,7 +355,7 @@ The result is 38 tools (39 minus `calm.review.round`, which #2017 removed), all 
 
 ### 4.5 Discovery
 
-- `neige tool list (--prefix P | --all) [--after N]` returns rows `{name, cli, listed}`.
+- `neige tool ls (--prefix P | --all) [--after N]` returns rows `{name, cli, listed}`.
   - The rows are the session's `tools/list` set **plus** every CLI-covered tool.
   - `cli` is the derived command or null. `listed` says whether `tools/list` shows the tool to
     this session.
@@ -543,7 +543,7 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
   `mcp__calm`, or 116 under `mcp__neige`, or a sanitize collision between plugins such as
   `dev.x-y` and `dev.x.y`) is not resolved by `source.capture`. The call fails explicitly with the
   raw names listed. No production tool is affected (max 45 B, no collisions).
-- **K2:** role admission is not declared. `neige tool list` can show a CLI-covered tool that the
+- **K2:** role admission is not declared. `neige tool ls` can show a CLI-covered tool that the
   caller's role is refused (for example, Worker → `neige admin gc`). The output says that listing
   is not a grant.
 - **K3:** the fe infers read/write from tool names (`mcp-tools.ts`), which is a UI-side policy

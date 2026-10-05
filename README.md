@@ -66,6 +66,7 @@ The simplest source-based preview runs directly on the host. It currently assume
 - Node.js 22.12 or newer and npm
 - An installed and authenticated OpenAI Codex CLI
 - Optional: a configured and authenticated Claude Planner; see [Planner configuration](docs/neige-app-config.md#enable-a-claude-planner)
+- Optional, for publishing Tracks as pull requests: an authenticated [GitHub CLI](https://cli.github.com/) (`gh`) and `jq` on the server's `PATH`. The development plugin's forge tools run `gh`, and its PR checks read also runs `jq`
 
 Clone and prepare the environment:
 

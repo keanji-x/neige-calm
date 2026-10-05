@@ -213,7 +213,8 @@ fn shell_argv(script: &str, args: &[&str]) -> Vec<String> {
 }
 
 /// D5 and D6: the forge payload of one publish. `facts` are the track's candidates, whose
-/// commits the script may replace on the remote (#2058 D1); argv is not part of the payload hash.
+/// commits the script may replace on the remote (#2058 D1); argv is not part of the payload hash,
+/// the event fields and the probes are.
 fn publish_payload(
     dest: &Destination,
     title: &str,
@@ -227,7 +228,6 @@ fn publish_payload(
         .map(|candidate| candidate.commit_sha.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
     forge_action_payload(
         // The sha is in the payload (argv and probe), not the key: the same key replays its first
         // publish, and the same key over a moved tip is `idempotency_payload_conflict`.
@@ -236,17 +236,7 @@ fn publish_payload(
             PR_PUBLISH_SCRIPT,
             &[sha, branch, url, &dest.base, title, body, &own_commits],
         ),
-        ForgeEventSpec {
-            event_kind: "forge.pr.opened".into(),
-            fields: [
-                ("pr_number".to_string(), json_field("/number")),
-                ("head_sha".to_string(), json_field("/headRefOid")),
-                // The PR's web URL; `forge.pr.opened` drops it, the tool result returns it.
-                ("url".to_string(), json_field("/url")),
-            ]
-            .into_iter()
-            .collect(),
-        },
+        pr_opened_event(),
         ProbeSpec {
             probe_argv: shell_argv(PR_PUBLISH_PROBE_SCRIPT, &[sha, branch, url]),
             output_probe_argv: Some(shell_argv(
@@ -255,6 +245,25 @@ fn publish_payload(
             )),
         },
     )
+}
+
+/// The publish's event: `forge.pr.opened` from the script's stdout. `pr_action` and `url` are
+/// for the tool result; the event drops them.
+fn pr_opened_event() -> ForgeEventSpec {
+    let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
+    ForgeEventSpec {
+        event_kind: "forge.pr.opened".into(),
+        fields: [
+            ("pr_number".to_string(), json_field("/number")),
+            // `created`, `reused` or `recovered`.
+            ("pr_action".to_string(), json_field("/pr_action")),
+            ("head_sha".to_string(), json_field("/headRefOid")),
+            // The PR's web URL.
+            ("url".to_string(), json_field("/url")),
+        ]
+        .into_iter()
+        .collect(),
+    }
 }
 
 async fn dev_publish(
@@ -318,6 +327,7 @@ async fn dev_publish(
         "ok": true,
         "op_id": op_id,
         "pr_number": event["pr_number"],
+        "pr_action": event["pr_action"],
         "head_sha": event["head_sha"],
         "branch": dest.branch,
         "base": dest.base,
@@ -349,5 +359,36 @@ mod tests {
         register_into(&mut registry);
         assert!(registry.lookup("neige_dev_publish").is_some());
         assert!(registry.lookup("neige_track_publish").is_none()); // retired-name: rejection input
+    }
+
+    /// #2139: a recovered publish re-reads the PR with the output probe; its stdout, from gh's
+    /// indented export, extracts through the real event fields with `pr_action` `recovered`.
+    #[test]
+    fn the_output_probe_answers_every_event_field() {
+        let dest = Destination {
+            worktree: PathBuf::from("/nonexistent"),
+            branch: "neige/track-t".into(),
+            tip: "abc".into(),
+            url: "/origin.git".into(),
+            base: "main".into(),
+        };
+        let payload = publish_payload(&dest, "Title", "Body.", "k", &[]);
+        let argv = payload.probe.unwrap().output_probe_argv.unwrap();
+        // `argv[2]` is the prelude, a newline and the script; the fake gh replaces the prelude.
+        let script = argv[2].strip_prefix(FORGE_SHELL_PRELUDE).unwrap();
+        let fake_gh = "neige_gh() { printf '{\n  \"headRefOid\": \"abc\",\n  \"number\": 7,\n  \"url\": \"https://github.invalid/pull/7\"\n}\n'; }";
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{fake_gh}{script}"))
+            .args(&argv[3..])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let fields = pr_opened_event().extract_payload(0, Some(&stdout)).unwrap();
+        assert_eq!(fields["pr_action"], json!("recovered"));
+        assert_eq!(fields["pr_number"], json!(7));
+        assert_eq!(fields["head_sha"], json!("abc"));
+        assert_eq!(fields["url"], json!("https://github.invalid/pull/7"));
     }
 }

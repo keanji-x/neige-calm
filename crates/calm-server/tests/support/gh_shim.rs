@@ -284,7 +284,20 @@ case "$area:$verb" in
     printf '%s\n' "$base" > "$pr_dir/base"
     printf '%s\n' "$head_sha" > "$pr_dir/headRefOid"
     printf 'false\n' > "$pr_dir/merged"
+    get_arg --title "$@" > "$pr_dir/title" || true
+    get_arg --body "$@" > "$pr_dir/body" || true
     print_pr_json "$pr_dir" "$repo"
+    ;;
+  pr:edit)
+    # Only an open PR is edited, as GitHub allows; the title and body are replaced.
+    [ "$#" -ge 1 ] || exit 2
+    selector=$1
+    repo=$(get_arg --repo "$@") || exit 2
+    state=$(ensure_state "$repo")
+    pr_dir=$(find_pr "$selector" "$state") || exit 1
+    [ "$(cat "$pr_dir/merged")" = "false" ] || exit 1
+    get_arg --title "$@" > "$pr_dir/title" || exit 2
+    get_arg --body "$@" > "$pr_dir/body" || exit 2
     ;;
   pr:diff)
     [ "$#" -ge 1 ] || exit 2

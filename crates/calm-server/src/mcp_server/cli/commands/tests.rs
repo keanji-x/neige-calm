@@ -713,14 +713,22 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// H8: every `` `neige <object> <action>`` in agent-facing prose names a command the kernel serves,
-/// with only options it accepts, so a rename fails here first. The frozen pre-header report body
-/// keeps its shipped bytes.
+/// with only options it accepts, so a rename fails here first. The prose is every markdown file
+/// the kernel embeds for agents: prompts, built-in templates, every built-in plugin's guide
+/// (#2139), report bodies and observation texts. The frozen pre-header report body keeps its
+/// shipped bytes.
 #[test]
 fn prompt_neige_mentions_name_served_commands() {
     const FROZEN: &str = "../calm-types/src/report/legacy_initial_v4.md";
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    for dir in ["prompts", "templates/builtin", "../calm-types/src/report"] {
+    for dir in [
+        "prompts",
+        "templates/builtin",
+        "src/builtin_plugins",
+        "../calm-types/src/report",
+        "../calm-types/src/observation",
+    ] {
         markdown_files(&crate_dir.join(dir), &mut files);
     }
     assert!(

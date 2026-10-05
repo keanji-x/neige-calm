@@ -67,13 +67,28 @@ pub(super) fn remote_branch(fx: &Fx) -> Option<String> {
 }
 
 pub(super) async fn publish(fx: &Fx, key: &str) -> Result<Value, RpcError> {
+    publish_titled(fx, key, "Publish the track", "Done work.").await
+}
+
+async fn publish_titled(fx: &Fx, key: &str, title: &str, body: &str) -> Result<Value, RpcError> {
     call_tool(
         &fx.boot,
         TOOL,
         planner_identity(&fx.boot),
-        json!({"idempotency_key": key, "title": "Publish the track", "body": "Done work."}),
+        json!({"idempotency_key": key, "title": title, "body": body}),
     )
     .await
+}
+
+/// The shim's record of PR `number`'s title and body, as the last create or edit set them.
+fn shim_pr_text(fx: &Fx, number: u64) -> (String, String) {
+    let mut state = origin(fx).into_os_string();
+    state.push(format!(".shimstate/prs/{number}"));
+    let read = |field: &str| {
+        let text = std::fs::read_to_string(Path::new(&state).join(field)).unwrap();
+        text.strip_suffix('\n').unwrap_or(&text).to_string()
+    };
+    (read("title"), read("body"))
 }
 
 /// A `done` attempt of `key` that writes `<key>.txt`; returns its candidate commit.
@@ -168,6 +183,7 @@ async fn publish_pushes_the_candidate_and_opens_its_pr() {
 
     assert_eq!(result["ok"], json!(true));
     assert_eq!(result["pr_number"], json!(1));
+    assert_eq!(result["pr_action"], json!("created"));
     assert_eq!(result["head_sha"], json!(c));
     assert_eq!(result["base"], json!("main"));
     assert_eq!(remote_branch(fx).as_deref(), Some(c.as_str()));
@@ -352,12 +368,46 @@ async fn a_second_candidate_is_pushed_and_reuses_the_pr() {
     let result = publish(fx, "second").await.unwrap();
 
     assert_eq!(result["pr_number"], json!(1));
+    assert_eq!(result["pr_action"], json!("reused"));
     assert_eq!(result["head_sha"], json!(c2));
     assert_eq!(remote_branch(fx).as_deref(), Some(c2.as_str()));
     assert_eq!(pr_opened_heads(fx).await, vec![json!(c1), json!(c2)]);
     let log = gh_log(fx);
     assert_eq!(log.matches(" pr create ").count(), 1, "{log}");
     assert_eq!(shim_pr(fx), json!({"number": 1, "headRefOid": c2}));
+}
+
+/// #2139 (#2122 item 6) — a publish that reuses the open PR gives it this call's title and body
+/// instead of silently keeping the first publish's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_that_reuses_the_open_pr_sets_its_title_and_body() {
+    let _env = publish_env(None).await;
+    let w = development_world().await;
+    let fx = &w.fx;
+    done_candidate(fx, "a").await;
+    let first = publish_titled(fx, "first", "First title", "First body.")
+        .await
+        .unwrap();
+    assert_eq!(first["pr_action"], json!("created"));
+    assert_eq!(
+        shim_pr_text(fx, 1),
+        ("First title".into(), "First body.".into())
+    );
+    done_candidate(fx, "b").await;
+
+    let second = publish_titled(fx, "second", "Second title", "Second body,\nnow longer.")
+        .await
+        .unwrap();
+
+    assert_eq!(second["pr_number"], json!(1));
+    assert_eq!(second["pr_action"], json!("reused"));
+    let log = gh_log(fx);
+    assert_eq!(log.matches(" pr create ").count(), 1, "{log}");
+    assert_eq!(log.matches(" pr edit ").count(), 1, "{log}");
+    assert_eq!(
+        shim_pr_text(fx, 1),
+        ("Second title".into(), "Second body,\nnow longer.".into())
+    );
 }
 
 /// D6 — the key names one publish: repeated, it replays (same op, nothing pushed again); over a
