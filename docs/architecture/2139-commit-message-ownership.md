@@ -350,10 +350,20 @@ passes `pr-ownership` on its first publish, with no terminal rewrite and no re-r
 - Author and committer identity stay the checkout's git config. A DCO `Signed-off-by` line written
   by the worker must match it.
 
-## 11. Open questions for the owner
+## 11. Decisions (orchestrator, 2026-10-05)
 
-1. **Raw string instead of structured `subject/body/trailers`.** It departs from the issue's
-   wording, for the reasons in §3. Accept?
-2. **Failed-attempt commits stay a KNOWN GAP** with the catch-up remedy, instead of also adding
-   `commit_message` to `neige_task_fail`. Accept?
-3. **Two slices (D1 persistence, D2 surface), each L2.** Or one ~800-line L2 PR?
+1. **A raw string, not structured `subject/body/trailers`.** A git message is already
+   text with trailers. The kernel validates only text-level limits (§4) and carries no
+   trailer knowledge.
+2. **Failed-attempt commits stay a KNOWN GAP**, with the catch-up remedy (§5, §10).
+   `neige_task_fail` is unchanged. Evidence: every 4140 delivery that touched a readonly
+   path completed (§1).
+3. **One L2 PR carrying both slices as two commits (D1, then D2).** The total is about
+   800 lines, within the ~1k PR target; splitting it would ship D1's column with no
+   writer.
+
+4140 check, run read-only on 2026-10-05:
+- `_sqlx_migrations` max is 140; SQLite is 3.40.1.
+- There is no `commit_message` column yet.
+- Deliveries: 45 rows have a NULL outcome, 31 are completed and 1 failed. All 77 are settled as `candidate`, and none is unsettled.
+- All six deliveries of track `028f636e…` completed.
