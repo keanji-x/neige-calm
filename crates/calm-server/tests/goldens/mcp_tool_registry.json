@@ -35,7 +35,7 @@
   },
   {
     "name": "neige_area_ls",
-    "description_sha256": "44f6c2828e6b30ae807ecd0eb2cce9ddad4a5d3334b38c6a7758a086e70b1ad9",
+    "description_sha256": "7d503be5c80b91f66968e6b0bace8e043cf1a72913351f0e3fe3bf226a293d34",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -421,6 +421,81 @@
     },
     "annotations": {
       "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige_mail_cat",
+    "description_sha256": "00b800ab6ff4138ff32247b97f6c32e8cf7c2c393e4af0514c5e85366a062484",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "mail_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mail_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "neige_mail_ls",
+    "description_sha256": "c21ce9865ac31cd2b01e9da42be9ce2c9290a83670dbc33546aeb3192d2da658",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "neige_mail_send",
+    "description_sha256": "246658df40e76e7678a858f6f80a61d2a37a29458c1b8a793e27cbb6c910f344",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "mail_id": {
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 8000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "track_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary",
+        "text"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
     },
     "visible_to_roles": [
       "planner"
@@ -835,7 +910,7 @@
   },
   {
     "name": "neige_source_ls",
-    "description_sha256": "0248d249848614827423b785c14444c4a399d364266fb45cb3a730af4dcfa215",
+    "description_sha256": "4b5ae10fc547137a846899aa5e0c7311b196b616d3a1c54c98e391de3c3a9f2b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -881,7 +956,7 @@
   },
   {
     "name": "neige_task_cancel",
-    "description_sha256": "8eb8c2c11056c05ed1bbd83d624716d198dfd57d22ad93257fea56d5dc28bfa9",
+    "description_sha256": "dd1896d21a0446dcfe7ec74b727b893fe76d635347c612e82633e72dfcb83965",
     "input_schema": {
       "properties": {
         "key": {
@@ -1125,7 +1200,7 @@
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "13239025c573194ab203be3641af00d6b98e29188e53861e700fcc644c5b8a28",
+    "description_sha256": "ceaaf6e1dce376bda07a484cdbd3ab0439b3abea692f06e4abd68326faaddbed",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1391,7 +1466,7 @@
   },
   {
     "name": "neige_terminal_read",
-    "description_sha256": "cf0bdb1eec875e2dd45ed8f0fb6c0418669da8c033380ea7f8c81853ababb8ff",
+    "description_sha256": "b6fc1264535dbf2691d46504b27753a70fa9a253eb6c97c8c672a34a9d88420e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1534,7 +1609,7 @@
   },
   {
     "name": "neige_track_close",
-    "description_sha256": "4d6eceaee396234a75c8c654df3bb55e92dc297474422b105bd30098ccaac3bc",
+    "description_sha256": "9e303c81363887445660330f4105ce7893393a8dd6119083d9eddddc76d84726",
     "input_schema": {
       "properties": {
         "message": {
@@ -1625,7 +1700,7 @@
   },
   {
     "name": "neige_track_rename",
-    "description_sha256": "424ac2281750e97ea9de8babd376773ffe391082a0b5bf88d6227fd494151a34",
+    "description_sha256": "c3e4e48c3acd7b414db1c5da410c7df89d44be53da5bcbb8613410efff661601",
     "input_schema": {
       "properties": {
         "message": {
@@ -1689,7 +1764,7 @@
   },
   {
     "name": "neige_user_notify",
-    "description_sha256": "b0fddf7dae77ff50bcf539e6087bd0cffb690bf4b2277cc729972835c8754685",
+    "description_sha256": "e1fb6729dbd0638f09b09f301cc0dc31448a2aa490cf753f699b004aa0e1c0ef",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
