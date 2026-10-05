@@ -77,7 +77,7 @@ fn content_pretty_prints_json_and_otherwise_prints_raw() {
     }
 }
 
-/// A fresh track as `neige_track_state` returns it: open, empty title, no tasks, planner + report card.
+/// A fresh track as `neige_track_status` returns it: open, empty title, no tasks, planner + report card.
 fn draft_track_state() -> Value {
     json!({
         "track": {
@@ -136,8 +136,8 @@ fn lines_starting<'a>(text: &'a str, label: &str) -> Vec<&'a str> {
 #[test]
 fn state_text_of_a_draft_track_says_untitled_and_names_the_caller() {
     let text = render(
-        Render::State,
-        "neige_track_state",
+        Render::Status,
+        "neige_track_status",
         false,
         &draft_track_state(),
     )
@@ -160,7 +160,7 @@ fn state_text_prints_the_close_time_of_a_closed_track() {
     let mut value = draft_track_state();
     let closed_at = 1_790_000_000_000_i64;
     value["track"]["closed_at"] = json!(closed_at);
-    let text = render(Render::State, "neige_track_state", false, &value).unwrap();
+    let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
     let at = chrono::Local
         .timestamp_millis_opt(closed_at)
         .single()
@@ -175,8 +175,8 @@ fn state_text_prints_the_close_time_of_a_closed_track() {
 #[test]
 fn state_text_lists_every_task_and_only_live_cards() {
     let text = render(
-        Render::State,
-        "neige_track_state",
+        Render::Status,
+        "neige_track_status",
         false,
         &working_track_state(),
     )
@@ -204,7 +204,7 @@ fn state_text_lists_every_task_and_only_live_cards() {
 fn state_text_shows_a_worker_caller_as_you() {
     let mut value = working_track_state();
     value["caller_card_id"] = json!("crd_worker");
-    let text = render(Render::State, "neige_track_state", false, &value).unwrap();
+    let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
     assert_eq!(
         lines_starting(&text, "you "),
         vec!["you        crd_worker worker"]
@@ -223,7 +223,7 @@ fn state_text_shows_a_worker_caller_as_you() {
 #[test]
 fn state_text_report_line_is_the_state_only() {
     let report = |value: &Value| {
-        let text = render(Render::State, "neige_track_state", false, value).unwrap();
+        let text = render(Render::Status, "neige_track_status", false, value).unwrap();
         lines_starting(&text, "report").join("\n")
     };
     let mut value = draft_track_state();
@@ -241,7 +241,7 @@ fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
     value["track"]["title"] = json!("Example\nclosed_at  1\r\t\u{7}");
     value["cards"][2]["kind"] = json!("cl\naude");
     value["tasks"][1]["key"] = json!("add\ntest");
-    let text = render(Render::State, "neige_track_state", false, &value).unwrap();
+    let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
     assert_eq!(
         lines_starting(&text, "title"),
         vec!["title      Example\\nclosed_at  1\\r\\t\\u{7}"]
@@ -267,7 +267,7 @@ fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
     assert!(text.contains("  cl\\naude  "), "{text}");
 
     value["track"]["title"] = json!("修复 登录 跳转 — café");
-    let text = render(Render::State, "neige_track_state", false, &value).unwrap();
+    let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
     assert_eq!(
         lines_starting(&text, "title"),
         vec!["title      修复 登录 跳转 — café"]
@@ -278,7 +278,7 @@ fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
 fn state_json_is_the_compact_tool_result() {
     let value = working_track_state();
     assert_eq!(
-        render(Render::State, "neige_track_state", true, &value).unwrap(),
+        render(Render::Status, "neige_track_status", true, &value).unwrap(),
         format!("{value}\n")
     );
 }
@@ -292,7 +292,7 @@ fn state_text_start_is_explicit_for_checkout_and_upstream() {
                 task["start"] = json!(start);
             }
             value["tasks"][0]["access"] = json!(access);
-            let text = render(Render::State, "neige_track_state", false, &value).unwrap();
+            let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
             let suffix = if access == "read_only" {
                 " read_only"
             } else {
@@ -323,21 +323,21 @@ fn state_start_is_required_only_for_text_and_json_objects_pass_through() {
         } else {
             value["tasks"][0].as_object_mut().unwrap().remove("start");
         }
-        let err = render(Render::State, "neige_track_state", false, &value).unwrap_err();
+        let err = render(Render::Status, "neige_track_status", false, &value).unwrap_err();
         assert_eq!(
             err.message,
             if value["tasks"][0]["start"] == "main" {
-                "neige_track_state task has unknown start \"main\""
+                "neige_track_status task has unknown start \"main\""
             } else {
-                "neige_track_state task missing string start"
+                "neige_track_status task missing string start"
             }
         );
         assert_eq!(
             err.detail,
-            json!({"kind":"shape","tool":"neige_track_state","task":value["tasks"][0]})
+            json!({"kind":"shape","tool":"neige_track_status","task":value["tasks"][0]})
         );
         assert_eq!(
-            render(Render::State, "neige_track_state", true, &value).unwrap(),
+            render(Render::Status, "neige_track_status", true, &value).unwrap(),
             format!("{value}\n")
         );
     }
@@ -360,7 +360,7 @@ fn state_text_access_matrix_preserves_the_full_read_write_output() {
             value["tasks"][0]["access"] = json!(access);
             value["tasks"][0]["key"] = json!("fix\nlogin");
             assert_eq!(
-                render(Render::State, "neige_track_state", false, &value).unwrap(),
+                render(Render::Status, "neige_track_status", false, &value).unwrap(),
                 format!(
                     "track      trk_2\ntitle      Fix login redirect\nclosed_at  -\nyou        crd_planner planner\nreport     has content\ntasks      fix\\nlogin {status}{suffix} start=checkout\n           add-test pending start=checkout\n           old failed start=checkout\nlive       crd_planner  planner  codex   (you)\n           crd_worker   worker   claude  session running\n"
                 )
@@ -374,7 +374,7 @@ fn state_text_marks_readers_without_a_live_worker() {
     let mut value = working_track_state();
     value["tasks"][1]["access"] = json!("read_only");
     value["tasks"][2]["access"] = json!("read_only");
-    let text = render(Render::State, "neige_track_state", false, &value).unwrap();
+    let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
     assert!(
         text.contains("\n           add-test pending read_only start=checkout\n           old failed read_only start=checkout\n"),
         "{text}"
@@ -397,21 +397,21 @@ fn state_access_is_required_only_for_text_and_json_objects_pass_through() {
         } else {
             value["tasks"][0].as_object_mut().unwrap().remove("access");
         }
-        let err = render(Render::State, "neige_track_state", false, &value).unwrap_err();
+        let err = render(Render::Status, "neige_track_status", false, &value).unwrap_err();
         assert_eq!(
             err.message,
             if value["tasks"][0]["access"] == "reader" {
-                "neige_track_state task has unknown access \"reader\""
+                "neige_track_status task has unknown access \"reader\""
             } else {
-                "neige_track_state task missing string access"
+                "neige_track_status task missing string access"
             }
         );
         assert_eq!(
             err.detail,
-            json!({"kind":"shape","tool":"neige_track_state","task":value["tasks"][0]})
+            json!({"kind":"shape","tool":"neige_track_status","task":value["tasks"][0]})
         );
         assert_eq!(
-            render(Render::State, "neige_track_state", true, &value).unwrap(),
+            render(Render::Status, "neige_track_status", true, &value).unwrap(),
             format!("{value}\n")
         );
     }
@@ -423,10 +423,10 @@ fn state_access_is_required_only_for_text_and_json_objects_pass_through() {
         json!(false),
     ] {
         for json in [false, true] {
-            let err = render(Render::State, "neige_track_state", json, &value).unwrap_err();
+            let err = render(Render::Status, "neige_track_status", json, &value).unwrap_err();
             assert_eq!(
                 err.message,
-                "neige_track_state returned non-object structuredContent"
+                "neige_track_status returned non-object structuredContent"
             );
             assert_eq!(err.detail["kind"], "shape");
         }
@@ -438,46 +438,46 @@ fn state_shape_errors_name_the_missing_fact() {
     type Mutation = fn(&mut Value);
     let cases: [(&str, Mutation); 8] = [
         (
-            "neige_track_state value missing string caller_card_id",
+            "neige_track_status value missing string caller_card_id",
             |v| {
                 v.as_object_mut().unwrap().remove("caller_card_id");
             },
         ),
         (
-            "neige_track_state track missing number-or-null closed_at",
+            "neige_track_status track missing number-or-null closed_at",
             |v| {
                 v["track"].as_object_mut().unwrap().remove("closed_at");
             },
         ),
-        ("neige_track_state value missing array tasks", |v| {
+        ("neige_track_status value missing array tasks", |v| {
             v.as_object_mut().unwrap().remove("tasks");
         }),
         (
-            "neige_track_state card missing object-or-null runtime",
+            "neige_track_status card missing object-or-null runtime",
             |v| {
                 v["cards"][0].as_object_mut().unwrap().remove("runtime");
             },
         ),
         (
-            "neige_track_state runtime has unknown status \"exploded\"",
+            "neige_track_status runtime has unknown status \"exploded\"",
             |v| v["cards"][2]["runtime"]["status"] = json!("exploded"),
         ),
-        ("neige_track_state task missing string status", |v| {
+        ("neige_track_status task missing string status", |v| {
             v["tasks"][0].as_object_mut().unwrap().remove("status");
         }),
         (
-            "neige_track_state task has unknown status \"finished\"",
+            "neige_track_status task has unknown status \"finished\"",
             |v| v["tasks"][0]["status"] = json!("finished"),
         ),
         (
-            "neige_track_state caller card crd_gone is not among the track's cards",
+            "neige_track_status caller card crd_gone is not among the track's cards",
             |v| v["caller_card_id"] = json!("crd_gone"),
         ),
     ];
     for (message, mutate) in cases {
         let mut value = working_track_state();
         mutate(&mut value);
-        let err = render(Render::State, "neige_track_state", false, &value).unwrap_err();
+        let err = render(Render::Status, "neige_track_status", false, &value).unwrap_err();
         assert_eq!(err.message, message);
     }
 }
@@ -489,7 +489,7 @@ fn state_text_names_the_session_status_and_the_task_status_apart() {
     for status in ["running", "verifying", "done", "failed", "canceled"] {
         let mut value = working_track_state();
         value["tasks"][0]["status"] = json!(status);
-        let text = render(Render::State, "neige_track_state", false, &value).unwrap();
+        let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
         assert_eq!(
             lines_starting(&text, "tasks"),
             vec![format!("tasks      fix-login {status} start=checkout")]
@@ -513,7 +513,7 @@ fn state_text_shows_each_key_once_at_its_current_execution() {
     let mut value = working_track_state();
     value["cards"][3]["runtime"]["status"] = json!("idle");
     value["tasks"][2] = json!({ "key": "old", "status": "done", "worker_card_id": "crd_worker", "access": "read_write", "start": "checkout" });
-    let text = render(Render::State, "neige_track_state", false, &value).unwrap();
+    let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
     assert_eq!(
         text.lines()
             .skip_while(|l| !l.starts_with("tasks"))

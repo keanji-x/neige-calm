@@ -128,9 +128,9 @@ const HELP: &[CommandHelp] = &[
         "  -h, --help           Print help",
     ),
     command_help!(
-        track_state::TOOL_TRACK_STATE,
+        track_state::TOOL_TRACK_STATUS,
         "Show the track's current state: closed_at, your card, report, tasks and live sessions",
-        "Usage: neige track state [--json]",
+        "Usage: neige track status [--json]",
         "",
         "Options:",
         "      --json  Emit compact JSON output",
@@ -238,7 +238,7 @@ const HELP: &[CommandHelp] = &[
     command_help!(
         catalog::COMMAND_NAME,
         "List and describe the tools of this session",
-        "Usage: neige tool list (--prefix PREFIX | --all) [--after NAME] [--json]",
+        "Usage: neige tool ls (--prefix PREFIX | --all) [--after NAME] [--json]",
         "       neige tool describe --name NAME [--json]",
         "",
         "List rows are {name, cli, listed}: this session's tools/list set plus every tool a",
@@ -257,7 +257,7 @@ const HELP: &[CommandHelp] = &[
 
 const HELP_SUMMARY: &str = "Print global, object or command help";
 
-/// `track cat` for a command's tool key, `tool list|describe` for the meta command.
+/// `track cat` for a command's tool key, `tool ls|describe` for the meta command.
 fn spelling(key: &str) -> String {
     match commands::command_for_tool(key) {
         Some(command) => command.spelling(),

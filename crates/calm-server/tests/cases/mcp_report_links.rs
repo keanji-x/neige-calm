@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use calm_server::mcp_server::tools::report_links::{TOOL_AREA_OUTLINE, TOOL_REPORT_BACKLINKS};
+use calm_server::mcp_server::tools::report_links::{TOOL_AREA_LS, TOOL_LINK_LS};
 use calm_server::model::{NewArea, NewCard, NewTrack};
 use calm_server::track_report::{TrackReportPayload, persist_report};
 use calm_server::{event::EditAuthor, ids::ActorId};
@@ -105,7 +105,7 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
         "# Outside\n".into(),
     )
     .await;
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let tracks = value["tracks"].as_array().unwrap();
@@ -136,7 +136,7 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
     .await;
     strip_report_cache_and_crdt(&boot, &legacy).await;
 
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let track = value["tracks"]
@@ -187,7 +187,7 @@ async fn outline_labels_live_and_tombstone_tasks_at_the_mcp_boundary() {
     )
     .await;
 
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let blocks = value["tracks"]
@@ -219,7 +219,7 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
     let boot = boot().await;
     let track = add_track(&boot, boot.area_id.as_str(), "Carrier", contract_body()).await;
 
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let entry = value["tracks"]
@@ -264,7 +264,7 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
         );
     }
 
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let bytes = serde_json::to_vec(&value).unwrap().len();
@@ -332,14 +332,9 @@ async fn backlinks_returns_linking_track_for_callers_track() {
     )
     .await;
 
-    let value = call_tool(
-        &boot,
-        TOOL_REPORT_BACKLINKS,
-        planner_identity(&boot),
-        json!({}),
-    )
-    .await
-    .unwrap();
+    let value = call_tool(&boot, TOOL_LINK_LS, planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
     assert_eq!(value["backlinks"][0]["src_track_id"], source.id.as_str());
     assert_eq!(value["backlinks"][0]["label"], "target");
 }
@@ -355,14 +350,9 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
     )
     .await;
 
-    let value = call_tool(
-        &boot,
-        TOOL_REPORT_BACKLINKS,
-        planner_identity(&boot),
-        json!({}),
-    )
-    .await
-    .unwrap();
+    let value = call_tool(&boot, TOOL_LINK_LS, planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
     let backlink = &value["backlinks"][0];
     let src_block_id = backlink["src_block_id"].as_str().unwrap();
     let updated_at = backlink["updated_at"].as_i64().unwrap();
@@ -386,7 +376,7 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
 #[tokio::test]
 async fn report_link_reads_reject_non_planner_caller() {
     let boot = boot().await;
-    for tool in [TOOL_AREA_OUTLINE, TOOL_REPORT_BACKLINKS] {
+    for tool in [TOOL_AREA_LS, TOOL_LINK_LS] {
         let error = call_tool(
             &boot,
             tool,

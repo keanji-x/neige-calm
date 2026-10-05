@@ -10,7 +10,7 @@ The existing System Area ensure and Track structure factory remain authoritative
 
 Generic authorization consumes those declarations. It never recognizes an application or template name. The report-planning profile permits report reads and maintenance of its own report; it refuses worker, terminal, lifecycle and plugin mutation tools at both registered and dynamic-plugin entry points. The report persistence boundary also refuses task block changes, preventing report writes from scheduling workers. Agents cannot write a closed daily report; a human can explicitly correct it without reopening the Track.
 
-The template declares `user_creatable = false`. Template admission and the picker use that metadata, so selecting a template cannot imply a workspace read grant. The immutable creation identity is exposed through `neige_track_state`; renaming the display title does not change the day.
+The template declares `user_creatable = false`. Template admission and the picker use that metadata, so selecting a template cannot imply a workspace read grant. The immutable creation identity is exposed through `neige_track_status`; renaming the display title does not change the day.
 
 ## Reports and history
 

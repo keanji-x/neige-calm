@@ -6300,7 +6300,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
     )
     .await;
 
-    let pending = call_tool(&boot, "neige_plan_list", planner_identity(&boot), json!({}))
+    let pending = call_tool(&boot, "neige_task_ls", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(pending["tasks"][0]["status"], "pending");
@@ -6323,7 +6323,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
     tokio::time::timeout(Duration::from_secs(5), claimed.notified())
         .await
         .expect("production claim must reach the post-claim hook");
-    let dispatched = call_tool(&boot, "neige_plan_list", planner_identity(&boot), json!({}))
+    let dispatched = call_tool(&boot, "neige_task_ls", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(dispatched["tasks"][0]["attempt_id"], attempt_id);
@@ -6335,7 +6335,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
         .await
         .expect("provider startup must settle")
         .unwrap();
-    let running = call_tool(&boot, "neige_plan_list", planner_identity(&boot), json!({}))
+    let running = call_tool(&boot, "neige_task_ls", planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(running["tasks"][0]["attempt_id"], attempt_id);

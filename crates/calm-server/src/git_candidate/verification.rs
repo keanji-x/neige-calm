@@ -1,4 +1,4 @@
-//! `neige_plan_list.candidate.verification` (#1727 S4 D8): the twelve-value state of one
+//! `neige_task_ls.candidate.verification` (#1727 S4 D8): the twelve-value state of one
 //! attempt's gate, derived from the tasks row, its persisted verdict and whether a task-verify
 //! Operation exists for it. Pure over its inputs; every D8 row has one arm.
 

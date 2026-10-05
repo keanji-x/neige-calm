@@ -1,4 +1,4 @@
-//! #2058: a running Track worker canceled through `neige_plan_cancel` reads `canceled` in the
+//! #2058: a running Track worker canceled through `neige_task_cancel` reads `canceled` in the
 //! runs views, both the live `neige_track_cat` projection and the track VCS head, as `neige state`
 //! does.
 
@@ -7,7 +7,7 @@ use super::*;
 use calm_server::db::sqlite::card_create_with_id_tx;
 use calm_server::db::write_with_event_typed;
 use calm_server::event::EventScope;
-use calm_server::mcp_server::tools::plan::TOOL_PLAN_CANCEL;
+use calm_server::mcp_server::tools::plan::TOOL_TASK_CANCEL;
 use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
 use calm_server::track_vcs;
 
@@ -133,7 +133,7 @@ async fn canceled_running_task_reads_canceled_in_every_runs_view() {
 
     call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "runs-cancel", "message": "wrong direction" }),
     )

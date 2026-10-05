@@ -301,14 +301,14 @@ impl Observation {
                 author: None,
                 body_before: None,
                 ..
-            } => "The user edited the track report. Re-read the track state.".to_string(),
+            } => "The user edited the track report. Re-read the track status.".to_string(),
             // Rows with author but no `body_before` keep their sentence byte for byte as well.
             Observation::ReportEdited {
                 author: Some(author),
                 body_before: None,
                 ..
             } => format!(
-                "The track report was edited (author = \"{}\"). Re-read the track state.",
+                "The track report was edited (author = \"{}\"). Re-read the track status.",
                 author.wire_str()
             ),
             Observation::TaskCompleted {
@@ -322,7 +322,7 @@ impl Observation {
             Observation::WorkerHookStop {
                 idempotency_key, ..
             } => format!(
-                "A worker card finished a turn. Re-read the track state to incorporate any changes.\n(hook_id={idempotency_key})"
+                "A worker card finished a turn. Re-read the track status to incorporate any changes.\n(hook_id={idempotency_key})"
             ),
             Observation::TaskGateResult {
                 idempotency_key,
@@ -404,22 +404,22 @@ impl Observation {
                 format!("Wake from {source} ({key}): {text}")
             }
             Observation::WorkspaceLeased { path, .. } => {
-                format!("A worker workspace was provisioned at {path}. Re-read the track state.")
+                format!("A worker workspace was provisioned at {path}. Re-read the track status.")
             }
             Observation::WorkspaceReleased { .. } => {
-                "A worker workspace lease was released. Re-read the track state.".to_string()
+                "A worker workspace lease was released. Re-read the track status.".to_string()
             }
             Observation::ForgePrMerged { pr_number, .. } => {
-                format!("Forge PR #{pr_number} was merged. Re-read the track state.")
+                format!("Forge PR #{pr_number} was merged. Re-read the track status.")
             }
             Observation::ForgeScanCompleted {
                 overlapping_prs, ..
             } => format!(
-                "Forge scan completed with overlapping PRs {:?}. Re-read the track state.",
+                "Forge scan completed with overlapping PRs {:?}. Re-read the track status.",
                 overlapping_prs
             ),
             Observation::ForgePrOpened { pr_number, .. } => {
-                format!("Forge PR #{pr_number} was opened. Re-read the track state.")
+                format!("Forge PR #{pr_number} was opened. Re-read the track status.")
             }
             Observation::ForgePrChecks {
                 pr_number,
@@ -445,16 +445,20 @@ impl Observation {
                 .to_owned(),
             },
             Observation::ForgeIssueClosed { issue_number, .. } => {
-                format!("Forge issue #{issue_number} was closed. Re-read the track state.")
+                format!("Forge issue #{issue_number} was closed. Re-read the track status.")
             }
             Observation::WorktreeProvisioned { path, .. } => {
-                format!("A worker git worktree was provisioned at {path}. Re-read the track state.")
+                format!(
+                    "A worker git worktree was provisioned at {path}. Re-read the track status."
+                )
             }
             Observation::WorktreeCommitted { branch, .. } => {
-                format!("A worker git worktree committed branch {branch}. Re-read the track state.")
+                format!(
+                    "A worker git worktree committed branch {branch}. Re-read the track status."
+                )
             }
             Observation::RatifyRequested { reason, .. } => {
-                format!("Ratification was requested: {reason}. Re-read the track state.")
+                format!("Ratification was requested: {reason}. Re-read the track status.")
             }
             Observation::RatifyResolved {
                 decision, message, ..
@@ -464,7 +468,7 @@ impl Observation {
                     RatifyDecision::Deny => "deny",
                 };
                 let mut text = format!(
-                    "Ratification was resolved with decision={decision}. Re-read the track state."
+                    "Ratification was resolved with decision={decision}. Re-read the track status."
                 );
                 if let Some(message) = message {
                     text.push_str(&format!("\nThe user's message, verbatim:\n{message}"));
@@ -951,7 +955,7 @@ mod tests {
             "the channel line is batch-level, not per observation: {text}"
         );
         assert!(
-            !text.contains("Re-read the track state"),
+            !text.contains("Re-read the track status"),
             "the diff form must not order a re-read: {text}"
         );
         assert!(
@@ -1028,11 +1032,11 @@ mod tests {
     fn report_edited_without_body_before_keeps_the_old_sentence() {
         assert_eq!(
             report_edited(Some(EditAuthor::Plugin)).to_turn_text(),
-            "The track report was edited (author = \"plugin\"). Re-read the track state."
+            "The track report was edited (author = \"plugin\"). Re-read the track status."
         );
         assert_eq!(
             report_edited(None).to_turn_text(),
-            "The user edited the track report. Re-read the track state."
+            "The user edited the track report. Re-read the track status."
         );
     }
 
@@ -1058,7 +1062,7 @@ mod tests {
         ));
         assert_eq!(
             obs.to_turn_text(),
-            "The user edited the track report. Re-read the track state."
+            "The user edited the track report. Re-read the track status."
         );
         let with_author = serde_json::json!({
             "type": "report_edited",
@@ -1070,7 +1074,7 @@ mod tests {
         let obs: Observation = serde_json::from_value(with_author).unwrap();
         assert_eq!(
             obs.to_turn_text(),
-            "The track report was edited (author = \"assistant\"). Re-read the track state."
+            "The track report was edited (author = \"assistant\"). Re-read the track status."
         );
         let round_one = serde_json::json!({
             "type": "report_edited",
@@ -1132,7 +1136,7 @@ mod tests {
         assert_eq!(obs, report_edited(None));
         assert_eq!(
             obs.to_turn_text(),
-            "The user edited the track report. Re-read the track state."
+            "The user edited the track report. Re-read the track status."
         );
     }
 

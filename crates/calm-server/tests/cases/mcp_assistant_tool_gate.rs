@@ -17,26 +17,26 @@ const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
     "neige_calendar_create",
     "neige_calendar_update",
     "neige_report_read",
-    "neige_report_kinds",
+    "neige_report_describe",
     "neige_report_commit",
     "neige_report_write",
 ];
 
 /// Denied tools whose handler a **Planner** token gets past; also the control list below.
 const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
-    "neige_workspace_reports",
-    "neige_workspace_report",
-    "neige_workspace_changes",
-    "neige_workspace_edits",
+    "neige_workspace_ls",
+    "neige_workspace_cat",
+    "neige_workspace_diff",
+    "neige_workspace_log",
     // Cross-track / cross-area report discovery reads.
-    "neige_area_outline",
-    "neige_report_backlinks",
+    "neige_area_ls",
+    "neige_link_ls",
     "neige_report_find",
     // Captured sources are the planner's evidence.
     "neige_source_capture",
-    "neige_source_list",
+    "neige_source_ls",
     // Track state + verdict.
-    "neige_track_state",
+    "neige_track_status",
     "neige_task_verdict",
     // Naming the track is a planner judgement.
     "neige_track_rename",
@@ -63,8 +63,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_track_show",
     "neige_track_log",
     // Planning, review, admin.
-    "neige_plan_cancel",
-    "neige_plan_list",
+    "neige_task_cancel",
+    "neige_task_ls",
     "neige_ratify_request",
     "neige_admin_gc",
     "neige_admin_vacuum",
@@ -204,7 +204,7 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
         "`docRev` must be the CRDT-derived revision — it is what this read \
          anchors a later write to: {payload:#?}"
     );
-    // `taskDiagnostics` is dispatched-task runtime state, the class `neige_plan_list` stays
+    // `taskDiagnostics` is dispatched-task runtime state, the class `neige_task_ls` stays
     // Planner-only to withhold; it must not leak out the side.
     assert!(
         payload.get("taskDiagnostics").is_none(),

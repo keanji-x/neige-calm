@@ -16,7 +16,7 @@ use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, EventBus};
 use calm_server::ids::{ActorId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
+use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATUS;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::operation::planner_harness_start_adapter::render_planner_developer_instructions_for_test;
@@ -1800,7 +1800,7 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
     );
 
     let (ctx, registry, identity) = planner_tool_channel(&boot, &target_track_id).await;
-    let state = call_planner_tool(&ctx, &registry, TOOL_TRACK_STATE, identity, json!({}))
+    let state = call_planner_tool(&ctx, &registry, TOOL_TRACK_STATUS, identity, json!({}))
         .await
         .expect("forked planner can read track state");
     assert_eq!(
@@ -1866,7 +1866,7 @@ async fn initial_track_does_not_require_report_startup_read() {
     assert!(!payload.report_startup_read_required());
 
     let (ctx, registry, identity) = planner_tool_channel(&boot, &track_id).await;
-    let state = call_planner_tool(&ctx, &registry, TOOL_TRACK_STATE, identity, json!({}))
+    let state = call_planner_tool(&ctx, &registry, TOOL_TRACK_STATUS, identity, json!({}))
         .await
         .expect("fresh planner can read track state");
     assert_eq!(

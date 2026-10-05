@@ -1,11 +1,11 @@
-//! `neige_source_capture` / `neige_source_list` through the real tool registry. The transient ring
+//! `neige_source_capture` / `neige_source_ls` through the real tool registry. The transient ring
 //! is seeded directly here (`ctx.plugin_results`); the transport recording point is covered by
 //! `mcp_source_capture_e2e.rs`.
 
 #![cfg(unix)]
 
-use calm_server::mcp_server::tools::source::{TOOL_SOURCE_CAPTURE, TOOL_SOURCE_LIST};
-use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
+use calm_server::mcp_server::tools::source::{TOOL_SOURCE_CAPTURE, TOOL_SOURCE_LS};
+use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATUS;
 use calm_server::plugin_host::mcp::{CallToolResult, ContentBlock, RpcError};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry};
 use calm_server::plugin_results::{MAX_ARGS_BYTES, MAX_TEXT_BYTES, sha256_hex};
@@ -98,7 +98,7 @@ pub(crate) async fn capture(boot: &Boot, args: Value) -> Result<Value, RpcError>
 }
 
 async fn list(boot: &Boot) -> Vec<Value> {
-    call_tool(boot, TOOL_SOURCE_LIST, planner_identity(boot), json!({}))
+    call_tool(boot, TOOL_SOURCE_LS, planner_identity(boot), json!({}))
         .await
         .expect("list")["sources"]
         .as_array()
@@ -796,7 +796,7 @@ async fn non_planner_roles_are_refused_with_invalid_params() {
             .await
             .unwrap_err();
         assert_invalid_params(&err, "tool requires role=Planner");
-        let err = call_tool(&boot, TOOL_SOURCE_LIST, identity, json!({}))
+        let err = call_tool(&boot, TOOL_SOURCE_LS, identity, json!({}))
             .await
             .unwrap_err();
         assert_invalid_params(&err, "tool requires role=Planner");
@@ -820,7 +820,7 @@ async fn capture_only_leaves_the_report_unwritten() {
     )
     .await
     .expect("capture");
-    let state = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
+    let state = call_tool(&boot, TOOL_TRACK_STATUS, planner_identity(&boot), json!({}))
         .await
         .expect("track state");
     assert_eq!(

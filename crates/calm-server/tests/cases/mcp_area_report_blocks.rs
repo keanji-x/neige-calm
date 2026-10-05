@@ -1,9 +1,9 @@
 //! `neige_track_cat { blocks }` (#1874, `neige track cat <report> --blocks`): chosen blocks of a report,
 //! own (`report.md`) or same-area (`area/reports/<name>.md`), exactly as `neige_report_read`'s
-//! `select.blocks` text. Block ids come from `neige_area_outline`, the Planner's id source.
+//! `select.blocks` text. Block ids come from `neige_area_ls`, the Planner's id source.
 
 use super::*;
-use calm_server::mcp_server::tools::report_links::TOOL_AREA_OUTLINE;
+use calm_server::mcp_server::tools::report_links::TOOL_AREA_LS;
 
 /// A maintenance contract before the first heading (block 0), then three sections.
 const BODY: &str = "<!-- contract: keep the conclusion first -->\nContract intro.\n\n# Goal\n\nalpha\n\n# Findings\n\nbeta\n\n# Next\n\ngamma\n";
@@ -25,11 +25,11 @@ async fn cat_blocks(
     Ok(value["content"].as_str().expect("content").to_string())
 }
 
-/// `side`'s block ids in document order, as `neige_area_outline` lists them to `reader`.
+/// `side`'s block ids in document order, as `neige_area_ls` lists them to `reader`.
 async fn outline_ids(boot: &Boot, reader: &Side, side: &Side) -> Vec<String> {
-    let outline = call(boot, TOOL_AREA_OUTLINE, planner(reader), json!({}))
+    let outline = call(boot, TOOL_AREA_LS, planner(reader), json!({}))
         .await
-        .expect("neige_area_outline");
+        .expect("neige_area_ls");
     let track = outline["tracks"]
         .as_array()
         .expect("tracks")

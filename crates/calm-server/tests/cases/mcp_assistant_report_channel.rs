@@ -11,7 +11,7 @@ use crate::mcp_track_report::{
 use calm_server::event::{EditAuthor, Event};
 use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::mcp_server::tools::track_report_blocks::{
-    TOOL_REPORT_COMMIT, TOOL_REPORT_KINDS, TOOL_REPORT_WRITE,
+    TOOL_REPORT_COMMIT, TOOL_REPORT_DESCRIBE, TOOL_REPORT_WRITE,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_types::report_blocks::{KIND_TASK, marker_line, render_fence};
@@ -169,7 +169,7 @@ async fn assistant_drives_commit_and_write_markdown() {
 
     call_tool(
         &boot,
-        TOOL_REPORT_KINDS,
+        TOOL_REPORT_DESCRIBE,
         assistant_identity(&boot),
         json!({}),
     )
@@ -263,7 +263,7 @@ async fn the_assistant_today_summary_path_is_a_full_read_then_write_markdown() {
 #[tokio::test]
 async fn worker_is_still_refused_at_the_block_channel_entry() {
     let boot = boot().await;
-    for tool in [TOOL_REPORT_KINDS, TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE] {
+    for tool in [TOOL_REPORT_DESCRIBE, TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE] {
         let err = call_tool(&boot, tool, worker_identity(&boot), json!({}))
             .await
             .err()

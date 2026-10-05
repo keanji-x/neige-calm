@@ -1,4 +1,4 @@
-//! `neige tool list|describe` (#2003 §4.5): a literal, bounded lookup over this session's
+//! `neige tool ls|describe` (#2003 §4.5): a literal, bounded lookup over this session's
 //! `tools/list` set plus every tool a `neige` command calls. Listing is not a grant.
 use super::commands::{JSON, cli_spelling, command_for_tool};
 use super::{CliExit, Output};
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 /// The CLI-only meta object; it is no tool.
 pub(super) const COMMAND_NAME: &str = "tool";
-pub(super) const ACTIONS: [&str; 2] = ["list", "describe"];
+pub(super) const ACTIONS: [&str; 2] = ["ls", "describe"];
 pub(super) const FOOTER: &str = "listing is not a grant; the tool's role gate decides";
 
 const PAGE_SIZE: usize = 20;
@@ -50,7 +50,7 @@ fn tool_name(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_whitespace)
 }
 
-const LIST_USAGE: &str = "neige tool list (--prefix PREFIX | --all) [--after NAME]";
+const LS_USAGE: &str = "neige tool ls (--prefix PREFIX | --all) [--after NAME]";
 const DESCRIBE_USAGE: &str = "neige tool describe --name NAME";
 
 fn parse(argv: &[String]) -> Result<(Query, bool), String> {
@@ -60,7 +60,7 @@ fn parse(argv: &[String]) -> Result<(Query, bool), String> {
         .map(String::as_str)
         .filter(|arg| *arg != JSON)
         .collect();
-    let choices = || format!("use `{LIST_USAGE}` or `{DESCRIBE_USAGE}`");
+    let choices = || format!("use `{LS_USAGE}` or `{DESCRIBE_USAGE}`");
     match args.get(1).copied() {
         Some("describe") if args.len() == 4 && args[2] == "--name" && tool_name(args[3]) => Ok((
             Query::Describe {
@@ -69,7 +69,7 @@ fn parse(argv: &[String]) -> Result<(Query, bool), String> {
             json,
         )),
         Some("describe") => Err(format!("use `{DESCRIBE_USAGE}`")),
-        Some("list") => {
+        Some("ls") => {
             let mut prefix = None;
             let mut after = None;
             let mut index = 2;
@@ -95,14 +95,14 @@ fn parse(argv: &[String]) -> Result<(Query, bool), String> {
                     }
                     _ => {
                         return Err(format!(
-                            "use `{LIST_USAGE}`: a literal --prefix or explicit --all, with optional --after"
+                            "use `{LS_USAGE}`: a literal --prefix or explicit --all, with optional --after"
                         ));
                     }
                 }
             }
             prefix
                 .map(|prefix| (Query::List { prefix, after }, json))
-                .ok_or_else(|| format!("tool list requires --prefix or --all; use `{LIST_USAGE}`"))
+                .ok_or_else(|| format!("tool ls requires --prefix or --all; use `{LS_USAGE}`"))
         }
         Some(action) => Err(format!(
             "unknown action `{action}` for `neige tool`; {}",
@@ -143,7 +143,7 @@ fn select(query: Query, entries: Vec<Entry>) -> Result<Value, String> {
                 .into_iter()
                 .find(|entry| entry.tool.name == name)
                 .ok_or_else(|| {
-                    format!("no tool `{name}` in this session; `neige tool list --all` lists them")
+                    format!("no tool `{name}` in this session; `neige tool ls --all` lists them")
                 })?;
             let mut value = entry.tool.clone().into_mcp_value();
             let object = value.as_object_mut().expect("a descriptor is an object");
@@ -338,7 +338,7 @@ mod tests {
         let entries = listed(&names);
         let mut argv = vec![
             "tool".into(),
-            "list".into(),
+            "ls".into(),
             "--prefix".into(),
             "plugin_".into(),
         ];
@@ -453,7 +453,7 @@ mod tests {
             let argv: Vec<String> = argv.iter().map(|arg| arg.to_string()).collect();
             let message = parse(&argv).unwrap_err();
             assert!(
-                message.contains("neige tool list") && message.contains("neige tool describe"),
+                message.contains("neige tool ls") && message.contains("neige tool describe"),
                 "{message}"
             );
         }

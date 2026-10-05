@@ -26,7 +26,7 @@ pub enum Render {
     Find,
     /// `track cat` and `track show`: the view content; `--json` changes only the error format.
     Content,
-    State,
+    Status,
     Diff,
     Log,
     /// `report tag`: the current tags space-joined on one line.
@@ -52,7 +52,7 @@ pub fn render(
         Render::Ls { long, reports } => listing::ls(tool, json, long, reports, value),
         Render::Find => listing::find(tool, json, value),
         Render::Content => content(tool, value),
-        Render::State => state(tool, json, value),
+        Render::Status => state(tool, json, value),
         Render::Diff if json => Ok(compact(value)),
         Render::Diff => diff(tool, value),
         Render::Log if json => Ok(compact(value)),

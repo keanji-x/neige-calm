@@ -185,7 +185,7 @@ pub(crate) async fn report_read(
     if let Some((text, _)) = text {
         response["text"] = Value::String(text);
     }
-    // `taskDiagnostics` is the dispatched-task runtime projection `neige_plan_list` withholds from the assistant; only the Planner gets it.
+    // `taskDiagnostics` is the dispatched-task runtime projection `neige_task_ls` withholds from the assistant; only the Planner gets it.
     if identity.role == CardRole::Planner {
         response["taskDiagnostics"] = json!(snapshot.task_diagnostics);
     }

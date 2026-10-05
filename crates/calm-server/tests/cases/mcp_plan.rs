@@ -1,5 +1,5 @@
 //! `mcp_server::tools::plan` integration coverage: an `AppContext` built directly (no live MCP
-//! listener) driving `neige_plan_cancel` / `neige_plan_list` end-to-end.
+//! listener) driving `neige_task_cancel` / `neige_task_ls` end-to-end.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use calm_server::event::{Event, EventBus};
 use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::{
-    TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, plan_cancel_after_pre_read_for_test,
+    TOOL_TASK_CANCEL, TOOL_TASK_LS, plan_cancel_after_pre_read_for_test,
 };
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TaskStatus, TrackPatch, now_ms};
@@ -388,7 +388,7 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     let mut rx = boot.ctx.events.subscribe();
     let out = call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "a", "message": "obsolete" }),
     )
@@ -418,7 +418,7 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     let mut rx = boot.ctx.events.subscribe();
     let out = call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "a", "message": "retry" }),
     )
@@ -437,7 +437,7 @@ async fn cancel_with_a_lifecycle_key_is_refused_and_writes_nothing() {
     let mut rx = boot.ctx.events.subscribe();
     let err = call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "done" }),
     )
@@ -463,7 +463,7 @@ async fn assert_cancel_refused(boot: &Boot, status: &str, expect: &str) {
     let mut rx = boot.ctx.events.subscribe();
     let err = call_tool(
         boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(boot),
         json!({ "key": "a", "message": "stop" }),
     )
@@ -529,7 +529,7 @@ async fn cancel_dispatched_task_refusal_names_dispatched_whatever_blocks_it() {
 async fn concurrent_second_cancel_of_a_running_task_is_idempotent() {
     let boot = boot().await;
     declare_bound_task(&boot, "running").await;
-    let handler = boot.registry.lookup(TOOL_PLAN_CANCEL).expect("cancel tool");
+    let handler = boot.registry.lookup(TOOL_TASK_CANCEL).expect("cancel tool");
     let (ctx, identity) = (boot.ctx.clone(), planner_identity(&boot));
     let mut rx = boot.ctx.events.subscribe();
 
@@ -570,7 +570,7 @@ async fn concurrent_second_cancel_of_a_running_task_is_idempotent() {
 async fn concurrent_second_cancel_of_a_pending_task_is_idempotent() {
     let boot = boot().await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
-    let handler = boot.registry.lookup(TOOL_PLAN_CANCEL).expect("cancel tool");
+    let handler = boot.registry.lookup(TOOL_TASK_CANCEL).expect("cancel tool");
     let (ctx, identity) = (boot.ctx.clone(), planner_identity(&boot));
     let mut rx = boot.ctx.events.subscribe();
 
@@ -689,7 +689,7 @@ async fn cancel_terminal_or_unknown_task_rejected() {
 
     let err = call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "a", "message": "m" }),
     )
@@ -703,7 +703,7 @@ async fn cancel_terminal_or_unknown_task_rejected() {
 
     let err = call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "ghost", "message": "m" }),
     )
@@ -770,7 +770,7 @@ async fn list_returns_plan_shape_without_gate_commands() {
     )
     .await;
 
-    let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TASK_LS, planner_identity(&boot), json!({}))
         .await
         .expect("list ok");
     let tasks = out["tasks"].as_array().expect("tasks array");
@@ -837,7 +837,7 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
         1
     );
     tx.commit().await.unwrap();
-    let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TASK_LS, planner_identity(&boot), json!({}))
         .await
         .expect("list ok");
     let entry = &out["tasks"][0];
@@ -880,8 +880,8 @@ async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
     let mut rx = boot.ctx.events.subscribe();
     let before = all_persistent_rows(&boot).await;
     for (tool, args) in [
-        (TOOL_PLAN_CANCEL, json!({ "key": "a", "message": "m" })),
-        (TOOL_PLAN_LIST, json!({})),
+        (TOOL_TASK_CANCEL, json!({ "key": "a", "message": "m" })),
+        (TOOL_TASK_LS, json!({})),
     ] {
         let err = call_tool(&boot, tool, worker_identity(&boot), args)
             .await
@@ -910,7 +910,7 @@ async fn plan_list_hides_gate_commands_but_shows_step_names() {
                                       { "name": "test", "cmd": "cargo test -p secret" } ] } }),
     )
     .await;
-    let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TASK_LS, planner_identity(&boot), json!({}))
         .await
         .expect("plan.list");
     let listed = out["tasks"]

@@ -1,4 +1,4 @@
-//! Track-state tools: `neige_track_state` (Planner or Worker snapshot read, no event emission),
+//! Track-state tools: `neige_track_status` (Planner or Worker snapshot read, no event emission),
 //! `neige_task_verdict` (Planner-only accept/reject, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track)
 //! and `neige_track_close` (Planner-only close of the caller's track).
 
@@ -17,7 +17,7 @@ use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_TRACK_STATE: &str = "neige_track_state";
+pub const TOOL_TRACK_STATUS: &str = "neige_track_status";
 pub const TOOL_TASK_VERDICT: &str = "neige_task_verdict";
 pub const TOOL_TRACK_CLOSE: &str = "neige_track_close";
 
@@ -44,8 +44,8 @@ where
 
 fn track_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_TRACK_STATE.into(),
-        description: include_str!("../../../prompts/tools/neige_track_state.md")
+        name: TOOL_TRACK_STATUS.into(),
+        description: include_str!("../../../prompts/tools/neige_track_status.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

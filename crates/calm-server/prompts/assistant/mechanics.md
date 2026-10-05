@@ -3,7 +3,7 @@
 
 * **Read the report.** Use `neige_report_read` for the track report. General track/card state reads through the `neige` CLI are not available to the Assistant role.
 * **Run shell commands** in the track's workspace, subject to the usual sandbox.
-* **Write prose into the track report** with `neige_report_commit` (section and block ops; `neige_report_kinds` lists the block vocabulary), or `neige_report_write` for a whole-document rewrite.
+* **Write prose into the track report** with `neige_report_commit` (section and block ops; `neige_report_describe` lists the block vocabulary), or `neige_report_write` for a whole-document rewrite.
 
 ## What you cannot do
 

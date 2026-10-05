@@ -11,7 +11,7 @@ use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::track_state::{TOOL_TASK_VERDICT, TOOL_TRACK_STATE};
+use calm_server::mcp_server::tools::track_state::{TOOL_TASK_VERDICT, TOOL_TRACK_STATUS};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::mcp::RpcError;
@@ -242,7 +242,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
 #[tokio::test]
 async fn get_track_state_returns_track_and_cards_for_planner() {
     let boot = boot().await;
-    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TRACK_STATUS, planner_identity(&boot), json!({}))
         .await
         .expect("planner can read track state");
 
@@ -359,7 +359,7 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
         .unwrap();
     insert_task(&boot, "docs-1", "docs", "pending", None).await;
 
-    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TRACK_STATUS, planner_identity(&boot), json!({}))
         .await
         .expect("planner can read track state");
     assert_eq!(out["caller_card_id"], json!(boot.planner_card_id.as_str()));
@@ -377,7 +377,7 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
         assert!(out.get(gone).is_none(), "`{gone}` left the snapshot: {out}");
     }
 
-    let out = call_tool(&boot, TOOL_TRACK_STATE, worker_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TRACK_STATUS, worker_identity(&boot), json!({}))
         .await
         .expect("worker can read track state");
     assert_eq!(out["caller_card_id"], json!(worker));
@@ -386,7 +386,7 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
 #[tokio::test]
 async fn get_track_state_callable_by_worker() {
     let boot = boot().await;
-    let out = call_tool(&boot, TOOL_TRACK_STATE, worker_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TRACK_STATUS, worker_identity(&boot), json!({}))
         .await
         .expect("worker can also read track state — no role gate on read");
     assert_eq!(

@@ -142,7 +142,7 @@ async fn cleanup_marker(fx: &crate::git_delivery::Fx, card_id: &str) -> Option<S
 async fn cancel(fx: &crate::git_delivery::Fx, key: &str) {
     call_tool(
         &fx.boot,
-        "neige_plan_cancel",
+        "neige_task_cancel",
         planner_identity(&fx.boot),
         json!({"key": key, "message": "stop"}),
     )
@@ -181,7 +181,7 @@ async fn a_failed_codex_interrupt_keeps_the_lease_until_it_succeeds() {
     );
 }
 
-/// `neige_plan_cancel` of a running worker commits what it left, as `canceled`, after the kill.
+/// `neige_task_cancel` of a running worker commits what it left, as `canceled`, after the kill.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_canceled_worker_is_committed_as_canceled_after_the_kill() {
     let w = world().await;

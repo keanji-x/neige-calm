@@ -163,7 +163,7 @@ pub(super) fn summary(entry: &Value) -> Value {
     result["omitted_fields"] = json!(omitted_fields);
     result["truncated_fields"] = json!(truncated_fields);
     result["full_evidence"] =
-        json!({"tool":TOOL_PLAN_LIST,"arguments":{"detail":"full","key":entry["key"]}});
+        json!({"tool":TOOL_TASK_LS,"arguments":{"detail":"full","key":entry["key"]}});
     result
 }
 

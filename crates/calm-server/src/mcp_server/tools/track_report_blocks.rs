@@ -1,4 +1,4 @@
-//! The agent report write surface (`neige_report_commit`, `neige_report_write`) plus the read-only `neige_report_kinds`.
+//! The agent report write surface (`neige_report_commit`, `neige_report_write`) plus the read-only `neige_report_describe`.
 //! Neither write takes a revision (#1883): the anchors are what this session last read through `neige_report_read`, checked inside
 //! the persist transaction against CRDT truth; a mismatch is `-32001` and writes nothing.
 
@@ -24,7 +24,7 @@ mod contracts;
 use anchors::{block_anchor, parse_section_op};
 use contracts::{commit_descriptor, kinds_descriptor, kinds_table, write_markdown_descriptor};
 
-pub const TOOL_REPORT_KINDS: &str = "neige_report_kinds";
+pub const TOOL_REPORT_DESCRIBE: &str = "neige_report_describe";
 pub const TOOL_REPORT_WRITE: &str = "neige_report_write";
 pub const TOOL_REPORT_COMMIT: &str = "neige_report_commit";
 
@@ -364,7 +364,7 @@ fn resolve_upsert_content(
         if !matches!(obj.get("markdown"), None | Some(Value::Null)) {
             return Err(RpcError::invalid_params(format!(
                 "{tool}: `markdown` is only valid for kind=prose — pass the {kind} data in \
-                 `payload` (see neige_report_kinds)"
+                 `payload` (see neige_report_describe)"
             )));
         }
         let payload = match obj.get("payload") {
@@ -372,7 +372,7 @@ fn resolve_upsert_content(
             _ => {
                 return Err(RpcError::invalid_params(format!(
                     "{tool}: kind={kind} requires a `payload` object (see \
-                     neige_report_kinds for its schema)"
+                     neige_report_describe for its schema)"
                 )));
             }
         };
@@ -380,7 +380,7 @@ fn resolve_upsert_content(
             .map_err(|why| RpcError::invalid_params(format!("{tool}: {why}")))?
     } else {
         return Err(RpcError::invalid_params(format!(
-            "{tool}: {}. See neige_report_kinds.",
+            "{tool}: {}. See neige_report_describe.",
             report_blocks::unknown_kind_message(&kind)
         )));
     };

@@ -67,7 +67,7 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "its payload needs a per-track-unique ",
     "`key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, ",
     "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
-    "sibling keys, `priority`, and usually `gate`. Use `neige_plan_cancel` to ",
+    "sibling keys, `priority`, and usually `gate`. Use `neige_task_cancel` to ",
     "cancel a pending task, or a running codex/claude task whose worker the kernel ",
     "then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. ",
     "A `codex`/`claude` task requires `goal`, a natural-language objective, and ",
@@ -485,7 +485,7 @@ mod tests {
     }
 
     /// Every `neige_`-prefixed token in `text`: `neige_` not preceded by `[A-Za-z0-9_.]`, extended over `[A-Za-z0-9_]`, wildcard families (`neige_terminal_*`) dropped.
-    /// Uppercase is part of the continuation so `neige_plan_listX` stays one unregistered token.
+    /// Uppercase is part of the continuation so `neige_task_lsX` stays one unregistered token.
     fn kernel_tool_tokens(text: &str) -> Vec<&str> {
         let bytes = text.as_bytes();
         let mut tokens = Vec::new();
@@ -513,13 +513,13 @@ mod tests {
     #[test]
     fn kernel_tool_tokens_are_whole_tokens() {
         for (text, expected) in [
-            ("see neige_plan_list.", vec!["neige_plan_list"]),
-            ("xneige_plan_list", vec![]),
+            ("see neige_task_ls.", vec!["neige_task_ls"]),
+            ("xneige_task_ls", vec![]),
             ("dev.neige.git-forge", vec![]),
             ("neige.kv.set", vec![]),
             ("neige_terminal_*", vec![]),
-            ("neige_plan_list2", vec!["neige_plan_list2"]),
-            ("neige_plan_listX", vec!["neige_plan_listX"]),
+            ("neige_task_ls2", vec!["neige_task_ls2"]),
+            ("neige_task_lsX", vec!["neige_task_lsX"]),
             ("", vec![]),
             ("neige_", vec!["neige_"]),
         ] {
@@ -527,7 +527,7 @@ mod tests {
         }
     }
 
-    /// Tokens are whole-token matched, so a misspelling or a stray suffix (`neige_plan_list2`) is red, not a prefix hit; only wildcard families are skipped.
+    /// Tokens are whole-token matched, so a misspelling or a stray suffix (`neige_task_ls2`) is red, not a prefix hit; only wildcard families are skipped.
     #[test]
     fn planner_prompt_names_only_tools_the_planner_role_can_see() {
         use std::collections::BTreeSet;

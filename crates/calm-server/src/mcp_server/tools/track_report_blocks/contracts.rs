@@ -1,4 +1,4 @@
-use super::{TOOL_REPORT_COMMIT, TOOL_REPORT_KINDS, TOOL_REPORT_WRITE};
+use super::{TOOL_REPORT_COMMIT, TOOL_REPORT_DESCRIBE, TOOL_REPORT_WRITE};
 use crate::mcp_server::registry::{
     ToolDescriptor, read_only_annotations, role_gated_write_annotations,
 };
@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 
 pub(super) fn kinds_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_REPORT_KINDS.into(),
-        description: include_str!("../../../../prompts/tools/neige_report_kinds.md")
+        name: TOOL_REPORT_DESCRIBE.into(),
+        description: include_str!("../../../../prompts/tools/neige_report_describe.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -486,7 +486,7 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
                             "id": { "type": "string" },
                             "kind": { "type": "string", "enum": block_kind_enum() },
                             "markdown": { "type": "string" },
-                            "payload": { "type": "object", "description": "Data kinds: see neige_report_kinds." },
+                            "payload": { "type": "object", "description": "Data kinds: see neige_report_describe." },
                             "position": { "type": "integer", "minimum": 0 },
                             "to_index": { "type": "integer", "minimum": 0 }
                         }

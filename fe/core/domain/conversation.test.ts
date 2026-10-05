@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { HarnessItem, HarnessPhaseTag } from '../api/generated/wire.js';
 import {
-  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, DEV_PUBLISH_TOOL,
+  TASK_LS_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, DEV_PUBLISH_TOOL,
   TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 
@@ -552,7 +552,7 @@ describe('harnessItemToActivity', () => {
 
   it('reads the root cause of the other failed row on the wire', () => {
     expect(harnessItemToActivity(mcpFailure({
-      message: 'tool call error: tool call failed for `neige/neige_plan_cancel`\n'
+      message: 'tool call error: tool call failed for `neige/neige_task_cancel`\n'
         + '\nCaused by:\n    Mcp error: -32602: `tasks` must be a non-empty array\n',
     }))).toMatchObject({
       state: 'failed', detail: 'Mcp error: -32602: `tasks` must be a non-empty array',
@@ -598,7 +598,7 @@ describe('harnessItemToActivity', () => {
 
   it.each([
     [TASK_VERDICT_TOOL, 'Writing task verdict', 'Wrote task verdict'],
-    [PLAN_LIST_TOOL, 'Reading plan', 'Read plan'],
+    [TASK_LS_TOOL, 'Reading plan', 'Read plan'],
   ])('renders the known %s tool in English', (tool, running, done) => {
     expect(harnessItemToActivity(row({
       item_type: 'mcpToolCall', method: 'item/started',

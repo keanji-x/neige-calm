@@ -17,7 +17,7 @@ use calm_server::mcp_server::auth;
 use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture,
 };
-use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
+use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATUS;
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
@@ -371,7 +371,7 @@ async fn existing_handlers_unchanged_when_meta_present() {
     let boot = boot_with_registry(build_default_registry()).await;
     let (mut rd, mut wr) = initialized_client(&boot).await;
 
-    let without_meta = tools_call_frame(2, TOOL_TRACK_STATE, json!({}));
+    let without_meta = tools_call_frame(2, TOOL_TRACK_STATUS, json!({}));
     send_frame(&mut wr, without_meta).await;
     let without_resp = recv_frame(&mut rd).await;
     assert!(
@@ -383,7 +383,7 @@ async fn existing_handlers_unchanged_when_meta_present() {
         json!(boot.track_id)
     );
 
-    let mut with_meta = tools_call_frame(3, TOOL_TRACK_STATE, json!({}));
+    let mut with_meta = tools_call_frame(3, TOOL_TRACK_STATUS, json!({}));
     with_meta["params"]["_meta"] = json!({
         "threadId": boot.thread_id,
         "card_id": "not-the-bound-card"

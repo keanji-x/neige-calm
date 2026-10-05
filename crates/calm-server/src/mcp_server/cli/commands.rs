@@ -194,11 +194,11 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Log,
     },
     Command {
-        tool: track_state::TOOL_TRACK_STATE,
+        tool: track_state::TOOL_TRACK_STATUS,
         positionals: &[],
         options: &[],
         confirm: None,
-        render: Render::State,
+        render: Render::Status,
     },
     Command {
         tool: track_state::TOOL_TRACK_CLOSE,

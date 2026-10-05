@@ -11,13 +11,13 @@ export const REPORT_WRITE_TOOLS: readonly string[] = Object.freeze([
 /** The retired single-op block delete, as stored history names it (#2003 migration). */
 export const REPORT_DELETE_TOOL = 'neige_report_delete';
 export const TASK_VERDICT_TOOL = 'neige_task_verdict';
-export const PLAN_LIST_TOOL = 'neige_plan_list';
+export const TASK_LS_TOOL = 'neige_task_ls';
 
 /** Reads of the report. */
 export const REPORT_READ_TOOLS: readonly string[] = Object.freeze([
   'neige_report_read',
-  'neige_report_kinds',
-  'neige_report_backlinks',
+  'neige_report_describe',
+  'neige_link_ls',
 ]);
 
 /** Every report tool, read or write, is under this prefix: a report tool this file has never

@@ -194,7 +194,7 @@ only `neige --version` works without a connection. Use the `neige` binary
 shipped beside the running kernel; old clients are refused with the correct
 path in the error. A command is `neige <object> <action>`, spelled from the
 tool `neige.<object>.<action>` it calls; each option is the tool's input key
-(`--attempt-id` for `attempt_id`). `neige tool list --all` lists this session's
+(`--attempt-id` for `attempt_id`). `neige tool ls --all` lists this session's
 tools with their commands.
 
 A Planner can read other reports through the read-only `area/reports/` view,

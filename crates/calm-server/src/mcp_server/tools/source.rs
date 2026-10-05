@@ -1,4 +1,4 @@
-//! `neige_source_capture` and `neige_source_list`: turn a plugin result the Planner just read into a stable, verifiable source.
+//! `neige_source_capture` and `neige_source_ls`: turn a plugin result the Planner just read into a stable, verifiable source.
 //! Both handlers check `require_role(Planner)` themselves; tools still dispatch by name.
 
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use crate::report_sources::{
 use calm_types::report_source_links::is_source_id;
 
 pub const TOOL_SOURCE_CAPTURE: &str = "neige_source_capture";
-pub const TOOL_SOURCE_LIST: &str = "neige_source_list";
+pub const TOOL_SOURCE_LS: &str = "neige_source_ls";
 
 /// Wording shared by every "nothing recorded" refusal for a tool the Track can see.
 const NO_RECORD: &str = "no recorded result for this call in this track \
@@ -106,8 +106,8 @@ fn capture_descriptor() -> ToolDescriptor {
 
 fn list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_SOURCE_LIST.into(),
-        description: include_str!("../../../prompts/tools/neige_source_list.md")
+        name: TOOL_SOURCE_LS.into(),
+        description: include_str!("../../../prompts/tools/neige_source_ls.md")
             .trim_end()
             .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -538,7 +538,7 @@ async fn source_list(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
-    let tool = TOOL_SOURCE_LIST;
+    let tool = TOOL_SOURCE_LS;
     let track_id = identity
         .track_id
         .as_deref()
@@ -558,7 +558,7 @@ async fn source_list(
     Ok(json!({ "sources": sources }))
 }
 
-/// One `neige_source_list` entry: everything but the body.
+/// One `neige_source_ls` entry: everything but the body.
 pub fn list_entry(row: &SourceRow) -> Value {
     let mut entry = json!({
         "source_id": row.source_id,

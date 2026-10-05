@@ -11,31 +11,31 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_WORKSPACE_REPORTS: &str = "neige_workspace_reports";
-pub const TOOL_WORKSPACE_REPORT: &str = "neige_workspace_report";
-pub const TOOL_WORKSPACE_CHANGES: &str = "neige_workspace_changes";
-pub const TOOL_WORKSPACE_EDITS: &str = "neige_workspace_edits";
+pub const TOOL_WORKSPACE_LS: &str = "neige_workspace_ls";
+pub const TOOL_WORKSPACE_CAT: &str = "neige_workspace_cat";
+pub const TOOL_WORKSPACE_DIFF: &str = "neige_workspace_diff";
+pub const TOOL_WORKSPACE_LOG: &str = "neige_workspace_log";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     for (name, description, schema) in [
         (
-            TOOL_WORKSPACE_REPORTS,
-            include_str!("../../../prompts/tools/neige_workspace_reports.md"),
+            TOOL_WORKSPACE_LS,
+            include_str!("../../../prompts/tools/neige_workspace_ls.md"),
             json!({"type":"object","properties":{"after":{"type":"string"}},"additionalProperties":false}),
         ),
         (
-            TOOL_WORKSPACE_REPORT,
-            include_str!("../../../prompts/tools/neige_workspace_report.md"),
+            TOOL_WORKSPACE_CAT,
+            include_str!("../../../prompts/tools/neige_workspace_cat.md"),
             json!({"type":"object","required":["track_id"],"properties":{"track_id":{"type":"string"}},"additionalProperties":false}),
         ),
         (
-            TOOL_WORKSPACE_CHANGES,
-            include_str!("../../../prompts/tools/neige_workspace_changes.md"),
+            TOOL_WORKSPACE_DIFF,
+            include_str!("../../../prompts/tools/neige_workspace_diff.md"),
             json!({"type":"object","required":["date"],"properties":{"date":{"type":"string"},"after":{"type":"string"},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
         ),
         (
-            TOOL_WORKSPACE_EDITS,
-            include_str!("../../../prompts/tools/neige_workspace_edits.md"),
+            TOOL_WORKSPACE_LOG,
+            include_str!("../../../prompts/tools/neige_workspace_log.md"),
             json!({"type":"object","required":["date","track_id","through_event_id"],"properties":{"date":{"type":"string"},"track_id":{"type":"string"},"after":{"type":"integer","minimum":0},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
         ),
     ] {
@@ -83,7 +83,7 @@ async fn dispatch(
         .ok_or_else(|| RpcError::internal("workspace reports require sqlite"))?;
     let invalid = |e: serde_json::Error| RpcError::invalid_params(e.to_string());
     match name {
-        TOOL_WORKSPACE_REPORTS => {
+        TOOL_WORKSPACE_LS => {
             let args: ListArgs = serde_json::from_value(args).map_err(invalid)?;
             let mut rows:Vec<(String,String,String,String,Option<i64>)>=sqlx::query_as(concat!(
 "SELECT t.id,t.title,a.id,a.name,t.closed_at FROM tracks t JOIN areas a ON a.id=t.area_id ",
@@ -97,7 +97,7 @@ async fn dispatch(
                 json!({"reports":rows.into_iter().map(|(track_id,title,area_id,area_name,closed_at)|json!({"track_id":track_id,"title":title,"area_id":area_id,"area_name":area_name,"closed_at":closed_at})).collect::<Vec<_>>(),"next_cursor":next_cursor,"time_zone":zone.name()}),
             )
         }
-        TOOL_WORKSPACE_REPORT => {
+        TOOL_WORKSPACE_CAT => {
             let args: ReadArgs = serde_json::from_value(args).map_err(invalid)?;
             let track = ctx
                 .repo
@@ -128,7 +128,7 @@ async fn dispatch(
                 json!({"track_id":track.id,"title":track.title,"area_id":track.area_id,"summary":snapshot.summary,"body":snapshot.body,"doc_rev":snapshot.doc_rev,"blocks":snapshot.blocks}),
             )
         }
-        TOOL_WORKSPACE_CHANGES => {
+        TOOL_WORKSPACE_DIFF => {
             let query: ReportChangesQuery = serde_json::from_value(args).map_err(invalid)?;
             serde_json::to_value(
                 workspace_reports::changes(pool, &query, zone)
@@ -137,7 +137,7 @@ async fn dispatch(
             )
             .map_err(|e| RpcError::internal(e.to_string()))
         }
-        TOOL_WORKSPACE_EDITS => {
+        TOOL_WORKSPACE_LOG => {
             let query: ReportEditsQuery = serde_json::from_value(args).map_err(invalid)?;
             serde_json::to_value(
                 workspace_reports::edits(pool, &query, zone)

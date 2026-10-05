@@ -214,7 +214,7 @@ async fn legacy_4140_rows_load() {
 
     for (track, key) in TRACKS {
         // The Planner's plan reads return every current entry.
-        let full = call_tool(&boot, "neige_plan_list", planner(track), json!({}))
+        let full = call_tool(&boot, "neige_task_ls", planner(track), json!({}))
             .await
             .unwrap_or_else(|error| panic!("{track}: plan.list full: {error:?}"));
         let keys: Vec<&str> = full["tasks"]
@@ -234,7 +234,7 @@ async fn legacy_4140_rows_load() {
         }
         let summary = call_tool(
             &boot,
-            "neige_plan_list",
+            "neige_task_ls",
             planner(track),
             json!({"detail":"summary","key":key}),
         )

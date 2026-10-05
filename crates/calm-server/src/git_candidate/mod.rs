@@ -17,7 +17,7 @@
 //!
 //! Wired in: the report transaction (`decision_sink`) inserts the delivery row, `neige_task_done`
 //! and `scheduler::git_delivery` submit it, the scheduler settles it (a failed settlement fails a
-//! gated attempt still verifying), `neige_plan_list` reads it, the Track-delete sweep drops its refs.
+//! gated attempt still verifying), `neige_task_ls` reads it, the Track-delete sweep drops its refs.
 
 pub(crate) mod candidate;
 pub(crate) mod delivery;

@@ -179,10 +179,10 @@ fn cat_blocks_sends_the_comma_separated_ids_as_an_array() {
 
 #[test]
 fn state_takes_no_arguments() {
-    assert_eq!(tool_args(&["track", "state"]), json!({}));
+    assert_eq!(tool_args(&["track", "status"]), json!({}));
     assert_eq!(
-        refusal(&["track", "state", "extra"]),
-        "unexpected argument `extra`; usage: neige track state [--json]"
+        refusal(&["track", "status", "extra"]),
+        "unexpected argument `extra`; usage: neige track status [--json]"
     );
 }
 
@@ -461,10 +461,10 @@ fn track_close_maps_the_message_onto_neige_track_close() {
 #[test]
 fn json_flag_is_accepted_before_and_after_the_command() {
     for args in [
-        &["--json", "track", "state"][..],
-        &["track", "--json", "state"][..],
-        &["track", "state", "--json"][..],
-        &["--json", "--json", "track", "state"][..],
+        &["--json", "track", "status"][..],
+        &["track", "--json", "status"][..],
+        &["track", "status", "--json"][..],
+        &["--json", "--json", "track", "status"][..],
     ] {
         assert!(parse_args(args).expect("parse").json, "{args:?}");
     }
@@ -504,11 +504,11 @@ fn an_old_spelling_is_a_usage_error_listing_the_objects() {
     );
     assert_eq!(
         refusal(&["track", "cat-at", "c", "p"]),
-        "unknown action `cat-at` for `neige track`; expected one of: ls, cat, show, diff, log, state, close"
+        "unknown action `cat-at` for `neige track`; expected one of: ls, cat, show, diff, log, status, close"
     );
     assert_eq!(
         refusal(&["track"]),
-        "`neige track` needs an action: ls, cat, show, diff, log, state, close"
+        "`neige track` needs an action: ls, cat, show, diff, log, status, close"
     );
 }
 
@@ -674,7 +674,7 @@ fn help_documents_exactly_the_served_commands() {
     let served: Vec<String> = COMMANDS
         .iter()
         .map(Command::spelling)
-        .chain(["tool list|describe".to_string(), "help".to_string()])
+        .chain(["tool ls|describe".to_string(), "help".to_string()])
         .collect();
     assert_eq!(documented, served);
     for command in COMMANDS {

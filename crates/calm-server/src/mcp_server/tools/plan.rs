@@ -1,5 +1,5 @@
 //! `neige_plan_*` — the planner card's durable per-track task plan.
-//! `neige_plan_list` never echoes gate commands, only `{present, steps: [names]}`.
+//! `neige_task_ls` never echoes gate commands, only `{present, steps: [names]}`.
 
 use crate::db::sqlite::{task_cancel_tx, task_get_tx};
 use crate::db::write_with_actor_events_typed;
@@ -28,8 +28,8 @@ use std::sync::Arc;
 mod cancel_running;
 mod list;
 
-pub const TOOL_PLAN_CANCEL: &str = "neige_plan_cancel";
-pub const TOOL_PLAN_LIST: &str = "neige_plan_list";
+pub const TOOL_TASK_CANCEL: &str = "neige_task_cancel";
+pub const TOOL_TASK_LS: &str = "neige_task_ls";
 
 /// Gate timeout defaults/caps; the task-verify adapter re-clamps at run time.
 pub fn register_into(registry: &mut ToolRegistry) {
@@ -325,8 +325,8 @@ fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Tas
 
 fn plan_cancel_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_PLAN_CANCEL.into(),
-        description: include_str!("../../../prompts/tools/neige_plan_cancel.md")
+        name: TOOL_TASK_CANCEL.into(),
+        description: include_str!("../../../prompts/tools/neige_task_cancel.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -431,7 +431,7 @@ where
                     Some(current) if current.id == task_id => current,
                     _ => {
                         return Err(CalmError::Conflict(
-                            "current execution changed; refresh neige_plan_list".into(),
+                            "current execution changed; refresh neige_task_ls".into(),
                         ));
                     }
                 };
@@ -448,7 +448,7 @@ where
                     if !now_canceled {
                         return Err(CalmError::Conflict(format!(
                             "task {key} changed state concurrently; re-check with \
-                             `neige track state` and retry"
+                             `neige track status` and retry"
                         )));
                     }
                 }
@@ -513,8 +513,8 @@ where
 
 fn plan_list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_PLAN_LIST.into(),
-        description: include_str!("../../../prompts/tools/neige_plan_list.md")
+        name: TOOL_TASK_LS.into(),
+        description: include_str!("../../../prompts/tools/neige_task_ls.md")
             .trim_end()
             .to_string(),
         input_schema: json!({

@@ -4,10 +4,10 @@ title = "Daily Planner"
 user_creatable = false
 description = "Plan one day using read-only workspace reports and yesterday’s report changes."
 instructions = """
-Read neige_track_state first. You plan the calendar date in creation_identity.identity,
+Read neige_track_status first. You plan the calendar date in creation_identity.identity,
 in creation_identity.time_zone. The server owns this immutable date identity.
-Start by discovering neige_workspace_reports, neige_workspace_report,
-and neige_workspace_changes. Read yesterday’s changes and selected current
+Start by discovering neige_workspace_ls, neige_workspace_cat,
+and neige_workspace_diff. Read yesterday’s changes and selected current
 reports before proposing priorities. Follow pagination until next_cursor is null;
 never interpret an incomplete read or failure as a quiet day. These tools grant
 read-only access to user-visible Areas; they grant no write authority over other Tracks.

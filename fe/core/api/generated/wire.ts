@@ -54,7 +54,7 @@ export type AttachmentId = string;
  */
 export type BlockMention = { 
 /**
- * The block's heading as `neige_area_outline` lists it; a block with no heading is not offered.
+ * The block's heading as `neige_area_ls` lists it; a block with no heading is not offered.
  */
 label: string, block_id: string, 
 /**

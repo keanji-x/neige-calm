@@ -7615,7 +7615,7 @@
           },
           "label": {
             "type": "string",
-            "description": "The block's heading as `neige_area_outline` lists it; a block with no heading is not offered."
+            "description": "The block's heading as `neige_area_ls` lists it; a block with no heading is not offered."
           },
           "track_id": {
             "$ref": "#/components/schemas/TrackId"

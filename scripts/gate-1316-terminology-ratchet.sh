@@ -15,6 +15,8 @@
 # migration 0137 and its verification query against the existing transcript table.
 # #2087 B0 bounded exception: harness_item/crates 268 -> 269 comes solely from migration 0141's
 # one UPDATE of the existing transcript table; its test reads rows back through a shared helper.
+# #2087 B1 bounded exception: harness_item/crates 269 -> 270 comes solely from migration 0142's
+# one UPDATE of the existing transcript table; its test reads rows back through the same helper.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

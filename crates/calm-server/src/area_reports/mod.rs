@@ -235,7 +235,7 @@ pub async fn read(
     report_markdown(&report.card_id, report.payload)
 }
 
-/// The block projection of the report `file` names in `area_id` — the blocks `neige_area_outline`
+/// The block projection of the report `file` names in `area_id` — the blocks `neige_area_ls`
 /// indexes and `neige_report_read` selects — resolved and re-checked exactly as [`read`].
 pub async fn read_blocks(
     pool: &SqlitePool,

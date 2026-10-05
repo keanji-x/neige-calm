@@ -1,7 +1,7 @@
 //! #1727 S4 slice 2 PR-B: kernel git delivery for attached workers, wired end to end — the
 //! report transaction's delivery row, the keyed forge submission, the scheduler's settlement
 //! into `task_candidates` + `task.git_delivery_settled`, the deferred self-report and the
-//! `neige_plan_list.candidate` read surface. Design §6 rows A3–A7, A23–A23c, A25–A31.
+//! `neige_task_ls.candidate` read surface. Design §6 rows A3–A7, A23–A23c, A25–A31.
 //!
 //! #1893 S6 (the second half of this file): a failed delivery fails its gated task; Track and
 //! Area deletion take the delivery tables and candidate refs with them (A9d, A6c).
@@ -649,11 +649,11 @@ impl Fx {
             .collect()
     }
 
-    /// `neige_plan_list` (full detail) entry of `key`.
+    /// `neige_task_ls` (full detail) entry of `key`.
     pub(super) async fn plan_entry(&self, key: &str) -> Value {
         let list = call_tool(
             &self.boot,
-            "neige_plan_list",
+            "neige_task_ls",
             planner_identity(&self.boot),
             json!({"detail": "full", "key": key}),
         )
@@ -665,7 +665,7 @@ impl Fx {
     pub(super) async fn plan_summary_entry(&self, key: &str) -> Value {
         let list = call_tool(
             &self.boot,
-            "neige_plan_list",
+            "neige_task_ls",
             planner_identity(&self.boot),
             json!({"detail": "summary", "key": key}),
         )
@@ -2697,7 +2697,7 @@ async fn candidate_view_is_total_over_task_status() {
 
     let list = call_tool(
         &fx.boot,
-        "neige_plan_list",
+        "neige_task_ls",
         planner_identity(&fx.boot),
         json!({"detail": "full"}),
     )

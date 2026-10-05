@@ -13,8 +13,8 @@ use crate::mcp_server::registry::{
 use crate::model::CardRole;
 use crate::track_report_read::load_report_read_snapshot;
 
-pub const TOOL_AREA_OUTLINE: &str = "neige_area_outline";
-pub const TOOL_REPORT_BACKLINKS: &str = "neige_report_backlinks";
+pub const TOOL_AREA_LS: &str = "neige_area_ls";
+pub const TOOL_LINK_LS: &str = "neige_link_ls";
 
 const MAX_TRACKS: usize = 50;
 const MAX_BLOCKS_PER_TRACK: usize = 40;
@@ -42,8 +42,8 @@ where
 
 fn outline_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_AREA_OUTLINE.into(),
-        description: include_str!("../../../prompts/tools/neige_area_outline.md")
+        name: TOOL_AREA_LS.into(),
+        description: include_str!("../../../prompts/tools/neige_area_ls.md")
             .trim_end()
             .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -54,8 +54,8 @@ fn outline_descriptor() -> ToolDescriptor {
 
 fn backlinks_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_REPORT_BACKLINKS.into(),
-        description: include_str!("../../../prompts/tools/neige_report_backlinks.md")
+        name: TOOL_LINK_LS.into(),
+        description: include_str!("../../../prompts/tools/neige_link_ls.md")
             .trim_end()
             .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -286,9 +286,9 @@ async fn report_backlinks(
     _args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
-    let track_id = identity.track_id.ok_or_else(|| {
-        RpcError::invalid_params("neige_report_backlinks requires a track-scoped caller")
-    })?;
+    let track_id = identity
+        .track_id
+        .ok_or_else(|| RpcError::invalid_params("neige_link_ls requires a track-scoped caller"))?;
     let page = crate::report_backlinks::backlinks_for_track(ctx.repo.as_ref(), &track_id)
         .await
         .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;

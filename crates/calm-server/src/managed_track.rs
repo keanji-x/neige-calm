@@ -180,17 +180,17 @@ pub(crate) fn report_planning_tool(name: &str) -> bool {
         track_report::TOOL_REPORT_READ
             | track_report_blocks::TOOL_REPORT_COMMIT
             | track_report_blocks::TOOL_REPORT_WRITE
-            | track_report_blocks::TOOL_REPORT_KINDS
-            | track_state::TOOL_TRACK_STATE
+            | track_report_blocks::TOOL_REPORT_DESCRIBE
+            | track_state::TOOL_TRACK_STATUS
             | track_file::TOOL_TRACK_LS
             | track_file::TOOL_TRACK_CAT
             | track_history::TOOL_TRACK_LOG
             | track_history::TOOL_TRACK_DIFF
             | track_history::TOOL_TRACK_SHOW
-            | workspace_reports::TOOL_WORKSPACE_REPORTS
-            | workspace_reports::TOOL_WORKSPACE_REPORT
-            | workspace_reports::TOOL_WORKSPACE_CHANGES
-            | workspace_reports::TOOL_WORKSPACE_EDITS
+            | workspace_reports::TOOL_WORKSPACE_LS
+            | workspace_reports::TOOL_WORKSPACE_CAT
+            | workspace_reports::TOOL_WORKSPACE_DIFF
+            | workspace_reports::TOOL_WORKSPACE_LOG
     )
 }
 

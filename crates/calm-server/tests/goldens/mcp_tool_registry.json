@@ -34,7 +34,7 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige_area_outline",
+    "name": "neige_area_ls",
     "description_sha256": "44f6c2828e6b30ae807ecd0eb2cce9ddad4a5d3334b38c6a7758a086e70b1ad9",
     "input_schema": {
       "additionalProperties": false,
@@ -387,54 +387,11 @@
     ]
   },
   {
-    "name": "neige_plan_cancel",
-    "description_sha256": "8eb8c2c11056c05ed1bbd83d624716d198dfd57d22ad93257fea56d5dc28bfa9",
-    "input_schema": {
-      "properties": {
-        "key": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "key",
-        "message"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
-    "name": "neige_plan_list",
-    "description_sha256": "9f55a1de6c2ea058dedd7df8ac7f6c06439c0cefc864c91e10b31f48e80c3178",
+    "name": "neige_link_ls",
+    "description_sha256": "9d36b5487437516fdb5dc91024bc7ced7e1ee0a209af183e64d7e22a3c6f99ca",
     "input_schema": {
       "additionalProperties": false,
-      "properties": {
-        "detail": {
-          "enum": [
-            "summary",
-            "full"
-          ],
-          "type": "string"
-        },
-        "key": {
-          "description": "One exact current task key in this Track; no prefix matching or whitespace normalization.",
-          "minLength": 1,
-          "type": "string"
-        }
-      },
+      "properties": {},
       "type": "object"
     },
     "annotations": {
@@ -535,21 +492,6 @@
     ]
   },
   {
-    "name": "neige_report_backlinks",
-    "description_sha256": "90e71a3eca43c4d73dca04b12a07332dd1bf0b7a2987ce53d82b2afdaa698a5f",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
     "name": "neige_report_commit",
     "description_sha256": "821b43cb190ebabb2a057709a024b45ce5fa2b244bcdc10b46f3bac0f1849502",
     "input_schema": {
@@ -593,7 +535,7 @@
                 "type": "string"
               },
               "payload": {
-                "description": "Data kinds: see neige_report_kinds.",
+                "description": "Data kinds: see neige_report_describe.",
                 "type": "object"
               },
               "position": {
@@ -636,6 +578,21 @@
     ]
   },
   {
+    "name": "neige_report_describe",
+    "description_sha256": "004d0d3ec01d99d01ad8bfef1615cb008b115f532cc7f79b9f84767d919e28df",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
     "name": "neige_report_find",
     "description_sha256": "9bd09dad6a05fe739f814aac10e929843a9916d47dfda7d7b573ebc3816e8b8f",
     "input_schema": {
@@ -660,21 +617,6 @@
       "readOnlyHint": true
     },
     "visible_to_roles": []
-  },
-  {
-    "name": "neige_report_kinds",
-    "description_sha256": "004d0d3ec01d99d01ad8bfef1615cb008b115f532cc7f79b9f84767d919e28df",
-    "input_schema": {
-      "properties": {},
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "visible_to_roles": [
-      "planner",
-      "assistant"
-    ]
   },
   {
     "name": "neige_report_read",
@@ -817,7 +759,7 @@
   },
   {
     "name": "neige_source_capture",
-    "description_sha256": "15846996d62dfb3c8a50e502080c338bdae5dd199517a9258a7a539de5805f3f",
+    "description_sha256": "a2cadf622d6799ad9b256aef10a9f101ec2000175deec30af672a3820aafda68",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -889,7 +831,7 @@
     ]
   },
   {
-    "name": "neige_source_list",
+    "name": "neige_source_ls",
     "description_sha256": "0248d249848614827423b785c14444c4a399d364266fb45cb3a730af4dcfa215",
     "input_schema": {
       "additionalProperties": false,
@@ -898,6 +840,36 @@
     },
     "annotations": {
       "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige_task_cancel",
+    "description_sha256": "8eb8c2c11056c05ed1bbd83d624716d198dfd57d22ad93257fea56d5dc28bfa9",
+    "input_schema": {
+      "properties": {
+        "key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
     },
     "visible_to_roles": [
       "planner"
@@ -957,6 +929,34 @@
     },
     "visible_to_roles": [
       "worker"
+    ]
+  },
+  {
+    "name": "neige_task_ls",
+    "description_sha256": "9f55a1de6c2ea058dedd7df8ac7f6c06439c0cefc864c91e10b31f48e80c3178",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "type": "string"
+        },
+        "key": {
+          "description": "One exact current task key in this Track; no prefix matching or whitespace normalization.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
     ]
   },
   {
@@ -1443,7 +1443,7 @@
   },
   {
     "name": "neige_terminal_resolve",
-    "description_sha256": "8306d83c8519b66bf4c65f35e892cd782cc971cb1364e997de35812f715c6a89",
+    "description_sha256": "2b4fa2e1dafe2dbdfef90a1b5898e70b574d46b54deb986beeb2ea1abf836202",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1645,8 +1645,8 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige_track_state",
-    "description_sha256": "b4a4baca88e0b375efe3e108553b9a79f7a6d85927d683ecd43c305eb0ffeb85",
+    "name": "neige_track_status",
+    "description_sha256": "b7a7a23e473c6816f535e17c2f1814cf71c81db94dde92b30ef225dd02f94995",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -1684,7 +1684,29 @@
     ]
   },
   {
-    "name": "neige_workspace_changes",
+    "name": "neige_workspace_cat",
+    "description_sha256": "2c052d2a7601a0b9c30d34f97f6215e8abbe406c37fed2fda9c9d5ee7daf274c",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "track_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "track_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige_workspace_diff",
     "description_sha256": "20170c02dd967538243e11a617f5ec7bfd69a80b5efb51c0b11291e2d1e0695e",
     "input_schema": {
       "additionalProperties": false,
@@ -1713,7 +1735,7 @@
     ]
   },
   {
-    "name": "neige_workspace_edits",
+    "name": "neige_workspace_log",
     "description_sha256": "c17a67a42b4ea5ed73590857ed069e82b999d2f29e560776550bc50c48a7588e",
     "input_schema": {
       "additionalProperties": false,
@@ -1748,29 +1770,7 @@
     ]
   },
   {
-    "name": "neige_workspace_report",
-    "description_sha256": "2c052d2a7601a0b9c30d34f97f6215e8abbe406c37fed2fda9c9d5ee7daf274c",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "track_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "track_id"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
-    "name": "neige_workspace_reports",
+    "name": "neige_workspace_ls",
     "description_sha256": "9de81ae1f93d28e8df6269d9d5cbd473c556b5c5a12457ba7f22b9e99158423e",
     "input_schema": {
       "additionalProperties": false,

@@ -71,7 +71,7 @@ async fn native_view_upsert_read_roundtrip_and_cas_are_one_truth() {
     );
     let kinds = call_tool(
         &boot,
-        "neige_report_kinds",
+        "neige_report_describe",
         planner_identity(&boot),
         json!({}),
     )

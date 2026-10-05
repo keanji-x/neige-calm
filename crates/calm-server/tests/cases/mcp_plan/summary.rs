@@ -21,7 +21,7 @@ async fn plan_list_projects_stored_start_in_summary_and_full() {
         json!({"detail":"full"}),
         json!({"detail":"summary"}),
     ] {
-        let out = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), args)
+        let out = call_tool(&boot, TOOL_TASK_LS, planner_identity(&boot), args)
             .await
             .unwrap();
         let tasks = out["tasks"].as_array().unwrap();
@@ -50,7 +50,7 @@ async fn plan_list_summary_exact_current_key() {
     let before = all_persistent_rows(&boot).await;
     let out = call_tool(
         &boot,
-        TOOL_PLAN_LIST,
+        TOOL_TASK_LS,
         planner_identity(&boot),
         json!({"detail":"summary","key":"ab"}),
     )
@@ -87,7 +87,7 @@ async fn plan_list_summary_args_strict() {
         json!({"detail":true}),
         json!({"unknown":true}),
     ] {
-        let error = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), args.clone())
+        let error = call_tool(&boot, TOOL_TASK_LS, planner_identity(&boot), args.clone())
             .await
             .expect_err(&args.to_string());
         assert_eq!(error.code, -32602);
@@ -101,7 +101,7 @@ async fn plan_list_summary_missing_current() {
     for key in ["missing", "A", " a", "a "] {
         let error = call_tool(
             &boot,
-            TOOL_PLAN_LIST,
+            TOOL_TASK_LS,
             planner_identity(&boot),
             json!({"detail":"summary","key":key}),
         )
@@ -119,14 +119,14 @@ async fn plan_list_summary_large_goal_and_legacy_full() {
     let boot = boot().await;
     let goal = "large-private-goal ".repeat(100);
     write_task_block(&boot, json!({"key":"a", "kind":"codex", "goal":goal})).await;
-    let full = call_tool(&boot, TOOL_PLAN_LIST, planner_identity(&boot), json!({}))
+    let full = call_tool(&boot, TOOL_TASK_LS, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(full["tasks"][0]["goal"], goal);
     assert!(full["tasks"][0].get("full_evidence").is_none());
     let summary = call_tool(
         &boot,
-        TOOL_PLAN_LIST,
+        TOOL_TASK_LS,
         planner_identity(&boot),
         json!({"detail":"summary"}),
     )
@@ -175,7 +175,7 @@ async fn plan_list_summary_same_track_only() {
     }
     let missing = call_tool(
         &local,
-        TOOL_PLAN_LIST,
+        TOOL_TASK_LS,
         planner_identity(&local),
         json!({"key":"foreign-only","detail":"summary"}),
     )
@@ -184,7 +184,7 @@ async fn plan_list_summary_same_track_only() {
     assert!(missing.message.contains("current execution unavailable"));
     let result = call_tool(
         &local,
-        TOOL_PLAN_LIST,
+        TOOL_TASK_LS,
         planner_identity(&local),
         json!({"key":"same"}),
     )
@@ -199,7 +199,7 @@ async fn plan_list_summary_same_track_only() {
         json!({"detail":"summary","key":"same"}),
         json!({"detail":"full","key":"same"}),
     ] {
-        let error = call_tool(&local, TOOL_PLAN_LIST, worker_identity(&local), args)
+        let error = call_tool(&local, TOOL_TASK_LS, worker_identity(&local), args)
             .await
             .unwrap_err();
         assert!(error.message.contains("Planner"));
@@ -223,7 +223,7 @@ async fn plan_list_summary_covers_omitted_full_fields() {
     .await;
     let full = call_tool(
         &boot,
-        TOOL_PLAN_LIST,
+        TOOL_TASK_LS,
         planner_identity(&boot),
         json!({"detail":"full","key":"gated"}),
     )
@@ -231,7 +231,7 @@ async fn plan_list_summary_covers_omitted_full_fields() {
     .unwrap();
     let summary = call_tool(
         &boot,
-        TOOL_PLAN_LIST,
+        TOOL_TASK_LS,
         planner_identity(&boot),
         json!({"detail":"summary","key":"gated"}),
     )

@@ -363,7 +363,7 @@ async fn a_worker_is_refused_area_reports_through_neige() {
 const BLOCKS_BODY: &str =
     "Contract intro.\n\n# Goal\n\nalpha\n\n# Findings\n\nbeta\n\n# Next\n\ngamma\n";
 
-/// The report's block ids in document order, from the snapshot `neige_area_outline` also reads.
+/// The report's block ids in document order, from the snapshot `neige_area_ls` also reads.
 async fn block_ids(boot: &CardBoot, report_card: &str) -> Vec<String> {
     calm_server::track_report_read::load_report_doc_snapshot(boot.repo.as_ref(), report_card)
         .await

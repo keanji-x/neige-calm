@@ -43,22 +43,20 @@ const RESPELLED: &[(&str, &str)] = &[
 /// respelled name.
 const KEPT: &[&str] = &["Read", "mcp__calm__plugin_dev_x_unknown", "neige_track_ls"];
 
-/// Every migration from 0134 through the #2087 one, in order. 0136 only creates tables and an
-/// index, 0138 only adds a column, 0139 only creates a table, which the fixture's schema
-/// already has, and 0140 only renames template ids; none holds a tool name.
-async fn run_the_chain(f: &Fx) {
+/// Every migration from 0134 through version `last`, in order; `expected` names them, so a drifted
+/// chain is red. 0136 only creates tables and an index, 0138 only adds a column, 0139 only creates
+/// a table, which the fixture's schema already has, and 0140 only renames template ids; none holds
+/// a tool name.
+pub(super) async fn run_the_chain_through(f: &Fx, last: i64, expected: &[&str]) {
     let chain: Vec<_> = calm_truth::MIGRATOR
         .iter()
-        .filter(|m| m.version >= 134 && !matches!(m.version, 136 | 138 | 139 | 140))
+        .filter(|m| {
+            (134..=last).contains(&m.version) && !matches!(m.version, 136 | 138 | 139 | 140)
+        })
         .collect();
     assert_eq!(
         chain.iter().map(|m| &*m.description).collect::<Vec<_>>(),
-        [
-            "neige tool names",
-            "worker report recipe names",
-            "neige dev publish",
-            "tool name separator",
-        ],
+        expected,
         "the chain this test replays drifted"
     );
     for migration in chain {
@@ -69,15 +67,24 @@ async fn run_the_chain(f: &Fx) {
     }
 }
 
-async fn run_the_separator_migration(f: &Fx) {
+/// The 0134 → 0141 chain this file's expectations are written against.
+pub(super) const SEPARATOR_CHAIN: &[&str] = &[
+    "neige tool names",
+    "worker report recipe names",
+    "neige dev publish",
+    "tool name separator",
+];
+
+/// Applies the one embedded migration named `description` again.
+pub(super) async fn rerun_migration(f: &Fx, description: &str) {
     let migration = calm_truth::MIGRATOR
         .iter()
-        .find(|m| m.description == "tool name separator")
-        .expect("the #2087 migration is embedded");
+        .find(|m| m.description == description)
+        .unwrap_or_else(|| panic!("migration `{description}` is embedded"));
     sqlx::raw_sql(&migration.sql)
         .execute(&f.pool)
         .await
-        .expect("apply the #2087 migration");
+        .unwrap_or_else(|e| panic!("apply {description}: {e}"));
 }
 
 #[tokio::test]
@@ -170,7 +177,7 @@ async fn stored_tool_names_and_recipes_read_back_with_underscores() {
         .await
         .unwrap();
 
-    run_the_chain(&f).await;
+    run_the_chain_through(&f, 141, SEPARATOR_CHAIN).await;
 
     for (id, old, mut params) in seeded {
         let expected = RESPELLED
@@ -215,7 +222,7 @@ async fn stored_tool_names_and_recipes_read_back_with_underscores() {
     );
 
     // Reapplying the migration changes nothing more.
-    run_the_separator_migration(&f).await;
+    rerun_migration(&f, "tool name separator").await;
     let repeated = f
         .repo_dyn
         .track_recipe_get(&recipe.id)
@@ -243,7 +250,7 @@ async fn the_separator_migration_bumps_a_recipe_revision_once() {
         })
         .await
         .unwrap();
-    run_the_separator_migration(&f).await;
+    rerun_migration(&f, "tool name separator").await;
     let migrated = f
         .repo_dyn
         .track_recipe_get(&recipe.id)

@@ -1,4 +1,4 @@
-//! `neige_plan_cancel` past `pending` (#1785 S1): a `running` codex/claude Track worker is
+//! `neige_task_cancel` past `pending` (#1785 S1): a `running` codex/claude Track worker is
 //! canceled and its worker marked for the same reap as a liveness timeout. Everything else past
 //! `pending` is refused with the current status.
 

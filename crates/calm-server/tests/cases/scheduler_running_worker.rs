@@ -1,11 +1,11 @@
-//! #1785 S1: `neige_plan_cancel` on a running Track worker, and the sweep's idle arm that fails a
+//! #1785 S1: `neige_task_cancel` on a running Track worker, and the sweep's idle arm that fails a
 //! codex task whose worker turn ended without a report.
 
 use super::*;
 
 use calm_server::dispatcher::task_event_pushes_planner_for_test;
 use calm_server::event::BroadcastEnvelope;
-use calm_server::mcp_server::tools::plan::TOOL_PLAN_CANCEL;
+use calm_server::mcp_server::tools::plan::TOOL_TASK_CANCEL;
 use provider::worker::{
     CodexDaemonProbe, CodexLivenessFacts, LastTurnFacts, ThreadStatusLite, TurnStatusLite,
 };
@@ -533,7 +533,7 @@ async fn cancel_running_task_cancels_and_reaps_worker() {
 
     call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "cancel-me", "message": "wrong direction" }),
     )
@@ -622,7 +622,7 @@ async fn cancel_running_claude_task_cancels_and_reaps_worker() {
 
     call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "claude-cancel", "message": "stop" }),
     )
@@ -666,7 +666,7 @@ async fn cancel_first_then_late_worker_report_is_rejected_without_delivery() {
 
     call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "cancel-first", "message": "stop" }),
     )
@@ -709,7 +709,7 @@ async fn report_first_then_cancel_is_refused_with_the_current_status() {
     .expect("report wins");
     let err = call_tool(
         &boot,
-        TOOL_PLAN_CANCEL,
+        TOOL_TASK_CANCEL,
         planner_identity(&boot),
         json!({ "key": "report-first", "message": "too late" }),
     )

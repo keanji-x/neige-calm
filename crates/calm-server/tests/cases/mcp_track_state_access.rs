@@ -13,7 +13,7 @@ async fn track_state_projects_stored_access_into_tool_and_text() {
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_TRACK_STATUS, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(
@@ -23,7 +23,7 @@ async fn track_state_projects_stored_access_into_tool_and_text() {
             {"key":"writer","status":"pending","worker_card_id":null,"access":"read_write","start":"checkout"}
         ])
     );
-    let text = render(Render::State, TOOL_TRACK_STATE, false, &out).unwrap();
+    let text = render(Render::Status, TOOL_TRACK_STATUS, false, &out).unwrap();
     assert_eq!(
         text,
         format!(
@@ -31,7 +31,7 @@ async fn track_state_projects_stored_access_into_tool_and_text() {
             boot.track_id, boot.planner_card_id
         )
     );
-    let json_text = render(Render::State, TOOL_TRACK_STATE, true, &out).unwrap();
+    let json_text = render(Render::Status, TOOL_TRACK_STATUS, true, &out).unwrap();
     assert_eq!(json_text, format!("{out}\n"));
     assert_eq!(
         serde_json::from_str::<Value>(&json_text).unwrap()["tasks"][0]["access"],

@@ -11,19 +11,19 @@ use support::mcp::{
 
 fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
-        "neige_area_outline",
-        "neige_plan_cancel",
-        "neige_plan_list",
+        "neige_area_ls",
+        "neige_link_ls",
         "neige_preview_register",
         "neige_preview_unregister",
         "neige_ratify_request",
-        "neige_report_backlinks",
         "neige_report_commit",
-        "neige_report_kinds",
+        "neige_report_describe",
         "neige_report_read",
         "neige_report_write",
         "neige_source_capture",
-        "neige_source_list",
+        "neige_source_ls",
+        "neige_task_cancel",
+        "neige_task_ls",
         "neige_task_verdict",
         "neige_terminal_control",
         "neige_terminal_input",
@@ -33,10 +33,10 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_track_close",
         "neige_track_rename",
         "neige_user_notify",
-        "neige_workspace_changes",
-        "neige_workspace_edits",
-        "neige_workspace_report",
-        "neige_workspace_reports",
+        "neige_workspace_cat",
+        "neige_workspace_diff",
+        "neige_workspace_log",
+        "neige_workspace_ls",
     ]
 }
 
@@ -86,7 +86,7 @@ async fn tools_list_for_planner_role_returns_planner_toolset() {
 }
 
 /// #2003: the deprecated aliases and the retired shims are gone, not hidden: no handler is left
-/// under any of their names.
+/// under any of their names; nor under the view names #2087 B1a renamed.
 #[test]
 fn removed_aliases_and_retired_shims_are_not_registered() {
     let registry = calm_server::mcp_server::build_default_registry();
@@ -103,6 +103,17 @@ fn removed_aliases_and_retired_shims_are_not_registered() {
         "neige.task.report_failure", // retired-name: rejection input
         "neige_task_complete",
         "neige_task_report_success",
+        "neige_plan_list",         // retired-name: rejection input
+        "neige_plan_cancel",       // retired-name: rejection input
+        "neige_source_list",       // retired-name: rejection input
+        "neige_area_outline",      // retired-name: rejection input
+        "neige_report_backlinks",  // retired-name: rejection input
+        "neige_report_kinds",      // retired-name: rejection input
+        "neige_track_state",       // retired-name: rejection input
+        "neige_workspace_reports", // retired-name: rejection input
+        "neige_workspace_report",  // retired-name: rejection input
+        "neige_workspace_changes", // retired-name: rejection input
+        "neige_workspace_edits",   // retired-name: rejection input
         "plugin.dev.neige.git-forge_gh.pr.checks",
     ] {
         assert!(
@@ -124,6 +135,7 @@ async fn unknown_tool_error_lists_the_sessions_tools() {
         (CardRole::Worker, "neige.task.report_success"), // retired-name: rejection input
         (CardRole::Planner, "neige.track.cat"),       // retired-name: rejection input
         (CardRole::Worker, "neige_task_report_success"),
+        (CardRole::Planner, "neige_plan_list"), // retired-name: rejection input
     ] {
         let boot = boot_with_role(role).await;
         let (mut rd, mut wr) = connect(&boot.socket_path).await;
@@ -220,7 +232,7 @@ async fn tools_list_for_assistant_role_returns_the_report_write_surface_only() {
         names,
         vec![
             "neige_report_commit",
-            "neige_report_kinds",
+            "neige_report_describe",
             "neige_report_write",
         ],
         "assistant tools/list must be exactly the report write surface",

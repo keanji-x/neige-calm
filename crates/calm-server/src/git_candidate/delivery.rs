@@ -73,7 +73,7 @@ pub(crate) enum AttemptOutcome {
     Completed,
     /// `neige_task_fail`, a dead worker, or a liveness timeout.
     Failed,
-    /// `neige_plan_cancel` of a running worker.
+    /// `neige_task_cancel` of a running worker.
     Canceled,
     /// The spawn failed before the launch may have started (compensation).
     SpawnFailed,

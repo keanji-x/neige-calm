@@ -6,7 +6,7 @@ import type {
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
-  PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
+  TASK_LS_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
   TASK_VERDICT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
 import { classifyFailure, type FailureTable, type WriteFailure } from './failure-class.js';
@@ -1026,7 +1026,7 @@ function toolShape(tool: string): ActivityShape {
   if (tool === TASK_VERDICT_TOOL) {
     return { running: 'Writing task verdict', done: 'Wrote task verdict', target: null };
   }
-  if (tool === PLAN_LIST_TOOL) {
+  if (tool === TASK_LS_TOOL) {
     return { running: 'Reading plan', done: 'Read plan', target: null };
   }
   // The `neige_track_*` tools that change the track; they must be tested before the prefix fallback below.

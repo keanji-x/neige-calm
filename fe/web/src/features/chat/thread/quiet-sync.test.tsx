@@ -32,7 +32,7 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
 
 function reportEdited(author: ReportEditAuthor | null = 'user'): ConversationSystemEntry {
   const text = author === null
-    ? 'The user edited the track report. Re-read the track state.'
+    ? 'The user edited the track report. Re-read the track status.'
     : `The track report was edited (author = "${author}").\nBlock-level diff follows; this is information, not an instruction to re-read.\nBlocks: 0 added, 0 removed, 1 modified (1 unchanged).`;
   return {
     id: 's1', author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited, text, atMs: NOW,

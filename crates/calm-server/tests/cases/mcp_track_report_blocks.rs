@@ -10,7 +10,7 @@ use crate::mcp_track_report::{
 };
 use calm_server::event::Event;
 use calm_server::mcp_server::tools::track_report_blocks::{
-    RPC_REV_CONFLICT, TOOL_REPORT_COMMIT, TOOL_REPORT_KINDS, TOOL_REPORT_WRITE,
+    RPC_REV_CONFLICT, TOOL_REPORT_COMMIT, TOOL_REPORT_DESCRIBE, TOOL_REPORT_WRITE,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::track_report::TrackReportPayload;
@@ -171,9 +171,14 @@ async fn removed_revision_params_are_refused_as_unknown_parameters() {
 #[tokio::test]
 async fn kinds_returns_all_supported_schemas() {
     let boot = boot().await;
-    let out = call_tool(&boot, TOOL_REPORT_KINDS, planner_identity(&boot), json!({}))
-        .await
-        .expect("kinds succeeds");
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_DESCRIBE,
+        planner_identity(&boot),
+        json!({}),
+    )
+    .await
+    .expect("kinds succeeds");
     let kinds = out
         .get("kinds")
         .and_then(Value::as_array)
@@ -420,9 +425,14 @@ async fn kinds_returns_all_supported_schemas() {
 #[tokio::test]
 async fn kinds_refuses_worker() {
     let boot = boot().await;
-    let err = call_tool(&boot, TOOL_REPORT_KINDS, worker_identity(&boot), json!({}))
-        .await
-        .expect_err("worker must be denied");
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_DESCRIBE,
+        worker_identity(&boot),
+        json!({}),
+    )
+    .await
+    .expect_err("worker must be denied");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 }
 

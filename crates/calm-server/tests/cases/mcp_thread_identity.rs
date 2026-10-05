@@ -836,7 +836,7 @@ async fn tools_call_malformed_meta_rejects_even_when_cardbound_token_present() {
             "method": "tools/call",
             "_meta": "not-an-object",
             "params": {
-                "name": "neige_track_state",
+                "name": "neige_track_status",
                 "arguments": {}
             }
         }),
@@ -866,7 +866,7 @@ async fn tools_call_malformed_params_meta_also_rejects() {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "neige_track_state",
+                "name": "neige_track_status",
                 "arguments": {},
                 "_meta": ["array-not-object"]
             }
@@ -1010,7 +1010,14 @@ async fn daemontrust_with_unresolvable_thread_id_rejects() {
 #[tokio::test]
 async fn default_track_state_tool_without_thread_id_uses_cardbound_planner_identity() {
     let boot = boot_with_registry(build_default_registry()).await;
-    let resp = call_with_token(&boot, &boot.raw_token, "neige_track_state", None, json!({})).await;
+    let resp = call_with_token(
+        &boot,
+        &boot.raw_token,
+        "neige_track_status",
+        None,
+        json!({}),
+    )
+    .await;
     assert!(
         resp.get("error").is_none(),
         "shell-neige style CardBound no-thread call must succeed: {resp:#?}"
@@ -1025,7 +1032,7 @@ async fn pre_initialize_tools_call_rejects() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(2, "neige_track_state", None, json!({})),
+        tools_call_frame(2, "neige_track_status", None, json!({})),
     )
     .await;
     let resp = recv_frame(&mut rd).await;
@@ -1050,7 +1057,7 @@ async fn cardbound_role_gate_still_applies() {
     let resp = call_with_token(
         &boot,
         &report.mcp_token,
-        "neige_track_state",
+        "neige_track_status",
         None,
         json!({}),
     )
@@ -1088,7 +1095,7 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
                 "reason": "should not run"
             }),
         ),
-        ("neige_track_state", json!({})),
+        ("neige_track_status", json!({})),
         (
             "neige_task_verdict",
             json!({

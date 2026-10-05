@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_TOOL_PREFIX,
+  TASK_LS_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_TOOL_PREFIX,
   REPORT_WRITE_TOOLS, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
 import {
@@ -193,7 +193,7 @@ describe('foldQuietSyncs outcome', () => {
       reportEdited('s1'), ...REPORT_READ_TOOLS.map((tool, index) => activity(`r${index}`, { tool })), outcome('o1'),
     ]);
     expect(group(reads[0]).outcome).toBe('accepted');
-    const other = foldQuietSyncs([reportEdited('s1'), activity('t1', { tool: PLAN_LIST_TOOL }), outcome('o1')]);
+    const other = foldQuietSyncs([reportEdited('s1'), activity('t1', { tool: TASK_LS_TOOL }), outcome('o1')]);
     expect(group(other[0]).outcome).toBe('accepted');
     const shell = foldQuietSyncs([reportEdited('s1'), activity('sh', { verb: 'Ran', tool: null }), outcome('o1')]);
     expect(group(shell[0]).outcome).toBe('accepted');
@@ -285,12 +285,12 @@ describe('foldQuietSyncs over persisted batches', () => {
 describe('reportEditAuthor', () => {
   it('reads the author the kernel named on the first line', () => {
     expect(reportEditAuthor(DIFF_TEXT)).toBe('user');
-    expect(reportEditAuthor('The track report was edited (author = "plugin"). Re-read the track state.')).toBe('plugin');
+    expect(reportEditAuthor('The track report was edited (author = "plugin"). Re-read the track status.')).toBe('plugin');
     expect(reportEditAuthor('The track report was edited (author = "assistant").\nmore')).toBe('assistant');
   });
 
   it('answers null for the pre-#1252 sentence and for an unknown spelling', () => {
-    expect(reportEditAuthor('The user edited the track report. Re-read the track state.')).toBeNull();
+    expect(reportEditAuthor('The user edited the track report. Re-read the track status.')).toBeNull();
     expect(reportEditAuthor('The track report was edited (author = "kernel").')).toBeNull();
     expect(reportEditAuthor('')).toBeNull();
     expect(reportEditAuthor('The user edited the track report.\n+(author = "plugin")')).toBeNull();
