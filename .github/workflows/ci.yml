@@ -473,6 +473,9 @@ jobs:
       - name: prose ratchet discriminates (#1635 S6)
         run: ./scripts/gate-prose-ratchet.sh --selftest
 
+      - name: track scorecard bypass classifier discriminates (#2170 A)
+        run: ./scripts/track-scorecard.py --selftest
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         if: env.RUN_RUST_CHECKS == 'true'
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
