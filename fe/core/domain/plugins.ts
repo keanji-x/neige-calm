@@ -517,8 +517,10 @@ export type PluginReloadOutcome = Readonly<{
  */
 export function reloadOutcome(facts: PluginRestartFacts): PluginReloadOutcome {
   const { rejection, state, lastError } = facts;
-  const refusal = rejection === null ? null : refusalText(writeFailureOf(rejection.error), PLUGIN_RELOAD_FAILURES, '');
-  if (refusal !== null && state === 'running') {
+  const failure = rejection === null ? null : writeFailureOf(rejection.error);
+  const refusal = rejection === null ? null : refusalText(failure, PLUGIN_RELOAD_FAILURES, '');
+  /* Refused before the stop, or never sent: nothing stopped the plugin. */
+  if (refusal !== null && (state === 'running' || failure instanceof NotSentError)) {
     return {
       kind: 'refused',
       tone: 'warning',

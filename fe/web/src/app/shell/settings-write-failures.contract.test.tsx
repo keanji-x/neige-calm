@@ -213,6 +213,26 @@ describe('an offline press is refused before anything is sent', () => {
     expect(writes).toEqual([]);
   });
 
+  it.each(['Save', 'Apply & restart'] as const)('configuration %s', async (press) => {
+    const { writes } = renderSettings('/settings/plugins', () => Promise.resolve(ok(DETAIL)));
+    await userEvent.click(await screen.findByRole('button', { name: 'Configure Git forge' }));
+    await userEvent.type(await screen.findByLabelText('base_url'), 'https://forge.internal');
+    act(() => onlineManager.setOnline(false));
+    await userEvent.click(screen.getByRole('button', { name: press }));
+    expect(await alerts()).toContain('Nothing was saved.');
+    expect(writes).toEqual([]);
+  });
+
+  it('Apply & restart with no edit, whose first write is the restart', async () => {
+    const { writes } = renderSettings('/settings/plugins', () => Promise.resolve(ok(DETAIL)));
+    await userEvent.click(await screen.findByRole('button', { name: 'Configure Git forge' }));
+    await screen.findByLabelText('base_url');
+    act(() => onlineManager.setOnline(false));
+    await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));
+    expect(await alerts()).toContain('Nothing was saved.');
+    expect(writes).toEqual([]);
+  });
+
   it('network settings PUT', async () => {
     const { writes } = renderSettings('/settings', () => Promise.resolve(ok({ settings: {} })));
     const field = await screen.findByLabelText('HTTP proxy');

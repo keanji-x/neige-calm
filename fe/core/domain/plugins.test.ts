@@ -287,6 +287,12 @@ describe('reloadOutcome (#1284 §2.4)', () => {
     expect(outcome.message).toContain('plugin `git-forge` is busy');
   });
 
+  it('says a restart that was never sent did not run, rather than that the plugin stopped', () => {
+    const outcome = reloadOutcome({ rejection: { error: new NotSentError() }, state: 'unknown' });
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.message).not.toMatch(/has stopped/);
+  });
+
   it('carries last_error verbatim when the plugin landed in unavailable', () => {
     /* `unavailable` is a connector's normal terminal state, not a kernel error; `last_error` is the only diagnostic. */
     const reason = 'mcp-http: connect to https://api.example.com failed: connection refused';
