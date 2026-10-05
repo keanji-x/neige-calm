@@ -63,7 +63,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import {
-  ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, writeFailureOf, writeFailureText,
+  ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, refusalText, writeFailureOf, writeFailureText,
 } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
@@ -1181,8 +1181,7 @@ export function usePluginConfigMutations(
     },
     applyRestart: async (id, patch, options) => {
       /* An empty patch with no reset is not a write: PATCHing `{}` would take the lifecycle lock for nothing and could 409 the restart. */
-      const saves = Object.keys(patch).length > 0 || options.reset;
-      if (saves) {
+      if (Object.keys(patch).length > 0 || options.reset) {
         try { await write.mutateAsync({ id, patch, options }); }
         catch (error) { return { saved: false, error }; }
         finally { write.reset(); }
@@ -1190,9 +1189,7 @@ export function usePluginConfigMutations(
       try {
         return { saved: true, restart: await restart.mutateAsync(id) };
       } catch (error) {
-        /* Nothing was sent and nothing was saved first: the press itself was refused. */
-        if (!saves && error instanceof NotSentError) return { saved: false, error };
-        // A previous acknowledgement does not prove the plugin's current state once this attempt lost ownership of its readback.
+        // A restart never sent reads as one that did not run. A previous acknowledgement does not prove the plugin's current state once this attempt lost ownership of its readback.
         return { saved: true, restart: { rejection: { error }, state: 'unknown' } };
       } finally { restart.reset(); }
     },

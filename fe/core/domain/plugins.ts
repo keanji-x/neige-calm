@@ -127,6 +127,19 @@ export const PLUGIN_CONFIG_RESET_OFFERS: FailureTable<'reset' | 'none'> = Object
 });
 
 /**
+ * The reload answers given before anything stopped (`lifecycle.rs` `reload`): 404 from the existence probe and 409
+ * `plugin_busy` from the lifecycle lock. Every other answer may follow the stop.
+ */
+export const PLUGIN_RELOAD_BEFORE_STOP: FailureTable<'untouched' | 'after-stop'> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([404]), is: 'untouched' as const }),
+    Object.freeze({ status: Object.freeze([409]), code: 'plugin_busy', is: 'untouched' as const }),
+  ]),
+  unauthorized: 'untouched',
+  otherwise: 'after-stop',
+});
+
+/**
  * `POST /api/plugins/{id}/reload`. Refusals: 404 and 409 `plugin_busy` before anything stopped; 400 (the manifest),
  * 409 `plugin_conflict`, 422 and 503 after the stop. A 500 may have stopped it or not, so it is `unknown`. Which of
  * these left the plugin where is read back from its state by {@link reloadOutcome}.
@@ -519,12 +532,12 @@ export function reloadOutcome(facts: PluginRestartFacts): PluginReloadOutcome {
   const { rejection, state, lastError } = facts;
   const failure = rejection === null ? null : writeFailureOf(rejection.error);
   const refusal = rejection === null ? null : refusalText(failure, PLUGIN_RELOAD_FAILURES, '');
-  /* Refused before the stop, or never sent: nothing stopped the plugin. */
-  if (refusal !== null && (state === 'running' || failure instanceof NotSentError)) {
+  /* Never sent, or refused before the stop: nothing stopped the plugin, whatever its state reads back as. */
+  if (refusal !== null && (failure instanceof NotSentError || classifyFailure(failure, PLUGIN_RELOAD_BEFORE_STOP) === 'untouched')) {
     return {
       kind: 'refused',
       tone: 'warning',
-      message: `Configuration saved. The restart did not run, so the plugin is still running its previous configuration. ${refusal}`.trim(),
+      message: `Configuration saved. The restart did not run, so the plugin keeps the configuration it last started with. ${refusal}`.trim(),
     };
   }
   if (state === 'unavailable') {

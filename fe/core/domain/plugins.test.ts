@@ -283,8 +283,22 @@ describe('reloadOutcome (#1284 §2.4)', () => {
     expect(outcome.kind).toBe('refused');
     expect(outcome.tone).toBe('warning');
     expect(outcome.message).toMatch(/saved/i);
-    expect(outcome.message).toMatch(/previous configuration/);
+    expect(outcome.message).toMatch(/did not run, so the plugin keeps the configuration it last started with/);
     expect(outcome.message).toContain('plugin `git-forge` is busy');
+  });
+
+  it.each(['spawning', 'unknown', 'disabled', 'crashed'] as const)(
+    'reads a busy or missing plugin as refused before the stop, whatever reads back (%s)', (state) => {
+      for (const error of [answered(409, 'plugin_busy', 'plugin `git-forge` is busy'), answered(404, 'not_found', 'not found: plugin git-forge')]) {
+        const outcome = reloadOutcome({ rejection: { error }, state });
+        expect(outcome.kind).toBe('refused');
+        expect(outcome.message).not.toMatch(/has stopped|still running/);
+      }
+    },
+  );
+
+  it('reads a refusal after the stop as stopped even when something else brought the plugin up', () => {
+    expect(reloadOutcome({ rejection: { error: answered(409, 'plugin_conflict', 'template taken') }, state: 'running' }).kind).toBe('stopped');
   });
 
   it('says a restart that was never sent did not run, rather than that the plugin stopped', () => {

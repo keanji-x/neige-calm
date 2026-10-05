@@ -14,7 +14,7 @@ import {
 } from './failure-class.js';
 import {
   PLUGIN_CONFIG_FAILURES, PLUGIN_CONFIG_RESET_OFFERS, PLUGIN_INSTALL_FAILURES, PLUGIN_INSTALL_RETRY_FAILURES,
-  PLUGIN_RELOAD_FAILURES, PLUGIN_TOGGLE_FAILURES, PLUGIN_UNINSTALL_FAILURES,
+  PLUGIN_RELOAD_BEFORE_STOP, PLUGIN_RELOAD_FAILURES, PLUGIN_TOGGLE_FAILURES, PLUGIN_UNINSTALL_FAILURES,
 } from './plugins.js';
 import { SETTINGS_FAILURES } from './settings.js';
 import { LAUNCHPAD_ENSURE_FAILURES, REPORT_RESET_FAILURES } from './today.js';
@@ -207,6 +207,12 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(409, 'plugin_conflict'), 'refused'], [http(422, 'plugin_kernel_too_old'), 'refused'],
     [http(503, 'service_unavailable'), 'refused'], [unauthorized, 'refused'],
     [http(500, 'internal'), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /plugins/{id}/reload, answered before the stop', PLUGIN_RELOAD_BEFORE_STOP, [
+    [http(404, 'not_found'), 'untouched'], [http(409, 'plugin_busy'), 'untouched'], [unauthorized, 'untouched'],
+    [http(409, 'plugin_conflict'), 'after-stop'], [http(400, 'plugin_install'), 'after-stop'], [http(422), 'after-stop'],
+    [http(503, 'service_unavailable'), 'after-stop'], [http(500, 'internal'), 'after-stop'],
+    [transport, 'after-stop'], [decode, 'after-stop'], [null, 'after-stop'],
   ]],
   ['PUT /settings', SETTINGS_FAILURES, [
     /* The handler answers only 500; a 4xx is the extractor's, before anything was stored. */

@@ -84,10 +84,13 @@ export function PluginAddPane({ pending, onBack, onCheckConnector, onInstallConn
     const failure = source === 'connector' ? problem : path.trim() === '' ? 'A directory path is required.' : null;
     if (failure !== null) { setError(failure); return; }
     clearResult();
+    /* An edit while this attempt is out makes it another draft's: its outcome decides nothing here. */
+    const token = generation.current;
     const table = afterUnknown ? PLUGIN_INSTALL_RETRY_FAILURES : PLUGIN_INSTALL_FAILURES;
     try {
       await (source === 'connector' && draft !== null ? onInstallConnector(draft) : onInstallLocalPath(path));
     } catch (failed) {
+      if (generation.current !== token) return;
       const text = writeFailureText(table, PLUGIN_INSTALL_TEXT)(failed);
       if (text !== null) {
         if (writeClassOf(failed, table) === 'unknown') setAfterUnknown(true);
@@ -95,7 +98,7 @@ export function PluginAddPane({ pending, onBack, onCheckConnector, onInstallConn
         return;
       }
     }
-    onInstalled();
+    if (generation.current === token) onInstalled();
   };
 
   return (

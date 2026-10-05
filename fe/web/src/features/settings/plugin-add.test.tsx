@@ -81,6 +81,25 @@ describe('Add a plugin from JSON', () => {
     expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'MCP configuration' }).value).toBe(config);
     expect(p.onInstalled).not.toHaveBeenCalled();
   });
+  it('never lets an attempt for an edited-away draft decide the new draft', async () => {
+    let failFirst!: (error: unknown) => void;
+    const onInstallLocalPath = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failFirst = reject; }))
+      .mockImplementationOnce(() => Promise.reject(new ApiError({
+        kind: 'http', status: 409, code: 'plugin_conflict', message: 'plugin `b` already installed', body: {},
+      })));
+    const p = props({ onInstallLocalPath }); render(<PluginAddPane {...p} />);
+    await choose('Source', 'Server directory');
+    await userEvent.type(screen.getByLabelText('Directory path'), '/a');
+    await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
+    await userEvent.clear(screen.getByLabelText('Directory path'));
+    await userEvent.type(screen.getByLabelText('Directory path'), '/b');
+    await act(async () => { failFirst(new ApiError({ kind: 'transport', message: 'Transport request failed' })); await Promise.resolve(); });
+    await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('already installed');
+    expect(onInstallLocalPath.mock.calls).toEqual([['/a'], ['/b']]);
+    expect(p.onInstalled).not.toHaveBeenCalled();
+  });
   it('still installs a directory on the server', async () => {
     const p = props(); render(<PluginAddPane {...p} />);
     await choose('Source', 'Server directory');

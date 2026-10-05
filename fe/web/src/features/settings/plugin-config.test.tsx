@@ -279,7 +279,7 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));
     const status = await verdict(/restart did not run/);
     expect(status.textContent).toMatch(/saved/i);
-    expect(status.textContent).toMatch(/still running its previous configuration/);
+    expect(status.textContent).toMatch(/keeps the configuration it last started with/);
     expect(status.textContent).toContain('plugin `git-forge` is busy');
   });
 

@@ -10,7 +10,7 @@ import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
 import { VisuallyHidden as AstryxVisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useEffect, useRef, type ReactNode } from 'react';
 
-import { writeFailureText } from '../../../../core/domain/failure-class.ts';
+import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import {
   HTTPS_PROXY_KEY, HTTP_PROXY_KEY, SETTINGS_FAILURES, SETTINGS_TEXT, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
@@ -248,8 +248,8 @@ export function NetworkPane({
       .then(() => { settle({ phase: 'saved', at: Date.now(), value }); })
       .catch((error: unknown) => {
         /* Clearing `sent` on failure is what lets the reader retry with refocus + Enter. */
-        const message = writeFailureText(SETTINGS_FAILURES, SETTINGS_TEXT)(error);
-        settle(message === null ? { phase: 'saved', at: Date.now(), value } : { phase: 'failed', message, value });
+        const message = refusalText(writeFailureOf(error), SETTINGS_FAILURES, SETTINGS_TEXT.refused) ?? SETTINGS_TEXT.unknown;
+        settle({ phase: 'failed', message, value });
       });
   };
 

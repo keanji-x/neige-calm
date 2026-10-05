@@ -194,11 +194,11 @@ describe('a refusal shows the server’s reason', () => {
     expect(await alerts()).toContain('another lifecycle operation holds it');
   });
 
-  it('a busy restart keeps the plugin on its previous configuration', async () => {
+  it('a busy restart keeps the plugin on the configuration it last started with', async () => {
     renderSettings('/settings/plugins', (request) => Promise.resolve(request.path.endsWith('/reload') ? BUSY : ok(DETAIL)));
     await configure('Apply & restart');
     const status = await screen.findByText(/Configuration saved\./);
-    expect(status.textContent).toMatch(/previous configuration/);
+    expect(status.textContent).toMatch(/restart did not run/);
     expect(status.textContent).toContain('another lifecycle operation holds it');
   });
 });
@@ -229,7 +229,7 @@ describe('an offline press is refused before anything is sent', () => {
     await screen.findByLabelText('base_url');
     act(() => onlineManager.setOnline(false));
     await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));
-    expect(await alerts()).toContain('Nothing was saved.');
+    expect((await screen.findByText(/Configuration saved\./)).textContent).toMatch(/restart did not run/);
     expect(writes).toEqual([]);
   });
 
