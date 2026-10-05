@@ -25,11 +25,12 @@ const notFound: ApiTransportResponse = { status: 404, statusText: 'Not Found', b
 /** What a lost answer, a timeout or an unreadable answer would put on screen if the raw failure were shown. */
 const RAW_OR_CONNECTIVITY = /Transport request failed|timed out|schema|offline|reconnect|connection/i;
 
-type World = { closed: boolean; gone: boolean };
+/** `stale`: track reads stop answering, so only a write's own cache update can change the page. */
+type World = { closed: boolean; gone: boolean; stale: boolean };
 
 /** The real app over a fake server: reads answer from `world`, and every write goes to `write`. */
 function renderApp(path: string, write: (request: ApiRequest, world: World) => Promise<ApiTransportResponse>, closed = false) {
-  const world: World = { closed, gone: false };
+  const world: World = { closed, gone: false, stale: false };
   const writes: ApiRequest[] = [];
   const reads: string[] = [];
   const transport: ApiTransportPort = { send(request) {
@@ -38,6 +39,7 @@ function renderApp(path: string, write: (request: ApiRequest, world: World) => P
     const track = { ...openTrack, closed_at: world.closed ? 2 : null };
     if (request.path === '/api/areas') return Promise.resolve(ok([area]));
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(world.gone ? [] : [track]));
+    if (request.path === '/api/tracks/w1' && world.stale) return new Promise<ApiTransportResponse>(() => undefined);
     if (request.path === '/api/tracks/w1') return Promise.resolve(world.gone ? notFound : ok({
       track, can_reopen: world.closed, can_close: !world.closed, cards: [card], overlays: [],
     }));
@@ -153,6 +155,27 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
     await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Workspace' })).queryByText('Reliable')).toBeNull());
     expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);
     expect(writes.map((request) => `${request.method} ${request.path}`)).toEqual(['DELETE /api/tracks/w1', 'DELETE /api/tracks/w1']);
+  });
+
+  /* #2131 S2: the board draws the cached detail, so a done delete drops the card there rather than waiting for a read. */
+  it('drops the card from the board before any read answers', async () => {
+    let attempt = 0;
+    const { writes } = renderApp('/track/w1', (_request, world) => {
+      attempt += 1;
+      if (attempt === 1) return lost();
+      world.stale = true;
+      return Promise.resolve({ status: 404, statusText: 'Not Found', body: { error: 'card not found', code: 'not_found' } });
+    });
+    const deleteCard = async () => {
+      await userEvent.click(await screen.findByRole('button', { name: 'Delete card Build log' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));
+    };
+    await deleteCard();
+    expect((await screen.findByRole('alert')).textContent).toBe('The delete is unconfirmed.');
+    await deleteCard();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull());
+    expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);
+    expect(writes.map((request) => `${request.method} ${request.path}`)).toEqual(['DELETE /api/cards/k1', 'DELETE /api/cards/k1']);
   });
 
   it('leaves the deleted track’s own page as a delete that held', async () => {

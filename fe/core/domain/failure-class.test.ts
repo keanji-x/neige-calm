@@ -122,7 +122,11 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
   ['POST a card', CARD_CREATE_FAILURES, [
     [http(400, 'bad_request'), 'refused'], [http(403, 'plugin_permission'), 'refused'], [http(404, 'not_found'), 'refused'],
     [http(422, 'not_a_card_tool'), 'refused'], [unauthorized, 'refused'],
-    [http(409, 'conflict'), 'unknown'], [http(500), 'unknown'], [http(502, 'tool_call_failed'), 'unknown'],
+    /* A key bound to another body, or one the server cannot store: final, the next intent mints a new key (#2131 S2). */
+    [http(409, 'idempotency_key_reused'), 'refused'], [http(400, 'idempotency_key_invalid'), 'refused'],
+    /* A stored failed create replayed under its key, a 5xx, a lost answer: the card may exist, so the key is kept. */
+    [http(409, 'conflict'), 'unknown'], [http(409, 'idempotency_key_concurrent'), 'unknown'],
+    [http(500), 'unknown'], [http(502, 'tool_call_failed'), 'unknown'], [http(503, 'service_unavailable'), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   ['PATCH /areas/{id}', AREA_PATCH_FAILURES, [

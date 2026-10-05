@@ -538,14 +538,20 @@ export type NewTerminalCardBody = Readonly<{
   env?: Readonly<Record<string, string>>;
 }>;
 
+/**
+ * `POST /api/tracks/:id/terminal-cards`. Keyed per add-card intent, not per call: a retry under the key joins the card the
+ * first attempt made, where an unkeyed one would make a second terminal.
+ */
 export function createTerminalCardOperation(
   trackId: string,
   body: NewTerminalCardBody,
+  idempotencyKey: string,
 ): ApiOperation<CardWire> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/terminal-cards`,
     body,
+    headers: { 'Idempotency-Key': idempotencyKey },
     responseSchema: cardWireSchema,
   };
 }
@@ -559,14 +565,17 @@ export type NewCodexCardBody = Readonly<{
   sort?: number | null;
 }>;
 
+/** `POST /api/tracks/:id/codex-cards`, keyed per add-card intent like the terminal create. */
 export function createCodexCardOperation(
   trackId: string,
   body: NewCodexCardBody,
+  idempotencyKey: string,
 ): ApiOperation<CardWire> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/codex-cards`,
     body,
+    headers: { 'Idempotency-Key': idempotencyKey },
     responseSchema: cardWireSchema,
   };
 }
@@ -590,10 +599,14 @@ export function createCardOperation(trackId: string, body: NewCardBody): ApiOper
 
 /**
  * What a failed card create says: 400, 403, 404 and 422 refuse the body, the track or the plugin before anything is
- * made; anything else may have made the card.
+ * made, and a key bound to another body (`idempotency_key_reused`) can never make this one: both are final, so the next
+ * intent mints a new key. Anything else may have made the card, so a keyed create keeps its key for Try again.
  */
 export const CARD_CREATE_FAILURES: FailureTable<WriteClass> = Object.freeze({
-  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const })]),
+  rules: Object.freeze([
+    Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),
+  ]),
   unauthorized: 'refused',
   otherwise: 'unknown',
 });

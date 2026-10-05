@@ -58,6 +58,8 @@ export type NewCardFormProps = Readonly<{
   entry: CardAddMenuEntry;
   submitting: boolean;
   error: string | null;
+  /** Resends the create whose outcome `error` says is unknown, under its key and body; `null` when there is none. */
+  onRetry: (() => void) | null;
   /** The picker's read port, injected. */
   listDirectory: ListDirectory;
   /** The dialog's opening focus target, bound to the first field: without one the dialog focuses its own Close button and the first keystroke closes it. */
@@ -68,7 +70,7 @@ export type NewCardFormProps = Readonly<{
 
 /** The declared fields of one kind. Empty means absent: an untouched `Working directory` sends no `cwd` at all rather than `""`, which the kernel would read as a path. */
 export function NewCardForm({
-  entry, submitting, error, listDirectory, firstFieldRef, onCancel, onSubmit,
+  entry, submitting, error, onRetry, listDirectory, firstFieldRef, onCancel, onSubmit,
 }: NewCardFormProps) {
   const fieldId = useId();
   const [values, setValues] = useState<NewCardValues>({});
@@ -88,7 +90,8 @@ export function NewCardForm({
         onSubmit(values);
       }}
     >
-      {error !== null && <Banner status="error" title={error} data-nc-new-card-error />}
+      {error !== null && <Banner status="error" title={error} data-nc-new-card-error
+        endContent={onRetry === null ? undefined : <Button label="Try again" variant="ghost" onClick={onRetry} />} />}
 
       {entry.fields.map((field, index) => {
         const id = `${fieldId}-${field.key}`;

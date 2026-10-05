@@ -62,7 +62,7 @@ import {
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
-import { ApiError, refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
+import { ApiError, classifyFailure, DELETE_FAILURES, refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem, UploadAttachmentResponse } from '../../../../core/api/generated/wire.ts';
@@ -785,8 +785,8 @@ export type TrackMutations = Readonly<{
   create: TrackCreateMutation;
   patch: (trackId: string, areaId: string, body: TrackPatchBody) => Promise<Track>;
   setPinned: (trackId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Track>;
-  createTerminal: (trackId: string, body: NewTerminalCardBody) => Promise<CardWire>;
-  createCodex: (trackId: string, body: NewCodexCardBody) => Promise<CardWire>;
+  createTerminal: (trackId: string, body: NewTerminalCardBody, idempotencyKey: string) => Promise<CardWire>;
+  createCodex: (trackId: string, body: NewCodexCardBody, idempotencyKey: string) => Promise<CardWire>;
   createCard: (trackId: string, body: NewCardBody) => Promise<CardWire>;
   removeCard: (trackId: string, cardId: string, signal?: AbortSignal) => Promise<void>;
   remove: (trackId: string, areaId: string, signal?: AbortSignal) => Promise<void>;
@@ -850,13 +850,13 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     void client.invalidateQueries({ queryKey: queryKeys.trackDetail(card.track_id) });
   };
   const createTerminal = useRecoveryMutation(transport, {
-    mutationFn: ({ trackId, body }: { trackId: string; body: NewTerminalCardBody }, transport: ApiTransportPort) =>
-      runOperation(transport, createTerminalCardOperation(trackId, body), unauthorized),
+    mutationFn: ({ trackId, body, key }: { trackId: string; body: NewTerminalCardBody; key: string }, transport: ApiTransportPort) =>
+      runOperation(transport, createTerminalCardOperation(trackId, body, key), unauthorized),
     onSuccess: addCardToDetail,
   });
   const createCodex = useRecoveryMutation(transport, {
-    mutationFn: ({ trackId, body }: { trackId: string; body: NewCodexCardBody }, transport: ApiTransportPort) =>
-      runOperation(transport, createCodexCardOperation(trackId, body), unauthorized),
+    mutationFn: ({ trackId, body, key }: { trackId: string; body: NewCodexCardBody; key: string }, transport: ApiTransportPort) =>
+      runOperation(transport, createCodexCardOperation(trackId, body, key), unauthorized),
     onSuccess: addCardToDetail,
   });
   const createCard = useRecoveryMutation(transport, {
@@ -865,16 +865,21 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     onSuccess: addCardToDetail,
   });
   /* Delete drops the row from the cached detail before the refetch lands: leaving it on screen would keep
-   * a PTY attached to a card the kernel has torn down. `onSettled`: an aborted wait says nothing about commit. */
+   * a PTY attached to a card the kernel has torn down. A delete answered done (404, `DELETE_FAILURES`) is gone the same
+   * way. `onSettled`: an aborted wait says nothing about commit. */
+  const dropCard = (_result: unknown, { trackId, cardId }: { trackId: string; cardId: string }) => {
+    client.setQueryData(queryKeys.trackDetail(trackId), (previous: TrackDetailWire | undefined) => {
+      if (previous === undefined) return previous;
+      const cards = previous.cards.filter((existing) => existing.id !== cardId);
+      return cards.length === previous.cards.length ? previous : { ...previous, cards };
+    });
+  };
   const removeCard = useRecoveryMutation(transport, {
     mutationFn: ({ cardId, signal }: { trackId: string; cardId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>
       runOperation(transport, { ...deleteCardOperation(cardId), signal }, unauthorized),
-    onSuccess: (_result, { trackId, cardId }) => {
-      client.setQueryData(queryKeys.trackDetail(trackId), (previous: TrackDetailWire | undefined) => {
-        if (previous === undefined) return previous;
-        const cards = previous.cards.filter((existing) => existing.id !== cardId);
-        return cards.length === previous.cards.length ? previous : { ...previous, cards };
-      });
+    onSuccess: dropCard,
+    onError: (error, variables) => {
+      if (error instanceof ApiError && classifyFailure(error.failure, DELETE_FAILURES) === 'done') dropCard(undefined, variables);
     },
     onSettled: (_result, _error, { trackId }) => {
       void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
@@ -909,8 +914,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
   return {
     create: createTrack,
     patch: patchTrack,
-    createTerminal: async (trackId, body) => createTerminal.mutateAsync({ trackId, body }),
-    createCodex: async (trackId, body) => createCodex.mutateAsync({ trackId, body }),
+    createTerminal: async (trackId, body, key) => createTerminal.mutateAsync({ trackId, body, key }),
+    createCodex: async (trackId, body, key) => createCodex.mutateAsync({ trackId, body, key }),
     createCard: async (trackId, body) => createCard.mutateAsync({ trackId, body }),
     removeCard: async (trackId, cardId, signal) => {
       await removeCard.mutateAsync({ trackId, cardId, signal });

@@ -77,8 +77,8 @@ describe('writes never queue an offline submission, in either build', () => {
     ['area create', ({ area }) => area.create({ name: 'Offline area', color: '#123456' }, 'offline-area')],
     ['area update', ({ area }) => area.update('c1', { name: 'Offline rename' })],
     ['track create', ({ track }) => track.create({ area_id: 'c1', planner_provider: 'codex', theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
-    ['terminal create', ({ track }) => track.createTerminal('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
-    ['codex create', ({ track }) => track.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['terminal create', ({ track }) => track.createTerminal('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } }, 'offline-terminal')],
+    ['codex create', ({ track }) => track.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } }, 'offline-codex')],
     ['card create', ({ track }) => track.createCard('w1', { kind: 'note', title: 'Offline note', payload: {} })],
     ['recipe create', ({ recipe }) => recipe.create({ title: 'Offline recipe', body: '' })],
     ['recipe save', ({ recipe }) => recipe.save('recipe-1', { title: 'Offline recipe', body: '', if_revision: 1 })],
@@ -626,6 +626,40 @@ describe('track detail mutation cache writes', () => {
     expect(reads).toBe(0);
   });
 
+  /* #2131: a DELETE answered 404 is done (`DELETE_FAILURES`), and a done delete leaves the board the same way. */
+  it('drops a card whose delete was answered 404 without waiting for a refetch', async () => {
+    let reads = 0;
+    const transport: ApiTransportPort = {
+      send: (request) => {
+        if (request.method === 'GET') { reads += 1; return new Promise<ApiTransportResponse>(() => undefined); }
+        return Promise.resolve({ status: 404, statusText: 'Not Found', body: { error: 'card not found', code: 'not_found' } });
+      },
+    };
+    const { client, result } = mounted(transport);
+    client.setQueryData(queryKeys.trackDetail('w1'), detail);
+
+    await act(() => expect(result.current.removeCard('w1', 'card-a')).rejects.toBeInstanceOf(ApiError));
+
+    expect(client.getQueryData<typeof detail>(queryKeys.trackDetail('w1'))?.cards.map((card) => card.id)).toEqual(['card-b']);
+    expect(reads).toBe(0);
+  });
+
+  it('keeps a card whose delete was refused or unanswered', async () => {
+    for (const answer of [
+      () => Promise.resolve<ApiTransportResponse>({ status: 409, statusText: 'Conflict', body: { error: 'busy', code: 'terminal_disposal' } }),
+      () => Promise.reject<ApiTransportResponse>(new Error('socket hang up')),
+    ]) {
+      const transport: ApiTransportPort = {
+        send: (request) => (request.method === 'GET' ? new Promise<ApiTransportResponse>(() => undefined) : answer()),
+      };
+      const { client, result } = mounted(transport);
+      client.setQueryData(queryKeys.trackDetail('w1'), detail);
+      await act(() => expect(result.current.removeCard('w1', 'card-a')).rejects.toBeInstanceOf(ApiError));
+      expect(client.getQueryData<typeof detail>(queryKeys.trackDetail('w1'))?.cards.map((card) => card.id))
+        .toEqual(['card-a', 'card-b']);
+    }
+  });
+
   it('leaves a detail it has no copy of alone rather than inventing one', async () => {
     const transport: ApiTransportPort = { send: () => Promise.resolve(ok(undefined)) };
     const { client, result } = mounted(transport);
@@ -659,7 +693,7 @@ describe('track detail mutation cache writes', () => {
     const { client, result } = mounted(transport);
     client.setQueryData(queryKeys.trackDetail('w1'), detail);
 
-    await act(() => result.current.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [1, 1, 1] } }));
+    await act(() => result.current.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [1, 1, 1] } }, 'replayed-key'));
 
     expect(client.getQueryData<typeof detail>(queryKeys.trackDetail('w1'))?.cards.map((card) => card.id))
       .toEqual(['card-a', 'card-b']);

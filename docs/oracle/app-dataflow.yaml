@@ -679,6 +679,27 @@
   intentional_omission: false
   migration: migrated
 
+- id: INV-APP-119
+  kind: invariant
+  family: app-keyed-writes
+  statement: >
+    一次带 key 的创建（Area、终端卡、Codex 卡）的 `Idempotency-Key` 必须按意图铸造一次，而不是按请求：结果未知后，
+    Try again 与同一草稿的再次提交必须重发同一 key 与首次提交时构造的同一 body（主题等随按下时刻变化的值不重读）；
+    只有最终结果（创建成功、被拒绝、`idempotency_key_reused`）或新的意图（草稿改变、从菜单重新选择卡片种类）才换新 key。
+    `useKeyedIntent` 是这一生命周期的唯一实现。
+  why: >
+    #2131：内核已对卡片创建接受 key，同 key 同 body 的重试会接上首次请求存下的操作（返回同一张卡），而无 key 或按次换 key
+    的重试在应答丢失后会再建一张终端/Codex 卡及其 PTY；body 变了则被 409 `idempotency_key_reused` 拒绝。
+  source: fe/web/src/app/providers/idempotency-key.ts:25-45; fe/web/src/app/router/public.tsx:2165-2245;
+    fe/web/src/app/shell/public.tsx:98-100,247-256
+  authoritative_test: fe/web/src/app/router/new-card.test.tsx:209-333; fe/web/src/app/shell/area-editor-flow.test.tsx:169-199
+  owner_slice: app/providers
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
 # Contracts still defended by the maintained frontend mutation suite.
 - id: CAP-APP-006
   kind: capability

@@ -114,16 +114,18 @@ describe('card operations', () => {
 
   it('mints a codex card on the kind\'s own atomic endpoint, carrying the body verbatim', () => {
     const body = { theme, title: 'Codex', cwd: '/srv' };
-    const operation = createCodexCardOperation('w/1', body);
+    const operation = createCodexCardOperation('w/1', body, 'intent-key');
     expect(operation.method).toBe('POST');
     expect(operation.path).toBe('/api/tracks/w%2F1/codex-cards');
     expect(operation.body).toBe(body);
+    expect(operation.headers).toEqual({ 'Idempotency-Key': 'intent-key' });
   });
 
   it('mints a terminal card on its own atomic endpoint, not the generic one', () => {
-    const operation = createTerminalCardOperation('w1', { theme });
+    const operation = createTerminalCardOperation('w1', { theme }, 'intent-key');
     expect(operation.method).toBe('POST');
     expect(operation.path).toBe('/api/tracks/w1/terminal-cards');
+    expect(operation.headers).toEqual({ 'Idempotency-Key': 'intent-key' });
   });
 
   it('writes a runtime-less card through the generic create with its kind and payload', () => {

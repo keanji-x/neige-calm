@@ -22,7 +22,7 @@ import { createDirectoryLister } from '../providers/directory.ts';
 import {
   AreaCreatePreflightError, useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
 } from '../providers/queries.ts';
-import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
+import { useKeyedIntent, type KeyedRequest } from '../providers/idempotency-key.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useRouteCardId, useRouteFilePath, useTrackPanelNavigation } from '../router/navigation.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { MobileWorkspaceHeader } from './mobile-header.tsx';
@@ -74,9 +74,6 @@ export function useMobileHeaderTitleHost(): HTMLElement | null {
 }
 
 
-type AreaCreateRequest = Readonly<{ body: NewAreaBody; key: string }>;
-
-
 type AreaEditorTarget = Readonly<{ kind: 'create' }> | Readonly<{ kind: 'edit'; area: Area }>;
 
 function randomAreaColor(): string {
@@ -98,7 +95,9 @@ export function AppShell({
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
   const listDirectory = createDirectoryLister(transport, unauthorized);
-  const [areaCreateRequest, setAreaCreateRequest] = useState<AreaCreateRequest | null>(null);
+  /* The create form is locked while a request is held, so every press resends the held key and body (#2131). */
+  const areaIntent = useKeyedIntent<null, NewAreaBody>(() => true);
+  const areaCreateRequest = areaIntent.held;
   const [areaEditorTarget, setAreaEditorTarget] = useState<AreaEditorTarget | null>(null);
   const [areaEditorPending, setAreaEditorPending] = useState(false);
   const [areaEditorError, setAreaEditorError] = useState<string | null>(null);
@@ -246,17 +245,14 @@ export function AppShell({
     setAreaEditorPending(true);
     setAreaEditorError(null);
     let write: Promise<Area>;
+    let creation: KeyedRequest<null, NewAreaBody> | null = null;
     if (target.kind === 'create') {
-      const creation = areaCreateRequest ?? {
-        key: mintIdempotencyKey(),
-        body: {
-          name: values.name,
-          color: randomAreaColor(),
-          default_template_id: values.defaultTemplateId,
-          default_cwd: values.defaultCwd,
-        },
-      };
-      setAreaCreateRequest(creation);
+      creation = areaIntent.request(null, () => ({
+        name: values.name,
+        color: randomAreaColor(),
+        default_template_id: values.defaultTemplateId,
+        default_cwd: values.defaultCwd,
+      }));
       write = areaMutations.create(creation.body, creation.key);
     } else {
       write = areaMutations.update(target.area.id, {
@@ -267,7 +263,7 @@ export function AppShell({
       });
     }
     void write.then(() => {
-      if (target.kind === 'create') setAreaCreateRequest(null);
+      if (creation !== null) areaIntent.release(creation);
       setAreaEditorTarget(null);
     }).catch((failure: unknown) => {
       if (target.kind === 'edit') { setAreaEditorError(writeFailureText(AREA_PATCH_FAILURES, AREA_PATCH_TEXT)(failure)); return; }
@@ -278,7 +274,7 @@ export function AppShell({
       // A refused retry says nothing about an earlier unconfirmed POST; a spent key ends the request.
       const unconfirmed = target.kind === 'create' && kind !== 'key-spent'
         && (areaCreateRequest !== null || !rejected);
-      if (target.kind === 'create' && !unconfirmed) setAreaCreateRequest(null);
+      if (creation !== null && !unconfirmed) areaIntent.release(creation);
       // This attempt's own words only when it was answered or stopped before sending; an unknown answer is the fixed state.
       const said = failure instanceof AreaCreatePreflightError ? failure.message
         : rejected || kind === 'key-spent' ? refusedText(writeFailureOf(failure), AREA_CREATE_TEXT.refused) : null;
@@ -459,7 +455,7 @@ export function AppShell({
             cancelLabel={!areaEditorPending && areaEditorTarget.kind === 'create' && areaCreateRequest !== null ? 'Discard draft' : 'Cancel'}
             onCancel={() => {
               if (areaEditorPending) return;
-              if (areaEditorTarget.kind === 'create') setAreaCreateRequest(null);
+              if (areaEditorTarget.kind === 'create' && areaCreateRequest !== null) areaIntent.release(areaCreateRequest);
               closeAreaEditor();
             }}
             onSubmit={submitAreaEditor}

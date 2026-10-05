@@ -48,6 +48,7 @@ describe('AddCardMenu', () => {
 describe('NewCardForm', () => {
   function renderForm(entry: CardAddMenuEntry, overrides: {
     submitting?: boolean; error?: string | null; onSubmit?: (values: Readonly<Record<string, string>>) => void;
+    onRetry?: () => void;
   } = {}) {
     const onSubmit = overrides.onSubmit ?? vi.fn();
     render(
@@ -55,6 +56,7 @@ describe('NewCardForm', () => {
         entry={entry}
         submitting={overrides.submitting ?? false}
         error={overrides.error ?? null}
+        onRetry={overrides.onRetry ?? null}
         listDirectory={listDirectory}
         firstFieldRef={createRef<HTMLInputElement>()}
         onCancel={vi.fn()}
@@ -72,6 +74,7 @@ describe('NewCardForm', () => {
           entry={CODEX}
           submitting={false}
           error={null}
+          onRetry={null}
           listDirectory={listDirectory}
           firstFieldRef={createRef<HTMLInputElement>()}
           onCancel={vi.fn()}
@@ -121,6 +124,16 @@ describe('NewCardForm', () => {
     renderForm(CODEX, { error: 'track … is not a git repository' });
     expect(screen.getByText('track … is not a git repository')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Create codex' })).toBeTruthy();
+  });
+
+  it('offers Try again beside an unknown outcome only when there is a create to resend', async () => {
+    const onRetry = vi.fn();
+    renderForm(CODEX, { error: 'Creating the codex card is unconfirmed.', onRetry });
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    cleanup();
+    renderForm(CODEX, { error: 'The codex card was not created.' });
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 
   it('says it is working while the create is in flight', () => {
