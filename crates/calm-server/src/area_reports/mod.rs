@@ -320,11 +320,17 @@ async fn resolve_and_read(
 }
 
 fn rfc3339_local(ms: i64) -> Result<String, TrackFsError> {
+    rfc3339_local_ms(ms)
+        .ok_or_else(|| TrackFsError::Internal(format!("report updated_at {ms} is out of range")))
+}
+
+/// A unix-ms time as RFC 3339 with the server's offset, the one spelling of agent-facing times
+/// here and in `neige mail ls|cat`; `None` when it is out of range.
+pub(crate) fn rfc3339_local_ms(ms: i64) -> Option<String> {
     Local
         .timestamp_millis_opt(ms)
         .single()
         .map(|at| at.to_rfc3339_opts(SecondsFormat::Millis, false))
-        .ok_or_else(|| TrackFsError::Internal(format!("report updated_at {ms} is out of range")))
 }
 
 fn internal(error: impl std::fmt::Display) -> TrackFsError {

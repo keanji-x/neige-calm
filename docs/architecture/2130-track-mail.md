@@ -156,7 +156,7 @@ Tool texts below use today's dotted names (D12).
   `send` means mail only.
 - §4 `text`: "verbatim text delivered to a person, typed into a terminal, or mailed to a Track".
 - `mail_id` is `<noun>_id`; `summary`, `track_id`, `cursor`/`next_cursor` already exist.
-- §8 item 7 ("keep the Planner byte budget"): S1 first trims wording of existing Planner tool descriptions to fit `neige.mail.send` (description + compact schema); only the remainder trimming cannot free raises `planner_tool_surface_fits_its_byte_budget`'s cap, recorded here and in the test comment with the measured numbers and `#2130` (owner decision, D6). Why an exception is possible at all: the surface was 91 B under the cap (F19) and `send` must be listed to be discoverable. The per-description 2,048 B cap is unchanged.
+- §8 item 7 ("keep the Planner byte budget"): S1 first trims wording of existing Planner tool descriptions to fit `neige.mail.send` (description + compact schema); only the remainder trimming cannot free raises `planner_tool_surface_fits_its_byte_budget`'s cap, recorded here and in the test comment with the measured numbers and `#2130` (owner decision, D6). Why an exception is possible at all: the surface was 91 B under the cap (F19) and `send` must be listed to be discoverable. The per-description 2,048 B cap is unchanged. S1 measured: 29,999 B before `send` (1 B under the cap, not the comment's 29,909), `send` 1,059 B (description 797, schema 262), trims 201 B across ten descriptions, new cap 30,857 B (+857).
 
 ### 4.2 `neige_mail_send` (W, listed for the Planner, no CLI row)
 
@@ -395,3 +395,21 @@ TT=harness; TT=${TT}_items
 | N6 names | Accepted: refusal points at `neige.area.outline`; all tool texts in dotted form (D12) |
 | N7 byte cap | Accepted: §4.1 records the §8 item 7 exception |
 | N8 check order | Accepted: §6 reordered (wrapper at `registry.rs:315` first) |
+
+### S1 implementation notes
+
+| Item | Note |
+|---|---|
+| F19 | The budget comment's 29,909 B was stale: the surface measured 29,999 B before `send` (§4.1 has the S1 numbers). |
+| D15 | `neige.area.outline` lists the Tracks that have a report card; every Track created through the routes has one, so the fixture Tracks get one too. |
+| §4.4 `next_hop` | When a send from this turn would be refused, `next_hop` is `"7/6"` (the render prints the hand-off line for any n > 6); `null` stays "no recorded turn input". |
+| `cat` | Every `cat` (sender's too) runs in one `BEGIN IMMEDIATE` transaction: lookup, `decide_recorder`, the stamp `UPDATE … AND read_at IS NULL`, the next-hop read. |
+| `ls` text | A last `more: neige mail ls --cursor <c>` line when `next_cursor` is not null. |
+| Refusal data | Argument refusals carry `data.refusal` too (`arguments`, `recipient`, `summary`, `text`, `cursor`); `summary` is trimmed before its 1..200 check. |
+| `reports_only_card` | Now resolves the Planner card's Track, then calls `reports_only_track` (two primary-key reads instead of one join). |
+| Test 9 | Drives `harness::spawn_recovered_harness`, the call the lazy respawn makes (`routes/planner_input_send.rs`), not the REST route. |
+| Claude acceptance | `mail_trace_reaches_a_claude_planner`: the Weekly review Planner runs on the Claude backend (fake `claude`, scenario `exit`); its tool calls drive `mail::send`/`mail::cat` below the transport, since its MCP credential is the one its first turn mints. |
+| Test 3 | Both reading turns are wake turns (B starts from a task-completion turn and a seeded hop-4 mail), so row 10's mutation reds it as predicted. |
+| Mutation 1 | Realized as: checks and `INSERT` in their own committed `write_in_tx_typed`, then the wake in a second `write_with_events_typed`. |
+| Mutation red sets | Rows 2 and 10 also red both trace tests, and row 2 also reds test 4 (its premise check `next hop 4/6` before the steer); predicted by name and matched. |
+

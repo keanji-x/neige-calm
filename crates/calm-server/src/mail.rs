@@ -6,7 +6,6 @@
 use std::sync::{Arc, Mutex};
 
 use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
-use chrono::{Local, SecondsFormat, TimeZone};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
@@ -327,12 +326,7 @@ const OTHER_TRACK_JOIN: &str = "JOIN tracks t ON t.id = \
      CASE WHEN m.to_track_id = ?1 THEN m.from_track_id ELSE m.to_track_id END";
 
 fn rfc3339(ms: i64) -> Value {
-    Local
-        .timestamp_millis_opt(ms)
-        .single()
-        .map_or(Value::Null, |at| {
-            Value::String(at.to_rfc3339_opts(SecondsFormat::Millis, false))
-        })
+    json!(crate::area_reports::rfc3339_local_ms(ms))
 }
 
 impl MailRow {
