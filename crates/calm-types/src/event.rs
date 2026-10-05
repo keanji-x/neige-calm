@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 use std::ops::Deref;
 use ts_rs::TS;
 
+#[cfg(test)]
+mod checks_tests;
+
 /// One report-block identity captured in a task context freeze.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -225,6 +228,14 @@ impl EventScope {
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
 pub const SYNC_EVENT_VERSION: u32 = 24;
+
+/// Evidence captured by the checks read, never reconstructed from a later PR head.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ForgeChecksSnapshot {
+    pub head_sha: String,
+    pub mergeable: String,
+}
 
 /// What happened to one entry in the harness pending queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -686,6 +697,10 @@ pub enum Event {
         track_id: TrackId,
         pr_number: u64,
         conclusion: String,
+        /// Absent only for historical events or operations frozen before snapshot capture.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        snapshot: Option<ForgeChecksSnapshot>,
     },
     #[serde(rename = "forge.issue.read")]
     ForgeIssueRead {
@@ -1581,6 +1596,7 @@ mod scope_tests {
             track_id: TrackId::from("track-1"),
             pr_number: 1,
             conclusion: "success".into(),
+            snapshot: None,
         };
         assert_eq!(forge_pr_checks.kind_tag(), "forge.pr.checks");
 
@@ -2627,6 +2643,7 @@ mod scope_tests {
                 track_id: TrackId::from("track-1"),
                 pr_number: 1,
                 conclusion: "success".into(),
+                snapshot: None,
             },
             Event::ForgeIssueRead {
                 track_id: TrackId::from("track-1"),

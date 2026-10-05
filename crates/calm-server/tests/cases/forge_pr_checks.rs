@@ -45,6 +45,21 @@ fn pending_rollup() -> Value {
     json!([success("lint"), check_run("shard", "IN_PROGRESS", "")])
 }
 
+fn run_checks_read(gh: &std::path::Path, read: &[String]) -> std::process::Output {
+    std::process::Command::new(&read[0])
+        .args(&read[1..])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                gh.parent().unwrap().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .output()
+        .expect("run production checks output probe")
+}
+
 /// The `failed-run` row: one check failed while another still runs.
 fn failed_while_running_rollup() -> Value {
     json!([
@@ -80,8 +95,10 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
     .expect("lower gh.pr.checks");
     let read: Vec<String> = serde_json::from_value(payload["probe"]["output_probe_argv"].clone())
         .expect("gh.pr.checks output probe argv");
-    assert_eq!(read[0], "gh", "the output probe reads once: {read:?}");
-    let read_args: Vec<&str> = read[1..].iter().map(String::as_str).collect();
+    assert_eq!(
+        read[0], "sh",
+        "the output probe validates a paginated read: {read:?}"
+    );
 
     let cases = [
         // PR #1964's shape while its Rust shards ran.
@@ -171,6 +188,26 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
             "mergeable",
         ),
         (
+            "id-only-run",
+            json!([{
+                "__typename": "CheckRun", "name": "test", "status": "COMPLETED",
+                "conclusion": "TIMED_OUT", "detailsUrl": ""
+            }]),
+            "MERGEABLE",
+            "failure",
+            "mergeable",
+        ),
+        (
+            "id-only-status",
+            json!([{
+                "__typename": "StatusContext", "context": "ci/legacy", "state": "FAILURE",
+                "targetUrl": ""
+            }]),
+            "MERGEABLE",
+            "failure",
+            "mergeable",
+        ),
+        (
             "all-finished-green",
             json!([
                 success("lint"),
@@ -196,11 +233,26 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
     for (case, rollup, mergeable, conclusion, folded_mergeable) in &cases {
         seed_shim_pr_checks(&repo, pr_number, rollup);
         seed_shim_pr_mergeable(&repo, pr_number, mergeable);
-        let output = run_gh(&gh, &read_args);
+        let output = run_checks_read(&gh, &read);
         let want = json!({
             "conclusion": conclusion,
             "mergeable": folded_mergeable,
-            "head_sha": head_sha
+            "head_sha": head_sha,
+            "snapshot": { "head_sha": head_sha, "mergeable": folded_mergeable },
+            "failed_checks": match *case {
+                "failed-run" | "cancelled-run" | "startup-failure-run" => json!([
+                    {"name": "test", "url": "https://github.invalid/shim/checks/1"}
+                ]),
+                "action-required-run" => json!([
+                    {"name": "deploy", "url": "https://github.invalid/shim/checks/1"}
+                ]),
+                "error-status" => json!([
+                    {"name": "ci/legacy", "url": "https://github.invalid/shim/status/1"}
+                ]),
+                "id-only-run" => json!([{ "name": "test", "id": "CheckRun-0" }]),
+                "id-only-status" => json!([{ "name": "ci/legacy", "id": "StatusContext-0" }]),
+                _ => json!([]),
+            }
         });
         match serde_json::from_slice::<Value>(&output.stdout) {
             Ok(got) if output.status.success() && got == want => {}
@@ -208,6 +260,51 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
         }
     }
     assert!(mismatches.is_empty(), "{mismatches:#?}");
+
+    // Failures beyond page one must not disappear. Seed only the real export's fields;
+    // the GraphQL shim models IDs on the source nodes separately from the lossy exporter.
+    let mut checks = vec![success("passing"); 100];
+    checks.push(json!({"__typename":"CheckRun", "name":"last-run", "status":"COMPLETED", "conclusion":"FAILURE", "detailsUrl":""}));
+    checks.push(json!({"__typename":"StatusContext", "context":"last-status", "state":"FAILURE", "targetUrl":""}));
+    seed_shim_pr_checks(&repo, pr_number, &json!(checks));
+    let output = run_checks_read(&gh, &read);
+    assert!(output.status.success(), "{output:?}");
+    let got: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        got["failed_checks"],
+        json!([
+            {"name":"last-run", "id":"CheckRun-100"},
+            {"name":"last-status", "id":"StatusContext-101"}
+        ])
+    );
+
+    let page = |head: &str, oid: &str| {
+        json!({"data":{"repository":{"pullRequest":{
+            "headRefOid":head, "mergeable":"MERGEABLE", "commits":{"nodes":[{"commit":{
+                "oid":oid, "statusCheckRollup":{"contexts":{"nodes":[success("test")],
+                    "pageInfo":{"hasNextPage":false,"endCursor":null}}}
+            }}]}
+        }}}})
+    };
+    let pages_path = shim_state_dir(&repo)
+        .join("checks")
+        .join(format!("{pr_number}.pages"));
+    for pages in [
+        json!([page(&head_sha, &head_sha), page("moved", "moved")]),
+        json!([page(&head_sha, "wrong-commit")]),
+        json!([page("stale", "stale")]),
+    ] {
+        std::fs::write(&pages_path, pages.to_string()).unwrap();
+        let output = run_checks_read(&gh, &read);
+        assert!(
+            !output.status.success(),
+            "mixed/stale snapshot must fail: {output:?}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "must not emit mixed evidence: {output:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -229,7 +326,7 @@ async fn a_conflicting_pr_returns_at_once() {
     let repeated = cx.call(42, "b-1").await;
     assert_eq!(
         repeated["result"]["structuredContent"]["result"]["event"],
-        cx.recorded_event("no_checks", "conflicting", &cx.head_sha()),
+        cx.recorded_event("no_checks", "conflicting", &cx.head_sha(), json!([])),
         "{repeated}"
     );
 }
@@ -248,23 +345,50 @@ async fn a_checks_wait_parks_until_ci_fails() {
     let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
 
+    let pending_again = cx.call(49, "a-1").await;
+    assert_eq!(
+        pending_again["result"]["structuredContent"],
+        resp["result"]["structuredContent"]
+    );
+
     seed_shim_pr_checks(
         &cx.fx.origin_repo,
         cx.pr,
-        &json!([check_run("test", "COMPLETED", "FAILURE")]),
+        &json!([
+            check_run("test", "COMPLETED", "FAILURE"),
+            status_context("ci/legacy", "ERROR"),
+            check_run("shard", "IN_PROGRESS", "")
+        ]),
     );
     let event = cx.wait_for_event(Duration::from_secs(35)).await;
-    // The persisted event keeps its shape; head and mergeability travel in the result only.
+    assert_eq!(event.payload["snapshot"]["head_sha"], cx.head_sha());
+    assert_eq!(event.payload["snapshot"]["mergeable"], "mergeable");
     assert_eq!(
         event.payload,
-        json!({ "track_id": cx.fx.track_id, "pr_number": cx.pr, "conclusion": "failure" })
+        json!({ "track_id": cx.fx.track_id, "pr_number": cx.pr, "conclusion": "failure",
+            "snapshot": { "head_sha": cx.head_sha(), "mergeable": "mergeable" } })
     );
     assert_track_event(&event, &cx.fx.track_id);
 
     let repeated = cx.call(44, "a-1").await;
     assert_eq!(
+        repeated["result"]["structuredContent"]["result"]["event"]["failed_checks"],
+        json!([
+            { "name": "test", "url": "https://github.invalid/shim/checks/1" },
+            { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1" }
+        ])
+    );
+    assert_eq!(
         repeated["result"]["structuredContent"]["result"]["event"],
-        cx.recorded_event("failure", "mergeable", &cx.head_sha()),
+        cx.recorded_event(
+            "failure",
+            "mergeable",
+            &cx.head_sha(),
+            json!([
+                { "name": "test", "url": "https://github.invalid/shim/checks/1" },
+                { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1" }
+            ])
+        ),
         "{repeated}"
     );
 }
@@ -293,11 +417,11 @@ async fn a_moved_head_ends_the_wait() {
     let event = cx.wait_for_event(Duration::from_secs(35)).await;
     assert_eq!(event.payload["conclusion"], "pending", "{event:?}");
 
-    // The persisted event has no head; the repeated call carries it.
+    assert_eq!(event.payload["snapshot"]["head_sha"], moved);
     let repeated = cx.call(46, "h-1").await;
     assert_eq!(
         repeated["result"]["structuredContent"]["result"]["event"],
-        cx.recorded_event("pending", "mergeable", &moved),
+        cx.recorded_event("pending", "mergeable", &moved, json!([])),
         "{repeated}"
     );
 }
@@ -338,6 +462,28 @@ async fn a_failed_check_ends_the_wait_while_others_run() {
     let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
     let event = cx.wait_for_event(Duration::from_secs(10)).await;
     assert_eq!(event.payload["conclusion"], "failure", "{event:?}");
+}
+
+#[tokio::test]
+async fn a_successful_checks_wait_records_exact_head() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let cx = ChecksFixture::boot("success").await;
+    seed_shim_pr_checks(&cx.fx.origin_repo, cx.pr, &json!([success("lint")]));
+    let resp = cx.call(50, "s-1").await;
+    let op_id = assert_receipt_or_settled(&resp);
+    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let event = cx.wait_for_event(Duration::from_secs(10)).await;
+    assert_eq!(event.payload["conclusion"], "success");
+    assert_eq!(event.payload["snapshot"]["head_sha"], cx.head_sha());
+    assert_eq!(event.payload["snapshot"]["mergeable"], "mergeable");
+    let repeated = cx.call(51, "s-1").await;
+    assert_eq!(
+        repeated["result"]["structuredContent"]["result"]["event"]["failed_checks"],
+        json!([])
+    );
 }
 
 /// A track fixture with an open PR on its own origin branch, read through the production MCP path.
@@ -418,10 +564,7 @@ impl ChecksFixture {
     }
 
     fn reads(&self) -> usize {
-        let read = format!(
-            "pr view {} --repo {} --json headRefOid,mergeable,statusCheckRollup ",
-            self.pr, self.repo_arg
-        );
+        let read = format!("api graphql pr={}", self.pr);
         std::fs::read_to_string(shim_state_dir(&self.fx.origin_repo).join("gh.log"))
             .unwrap_or_default()
             .lines()
@@ -469,13 +612,21 @@ impl ChecksFixture {
         }
     }
 
-    fn recorded_event(&self, conclusion: &str, mergeable: &str, head_sha: &str) -> Value {
+    fn recorded_event(
+        &self,
+        conclusion: &str,
+        mergeable: &str,
+        head_sha: &str,
+        failed_checks: Value,
+    ) -> Value {
         json!({
             "track_id": self.fx.track_id,
             "pr_number": self.pr,
             "conclusion": conclusion,
             "mergeable": mergeable,
-            "head_sha": head_sha
+            "head_sha": head_sha,
+            "snapshot": { "head_sha": head_sha, "mergeable": mergeable },
+            "failed_checks": failed_checks
         })
     }
 }

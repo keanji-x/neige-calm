@@ -139,6 +139,9 @@ pub enum Observation {
         track_id: TrackId,
         pr_number: u64,
         conclusion: String,
+        /// Historical pending queues may lack the entire snapshot, never individual fields.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        snapshot: Option<crate::event::ForgeChecksSnapshot>,
     },
     ForgeIssueClosed {
         track_id: TrackId,
@@ -421,10 +424,26 @@ impl Observation {
             Observation::ForgePrChecks {
                 pr_number,
                 conclusion,
+                snapshot,
                 ..
-            } => format!(
-                "Forge checks for PR #{pr_number} read {conclusion}. Re-read the track state."
-            ),
+            } => match snapshot {
+                Some(snapshot) => format!(
+                    include_str!("observation/forge-checks-snapshot.md"),
+                    snapshot.head_sha,
+                    snapshot.mergeable,
+                    pr_number = pr_number,
+                    conclusion = conclusion
+                )
+                .trim_end()
+                .to_owned(),
+                None => format!(
+                    include_str!("observation/forge-checks-historical.md"),
+                    pr_number = pr_number,
+                    conclusion = conclusion
+                )
+                .trim_end()
+                .to_owned(),
+            },
             Observation::ForgeIssueClosed { issue_number, .. } => {
                 format!("Forge issue #{issue_number} was closed. Re-read the track state.")
             }

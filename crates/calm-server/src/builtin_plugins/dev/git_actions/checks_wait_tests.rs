@@ -1,5 +1,5 @@
-//! The lowered checks wait run as a real script against a fake `gh` that stands in for gh's
-//! `--jq` output; tests/cases/forge_pr_checks.rs drives the same wait through the kernel.
+//! The wait loop runs against a controlled reader; tests/cases/forge_pr_checks.rs drives
+//! the complete production GraphQL reader, shared fold and wait through the kernel.
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -36,6 +36,9 @@ fn run_wait(reads: &[Option<&str>]) -> (String, usize) {
     let mut argv: Vec<String> = serde_json::from_value(payload["argv"].clone()).expect("argv");
     assert_eq!(argv[6], PR_CHECKS_POLL_SECS.to_string(), "{argv:?}");
     argv[6] = "0".into();
+    // Isolate only the polling state machine here. Integration tests execute this reader's
+    // real lowering, pagination validation and classifier rather than duplicating policy.
+    argv[8] = "gh".into();
     let path = format!(
         "{}:{}",
         dir.path().display(),

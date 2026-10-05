@@ -134,7 +134,7 @@
     },
     {
       "name": "gh.pr.checks",
-      "description": "Wait for a pull request's checks on its current head. Returns a pending receipt; the kernel wakes you with forge.pr.checks when every check has finished or as soon as any check fails, when the PR is conflicting, when the head moves, or after about 15-20 minutes; then repeat the same call to read head_sha and mergeable. Use a new attempt for each wait.",
+      "description": "Park this call to wait for a pull request's checks on its current head. Returns a pending receipt; the kernel wakes you with forge.pr.checks naming the exact head_sha, CI conclusion and mergeable when every check has finished or as soon as any check fails, when the PR is conflicting, when the head moves, or after about 15-20 minutes. While pending, repeating the same call returns the same receipt and adds no information. After the wake, repeat the same call to read the recorded result, including all failed check names and job URLs or IDs. Use a new attempt for each new wait.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",

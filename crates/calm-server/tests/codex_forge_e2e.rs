@@ -360,7 +360,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     )
     .await;
     assert_forge_tool_accepted(&checks_resp, "gh.pr.checks");
-    let (checks_id, _, _checks) = wait_for_track_forge_event(
+    let (checks_id, _, checks) = wait_for_track_forge_event(
         &fx,
         "forge.pr.checks",
         opened_id,
@@ -435,6 +435,10 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
             track_id: fx.track_id.clone(),
             pr_number,
             conclusion: "success".into(),
+            snapshot: Some(
+                serde_json::from_value(checks["snapshot"].clone())
+                    .expect("production checks event carries exact-head snapshot"),
+            ),
         },
     )
     .await;

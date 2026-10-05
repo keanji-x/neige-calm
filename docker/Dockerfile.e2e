@@ -20,12 +20,13 @@
 #                  (the model prompt prefers `rg`/`rg --files`); without it the
 #                  agent's search/plan returns empty and the test fails (#923
 #                  defect 3). Audited the vendored codex prompts + git-forge
-#                  fixture: `rg` and `zstd` are the only agent-/worker-facing
+#                  fixture: `rg`, `zstd` and `jq` are the agent-/worker-facing
 #                  CLIs that must be apt-installed here — `neige` is agent-facing
 #                  too (the planner agent's track-read CLI) but is host-compiled and
 #                  bind-mounted onto PATH like codex (run.sh `ensure_neige_bin`),
-#                  `jq` is consumed inside the shimmed `gh` (never a separate
-#                  process), and fd/ast-grep/bat/tree/node/python are unused.
+#                  fd/ast-grep/bat/tree/node/python are unused.
+#   jq           — the checks lowerer validates the complete paginated GraphQL
+#                  response before folding checks; gh --slurp cannot use --jq.
 #   zstd         — the worker rollout reader shells out to `zstd -dc` to read
 #                  compressed codex rollout files (crates/calm-server/src/
 #                  worker_flow/codex_rollout.rs). Not tier-triggered by today's
@@ -45,5 +46,5 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk git ca-certificates bubblewrap socat procps ripgrep zstd \
+ && apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk git ca-certificates bubblewrap socat procps ripgrep zstd jq \
  && rm -rf /var/lib/apt/lists/*

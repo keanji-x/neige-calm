@@ -221,7 +221,11 @@ note: string,
  * Pending-scoped idempotency key: re-submits while pending return the original proposal id;
  * resolution releases the key.
  */
-idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, 
+idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, 
+/**
+ * Absent only for historical events or operations frozen before snapshot capture.
+ */
+snapshot?: ForgeChecksSnapshot, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, 
 /**
  * #1727 S4: set by the kernel delivery path only; absent on legacy auto-commits.
  */
@@ -254,6 +258,11 @@ export type FolderConflict = { folder_id: number, area_id: AreaId, conflict_path
  * Kind of overlap detected by the `POST /api/areas/:area_id/folders` conflict check.
  */
 export type FolderConflictKind = "equal" | "ancestor" | "descendant";
+
+/**
+ * Evidence captured by the checks read, never reconstructed from a later PR head.
+ */
+export type ForgeChecksSnapshot = { head_sha: string, mergeable: string, };
 
 /**
  * The PR a `forge.pr.merged` event merged. Rows written before #2016 also carry `phase` and

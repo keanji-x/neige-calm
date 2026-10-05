@@ -1,0 +1,15 @@
+{
+  "description": "New checks wakes preserve exact-head and mergeability evidence; the historical golden remains readable",
+  "wire": {
+    "ev": "forge.pr.checks",
+    "data": {
+      "track_id": "track-01",
+      "pr_number": 1,
+      "conclusion": "failure",
+      "snapshot": {
+        "head_sha": "exact-head",
+        "mergeable": "mergeable"
+      }
+    }
+  }
+}

@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn checks_wake_includes_exact_snapshot_for_success_and_failure() {
+    let track = TrackId::from("checks-track");
+    for conclusion in ["success", "failure"] {
+        let event = Event::from_kind_and_payload(
+            "forge.pr.checks",
+            serde_json::json!({
+                "track_id": track, "pr_number": 42, "conclusion": conclusion,
+                "snapshot": { "head_sha": "exact-head", "mergeable": "mergeable" }
+            }),
+        )
+        .unwrap();
+        let observation = harness_observation_from_event(&track, &event, None).unwrap();
+        let text = observation.to_turn_text();
+        assert!(text.contains("head_sha=exact-head"), "{text}");
+        assert!(
+            text.contains(&format!("CI conclusion={conclusion}")),
+            "{text}"
+        );
+        assert!(text.contains("mergeable=mergeable"), "{text}");
+    }
+}
+
+#[test]
+fn historical_checks_wake_does_not_invent_head_evidence() {
+    let observation: HarnessObservation = serde_json::from_value(serde_json::json!({
+        "type": "forge_pr_checks", "track_id": "checks-track", "pr_number": 42,
+        "conclusion": "success"
+    }))
+    .unwrap();
+    assert!(
+        observation
+            .to_turn_text()
+            .contains("historical event did not record exact head_sha or mergeable")
+    );
+}
+
+#[test]
 fn periodic_reconcile_sweeps_context_before_scheduler() {
     let source = include_str!("mod.rs");
     source
@@ -192,6 +229,7 @@ fn dispatcher_filter_matches_push_kinds() {
         track_id: track.clone(),
         pr_number: 1,
         conclusion: "success".into(),
+        snapshot: None,
     })));
     assert!(filter.matches(&env(Event::ForgeIssueClosed {
         track_id: track.clone(),
@@ -1266,6 +1304,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             track_id: track.clone(),
             pr_number: 1,
             conclusion: "success".into(),
+            snapshot: None,
         },
         Event::ForgeIssueClosed {
             track_id: track.clone(),
@@ -1637,6 +1676,7 @@ fn harness_observation_from_event_mapping_pin() {
                 track_id: TrackId::from("payload-track-ignored"),
                 pr_number: 1,
                 conclusion: "success".into(),
+                snapshot: None,
             },
             Some("impl-parser")
         ),
@@ -1644,6 +1684,7 @@ fn harness_observation_from_event_mapping_pin() {
             track_id: track.clone(),
             pr_number: 1,
             conclusion: "success".into(),
+            snapshot: None,
         })
     );
     assert_eq!(
@@ -2102,6 +2143,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 track_id: track.clone(),
                 pr_number: 1,
                 conclusion: "success".into(),
+                snapshot: None,
             },
             ActorId::KernelDispatcher,
             true,

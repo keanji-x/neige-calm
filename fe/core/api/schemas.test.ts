@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { decodeWireEvent } from './schemas.js';
 
 describe('core/api wire decode behavior', () => {
+  it('accepts historical checks and complete snapshots but rejects incomplete evidence', () => {
+    const data = { track_id: 'track-01', pr_number: 1, conclusion: 'success' };
+    expect(decodeWireEvent({ ev: 'forge.pr.checks', data }).status).toBe('ready');
+    expect(decodeWireEvent({ ev: 'forge.pr.checks', data: {
+      ...data, snapshot: { head_sha: 'exact-head', mergeable: 'mergeable' },
+    } }).status).toBe('ready');
+    for (const snapshot of [{ head_sha: 'exact-head' }, { mergeable: 'mergeable' }]) {
+      expect(decodeWireEvent({ ev: 'forge.pr.checks', data: { ...data, snapshot } }).status).toBe('failed');
+    }
+  });
   it('returns unknown frames as decode data so callers can log and skip', () => {
     const result = decodeWireEvent({ ev: 'future.event', data: { version: 2 } });
     expect(result.status).toBe('failed');

@@ -11,8 +11,8 @@ pub fn seed_shim_issue_body(repo_selector: &Path, issue: u64, body: &str) {
         .expect("write gh shim seeded issue body");
 }
 
-/// Seed the rollup the shim's `pr view <pr> --json headRefOid,mergeable,statusCheckRollup`
-/// exports; `rollup` is the `statusCheckRollup` value in gh's export shape (an array, or null).
+/// Seed checks using gh's lossy export shape (an array, or null). The GraphQL endpoint
+/// models the source nodes' IDs; `pr view` must not expose those IDs in its export.
 pub fn seed_shim_pr_checks(repo_selector: &Path, pr: u64, rollup: &serde_json::Value) {
     let checks_dir = PathBuf::from(format!("{}.shimstate", repo_selector.display())).join("checks");
     std::fs::create_dir_all(&checks_dir).expect("create gh shim checks state dir");
@@ -187,6 +187,51 @@ if log_repo=$(get_arg --repo "$@"); then
 fi
 
 case "$area:$verb" in
+  repo:view)
+    # Local git-dir selectors remain hermetic repository identities in this shim.
+    printf 'github.com\n%s\n' "$1"
+    ;;
+  api:graphql)
+    # Emulate the supported GraphQL connection, not gh pr view's lossy export.
+    owner= name= number=
+    for arg in "$@"; do
+      case "$arg" in
+        owner=*) owner=${arg#owner=} ;;
+        name=*) name=${arg#name=} ;;
+        pr=*) number=${arg#pr=} ;;
+      esac
+    done
+    repo="$owner/$name"
+    state=$(ensure_state "$repo")
+    printf 'api graphql pr=%s\n' "$number" >> "$state/gh.log"
+    pr_dir=$(find_pr "$number" "$state") || exit 1
+    head_sha=$(live_head_sha "$pr_dir" "$repo")
+    query=$(get_arg -f "$@") || exit 2
+    case "$query" in
+      *'CheckRun{id name status conclusion detailsUrl}'*'StatusContext{id context state targetUrl}'*'pageInfo{hasNextPage endCursor}'*) ;;
+      *) echo 'missing GraphQL locator/pagination fields' >&2; exit 2 ;;
+    esac
+    mergeable=MERGEABLE
+    if [ -f "$state/checks/$number.mergeable" ]; then
+      mergeable=$(cat "$state/checks/$number.mergeable")
+    fi
+    if [ -f "$state/checks/$number.pages" ]; then
+      cat "$state/checks/$number.pages"
+    else
+      if [ -f "$state/checks/$number.json" ]; then
+        cat "$state/checks/$number.json"
+      else
+        printf '%s\n' "$DEFAULT_CHECKS_ROLLUP"
+      fi | jq --arg head "$head_sha" --arg mergeable "$mergeable" '
+        (.statusCheckRollup // [] | to_entries | map(.value + {id: (.value.__typename + "-" + (.key|tostring))})) as $nodes |
+        [range(0; ([($nodes|length), 1]|max); 100) as $offset |
+          {data: {repository: {pullRequest: {headRefOid: $head, mergeable: $mergeable,
+            commits: {nodes: [{commit: {oid: $head, statusCheckRollup: {contexts: {
+              nodes: $nodes[$offset:$offset+100], pageInfo: {hasNextPage: ($offset+100 < ($nodes|length)), endCursor: (($offset+100)|tostring)}
+            }}}}]}}}}}]
+      '
+    fi
+    ;;
   pr:list)
     repo=$(get_arg --repo "$@") || exit 2
     base=$(get_arg --base "$@" || true)
@@ -273,6 +318,9 @@ case "$area:$verb" in
     head_sha=$(live_head_sha "$pr_dir" "$repo")
     merged=$(cat "$pr_dir/merged")
     case "$json_fields" in
+      headRefOid)
+        printf '%s\n' "$head_sha"
+        ;;
       state)
         if [ "$merged" = "true" ]; then
           printf '{"state":"MERGED"}\n'

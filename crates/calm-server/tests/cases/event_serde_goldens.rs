@@ -1024,6 +1024,21 @@ golden_test!(
         track_id: TrackId::from("track-01"),
         pr_number: 1,
         conclusion: "success".into(),
+        snapshot: None,
+    }
+);
+
+golden_test!(
+    forge_pr_checks_snapshot,
+    "forge_pr_checks_snapshot.json",
+    Event::ForgePrChecks {
+        track_id: TrackId::from("track-01"),
+        pr_number: 1,
+        conclusion: "failure".into(),
+        snapshot: Some(calm_types::event::ForgeChecksSnapshot {
+            head_sha: "exact-head".into(),
+            mergeable: "mergeable".into(),
+        }),
     }
 );
 
@@ -1295,7 +1310,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 81,
+        files, 82,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {

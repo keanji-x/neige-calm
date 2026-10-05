@@ -720,6 +720,7 @@ export const forgePrChecksSchema = z.object({
     track_id: z.string(),
     pr_number: z.number(),
     conclusion: z.string(),
+    snapshot: z.object({ head_sha: z.string(), mergeable: z.string() }).optional(),
   }),
 });
 

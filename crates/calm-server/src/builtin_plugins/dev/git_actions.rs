@@ -220,14 +220,44 @@ fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
     )
 }
 
-/// The fields both checks reads export; a macro so the wait script can splice it in at compile time.
-macro_rules! pr_checks_fields {
-    () => {
-        "headRefOid,mergeable,statusCheckRollup"
-    };
-}
+/// Query IDs directly: gh pr view's rollup exporter drops both node IDs and database IDs.
+const PR_CHECKS_QUERY: &str = concat!(
+    "query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){",
+    "repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid mergeable ",
+    "commits(last:1){nodes{commit{oid statusCheckRollup{",
+    "contexts(first:100,after:$endCursor){nodes{__typename ",
+    "... on CheckRun{id name status conclusion detailsUrl} ",
+    "... on StatusContext{id context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}}}",
+);
 
-/// Folds gh's export into `{conclusion, mergeable, head_sha}`. A CheckRun is pending until its
+/// Every page must still describe the first head, including the commit whose checks we read.
+/// gh --paginate follows contexts.pageInfo; --slurp allows validation before the shared fold.
+const PR_CHECKS_PAGES_JQ: &str = concat!(
+    "map(.data.repository.pullRequest) as $pages | $pages[0] as $first | ",
+    "if ($first.headRefOid == null or $first.headRefOid == \"\") or ",
+    "any($pages[]; .headRefOid != $first.headRefOid or ",
+    ".commits.nodes[0].commit.oid != $first.headRefOid) then error(\"PR head moved during checks pagination\") else ",
+    "{headRefOid: $first.headRefOid, mergeable: $first.mergeable, ",
+    "statusCheckRollup: [$pages[].commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]?]} end | ",
+    ".headRefOid, (",
+);
+
+/// $1 PR, $2 repository selector, $3 fold, $4 query, $5 page normalization. Recheck the current
+/// head after pagination; a moving read fails and the wait retries without emitting evidence.
+const PR_CHECKS_READ_SCRIPT: &str = concat!(
+    "identity=$(gh repo view \"$2\" --json nameWithOwner,url --jq '(.url | split(\"/\")[2]), .nameWithOwner') || exit 1\n",
+    "host=${identity%%\n*}\nrepo=${identity#*\n}\n",
+    "pages=$(gh api graphql --hostname \"$host\" --paginate --slurp -F owner=\"${repo%/*}\" -F name=\"${repo##*/}\" ",
+    "-F pr=\"$1\" -f query=\"$4\") || exit 1\n",
+    "out=$(printf '%s\\n' \"$pages\" | jq -rc \"$5$3)\") || exit 1\n",
+    "head=${out%%\n*}\n",
+    "current=$(gh pr view \"$1\" --repo \"$2\" --json headRefOid --jq .headRefOid) || exit 1\n",
+    "[ \"$head\" = \"$current\" ] || exit 1\n",
+    "printf '%s\\n' \"${out#*\n}\"\n",
+);
+
+/// Folds normalized GraphQL nodes into a verdict, snapshot and failed-check locators.
+/// A CheckRun is pending until its
 /// `status` is COMPLETED (an unfinished run exports `conclusion: ""`), then green only for
 /// SUCCESS, NEUTRAL or SKIPPED; a StatusContext has only `state`, pending while PENDING or
 /// EXPECTED. Any other finished value is a failure, which outranks pending: one failed check
@@ -236,19 +266,27 @@ macro_rules! pr_checks_fields {
 macro_rules! pr_checks_fold {
     () => {
         concat!(
-            "{conclusion: ([(.statusCheckRollup // [])[] | ",
+            "[(.statusCheckRollup // [])[] | . as $check | ",
             "if .__typename == \"CheckRun\" then ",
             "(if .status != \"COMPLETED\" then \"pending\" ",
             "elif .conclusion == \"SUCCESS\" or .conclusion == \"NEUTRAL\" or .conclusion == \"SKIPPED\" ",
             "then \"success\" else \"failure\" end) ",
             "elif .state == \"SUCCESS\" then \"success\" ",
             "elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" ",
-            "else \"failure\" end] | ",
+            "else \"failure\" end | {check: $check, verdict: .}] as $checks | ",
+            "{conclusion: ($checks | map(.verdict) | ",
             "if any(. == \"failure\") then \"failure\" ",
             "elif any(. == \"pending\") then \"pending\" ",
             "elif length == 0 then \"no_checks\" ",
             "else \"success\" end), ",
-            "mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid}"
+            "mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid, ",
+            "snapshot: {head_sha: .headRefOid, mergeable: (.mergeable | ascii_downcase)}, ",
+            "failed_checks: [$checks[] | select(.verdict == \"failure\") | .check | ",
+            "{name: (.name // .context)} + ",
+            "((.detailsUrl // .targetUrl) as $url | ",
+            "if $url != null and $url != \"\" then {url: $url} ",
+            "elif .id != null and .id != \"\" then {id: .id} ",
+            "else error(\"Failed check has no locator\") end)]}"
         )
     };
 }
@@ -257,8 +295,8 @@ macro_rules! pr_checks_fold {
 const PR_CHECKS_JQ: &str = pr_checks_fold!();
 
 /// The wait's program prints two lines: `<settle|wait> <head_sha>`, where `settle` means the
-/// checks concluded success or failure or the PR conflicts, then the fold's object as JSON. gh
-/// prints a string result raw, so the script reads the verdict without parsing JSON.
+/// checks concluded success or failure or the PR conflicts, then the fold's object as JSON.
+/// jq prints string results raw, so the script reads the verdict without parsing JSON.
 const PR_CHECKS_WAIT_JQ: &str = concat!(
     "(",
     pr_checks_fold!(),
@@ -267,7 +305,7 @@ const PR_CHECKS_WAIT_JQ: &str = concat!(
     "\\($r.head_sha // \"\")\", ($r | tojson)",
 );
 
-/// Seconds between the wait's reads: one GraphQL call per interval per waiting call.
+/// Seconds between the wait's complete, head-validated reads.
 const PR_CHECKS_POLL_SECS: u64 = 15;
 
 /// `$1` PR, `$2` repo, `$3` poll seconds, `$4` [`PR_CHECKS_WAIT_JQ`]. Prints the JSON after the
@@ -277,9 +315,7 @@ const PR_CHECKS_POLL_SECS: u64 = 15;
 const PR_CHECKS_WAIT_SCRIPT: &str = concat!(
     "first=\n",
     "while :; do\n",
-    "  if out=$(gh pr view \"$1\" --repo \"$2\" --json ",
-    pr_checks_fields!(),
-    " --jq \"$4\"); then\n",
+    "  if out=$(sh -c \"$5\" sh \"$1\" \"$2\" \"$4\" \"$6\" \"$7\"); then\n",
     "    read -r verdict head <<EOF\n",
     "$out\n",
     "EOF\n",
@@ -310,19 +346,21 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         repo.clone(),
         PR_CHECKS_POLL_SECS.to_string(),
         PR_CHECKS_WAIT_JQ.into(),
+        PR_CHECKS_READ_SCRIPT.into(),
+        PR_CHECKS_QUERY.into(),
+        PR_CHECKS_PAGES_JQ.into(),
     ];
     // The deadline snapshot reads once; it is never the waiting script.
     let read = vec![
-        "gh".to_string(),
-        "pr".into(),
-        "view".into(),
+        "sh".to_string(),
+        "-c".into(),
+        PR_CHECKS_READ_SCRIPT.into(),
+        "sh".into(),
         pr.to_string(),
-        "--repo".into(),
         repo.clone(),
-        "--json".into(),
-        pr_checks_fields!().into(),
-        "--jq".into(),
         PR_CHECKS_JQ.into(),
+        PR_CHECKS_QUERY.into(),
+        PR_CHECKS_PAGES_JQ.into(),
     ];
     let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
     forge_payload(
@@ -334,6 +372,8 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
                 ("conclusion", json_field("/conclusion")),
                 ("mergeable", json_field("/mergeable")),
                 ("head_sha", json_field("/head_sha")),
+                ("snapshot", json_field("/snapshot")),
+                ("failed_checks", json_field("/failed_checks")),
             ],
         )),
         json!({ "pr_number": pr }),
