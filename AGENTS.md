@@ -41,7 +41,10 @@ cross a boundary. Never lower it mid-review.
   instead of re-reviewing the whole diff.
 - **L2, high risk:** authority, persistence, isolation, or security
   boundaries; database migrations; or a large diff. Use two independent review
-  channels, and re-run both fresh after every fix.
+  channels, and re-run both fresh after every fix. When a fix is mechanical,
+  meaning it changes no behaviour (a test registration, a regenerated golden,
+  a rename), both channels instead check only its delta and confirm that their
+  earlier verdicts still hold.
 
 ## Review and fix loop
 
