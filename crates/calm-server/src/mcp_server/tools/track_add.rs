@@ -77,6 +77,8 @@ pub enum TrackAddRefusal {
         cap: u32,
         open: Vec<OpenAddedTrack>,
     },
+    /// The creator's Planner provider cannot start a new Planner now.
+    ProviderUnavailable(String),
     Create(CalmError),
 }
 
@@ -314,6 +316,9 @@ fn refusal_error(creator: &Track, refusal: TrackAddRefusal) -> RpcError {
                 message,
                 data: Some(data),
             }
+        }
+        TrackAddRefusal::ProviderUnavailable(reason) => {
+            RpcError::custom(-32503, format!("{TOOL_TRACK_ADD}: {reason}"))
         }
         TrackAddRefusal::Create(error) => match error {
             CalmError::Forbidden(m) => forbidden(m),

@@ -143,10 +143,14 @@ impl TrackCreator for RouteTrackCreator {
             }
             KeyedPlan::Mint(plan) => plan,
         };
-        if let Some(checked) = &claude_availability {
-            checked.catalog().map_err(|refusal| {
-                CalmError::BadRequest(format!("the creator's Planner provider {refusal}"))
-            })?;
+        // A dependency unavailable now, not a bad argument: the same call succeeds once the
+        // provider is ready.
+        if let Some(checked) = &claude_availability
+            && let Err(refusal) = checked.catalog()
+        {
+            return Err(TrackAddRefusal::ProviderUnavailable(format!(
+                "the creator's Planner provider {refusal}"
+            )));
         }
         let cwd = normalize_path(&default_cwd());
         let refused = Arc::new(OnceLock::new());

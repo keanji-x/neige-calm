@@ -712,3 +712,26 @@ async fn track_creator_does_not_keep_the_state_alive() {
         "the creator outlived every AppState: something holds it strongly"
     );
 }
+
+/// A creator whose Planner runs on Claude, on a server where Claude is not ready, gets the
+/// dependency refusal: -32503, nothing created.
+#[tokio::test]
+async fn track_add_refuses_while_the_creators_provider_is_unavailable() {
+    let boot = boot(16).await;
+    let (creator, planner) = boot.user_track("portfolio").await;
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'claude') \
+         WHERE track_id = ?1 AND role = 'planner'",
+    )
+    .bind(&creator)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    let before = boot.track_count().await;
+    let error = boot
+        .add(&planner, boot.args("k1"))
+        .await
+        .expect_err("Claude is not configured here");
+    assert_eq!(error.code, -32503, "{error:?}");
+    assert_eq!(boot.track_count().await, before);
+}
