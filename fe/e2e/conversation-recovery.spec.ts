@@ -155,9 +155,9 @@ for (const failedFirst of [false, true]) {
       });
       await page.route('**/api/cards/*/planner/interrupt', async (route) => {
         stops += 1;
-        if (failedFirst && stops === 1) {
-          await route.fulfill({ status: 503, json: { code: 'service_unavailable', error: 'The connection is unavailable.' } });
-        } else await route.continue();
+        /* The first answer is lost on the way back: the interrupt may have been dispatched, so it is unconfirmed. */
+        if (failedFirst && stops === 1) await route.abort('failed');
+        else await route.continue();
       });
       page.on('request', (outgoing) => { if (outgoing.method() === 'POST' && outgoing.url().endsWith('/planner/input')) sends += 1; });
       await page.goto(`/next/track/${track.id}`);
@@ -166,15 +166,19 @@ for (const failedFirst of [false, true]) {
       await expect(composer).toHaveAttribute('contenteditable', 'true');
       await composer.fill('Keep this stop request draft');
       await page.getByRole('button', { name: 'Stop', exact: true }).click();
-      if (failedFirst) {
-        const failure = page.getByRole('button', { name: 'Stop failed', exact: true });
-        await expect(failure).toBeVisible();
-        await failure.click();
-        await expect(page.getByText('The connection is unavailable.', { exact: true })).toBeVisible();
-        expect(stops).toBe(1);
-        await page.getByRole('button', { name: 'Stop', exact: true }).click();
-      }
       const notice = page.locator('[data-nc-drawer-scroll]').getByRole('button', { name: 'Stop unconfirmed', exact: true });
+      if (failedFirst) {
+        /* A lost answer is the same unconfirmed state, sent once and never narrated: the connection is the global indicator's. */
+        await expect(notice).toBeVisible();
+        await notice.click();
+        await expect(page.getByText('The response may still be starting or may already have ended.', { exact: true })).toBeVisible();
+        await expect(page.getByText('Stop failed', { exact: true })).toHaveCount(0);
+        await expect(page.locator('[data-nc-drawer]')).not.toContainText(/Transport request failed|timed out|back online|连接恢复/);
+        expect(stops).toBe(1);
+        /* A manual retry is still offered, and reaches the real route. */
+        await page.getByRole('button', { name: 'Stop', exact: true }).click();
+        await expect.poll(() => stops).toBe(2);
+      }
       await expect(notice).toBeVisible();
       // Retrying preserves the user's open disclosure across status changes.
       await expect(notice).toHaveAttribute('aria-expanded', failedFirst ? 'true' : 'false');

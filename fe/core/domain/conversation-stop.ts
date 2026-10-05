@@ -10,9 +10,10 @@ export type ConversationStopFeedback = Readonly<
 >;
 
 /**
- * What a failed `POST /planner/interrupt` says. `refused`: answered before anything was dispatched (403 not a
- * planner card, 404 no such card, 409 `planner_harness_dormant` no live session). Anything else, a lost answer
- * included, may follow a dispatched interrupt, so the stop is `unconfirmed`, never "failed".
+ * What a failed `POST /planner/interrupt` says. `refused`: the documented answers given before anything is dispatched
+ * (403 not a planner card, 404 no such card, 409 `planner_harness_dormant` no live session). A lost or unreadable
+ * answer, or a 5xx (what a failure after dispatch answers), may follow a dispatched interrupt. Any other status is
+ * not documented for this route, so it is read the same conservative way: the stop is `unconfirmed`, never "failed".
  */
 export const PLANNER_INTERRUPT_FAILURES: FailureTable<'refused' | 'unconfirmed'> = Object.freeze({
   rules: Object.freeze([
