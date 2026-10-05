@@ -335,6 +335,13 @@ describe('reloadOutcome (#1284 §2.4)', () => {
     }
   });
 
+  it('does not confirm a restart it cannot know, even when the plugin reads back running', () => {
+    /* A 500 can be a stop that failed: the plugin still runs its previous configuration. */
+    const outcome = reloadOutcome({ rejection: { error: answered(500, 'internal', 'stop failed: timeout') }, state: 'running' });
+    expect(outcome.kind).toBe('unknown');
+    expect(outcome.message).not.toMatch(/restarted with it/);
+  });
+
   it('paints unavailable as a warning rather than an error', () => {
     expect(reloadOutcome({ rejection: null, state: 'unavailable', lastError: 'upstream said no' }).tone)
       .toBe('warning');
