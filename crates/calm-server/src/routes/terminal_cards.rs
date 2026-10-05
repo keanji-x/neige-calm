@@ -56,11 +56,16 @@ pub struct NewTerminalCardBody {
     post,
     path = "/api/tracks/{track_id}/terminal-cards",
     tag = "terminals",
-    params(("track_id" = String, Path, description = "Track id to create the terminal card under")),
+    params(
+        ("track_id" = String, Path, description = "Track id to create the terminal card under"),
+        ("Idempotency-Key" = Option<String>, Header, description = "Optional; without one a retry creates another card. A retry under the key returns the same card."),
+    ),
     request_body(content = NewTerminalCardBody, description = "Body required (theme is mandatory; program/cwd/env optional)"),
     responses(
         (status = 201, description = "Card + linked terminal created atomically; daemon spawned", body = Card),
+        (status = 400, description = "An `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 409, description = "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed; the saga rolled back the committed transaction (no leaked rows).", body = ErrorBody),
     ),
@@ -132,17 +137,31 @@ pub(crate) async fn create_terminal_card(
     }
 }
 
+/// The longest `Idempotency-Key` any keyed route stores, in bytes (the key is ASCII). Every client
+/// mints far less: the browser a 36-character UUID (`fe/web/src/app/router/idempotency-key.ts`),
+/// the e2e scripts `uuid4`, the kernel's own Today summary `today-summary`. The cap bounds what a
+/// binding row keeps for as long as its card or Track lives, with room for a prefixed UUID or ULID.
+pub(crate) const IDEMPOTENCY_KEY_MAX_LEN: usize = 128;
+
+/// The one `Idempotency-Key` parser every keyed route shares. A key that is not visible ASCII, is
+/// blank, or is longer than [`IDEMPOTENCY_KEY_MAX_LEN`] is 400 `idempotency_key_invalid`.
 pub(crate) fn parse_idempotency_key_header(headers: &HeaderMap) -> Result<Option<String>> {
     match headers.get("idempotency-key") {
         Some(value) => {
             let value = value.to_str().map_err(|_| {
-                CalmError::BadRequest("invalid Idempotency-Key header (non-ASCII bytes)".into())
+                CalmError::IdempotencyKeyInvalid("the header holds non-ASCII bytes".into())
             })?;
             let value = value.trim();
             if value.is_empty() {
-                return Err(CalmError::BadRequest(
-                    "invalid Idempotency-Key header (empty)".into(),
+                return Err(CalmError::IdempotencyKeyInvalid(
+                    "the header is empty".into(),
                 ));
+            }
+            if value.len() > IDEMPOTENCY_KEY_MAX_LEN {
+                return Err(CalmError::IdempotencyKeyInvalid(format!(
+                    "the key is {} bytes; at most {IDEMPOTENCY_KEY_MAX_LEN} are accepted",
+                    value.len()
+                )));
             }
             Ok(Some(value.to_string()))
         }
@@ -188,5 +207,51 @@ fn canonical_json(value: serde_json::Value) -> serde_json::Value {
             serde_json::Value::Object(sorted.into_iter().collect())
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod idempotency_key_header_tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn parse(value: HeaderValue) -> Result<Option<String>> {
+        let mut headers = HeaderMap::new();
+        headers.insert("idempotency-key", value);
+        parse_idempotency_key_header(&headers)
+    }
+
+    #[test]
+    fn a_key_up_to_the_cap_is_kept_and_one_byte_more_is_invalid() {
+        let longest = "k".repeat(IDEMPOTENCY_KEY_MAX_LEN);
+        assert_eq!(
+            parse(HeaderValue::from_str(&longest).unwrap()).unwrap(),
+            Some(longest.clone())
+        );
+        // The cap applies to the trimmed key, so surrounding blanks do not count.
+        assert_eq!(
+            parse(HeaderValue::from_str(&format!(" {longest} ")).unwrap()).unwrap(),
+            Some(longest)
+        );
+        let refused =
+            parse(HeaderValue::from_str(&"k".repeat(IDEMPOTENCY_KEY_MAX_LEN + 1)).unwrap())
+                .unwrap_err();
+        assert_eq!(refused.code(), "idempotency_key_invalid", "{refused:?}");
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn a_blank_or_non_ascii_key_is_invalid_and_no_key_is_none() {
+        for value in [
+            HeaderValue::from_static("   "),
+            HeaderValue::from_bytes(b"\xff").unwrap(),
+        ] {
+            let refused = parse(value).unwrap_err();
+            assert_eq!(refused.code(), "idempotency_key_invalid", "{refused:?}");
+        }
+        assert_eq!(
+            parse_idempotency_key_header(&HeaderMap::new()).unwrap(),
+            None
+        );
     }
 }

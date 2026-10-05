@@ -19,6 +19,43 @@ pub enum TruthError {
 
     #[error("internal: {0}")]
     Internal(String),
+
+    /// A keyed write's `Idempotency-Key` is already bound to a different request; the same key can
+    /// never be answered for this one. Final.
+    #[error("idempotency key reused: {0}")]
+    IdempotencyKeyReused(String),
+
+    /// A keyed binding's UNIQUE wall refused this insert: another request under the same key
+    /// committed first, and this transaction rolled back. Retrying the same request under the same
+    /// key is answered by that one.
+    #[error("idempotency key concurrent: {0}")]
+    IdempotencyKeyConcurrent(String),
+
+    /// A keyed write's `Idempotency-Key` names something that can no longer be produced under it
+    /// (its result was deleted); only a new key goes anywhere. Final for the key.
+    #[error("idempotency key exhausted: {0}")]
+    IdempotencyKeyExhausted(String),
+
+    /// A send that replaces a turn was refused inside the transaction that would have removed it,
+    /// which rolled back; nothing changed. Carried here so the refusal keeps its kind through the
+    /// storage write path.
+    #[error("{0}")]
+    PlannerTurnNotReplaceable(String),
+}
+
+/// What a keyed binding insert raises when its UNIQUE wall refuses it: the typed retryable
+/// [`TruthError::IdempotencyKeyConcurrent`], never the raw SQL text. Every other error passes through.
+pub(crate) fn idempotency_binding_insert_error(error: sqlx::Error) -> TruthError {
+    match error {
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            TruthError::IdempotencyKeyConcurrent(
+                "another request under this Idempotency-Key was accepted at the same time; send \
+                 this request again under the same key to receive that request's answer"
+                    .into(),
+            )
+        }
+        other => TruthError::Db(other),
+    }
 }
 
 impl TruthError {

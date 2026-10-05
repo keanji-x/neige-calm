@@ -70,8 +70,8 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
 /// The first request under a key that the server stores binds the key to that message, in the
 /// transaction that stores it. A retry with the same key and the same body (text, attachments,
 /// `replaces_turn`, actor) answers 200 with the first request's body and queues nothing, whatever
-/// happened to the message since. The same key with a different body is 409 `conflict`. A refusal stores and
-/// binds nothing, so its key can be sent again. A binding lasts as long as its card.
+/// happened to the message since. The same key with a different body is 409 `idempotency_key_reused`. A
+/// refusal stores and binds nothing, so its key can be sent again. A binding lasts as long as its card.
 ///
 /// With `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing
 /// queued: it is removed and this message queued in the transaction that binds the key, and the
@@ -82,15 +82,15 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     tag = "cards",
     params(
         ("id" = String, Path, description = "Planner card id"),
-        ("Idempotency-Key" = String, Header, description = "**Required.** One key per message; a retry under it replays the first answer."),
+        ("Idempotency-Key" = String, Header, description = "**Required.** One key per message, at most 128 ASCII bytes; a retry under it replays the first answer."),
     ),
     request_body = SendPlannerInputRequest,
     responses(
         (status = 200, description = "User text queued for next harness turn, or the answer of the earlier request under this Idempotency-Key", body = SendPlannerInputResponse),
-        (status = 400, description = "Empty text, a blank `replaces_turn`, or a missing or blank Idempotency-Key", body = ErrorBody),
+        (status = 400, description = "Empty text, a blank `replaces_turn`, or a missing or invalid Idempotency-Key (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 403, description = "Card is not a planner codex card, or `replaces_turn` from an actor other than `X-Calm-Actor: user`", body = ErrorBody),
         (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "This Idempotency-Key was used for a different message (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); on a plain send, the runtime is shutting down (code `conflict`) or is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`); on a send with `replaces_turn`, the turn cannot be replaced now — not the latest, still running, messages waiting, the runtime shutting down or no longer the card's, or the provider refusing the cut — and nothing changed (code `planner_turn_not_replaceable`, with the reason), or the conversation stopped before answering and the replace may have landed (code `conflict`)", body = ErrorBody),
+        (status = 409, description = "Distinguished by `code`:\n* `idempotency_key_reused` — this Idempotency-Key was already used for a different message on this card (text, attachments, `replaces_turn` or actor); final, send the new message under a new key.\n* `idempotency_key_concurrent` — another request under this key was stored at the same moment and nothing of this one was; send it again under the same key to receive that answer.\n* `planner_harness_dormant` — the planner harness session is dormant and not recoverable; reset to start a session.\n* `planner_harness_runtime_superseded` — on a plain send, the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor.\n* `planner_turn_not_replaceable` — on a send with `replaces_turn`, the turn cannot be replaced now (not the latest, still running, messages waiting, the conversation shutting down or no longer the card's, or the provider refusing the cut) and nothing changed; the body carries the reason.\n* `conflict` — the conversation's run loop is shutting down, already closed, or stopped before answering, on a plain send and on a send with `replaces_turn` alike. This answer does not say whether the message was stored or the turn replaced: a loop that stopped before answering may have committed it. Send it again under the same key.", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Observation queue saturated, shared codex app-server not running, a planner-harness start is still in flight, or the provider did not check a replace in time — retry shortly", body = ErrorBody),
     ),
@@ -181,7 +181,11 @@ pub(crate) async fn send_planner_input_keyed(
         return Ok(answer);
     }
     #[cfg(feature = "fixtures")]
-    wait_at_replay_miss_hook_for_test(card.id.as_str()).await;
+    crate::test_seams::pause_point(
+        crate::test_seams::PLANNER_INPUT_REPLAY_MISSED,
+        card.id.as_str(),
+    )
+    .await;
 
     // `_recovery_guard` holds the per-card recovery lock until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
     let (runtime, harness, _recovery_guard) = match replaces_turn {
@@ -298,7 +302,7 @@ async fn replay(
         return Ok(None);
     };
     if binding.payload_hash != key.payload_hash {
-        return Err(CalmError::Conflict(
+        return Err(CalmError::IdempotencyKeyReused(
             "This Idempotency-Key was already used for a different message on this card; send \
              the new message under a new key."
                 .into(),
@@ -434,43 +438,4 @@ async fn ensure_live_planner_harness(
     );
     // Return the guard so the caller keeps the per-card lock alive through `harness.observe` and the audit event.
     Ok((runtime, harness, Some(guard)))
-}
-
-/// Pause one send of `card_id` right after its replay check found no binding, so a test can
-/// commit a concurrent send under the same key in between (#2043, the UNIQUE backstop).
-#[cfg(feature = "fixtures")]
-#[derive(Clone)]
-pub struct ReplayMissHook {
-    pub entered: std::sync::Arc<tokio::sync::Notify>,
-    pub release: std::sync::Arc<tokio::sync::Notify>,
-}
-
-#[cfg(feature = "fixtures")]
-fn replay_miss_hooks()
--> &'static std::sync::Mutex<std::collections::HashMap<String, ReplayMissHook>> {
-    static HOOKS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, ReplayMissHook>>,
-    > = std::sync::OnceLock::new();
-    HOOKS.get_or_init(Default::default)
-}
-
-#[cfg(feature = "fixtures")]
-#[doc(hidden)]
-pub fn install_replay_miss_hook_for_test(card_id: &str, hook: ReplayMissHook) {
-    replay_miss_hooks()
-        .lock()
-        .expect("replay miss hook mutex")
-        .insert(card_id.to_owned(), hook);
-}
-
-#[cfg(feature = "fixtures")]
-async fn wait_at_replay_miss_hook_for_test(card_id: &str) {
-    let hook = replay_miss_hooks()
-        .lock()
-        .expect("replay miss hook mutex")
-        .remove(card_id);
-    if let Some(hook) = hook {
-        hook.entered.notify_one();
-        hook.release.notified().await;
-    }
 }

@@ -3,6 +3,7 @@
 import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
+import type { FailureTable } from './failure-class.js';
 
 export const areaKindSchema = z.enum(['user', 'system']);
 export type AreaKind = z.infer<typeof areaKindSchema>;
@@ -98,6 +99,27 @@ export function areaCreationCapabilityOperation(): ApiOperation<'supported' | 'u
       .transform((value) => value.areaCreateIdempotency === true ? 'supported' as const : 'unsupported' as const),
   };
 }
+
+/**
+ * What one failed `POST /api/areas` means for its draft.
+ * - `key-spent`: the key is invalid, bound to another request (`idempotency_key_reused`) or its Area
+ *   was deleted (`idempotency_key_exhausted`). No retry under it can succeed, whatever an earlier
+ *   attempt did, so the request is dropped and the next Create mints a new key. Final.
+ * - `rejected`: refused before anything was created; it says nothing about an earlier attempt.
+ * - `unconfirmed`: the Area may have been created, so the request and its key are kept for a retry.
+ */
+export type AreaCreateFailure = 'key-spent' | 'rejected' | 'unconfirmed';
+
+export const AREA_CREATE_FAILURES: FailureTable<AreaCreateFailure> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ code: 'idempotency_key_invalid', is: 'key-spent' as const }),
+    Object.freeze({ code: 'idempotency_key_reused', is: 'key-spent' as const }),
+    Object.freeze({ code: 'idempotency_key_exhausted', is: 'key-spent' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 404, 422, 429]), is: 'rejected' as const }),
+  ]),
+  unauthorized: 'rejected',
+  otherwise: 'unconfirmed',
+});
 
 /** One key identifies one exact creation intent, including every retry. */
 export function createAreaOperation(body: NewAreaBody, idempotencyKey: string): ApiOperation<AreaWire> {

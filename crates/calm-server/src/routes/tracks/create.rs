@@ -378,12 +378,16 @@ fn binding_fingerprint(
     binding: &crate::db::sqlite::TrackCreateBinding,
 ) -> Result<(&str, Option<&str>)> {
     match &binding.request_fingerprint {
-        TrackCreateRequestFingerprint::LegacyUnknown => Err(CalmError::Conflict(format!(
-            "this Idempotency-Key names track {} but predates durable request fingerprints, so \
+        // `idempotency_key_reused`: the key is bound to a create this request cannot be shown to be,
+        // so no retry under it can be answered for this one.
+        TrackCreateRequestFingerprint::LegacyUnknown => {
+            Err(CalmError::IdempotencyKeyReused(format!(
+                "this Idempotency-Key names track {} but predates durable request fingerprints, so \
              the server cannot safely decide whether this is the same create; inspect that track \
              before choosing a new key",
-            binding.track_id
-        ))),
+                binding.track_id
+            )))
+        }
         TrackCreateRequestFingerprint::V1 {
             create_request_sha256,
             first_message_sha256,

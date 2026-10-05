@@ -120,7 +120,7 @@
     （Sidebar 的 useAreasQuery）在下一次渲染就看到新名字，不依赖 HTTP。
     朴素的 `setQueryData([updated])` 会静默丢掉其他 area；事件与 HTTP 的到达顺序也不稳定，
     所以"保留其他行"和"保留更高版本"必须一起锁。
-  source: fe/core/domain/area.ts:51-56; fe/web/src/app/events/query-invalidation-adapter.ts:61-70
+  source: fe/core/domain/area.ts:52-57; fe/web/src/app/events/query-invalidation-adapter.ts:61-70
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:130-189
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -601,7 +601,7 @@
   why: >
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
-  source: fe/core/domain/area.ts:51-56; fe/web/src/app/providers/queries.ts:615-640
+  source: fe/core/domain/area.ts:52-57; fe/web/src/app/providers/queries.ts:615-640
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:158-189;
     fe/web/src/app/providers/queries.contract.test.ts:246-292,315-352
   owner_slice: app/providers

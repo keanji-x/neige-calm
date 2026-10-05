@@ -1359,15 +1359,17 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     ]);
   });
 
+  /* The server answers `idempotency_key_reused` both for a different create under the key and for a
+     legacy binding it can no longer compare (#2068): the key can never be answered for this draft. */
   it.each([
-    ['payload conflict', 'already used with different payload'],
+    ['payload conflict', 'operation idempotency key k already used with different payload'],
     ['legacy unprovable key', 'this key predates durable request fingerprints'],
-  ])('does not silently rekey a %s', async (_case, errorMessage) => {
+  ])('offers no retry after a %s, only an explicit new track', async (_case, errorMessage) => {
     const { sent } = harness({
       trackCreate: {
         status: 409,
         statusText: 'Conflict',
-        body: { error: errorMessage, code: 'conflict' },
+        body: { error: errorMessage, code: 'idempotency_key_reused' },
       },
     });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
@@ -1378,19 +1380,44 @@ describe('the sentence is delivered by the create, and the track opens on it', (
 
     expect((await within(await screen.findByRole('main')).findByRole('alert')).textContent).toContain(errorMessage);
     expect(screen.getByRole('button', { name: 'Start as a new track' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
-    const [conflict, retry] = createdTrackRequests(sent);
-    expect(retry?.headers?.['Idempotency-Key']).toBe(conflict?.headers?.['Idempotency-Key']);
+    /* No retry under the reused key: Create is refused until the reader chooses a new track. */
+    const create = screen.getByRole('button', { name: 'Create track' });
+    expect(create.hasAttribute('disabled') || create.getAttribute('aria-disabled') === 'true').toBe(true);
+    await userEvent.click(create);
+    expect(createdTrackRequests(sent)).toHaveLength(1);
+    const [conflict] = createdTrackRequests(sent);
 
     await userEvent.click(await screen.findByRole('button', { name: 'Start as a new track' }));
     expect(within(screen.getByRole('main')).queryByRole('alert')).toBeNull();
-    expect(createdTrackRequests(sent)).toHaveLength(2);
+    expect(createdTrackRequests(sent)).toHaveLength(1);
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(3));
-    const explicitNew = createdTrackRequests(sent)[2];
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const explicitNew = createdTrackRequests(sent)[1];
     expect(explicitNew?.headers?.['Idempotency-Key']).toBeDefined();
     expect(explicitNew?.headers?.['Idempotency-Key'])
       .not.toBe(conflict?.headers?.['Idempotency-Key']);
+  });
+
+  it('keeps the key and the request after a concurrent create under the same key', async () => {
+    const { sent } = harness({
+      trackCreate: {
+        status: 409,
+        statusText: 'Conflict',
+        body: { error: 'another request under this key was accepted', code: 'idempotency_key_concurrent' },
+      },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    expect(await within(await screen.findByRole('main')).findByRole('alert')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Start as a new track' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const [first, retry] = createdTrackRequests(sent);
+    expect(retry?.headers?.['Idempotency-Key']).toBe(first?.headers?.['Idempotency-Key']);
+    expect(retry?.body).toEqual(first?.body);
   });
 });

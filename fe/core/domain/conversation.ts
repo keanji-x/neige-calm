@@ -755,7 +755,7 @@ export type ConversationCreateFailure = Readonly<
     message: string;
   }
   | {
-    /** The key used up its retry slots; only a new key can go anywhere. */
+    /** The key used up its retry slots or was refused as invalid; only a new key can go anywhere. */
     kind: 'exhausted';
     message: string;
   }
@@ -767,17 +767,19 @@ export type ConversationCreateFailure = Readonly<
 >;
 
 /**
- * What a failed create means for the draft; a 409 is told apart by its `code`, and the payload
- * conflict only by its wording. A lost or unreadable answer may have been served, so it is `retry`.
+ * What a failed create means for the draft; a 409 is told apart by its `code`. A lost or unreadable
+ * answer may have been served, so it is `retry`, as is a concurrent create under the same key.
  */
 export const CONVERSATION_CREATE_FAILURES: FailureTable<ConversationCreateFailure['kind']> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ code: 'idempotency_key_exhausted', is: 'exhausted' as const }),
+    Object.freeze({ code: 'idempotency_key_invalid', is: 'exhausted' as const }),
+    Object.freeze({ code: 'idempotency_key_reused', is: 'stale-payload' as const }),
+    Object.freeze({ code: 'idempotency_key_concurrent', is: 'retry' as const }),
     Object.freeze({ status: Object.freeze([404]), is: 'gone' as const }),
     /* Its own kind for its own sentence, but not its own resolution. */
     Object.freeze({ status: Object.freeze([503]), is: 'unavailable' as const }),
     Object.freeze({ status: Object.freeze([400]), is: 'blocked' as const }),
-    Object.freeze({ status: Object.freeze([409]), message: 'already used with different payload', is: 'stale-payload' as const }),
     Object.freeze({ status: Object.freeze([409]), is: 'exists' as const }),
   ]),
   unauthorized: 'retry',

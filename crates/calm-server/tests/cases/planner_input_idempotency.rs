@@ -16,7 +16,7 @@ use tokio::sync::Notify;
 use tower::ServiceExt;
 
 use calm_server::harness::Observation;
-use calm_server::routes::planner_input_send::{ReplayMissHook, install_replay_miss_hook_for_test};
+use calm_server::test_seams::{PLANNER_INPUT_REPLAY_MISSED, PausePoint, install_pause_for_test};
 
 use crate::support::planner_queue_fixture::{
     Boot, boot_with, get, idle_snapshot, post_input_keyed, post_input_keyed_as, send_json,
@@ -90,8 +90,29 @@ async fn a_used_key_with_a_different_message_is_a_conflict() {
     let (status, body) =
         post_input_keyed(boot.app.clone(), &card_id, json!({"text": "second"}), "k-1").await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(body["code"], json!("conflict"), "body={body}");
+    assert_eq!(body["code"], json!("idempotency_key_reused"), "body={body}");
     assert_eq!(queued_texts(&boot).await, vec!["first"]);
+}
+
+#[tokio::test]
+async fn an_over_long_key_is_invalid_and_stores_nothing() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let card_id = boot.planner_card.id.as_str().to_string();
+    let (status, body) = post_input_keyed(
+        boot.app.clone(),
+        &card_id,
+        json!({"text": "too long a key"}),
+        &"k".repeat(129),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(
+        body["code"],
+        json!("idempotency_key_invalid"),
+        "body={body}"
+    );
+    assert!(queued_texts(&boot).await.is_empty());
+    assert_eq!(bindings(&boot).await, 0);
 }
 
 #[tokio::test]
@@ -271,7 +292,7 @@ async fn a_used_key_with_other_attachments_is_a_conflict() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(body["code"], json!("conflict"), "body={body}");
+    assert_eq!(body["code"], json!("idempotency_key_reused"), "body={body}");
     assert_eq!(queued_texts(&boot).await, vec!["look"]);
 }
 
@@ -286,7 +307,11 @@ async fn a_used_key_from_another_actor_is_a_conflict() {
     let (status, answer) =
         post_input_keyed_as(boot.app.clone(), &card_id, body, "k-1", "ai:codex").await;
     assert_eq!(status, StatusCode::CONFLICT, "body={answer}");
-    assert_eq!(answer["code"], json!("conflict"), "body={answer}");
+    assert_eq!(
+        answer["code"],
+        json!("idempotency_key_reused"),
+        "body={answer}"
+    );
     assert_eq!(queued_texts(&boot).await, vec!["who said this"]);
 }
 
@@ -294,7 +319,8 @@ async fn a_used_key_from_another_actor_is_a_conflict() {
 /// request is parked in the queue with its handler gone (lock released), and a second request
 /// under the same key passes its replay check before the first commits. The binding's UNIQUE
 /// constraint refuses the second in the transaction that would have stored it: one message, one
-/// binding, a 500 the client treats as unknown, and its retry replays.
+/// binding, a typed retryable 409 `idempotency_key_concurrent` with no SQL text, and its retry
+/// replays.
 #[tokio::test]
 async fn a_duplicate_past_the_replay_check_is_refused_by_the_binding() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -318,9 +344,10 @@ async fn a_duplicate_past_the_replay_check_is_refused_by_the_binding() {
     assert!(first.await.unwrap_err().is_cancelled());
 
     let missed = (Arc::new(Notify::new()), Arc::new(Notify::new()));
-    install_replay_miss_hook_for_test(
+    install_pause_for_test(
+        PLANNER_INPUT_REPLAY_MISSED,
         &card_id,
-        ReplayMissHook {
+        PausePoint {
             entered: missed.0.clone(),
             release: missed.1.clone(),
         },
@@ -342,7 +369,19 @@ async fn a_duplicate_past_the_replay_check_is_refused_by_the_binding() {
     missed.1.notify_one();
 
     let (status, refused) = second.await.unwrap();
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={refused}");
+    assert_eq!(status, StatusCode::CONFLICT, "body={refused}");
+    assert_eq!(
+        refused["code"],
+        json!("idempotency_key_concurrent"),
+        "body={refused}"
+    );
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|message| !message.contains("UNIQUE")
+                && !message.contains("planner_input_idempotency")),
+        "the answer carries no raw SQL text: body={refused}"
+    );
     assert_eq!(queued_texts(&boot).await, vec!["exactly one"]);
     assert_eq!(bindings(&boot).await, 1);
 

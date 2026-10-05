@@ -154,20 +154,18 @@ pub struct OperationKey {
     pub payload_hash: String,
 }
 
-/// Kept in one place so [`is_idempotency_payload_conflict`] can match reliably.
-const IDEMPOTENCY_PAYLOAD_CONFLICT_MSG: &str = "already used with different payload";
-
-/// The `(kind, idempotency_key)` pair already exists with a DIFFERENT payload hash; built in one place so callers can classify it.
+/// The `(kind, idempotency_key)` pair already exists with a DIFFERENT payload hash: 409
+/// `idempotency_key_reused`, built in one place so callers can classify it.
 pub(crate) fn idempotency_payload_conflict(idempotency_key: Option<&str>) -> CalmError {
     let key = idempotency_key.unwrap_or("<missing idempotency key>");
-    CalmError::Conflict(format!(
-        "operation idempotency key {key} {IDEMPOTENCY_PAYLOAD_CONFLICT_MSG}"
+    CalmError::IdempotencyKeyReused(format!(
+        "operation idempotency key {key} already used with different payload"
     ))
 }
 
 /// The scheduler classifies this as a PERMANENT spawn error: its payloads are pure functions of the frozen task row, so retrying can never self-heal.
 pub fn is_idempotency_payload_conflict(e: &CalmError) -> bool {
-    matches!(e, CalmError::Conflict(msg) if msg.contains(IDEMPOTENCY_PAYLOAD_CONFLICT_MSG))
+    matches!(e, CalmError::IdempotencyKeyReused(_))
 }
 
 #[derive(Clone, Debug)]

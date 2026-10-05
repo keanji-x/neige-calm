@@ -62,11 +62,16 @@ pub struct NewCodexCardBody {
     post,
     path = "/api/tracks/{track_id}/codex-cards",
     tag = "codex",
-    params(("track_id" = String, Path, description = "Track id to create the codex card under")),
+    params(
+        ("track_id" = String, Path, description = "Track id to create the codex card under"),
+        ("Idempotency-Key" = Option<String>, Header, description = "Optional; without one a retry creates another card. A retry under the key returns the same card."),
+    ),
     request_body(content = NewCodexCardBody, description = "Body required (theme is mandatory; cwd/prompt optional)"),
     responses(
         (status = 201, description = "Card + linked terminal created atomically; codex daemon spawned", body = Card),
+        (status = 400, description = "A refused body field, or an `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 409, description = "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)", body = ErrorBody),
     ),

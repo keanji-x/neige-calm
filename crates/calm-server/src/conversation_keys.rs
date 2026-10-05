@@ -31,6 +31,16 @@ pub fn derive_track_conversation_card_id_for_test(track_id: &str, idempotency_ke
     derive_track_conversation_keys(track_id, idempotency_key).card_id
 }
 
+/// Exposed for race tests that arm a pause on the conversation's operation key.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn derive_track_conversation_operation_key_for_test(
+    track_id: &str,
+    idempotency_key: &str,
+) -> String {
+    derive_track_conversation_keys(track_id, idempotency_key).operation_key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,7 +5,7 @@
 
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
-use crate::error::Result;
+use crate::error::{Result, idempotency_binding_insert_error};
 use crate::model::now_ms;
 
 /// What an earlier send under one key was answered.
@@ -40,7 +40,8 @@ pub async fn planner_input_binding_get(
 }
 
 /// Must run in the transaction that writes the snapshot holding the message. A plain INSERT on
-/// purpose: a second binding for one key fails that transaction instead of storing the message twice.
+/// purpose: a second binding for one key fails that transaction instead of storing the message
+/// twice, and answers [`crate::error::TruthError::IdempotencyKeyConcurrent`].
 pub async fn planner_input_bind_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
@@ -59,6 +60,7 @@ pub async fn planner_input_bind_tx(
     .bind(&binding.entry_id)
     .bind(now_ms())
     .execute(&mut **tx)
-    .await?;
+    .await
+    .map_err(idempotency_binding_insert_error)?;
     Ok(())
 }

@@ -59,8 +59,8 @@ pub async fn area_create_replay_tx(
         return Ok(None);
     };
     if original_fingerprint != fingerprint {
-        return Err(CalmError::Conflict(
-            "This Area creation key belongs to a different request. Retry the original request or explicitly start a new Area.",
+        return Err(CalmError::IdempotencyKeyReused(
+            "This Area creation key belongs to a different request. Retry the original request or explicitly start a new Area.".into(),
         ));
     }
     let area = sqlx::query_as::<_, crate::db::rows::AreaRow>(
@@ -70,8 +70,10 @@ pub async fn area_create_replay_tx(
     .fetch_optional(&mut **tx)
     .await?
     .map(Area::from)
-    .ok_or_else(|| CalmError::Conflict(
-        "The Area created by this request was deleted. Discard this draft to explicitly start a new Area.",
+    .ok_or_else(|| CalmError::IdempotencyKeyExhausted(
+        "The Area created by this request was deleted, so this key can never create another; \
+         create the Area again under a new key."
+            .into(),
     ))?;
     Ok(Some(area))
 }
@@ -89,7 +91,8 @@ pub async fn area_create_bind_tx(
         .bind(fingerprint)
         .bind(area_id)
         .execute(&mut **tx)
-        .await?;
+        .await
+        .map_err(crate::error::idempotency_binding_insert_error)?;
     Ok(())
 }
 

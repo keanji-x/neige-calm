@@ -130,6 +130,7 @@ async fn area_create_idempotency_binds_every_input_but_allows_independent_same_n
         changed[field] = value;
         let (status, body) = post(boot.app.clone(), Some("shape"), changed).await;
         assert_eq!(status, StatusCode::CONFLICT, "{field}: {body}");
+        assert_eq!(body["code"], "idempotency_key_reused", "{field}: {body}");
     }
     assert_eq!(boot.repo.areas_list_user_visible().await.unwrap().len(), 1);
     let explicit_nulls = json!({"name":"Same name", "color":"#123456", "sort":null,
@@ -165,6 +166,10 @@ async fn area_create_idempotency_deleted_area_and_binding_tampering_fail_closed(
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let (status, error) = post(boot.app, Some("deleted"), body).await;
     assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(
+        error["code"], "idempotency_key_exhausted",
+        "a deleted Area spends its key, as a deleted Track does: {error}"
+    );
     assert!(
         boot.repo
             .areas_list_user_visible()
@@ -253,8 +258,11 @@ async fn area_create_idempotency_replays_current_row_after_original_folder_is_re
 async fn area_create_idempotency_malformed_key_and_validation_leave_no_binding() {
     let boot = boot().await;
     let body = json!({"name":"Invalid", "color":"#123456"});
-    let (status, _) = post(boot.app.clone(), Some("  "), body.clone()).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for key in ["  ".to_string(), "k".repeat(129)] {
+        let (status, error) = post(boot.app.clone(), Some(&key), body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+        assert_eq!(error["code"], "idempotency_key_invalid", "{error}");
+    }
     let mut invalid = body.clone();
     invalid["default_template_id"] = json!("missing-template");
     let (status, _) = post(boot.app.clone(), Some("valid"), invalid).await;
@@ -285,4 +293,53 @@ async fn area_create_idempotency_version_advertises_safe_retry_capability() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["areaCreateIdempotency"], true);
+}
+
+/// The binding's primary key is the backstop. A real race cannot reach it: the replay check and the
+/// bind share one `BEGIN IMMEDIATE` transaction. So a trigger writes the conflicting binding inside
+/// that transaction, after the replay check missed and before the bind, which is the state a
+/// concurrent committer would leave. The answer is the typed retryable 409, with no SQL text, and
+/// nothing of the request is kept.
+#[tokio::test]
+async fn area_create_idempotency_a_key_bound_past_the_replay_check_is_a_typed_retryable_409() {
+    let boot = boot().await;
+    sqlx::query(
+        "CREATE TRIGGER bind_raced_key AFTER INSERT ON areas WHEN NEW.name = 'Raced' BEGIN \
+         INSERT INTO area_create_idempotency (idempotency_key, request_fingerprint, area_id) \
+         VALUES ('raced', 'v1:another-request', NEW.id); END",
+    )
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    let body = json!({"name":"Raced", "color":"#123456"});
+    let (status, error) = post(boot.app.clone(), Some("raced"), body.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error["code"], "idempotency_key_concurrent", "{error}");
+    let message = error["error"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("UNIQUE") && !message.contains("area_create_idempotency"),
+        "no raw SQL text: {error}"
+    );
+    assert!(
+        boot.repo
+            .areas_list_user_visible()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let bindings: i64 = sqlx::query_scalar("SELECT count(*) FROM area_create_idempotency")
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        bindings, 0,
+        "the whole create rolled back, the trigger's row with it"
+    );
+
+    sqlx::query("DROP TRIGGER bind_raced_key")
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+    let (status, area) = post(boot.app, Some("raced"), body).await;
+    assert_eq!(status, StatusCode::CREATED, "{area}");
 }

@@ -464,7 +464,8 @@ pub struct TrackCreateBindingClaim {
 /// Claim `(area_id, idempotency_key)` **inside the transaction that minted the
 /// track**: written after the track commit, the interval between the two
 /// commits is exactly where a retry mints a second track. A duplicate key
-/// violates the primary key and rolls the whole create back.
+/// violates the primary key, rolls the whole create back, and answers
+/// [`crate::error::TruthError::IdempotencyKeyConcurrent`].
 pub async fn track_create_idempotency_claim_tx(
     tx: &mut Transaction<'_, Sqlite>,
     area_id: &str,
@@ -494,7 +495,8 @@ pub async fn track_create_idempotency_claim_tx(
     .bind(&binding.create_request_sha256)
     .bind(&binding.first_message_sha256)
     .execute(&mut **tx)
-    .await?;
+    .await
+    .map_err(crate::error::idempotency_binding_insert_error)?;
     Ok(())
 }
 

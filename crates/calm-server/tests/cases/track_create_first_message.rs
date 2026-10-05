@@ -1741,7 +1741,7 @@ async fn a_failed_operation_does_not_unbind_the_create_shape() {
     edited["title"] = json!("different title");
     let (status, body) = b.post_create(Some(key), edited).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(body["code"], "conflict", "body={body}");
+    assert_eq!(body["code"], "idempotency_key_reused", "body={body}");
     assert_eq!(b.track_count().await, 1);
     let title: String = sqlx::query_scalar("SELECT title FROM tracks")
         .fetch_one(b.repo.pool())
@@ -1792,7 +1792,7 @@ async fn a_key_exhausted_by_64_failed_attempts_answers_409() {
     let (status, body) = b.post_create(Some("idem-burn"), different_create).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert_eq!(
-        body["code"], "conflict",
+        body["code"], "idempotency_key_reused",
         "the permanent create fingerprint is checked before retry-slot exhaustion: body={body}"
     );
     b.shutdown_harnesses().await;
@@ -2070,7 +2070,7 @@ async fn an_operationless_binding_rejects_a_different_first_message() {
         .post_create_on(running_app, Some(key), edited.take())
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(body["code"], "conflict", "body={body}");
+    assert_eq!(body["code"], "idempotency_key_reused", "body={body}");
     assert_eq!(b.track_count().await, 1, "the rejected edit mints nothing");
     assert_eq!(
         b.operation_count().await,
@@ -2112,7 +2112,7 @@ async fn an_operationless_binding_rejects_a_different_create_shape() {
         .post_create_on(b.app_with_running_daemon(), Some(key), edited)
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(body["code"], "conflict", "body={body}");
+    assert_eq!(body["code"], "idempotency_key_reused", "body={body}");
     let title: String = sqlx::query_scalar("SELECT title FROM tracks")
         .fetch_one(b.repo.pool())
         .await
@@ -2145,7 +2145,7 @@ async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
 
     let (status, body) = b.create_track(Some(key), Some("same sentence")).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(body["code"], "conflict", "body={body}");
+    assert_eq!(body["code"], "idempotency_key_reused", "body={body}");
     assert!(
         body["error"]
             .as_str()
@@ -2313,7 +2313,9 @@ async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
 }
 
 /// The cross-instance primary-key race: two `AppState`s sharing only the database file, the loser *held* at
-/// the mint rendezvous until the winner commits. The loser 500s naming the violation, leaves no orphan track, and its retry resolves to the winner's track.
+/// the mint rendezvous until the winner commits. The loser's binding INSERT is refused by the primary
+/// key: it answers the typed retryable 409 `idempotency_key_concurrent` with no SQL text, leaves no
+/// orphan track, and its retry resolves to the winner's track.
 #[tokio::test]
 async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_the_winner() {
     use calm_server::routes::tracks::TrackCreateMintGate;
@@ -2388,21 +2390,25 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
     // (1) the mapping.
     assert_eq!(
         loser_status,
-        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::CONFLICT,
         "the losing racer must fail closed, not resume and not mint; body={loser_error}"
+    );
+    assert_eq!(
+        loser_error["code"], "idempotency_key_concurrent",
+        "and must say which wall it hit, as a retryable code; body={loser_error}"
     );
     assert!(
         loser_error["error"]
             .as_str()
-            .is_some_and(|message| message.contains("claimed by a concurrent create")),
-        "and must say which wall it hit; body={loser_error}"
+            .is_some_and(|message| !message.contains("UNIQUE") && !message.contains("SQL")),
+        "the answer carries no raw SQL text; body={loser_error}"
     );
 
     // (2) no orphan: the loser's transaction had already minted a track row when the binding INSERT raised.
     assert_eq!(
         winner.track_count().await,
         1,
-        "the loser's rolled-back mint must leave no orphan track behind its 500"
+        "the loser's rolled-back mint must leave no orphan track behind its 409"
     );
     assert_eq!(winner.binding_count().await, 1);
     let surviving: String = sqlx::query_scalar("SELECT id FROM tracks")
@@ -2856,7 +2862,10 @@ async fn every_mint_input_is_bound_to_the_track_create_key() {
             StatusCode::CONFLICT,
             "changing {field} must not silently return the original track: body={body}"
         );
-        assert_eq!(body["code"], "conflict", "field={field} body={body}");
+        assert_eq!(
+            body["code"], "idempotency_key_reused",
+            "field={field} body={body}"
+        );
     }
     assert_eq!(b.track_count().await, 1);
     b.shutdown_harnesses().await;
@@ -3709,3 +3718,6 @@ async fn create_model_selection_refuses_agent_before_mint() {
     assert_eq!(b.track_count().await, 0);
     assert_eq!(b.card_count().await, 0);
 }
+
+#[path = "track_create_first_message_keyed.rs"]
+mod keyed;

@@ -9,7 +9,8 @@ import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { Track } from '../../../../core/domain/track.ts';
-import { visibleAreas } from '../../../../core/domain/area.ts';
+import { AREA_CREATE_FAILURES, visibleAreas } from '../../../../core/domain/area.ts';
+import { classifyFailure } from '../../../../core/domain/failure-class.ts';
 import type { Area, NewAreaBody } from '../../../../core/domain/area.ts';
 import {
   AreaEditorForm, type AreaEditorPatch, type AreaEditorValues,
@@ -270,11 +271,13 @@ export function AppShell({
       if (target.kind === 'create') setAreaCreateRequest(null);
       setAreaEditorTarget(null);
     }).catch((failure: unknown) => {
+      const kind = classifyFailure(failure instanceof ApiError ? failure.failure : null, AREA_CREATE_FAILURES);
+      // A refusal that never left the browser, or an answer `AREA_CREATE_FAILURES` reads as one.
       const rejected = failure instanceof AreaCreatePreflightError || failure instanceof OfflineSubmissionError
-        || (failure instanceof ApiError && (failure.failure.kind === 'unauthorized'
-          || (failure.failure.kind === 'http' && [400, 403, 404, 422, 429].includes(failure.failure.status))));
-      // A refused retry says nothing about an earlier unconfirmed POST.
-      const unconfirmed = target.kind === 'create' && (areaCreateRequest !== null || !rejected);
+        || kind === 'rejected';
+      // A refused retry says nothing about an earlier unconfirmed POST; a spent key ends the request.
+      const unconfirmed = target.kind === 'create' && kind !== 'key-spent'
+        && (areaCreateRequest !== null || !rejected);
       if (target.kind === 'create' && !unconfirmed) setAreaCreateRequest(null);
       const reason = failure instanceof Error ? failure.message
         : `Could not ${target.kind === 'create' ? 'create' : 'update'} the area.`;

@@ -8,7 +8,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { AREA_PALETTE } from '../../features/area/palette.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { AppShell } from './public.tsx';
-import { AreaCreatePreflightError } from '../providers/queries.ts';
+import { ApiError, AreaCreatePreflightError } from '../providers/queries.ts';
 
 const harness = vi.hoisted(() => ({
   compact: false,
@@ -195,6 +195,48 @@ describe('AppShell Area editor flow', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
     await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(4));
     expect(harness.create.mock.calls[3]?.[1]).not.toBe(key);
+  });
+
+  /* #2068: a key bound to another request can never be answered for this one, so the draft is not
+     offered a retry under it; the next Create is a new request under a new key. */
+  it('offers no retry after a key-reused answer and creates anew under a fresh key', async () => {
+    harness.create.mockRejectedValueOnce(new ApiError({
+      kind: 'http', status: 409, code: 'idempotency_key_reused', message: 'This Area creation key belongs to a different request.',
+    }));
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Reused');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('belongs to a different request');
+    expect(alert.textContent).not.toContain('Try again');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ }).disabled).toBe(false);
+    const reusedKey: unknown = harness.create.mock.calls[0]?.[1];
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(2));
+    expect(harness.create.mock.calls[1]?.[1]).not.toBe(reusedKey);
+  });
+
+  /* A spent key ends the request even after an unconfirmed attempt: the Area it made was deleted. */
+  it('drops an unconfirmed request whose retry finds its Area deleted', async () => {
+    harness.create.mockRejectedValueOnce(new Error('Transport request failed'))
+      .mockRejectedValueOnce(new ApiError({
+        kind: 'http', status: 409, code: 'idempotency_key_exhausted', message: 'The Area created by this request was deleted.',
+      }));
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Deleted');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(2));
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => expect(alert.textContent).toContain('was deleted'));
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    const spentKey: unknown = harness.create.mock.calls[1]?.[1];
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(3));
+    expect(harness.create.mock.calls[2]?.[1]).not.toBe(spentKey);
   });
 
   it('keeps an unsubmitted preflight failure editable and permits an explicit discard', async () => {

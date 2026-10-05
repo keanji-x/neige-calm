@@ -4,8 +4,8 @@
 //! persists while it decides, commits and adopts. The provider drops the turn when the next turn
 //! starts (`pending_rewind`), so the commit is the whole of the op's own effect.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex as StdMutex};
 
 use super::{
     DurableAck, DurableSendBinding, HarnessObservationDelivery, Inner, SendKey,
@@ -200,9 +200,8 @@ struct Commit {
 }
 
 /// The turn's rows go, the snapshot holding the cut and the message is written, and the key is
-/// bound to the message, or none of it happens. A refusal inside the transaction rolls it back; its
-/// reason travels beside the error, since the storage layer keeps only the message of an error it
-/// has no kind for.
+/// bound to the message, or none of it happens. A refusal inside the transaction rolls it back and
+/// keeps its kind through the storage layer, which has a twin for it.
 async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
     let Commit {
         thread_id,
@@ -217,14 +216,6 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
     let worker_session_id = inner.worker_session_id.clone();
     let card_id = inner.card_id.clone();
     let track_id = inner.track_id.clone();
-    let refusal = Arc::new(StdMutex::new(None::<&'static str>));
-    let refuse = {
-        let refusal = Arc::clone(&refusal);
-        move |reason: &'static str| {
-            *refusal.lock().expect("refusal slot") = Some(reason);
-            refused(reason)
-        }
-    };
     write_with_event_typed(
         inner.repo.as_ref(),
         ActorId::Kernel,
@@ -246,7 +237,7 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
                 )
                 .await?;
                 if removed_item_count != planned_rows {
-                    return Err(refuse(
+                    return Err(refused(
                         "the conversation changed while the edit was prepared",
                     ));
                 }
@@ -259,7 +250,7 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
                 )
                 .await?
                 {
-                    return Err(refuse(
+                    return Err(refused(
                         "this conversation is no longer the card's active session",
                     ));
                 }
@@ -293,8 +284,4 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
     )
     .await
     .map(|((), _event_id)| ())
-    .map_err(|error| match refusal.lock().expect("refusal slot").take() {
-        Some(reason) => refused(reason),
-        None => error,
-    })
 }

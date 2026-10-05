@@ -106,7 +106,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs or a deleted Area return 409. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name.",
+            "description": "Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs return 409 `idempotency_key_reused` and a deleted Area 409 `idempotency_key_exhausted`. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name. A blank, non-ASCII or over-128-byte key is 400.",
             "required": false,
             "schema": {
               "type": [
@@ -138,7 +138,7 @@
             }
           },
           "400": {
-            "description": "Unknown default template, invalid attached default folder, or malformed Idempotency-Key",
+            "description": "Unknown default template, invalid default folder, or an invalid Idempotency-Key (`idempotency_key_invalid`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -148,7 +148,7 @@
             }
           },
           "409": {
-            "description": "Creation key belongs to different inputs or its Area was deleted",
+            "description": "The key belongs to different inputs (`idempotency_key_reused`) or its Area was deleted (`idempotency_key_exhausted`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1379,7 +1379,7 @@
           "cards"
         ],
         "summary": "Queue one message for the card's harness, under a required `Idempotency-Key`.",
-        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\n`replaces_turn`, actor) answers 200 with the first request's body and queues nothing, whatever\nhappened to the message since. The same key with a different body is 409 `conflict`. A refusal stores and\nbinds nothing, so its key can be sent again. A binding lasts as long as its card.\n\nWith `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing\nqueued: it is removed and this message queued in the transaction that binds the key, and the\nprovider drops the turn when the next one starts. There is no lazy recovery on this path.",
+        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\n`replaces_turn`, actor) answers 200 with the first request's body and queues nothing, whatever\nhappened to the message since. The same key with a different body is 409 `idempotency_key_reused`. A\nrefusal stores and binds nothing, so its key can be sent again. A binding lasts as long as its card.\n\nWith `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing\nqueued: it is removed and this message queued in the transaction that binds the key, and the\nprovider drops the turn when the next one starts. There is no lazy recovery on this path.",
         "operationId": "send_planner_input",
         "parameters": [
           {
@@ -1394,7 +1394,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "**Required.** One key per message; a retry under it replays the first answer.",
+            "description": "**Required.** One key per message, at most 128 ASCII bytes; a retry under it replays the first answer.",
             "required": true,
             "schema": {
               "type": "string"
@@ -1423,7 +1423,7 @@
             }
           },
           "400": {
-            "description": "Empty text, a blank `replaces_turn`, or a missing or blank Idempotency-Key",
+            "description": "Empty text, a blank `replaces_turn`, or a missing or invalid Idempotency-Key (`idempotency_key_invalid`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1453,7 +1453,7 @@
             }
           },
           "409": {
-            "description": "This Idempotency-Key was used for a different message (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); on a plain send, the runtime is shutting down (code `conflict`) or is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`); on a send with `replaces_turn`, the turn cannot be replaced now — not the latest, still running, messages waiting, the runtime shutting down or no longer the card's, or the provider refusing the cut — and nothing changed (code `planner_turn_not_replaceable`, with the reason), or the conversation stopped before answering and the replace may have landed (code `conflict`)",
+            "description": "Distinguished by `code`:\n* `idempotency_key_reused` — this Idempotency-Key was already used for a different message on this card (text, attachments, `replaces_turn` or actor); final, send the new message under a new key.\n* `idempotency_key_concurrent` — another request under this key was stored at the same moment and nothing of this one was; send it again under the same key to receive that answer.\n* `planner_harness_dormant` — the planner harness session is dormant and not recoverable; reset to start a session.\n* `planner_harness_runtime_superseded` — on a plain send, the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor.\n* `planner_turn_not_replaceable` — on a send with `replaces_turn`, the turn cannot be replaced now (not the latest, still running, messages waiting, the conversation shutting down or no longer the card's, or the provider refusing the cut) and nothing changed; the body carries the reason.\n* `conflict` — the conversation's run loop is shutting down, already closed, or stopped before answering, on a plain send and on a send with `replaces_turn` alike. This answer does not say whether the message was stored or the turn replaced: a loop that stopped before answering may have committed it. Send it again under the same key.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5208,7 +5208,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "**Required if the body carries `first_message`; optional otherwise, and honoured when sent.** A create that sends no key at all is not idempotent — a retry mints a second track — which is the unchanged behaviour of every caller that sends none.\n\nWithout `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201, a different create shape under the same key is 409 `conflict`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `conflict`, in both directions.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, `fork_report_from`, non-null `model` / `reasoning_effort`, and a `planner_provider` other than `codex`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `conflict`, including after a terminal operation failure. A different `first_message` is also a conflict after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries; a `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 because the server cannot prove request equality.",
+            "description": "**Required if the body carries `first_message`; optional otherwise, and honoured when sent.** A create that sends no key at all is not idempotent — a retry mints a second track — which is the unchanged behaviour of every caller that sends none.\n\nWithout `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201, a different create shape under the same key is 409 `idempotency_key_reused`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `idempotency_key_reused`, in both directions.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, `fork_report_from`, non-null `model` / `reasoning_effort`, and a `planner_provider` other than `codex`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `idempotency_key_reused`, including after a terminal operation failure. A different `first_message` is also `idempotency_key_reused` after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries; a `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 `idempotency_key_reused` because the server cannot prove request equality. A key longer than 128 bytes, blank or not visible ASCII is 400 `idempotency_key_invalid`.",
             "required": false,
             "schema": {
               "type": [
@@ -5240,7 +5240,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty, non-ASCII or over 128 bytes; code `idempotency_key_invalid`) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5260,7 +5260,7 @@
             }
           },
           "409": {
-            "description": "Folder-claim conflict (structured `FolderConflict` body), `conflict` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized, or `conflict` naming `attached-repo-diverged` when the attached checkout has unpushed commits and its upstream moved on, so the track's worktree cannot be made (the track is already committed and stays, as after a failed managed materialization; reconcile the checkout, then retry under the same key). Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request for a payload conflict (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.",
+            "description": "Folder-claim conflict (structured `FolderConflict` body), `idempotency_key_reused` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, `idempotency_key_concurrent` when another create under the same key committed at the same moment (nothing of this request was kept; retry the identical request under the same key and it resolves to that track), `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized, or `conflict` naming `attached-repo-diverged` when the attached checkout has unpushed commits and its upstream moved on, so the track's worktree cannot be made (the track is already committed and stays, as after a failed managed materialization; reconcile the checkout, then retry under the same key). Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request after `idempotency_key_reused` (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6860,6 +6860,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Optional; without one a retry creates another card. A retry under the key returns the same card.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -6884,8 +6896,28 @@
               }
             }
           },
+          "400": {
+            "description": "A refused body field, or an `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key",
             "content": {
               "application/json": {
                 "schema": {
@@ -6932,6 +6964,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Optional; without one a retry creates another card. A retry under the key returns the same card.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -6956,8 +7000,28 @@
               }
             }
           },
+          "400": {
+            "description": "A refused body field, or an `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key",
             "content": {
               "application/json": {
                 "schema": {
@@ -7061,7 +7125,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**: a success replays without re-sending; a terminal failure retries under a `#N` operation key; a stuck attempt stays failed closed; 64 failed attempts exhaust the key; and the same key with different text is a conflict. The derived card id never carries the retry suffix.",
+            "description": "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**: a success replays without re-sending; a terminal failure retries under a `#N` operation key; a stuck attempt stays failed closed; 64 failed attempts exhaust the key; and the same key with different text is 409 `idempotency_key_reused`. A key longer than 128 bytes, blank or not visible ASCII is 400 `idempotency_key_invalid`. The derived card id never carries the retry suffix.",
             "required": true,
             "schema": {
               "type": "string"
@@ -7090,7 +7154,7 @@
             }
           },
           "400": {
-            "description": "Missing/blank `Idempotency-Key`, or empty/over-long text. A `BadRequest` raised by `PlannerHarnessStartAdapter::validate` also lands here — the operation-failure mapping keeps `bad_request` a 400.",
+            "description": "Missing `Idempotency-Key`, one that is blank, not visible ASCII or over 128 bytes (code `idempotency_key_invalid`), or empty/over-long text. A `BadRequest` raised by `PlannerHarnessStartAdapter::validate` also lands here — the operation-failure mapping keeps `bad_request` a 400.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7120,7 +7184,7 @@
             }
           },
           "409": {
-            "description": "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.",
+            "description": "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists.\n* `idempotency_key_reused` — this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares); final for this key.\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7167,6 +7231,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Optional; without one a retry creates another card. A retry under the key returns the same card.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -7191,8 +7267,28 @@
               }
             }
           },
+          "400": {
+            "description": "An `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This `Idempotency-Key` was already used for a different request (code `idempotency_key_reused`); final for this key",
             "content": {
               "application/json": {
                 "schema": {

@@ -90,6 +90,14 @@ impl OperationRepo for SqlxOperationRepo {
             }
             return Err(idempotency_payload_conflict(Some(idempotency_key)));
         }
+        #[cfg(feature = "fixtures")]
+        if let Some(idempotency_key) = key.idempotency_key.as_deref() {
+            crate::test_seams::pause_point(
+                crate::test_seams::OPERATION_DEDUP_MISSED,
+                idempotency_key,
+            )
+            .await;
+        }
 
         let id = new_id();
         let now = now_ms();

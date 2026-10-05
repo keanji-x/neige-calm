@@ -2,13 +2,11 @@ import type { ApiFailure, HttpFailure } from '../api/types.js';
 
 /**
  * One answered HTTP failure a route gives a meaning. Every field given must match: `status` as a
- * list or an inclusive range, `code` exactly, and `message` as a substring (for the one server
- * refusal that is told apart only by its wording).
+ * list or an inclusive range, `code` exactly. A failure is never told apart by its wording.
  */
 export type FailureRule<C extends string> = Readonly<{
   status?: readonly number[] | Readonly<{ from: number; to: number }>;
   code?: string;
-  message?: string;
   is: C;
 }>;
 
@@ -25,11 +23,10 @@ export type FailureTable<C extends string> = Readonly<{
 }>;
 
 function matches(rule: FailureRule<string>, failure: HttpFailure): boolean {
-  const { status, code, message } = rule;
+  const { status, code } = rule;
   const statusMatches = status === undefined
     || ('from' in status ? failure.status >= status.from && failure.status <= status.to : status.includes(failure.status));
-  return statusMatches && (code === undefined || failure.code === code)
-    && (message === undefined || failure.message.includes(message));
+  return statusMatches && (code === undefined || failure.code === code);
 }
 
 /** The one classifier for a failed chat write: what `failure` means on the route `table` describes. */

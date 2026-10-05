@@ -197,7 +197,7 @@ describe('track conversations', () => {
 
   it.each([
     [{ kind: 'http', status: 409, code: 'idempotency_key_exhausted', message: 'key exhausted' }, 'exhausted'],
-    [{ kind: 'http', status: 409, code: 'conflict', message: 'already used with different payload' }, 'stale-payload'],
+    [{ kind: 'http', status: 409, code: 'idempotency_key_reused', message: 'already used with different payload' }, 'stale-payload'],
     [{ kind: 'http', status: 409, code: 'conflict', message: 'card already exists' }, 'exists'],
     [{ kind: 'http', status: 404, code: 'not_found', message: 'track not found' }, 'gone'],
     [{ kind: 'http', status: 400, code: 'bad_request', message: 'text must not be blank' }, 'blocked'],

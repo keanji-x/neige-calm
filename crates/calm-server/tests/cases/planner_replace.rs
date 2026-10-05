@@ -386,7 +386,7 @@ async fn a_key_bound_to_one_message_refuses_another() {
 
     let (status, body) = replace_keyed_as(&boot, "user", TURN_A, "edited", &key).await;
     assert_eq!(status, StatusCode::CONFLICT, "another turn: {body}");
-    assert_eq!(body["code"], json!("conflict"));
+    assert_eq!(body["code"], json!("idempotency_key_reused"));
     let plain = |key: String| {
         let app = boot.app.clone();
         let card = boot.planner_card.id.as_str().to_string();
@@ -394,7 +394,7 @@ async fn a_key_bound_to_one_message_refuses_another() {
     };
     let (status, body) = plain(key.clone()).await;
     assert_eq!(status, StatusCode::CONFLICT, "a plain send: {body}");
-    assert_eq!(body["code"], json!("conflict"));
+    assert_eq!(body["code"], json!("idempotency_key_reused"));
 
     // And the other way round: a key a plain send bound is not a replace's.
     let plain_key = calm_server::model::new_id();
@@ -402,7 +402,7 @@ async fn a_key_bound_to_one_message_refuses_another() {
     assert_eq!(status, StatusCode::OK, "body={body}");
     let (status, body) = replace_keyed_as(&boot, "user", TURN_A, "edited", &plain_key).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(body["code"], json!("conflict"));
+    assert_eq!(body["code"], json!("idempotency_key_reused"));
 }
 
 /// Every refusal is a 409 `planner_turn_not_replaceable` that leaves the rows, the snapshot, the

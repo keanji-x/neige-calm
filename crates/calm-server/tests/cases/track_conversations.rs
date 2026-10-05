@@ -1002,6 +1002,7 @@ async fn changing_only_the_first_message_model_cannot_reuse_its_create_key() {
         )
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "idempotency_key_reused", "{body}");
     b.shutdown_harnesses().await;
 }
 
@@ -1235,3 +1236,6 @@ async fn side_source_survives_rest_and_trusted_payload_replacement() {
     );
     b.shutdown_harnesses().await;
 }
+
+#[path = "track_conversations_keyed.rs"]
+mod keyed;

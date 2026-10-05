@@ -471,7 +471,7 @@ async fn same_idempotency_key_different_hash_conflicts() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, CalmError::Conflict(_)));
+    assert!(matches!(err, CalmError::IdempotencyKeyReused(_)));
 }
 
 #[tokio::test]

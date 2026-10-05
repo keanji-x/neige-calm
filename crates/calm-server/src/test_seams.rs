@@ -12,6 +12,56 @@ pub fn crash_point(point: &str) {
     }
 }
 
+/// A one-shot pause a race test arms on a production path: the path calls [`pause_point`] with a
+/// named point and the key it is working on, signals `entered`, and waits for `release`.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct PausePoint {
+    pub entered: std::sync::Arc<tokio::sync::Notify>,
+    pub release: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+type PauseRegistry = std::sync::Mutex<std::collections::HashMap<(String, String), PausePoint>>;
+
+#[cfg(feature = "fixtures")]
+fn pause_points() -> &'static PauseRegistry {
+    static POINTS: std::sync::OnceLock<PauseRegistry> = std::sync::OnceLock::new();
+    POINTS.get_or_init(Default::default)
+}
+
+/// Arm `hook` for the next request that reaches `point` working on `key`; the first one consumes it.
+#[cfg(feature = "fixtures")]
+pub fn install_pause_for_test(point: &str, key: &str, hook: PausePoint) {
+    pause_points()
+        .lock()
+        .expect("pause point mutex")
+        .insert((point.to_owned(), key.to_owned()), hook);
+}
+
+/// Pause here when a test armed `point` for `key`. Call sites MUST be gated with
+/// `#[cfg(feature = "fixtures")]` as a whole statement.
+#[cfg(feature = "fixtures")]
+pub async fn pause_point(point: &str, key: &str) {
+    let hook = pause_points()
+        .lock()
+        .expect("pause point mutex")
+        .remove(&(point.to_owned(), key.to_owned()));
+    if let Some(hook) = hook {
+        hook.entered.notify_one();
+        hook.release.notified().await;
+    }
+}
+
+/// Where a planner send has found no binding for its key (#2043, the UNIQUE backstop); keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const PLANNER_INPUT_REPLAY_MISSED: &str = "planner-input-replay-missed";
+
+/// Where an operation insert has found no row under its `(kind, idempotency_key)` and is about to
+/// write one; keyed by the idempotency key.
+#[cfg(feature = "fixtures")]
+pub const OPERATION_DEDUP_MISSED: &str = "operation-dedup-missed";
+
 /// Reach the production worker-lease preparation (#1830 S2: the track's checkout, materialized
 /// for a managed track, checked clean) from an integration test. Returns the worker's directory.
 #[cfg(feature = "fixtures")]

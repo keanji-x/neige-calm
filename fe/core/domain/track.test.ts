@@ -7,7 +7,7 @@ import {
   sortAreaTracksByRecent, trackRecentAt, limitAreaTracks, railAreaTracks, AREA_TRACK_LIMIT,
   trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackWireSchema, tracksInAreaOperation,
-  trackCreateKeyAction, userVisibleTracks, trackOverlayPayload, plannerProviderOf,
+  userVisibleTracks, trackOverlayPayload, plannerProviderOf,
   type Track, type OverlayWire,
 } from './track.js';
 import type { Area } from './area.js';
@@ -99,26 +99,6 @@ describe('track create operation', () => {
       // @ts-expect-error first_message makes Idempotency-Key required.
       createTrackOperation({ area_id: 'area', planner_provider: 'codex', theme, first_message: 'missing key' });
     }).toThrow(/Idempotency-Key/);
-  });
-
-  it('replaces only an explicitly exhausted key', () => {
-    expect(trackCreateKeyAction({
-      kind: 'http', status: 409, code: 'idempotency_key_exhausted', message: 'used up',
-    })).toBe('replace');
-    expect(trackCreateKeyAction({
-      kind: 'http', status: 409, code: 'conflict', message: 'different payload',
-    })).toBe('preserve');
-    expect(trackCreateKeyAction({
-      kind: 'http', status: 409, code: 'conflict', message: 'already used with different payload',
-    })).toBe('offer-explicit-replace');
-    expect(trackCreateKeyAction({
-      kind: 'http', status: 409, code: 'conflict',
-      message: 'this key predates durable request fingerprints',
-    })).toBe('offer-explicit-replace');
-    expect(trackCreateKeyAction({
-      kind: 'http', status: 500, code: 'internal', message: 'unknown result',
-    })).toBe('preserve');
-    expect(trackCreateKeyAction({ kind: 'transport', message: 'answer lost' })).toBe('preserve');
   });
 });
 

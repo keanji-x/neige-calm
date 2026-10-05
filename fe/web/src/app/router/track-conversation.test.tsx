@@ -2679,6 +2679,29 @@ describe('track conversations', () => {
       .not.toBe(exhausted?.headers?.['Idempotency-Key']);
   });
 
+  /* #2068: a key bound to another first message can never be answered for this one, so the only way
+   * forward is a new conversation under a new key; a Try again under the reused key is not offered. */
+  it('offers no retry after a key-reused answer, only a new conversation', async () => {
+    const { requests } = setup((request) => {
+      if (request.path !== CONVERSATIONS || request.method !== 'POST') return undefined;
+      return creates(requests, CONVERSATIONS).length === 1
+        ? failure(409, 'idempotency_key_reused', 'this key was already used for another first message')
+        : created(derivedRow('w1', request));
+    });
+
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('a key that is spent');
+    await screen.findByText('this key was already used for another first message');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'Send as a new conversation' }));
+
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(2));
+    const [reused, fresh] = creates(requests, CONVERSATIONS);
+    expect(fresh?.headers?.['Idempotency-Key'])
+      .not.toBe(reused?.headers?.['Idempotency-Key']);
+  });
+
   /* At most one echo is ever unanswered: clearing the send state unconditionally
    * on a conversation switch would re-open a composer whose own message is still
    * in flight. The second POST is what this asserts. */

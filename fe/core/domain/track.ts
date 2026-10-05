@@ -5,11 +5,12 @@ import { z } from 'zod';
 
 import { cardRuntimeViewSchema } from '../api/schemas.js';
 import type { AgentProvider } from '../api/generated/wire.js';
-import type { ApiFailure, ApiOperation } from '../api/types.js';
+import type { ApiOperation } from '../api/types.js';
 import {
   activityStateOf, type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 import { visibleAreas, type Area } from './area.js';
+import type { FailureTable } from './failure-class.js';
 
 /**
  * `cwd` and the `*_at` columns may be absent from the OpenAPI `required` set; the decoder supplies
@@ -472,23 +473,30 @@ export function createTrackOperation(body: NewTrackBody, idempotencyKey?: string
   };
 }
 
-export type TrackCreateKeyAction = 'preserve' | 'replace' | 'offer-explicit-replace';
-
 /**
- * Only `idempotency_key_exhausted` earns a fresh key: transport errors and 5xx may have committed,
- * so rotating their key could mint a second track. Payload conflicts expose an explicit choice.
+ * What one failed `POST /api/tracks` means for its draft and key.
+ * - `exhausted`: the key can never mint again (spent, its track deleted, or refused as invalid);
+ *   nothing was minted under it for this request, so only a fresh key goes anywhere.
+ * - `key-reused`: the key is bound to another create (or one the server can no longer compare), so
+ *   no retry under it can succeed; a new track is an explicit choice, never automatic. Final.
+ * - `rejected`: refused before anything was minted; the key is unspent.
+ * - `unconfirmed`: the create may have committed (a lost answer, a 5xx, a timeout, a concurrent
+ *   create under the same key), so the key and the original request are kept for a retry.
  */
-export function trackCreateKeyAction(failure: ApiFailure): TrackCreateKeyAction {
-  if (failure.kind !== 'http') return 'preserve';
-  if (failure.code === 'idempotency_key_exhausted') return 'replace';
-  if (failure.code === 'conflict' && (
-    failure.message.includes('already used with different payload')
-    || failure.message.includes('predates durable request fingerprints')
-  )) {
-    return 'offer-explicit-replace';
-  }
-  return 'preserve';
-}
+export type TrackCreateFailure = 'exhausted' | 'key-reused' | 'rejected' | 'unconfirmed';
+
+/** First match wins: the codes, then 408/409 (which may follow a commit), then the other 4xx. */
+export const TRACK_CREATE_FAILURES: FailureTable<TrackCreateFailure> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ code: 'idempotency_key_exhausted', is: 'exhausted' as const }),
+    Object.freeze({ code: 'idempotency_key_invalid', is: 'exhausted' as const }),
+    Object.freeze({ code: 'idempotency_key_reused', is: 'key-reused' as const }),
+    Object.freeze({ status: Object.freeze([408, 409]), is: 'unconfirmed' as const }),
+    Object.freeze({ status: Object.freeze({ from: 400, to: 499 }), is: 'rejected' as const }),
+  ]),
+  unauthorized: 'unconfirmed',
+  otherwise: 'unconfirmed',
+});
 
 export function updateTrackOperation(trackId: string, body: TrackPatchBody): ApiOperation<TrackWire> {
   return { method: 'PATCH', path: `/api/tracks/${encodeURIComponent(trackId)}`, body, responseSchema: trackWireSchema };

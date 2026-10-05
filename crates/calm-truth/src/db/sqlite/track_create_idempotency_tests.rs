@@ -164,10 +164,12 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
     let error = refused.expect_err(
         "a second track under one (area, Idempotency-Key) must be refused by the database",
     );
-    let message = error.to_string();
+    // The primary key is the only wall that can refuse here; its answer is the typed retryable
+    // refusal, with no SQL text in it.
     assert!(
-        message.contains("UNIQUE constraint failed"),
-        "the refusal must come from the primary key, not from something incidental: {message}"
+        matches!(&error, crate::error::TruthError::IdempotencyKeyConcurrent(message)
+            if !message.contains("UNIQUE")),
+        "the refusal must come from the primary key, typed: {error:?}"
     );
 
     drop(tx);
@@ -289,10 +291,8 @@ async fn a_message_less_claim_round_trips_as_its_own_fingerprint_variant() {
         &claim(second.id.to_string(), "planner-2", "report-2"),
     )
     .await;
-    assert!(
-        refused
-            .expect_err("one (area, key) names one track, whatever shape claimed it")
-            .to_string()
-            .contains("UNIQUE constraint failed"),
-    );
+    assert!(matches!(
+        refused.expect_err("one (area, key) names one track, whatever shape claimed it"),
+        crate::error::TruthError::IdempotencyKeyConcurrent(_)
+    ));
 }

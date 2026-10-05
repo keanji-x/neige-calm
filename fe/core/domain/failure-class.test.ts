@@ -6,6 +6,8 @@ import {
 } from './conversation.js';
 import { SEND_FAILURES } from './conversation-delivery.js';
 import { PLANNER_INTERRUPT_FAILURES } from './conversation-stop.js';
+import { AREA_CREATE_FAILURES } from './area.js';
+import { TRACK_CREATE_FAILURES } from './track.js';
 import { classifyFailure, NotSentError, refusalText, type FailureTable } from './failure-class.js';
 
 const http = (status: number, code = 'http_error', message = 'answered'): ApiFailure =>
@@ -24,6 +26,10 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(409, 'planner_harness_dormant'), 'refused'], [http(409, 'planner_harness_runtime_superseded'), 'refused'],
     /* An Edit's replace refused before any write (#2043): final, the server's reason is shown. */
     [http(409, 'planner_turn_not_replaceable'), 'refused'],
+    /* A key bound to another message can never be stored or replayed (#2068): final. */
+    [http(409, 'idempotency_key_reused'), 'refused'], [http(400, 'idempotency_key_invalid'), 'refused'],
+    /* Another request under the key was stored at that moment: a retry replays its answer. */
+    [http(409, 'idempotency_key_concurrent'), 'unknown'],
     /* The code decides before the status: an answer naming one of these never wrote. */
     [http(400, 'planner_harness_dormant'), 'refused'],
     [http(409, 'conflict'), 'unknown'], [http(408), 'unknown'], [http(500), 'unknown'], [http(502), 'unknown'],
@@ -41,8 +47,12 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
   ['POST /tracks/{id}/conversations', CONVERSATION_CREATE_FAILURES, [
     [http(409, 'idempotency_key_exhausted'), 'exhausted'], [http(404, 'not_found'), 'gone'],
     [http(503, 'service_unavailable'), 'unavailable'], [http(400, 'bad_request'), 'blocked'],
-    [http(409, 'conflict', 'Idempotency-Key already used with different payload'), 'stale-payload'],
+    [http(409, 'idempotency_key_reused'), 'stale-payload'], [http(409, 'idempotency_key_concurrent'), 'retry'],
+    /* Told apart by the code alone: the wording of a `conflict` decides nothing. */
+    [http(409, 'conflict', 'Idempotency-Key already used with different payload'), 'exists'],
     [http(409, 'conflict', 'card already exists'), 'exists'],
+    /* An invalid key can never be answered; a new one can. */
+    [http(400, 'idempotency_key_invalid'), 'exhausted'],
     [http(500), 'retry'], [http(403), 'retry'], [unauthorized, 'retry'],
     [transport, 'retry'], [decode, 'retry'], [null, 'retry'],
   ]],
@@ -66,6 +76,30 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(500, 'internal'), 'unknown'], [http(503, 'service_unavailable'), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
+  ['POST /tracks', TRACK_CREATE_FAILURES, [
+    [http(409, 'idempotency_key_exhausted'), 'exhausted'],
+    /* A key bound to another create, or to one the server can no longer compare: final. */
+    [http(409, 'idempotency_key_reused'), 'key-reused'],
+    /* An invalid key can never mint; only a fresh key goes anywhere. */
+    [http(400, 'idempotency_key_invalid'), 'exhausted'], [http(400, 'bad_request'), 'rejected'],
+    [http(403, 'forbidden'), 'rejected'], [http(404, 'not_found'), 'rejected'], [http(422), 'rejected'],
+    [http(429), 'rejected'], [http(499), 'rejected'],
+    /* May follow a commit: the request and its key are kept. */
+    [http(409, 'idempotency_key_concurrent'), 'unconfirmed'], [http(409, 'conflict'), 'unconfirmed'],
+    [http(408), 'unconfirmed'], [http(500, 'internal'), 'unconfirmed'], [http(503, 'service_unavailable'), 'unconfirmed'],
+    [unauthorized, 'unconfirmed'], [transport, 'unconfirmed'], [decode, 'unconfirmed'], [null, 'unconfirmed'],
+  ]],
+  ['POST /areas', AREA_CREATE_FAILURES, [
+    /* No retry under the key can succeed: the next Create mints a new one (#2068). */
+    [http(409, 'idempotency_key_reused'), 'key-spent'], [http(400, 'idempotency_key_invalid'), 'key-spent'],
+    [http(409, 'idempotency_key_exhausted'), 'key-spent'],
+    [http(400, 'bad_request'), 'rejected'], [http(403), 'rejected'], [http(404), 'rejected'], [http(422), 'rejected'],
+    [http(429), 'rejected'], [unauthorized, 'rejected'],
+    /* A concurrent create or a lost answer: the request is kept for a retry. */
+    [http(409, 'conflict'), 'unconfirmed'], [http(409, 'idempotency_key_concurrent'), 'unconfirmed'],
+    [http(408), 'unconfirmed'], [http(500, 'internal'), 'unconfirmed'], [http(503, 'service_unavailable'), 'unconfirmed'],
+    [transport, 'unconfirmed'], [decode, 'unconfirmed'], [null, 'unconfirmed'],
+  ]],
 ];
 
 describe.each(cases)('classifying a failed %s', (_route, table, expected) => {
@@ -77,7 +111,7 @@ describe.each(cases)('classifying a failed %s', (_route, table, expected) => {
 describe('classifyFailure', () => {
   const table: FailureTable<'first' | 'second' | 'auth' | 'other'> = {
     rules: [
-      { status: [409], code: 'a', message: 'needle', is: 'first' },
+      { status: [409], code: 'a', is: 'first' },
       { status: { from: 400, to: 409 }, is: 'second' },
     ],
     unauthorized: 'auth',
@@ -85,9 +119,9 @@ describe('classifyFailure', () => {
   };
 
   it('takes the first rule whose every given field matches', () => {
-    expect(classifyFailure(http(409, 'a', 'a needle here'), table)).toBe('first');
-    expect(classifyFailure(http(409, 'a', 'no match'), table)).toBe('second');
-    expect(classifyFailure(http(409, 'b', 'needle'), table)).toBe('second');
+    expect(classifyFailure(http(409, 'a'), table)).toBe('first');
+    expect(classifyFailure(http(400, 'a'), table)).toBe('second');
+    expect(classifyFailure(http(409, 'b'), table)).toBe('second');
   });
 
   it('reads a status range inclusively at both ends', () => {
@@ -97,7 +131,7 @@ describe('classifyFailure', () => {
   });
 
   it('never reads rules for a 401, however its code reads', () => {
-    expect(classifyFailure({ ...unauthorized, code: 'a', message: 'needle' }, table)).toBe('auth');
+    expect(classifyFailure({ ...unauthorized, code: 'a' }, table)).toBe('auth');
   });
 });
 

@@ -6,7 +6,8 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { templateDetailOperation } from '../../../../core/domain/template.ts';
 import { availabilityOf } from '../../../../core/domain/agent-providers.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
-import { isBlankForKernel, trackCreateKeyAction, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
+import { classifyFailure } from '../../../../core/domain/failure-class.ts';
+import { isBlankForKernel, TRACK_CREATE_FAILURES, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
@@ -77,7 +78,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     // The provider owns the lease too: leaving and returning during a POST
     // must not enable a second request before the first settles.
     const current = store.get(areaId);
-    if (current === null || current.creating || !available || current.createdTrackId !== null) return;
+    // After `key-reused` only an explicit new track goes anywhere: a retry under the key cannot.
+    if (current === null || current.creating || !available || current.createdTrackId !== null
+      || current.canRetryAsNewTrack) return;
     const hadUnconfirmedRequest = replacementKey === undefined && current.request !== null;
     const attemptKey = replacementKey ?? current.key;
     const body = {
@@ -120,19 +123,16 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         });
         return;
       }
-      const keyAction = failure instanceof ApiError ? trackCreateKeyAction(failure.failure) : 'preserve';
+      const kind = classifyFailure(failure instanceof ApiError ? failure.failure : null, TRACK_CREATE_FAILURES);
       const rejectedBeforeDispatch = failure instanceof OfflineSubmissionError;
-      const rejectedInput = failure instanceof ApiError && failure.failure.kind === 'http'
-        && failure.failure.status >= 400 && failure.failure.status < 500
-        && failure.failure.status !== 408 && failure.failure.status !== 409;
       store.update(areaId, {
         error: hadUnconfirmedRequest && rejectedBeforeDispatch
           ? 'You’re offline. The original creation is still unconfirmed; reconnect to retry it.'
           : failure instanceof ApiError ? failure.message : 'Could not create the track.',
-        ...(keyAction === 'replace' ? { key: mintIdempotencyKey(), request: null } : {}),
+        ...(kind === 'exhausted' ? { key: mintIdempotencyKey(), request: null } : {}),
         // A refused retry says nothing about the earlier attempt's outcome.
-        ...(!hadUnconfirmedRequest && (rejectedBeforeDispatch || rejectedInput) ? { request: null } : {}),
-        canRetryAsNewTrack: keyAction === 'offer-explicit-replace',
+        ...(!hadUnconfirmedRequest && (rejectedBeforeDispatch || kind === 'rejected') ? { request: null } : {}),
+        canRetryAsNewTrack: kind === 'key-reused',
       });
     }).finally(() => { store.update(areaId, { creating: false }); });
   };
@@ -176,7 +176,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     }
     initialDraft={session.form ?? undefined}
     onDraftChange={saveForm}
-    submitBlocked={!available || createdTrackId !== null}
+    submitBlocked={!available || createdTrackId !== null || session.canRetryAsNewTrack}
     locked={session.request !== null}
     submitting={session.creating}
     error={areaFailure ?? (createdTrackId !== null ? 'Your track was created while you were away.' : session.error)}

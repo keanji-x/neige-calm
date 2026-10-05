@@ -85,11 +85,10 @@ async fn a_second_binding_for_one_key_fails_its_transaction() {
     let ids = cards(&repo, &role_cache, 1).await;
     bind(&repo, &ids[0], "key", &binding(0)).await;
     let mut tx = repo.pool().begin().await.expect("begin");
-    assert!(
-        planner_input_bind_tx(&mut tx, &ids[0], "key", &binding(1))
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        planner_input_bind_tx(&mut tx, &ids[0], "key", &binding(1)).await,
+        Err(crate::error::TruthError::IdempotencyKeyConcurrent(_))
+    ));
     drop(tx);
     assert_eq!(
         planner_input_binding_get(repo.pool(), &ids[0], "key")

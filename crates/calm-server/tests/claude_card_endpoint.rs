@@ -1110,6 +1110,10 @@ async fn post_claude_card_idempotency_same_key_different_payload_returns_409() {
     )
     .await;
     assert_eq!(second_status, StatusCode::CONFLICT, "body={second_body:?}");
+    assert_eq!(
+        second_body["code"], "idempotency_key_reused",
+        "body={second_body:?}"
+    );
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
 }
 
@@ -1256,6 +1260,10 @@ async fn post_claude_card_invalid_idempotency_key_header_returns_400() {
     let resp = boot.app.clone().oneshot(req).await.unwrap();
     let (status, response) = response_json(resp).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={response:?}");
+    assert_eq!(
+        response["code"], "idempotency_key_invalid",
+        "body={response:?}"
+    );
 }
 
 #[tokio::test]
@@ -1321,3 +1329,6 @@ async fn post_claude_card_idempotency_key_reused_by_other_kind_uses_fresh_operat
     assert_ne!(observed[0].1, key);
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
 }
+
+#[path = "claude_card_endpoint/keyed.rs"]
+mod keyed;

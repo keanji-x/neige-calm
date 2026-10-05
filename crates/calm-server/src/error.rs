@@ -42,6 +42,21 @@ pub enum CalmError {
     #[error("idempotency key exhausted: {0}")]
     IdempotencyKeyExhausted(String),
 
+    /// 400 — the `Idempotency-Key` header is not one the server stores: blank, not visible ASCII,
+    /// or longer than [`crate::routes::terminal_cards::IDEMPOTENCY_KEY_MAX_LEN`].
+    #[error("invalid Idempotency-Key: {0}")]
+    IdempotencyKeyInvalid(String),
+
+    /// 409 — the `Idempotency-Key` is already bound to a different request on this route. Final:
+    /// no retry under this key can be answered for this request.
+    #[error("idempotency key reused: {0}")]
+    IdempotencyKeyReused(String),
+
+    /// 409 — another request under the same `Idempotency-Key` was accepted at the same time and its
+    /// binding refused this one. Retryable: the same request under the same key is answered by it.
+    #[error("idempotency key concurrent: {0}")]
+    IdempotencyKeyConcurrent(String),
+
     /// 409 — `POST /api/today/summary` found no activity in today's window; nothing was created.
     #[error("no activity today: {0}")]
     TodaySummaryNoActivity(String),
@@ -144,6 +159,9 @@ impl CalmError {
             CalmError::Conflict(_) => "conflict",
             CalmError::IdempotencyCollision(_) => "idempotency_collision",
             CalmError::IdempotencyKeyExhausted(_) => "idempotency_key_exhausted",
+            CalmError::IdempotencyKeyInvalid(_) => "idempotency_key_invalid",
+            CalmError::IdempotencyKeyReused(_) => "idempotency_key_reused",
+            CalmError::IdempotencyKeyConcurrent(_) => "idempotency_key_concurrent",
             CalmError::TodaySummaryNoActivity(_) => "today_summary_no_activity",
             CalmError::BadRequest(_) => "bad_request",
             CalmError::Unauthorized => "unauthorized",
@@ -179,6 +197,8 @@ impl CalmError {
             CalmError::Conflict(_)
             | CalmError::IdempotencyCollision(_)
             | CalmError::IdempotencyKeyExhausted(_)
+            | CalmError::IdempotencyKeyReused(_)
+            | CalmError::IdempotencyKeyConcurrent(_)
             | CalmError::PluginConflict(_)
             | CalmError::PluginBusy(_)
             | CalmError::PluginManifestUnloaded(_)
@@ -188,6 +208,7 @@ impl CalmError {
             | CalmError::PlannerTurnNotReplaceable(_)
             | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_)
+            | CalmError::IdempotencyKeyInvalid(_)
             | CalmError::PluginInstall(_)
             | CalmError::PluginConfigTooLarge(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
@@ -284,6 +305,10 @@ impl From<calm_truth::TruthError> for CalmError {
             Truth::Io(e) => CalmError::Io(e),
             Truth::Serde(e) => CalmError::Serde(e),
             Truth::Internal(m) => CalmError::Internal(m),
+            Truth::IdempotencyKeyReused(m) => CalmError::IdempotencyKeyReused(m),
+            Truth::IdempotencyKeyExhausted(m) => CalmError::IdempotencyKeyExhausted(m),
+            Truth::IdempotencyKeyConcurrent(m) => CalmError::IdempotencyKeyConcurrent(m),
+            Truth::PlannerTurnNotReplaceable(m) => CalmError::PlannerTurnNotReplaceable(m),
         }
     }
 }
@@ -324,8 +349,18 @@ impl From<CalmError> for calm_truth::TruthError {
             CalmError::Db(e) => calm_truth::TruthError::Db(e),
             CalmError::Io(e) => calm_truth::TruthError::Io(e),
             CalmError::Serde(e) => calm_truth::TruthError::Serde(e),
+            CalmError::IdempotencyKeyReused(m) => calm_truth::TruthError::IdempotencyKeyReused(m),
+            CalmError::IdempotencyKeyExhausted(m) => {
+                calm_truth::TruthError::IdempotencyKeyExhausted(m)
+            }
+            CalmError::IdempotencyKeyConcurrent(m) => {
+                calm_truth::TruthError::IdempotencyKeyConcurrent(m)
+            }
+            CalmError::PlannerTurnNotReplaceable(m) => {
+                calm_truth::TruthError::PlannerTurnNotReplaceable(m)
+            }
             // Route-only variants with no `CoreError`/`TruthError` twin collapse to Internal.
-            CalmError::IdempotencyKeyExhausted(m)
+            CalmError::IdempotencyKeyInvalid(m)
             | CalmError::PluginInstall(m)
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)
@@ -337,7 +372,6 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PlannerResetUnsupportedInSharedMode(m)
             | CalmError::PlannerHarnessDormant(m)
             | CalmError::PlannerHarnessRuntimeSuperseded(m)
-            | CalmError::PlannerTurnNotReplaceable(m)
             | CalmError::TodaySummaryNoActivity(m)
             | CalmError::CodexRefused(m)
             | CalmError::CodexAppServer(m)
@@ -374,6 +408,30 @@ mod core_error_bridge_tests {
             let mapped = CalmError::from(core);
             assert_eq!(mapped.code(), code, "code drift for {mapped:?}");
             assert_eq!(mapped.to_string(), message, "message drift for {mapped:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod truth_error_bridge_tests {
+    use super::CalmError;
+
+    /// The typed refusals raised inside a storage transaction must come back out of it with their
+    /// code and message: the write path converts a closure's error to `TruthError` and back.
+    #[test]
+    fn typed_refusals_survive_the_storage_round_trip() {
+        let cases = [
+            CalmError::IdempotencyKeyReused("x".into()),
+            CalmError::IdempotencyKeyExhausted("x".into()),
+            CalmError::IdempotencyKeyConcurrent("x".into()),
+            CalmError::PlannerTurnNotReplaceable("x".into()),
+        ];
+        for error in cases {
+            let (code, status, message) = (error.code(), error.status(), error.to_string());
+            let back = CalmError::from(calm_truth::TruthError::from(error));
+            assert_eq!(back.code(), code, "code drift for {back:?}");
+            assert_eq!(back.status(), status, "status drift for {back:?}");
+            assert_eq!(back.to_string(), message, "message drift for {back:?}");
         }
     }
 }

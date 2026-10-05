@@ -504,6 +504,7 @@ async fn post_terminal_card_rejects_malformed_idempotency_key() {
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
 
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={json:?}");
+    assert_eq!(json["code"], "idempotency_key_invalid", "body={json:?}");
 }
 
 #[tokio::test]
@@ -961,3 +962,6 @@ async fn post_terminal_card_atomic_defaults_program_to_shell() {
         "#1147 S6 — the default cwd is the track's workspace, not $HOME"
     );
 }
+
+#[path = "terminal_card_endpoint_keyed.rs"]
+mod keyed;

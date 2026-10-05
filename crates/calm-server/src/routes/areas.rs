@@ -126,11 +126,11 @@ pub(crate) async fn list_areas(
     path = "/api/areas",
     tag = "areas",
     request_body = CreateAreaRequest,
-    params(("Idempotency-Key" = Option<String>, Header, description = "Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs or a deleted Area return 409. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name.")),
+    params(("Idempotency-Key" = Option<String>, Header, description = "Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs return 409 `idempotency_key_reused` and a deleted Area 409 `idempotency_key_exhausted`. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name. A blank, non-ASCII or over-128-byte key is 400.")),
     responses(
         (status = 201, description = "Area created", body = Area),
-        (status = 400, description = "Unknown default template, invalid attached default folder, or malformed Idempotency-Key", body = ErrorBody),
-        (status = 409, description = "Creation key belongs to different inputs or its Area was deleted", body = ErrorBody),
+        (status = 400, description = "Unknown default template, invalid default folder, or an invalid Idempotency-Key (`idempotency_key_invalid`)", body = ErrorBody),
+        (status = 409, description = "The key belongs to different inputs (`idempotency_key_reused`) or its Area was deleted (`idempotency_key_exhausted`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
