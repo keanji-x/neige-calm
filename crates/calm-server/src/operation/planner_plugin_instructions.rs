@@ -13,11 +13,15 @@ use crate::mcp_server::tool_visibility::plugin_scope_for_track_row;
 use crate::model::Track;
 use crate::plugin_host::{Manifest, PluginHost};
 
-/// Every byte the plugin section appends, the omission notice included.
+/// Every byte the plugin section appends to the Planner instructions: the [`JOINER`], the blocks
+/// and the [`OMITTED_NOTICE`].
 pub(crate) const PLUGIN_INSTRUCTIONS_CAP: usize = 4096;
 
-/// Appended once when any plugin is left out. Its bytes are always reserved, so the section
-/// never exceeds [`PLUGIN_INSTRUCTIONS_CAP`].
+/// Separates the section from the preceding fragment, like every other fragment.
+const JOINER: &str = "\n\n";
+
+/// Appended once when any plugin is left out. Its bytes and the [`JOINER`]'s are always reserved,
+/// so the section never exceeds [`PLUGIN_INSTRUCTIONS_CAP`].
 pub(crate) const OMITTED_NOTICE: &str =
     "## Plugin instructions omitted (over budget); see the server log\n";
 
@@ -30,7 +34,7 @@ pub(crate) fn plugin_documents_track(manifest: &Manifest, track: &Track) -> bool
             .any(|template| Some(template.id.as_str()) == track.template_id.as_deref())
 }
 
-/// Append the plugin section to `instructions`, joined like every other fragment.
+/// Append the plugin section, joiner included, to `instructions`.
 pub(crate) async fn append_plugin_instructions(
     repo: &dyn Repo,
     plugin: &PluginHost,
@@ -38,11 +42,7 @@ pub(crate) async fn append_plugin_instructions(
     instructions: &mut String,
 ) -> Result<()> {
     let plugins = instructing_plugins(repo, plugin, track).await?;
-    let section = render_section(&plugins);
-    if !section.is_empty() {
-        instructions.push_str("\n\n");
-        instructions.push_str(&section);
-    }
+    instructions.push_str(&render_section(&plugins));
     Ok(())
 }
 
@@ -72,7 +72,7 @@ async fn instructing_plugins(
         return Ok(Vec::new());
     }
     let scope = plugin_scope_for_track_row(track, Some(plugin)).await;
-    stored.retain(|manifest| scope.allows_manifest(manifest));
+    stored.retain(|manifest| scope.allows_manifest(manifest)); // MUTATION-K2-3
     stored.sort_by(|a, b| a.id.cmp(&b.id));
     let referenced = if stored
         .iter()
@@ -85,7 +85,7 @@ async fn instructing_plugins(
     Ok(stored
         .into_iter()
         .filter(|manifest| {
-            plugin_documents_track(manifest, track) || referenced.contains(&manifest.id)
+            plugin_documents_track(manifest, track) || referenced.contains(&manifest.id) // MUTATION-K2-1
         })
         .filter_map(|manifest| Some((manifest.id, manifest.planner_instructions?)))
         .collect())
@@ -116,11 +116,15 @@ async fn report_references(repo: &dyn Repo, track: &Track) -> BTreeSet<String> {
     }
 }
 
-/// Blocks are admitted in id order while they fit beside the reserved notice; once one does not,
-/// it and every later plugin are omitted, each logged, and the notice is appended once.
+/// The whole appended section, empty when no plugin instructs. After the joiner, blocks are
+/// admitted in id order while they fit beside the reserved notice; once one does not, it and every
+/// later plugin are omitted, each logged, and the notice is appended once.
 fn render_section(plugins: &[(String, String)]) -> String {
-    let budget = PLUGIN_INSTRUCTIONS_CAP - OMITTED_NOTICE.len();
-    let mut section = String::new();
+    if plugins.is_empty() {
+        return String::new();
+    }
+    let budget = PLUGIN_INSTRUCTIONS_CAP - OMITTED_NOTICE.len(); // MUTATION-K2-2
+    let mut section = String::from(JOINER);
     let mut omitted = false;
     for (id, text) in plugins {
         let block = format!("## Plugin {id}\n{text}\n");

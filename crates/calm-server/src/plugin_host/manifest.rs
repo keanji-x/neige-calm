@@ -612,6 +612,12 @@ impl Manifest {
                     "`planner_instructions` requires manifest_version 5",
                 ));
             }
+            if text.trim().is_empty() {
+                return Err(ManifestError::invalid(
+                    "planner_instructions",
+                    "must not be empty or whitespace only",
+                ));
+            }
             if text.len() > MAX_PLANNER_INSTRUCTIONS_BYTES {
                 return Err(ManifestError::invalid(
                     "planner_instructions",

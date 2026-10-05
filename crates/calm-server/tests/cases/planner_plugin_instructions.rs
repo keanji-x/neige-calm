@@ -30,12 +30,16 @@ fn manifest(version: u32, id: &str, text: &str) -> Value {
 }
 
 async fn install_row(boot: &Boot, id: &str, text: &str, enabled: bool) {
+    install_manifest(boot, id, manifest(5, id, text), enabled).await;
+}
+
+async fn install_manifest(boot: &Boot, id: &str, manifest: Value, enabled: bool) {
     boot.repo
         .plugin_install(NewPlugin {
             id: id.into(),
             version: "0.1.0".into(),
             install_path: format!("/nonexistent/{id}"),
-            manifest: manifest(5, id, text),
+            manifest,
             enabled,
             user_config: json!({}),
         })
@@ -191,31 +195,68 @@ async fn plugin_instructions_read_from_row_before_host_boot() {
 }
 
 #[tokio::test]
-async fn plugin_instructions_aggregate_never_exceeds_cap() {
+async fn plugin_instructions_skip_plugins_hidden_from_track() {
     let boot = boot().await;
     let host = host_before_boot(&boot);
-    let text = "k".repeat(1990);
+    install_row(&boot, "k2-visible", "Visible method.", true).await;
+    let mut hidden = manifest(5, "k2-hidden", "Hidden method.");
+    hidden["agent_tools_scope"] = json!("bound-track");
+    install_manifest(&boot, "k2-hidden", hidden, true).await;
+    reference_by_table(&boot, "k2-visible").await;
+    reference_by_table(&boot, "k2-hidden").await;
+
+    let prompt = prompt(&boot, &host).await;
+    assert!(
+        prompt.contains(&block("k2-visible", "Visible method.")),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("Hidden method."),
+        "a plugin whose tools this unbound Track cannot see never instructs its Planner:\n{prompt}"
+    );
+}
+
+/// Installs three referenced plugins with 32-byte ids and the given texts, and returns the ids
+/// and every byte the plugin section appended to the Planner instructions.
+async fn appended_section(texts: [usize; 3]) -> (Vec<String>, String) {
+    let boot = boot().await;
+    let host = host_before_boot(&boot);
+    let before = prompt(&boot, &host).await;
     let ids: Vec<String> = ["a", "b", "c"]
         .iter()
         .map(|letter| format!("k2-cap-{letter}-{}", "0".repeat(23)))
         .collect();
-    for id in &ids {
+    for (id, len) in ids.iter().zip(texts) {
         assert_eq!(id.len(), 32);
-        install_row(&boot, id, &text, true).await;
+        install_row(&boot, id, &"k".repeat(len), true).await;
         reference_by_table(&boot, id).await;
     }
-    assert_eq!(block(&ids[0], &text).len(), 2034);
-    assert_eq!(NOTICE.len(), 65);
+    let after = prompt(&boot, &host).await;
+    let appended = after
+        .strip_prefix(before.as_str())
+        .expect("the plugin section is appended after an unchanged prefix");
+    (ids, appended.to_string())
+}
 
-    let prompt = prompt(&boot, &host).await;
-    let start = prompt.find("## Plugin ").expect("a plugin section");
-    let appended = &prompt[start..];
+#[tokio::test]
+async fn plugin_instructions_aggregate_never_exceeds_cap() {
+    assert_eq!(NOTICE.len(), 65);
+    // 2 B joiner + 2,034 B blocks: the first fits in 4,031 B, the second (4,070 B) does not.
+    let (ids, appended) = appended_section([1990, 1990, 1990]).await;
+    assert_eq!(block(&ids[0], &"k".repeat(1990)).len(), 2034);
     assert_eq!(
         appended,
-        format!("{}{NOTICE}", block(&ids[0], &text)),
-        "the first block fits in 4,031 B, the second does not, and the notice follows once"
+        format!("\n\n{}{NOTICE}", block(&ids[0], &"k".repeat(1990))),
+        "joiner, the first block and the notice once"
     );
-    assert_eq!(appended.len(), 2099);
+    assert_eq!(appended.len(), 2101);
+    // The joiner counts too: 2 + 2,034 + 1,997 = 4,033 B > 4,031 B, so the second block is left
+    // out; admitting it would append 4,098 B.
+    let (ids, appended) = appended_section([1990, 1953, 1990]).await;
+    assert_eq!(
+        appended,
+        format!("\n\n{}{NOTICE}", block(&ids[0], &"k".repeat(1990)))
+    );
     assert!(appended.len() <= 4096);
 }
 
@@ -236,4 +277,10 @@ fn manifest_v4_refuses_planner_instructions() {
     }
     Manifest::parse(&manifest(5, "k2-version", &"x".repeat(2048)).to_string())
         .expect("exactly 2,048 B is accepted");
+    for blank in ["", " \n\t "] {
+        match Manifest::parse(&manifest(5, "k2-version", blank).to_string()) {
+            Err(ManifestError::Invalid { field, .. }) => assert_eq!(field, "planner_instructions"),
+            other => panic!("empty or whitespace-only text must be refused: {other:?}"),
+        }
+    }
 }

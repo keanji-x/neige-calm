@@ -124,7 +124,10 @@ installation cannot replace a compiled identity. Development preserves the
 Version 4 is required for `bound-track`; older manifests keep existing enabled
 tool visibility. Version 5 adds `planner_instructions` (at most 2,048 bytes): standing
 Planner documentation read from the stored manifest of an enabled plugin, in
-the same trust class as tool descriptions. It reaches a Planner only when the
+the same trust class as tool descriptions. Reading the stored row keeps an
+unbound Track's instructions independent of plugin-host boot; a bound Track
+whose owner is not running gets none until its next thread start or reset,
+the same as `tools/list`. It reaches a Planner only when the
 Track sees the plugin's tools and the built-in rule holds or the Track's report
 references `neige://plugin/<id>/`; all plugins share a 4,096-byte budget. A required template owner is fixed. `@` references carry a
 plugin's brief description as ordinary message text, including for disabled

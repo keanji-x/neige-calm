@@ -222,22 +222,29 @@ The instructions are documentation only (`:435`). One calm-types parser next to
 `validate_live_source` (`kinds.rs:123`) finds the references, and hydration's `view_slots` reuses
 it. "Bound Tracks only" cannot work, because invest Tracks are unbound (F5, F6).
 
-**Source and timing.** The text is read from the stored manifest of the enabled row (F15), so it
-does not race plugin-host boot. It is assembled in `planner_instructions` (`:417-457`). Codex
+**Source and timing.** The text is read from the stored manifest of the enabled row (F15), so for
+an unbound Track it does not race plugin-host boot. A bound Track whose owner is not running sees
+no plugin tools (F5), so it gets no instructions until its next thread start or reset, the same as
+`tools/list`. It is assembled in `planner_instructions` (`:417-457`). Codex
 picks it up at thread start or reset; Claude at every `open_session` (F23).
 
 **Aggregate cap: 4,096 B over every appended byte.**
+- The section is joined to the prompt by `\n\n` (2 B), and the joiner counts.
 - A block is `## Plugin <id>\n` + text + `\n`, so it is 44 + text bytes for a 32-byte id.
 - The fixed notice `## Plugin instructions omitted (over budget); see the server log\n` is 65 B.
-  Those 65 B are always reserved: blocks are admitted in id order while they fit in 4,031 B.
+  Those 65 B are always reserved: after the joiner, blocks are admitted in id order while the
+  joiner and the blocks fit in 4,031 B.
 - If any plugin is left out, the notice is appended once, and each omitted id gets a warning log
   line. The total never exceeds 4,096 B.
 - **Boundary fixture:** three plugins with 32-byte ids and 1,990 B texts, so each block is
   2,034 B.
-  - Correct: the first block is admitted (2,034 ≤ 4,031); the second is not (4,068 > 4,031);
-    the notice brings the total to 2,099 B.
-  - Without the reservation: two blocks fit in 4,096 (4,068); the third is omitted, and the
-    notice makes 4,133 B > 4,096, so the test goes red.
+  - Correct: the first block is admitted (2 + 2,034 = 2,036 ≤ 4,031); the second is not
+    (4,070 > 4,031); the notice brings the total to 2,101 B.
+  - Without the reservation: two blocks fit in 4,096 (4,070); the third is omitted, and the
+    notice makes 4,135 B > 4,096, so the test goes red.
+- **Joiner fixture:** texts of 1,990, 1,953 and 1,990 B. The second block makes
+  2 + 2,034 + 1,997 = 4,033 > 4,031, so only the first is admitted (2,101 B). Leaving the joiner
+  out of the count would admit both and append 4,098 B.
 
 **Recipes and trust.** Recipes keep only layout and schedule (#2098). Trust is the same class as
 tool descriptions (`docs/architecture/1413-local-plugin-trust.md`).
@@ -407,7 +414,7 @@ Each mutation is single-factor, and `→ {…}` lists the complete set of tests 
 | # | Slice (≈ lines) | Tier | Must go red first |
 |---|---|---|---|
 | K1 | `neige_track_add`, provenance in `_meta`, description trims (~1k) | L2 | Tests: `track_add_records_provenance_not_parent`; `…_refuses_past_open_cap` (cap 2: two adds, the third refused, nothing closed); `…_counts_only_open_tracks` (cap 2: two adds, close one, the third admitted); `…_refuses_worker` (fresh key: the mint arm); `…_refuses_worker_replay` (a Worker repeats a Planner's already-bound request: -32403, nothing redelivered); `…_cap_refusal_lists_open_tracks`; `…_refuses_bound_creator`; `…_refuses_created_creator`; `…_refuses_child_creator`; `…_replays_and_refuses_changed_request`; `…_fingerprint_ignores_provider`; `…_delivers_text_once`; `plugin_track_meta_carries_provenance` (through `tools_call` and `forge_tools_call`). Mutations: drop the handler role check → {`refuses_worker_replay`} (the mint case stays refused by the backstop); drop the count → {`refuses_past_open_cap`, `cap_refusal_lists_open_tracks`}; also count closed Tracks → {`counts_only_open_tracks`}; drop `data.open` from the cap refusal → {`cap_refusal_lists_open_tracks`}; drop the scope check → {`refuses_bound_creator`}; drop the `creator_track_id` half → {`refuses_created_creator`}; drop the `parent_track_id` half → {`refuses_child_creator`}; omit `creator_key` → {`plugin_track_meta_carries_provenance`} |
-| K2 | standing instructions (~500) | L2 | Tests: `plugin_instructions_follow_report_references`, `…_skip_unreferenced_tracks`, `…_skip_disabled_plugin`, `…_read_from_row_before_host_boot`, `…_aggregate_never_exceeds_cap` (the §3.5 boundary fixture: three 32-byte ids, 1,990 B texts), `manifest_v4_refuses_planner_instructions`. Mutations: the report-reference predicate always `true` → {`skip_unreferenced_tracks`}; skip the 65 B reservation → {`aggregate_never_exceeds_cap`} |
+| K2 | standing instructions (~500) | L2 | Tests: `plugin_instructions_follow_report_references`, `…_skip_unreferenced_tracks`, `…_skip_disabled_plugin`, `…_read_from_row_before_host_boot`, `…_skip_plugins_hidden_from_track`, `…_aggregate_never_exceeds_cap` (the §3.5 boundary and joiner fixtures: three 32-byte ids), `manifest_v4_refuses_planner_instructions`. Mutations: the report-reference predicate always `true` → {`skip_unreferenced_tracks`}; skip the 65 B reservation → {`aggregate_never_exceeds_cap`}; skip the visibility filter → {`skip_plugins_hidden_from_track`} |
 | P1 | invest core (~1k, Python): ledger, decisions, executions, multi-symbol bridge, portfolio units, recipe | L2 | Tests: `test_weights_respect_bounds`, `test_held_after_counts_positions`, `test_sells_before_buys_settled_cash_only`, `test_research_track_cannot_trade`, `test_leg_remarks_are_unique`, `test_unowned_active_order_blocks`, `test_opening_positions_pin_first_reconciliation`, `test_cutover_refuses_unquiesced_account`, `test_projections_conserve_value` (40 held: slices and series sum to the total, 其他 equals the omitted sum), and a port of `caller_identity.rs:45`. Mutations: drop the Track fence → {`research_track_cannot_trade`}; drop 其他 from weights → {`projections_conserve_value`} |
 | P2 | instruments, keys, lease, theses, research units and recipe, `planner_instructions` (~800) | L2 | Tests: `test_attestation_requires_portfolio_creator_and_current_key` (cases: a foreign creator; S's thesis written with the current key of another symbol; a `pending` S), `test_superseded_key_refused` (S's older key), `test_never_seen_key_goes_stale`, `test_lease_expiry_goes_stale` (`lease_days = 3`: not stale at day 2, stale at day 4), `test_board_shows_assessment_change` (only the assessment changes; the section label carries the new assessment), `test_set_issues_next_key_with_byte_identical_args`, `test_views_change_no_domain_state`, `test_last_seen_never_changes_authority` (and never bumps `version`), `test_fourth_open_thesis_refused_state_unchanged`, `test_rm_retires_open_theses`, `test_dropped_counts_toward_no_limit`, `test_units_fit_caps_at_max_config` (255 symbols, max-length CJK, every unit validated and ≤ 4 MiB), `test_unit_ids_injective`, kernel `invest_recipe_slots_resolve`. Mutations: accept any key of S → {`superseded_key_refused`}; accept any current key regardless of symbol → {`attestation_requires_portfolio_creator_and_current_key`}; drop the 120-minute bind window → {`never_seen_key_goes_stale`}; use the default 8 instead of the configured `lease_days` → {`lease_expiry_goes_stale`}; drop the assessment prefix → {`board_shows_assessment_change`}; drop the thesis cap → {`fourth_open_thesis_refused_state_unchanged`}; skip retiring on rm → {`rm_retires_open_theses`} |
 | P3 | `series_show` on the Longbridge SDK (~600); remove `plugins/market` | L1 | Tests: `test_series_contract_matches_market_series`, `test_series_refuses_agent_caller`, kernel `chart_series_resolves_through_invest` (the real resolver, `resolver.rs:573-575`). Mutation: accept an agent caller → {`series_refuses_agent_caller`} |
