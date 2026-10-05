@@ -109,7 +109,7 @@ carries tag `nvda`. Both open, both with Planners.
 
 ## 3. Data model and mail state
 
-Migration `0145_mails.sql` (renumbered twice while main moved; see §12):
+Migration `0146_mails.sql` (renumbered as main moved; see §12):
 
 ```sql
 CREATE TABLE mails (
@@ -400,7 +400,7 @@ TT=harness; TT=${TT}_items
 
 | Item | Note |
 |---|---|
-| D12 | B0 (#2117), B1a (#2138), B1b (#2143), B1c (#2145) and B2 (#2156) merged first: S1 registers `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat` with B0's file naming (`prompts/tools/neige_mail_*.md`), every name in its texts is `_`-separated, and discovery is `neige_area_ls` (B1a's name for `area.outline`). The migration is `0145_mails.sql` (0141–0144 are B0's, B1a's, B1b's and B1c's). The `neige_mail_send` description is the compressed text in `prompts/tools/neige_mail_send.md`, not §4.2's draft: same rules; it drops the evidence-citation hint, "it authorizes nothing only the user may decide" ("never the user's word" carries it) and "or thank". |
+| D12 | B0 (#2117), B1a (#2138), B1b (#2143), B1c (#2145) and B2 (#2156) merged first: S1 registers `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat` with B0's file naming (`prompts/tools/neige_mail_*.md`), every name in its texts is `_`-separated, and discovery is `neige_area_ls` (B1a's name for `area.outline`). The migration is `0146_mails.sql` (0141–0145 are B0's, B1a's, B1b's, B1c's and #2158's). The `neige_mail_send` description is the compressed text in `prompts/tools/neige_mail_send.md`, not §4.2's draft: same rules; it drops the evidence-citation hint, "it authorizes nothing only the user may decide" ("never the user's word" carries it) and "or thank". |
 | F19 | The budget comment's 29,909 B was stale: the surface measured 29,796 B before `send` (§4.1 has the S1 numbers). |
 | D15 | `neige.area.outline` lists the Tracks that have a report card; every Track created through the routes has one, so the fixture Tracks get one too. |
 | §4.4 `next_hop` | When a send from this turn would be refused, `next_hop` is `"7/6"` (the render prints the hand-off line for any n > 6); `null` stays "no recorded turn input". |
