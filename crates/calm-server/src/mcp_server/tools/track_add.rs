@@ -13,6 +13,7 @@ use crate::mcp_server::registry::{
     role_gated_write_annotations,
 };
 use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track};
+use crate::mcp_server::tools::write_args::parse_write_args;
 use crate::model::{Card, CardRole, Track};
 use crate::session_projection_repo::AgentProvider;
 use serde::{Deserialize, Serialize};
@@ -152,12 +153,15 @@ fn internal(reason: impl std::fmt::Display) -> RpcError {
 }
 
 fn parse_args(args: Value) -> Result<TrackAddArgs, RpcError> {
-    let args: TrackAddArgs = serde_json::from_value(args).map_err(invalid)?;
+    // `message` is every write tool's audit note, parsed the one shared way (trimmed, non-empty,
+    // `lifecycle` refused); the trimmed note is what the key binds and the event carries.
+    let message = parse_write_args(&args, TOOL_TRACK_ADD)?;
+    let mut args: TrackAddArgs = serde_json::from_value(args).map_err(invalid)?;
+    args.message = message;
     for (name, value) in [
         ("recipe_id", &args.recipe_id),
         ("title", &args.title),
         ("idempotency_key", &args.idempotency_key),
-        ("message", &args.message),
     ] {
         if value.trim().is_empty() {
             return Err(invalid(format!("`{name}` must not be empty")));
@@ -435,11 +439,22 @@ mod tests {
                 "{key} must not be blank"
             );
         }
-        let mut spaced = ok;
+        let mut spaced = ok.clone();
         spaced["idempotency_key"] = json!("a key");
         assert_eq!(
             parse_args(spaced).unwrap_err().code,
             RpcError::INVALID_PARAMS
+        );
+        // `message` takes the shared write-args path: trimmed, and `lifecycle` named and refused.
+        let mut padded = ok.clone();
+        padded["message"] = json!("  cover SPY \n");
+        assert_eq!(parse_args(padded).unwrap().message, "cover SPY");
+        let mut lifecycle = ok;
+        lifecycle["lifecycle"] = json!("done");
+        let refused = parse_args(lifecycle).unwrap_err();
+        assert!(
+            refused.message.contains("`lifecycle` is removed"),
+            "{refused:?}"
         );
     }
 }
