@@ -33,12 +33,12 @@ function scalar(value: ValueDisplay) {
 }
 function palette(value: number) { return styles[`series${value}`] ?? ''; }
 
-/** Keep complete readouts inside the donut hole, including long units and totals. */
-function fitDonutText(node: SVGTextElement | null) {
-  if (!node || !node.getComputedTextLength) return;
-  node.style.removeProperty('font-size');
-  const width = node.getComputedTextLength();
-  if (width > 64) node.style.fontSize = `${parseFloat(getComputedStyle(node).fontSize) * 64 / width}px`;
+/** Bound the center readout; the detail below retains the exact observation. */
+function donutNumber(value: number) {
+  const exact = observationNumber(value);
+  if (exact.length <= 8) return exact;
+  const compact = axisNumber(value);
+  return value >= 1000 && compact.length <= 8 ? compact : value.toExponential(1);
 }
 
 export function MetricGroup({ items }: { items: readonly MetricDatum[] }) {
@@ -70,10 +70,8 @@ export function DistributionChart({ label, unit, slices, emptyText, selected, on
           strokeDasharray={`${ratio * circumference} ${circumference}`}
           strokeDashoffset={-start * circumference} opacity={current && current.id !== slice.id ? 0.25 : 1} />;
       })}
-      <text x="75" y="73" textAnchor="middle" className={styles.donutValue}
-        ref={node => fitDonutText(node)}>{current ? percentage(current.value) : observationNumber(total)}</text>
-      <text x="75" y="94" textAnchor="middle" className={styles.donutLabel}
-        ref={node => fitDonutText(node)}>{current ? '占比' : unit}</text>
+      <text x="75" y="73" textAnchor="middle" className={styles.donutValue}>{current ? percentage(current.value) : donutNumber(total)}</text>
+      <text x="75" y="94" textAnchor="middle" className={styles.donutLabel}>{current ? '占比' : '总量'}</text>
     </svg>
     <div className={`${styles.legend} ${styles.distributionLegend}`}>{slices.map(slice => <button key={slice.id} type="button"
       aria-pressed={selected === slice.id} onClick={() => onSelect(selected === slice.id ? null : slice.id)}>

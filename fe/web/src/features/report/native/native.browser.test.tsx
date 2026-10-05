@@ -23,6 +23,19 @@ const demoOverlays: OverlayWire[] = Object.entries(demo.overlays).map(([kind, un
 const resolveDemo = (source: string) => trackOverlayPayload('example', demoOverlays, source);
 const performance = nativeViewPayloadSchema.parse(demo.views[0]);
 
+function checkDonut(svg: Element) {
+  const texts = [...svg.querySelectorAll<SVGTextElement>('text')];
+  for (const text of texts) {
+    expect(parseFloat(getComputedStyle(text).fontSize)).toBeGreaterThanOrEqual(12);
+    const box = text.getBBox();
+    expect(box.width).toBeGreaterThan(0);
+    for (const x of [box.x, box.x + box.width]) {
+      for (const y of [box.y, box.y + box.height]) expect(Math.hypot(x - 75, y - 75)).toBeLessThan(41);
+    }
+  }
+  expect(texts[0].getBoundingClientRect().bottom).toBeLessThan(texts[1].getBoundingClientRect().top);
+}
+
 it.each([1440, 320])('keeps distribution totals and selected shares inside the donut at %i', async width => {
   await page.viewport(width, 1000);
   const view = structuredClone(payload);
@@ -35,26 +48,19 @@ it.each([1440, 320])('keeps distribution totals and selected shares inside the d
   const svg = () => page.getByRole('img', { name: /^存储构成:/ }).element();
   const center = () => [...svg().querySelectorAll('text')].map(text => text.textContent);
   const checkLayout = () => {
-    const texts = [...svg().querySelectorAll<SVGTextElement>('text')];
-    for (const text of texts) {
-      const box = text.getBBox();
-      expect(box.width).toBeGreaterThan(0);
-      for (const x of [box.x, box.x + box.width]) {
-        for (const y of [box.y, box.y + box.height]) expect(Math.hypot(x - 75, y - 75)).toBeLessThan(41);
-      }
-    }
-    expect(texts[0].getBoundingClientRect().bottom).toBeLessThan(texts[1].getBoundingClientRect().top);
+    checkDonut(svg());
     expect(container.firstElementChild!.scrollWidth).toBeLessThanOrEqual(width);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   };
-  expect(center()).toEqual(['123,456,789.12345678', chart.unit]);
+  expect(center()).toEqual(['123.46M', '总量']);
+  expect(container.textContent).toContain(`123,456,789.12345678 ${chart.unit}`);
   checkLayout();
   await page.screenshot({ path: `__screenshots__/distribution-total-${width}.png` });
   await page.getByRole('button', { name: /备份\s*0%/ }).click();
   expect(center()).toEqual(['0%', '占比']);
   checkLayout();
   await page.getByRole('button', { name: /备份\s*0%/ }).click();
-  expect(center()).toEqual(['123,456,789.12345678', chart.unit]);
+  expect(center()).toEqual(['123.46M', '总量']);
   checkLayout();
   await page.getByRole('button', { name: /主库\s*100%/ }).click();
   expect(center()).toEqual(['100%', '占比']);
@@ -62,8 +68,46 @@ it.each([1440, 320])('keeps distribution totals and selected shares inside the d
   await page.screenshot({ path: `__screenshots__/distribution-selected-${width}.png` });
   chart.slices = [{ id: 'replacement', label: '新样本', value: 0.001, palette: 3 }];
   rerender(<main style={{ maxInlineSize: 1000, padding: 12 }}><NativeReportView payload={view} /></main>);
-  expect(center()).toEqual(['0.001', chart.unit]);
+  expect(center()).toEqual(['0.001', '总量']);
   checkLayout();
+});
+
+it.each([1440, 320])('keeps boundary totals readable inline and in inspection at %i', async width => {
+  await page.viewport(width, 1000);
+  const view = structuredClone(payload);
+  const chart = view.rows[1].cells[0];
+  if (chart.kind !== 'distribution') throw new Error('Expected distribution fixture');
+  view.rows = [{ id: 'totals', title: '', layout: 'one', cells: [chart] }];
+  const { container, rerender } = render(<main style={{ maxInlineSize: 700, padding: 12 }}><NativeReportView payload={view} /></main>);
+  for (const [value, unit, count, center] of [
+    [123456.78, 'USD', 1, '123.46K'],
+    [1e15, '字'.repeat(32), 12, '12,000T'],
+    [999999.99, 'W'.repeat(32), 1, '1M'],
+    [12.3456, 'USD', 1, '12.3456'],
+    [1e-300, '字'.repeat(32), 1, '1e-300'],
+    [1.23456789e-300, '字'.repeat(32), 1, '1.2e-300'],
+    [999.9999, 'USD', 1, '999.9999'],
+    [0, '字'.repeat(32), 1, '0'],
+  ] as const) {
+    chart.unit = unit;
+    chart.slices = Array.from({ length: count }, (_, i) => ({ id: `s${i}`, label: `样本 ${i}`, value, palette: 1 }));
+    const accepted = nativeViewPayloadSchema.parse(view);
+    rerender(<main style={{ maxInlineSize: 700, padding: 12 }}><NativeReportView payload={accepted} /></main>);
+    const svg = page.getByRole('img', { name: /^存储构成:/ }).element();
+    expect([...svg.querySelectorAll('text')].map(text => text.textContent)).toEqual([center, '总量']);
+    expect(container.textContent).toContain(unit);
+    if (value === 12.3456) expect(container.textContent).toContain('12.3456 USD');
+    if (count === 12) expect(container.textContent).toContain('12,000,000,000,000,000');
+    checkDonut(svg);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    if (value === 123456.78) await page.screenshot({ path: `__screenshots__/distribution-usd-${width}.png` });
+    await page.getByRole('button', { name: '放大查看 运营概览' }).click();
+    const dialog = page.getByRole('dialog');
+    checkDonut(dialog.getByRole('img', { name: /^存储构成:/ }).element());
+    expect(dialog.element().scrollWidth).toBeLessThanOrEqual(width);
+    if (value === 123456.78) await page.screenshot({ path: `__screenshots__/distribution-usd-dialog-${width}.png` });
+    await userEvent.keyboard('{Escape}');
+  }
 });
 
 it.each([1440, 736, 390, 320])('native composition renders without frames or overflow at %i', async width => {

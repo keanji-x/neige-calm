@@ -175,18 +175,18 @@ it('shows measured zero categories without inventing percentages or missing data
 it('shows the distribution total until a slice is selected and restores it on deselection', async () => {
   render(<NativeReportView payload={payload} />);
   const center = () => [...screen.getByRole('img', { name: /^存储构成:/ }).querySelectorAll('text')].map(text => text.textContent);
-  expect(center()).toEqual(['150', 'GB']);
+  expect(center()).toEqual(['150', '总量']);
   await userEvent.click(screen.getByRole('button', { name: /备份\s*20%/ }));
   expect(center()).toEqual(['20%', '占比']);
   await userEvent.click(screen.getByRole('button', { name: /备份\s*20%/ }));
-  expect(center()).toEqual(['150', 'GB']);
+  expect(center()).toEqual(['150', '总量']);
   await userEvent.click(screen.getByRole('button', { name: /主库\s*80%/ }));
   await userEvent.click(screen.getByRole('button', { name: '放大查看 运营概览' }));
   const dialog = within(screen.getByRole('dialog'));
   expect([...dialog.getByRole('img', { name: /^存储构成:/ }).querySelectorAll('text')].map(text => text.textContent)).toEqual(['80%', '占比']);
   await userEvent.click(dialog.getByRole('button', { name: /主库\s*80%/ }));
   await userEvent.keyboard('{Escape}');
-  expect(center()).toEqual(['150', 'GB']);
+  expect(center()).toEqual(['150', '总量']);
 });
 
 it('falls back to the current total when the selected distribution slice disappears', async () => {
@@ -197,14 +197,14 @@ it('falls back to the current total when the selected distribution slice disappe
   if (chart.kind !== 'distribution') throw new Error('Expected distribution fixture');
   chart.slices = chart.slices.filter(slice => slice.id !== 'b');
   rerender(<NativeReportView payload={view} />);
-  expect([...screen.getByRole('img', { name: /^存储构成:/ }).querySelectorAll('text')].map(text => text.textContent)).toEqual(['120', 'GB']);
+  expect([...screen.getByRole('img', { name: /^存储构成:/ }).querySelectorAll('text')].map(text => text.textContent)).toEqual(['120', '总量']);
   expect(screen.getByRole('button', { name: /主库\s*100%/ }).getAttribute('aria-pressed')).toBe('false');
 });
 
 it.each([null, 'a', 'missing'])('keeps zero distribution totals distinct from undefined shares for selection %s', selected => {
   const { container } = render(<DistributionChart label="计数" unit="个" slices={[{ id: 'a', label: '已完成', value: 0, palette: 1 }]}
     emptyText="未取得数据" selected={selected} onSelect={() => {}} />);
-  expect([...container.querySelectorAll('svg text')].map(text => text.textContent)).toEqual(selected === 'a' ? ['—', '占比'] : ['0', '个']);
+  expect([...container.querySelectorAll('svg text')].map(text => text.textContent)).toEqual(selected === 'a' ? ['—', '占比'] : ['0', '总量']);
   expect(container.textContent).not.toMatch(/NaN|100%/);
 });
 

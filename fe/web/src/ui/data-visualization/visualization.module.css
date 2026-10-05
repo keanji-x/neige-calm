@@ -14,8 +14,8 @@
   .series7 { color: var(--text-3); }
   .distribution { display: grid; justify-items: center; gap: var(--space-2); }
   .donut { inline-size: 150px; block-size: 150px; }
-  .donutValue { fill: var(--text); font-size: var(--text-lg); font-variant-numeric: tabular-nums; }
-  .donutLabel { fill: var(--text-2); font-size: var(--text-xs); }
+  .donutValue { fill: var(--text); font-size: var(--text-base); font-variant-numeric: tabular-nums; }
+  .donutLabel { fill: var(--text-2); font-size: var(--text-meta); }
   .legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); min-inline-size: 0; margin-block-start: var(--space-2); }
   .legend button { display: inline-flex; align-items: center; gap: var(--space-2); border: 0; padding: var(--space-2) 0; background: none; color: var(--text-2); font-size: var(--text-xs); overflow-wrap: anywhere; min-inline-size: 0; max-inline-size: 100%; }
   .legend button[aria-pressed="true"] { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
