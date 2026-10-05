@@ -33,6 +33,14 @@ function scalar(value: ValueDisplay) {
 }
 function palette(value: number) { return styles[`series${value}`] ?? ''; }
 
+/** Keep complete readouts inside the donut hole, including long units and totals. */
+function fitDonutText(node: SVGTextElement | null) {
+  if (!node || !node.getComputedTextLength) return;
+  node.style.removeProperty('font-size');
+  const width = node.getComputedTextLength();
+  if (width > 64) node.style.fontSize = `${parseFloat(getComputedStyle(node).fontSize) * 64 / width}px`;
+}
+
 export function MetricGroup({ items }: { items: readonly MetricDatum[] }) {
   return <dl className={styles.metrics}>{items.map(item => <div key={item.id}
     className={item.emphasis === 'primary' ? styles.primaryMetric : styles.metric}>
@@ -62,8 +70,10 @@ export function DistributionChart({ label, unit, slices, emptyText, selected, on
           strokeDasharray={`${ratio * circumference} ${circumference}`}
           strokeDashoffset={-start * circumference} opacity={current && current.id !== slice.id ? 0.25 : 1} />;
       })}
-      <text x="75" y="73" textAnchor="middle" className={styles.donutValue}>{percentage(current?.value ?? total)}</text>
-      <text x="75" y="94" textAnchor="middle" className={styles.donutLabel}>占比</text>
+      <text x="75" y="73" textAnchor="middle" className={styles.donutValue}
+        ref={node => fitDonutText(node)}>{current ? percentage(current.value) : observationNumber(total)}</text>
+      <text x="75" y="94" textAnchor="middle" className={styles.donutLabel}
+        ref={node => fitDonutText(node)}>{current ? '占比' : unit}</text>
     </svg>
     <div className={`${styles.legend} ${styles.distributionLegend}`}>{slices.map(slice => <button key={slice.id} type="button"
       aria-pressed={selected === slice.id} onClick={() => onSelect(selected === slice.id ? null : slice.id)}>

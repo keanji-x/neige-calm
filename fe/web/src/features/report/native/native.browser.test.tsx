@@ -23,6 +23,49 @@ const demoOverlays: OverlayWire[] = Object.entries(demo.overlays).map(([kind, un
 const resolveDemo = (source: string) => trackOverlayPayload('example', demoOverlays, source);
 const performance = nativeViewPayloadSchema.parse(demo.views[0]);
 
+it.each([1440, 320])('keeps distribution totals and selected shares inside the donut at %i', async width => {
+  await page.viewport(width, 1000);
+  const view = structuredClone(payload);
+  const chart = view.rows[1].cells[0];
+  if (chart.kind !== 'distribution') throw new Error('Expected distribution fixture');
+  chart.unit = '每秒处理的完整数据记录';
+  chart.slices[0].value = 123456789.12345678;
+  chart.slices[1].value = 0;
+  const { container, rerender } = render(<main style={{ maxInlineSize: 1000, padding: 12 }}><NativeReportView payload={view} /></main>);
+  const svg = () => page.getByRole('img', { name: /^存储构成:/ }).element();
+  const center = () => [...svg().querySelectorAll('text')].map(text => text.textContent);
+  const checkLayout = () => {
+    const texts = [...svg().querySelectorAll<SVGTextElement>('text')];
+    for (const text of texts) {
+      const box = text.getBBox();
+      expect(box.width).toBeGreaterThan(0);
+      for (const x of [box.x, box.x + box.width]) {
+        for (const y of [box.y, box.y + box.height]) expect(Math.hypot(x - 75, y - 75)).toBeLessThan(41);
+      }
+    }
+    expect(texts[0].getBoundingClientRect().bottom).toBeLessThan(texts[1].getBoundingClientRect().top);
+    expect(container.firstElementChild!.scrollWidth).toBeLessThanOrEqual(width);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  };
+  expect(center()).toEqual(['123,456,789.12345678', chart.unit]);
+  checkLayout();
+  await page.screenshot({ path: `__screenshots__/distribution-total-${width}.png` });
+  await page.getByRole('button', { name: /备份\s*0%/ }).click();
+  expect(center()).toEqual(['0%', '占比']);
+  checkLayout();
+  await page.getByRole('button', { name: /备份\s*0%/ }).click();
+  expect(center()).toEqual(['123,456,789.12345678', chart.unit]);
+  checkLayout();
+  await page.getByRole('button', { name: /主库\s*100%/ }).click();
+  expect(center()).toEqual(['100%', '占比']);
+  checkLayout();
+  await page.screenshot({ path: `__screenshots__/distribution-selected-${width}.png` });
+  chart.slices = [{ id: 'replacement', label: '新样本', value: 0.001, palette: 3 }];
+  rerender(<main style={{ maxInlineSize: 1000, padding: 12 }}><NativeReportView payload={view} /></main>);
+  expect(center()).toEqual(['0.001', chart.unit]);
+  checkLayout();
+});
+
 it.each([1440, 736, 390, 320])('native composition renders without frames or overflow at %i', async width => {
   await page.viewport(width, 1000);
   const { container } = render(<main style={{ maxInlineSize: 1000, padding: 12 }}><NativeReportView payload={payload} /></main>);
