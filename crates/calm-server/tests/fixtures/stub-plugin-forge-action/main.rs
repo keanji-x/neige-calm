@@ -99,6 +99,16 @@ fn tools_call_reply(frame: &serde_json::Value, id: serde_json::Value) -> serde_j
     {
         eprintln!("stub-forge-action: failed to write call marker: {e}");
     }
+    // What the kernel put under `_meta["dev.neige/track"]`, for a test to compare with the row.
+    if let Ok(path) = std::env::var("STUB_FORGE_TRACK_META_OUT") {
+        let meta = frame
+            .pointer("/params/_meta/dev.neige~1track")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if let Err(e) = std::fs::write(&path, meta.to_string()) {
+            eprintln!("stub-forge-action: failed to write track meta: {e}");
+        }
+    }
 
     let mode = std::env::var("STUB_FORGE_MODE").unwrap_or_else(|_| "ok".to_string());
     let structured = if mode == "malformed" {

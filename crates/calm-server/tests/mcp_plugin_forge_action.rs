@@ -665,6 +665,47 @@ async fn forge_action_idempotency_is_scoped_to_kernel_caller_identity() {
         .expect("stop scoped plugin");
 }
 
+/// #2104 K1: the production forge route hands a local lowerer the caller Track's creator
+/// provenance, read from its row, under `_meta["dev.neige/track"]`.
+#[tokio::test]
+async fn forge_plugin_track_meta_carries_provenance() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+
+    let fx = boot_fixture(StubMode::Awaited).await;
+    // The provenance `neige_track_add` stamps: both columns, which the table's CHECK requires.
+    sqlx::query(
+        "UPDATE tracks SET creator_track_id = 'track-portfolio', creator_key = 'invest-US-SPY-1' \
+         WHERE id = ?1",
+    )
+    .bind(&fx.track_id)
+    .execute(fx.repo.pool())
+    .await
+    .expect("stamp creator provenance");
+    let resp = call_forge_tool(&fx, 11).await;
+    assert!(resp.get("error").is_none(), "forge tool errored: {resp:#?}");
+    let seen: Value = serde_json::from_str(
+        &std::fs::read_to_string(track_meta_out(&fx.tool_call_marker))
+            .expect("the stub recorded the track meta"),
+    )
+    .expect("track meta is JSON");
+    assert_eq!(
+        seen,
+        json!({
+            "id": fx.track_id,
+            "creator_track_id": "track-portfolio",
+            "creator_key": "invest-US-SPY-1",
+        })
+    );
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop forge plugin");
+}
+
 #[tokio::test]
 async fn forge_action_default_result_dir_is_gate_logs_sibling() {
     let _env_lock = FORGE_ENV_LOCK
@@ -974,6 +1015,10 @@ async fn boot_plugin_host(
         "STUB_FORGE_CALL_MARKER".into(),
         json!(tool_call_marker.display().to_string()),
     );
+    env.insert(
+        "STUB_FORGE_TRACK_META_OUT".into(),
+        json!(track_meta_out(&tool_call_marker).display().to_string()),
+    );
     if let Some(stub_mode) = mode.stub_mode() {
         env.insert("STUB_FORGE_MODE".into(), json!(stub_mode));
     }
@@ -1140,6 +1185,11 @@ async fn assert_tool_is_discoverable(fx: &Fixture) {
         description.contains("not confirmed success"),
         "{description}"
     );
+}
+
+/// Where the stub writes the `_meta["dev.neige/track"]` it received, beside the call marker.
+fn track_meta_out(tool_call_marker: &Path) -> PathBuf {
+    tool_call_marker.with_file_name("track-meta.json")
 }
 
 async fn call_forge_tool(fx: &Fixture, id: i64) -> Value {
