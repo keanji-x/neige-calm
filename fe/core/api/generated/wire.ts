@@ -274,7 +274,7 @@ export type ForgeMergeSubject = { pr_number: number, };
  * How one segment of a harness `userMessage` should be presented to a human. The rendered English
  * is not a protocol: wording changes must not turn a system update into something the UI attributes to the user.
  */
-export type HarnessInputPresentation = "user" | "system" | "system_worker_turn_finished" | "system_report_edited" | "system_task_completed" | "system_task_failed";
+export type HarnessInputPresentation = "user" | "system" | "system_worker_turn_finished" | "system_report_edited" | "system_task_completed" | "system_task_failed" | "system_mail";
 
 /**
  * One observation in the exact order and wording sent to `turn/start`.

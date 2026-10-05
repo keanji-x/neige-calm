@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
+use calm_types::observation::MAIL_WAKE_SOURCE;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
@@ -25,8 +26,6 @@ pub const TOOL_MAIL_CAT: &str = "neige_mail_cat";
 
 /// The highest hop a mail may carry; a send that would get a higher one is refused.
 pub const MAX_HOP: i64 = 6;
-/// The `source` of the wake a mail writes.
-pub const WAKE_SOURCE: &str = "mail";
 /// Rows per `ls` page.
 pub const PAGE: i64 = 50;
 
@@ -280,7 +279,7 @@ pub async fn send(
                 .await?;
                 let event = Event::TrackWakeRequested {
                     track_id: recipient.id.clone(),
-                    source: WAKE_SOURCE.into(),
+                    source: MAIL_WAKE_SOURCE.into(),
                     key: mail_id.clone(),
                     text: wake_line(sender.id.as_str(), &sender.title, &request.summary, &mail_id),
                 };

@@ -393,6 +393,7 @@ pub enum HarnessInputPresentation {
     SystemReportEdited,
     SystemTaskCompleted,
     SystemTaskFailed,
+    SystemMail,
 }
 
 /// One observation in the exact order and wording sent to `turn/start`.

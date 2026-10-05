@@ -15,6 +15,9 @@ use crate::verify_target::{
 
 mod receipt;
 
+/// The `source` of the `TrackWake` a mail writes (#2130): the kernel's own fixed identifier.
+pub const MAIL_WAKE_SOURCE: &str = "mail";
+
 /// Shared acceptance guidance for Planner prompts, tool descriptions, and result notices.
 pub const TASK_ACCEPTANCE_GUIDANCE: &str = include_str!("observation/task-acceptance.md");
 
@@ -208,6 +211,9 @@ impl Observation {
             Observation::TaskFailed { .. } => HarnessInputPresentation::SystemTaskFailed,
             Observation::WorkerHookStop { .. } => {
                 HarnessInputPresentation::SystemWorkerTurnFinished
+            }
+            Observation::TrackWake { source, .. } if source == MAIL_WAKE_SOURCE => {
+                HarnessInputPresentation::SystemMail
             }
             Observation::SystemContext { .. }
             | Observation::TaskGateResult { .. }
@@ -864,6 +870,23 @@ mod tests {
             Observation::input_segments_for(&[context])[0].presentation,
             HarnessInputPresentation::System,
             "kernel context must never be attributed to the user"
+        );
+    }
+
+    #[test]
+    fn a_mail_wake_presents_as_mail_and_every_other_wake_as_a_system_update() {
+        let wake = |source: &str| Observation::TrackWake {
+            source: source.into(),
+            key: "k1".into(),
+            text: "\"R\": s — neige mail cat k1".into(),
+        };
+        assert_eq!(
+            Observation::input_segments_for(&[wake(MAIL_WAKE_SOURCE)])[0].presentation,
+            HarnessInputPresentation::SystemMail
+        );
+        assert_eq!(
+            Observation::input_segments_for(&[wake("dev.neige.calendar")])[0].presentation,
+            HarnessInputPresentation::System
         );
     }
 

@@ -9173,7 +9173,8 @@
           "system_worker_turn_finished",
           "system_report_edited",
           "system_task_completed",
-          "system_task_failed"
+          "system_task_failed",
+          "system_mail"
         ]
       },
       "HarnessInputSegment": {
