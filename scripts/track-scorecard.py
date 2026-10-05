@@ -7,14 +7,16 @@ so the post-merge interview does not count as rounds or interventions.
 
 Columns:
   minutes       window length
-  rounds        Planner turns started in the window ("-" when the Planner left no transcript)
+  rounds        completed Planner turns that started in the window ("-" when the Planner left
+                no transcript)
   tasks         task attempts created in the window, by kind (codex/terminal/claude)
   failed        task attempts that ended failed
-  rejected      task.failed events the Planner wrote: it revoked a completed task's acceptance
+  rejected      task.failed events the Planner wrote (neige_task_reject verdicts)
   gate_red      task.gate_result events with passed=false
   publish       forge.pr.opened events (one per published head)
   ci_red        distinct heads whose forge.pr.checks concluded failure
-  interventions user messages after the kickoff message, plus ratify decisions
+  interventions the user's messages to the Planner after the kickoff message, plus ratify
+                decisions
   ratify        ratify requests (and how many were denied)
   bypass        commands that write git history or GitHub outside the kernel's delivery path,
                 counted once per terminal task, Planner shell command, Planner terminal input
@@ -42,30 +44,37 @@ import time
 REQUIRED_COLUMNS = {
     "tracks": ["id", "title", "created_at", "closed_at"],
     "cards": ["id", "track_id", "role"],
-    "events": ["id", "kind", "payload", "actor", "at", "scope_track"],
+    "events": ["id", "kind", "payload", "actor", "at", "scope_track", "scope_card"],
     "tasks": ["track_id", "key", "kind", "goal", "status", "created_at_ms"],
     "harness_items": ["card_id", "item_type", "method", "params", "created_at_ms"],
     "worker_flow_items": ["track_id", "kind", "payload", "created_at_ms"],
 }
 
-GIT_OPTIONS = r"\bgit(?:\s+-[Cc]\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+"
-GIT_WRITE = re.compile(GIT_OPTIONS + r"(push|commit|commit-tree|update-ref|merge|rebase)\b(?!-)")
+GIT_OPTIONS = r"\bgit(?:\s+-[Cc]\s+\S+|\s+--(?:git-dir|work-tree|namespace)[=\s]\S+|\s+--[\w-]+(?:=\S+)?)*\s+"
+GIT_WRITE = re.compile(
+    GIT_OPTIONS + r"(push|commit|commit-tree|update-ref|merge|rebase|cherry-pick|revert|am)\b(?!-)"
+)
 GIT_REMOTE_WRITE = re.compile(GIT_OPTIONS + r"push\b")
-GH_WRITE = re.compile(r"\bgh\s+(pr\s+(?:merge|create|edit|close|ready|comment)|issue\s+(?:create|edit|close|comment))\b")
+GH_REPO = r"(?:(?:-R|--repo)[=\s]\S+\s+)?"
+GH_WRITE = re.compile(
+    r"\bgh\s+" + GH_REPO
+    + r"(pr\s+(?:merge|create|edit|close|ready|comment|review)|issue\s+(?:create|edit|close|comment))\b"
+)
 GH_API = re.compile(r"\bgh\s+api\b")
 GH_API_METHOD = re.compile(r"(?:-X|--method)[\s=]*([A-Za-z]+)")
 GH_API_BODY = re.compile(r"(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?:\s|=|$)")
 # Codex workers run shell through `tools.exec_command({cmd:"…"})` inside a JS snippet.
 WORKER_CMD = re.compile(r"""cmd:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)""")
 SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;\n]")
+LINE_CONTINUATION = re.compile(r"\\\n")
 
 
-def gh_api_writes(segment):
+def gh_api_writes(segment, text):
     if not GH_API.search(segment):
         return False
     if re.search(r"\bgh\s+api\s+graphql\b", segment):
-        # Every GraphQL call is a POST; only a mutation writes.
-        return "mutation" in segment
+        # Every GraphQL call is a POST; only a mutation writes. The query may span lines.
+        return "mutation" in text
     method = GH_API_METHOD.search(segment)
     if method:
         return method.group(1).upper() != "GET"
@@ -76,9 +85,10 @@ def gh_api_writes(segment):
 def write_segments(text, git_write=GIT_WRITE):
     """Return the shell segments of `text` that write git history (per `git_write`) or GitHub."""
     hits = []
+    text = LINE_CONTINUATION.sub(" ", text)
     for segment in SEGMENT_SPLIT.split(text):
         segment = segment.strip()
-        if git_write.search(segment) or GH_WRITE.search(segment) or gh_api_writes(segment):
+        if git_write.search(segment) or GH_WRITE.search(segment) or gh_api_writes(segment, text):
             hits.append(segment)
     return hits
 
@@ -133,7 +143,7 @@ def ci_red_heads(db, track_id, start, end):
         if kind == "forge.pr.opened":
             head = data["head_sha"]
         elif data["conclusion"] == "failure":
-            failed = (data.get("snapshot") or {}).get("head_sha") or head
+            failed = (data.get("snapshot") or {}).get("head_sha") or head or "unknown"
             if failed not in red:
                 red.append(failed)
     return red
@@ -203,18 +213,21 @@ def scorecard(db, track_id):
         1 for _, p, _, _ in events(db, track_id, ["task.gate_result"], start, end) if not json.loads(p)["passed"]
     )
     publish = len(events(db, track_id, ["forge.pr.opened"], start, end))
-    # The first user message of the Track is the kickoff, not an intervention.
+    # The Planner's first message is the kickoff, whoever sent it. After that only the user's own
+    # messages count: an AI-sent message is not an intervention, and side conversations with an
+    # assistant card are not steering the Planner.
     messages = db.execute(
-        "SELECT at FROM events WHERE scope_track = ? AND kind = 'harness.user_message.enqueued' ORDER BY id",
-        (track_id,),
+        "SELECT at, actor FROM events WHERE scope_track = ? AND scope_card = ?"
+        " AND kind = 'harness.user_message.enqueued' ORDER BY id",
+        (track_id, planner_card),
     ).fetchall()
-    followups = sum(1 for (at,) in messages[1:] if start <= at <= end)
+    followups = sum(1 for at, actor in messages[1:] if start <= at <= end and json.loads(actor)["kind"] == "User")
     ratify_requested = len(events(db, track_id, ["ratify.requested"], start, end))
     resolved = [json.loads(p)["decision"] for _, p, _, _ in events(db, track_id, ["ratify.resolved"], start, end)]
     rejected = sum(
         1
         for _, _, actor, _ in events(db, track_id, ["task.failed"], start, end)
-        if json.loads(actor)["kind"] == "AiPlannerSession"
+        if json.loads(actor)["kind"] in ("AiPlanner", "AiPlannerSession")
     )
     red_heads = ci_red_heads(db, track_id, start, end)
     hits = bypass_hits(db, track_id, planner_card, start, end)
@@ -298,6 +311,12 @@ SELFTEST_CASES = [
     ("gh api repos/o/r/actions/runs --method GET -f head_sha=abc", False, False),
     ("gh api repos/o/r/pulls/1 --jq .body", False, False),
     ("gh api graphql -f query='query { repository { name } }'", False, False),
+    ("gh api \\\n  repos/o/r/pulls/1 \\\n  --method PATCH --input body.json", True, True),
+    ("gh api graphql -f query='\nmutation { closeIssue }'", True, True),
+    ("gh --repo o/r pr merge 1 --squash", True, True),
+    ("gh pr review 1 --approve", True, True),
+    ("git --git-dir /x/.git push origin x", True, True),
+    ("git cherry-pick abc", True, False),
 ]
 
 
