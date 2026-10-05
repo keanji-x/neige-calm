@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use calm_server::db::prelude::*;
 use calm_server::model::NewPlugin;
 use calm_server::operation::planner_harness_start_adapter::planner_instructions_for_test;
 use calm_server::plugin_host::manifest::ManifestError;
