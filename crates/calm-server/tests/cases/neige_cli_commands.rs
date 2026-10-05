@@ -901,9 +901,11 @@ async fn cli_tag_lists_for_a_worker_and_refuses_its_changes() {
 #[tokio::test]
 async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions() {
     use support::mcp::{connect, handshake, recv_frame, send_frame, tools_list_frame};
-    const CLI_COVERED: [(&str, &str); 13] = [
+    const CLI_COVERED: [(&str, &str); 15] = [
         ("neige_admin_gc", "neige admin gc"),
         ("neige_admin_vacuum", "neige admin vacuum"),
+        ("neige_mail_cat", "neige mail cat"),
+        ("neige_mail_ls", "neige mail ls"),
         ("neige_report_find", "neige report find"),
         ("neige_report_tag", "neige report tag"),
         ("neige_task_fail", "neige task fail"),
