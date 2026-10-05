@@ -3,7 +3,7 @@
 Review tier: L2. The change adds a migration on `task_git_deliveries` and widens the worker
 report contract (`neige_task_done`), which is an authority boundary.
 
-Status: design only. Code facts were checked at `origin/main` `47ffdfc2a`.
+Status: implemented by #2158. Code facts were checked at `origin/main` `47ffdfc2a`.
 
 ## Owner's standing rules
 
@@ -304,7 +304,7 @@ D1 (`git_candidate/tests.rs`, migration cases):
 - `commit_message_parse_boundaries`: 16 384 bytes accepted and 16 385 refused; NUL, ESC, DEL and
   whitespace-only refused; `\t\n\r` and multi-byte UTF-8 accepted.
 
-D2 (`tests/cases/git_delivery.rs` over the real MCP socket via `support/done_delivery.rs`;
+D2 (`tests/cases/git_delivery_commit_message.rs` through the registered `neige_task_done` handler;
 `cli/commands/tests.rs`):
 - `worker_commit_message_is_the_candidate_commit_message`: `git log -1 --format=%B <candidate>`
   equals the message, including its `OWNERSHIP-CHANGE`-shaped lines. The kernel treats them as

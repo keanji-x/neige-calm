@@ -5,9 +5,6 @@
 # baseline or falls below it without `--update-baseline` (a baseline is only valid for the tree it was generated on).
 # `LC_ALL=C.UTF-8` is load-bearing: `\x{4e00}` needs PCRE2 UTF mode (else git grep exits 128) and `long_literal` counts BYTES outside it.
 # The `:(glob)` pathspec magic is load-bearing: without it `crates/**/*.rs` misses a tracked `crates/foo.rs`.
-# Enumerated raises: long_literal +1 (#2139 R1), the `neige task done` Usage line in
-# `mcp_server/cli/help.rs` (125 bytes): `command_help!` takes each help line as one literal and
-# `usage_line` reads the Usage line whole, so it cannot be split.
 
 set -uo pipefail
 
