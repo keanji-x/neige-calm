@@ -304,10 +304,12 @@ Workers and plain chats (Worker role) are refused by the role check.
 - **S1: none.** Recipient: the wake is a `· System update ·` row; expanding shows the wake line with
   the `cat` command (F29). Sender: `Called neige_mail_send` (F29). Unread lights through E1 when
   either woken turn completes (F30). The FE already treats the wake kind as a no-op invalidation (F28).
-- **S2 (optional, ~150 lines):** in `fe/core/domain/conversation.ts`'s tool shape, render
-  `neige_mail_send` as `Sent mail` / target `<summary>` from `item.arguments`, with its test. The
-  tool-name constant belongs in frozen `fe/core/keys` (change request). A "Mail" label on the
-  recipient side needs a structured presentation, not text parsing (F13): left as G11.
+- **S2 (#2160, done):** the sender's tool row is `Sent mail · <summary>` (`toolShape` reads
+  `arguments.summary`; a refused send keeps that line with the error mark and detail, like every
+  other tool, owner 2026-10-05). The recipient's wake segment is presented as `system_mail`
+  (`Observation::TrackWake` with `source == MAIL_WAKE_SOURCE`, one constant in calm-types shared
+  with `mail.rs`), labelled `Mail`; `WEB_COMPAT_VERSION` 40 → 41 because older bundles reject the
+  new value. `REST_API_VERSION` is unchanged: a newer bundle works against an older kernel.
 
 ## 8. Tests (must go red first)
 
@@ -353,8 +355,8 @@ the whole `-p calm-server` run (new tools and SQL reads hit source-scan suites);
 - G7 A Track closed between the send's commit and the push still gets the wake (pushes ignore `closed_at`, F15).
 - G8 No `idempotency_key`: a retried send makes two mails.
 - G9 A fork copies no mail; deleting either Track deletes its mails for both sides.
-- G10 The sender sees `Called neige_mail_send` without recipient or summary until S2.
-- G11 The recipient sees `System update`, not a mail label.
+- G10 The sender's row shows the summary, not the recipient Track (S2).
+- G11 Resolved by S2 (#2160): the recipient row is labelled `Mail`.
 - G12 No mailbox view in the FE; read state is visible only through `neige mail ls`.
 - G13 One recipient per mail; no CC, groups or cross-Area mail.
 - G15 A mail first read in an earlier turn is not counted when a later turn sends a new mail or a reply to a different mail (§5).
