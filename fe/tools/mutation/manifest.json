@@ -1842,5 +1842,26 @@
       "core/domain/failure-class.test.ts"
     ],
     "why_more_than_one": "PLUGIN_INSTALL_RETRY_FAILURES is the only place a repeated install's 409 plugin_conflict becomes done, so reading it as refused reddens the table case for that answer and the one route case that adds again after a lost answer; the first-attempt conflict case already expects a refusal and stays green."
+  },
+  {
+    "mutation_id": "s2131-cas-retry-skips-read-back",
+    "defends": [
+      "oracle:INV-APP-121"
+    ],
+    "target": "core/domain/failure-class.ts",
+    "patch": "diff --git a/core/domain/failure-class.ts b/core/domain/failure-class.ts\nindex d5ce4d5ab..6abb136bd 100644\n--- a/core/domain/failure-class.ts\n+++ b/core/domain/failure-class.ts\n@@ -152,7 +152,7 @@ export function casAttempts(table: FailureTable<CasClass>) {\n   let unknown: string | null = null;\n   return async <R>(attempt: unknown, write: () => Promise<R>, landed: () => Promise<Landed<R>>): Promise<R> => {\n     const id = JSON.stringify(attempt);\n-    const retried = unknown === id;\n+    const retried = false;\n     unknown = null;\n     try {\n       return await write();\n",
+    "expected_red": [
+      "casAttempts reads back a stale answer to a retry of an unknown attempt, and confirms it with what holds",
+      "casAttempts leaves a retry unknown when its read-back fails, and reads back again on the next retry",
+      "a recipe write whose answer was lost confirms a retried save whose 409 is its own first save, landed",
+      "a calendar update whose answer was lost confirms a retried save whose 409 is its own first save, landed",
+      "a calendar update whose answer was lost confirms a retried cancel whose 409 is its own first cancel, landed"
+    ],
+    "selection_paths": [
+      "core/domain/cas-writes.test.ts",
+      "web/src/app/router/recipes-route.test.tsx",
+      "web/src/app/router/calendar-writes.test.tsx"
+    ],
+    "why_more_than_one": "casAttempts is the one compare-after-unknown rule for every CAS writer, so never treating a stale answer as a retry of an unknown attempt reddens its two unit cases that read back and each production path that meets its own landed write: the recipe save, the calendar edit and the calendar cancel. The first-409, changed-attempt and genuine-concurrent-edit cases stay green, because they must be stale either way."
   }
 ]
