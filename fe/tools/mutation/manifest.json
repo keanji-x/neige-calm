@@ -1814,15 +1814,16 @@
       "oracle:INV-APP-119"
     ],
     "target": "web/src/app/providers/idempotency-key.ts",
-    "patch": "diff --git a/web/src/app/providers/idempotency-key.ts b/web/src/app/providers/idempotency-key.ts\nindex 6232d6350..e2fa9b015 100644\n--- a/web/src/app/providers/idempotency-key.ts\n+++ b/web/src/app/providers/idempotency-key.ts\n@@ -38,7 +38,7 @@ export function useKeyedIntent<Draft, Body>(sameDraft: (held: Draft, next: Draft\n   const mint = (draft: Draft, build: () => Body) => Object.freeze({ key: mintIdempotencyKey(), draft, body: build() });\n   return {\n     held,\n-    request: (draft: Draft, build: () => Body) => hold(held !== null && sameDraft(held.draft, draft) ? held : mint(draft, build)),\n+    request: (draft: Draft, build: () => Body) => hold(mint(draft, build)),\n     restart: (draft: Draft, build: () => Body) => hold(mint(draft, build)),\n     release: (request: KeyedRequest<Draft, Body>) => { setHeld((current) => (current === request ? null : current)); },\n   };\n",
+    "patch": "diff --git a/web/src/app/providers/idempotency-key.ts b/web/src/app/providers/idempotency-key.ts\nindex a68e0e40b..a57fefb14 100644\n--- a/web/src/app/providers/idempotency-key.ts\n+++ b/web/src/app/providers/idempotency-key.ts\n@@ -36,7 +36,7 @@ export function useKeyedIntent<Draft, Body>(sameDraft: (held: Draft, next: Draft\n   return {\n     held,\n     request: (draft: Draft, build: () => Body): KeyedRequest<Draft, Body> => {\n-      const next = held !== null && sameDraft(held.draft, draft) ? held : Object.freeze({ key: mintIdempotencyKey(), draft, body: build() });\n+      const next = Object.freeze({ key: mintIdempotencyKey(), draft, body: build() });\n       setHeld(next);\n       return next;\n     },\n",
     "expected_red": [
       "a keyed card create keeps the key when Create is pressed again on the same draft, and mints a new one for a changed draft",
+      "a keyed card create resends the held key and body when the same fieldless kind is picked again",
       "AppShell Area editor flow retries a lost create confirmation with the same identity and payload after reopening"
     ],
     "selection_paths": [
       "web/src/app/router/new-card.test.tsx",
       "web/src/app/shell/area-editor-flow.test.tsx"
     ],
-    "why_more_than_one": "useKeyedIntent is the one keyed-create lifecycle for card and Area create, so minting on every press reddens the two cases that press again on an unknown outcome through it: the card form's second Create of the same draft and Area's Try again after reopening. Card Try again resends the held request directly and stays green, as do the cases whose next press is meant to mint."
+    "why_more_than_one": "useKeyedIntent is the one keyed-create lifecycle for card and Area create, so minting on every press reddens the three cases that press again on an unknown outcome through it: the card form's second Create of the same draft, a second pick of the same fieldless kind, and Area's Try again after reopening. Card Try again resends the held request directly and stays green, as do the cases whose next press is meant to mint."
   }
 ]
