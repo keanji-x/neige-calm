@@ -13,6 +13,7 @@ use crate::operation::{
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
 
+#[cfg(test)]
 mod checks_upgrade_tests;
 
 #[test]
