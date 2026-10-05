@@ -98,7 +98,15 @@ pub async fn disable(
     Ok(no_store(Json(auth.mobile.status().await?)))
 }
 
-#[utoipa::path(post, path = "/api/mobile/pairings", tag = "mobile", request_body = MobileAction, responses((status = 200, body = PairingCreated), (status = 400, body = ErrorBody)))]
+#[utoipa::path(
+    post, path = "/api/mobile/pairings", tag = "mobile", request_body = MobileAction,
+    responses(
+        (status = 200, body = PairingCreated, description = "A new invitation; it replaces the earlier ones no phone has claimed, so a retry leaves one live ticket"),
+        (status = 400, body = ErrorBody, description = "`bad_request`: the pairing limit is reached"),
+        (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
+        (status = 409, body = ErrorBody, description = "`conflict`: mobile access is off"),
+    )
+)]
 pub async fn create(
     State(auth): State<AuthState>,
     principal: Principal,
@@ -124,7 +132,15 @@ pub async fn create(
     })))
 }
 
-#[utoipa::path(post, path = "/api/mobile/pairings/{id}/approve", tag = "mobile", params(("id" = String, Path)), request_body = MobileAction, responses((status = 204), (status = 401, body = ErrorBody)))]
+#[utoipa::path(
+    post, path = "/api/mobile/pairings/{id}/approve", tag = "mobile", params(("id" = String, Path)), request_body = MobileAction,
+    responses(
+        (status = 204, description = "Approved, also when it already was or its phone already joined"),
+        (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
+        (status = 404, body = ErrorBody, description = "`not_found`: no pending request with this id (expired, never claimed, or unknown)"),
+        (status = 409, body = ErrorBody, description = "`conflict`: mobile access is off"),
+    )
+)]
 pub async fn approve(
     State(auth): State<AuthState>,
     principal: Principal,
@@ -136,7 +152,14 @@ pub async fn approve(
     Ok(no_store(StatusCode::NO_CONTENT))
 }
 
-#[utoipa::path(delete, path = "/api/mobile/devices/{id}", tag = "mobile", params(("id" = String, Path)), request_body = MobileAction, responses((status = 204), (status = 401, body = ErrorBody)))]
+#[utoipa::path(
+    delete, path = "/api/mobile/devices/{id}", tag = "mobile", params(("id" = String, Path)), request_body = MobileAction,
+    responses(
+        (status = 204, description = "Revoked"),
+        (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
+        (status = 404, body = ErrorBody, description = "`not_found`: no paired device with this id; a repeated revoke is answered so"),
+    )
+)]
 pub async fn revoke(
     State(auth): State<AuthState>,
     principal: Principal,

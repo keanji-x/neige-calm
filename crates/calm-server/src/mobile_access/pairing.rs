@@ -26,6 +26,21 @@ fn digest(value: &str) -> [u8; 32] {
     Sha256::digest(value.as_bytes()).into()
 }
 
+// Owner-side refusals answer 404 or 409, never 401: the browser reads any 401 as a lost session
+// and signs the owner out (#2131). Only the phone-side claim and redeem answer 401, because there
+// the caller really holds no valid ticket or secret.
+
+fn access_off() -> CalmError {
+    CalmError::Conflict("Mobile access is off; enable it first".into())
+}
+
+/// The scan slot a create reserved was cancelled, disabled or expired before it was published.
+pub(super) fn scan_slot_gone() -> CalmError {
+    CalmError::Conflict(
+        "This invitation expired or was cancelled before it was ready; create a new one".into(),
+    )
+}
+
 struct Claim {
     secret_hash: [u8; 32],
     device_name: String,
@@ -43,6 +58,8 @@ struct Invitation {
 struct Device {
     public: PairedDevice,
     session: String,
+    /// The legacy pairing this device redeemed, so a repeated approve of it is answered as done.
+    pairing: Option<String>,
 }
 
 /// Every grant/revoke transition holds this one lock, including session creation.
@@ -127,10 +144,10 @@ impl PairingState {
 
     pub fn invite(&mut self) -> Result<(String, String, u64)> {
         self.expire();
-        let origin = self
-            .origin
-            .as_ref()
-            .ok_or_else(|| CalmError::BadRequest("Enable mobile access first".into()))?;
+        let origin = self.origin.as_ref().ok_or_else(access_off)?;
+        // A retry after a lost answer must not leave a second live ticket: like a new scan
+        // enrollment, a new invitation replaces the earlier ones no phone has claimed.
+        self.pending.retain(|_, row| row.claim.is_some());
         if self.pending.len() >= MAX_PENDING || self.devices.len() >= MAX_DEVICES {
             return Err(CalmError::BadRequest(
                 "Pairing limit reached; revoke a device or wait for an invitation to expire".into(),
@@ -186,13 +203,25 @@ impl PairingState {
     pub fn approve(&mut self, id: &str) -> Result<()> {
         self.expire();
         if self.origin.is_none() {
-            return Err(CalmError::Unauthorized);
+            return Err(access_off());
+        }
+        if self
+            .devices
+            .values()
+            .any(|device| device.pairing.as_deref() == Some(id))
+        {
+            return Ok(());
         }
         let claim = self
             .pending
             .get_mut(id)
             .and_then(|row| row.claim.as_mut())
-            .ok_or(CalmError::Unauthorized)?;
+            .ok_or_else(|| {
+                CalmError::NotFound(
+                    "No pending pairing request with this id; it expired or was never claimed"
+                        .into(),
+                )
+            })?;
         claim.approved = true;
         Ok(())
     }
@@ -232,13 +261,17 @@ impl PairingState {
                     device_name: name,
                 },
                 session: session.clone(),
+                pairing: Some(request.id),
             },
         );
         Ok(Some(session))
     }
 
     pub fn revoke(&mut self, id: &str, sessions: &SessionStore) -> Result<()> {
-        let device = self.devices.remove(id).ok_or(CalmError::Unauthorized)?;
+        let device = self
+            .devices
+            .remove(id)
+            .ok_or_else(|| CalmError::NotFound("No paired device with this id".into()))?;
         sessions.remove(&device.session);
         if self
             .scan

@@ -50,6 +50,12 @@ impl PairingState {
             ));
         }
         *count += 1;
+        Ok(())
+    }
+
+    /// The phone-side admission: without live access the caller holds no valid ticket, so 401.
+    fn phone_admit(&mut self) -> Result<()> {
+        self.scan_admit(false)?;
         if self.origin.is_none() {
             return Err(CalmError::Unauthorized);
         }
@@ -60,6 +66,9 @@ impl PairingState {
     /// Disable/cancel removes this generation so a late key cannot publish it.
     pub fn begin_scan(&mut self) -> Result<(String, String, String, Option<String>)> {
         self.scan_admit(true)?;
+        if self.origin.is_none() {
+            return Err(access_off());
+        }
         if self.devices.len() >= MAX_DEVICES {
             return Err(CalmError::BadRequest("Device limit reached".into()));
         }
@@ -87,14 +96,19 @@ impl PairingState {
         ttl: Duration,
     ) -> Result<()> {
         self.expire();
-        if self.origin.as_deref() != Some(origin) || ttl.is_zero() || ttl > PAIR_TTL {
-            return Err(CalmError::Unauthorized);
+        if ttl.is_zero() || ttl > PAIR_TTL {
+            return Err(CalmError::BadRequest(
+                "Issuer returned invalid key deadlines or capabilities".into(),
+            ));
+        }
+        if self.origin.as_deref() != Some(origin) {
+            return Err(scan_slot_gone());
         }
         let row = self
             .scan
             .as_mut()
             .filter(|r| r.id == id && r.generation == generation && !r.ready)
-            .ok_or(CalmError::Unauthorized)?;
+            .ok_or_else(scan_slot_gone)?;
         row.expires = Instant::now() + ttl;
         row.ready = true;
         Ok(())
@@ -107,7 +121,7 @@ impl PairingState {
     }
 
     pub fn claim_scan(&mut self, request: EnrollmentClaim) -> Result<EnrollmentClaimed> {
-        self.scan_admit(false)?;
+        self.phone_admit()?;
         if !id_valid(&request.enrollment_id)
             || !id_valid(&request.attempt_id)
             || !secret_valid(&request.ticket)
@@ -155,7 +169,7 @@ impl PairingState {
         request: &EnrollmentRedeem,
         sessions: &SessionStore,
     ) -> Result<String> {
-        self.scan_admit(false)?;
+        self.phone_admit()?;
         if !id_valid(&request.enrollment_id)
             || !id_valid(&request.attempt_id)
             || !secret_valid(&request.attempt_secret)
@@ -197,6 +211,7 @@ impl PairingState {
                     device_name: claim.device_name.clone(),
                 },
                 session: session.clone(),
+                pairing: None,
             },
         );
         row.session = Some(session.clone());
@@ -323,30 +338,42 @@ mod tests {
     #[test]
     fn scan_late_issuer_cannot_reactivate_cancelled_generation() {
         let mut state = state();
+        // The owner's create is refused as a conflict, never a 401 that would sign the owner out.
+        let gone = |error: CalmError| assert_eq!(error.code(), "conflict", "{error}");
         let (id, generation, _, _) = state.begin_scan().unwrap();
         state.cancel_scan(&id);
-        assert!(
+        gone(
             state
                 .finish_scan(
                     &id,
                     &generation,
                     "https://fixture.ts.net",
-                    Duration::from_secs(100)
+                    Duration::from_secs(100),
                 )
-                .is_err()
+                .unwrap_err(),
         );
         let (id, generation, _, _) = state.begin_scan().unwrap();
         state.disable(&SessionStore::new());
-        state.origin = Some("https://fixture.ts.net".into());
-        assert!(
+        gone(
             state
                 .finish_scan(
                     &id,
                     &generation,
                     "https://fixture.ts.net",
-                    Duration::from_secs(100)
+                    Duration::from_secs(100),
                 )
-                .is_err()
+                .unwrap_err(),
+        );
+        state.origin = Some("https://fixture.ts.net".into());
+        gone(
+            state
+                .finish_scan(
+                    &id,
+                    &generation,
+                    "https://fixture.ts.net",
+                    Duration::from_secs(100),
+                )
+                .unwrap_err(),
         );
     }
 

@@ -121,9 +121,11 @@ fn mobile_pairing_expiry_and_capacity_are_enforced() {
             })
             .is_err()
     );
+    // A new invitation replaces the unclaimed ones, so only claimed requests fill the cap.
     for _ in 0..MAX_PENDING {
-        state.invite().unwrap();
+        claimed(&mut state);
     }
+    assert_eq!(state.pending.len(), MAX_PENDING);
     assert!(state.invite().is_err());
 }
 

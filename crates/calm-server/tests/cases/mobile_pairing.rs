@@ -760,6 +760,9 @@ async fn private_tailnet_ingress_auth_and_control_fence() {
 #[path = "mobile_pairing/enrollment.rs"]
 mod enrollment;
 
+#[path = "mobile_pairing/owner_refusals.rs"]
+mod owner_refusals;
+
 #[tokio::test]
 async fn private_tailnet_disable_closes_active_websocket_and_revokes_session() {
     use futures_util::StreamExt;

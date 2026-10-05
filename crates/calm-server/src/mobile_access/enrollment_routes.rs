@@ -81,7 +81,12 @@ impl Drop for Reservation {
 
 #[utoipa::path(
     post, path="/api/mobile/enrollments", tag="mobile", request_body=MobileAction,
-    responses((status=200, body=EnrollmentCreated),(status=400, body=ErrorBody),(status=403, body=ErrorBody))
+    responses(
+        (status=200, body=EnrollmentCreated, description="A new scan invitation; it replaces and cancels the previous slot"),
+        (status=400, body=ErrorBody, description="`bad_request`: a create is already in progress, a limit is reached, or the issuer failed"),
+        (status=403, body=ErrorBody, description="`forbidden`: not a real owner login"),
+        (status=409, body=ErrorBody, description="`conflict`: mobile access is off, or the slot was cancelled or expired before it was ready"),
+    )
 )]
 pub async fn create(
     State(auth): State<AuthState>,
@@ -167,7 +172,7 @@ pub async fn create(
         // Last grant transition shares the same lock as disable/cancel/revoke.
         let remaining = key.pair_expires_at - chrono::Utc::now().timestamp_millis();
         if remaining <= 0 {
-            return Err(CalmError::Unauthorized);
+            return Err(super::pairing::scan_slot_gone());
         }
         auth.mobile.lock()?.finish_scan(
             &id,
