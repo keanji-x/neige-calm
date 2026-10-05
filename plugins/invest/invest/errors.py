@@ -1,6 +1,7 @@
 """The App's one error system (docs/conventions/agent-commands.md §5): every refusal is a JSON-RPC
-error with its code, and its message starts with the served tool name. A plain ValueError raised by
-an argument validator is an invalid argument (-32602) at the tool boundary."""
+error with its code, its message starts with the served tool name, and its `data` carries the
+machine fields the message states (`refusal`, plus the current version or key where one applies).
+A plain ValueError raised by an argument check is an invalid argument (-32602) at the tool boundary."""
 
 UNKNOWN_TOOL = -32601  # not an invest tool
 INVALID = -32602       # missing, malformed or unknown argument, or a bad value
@@ -12,9 +13,14 @@ SERVED = 'plugin_invest_'  # the kernel serves tool `<tool>` as `plugin_invest_<
 
 
 class Refused(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code, message, refusal, **fields):
         super().__init__(message)
         self.code = code
+        self.data = {'refusal': refusal, **fields}
+
+    def named(self, name):
+        """The same refusal, its message prefixed with the served tool name."""
+        return Refused(self.code, f'{served(name)}: {self}', **self.data)
 
 
 def served(name):

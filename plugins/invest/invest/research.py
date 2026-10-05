@@ -19,7 +19,8 @@ def context(meta):
     when the Track was not added by a Planner. All three are required; any other key is ignored."""
     if not isinstance(meta, dict) or not set(PROVENANCE) <= set(meta) or not isinstance(meta['id'], str) \
             or not meta['id'] or any(meta[k] is not None and not isinstance(meta[k], str) for k in PROVENANCE[1:]):
-        raise Refused(FORBIDDEN, 'host-provided Track context {id, creator_track_id, creator_key} required')
+        raise Refused(FORBIDDEN, 'host-provided Track context {id, creator_track_id, creator_key} required',
+                      'track_context')
     return {k: meta[k] for k in PROVENANCE}
 
 
@@ -27,15 +28,17 @@ def attest(db, config, track):
     """The live instrument whose current key `track` was added under by the portfolio Track."""
     key = track['creator_key']
     if track['creator_track_id'] != config.portfolio_track_id or key is None:
-        raise Refused(FORBIDDEN, 'only a research Track that the portfolio Track added may call this tool')
+        raise Refused(FORBIDDEN, 'only a research Track that the portfolio Track added may call this tool',
+                      'not_attested')
     parsed = instruments.parse_key(key)
     row = instruments.get(db, parsed[0]) if parsed else None
     if row is None or parsed[1] > row['key_seq']:
-        raise Refused(FORBIDDEN, f'research key {key} was never issued')
+        raise Refused(FORBIDDEN, f'research key {key} was never issued', 'not_attested')
     if row['state'] != 'live' or parsed[1] != row['key_seq']:
         current = row['body']['track_add']['idempotency_key'] if row['state'] == 'live' else None
         raise Refused(CONFLICT, f'superseded: close this Track with neige_track_close; {row["symbol"]} is '
-                                f'{row["state"]} and its current key is {current or "none"}, not {key}')
+                                f'{row["state"]} and its current key is {current or "none"}, not {key}',
+                      'superseded', symbol=row['symbol'], key=current)
     return row
 
 

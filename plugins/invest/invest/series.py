@@ -37,9 +37,10 @@ def admit(meta):
     meta = meta if isinstance(meta, dict) else {}
     track = meta.get(TRACK_KEY)
     if not isinstance(track, dict) or not isinstance(track.get('id'), str) or not track['id']:
-        raise Refused(FORBIDDEN, f'{served(TOOL)}: serves only the chart resolver: host Track context required')
+        raise Refused(FORBIDDEN, f'{served(TOOL)}: serves only the chart resolver: host Track context required',
+                      'resolver_only')
     if CALLER_KEY in meta:
-        raise Refused(FORBIDDEN, f'{served(TOOL)}: serves only the chart resolver, never an agent')
+        raise Refused(FORBIDDEN, f'{served(TOOL)}: serves only the chart resolver, never an agent', 'resolver_only')
 
 
 def calendar_date(raw):

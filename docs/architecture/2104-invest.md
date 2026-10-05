@@ -103,12 +103,15 @@ Lifecycle:
 1. **Raise.** The portfolio raises a thesis with `thesis_add` on a live symbol. A symbol has at
    most 3 open theses; a 4th is refused and nothing changes.
 2. **Assess.** The research Track holding the symbol's current key assesses it with `thesis_set`
-   under `expected_version` (§3.3).
+   under `expected_version` (§3.3). The assessment and its own `summary` and `source_refs` are stored
+   as the thesis's research assessment; the portfolio-owned fields above never change, so a lost-answer
+   replay of `thesis_add` still matches them.
 3. **Retire.** `thesis_rm` retires one thesis. `instrument_rm` retires every open thesis of its
    symbol in the same transaction. Retiring is a verb, never an assessment value.
 4. **Flow back.** `thesis.board` on the portfolio Track is republished every tick
    (`runtime.py:15-27`, F1, F2), so a status change appears there within one tick. Each
-   displayed thesis is a section labeled `<assessment> · <title>`, with `summary` as its body.
+   displayed thesis is a section labeled `<assessment> · <title>`, with the portfolio's `summary` as
+   its body, followed by `研究评估：<research summary>` once the research Track has assessed it.
    The assessment therefore shows explicitly: a label is at most 120 chars, and title ≤ 110 leaves
    room for the prefix.
 
@@ -147,7 +150,10 @@ prove which recipe or text the creation used.
   refused with -32409 `superseded: close this Track`, views included.
 - Any other caller is refused with -32403, including the portfolio Track itself, which has no
   creator.
-- A repeat call from the current Track is idempotent.
+- A repeat call from the current Track is attested again: attestation stores nothing, so calls
+  repeat freely. Writes still follow their own rules: a lost-answer retry of `thesis_set` carries the
+  `expected_version` that the first call already consumed and gets -32409 with the current version in
+  `data`; the caller rereads and retries.
 
 **Lease.** Every attested call sets `last_seen_at` for S. This is **access metadata**, like the
 kernel's `last_activity_ms`: it never bumps `version`, never changes authority, and is not domain
@@ -339,7 +345,7 @@ what it replaces.
 | `portfolio.weight_history` | 6 series | top 4 now + 其他 + 现金; each point sums to 100% |
 | `portfolio.holdings` | 500 rows | every held symbol + 现金 (≤ 256 rows: no aggregation needed) |
 | `portfolio.decision_log` | 50 records; per record ≤ 12 facts, ≤ 12 badges, ≤ 20 disclosures | facts: top 11 weights + 其他. Badges: state, `created_at`, `valid_until`. Disclosures: one per order, top 19 + 其他 |
-| `thesis.board` | 100 records × 8 sections | one record per counted symbol (held by weight, then watched): top 99 + one 其他 record with counts by assessment; sections are the ≤ 3 open theses (label `<assessment> · <title>`, body `summary`) |
+| `thesis.board` | 100 records × 8 sections | one record per counted symbol (held by weight, then watched): top 99 + one 其他 record with counts by assessment; sections are the ≤ 3 open theses (label `<assessment> · <title>`, body the portfolio's `summary` plus `研究评估：<research summary>` once assessed) |
 | `thesis.records` (research) | 100 records | ≤ 3 open + the 20 latest retired |
 | `nav_history`, `fill_log` | 500 points, 500 rows | 260 points, latest 500 fills |
 

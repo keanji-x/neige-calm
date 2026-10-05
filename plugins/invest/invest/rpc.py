@@ -73,23 +73,26 @@ def serve():
                 result = runtime.portfolio.call(meta.get(series.TRACK_KEY), name, params.get("arguments", {}),
                                                 meta.get(series.CALLER_KEY))
                 if name in RESEARCH_TOOLS:
-                    # Statelessly onto the caller's own Track; a lost projection is redone on its next call.
-                    for kind, payload in research_units(result).items():
-                        try:
+                    # The call committed: a failed projection never turns it into an error. It is logged,
+                    # and the caller's next attested call redoes it.
+                    try:
+                        for kind, payload in research_units(result).items():
                             runtime.publish(meta[series.TRACK_KEY]["id"], kind, payload)
-                        except Exception:
-                            pass
+                    except Exception as error:
+                        sys.stderr.write(f"invest: research units for {name} not published: {type(error).__name__}\n")
                 # Every write wakes the loop that owns broker access.
                 if name not in VIEWS:
                     runtime.wake.set()
                 reply(frame["id"], {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=True)}],
                                     "structuredContent": result})
             except Refused as error:
-                rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": error.code, "message": str(error)}})
+                rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {
+                    "code": error.code, "message": str(error), "data": error.data}})
             except Exception:
                 name = frame.get("params", {}).get("name") if isinstance(frame.get("params"), dict) else None
                 rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {
-                    "code": INTERNAL, "message": f"{served(name)}: unavailable ledger"}})
+                    "code": INTERNAL, "message": f"{served(name)}: unavailable ledger",
+                    "data": {"refusal": "internal"}}})
 
     def series_worker():
         # Its own thread: a slow SDK read for a chart never delays a portfolio tool call.
@@ -101,7 +104,8 @@ def serve():
                 reply(frame["id"], series.show(runtime.portfolio.broker, params.get("arguments", {}),
                                                time.time_ns() // 1_000_000))
             except Refused as error:
-                rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": error.code, "message": str(error)}})
+                rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {
+                    "code": error.code, "message": str(error), "data": error.data}})
             except Exception:
                 reply(frame["id"], series.tool_error("invalid request or unavailable source"))
 

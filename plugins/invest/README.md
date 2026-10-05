@@ -104,7 +104,10 @@ Every refusal is a JSON-RPC error whose message starts with the served name
 (`plugin_invest_<tool>: …`), per `docs/conventions/agent-commands.md` §5: -32602 invalid argument,
 -32403 wrong role, Track or provenance, -32404 unknown entity, -32409 state conflict (a stale
 `expected_version`, a full limit, a superseded research key), -32601 unknown tool, -32603 ledger
-failure. Only `series_show` answers a request-level failure as an `isError` result, because that is
+failure. Each error's `data` says the same in machine fields: `refusal` (for example `stale_version`
+with the current `version`, or `superseded` with the `symbol` and its current `key`). Every argument
+is type- and pattern-checked at one boundary (`invest/arguments.py`) before any lookup, so a
+wrong-typed id is -32602 and changes nothing. Only `series_show` answers a request-level failure as an `isError` result, because that is
 the `market.series` contract the kernel's chart resolver validates.
 
 ## Execution invariants

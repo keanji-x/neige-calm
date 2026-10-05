@@ -12,6 +12,12 @@ def refused(code, call, *args, **kwargs):
     return str(caught.value)
 
 
+def refusal_data(call, *args, **kwargs):
+    with refusal(CONFLICT) as caught:
+        call(*args, **kwargs)
+    return caught.value.data
+
+
 def key(r, symbol):
     return r.instrument(symbol)['key']
 
@@ -61,7 +67,9 @@ def test_superseded_key_refused(rig):
     before = r.dump()
     for name, call_args in (('instrument_status', {}), ('thesis_set', args)):
         message = refused(CONFLICT, r.research, old, name, call_args)
-        assert 'superseded: close this Track' in message
+        assert 'superseded: close this Track' in message and renewed in message
+    assert refusal_data(r.research, old, 'instrument_status') == {
+        'refusal': 'superseded', 'symbol': 'US:AAA', 'key': renewed}
     assert r.dump() == before
     # The current key is attested; then a dropped S supersedes every key, the current one included.
     assert r.research(renewed, 'instrument_status')['symbol'] == 'US:AAA'
@@ -176,7 +184,10 @@ def test_thesis_set_requires_current_version(rig):
     before = r.dump()
     # A lost answer retried under the version it read first, or any other stale version.
     for stale in (1, 3):
-        assert 'stale' in refused(CONFLICT, r.assess, current, 'aaa-margins', 'broken', expected_version=stale)
+        assert 'the current version is 2' in refused(CONFLICT, r.assess, current, 'aaa-margins', 'broken',
+                                                     expected_version=stale)
+    assert refusal_data(r.assess, current, 'aaa-margins', 'broken', expected_version=1) == {
+        'refusal': 'stale_version', 'version': 2}
     assert r.dump() == before
     assert r.open_thesis('aaa-margins')['assessment'] == 'holding'
 

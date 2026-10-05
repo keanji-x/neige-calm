@@ -101,5 +101,6 @@ def test_stdio_research_call_refuses_with_codes_and_projects_onto_the_caller(rig
                   track='owner', caller=PLANNER)
         frame = research(bbb['key'])
         assert frame['error']['code'] == -32409 and 'superseded' in frame['error']['message']
+        assert frame['error']['data'] == {'refusal': 'superseded', 'symbol': 'US:BBB', 'key': None}
     finally:
         host.close()

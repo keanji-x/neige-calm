@@ -81,9 +81,8 @@ def captured(refs):
 
 
 def version(value, current):
-    """The optimistic lock of a `set` or `rm`: the entry's current version."""
-    if type(value) is not int or value < 1:
-        raise ValueError('expected_version must be a positive integer')
+    """The optimistic lock of a `set` or `rm`: `value` (checked by `arguments.parse`) must be the entry's
+    current version."""
     if value != current:
         raise Refused(CONFLICT, f'expected_version {value} is stale: the current version is {current}; '
-                                'reread and retry')
+                                'reread and retry', 'stale_version', version=current)

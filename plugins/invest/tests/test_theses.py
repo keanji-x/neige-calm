@@ -5,7 +5,7 @@ import re
 import pytest
 
 from account import SimulatedAccount
-from invest import theses
+from invest import arguments, theses
 from invest.research_views import research_units
 from invest.symbols import canonical, unit_id
 from invest.errors import CONFLICT
@@ -117,16 +117,16 @@ def test_units_fit_caps_at_max_config(rig):
     with r.app.ledger.session() as db:
         for n in range(20):  # a long history of retired theses, then three open ones on every symbol
             thesis_id = f'retired-{n}'
-            theses.add(r.app.ledger, db, {'thesis_id': thesis_id, 'symbol': target, 'stance': 'bearish',
-                                          'title': cjk[:110], 'summary': cjk[:500], 'body': cjk,
-                                          'source_refs': SOURCES}, NOW)
+            theses.add(r.app.ledger, db, arguments.parse('thesis_add', {
+                'thesis_id': thesis_id, 'symbol': target, 'stance': 'bearish', 'title': cjk[:110],
+                'summary': cjk[:500], 'body': cjk, 'source_refs': SOURCES}), NOW)
             theses.retire(r.app.ledger, db, thesis_id, NOW, 'retired for the fixture')
         for s in held + watched:
             for n in range(3):
-                theses.add(r.app.ledger, db, {
+                theses.add(r.app.ledger, db, arguments.parse('thesis_add', {
                     'thesis_id': f'{unit_id(s).lower().replace(".", "-")[:60]}-{n}', 'symbol': s,
                     'stance': 'neutral', 'title': cjk[:110], 'summary': cjk[:500], 'body': cjk,
-                    'source_refs': SOURCES}, NOW)
+                    'source_refs': SOURCES}), NOW)
     state = r.step()
     assert state['error'] is None and len(state['snapshot']['positions']) == 128
     assert sum(i['state'] == 'live' for i in state['instruments']) == 255
