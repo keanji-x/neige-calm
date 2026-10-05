@@ -651,7 +651,7 @@
     #1722：rail 里「股票持仓表」`data-nc-activity=working` 而其 planner 已 idle 三天——FE 用 `isRunning(lifecycle)`
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
-  source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,572-596;
+  source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,574-598;
     fe/web/src/app/router/public.tsx:1745-1752,2195-2201; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
     fe/web/src/app/providers/queries.ts:949-954,988-995;
     fe/web/src/features/today/public.tsx:137-138,256-257;
@@ -695,7 +695,7 @@
     fe/web/src/app/router/public.tsx:2096-2155; fe/web/src/app/shell/public.tsx:98-100,247-256;
     fe/web/src/app/router/calendar.tsx:47-60
   authoritative_test: fe/web/src/app/router/new-card.test.tsx:207-383; fe/web/src/app/shell/area-editor-flow.test.tsx:169-199;
-    fe/web/src/app/router/calendar-writes.test.tsx:144-165
+    fe/web/src/app/router/calendar-writes.test.tsx:147-168
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -849,9 +849,9 @@
   why: >
     #2131 类 2：首次保存已落库而应答丢失时，读者重试仍带着旧 revision，服务端只能答 409，于是读者自己的写被报成
     「别处改过」。只有在未知结果之后才读回，首个 409 不多一次读取；真正的并发编辑读回后内容不同，仍是 stale。
-  source: fe/core/domain/failure-class.ts:143-170; fe/core/domain/track.ts:467-480;
+  source: fe/core/domain/failure-class.ts:143-175; fe/core/domain/track.ts:472-482;
     fe/core/domain/calendar.ts:89-118; fe/web/src/app/providers/queries.ts:613-632; fe/web/src/app/router/calendar.tsx:34-45
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:322-381; fe/web/src/app/router/calendar-writes.test.tsx:79-128
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:329-388; fe/web/src/app/router/calendar-writes.test.tsx:81-131
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit

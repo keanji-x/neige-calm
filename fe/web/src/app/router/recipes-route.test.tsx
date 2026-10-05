@@ -62,6 +62,8 @@ type Options = Readonly<{
   put?: ApiTransportResponse | (() => Promise<ApiTransportResponse>);
   /** What `POST /api/track-recipes` answers — the create. */
   post?: ApiTransportResponse | (() => Promise<ApiTransportResponse>);
+  /** The row `GET /api/track-recipes/{id}` answers with: what a lost save is read back through. */
+  stored?: () => unknown;
   /** What `DELETE /api/track-recipes/{id}` answers. */
   remove?: ApiTransportResponse;
 }>;
@@ -78,6 +80,11 @@ function harness(options: Options = {}) {
       }
       if (request.method === 'DELETE' && request.path.startsWith('/api/track-recipes/')) {
         return Promise.resolve(options.remove ?? { status: 204, statusText: 'No Content', body: null });
+      }
+      if (request.method === 'GET' && request.path.startsWith('/api/track-recipes/')) {
+        return Promise.resolve(options.stored === undefined
+          ? { status: 404, statusText: 'Not Found', body: { error: 'not found', code: 'not_found' } }
+          : OK(options.stored()));
       }
       if (request.method === 'POST' && request.path === '/api/track-recipes') {
         if (typeof options.post === 'function') return options.post();
@@ -325,6 +332,7 @@ describe('a recipe write whose answer was lost', () => {
     let attempt = 0;
     const { sent } = atRecipes({
       recipeList: () => OK([stored]),
+      stored: () => stored,
       /* The first save is stored but its answer is lost; the retry, still on revision 7, meets the 409 that store caused. */
       put: () => {
         attempt += 1;
@@ -345,6 +353,7 @@ describe('a recipe write whose answer was lost', () => {
     expect(sent.filter((request) => request.method === 'PUT').map((request) => request.body)).toEqual([
       { title: 'Ship checklist', body: 'Saved once.', if_revision: 7 }, { title: 'Ship checklist', body: 'Saved once.', if_revision: 7 },
     ]);
+    expect(sent.filter((request) => request.method === 'GET' && request.path === '/api/track-recipes/r-ship')).toHaveLength(1);
   });
 
   it('still calls a retried save stale when someone else changed the recipe', async () => {
@@ -353,6 +362,7 @@ describe('a recipe write whose answer was lost', () => {
     let attempt = 0;
     atRecipes({
       recipeList: () => OK([stored]),
+      stored: () => stored,
       /* The first save never arrived; meanwhile another window saved its own text. */
       put: () => {
         attempt += 1;
@@ -371,13 +381,10 @@ describe('a recipe write whose answer was lost', () => {
 
   it('calls a first 409 stale without reading the recipe back', async () => {
     const user = userEvent.setup();
-    const { listReads } = atRecipes({ put: stale });
-    await screen.findByRole('button', { name: 'Ship checklist' });
-    const before = listReads();
+    const { sent } = atRecipes({ put: stale, stored: () => RECIPE });
     await editAndSave(user, 'Half-finished thought.');
     expect(await screen.findByText(/changed somewhere else/)).toBeTruthy();
-    /* Only the settle's refetch of the list, never a read-back: one more read at most. */
-    await waitFor(() => expect(listReads()).toBe(before + 1));
+    expect(sent.filter((request) => request.method === 'GET' && request.path === '/api/track-recipes/r-ship')).toEqual([]);
   });
 
   it('shows a refused save in the server’s words and a lost one as the fixed state, never transport text', async () => {

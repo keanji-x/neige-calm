@@ -143,27 +143,32 @@ export function writeFailureText(table: FailureTable<WriteClass>, text: WriteTex
 export type Landed<R> = Readonly<{ stored: R }> | null;
 
 /**
- * One CAS writer's attempts, in the order it makes them. A `stale` answer to a retry of the attempt whose previous outcome
- * was `unknown` may be that attempt having landed, so `landed` reads the server back before it is called stale: a stored
+ * One CAS writer's attempts, in the order it makes them. A `stale` answer to a retry of an attempt whose outcome was once
+ * `unknown` may be that attempt having landed, so `landed` reads the server back before it is called stale: a stored
  * value that holds exactly this attempt's content confirms the write with it, anything else keeps the stale answer. A
- * read-back that fails leaves the retry unknown. An attempt is its content: the same id, revision and body.
+ * read-back that fails leaves the retry unknown. A refusal of a retry proves nothing about the earlier attempt, so only
+ * a changed attempt, a success or a settled stale answer forgets it. An attempt is its content: id, revision and body.
  */
 export function casAttempts(table: FailureTable<CasClass>) {
   let unknown: string | null = null;
   return async <R>(attempt: unknown, write: () => Promise<R>, landed: () => Promise<Landed<R>>): Promise<R> => {
     const id = JSON.stringify(attempt);
     const retried = unknown === id;
-    unknown = null;
+    if (!retried) unknown = null;
     try {
-      return await write();
+      const value = await write();
+      unknown = null;
+      return value;
     } catch (error) {
       const is = writeClassOf(error, table);
-      if (is === 'stale' && retried) {
-        let found: Landed<R>;
-        try { found = await landed(); } catch (cause) { unknown = id; throw new Error('The read-back failed.', { cause }); }
-        if (found !== null) return found.stored;
-      }
       if (is === 'unknown') unknown = id;
+      if (is !== 'stale') throw error;
+      if (retried) {
+        let found: Landed<R>;
+        try { found = await landed(); } catch (cause) { throw new Error('The read-back failed.', { cause }); }
+        if (found !== null) { unknown = null; return found.stored; }
+      }
+      unknown = null;
       throw error;
     }
   };

@@ -103,17 +103,44 @@ describe('casAttempts', () => {
     expect(readWriteFailure(error, RECIPE_SAVE_FAILURES, RECIPE_SAVE_TEXT).is).toBe('stale');
   });
 
-  it('never reads back a stale answer to a first attempt, a changed attempt, or one after a refusal', async () => {
+  it('never reads back a stale answer to a first attempt or a changed attempt', async () => {
     const landed = vi.fn(() => Promise.resolve({ stored: 'stored row' }));
     const first = casAttempts(RECIPE_SAVE_FAILURES);
     await expect(first(attempt, stale, landed)).rejects.toBeInstanceOf(ApiError);
     const changed = casAttempts(RECIPE_SAVE_FAILURES);
     await expect(changed(attempt, lost, landed)).rejects.toBeInstanceOf(ApiError);
     await expect(changed({ ...attempt, body: 'edited' }, stale, landed)).rejects.toBeInstanceOf(ApiError);
-    const refused = casAttempts(RECIPE_SAVE_FAILURES);
-    await expect(refused(attempt, lost, landed)).rejects.toBeInstanceOf(ApiError);
-    await expect(refused(attempt, () => Promise.reject(new ApiError(http(400))), landed)).rejects.toBeInstanceOf(ApiError);
-    await expect(refused(attempt, stale, landed)).rejects.toBeInstanceOf(ApiError);
+    expect(landed).not.toHaveBeenCalled();
+  });
+
+  /* A refusal of a retry says nothing about whether the earlier unknown attempt landed (#2166 N1). */
+  it.each([
+    { write: 'a recipe save', status: 401, table: RECIPE_SAVE_FAILURES, refusal: unauthorized },
+    { write: 'a recipe save', status: 400, table: RECIPE_SAVE_FAILURES, refusal: http(400) },
+    { write: 'a calendar update', status: 503, table: CALENDAR_WRITE_FAILURES.update, refusal: http(503, 'service_unavailable') },
+  ])(
+    'still reads back $write after a $status refusal of the same attempt that followed an unknown one', async ({ table, refusal }) => {
+      const attempts = casAttempts(table);
+      await expect(attempts(attempt, lost, () => Promise.resolve(null))).rejects.toBeInstanceOf(ApiError);
+      await expect(attempts(attempt, () => Promise.reject(new ApiError(refusal)), () => Promise.resolve(null))).rejects.toBeInstanceOf(ApiError);
+      await expect(attempts(attempt, stale, () => Promise.resolve({ stored: 'stored row' }))).resolves.toBe('stored row');
+    },
+  );
+
+  it('forgets an unknown attempt once a changed attempt, a success or a stale answer settles it', async () => {
+    const landed = vi.fn(() => Promise.resolve({ stored: 'stored row' }));
+    const changed = casAttempts(RECIPE_SAVE_FAILURES);
+    await expect(changed(attempt, lost, landed)).rejects.toBeInstanceOf(ApiError);
+    await expect(changed({ ...attempt, body: 'edited' }, () => Promise.reject(new ApiError(http(400))), landed)).rejects.toBeInstanceOf(ApiError);
+    await expect(changed(attempt, stale, landed)).rejects.toBeInstanceOf(ApiError);
+    const succeeded = casAttempts(RECIPE_SAVE_FAILURES);
+    await expect(succeeded(attempt, lost, landed)).rejects.toBeInstanceOf(ApiError);
+    await expect(succeeded(attempt, () => Promise.resolve('saved'), landed)).resolves.toBe('saved');
+    await expect(succeeded(attempt, stale, landed)).rejects.toBeInstanceOf(ApiError);
+    const concluded = casAttempts(RECIPE_SAVE_FAILURES);
+    await expect(concluded(attempt, lost, landed)).rejects.toBeInstanceOf(ApiError);
+    await expect(concluded(attempt, stale, () => Promise.resolve(null))).rejects.toBeInstanceOf(ApiError);
+    await expect(concluded(attempt, stale, landed)).rejects.toBeInstanceOf(ApiError);
     expect(landed).not.toHaveBeenCalled();
   });
 
@@ -129,11 +156,10 @@ describe('casAttempts', () => {
 describe('what a read-back holds', () => {
   const recipe: TrackRecipe = { id: 'r', title: 'Ship', body: 'Saved.', revision: 8, created_at: 1, updated_at: 2 };
 
-  it('finds a recipe save only when the listed row holds exactly the title and body it sent', () => {
-    expect(recipeSaveLanded([recipe], 'r', { title: 'Ship', body: 'Saved.' })).toEqual({ stored: recipe });
-    expect(recipeSaveLanded([recipe], 'r', { title: 'Ship', body: 'Other.' })).toBeNull();
-    expect(recipeSaveLanded([recipe], 'r', { title: 'Shipped', body: 'Saved.' })).toBeNull();
-    expect(recipeSaveLanded([], 'r', { title: 'Ship', body: 'Saved.' })).toBeNull();
+  it('finds a recipe save only when the stored row holds exactly the title and body it sent', () => {
+    expect(recipeSaveLanded(recipe, { title: 'Ship', body: 'Saved.' })).toEqual({ stored: recipe });
+    expect(recipeSaveLanded(recipe, { title: 'Ship', body: 'Other.' })).toBeNull();
+    expect(recipeSaveLanded(recipe, { title: 'Shipped', body: 'Saved.' })).toBeNull();
   });
 
   const timed = { kind: 'timed' as const, start: '2026-10-02T14:00:00+08:00', end: '2026-10-02T15:00:00+08:00', timezone: 'Asia/Shanghai' };

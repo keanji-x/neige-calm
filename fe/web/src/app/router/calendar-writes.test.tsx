@@ -21,6 +21,8 @@ const stale: ApiTransportResponse = { status: 409, statusText: 'Conflict',
   body: { error: 'conflict: calendar task changed; reload before editing', code: 'conflict' } };
 const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('socket hang up'));
 const RAW = /socket hang up|Transport request failed|timed out|schema|offline|connection|Nothing was sent|conflict:/i;
+/** Where the read-back window around ENTRY's date starts. */
+const READ_BACK_FROM = 'from=2026-04-02&';
 const STALE_TEXT = 'This task changed somewhere else. Close it and open it again to edit the current version.';
 
 type World = { entries: CalendarEntry[] };
@@ -89,7 +91,7 @@ describe('a calendar update whose answer was lost', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(writes.map((request) => request.body)).toEqual([writes[0].body, writes[0].body]);
     /* Read back through the widest window the server lists, centred on the sent date. */
-    expect(reads).toContain('/api/calendar/tasks?from=2026-04-02&until=2027-04-03&timezone=UTC');
+    expect(reads).toContain(`/api/calendar/tasks?${READ_BACK_FROM}until=2027-04-03&timezone=UTC`);
   });
 
   it('still calls a retried save stale when someone else changed the task', async () => {
@@ -124,7 +126,8 @@ describe('a calendar update whose answer was lost', () => {
     const { reads } = renderCalendar(() => Promise.resolve(stale));
     await renameTo('Research done');
     await waitFor(async () => expect(await alertText()).toBe(STALE_TEXT));
-    expect(reads.filter((path) => path.includes('timezone=UTC'))).toEqual([]);
+    /* The read-back window is the only one that starts six months before the task; the list reads never do. */
+    expect(reads.filter((path) => path.includes(READ_BACK_FROM))).toEqual([]);
   });
 
   it('shows a refused update in the server’s words', async () => {
@@ -162,6 +165,22 @@ describe('a calendar create', () => {
     const keys = writes.map((request) => (request.body as { idempotency_key: string }).idempotency_key);
     expect(keys).toHaveLength(2);
     expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('releases the key once a create is made, so the same task created again is a new task', async () => {
+    const { writes } = renderCalendar((request, world) => {
+      const body = request.body as { task: CalendarDraft };
+      const made = { ...ENTRY, id: `made-${world.entries.length}`, task: body.task, version: 1 };
+      world.entries = [...world.entries, made];
+      return Promise.resolve(ok(made));
+    });
+    await create('Write it up');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await create('Write it up');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const keys = writes.map((request) => (request.body as { idempotency_key: string }).idempotency_key);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
   });
 
   it('shows a key bound to other content in the server’s words', async () => {

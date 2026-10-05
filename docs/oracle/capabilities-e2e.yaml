@@ -424,7 +424,7 @@
     thing they see at the moment it happens. This is the failure an implementation is likeliest to
     have, because it looks correct in every case where the server changed nothing.
   source: fe/web/src/features/report/recipe/public.tsx:60-76,174-179
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:178,276,289
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:185,283,296
   owner_slice: features/report/recipe
   intentional_omission: false
   runtime_layer: features
@@ -446,7 +446,7 @@
     because "keep the draft" is a behaviour, and deciding a behaviour by matching an error string
     makes it depend on wording.
   source: fe/web/src/features/report/recipe/public.tsx:20-30,160-166
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:194,214
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:201,221
   owner_slice: features/report/recipe
   intentional_omission: false
   runtime_layer: features
@@ -474,7 +474,7 @@
   source: fe/web/src/features/area/default-pills/public.tsx:21-27,85-98,137-155;
     fe/web/src/features/area/new-track/public.tsx:32-42,134-138,162-195,213-235
   authoritative_test: fe/web/src/features/area/new-track/recipe-picker.test.tsx:100,113,133,146;
-    fe/web/src/app/router/recipes-route.test.tsx:433-453
+    fe/web/src/app/router/recipes-route.test.tsx:440-460
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features

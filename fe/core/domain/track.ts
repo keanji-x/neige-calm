@@ -399,6 +399,11 @@ export function trackRecipesOperation(): ApiOperation<TrackRecipe[]> {
   return { method: 'GET', path: '/api/track-recipes', responseSchema: z.array(trackRecipeSchema) };
 }
 
+/** One recipe as stored: what a save whose answer was lost is read back through. */
+export function trackRecipeOperation(recipeId: string): ApiOperation<TrackRecipe> {
+  return { method: 'GET', path: `/api/track-recipes/${encodeURIComponent(recipeId)}`, responseSchema: trackRecipeSchema };
+}
+
 export function createTrackRecipeOperation(
   body: Readonly<{ title: string; body: string }>,
 ): ApiOperation<TrackRecipe> {
@@ -469,14 +474,11 @@ export function recipeSaveAttempts() {
 }
 
 /**
- * Whether the recipe `listed` holds exactly what one save sent, which is how a save whose answer was lost is known to have
+ * Whether the `stored` recipe holds exactly what one save sent, which is how a save whose answer was lost is known to have
  * landed. Compared as sent: a body the server rewrote on the way in (a fence re-rendered) does not match, and stays stale.
  */
-export function recipeSaveLanded(
-  listed: readonly TrackRecipe[], recipeId: string, sent: Readonly<{ title: string; body: string }>,
-): Landed<TrackRecipe> {
-  const stored = listed.find((recipe) => recipe.id === recipeId);
-  return stored !== undefined && stored.title === sent.title && stored.body === sent.body ? { stored } : null;
+export function recipeSaveLanded(stored: TrackRecipe, sent: Readonly<{ title: string; body: string }>): Landed<TrackRecipe> {
+  return stored.title === sent.title && stored.body === sent.body ? { stored } : null;
 }
 
 export type TrackPatchBody = Readonly<{

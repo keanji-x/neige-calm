@@ -46,7 +46,7 @@ import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
   createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
   overlaysByKindOperation, recipeSaveAttempts, recipeSaveLanded, toTrack, updateTrackOperation, updateTrackRecipeOperation,
-  sortAreaTracksByRecent, trackActivityFrom, trackDetailOperation, trackRecipesOperation, trackTemplatesOperation,
+  sortAreaTracksByRecent, trackActivityFrom, trackDetailOperation, trackRecipeOperation, trackRecipesOperation, trackTemplatesOperation,
   tracksInAreaOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody,
   type NewTrackBodyWithFirstMessage, type NewTrackBodyWithoutFirstMessage, type OverlayWire,
@@ -624,7 +624,7 @@ export function useTrackRecipeMutations(
       saves(
         { recipeId, body },
         () => runOperation(transport, updateTrackRecipeOperation(recipeId, body), unauthorized),
-        async () => recipeSaveLanded(await runOperation(transport, trackRecipesOperation(), unauthorized), recipeId, body),
+        async () => recipeSaveLanded(await runOperation(transport, trackRecipeOperation(recipeId), unauthorized), body),
       ),
     /* Invalidate but do not write the response through: it reaches the editor as the promise's value, and
            two homes for one fact would drift. `onSettled` so a 409 also refetches the current revision. */
