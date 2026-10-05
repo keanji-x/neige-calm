@@ -175,7 +175,8 @@ async fn report_planning_profile_refuses_worker_terminal_lifecycle_and_plugin_wr
     let id = identity(&route, &track).await;
     for tool in [
         "neige_track_close",
-        "neige_task_verdict",
+        "neige_task_accept",
+        "neige_task_reject",
         "neige_terminal_open",
         "external-plugin.mutate",
     ] {

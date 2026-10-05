@@ -49,8 +49,8 @@
     ]
   },
   {
-    "name": "neige_calendar_create",
-    "description_sha256": "249d0709f53afd55bf9280346966bb4fe02747e9918cb8c9cdf4456b2caa573b",
+    "name": "neige_calendar_add",
+    "description_sha256": "7a1b32aa5285b94c82c91cd56e89494a05c7cf25063ba7a5716de2ac7a534877",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -182,8 +182,8 @@
     ]
   },
   {
-    "name": "neige_calendar_list",
-    "description_sha256": "7b893526b6dec8a21670e3c568a444913e732e1c8df5c358213454856dc86f07",
+    "name": "neige_calendar_ls",
+    "description_sha256": "9fbd93a3b975408372cba0313cacd2f90b5367d72273285dbd5ccb1dfe634d0d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -193,13 +193,13 @@
         "timezone": {
           "type": "string"
         },
-        "until": {
+        "to": {
           "type": "string"
         }
       },
       "required": [
         "from",
-        "until",
+        "to",
         "timezone"
       ],
       "type": "object"
@@ -213,19 +213,45 @@
     ]
   },
   {
-    "name": "neige_calendar_update",
-    "description_sha256": "9468d2f5959965e94bcd9eac35a5779363f8f55b9c1846d68c78dd5afb77ff04",
+    "name": "neige_calendar_rm",
+    "description_sha256": "23b4cccb761627ddc540a4a539ab1796d5e9a9a6a32a62b9425e98f1c2b92a2d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "cancelled": {
-          "type": "boolean"
+        "entry_id": {
+          "type": "string"
         },
         "expected_version": {
           "type": "integer"
-        },
-        "id": {
+        }
+      },
+      "required": [
+        "entry_id",
+        "expected_version"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "neige_calendar_set",
+    "description_sha256": "4c8e8323677ee0226c5c2a0170d39d78fc816c31a4b0870efde744977b1185cf",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "entry_id": {
           "type": "string"
+        },
+        "expected_version": {
+          "type": "integer"
         },
         "task": {
           "additionalProperties": false,
@@ -336,10 +362,9 @@
         }
       },
       "required": [
-        "id",
+        "entry_id",
         "expected_version",
-        "task",
-        "cancelled"
+        "task"
       ],
       "type": "object"
     },
@@ -402,12 +427,12 @@
     ]
   },
   {
-    "name": "neige_preview_register",
-    "description_sha256": "b015be12a2137ab7db9247c146fd57e31c7d7038e31f69b4807bc1b83b04cf74",
+    "name": "neige_preview_add",
+    "description_sha256": "22a5565bbbd8e2ae30452984c7214b223dbb9f38b18a8b3dbd061ffd2dd92b7d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "key": {
+        "preview_id": {
           "description": "Stable name of this preview within the track, e.g. `fe`.",
           "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
           "type": "string"
@@ -426,7 +451,7 @@
         }
       },
       "required": [
-        "key",
+        "preview_id",
         "target_port",
         "title"
       ],
@@ -442,19 +467,19 @@
     ]
   },
   {
-    "name": "neige_preview_unregister",
-    "description_sha256": "8aa686bdae538b8630c6ce9f2ff7333851b0c864ba2b0d2c3413cf7b1c2397c5",
+    "name": "neige_preview_rm",
+    "description_sha256": "314fd85f6393e326665e7b9b7c827284ab11f7b6bd4e9e835ea33c79673b578a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "key": {
+        "preview_id": {
           "description": "Stable name of this preview within the track, e.g. `fe`.",
           "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
           "type": "string"
         }
       },
       "required": [
-        "key"
+        "preview_id"
       ],
       "type": "object"
     },
@@ -498,7 +523,7 @@
       "additionalProperties": false,
       "properties": {
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
+          "description": "Why this write; stored on its event as agent_message.",
           "minLength": 1,
           "type": "string"
         },
@@ -734,7 +759,7 @@
           "type": "string"
         },
         "message": {
-          "description": "Optional human-readable rationale for this write, persisted as agent_message on the emitted event.",
+          "description": "Optional: why this write; stored on its event as agent_message.",
           "minLength": 1,
           "type": "string"
         },
@@ -846,6 +871,37 @@
     ]
   },
   {
+    "name": "neige_task_accept",
+    "description_sha256": "ae661deeddb4c305e50b31ee1a5282b5063e16108c5f8654e8b323557b4b67a4",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "message": {
+          "description": "Why this write; stored on its event as agent_message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_task_cancel",
     "description_sha256": "8eb8c2c11056c05ed1bbd83d624716d198dfd57d22ad93257fea56d5dc28bfa9",
     "input_schema": {
@@ -855,7 +911,7 @@
           "type": "string"
         },
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
+          "description": "Why this write; stored on its event as agent_message.",
           "minLength": 1,
           "type": "string"
         }
@@ -960,34 +1016,28 @@
     ]
   },
   {
-    "name": "neige_task_verdict",
-    "description_sha256": "bd4fad1e1c348c2230e203e145317239036334ab3322c70a5b1db4494a5389d8",
+    "name": "neige_task_reject",
+    "description_sha256": "d8dc62c052bb6b27a6ce31e231eba5f58534e6dcd94aa48f0b9b67f61eaf59f7",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "attempt_id": {
           "minLength": 1,
           "type": "string"
         },
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
+          "description": "Why this write; stored on its event as agent_message.",
           "minLength": 1,
           "type": "string"
         },
         "reason": {
           "type": "string"
-        },
-        "status": {
-          "enum": [
-            "accepted",
-            "rejected"
-          ],
-          "type": "string"
         }
       },
       "required": [
         "attempt_id",
-        "status",
-        "message"
+        "message",
+        "reason"
       ],
       "type": "object"
     },
@@ -1507,7 +1557,7 @@
     "input_schema": {
       "properties": {
         "message": {
-          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message.",
+          "description": "Why this write; stored on its event as agent_message.",
           "minLength": 1,
           "type": "string"
         }

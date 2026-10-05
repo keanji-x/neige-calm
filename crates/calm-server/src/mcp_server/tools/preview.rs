@@ -1,7 +1,7 @@
-//! #1780 `neige_preview_register` / `neige_preview_unregister`: bind a loopback dev server to a
+//! #1780 `neige_preview_add` / `neige_preview_rm`: bind a loopback dev server to a
 //! preview gateway pool port for the caller's own track. The track is always
-//! `identity.track_id`, never an argument (unknown arguments are ignored, as in sibling tools), so
-//! registrations are per track. Planner-only: Dispatch workers are isolated, have no network, and
+//! `identity.track_id`, never an argument (an unknown argument is refused with the valid keys), so
+//! registrations are per track. The tools' `preview_id` is the registry's and the block's `key`. Planner-only: Dispatch workers are isolated, have no network, and
 //! their MCP grant allowlist does not include these tools.
 
 use crate::ids::TrackId;
@@ -10,20 +10,23 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role, role_gated_write_annotations,
 };
+use crate::mcp_server::tools::write_args::refuse_unknown_keys;
 use crate::model::CardRole;
 use crate::preview::PreviewRegistry;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_PREVIEW_REGISTER: &str = "neige_preview_register";
-pub const TOOL_PREVIEW_UNREGISTER: &str = "neige_preview_unregister";
+pub const TOOL_PREVIEW_ADD: &str = "neige_preview_add";
+pub const TOOL_PREVIEW_RM: &str = "neige_preview_rm";
 
 const KEY_PATTERN: &str = "^[a-z0-9][a-z0-9_-]{0,63}$";
+const ADD_KEYS: &[&str] = &["preview_id", "target_port", "title"];
+const RM_KEYS: &[&str] = &["preview_id"];
 pub const MAX_TITLE_CHARS: usize = 120;
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(register_descriptor(), wrap(preview_register));
-    registry.register(unregister_descriptor(), wrap(preview_unregister));
+    registry.register(add_descriptor(), wrap(preview_add));
+    registry.register(rm_descriptor(), wrap(preview_rm));
 }
 
 fn wrap<F, Fut>(f: F) -> ToolHandler
@@ -41,7 +44,7 @@ where
     })
 }
 
-fn key_schema() -> Value {
+fn preview_id_schema() -> Value {
     json!({
         "type": "string",
         "pattern": KEY_PATTERN,
@@ -49,18 +52,18 @@ fn key_schema() -> Value {
     })
 }
 
-fn register_descriptor() -> ToolDescriptor {
+fn add_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_PREVIEW_REGISTER.into(),
-        description: include_str!("../../../prompts/tools/neige_preview_register.md")
+        name: TOOL_PREVIEW_ADD.into(),
+        description: include_str!("../../../prompts/tools/neige_preview_add.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "required": ["key", "target_port", "title"],
+            "required": ADD_KEYS,
             "additionalProperties": false,
             "properties": {
-                "key": key_schema(),
+                "preview_id": preview_id_schema(),
                 "target_port": {
                     "type": "integer",
                     "minimum": 1024,
@@ -80,17 +83,17 @@ fn register_descriptor() -> ToolDescriptor {
     }
 }
 
-fn unregister_descriptor() -> ToolDescriptor {
+fn rm_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_PREVIEW_UNREGISTER.into(),
-        description: include_str!("../../../prompts/tools/neige_preview_unregister.md")
+        name: TOOL_PREVIEW_RM.into(),
+        description: include_str!("../../../prompts/tools/neige_preview_rm.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "required": ["key"],
+            "required": RM_KEYS,
             "additionalProperties": false,
-            "properties": { "key": key_schema() }
+            "properties": { "preview_id": preview_id_schema() }
         }),
         annotations: Some(role_gated_write_annotations()),
         visible_to_roles: &[CardRole::Planner],
@@ -107,26 +110,29 @@ fn caller_track(tool: &str, identity: &ToolCallIdentity) -> Result<TrackId, RpcE
 }
 
 /// `KEY_PATTERN`, spelled out.
-fn parse_key(tool: &str, args: &Value) -> Result<String, RpcError> {
+fn parse_preview_id(tool: &str, args: &Value) -> Result<String, RpcError> {
     let key = args
-        .get("key")
+        .get("preview_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `key` (string)")))?;
+        .ok_or_else(|| {
+            RpcError::invalid_params(format!("{tool}: missing `preview_id` (string)"))
+        })?;
     let valid_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
     let valid = key.len() <= 64
         && key.chars().next().is_some_and(valid_char)
         && key.chars().all(|c| valid_char(c) || c == '_' || c == '-');
     if !valid {
         return Err(RpcError::invalid_params(format!(
-            "{tool}: `key` {key:?} must match {KEY_PATTERN}"
+            "{tool}: `preview_id` {key:?} must match {KEY_PATTERN}"
         )));
     }
     Ok(key.to_owned())
 }
 
-fn parse_register_args(args: &Value) -> Result<(String, u16, String), RpcError> {
-    let tool = TOOL_PREVIEW_REGISTER;
-    let key = parse_key(tool, args)?;
+fn parse_add_args(args: &Value) -> Result<(String, u16, String), RpcError> {
+    let tool = TOOL_PREVIEW_ADD;
+    refuse_unknown_keys(args, tool, ADD_KEYS)?;
+    let key = parse_preview_id(tool, args)?;
     let target_port = args
         .get("target_port")
         .and_then(Value::as_u64)
@@ -148,48 +154,49 @@ fn parse_register_args(args: &Value) -> Result<(String, u16, String), RpcError> 
     Ok((key, target_port, title.to_owned()))
 }
 
-fn register(
+fn add(
     registry: &PreviewRegistry,
     identity: &ToolCallIdentity,
     args: &Value,
 ) -> Result<Value, RpcError> {
-    let track_id = caller_track(TOOL_PREVIEW_REGISTER, identity)?;
-    let (key, target_port, title) = parse_register_args(args)?;
+    let track_id = caller_track(TOOL_PREVIEW_ADD, identity)?;
+    let (key, target_port, title) = parse_add_args(args)?;
     let port = registry
         .register(&track_id, &key, &title, target_port)
-        .map_err(|e| RpcError::invalid_params(format!("{TOOL_PREVIEW_REGISTER}: {e}")))?;
+        .map_err(|e| RpcError::invalid_params(format!("{TOOL_PREVIEW_ADD}: {e}")))?;
     Ok(json!({
-        "key": key,
+        "preview_id": key,
         "port": port,
         "block_hint": { "kind": "preview", "payload": { "key": key, "title": title } },
     }))
 }
 
-fn unregister(
+fn rm(
     registry: &PreviewRegistry,
     identity: &ToolCallIdentity,
     args: &Value,
 ) -> Result<Value, RpcError> {
-    let track_id = caller_track(TOOL_PREVIEW_UNREGISTER, identity)?;
-    let key = parse_key(TOOL_PREVIEW_UNREGISTER, args)?;
+    let track_id = caller_track(TOOL_PREVIEW_RM, identity)?;
+    refuse_unknown_keys(args, TOOL_PREVIEW_RM, RM_KEYS)?;
+    let key = parse_preview_id(TOOL_PREVIEW_RM, args)?;
     let port = registry.unregister(&track_id, &key);
-    Ok(json!({ "key": key, "port": port }))
+    Ok(json!({ "preview_id": key, "port": port }))
 }
 
-async fn preview_register(
+async fn preview_add(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    register(&ctx.preview, &identity, &args)
+    add(&ctx.preview, &identity, &args)
 }
 
-async fn preview_unregister(
+async fn preview_rm(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    unregister(&ctx.preview, &identity, &args)
+    rm(&ctx.preview, &identity, &args)
 }
 
 #[cfg(test)]
@@ -215,7 +222,7 @@ mod tests {
     }
 
     fn args(key: &str, target_port: u16) -> Value {
-        json!({ "key": key, "target_port": target_port, "title": " Web FE " })
+        json!({ "preview_id": key, "target_port": target_port, "title": " Web FE " })
     }
 
     fn message(result: Result<Value, RpcError>) -> String {
@@ -225,19 +232,19 @@ mod tests {
     }
 
     #[test]
-    fn register_returns_pool_port_keeps_it_and_hints_the_block() {
+    fn add_returns_pool_port_keeps_it_and_hints_the_block() {
         let reg = pool();
         let planner = caller(CardRole::Planner, Some("track-a"));
-        let first = register(&reg, &planner, &args("fe", 5173)).unwrap();
+        let first = add(&reg, &planner, &args("fe", 5173)).unwrap();
         assert_eq!(
             first,
             json!({
-                "key": "fe",
+                "preview_id": "fe",
                 "port": 4050,
                 "block_hint": { "kind": "preview", "payload": { "key": "fe", "title": "Web FE" } },
             })
         );
-        let again = register(&reg, &planner, &args("fe", 5180)).unwrap();
+        let again = add(&reg, &planner, &args("fe", 5180)).unwrap();
         assert_eq!(again["port"], 4050, "same (track, key) keeps its port");
         assert_eq!(reg.lookup(4050).unwrap().target_port, 5180);
     }
@@ -246,13 +253,13 @@ mod tests {
     fn full_disabled_and_refused_targets_say_why() {
         let reg = pool();
         let planner = caller(CardRole::Planner, Some("track-a"));
-        register(&reg, &planner, &args("fe", 5173)).unwrap();
-        register(&reg, &planner, &args("api", 8080)).unwrap();
-        let full = message(register(&reg, &planner, &args("docs", 8081)));
+        add(&reg, &planner, &args("fe", 5173)).unwrap();
+        add(&reg, &planner, &args("api", 8080)).unwrap();
+        let full = message(add(&reg, &planner, &args("docs", 8081)));
         assert!(full.contains("4050: track track-a key fe"), "{full}");
-        let calm = message(register(&reg, &planner, &args("x", 4040)));
+        let calm = message(add(&reg, &planner, &args("x", 4040)));
         assert!(calm.contains("calm's own listen"), "{calm}");
-        let off = message(register(
+        let off = message(add(
             &PreviewRegistry::disabled(),
             &planner,
             &args("fe", 5173),
@@ -261,23 +268,23 @@ mod tests {
     }
 
     #[test]
-    fn unregister_frees_only_the_callers_own_key() {
+    fn rm_frees_only_the_callers_own_key() {
         let reg = pool();
         let a = caller(CardRole::Planner, Some("track-a"));
         let b = caller(CardRole::Planner, Some("track-b"));
-        register(&reg, &b, &args("fe", 5173)).unwrap();
-        let key = json!({ "key": "fe" });
+        add(&reg, &b, &args("fe", 5173)).unwrap();
+        let key = json!({ "preview_id": "fe" });
         assert_eq!(
-            unregister(&reg, &a, &key).unwrap(),
-            json!({ "key": "fe", "port": null })
+            rm(&reg, &a, &key).unwrap(),
+            json!({ "preview_id": "fe", "port": null })
         );
         assert_eq!(reg.lookup(4050).unwrap().track_id, TrackId::from("track-b"));
         assert_eq!(
-            unregister(&reg, &b, &key).unwrap(),
-            json!({ "key": "fe", "port": 4050 })
+            rm(&reg, &b, &key).unwrap(),
+            json!({ "preview_id": "fe", "port": 4050 })
         );
         assert!(reg.lookup(4050).is_none());
-        assert_eq!(register(&reg, &a, &args("fe", 5173)).unwrap()["port"], 4050);
+        assert_eq!(add(&reg, &a, &args("fe", 5173)).unwrap()["port"], 4050);
     }
 
     #[test]
@@ -285,29 +292,43 @@ mod tests {
         let reg = pool();
         for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
             let who = caller(role, Some("track-a"));
-            assert!(message(register(&reg, &who, &args("fe", 5173))).contains("requires role"));
+            assert!(message(add(&reg, &who, &args("fe", 5173))).contains("requires role"));
             assert!(
-                message(unregister(&reg, &who, &json!({"key": "fe"}))).contains("requires role")
+                message(rm(&reg, &who, &json!({"preview_id": "fe"}))).contains("requires role")
             );
         }
         let trackless = caller(CardRole::Planner, None);
-        let refused = message(register(&reg, &trackless, &args("fe", 5173)));
+        let refused = message(add(&reg, &trackless, &args("fe", 5173)));
         assert!(refused.contains("track-scoped"), "{refused}");
         assert!(reg.for_track(&TrackId::from("track-a")).is_empty());
     }
 
-    /// The track comes from the identity only; a `track_id` (or any unknown key) in the arguments
-    /// is ignored, as sibling tools ignore arguments they do not read.
+    /// The track comes from the identity only; a `track_id`, the retired `key` or any other
+    /// unknown key is refused with the valid keys, and nothing is added or removed.
     #[test]
-    fn argument_track_id_is_ignored() {
+    fn unknown_arguments_are_refused_with_the_valid_keys() {
         let reg = pool();
         let a = caller(CardRole::Planner, Some("track-a"));
-        let mut spoofed = args("fe", 5173);
-        spoofed["track_id"] = json!("track-b");
-        spoofed["extra"] = json!(1);
-        assert_eq!(register(&reg, &a, &spoofed).unwrap()["port"], 4050);
+        for extra in ["track_id", "key", "extra"] {
+            let mut spoofed = args("fe", 5173);
+            spoofed[extra] = json!("track-b");
+            let refused = message(add(&reg, &a, &spoofed));
+            assert_eq!(
+                refused,
+                format!(
+                    "neige_preview_add: unknown argument `{extra}`; valid: `preview_id`, \
+                     `target_port`, `title`"
+                )
+            );
+        }
+        assert!(reg.for_track(&TrackId::from("track-a")).is_empty());
+        add(&reg, &a, &args("fe", 5173)).unwrap();
+        let refused = message(rm(&reg, &a, &json!({"preview_id": "fe", "key": "fe"})));
+        assert_eq!(
+            refused,
+            "neige_preview_rm: unknown argument `key`; valid: `preview_id`"
+        );
         assert_eq!(reg.for_track(&TrackId::from("track-a")).len(), 1);
-        assert!(reg.for_track(&TrackId::from("track-b")).is_empty());
     }
 
     #[test]
@@ -317,12 +338,12 @@ mod tests {
         let long = "a".repeat(65);
         for key in ["", "Fe", "-fe", "_x", "a b", "a.b", long.as_str()] {
             assert!(
-                message(register(&reg, &who, &args(key, 5173))).contains("`key`"),
+                message(add(&reg, &who, &args(key, 5173))).contains("`preview_id`"),
                 "{key:?}"
             );
         }
-        assert!(register(&reg, &who, &args(&"a".repeat(64), 5173)).is_ok());
-        let blank = json!({ "key": "fe", "target_port": 5173, "title": "  " });
-        assert!(message(register(&reg, &who, &blank)).contains("`title`"));
+        assert!(add(&reg, &who, &args(&"a".repeat(64), 5173)).is_ok());
+        let blank = json!({ "preview_id": "fe", "target_port": 5173, "title": "  " });
+        assert!(message(add(&reg, &who, &blank)).contains("`title`"));
     }
 }

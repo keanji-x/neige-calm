@@ -19,7 +19,7 @@ fn until(mut task: Value, last: &str) -> Value {
 
 async fn try_create(fx: &Fixture, who: &ToolCallIdentity, task: Value) -> Result<Value, String> {
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("neige_calendar_create").unwrap();
+    let create = registry.lookup("neige_calendar_add").unwrap();
     create(
         fx.ctx.clone(),
         who.clone(),
@@ -35,15 +35,15 @@ async fn listed(
     fx: &Fixture,
     who: &ToolCallIdentity,
     from: &str,
-    until: &str,
+    to: &str,
     zone: &str,
 ) -> Vec<(String, Vec<String>)> {
     let registry = crate::mcp_server::build_default_registry();
-    let list = registry.lookup("neige_calendar_list").unwrap();
+    let list = registry.lookup("neige_calendar_ls").unwrap();
     let result = list(
         fx.ctx.clone(),
         who.clone(),
-        json!({"from": from, "until": until, "timezone": zone}),
+        json!({"from": from, "to": to, "timezone": zone}),
     )
     .await
     .unwrap();
@@ -55,7 +55,7 @@ async fn listed(
         .map(|entry| {
             let starts = entry["occurrences"].as_array().unwrap().iter();
             (
-                entry["id"].as_str().unwrap().to_owned(),
+                entry["entry_id"].as_str().unwrap().to_owned(),
                 starts
                     .map(|span| span["start"].as_str().unwrap().to_owned())
                     .collect(),

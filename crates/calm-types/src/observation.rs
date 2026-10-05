@@ -663,7 +663,7 @@ mod tests {
             retained_path: None,
         };
         let text = observation.to_turn_text();
-        assert!(!text.contains("Accept with neige_task_verdict"), "{text}");
+        assert!(!text.contains("Accept with neige_task_accept"), "{text}");
         assert!(
             text.contains("Review and audit tasks need no verdict of their own"),
             "{text}"

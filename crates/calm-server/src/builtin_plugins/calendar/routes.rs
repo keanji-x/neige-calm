@@ -72,7 +72,15 @@ pub async fn update(
     Json(request): Json<Update>,
 ) -> Result<Json<Entry>> {
     let access = access(&s, &actor).await?;
+    let expected_version = request.expected_version;
     Ok(Json(
-        store::update(&s.mcp_context, access, id, request).await?,
+        store::update(
+            &s.mcp_context,
+            access,
+            id,
+            expected_version,
+            store::Change::Replace(request),
+        )
+        .await?,
     ))
 }

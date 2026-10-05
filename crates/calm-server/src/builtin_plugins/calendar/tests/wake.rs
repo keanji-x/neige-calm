@@ -86,7 +86,7 @@ pub(super) async fn create(
     task: serde_json::Value,
 ) -> Entry {
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("neige_calendar_create").unwrap();
+    let create = registry.lookup("neige_calendar_add").unwrap();
     let result = create(
         fx.ctx.clone(),
         who.clone(),
@@ -94,28 +94,38 @@ pub(super) async fn create(
     )
     .await
     .unwrap();
-    serde_json::from_value(serde_json::to_value(result).unwrap()["structuredContent"].clone())
-        .unwrap()
+    tool_entry(result)
 }
 
-async fn update(
+pub(super) async fn set(
     fx: &Fixture,
     who: &ToolCallIdentity,
     entry: &Entry,
     task: serde_json::Value,
-    cancelled: bool,
 ) -> Entry {
     let registry = crate::mcp_server::build_default_registry();
-    let update = registry.lookup("neige_calendar_update").unwrap();
-    let result = update(
+    let set = registry.lookup("neige_calendar_set").unwrap();
+    let result = set(
         fx.ctx.clone(),
         who.clone(),
-        json!({"id": entry.id, "expected_version": entry.version, "task": task, "cancelled": cancelled}),
+        json!({"entry_id": entry.id, "expected_version": entry.version, "task": task}),
     )
     .await
     .unwrap();
-    serde_json::from_value(serde_json::to_value(result).unwrap()["structuredContent"].clone())
-        .unwrap()
+    tool_entry(result)
+}
+
+pub(super) async fn rm(fx: &Fixture, who: &ToolCallIdentity, entry: &Entry) -> Entry {
+    let registry = crate::mcp_server::build_default_registry();
+    let rm = registry.lookup("neige_calendar_rm").unwrap();
+    let result = rm(
+        fx.ctx.clone(),
+        who.clone(),
+        json!({"entry_id": entry.id, "expected_version": entry.version}),
+    )
+    .await
+    .unwrap();
+    tool_entry(result)
 }
 
 pub(super) fn at(value: &str) -> DateTime<Utc> {
@@ -336,8 +346,7 @@ async fn human_cancelled_all_day_and_closed_track_entries_never_wake() {
         timed("2026-10-02T09:00", "2026-10-02T10:00"),
     )
     .await;
-    let cancelled_task = serde_json::to_value(&cancelled.task).unwrap();
-    update(&fx, &planner.identity, &cancelled, cancelled_task, true).await;
+    rm(&fx, &planner.identity, &cancelled).await;
     let all_day = create(
         &fx,
         &planner.identity,
@@ -399,12 +408,11 @@ async fn rescheduled_entry_wakes_again_at_its_new_start() {
             .unwrap(),
         1
     );
-    update(
+    set(
         &fx,
         &planner.identity,
         &entry,
         timed("2026-10-02T14:00", "2026-10-02T15:00"),
-        false,
     )
     .await;
     assert_eq!(
@@ -470,9 +478,8 @@ async fn edit_landing_after_the_scan_read_wins_over_the_stale_entry() {
         timed("2026-10-02T09:00", "2026-10-02T10:00"),
     )
     .await;
-    // The owner cancels after the scan listed version 1 but before its wake transaction.
-    let task = serde_json::to_value(&read_by_scan.task).unwrap();
-    update(&fx, &planner, &read_by_scan, task, true).await;
+    // The owner removes it after the scan listed version 1 but before its wake transaction.
+    rm(&fx, &planner, &read_by_scan).await;
     assert!(
         !crate::builtin_plugins::calendar::wake::handle(
             &fx.ctx,
@@ -526,12 +533,11 @@ async fn end_extended_after_the_scan_read_is_not_recorded_as_expired() {
     )
     .await;
     // The owner extends the entry after the scan listed version 1 but before its cursor write.
-    update(
+    set(
         &fx,
         &planner,
         &read_by_scan,
         timed("2026-10-02T09:00", "2026-10-02T12:00"),
-        false,
     )
     .await;
     let now = at("2026-10-02T10:30:00+08:00");

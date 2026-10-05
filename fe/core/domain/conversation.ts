@@ -7,7 +7,7 @@ import type {
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   TASK_LS_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
-  TASK_VERDICT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
+  TASK_ACCEPT_TOOL, TASK_REJECT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
 import { classifyFailure, type FailureTable, type WriteFailure } from './failure-class.js';
 import { sha256Hex } from './sha256.js';
@@ -1025,8 +1025,11 @@ function toolShape(tool: string): ActivityShape {
   if (REPORT_READ_TOOLS.includes(tool)) {
     return { running: 'Reading report', done: 'Read report', target: null };
   }
-  if (tool === TASK_VERDICT_TOOL) {
-    return { running: 'Writing task verdict', done: 'Wrote task verdict', target: null };
+  if (tool === TASK_ACCEPT_TOOL) {
+    return { running: 'Accepting task', done: 'Accepted task', target: null };
+  }
+  if (tool === TASK_REJECT_TOOL) {
+    return { running: 'Rejecting task', done: 'Rejected task', target: null };
   }
   if (tool === TASK_LS_TOOL) {
     return { running: 'Reading plan', done: 'Read plan', target: null };

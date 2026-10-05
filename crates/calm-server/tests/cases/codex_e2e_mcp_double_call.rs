@@ -1,5 +1,5 @@
 //! Regression net for native `neige.*` MCP dispatch from a real codex daemon: one Planner turn forcing two
-//! `neige_task_verdict` calls must produce matching `item/started` / `item/completed` counts. A tool without
+//! `neige_task_accept` calls must produce matching `item/started` / `item/completed` counts. A tool without
 //! annotations defaults to approval-required in codex and stalls before `tools/call` is ever dispatched.
 //! `#[ignore]`-gated; debug root persists at `/tmp/neige-mcp-double-call-debug`.
 
@@ -292,11 +292,11 @@ async fn codex_mcp_double_call_both_complete() {
     eprintln!("[double-call] thread_id={thread_id} runtime_attribution=seeded");
 
     let mut rx = daemon.subscribe_notifications();
-    let prompt = "You have one MCP tool available: neige_task_verdict. \
+    let prompt = "Use the MCP tool neige_task_accept. \
 You MUST call it exactly twice, in sequence, with these exact arguments. \
 Do NOT output any text before, between, or after the calls. \
-First call: { \"attempt_id\": \"double-call-first\", \"status\": \"accepted\", \"reason\": \"first probe\" } \
-Second call: { \"attempt_id\": \"double-call-second\", \"status\": \"accepted\", \"reason\": \"second probe\" } \
+First call: { \"attempt_id\": \"double-call-first\", \"message\": \"first probe\" } \
+Second call: { \"attempt_id\": \"double-call-second\", \"message\": \"second probe\" } \
 After the second call returns, output the single word OK and stop.";
     let turn_id = daemon
         .turn_start(

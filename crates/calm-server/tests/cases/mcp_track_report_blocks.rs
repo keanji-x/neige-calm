@@ -345,7 +345,7 @@ async fn kinds_returns_all_supported_schemas() {
         preview.pointer("/schema/additionalProperties"),
         Some(&Value::Bool(false))
     );
-    // The key pattern is `neige_preview_register`'s; the path pattern is the `app` block's `src`.
+    // The key pattern is `neige_preview_add`'s `preview_id`; the path pattern is the `app` block's `src`.
     assert_eq!(
         preview.pointer("/schema/properties/key/pattern"),
         Some(&json!("^[a-z0-9][a-z0-9_-]{0,63}$"))

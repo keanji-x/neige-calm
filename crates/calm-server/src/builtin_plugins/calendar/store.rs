@@ -158,13 +158,27 @@ pub async fn create(ctx: &AppContext, access: Access, mut request: Create) -> Re
         Err(error) => Err(error),
     }
 }
+/// What a versioned write does to one entry.
+pub enum Change {
+    /// The REST editor's whole replacement, its stored `cancelled` included.
+    Replace(Update),
+    /// `neige_calendar_set`: a new task for an entry that is not removed.
+    Edit(Draft),
+    /// `neige_calendar_rm`: the stored `cancelled` is set, which stops the entry's wakes and
+    /// hides it from lists. There is no undo through the tools.
+    Remove,
+}
 pub async fn update(
     ctx: &AppContext,
     access: Access,
     id: String,
-    mut request: Update,
+    expected_version: i64,
+    mut change: Change,
 ) -> Result<Entry> {
-    request.task.resolve_times()?;
+    match &mut change {
+        Change::Replace(Update { task, .. }) | Change::Edit(task) => task.resolve_times()?,
+        Change::Remove => {}
+    }
     let (entry, _) = write_with_events_typed(
         ctx.repo.as_ref(),
         access.actor.clone(),
@@ -178,13 +192,24 @@ pub async fn update(
                     .await?
                     .filter(|entry| access.permits(entry))
                     .ok_or_else(|| CalmError::NotFound("calendar task".into()))?;
-                if entry.version != request.expected_version {
+                if entry.cancelled && !matches!(change, Change::Replace(_)) {
+                    return Err(CalmError::Conflict(
+                        "calendar task was removed; a removal has no undo".into(),
+                    ));
+                }
+                if entry.version != expected_version {
                     return Err(CalmError::Conflict(
                         "calendar task changed; reload before editing".into(),
                     ));
                 }
-                entry.task = request.task;
-                entry.cancelled = request.cancelled;
+                match change {
+                    Change::Replace(request) => {
+                        entry.task = request.task;
+                        entry.cancelled = request.cancelled;
+                    }
+                    Change::Edit(task) => entry.task = task,
+                    Change::Remove => entry.cancelled = true,
+                }
                 entry.version += 1;
                 entry.updated_at = now_ms();
                 put(tx, &key, &entry).await?;

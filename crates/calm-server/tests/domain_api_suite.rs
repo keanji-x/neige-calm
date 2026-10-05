@@ -23,6 +23,8 @@ mod card_cascade_semantics;
 mod cards_deletable;
 #[path = "cases/claude_ingest.rs"]
 mod claude_ingest;
+#[path = "cases/crud_verbs_migration.rs"]
+mod crud_verbs_migration;
 #[path = "cases/deferred_read_tx_deadlock_repro.rs"]
 mod deferred_read_tx_deadlock_repro;
 #[path = "cases/dispatcher_real_auth_path.rs"]

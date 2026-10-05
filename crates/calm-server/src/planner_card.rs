@@ -171,7 +171,7 @@ mod tests {
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "acceptance-track");
         let descriptors = crate::mcp_server::build_default_registry()
             .descriptors_for_role(calm_types::model::CardRole::Planner);
-        let descriptions = ["neige_task_verdict"].map(|name| {
+        let descriptions = ["neige_task_accept"].map(|name| {
             descriptors
                 .iter()
                 .find(|tool| tool.name == name)
@@ -669,7 +669,7 @@ mod tests {
                 &render_system_prompt(template, "track-registry"),
                 calm_types::model::CardRole::Worker,
                 &[],
-                &["neige_task_verdict"],
+                &["neige_task_accept", "neige_task_reject"],
                 must_name_all_visible,
                 min_named,
             );

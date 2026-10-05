@@ -1097,10 +1097,9 @@ async fn tools_call_report_card_role_rejected_by_documented_role_gates() {
         ),
         ("neige_track_status", json!({})),
         (
-            "neige_task_verdict",
+            "neige_task_accept",
             json!({
-                "attempt_id": "report-meta",
-                "status": "accepted"
+                "attempt_id": "report-meta"
             }),
         ),
     ];

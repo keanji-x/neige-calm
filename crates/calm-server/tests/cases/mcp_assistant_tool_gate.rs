@@ -13,9 +13,10 @@ use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 /// Tools an Assistant token may call. Its report writes are anchored by its own `neige_report_read`;
 /// their `lifecycle` field alone is refused.
 const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
-    "neige_calendar_list",
-    "neige_calendar_create",
-    "neige_calendar_update",
+    "neige_calendar_ls",
+    "neige_calendar_add",
+    "neige_calendar_set",
+    "neige_calendar_rm",
     "neige_report_read",
     "neige_report_describe",
     "neige_report_commit",
@@ -37,7 +38,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_source_ls",
     // Track state + verdict.
     "neige_track_status",
-    "neige_task_verdict",
+    "neige_task_accept",
+    "neige_task_reject",
     // Naming the track is a planner judgement.
     "neige_track_rename",
     // Publishing the track's verified commit is a Planner action.
@@ -47,8 +49,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Speaking from a background sync turn is a planner action.
     "neige_user_notify",
     // Preview gateway registration is a Planner action.
-    "neige_preview_register",
-    "neige_preview_unregister",
+    "neige_preview_add",
+    "neige_preview_rm",
     "neige_terminal_open",
     "neige_terminal_show",
     "neige_terminal_read",

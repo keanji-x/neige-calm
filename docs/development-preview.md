@@ -15,8 +15,8 @@ Open a terminal in the task worktree with neige_terminal_open and start, each on
 - the frontend (after `npm --prefix fe ci` if needed):
   `FE_API_PROXY_TARGET=http://127.0.0.1:<CALM_PORT> FE_DEV_HOST=127.0.0.1 FE_DEV_PORT=<port> npm --prefix fe run dev`.
   The gateway only reaches 127.0.0.1, and vite's default host `localhost` may bind IPv6 only.
-Then call neige_preview_register {key:"fe", target_port:<FE_DEV_PORT>, title} and put its
+Then call neige_preview_add {preview_id:"fe", target_port:<FE_DEV_PORT>, title} and put its
 block_hint into the report with `path:"/next/"` added (a block upsert or a report commit). When the work is done, stop both and call
-neige_preview_unregister {key:"fe"}.
+neige_preview_rm {preview_id:"fe"}.
 Self-checks against the dev stack (curl, Playwright) run in a worker task, not in your own
 shell.

@@ -23,7 +23,7 @@ use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_DONE, TOOL_TASK_FAIL};
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
-use calm_server::mcp_server::tools::track_state::TOOL_TASK_VERDICT;
+use calm_server::mcp_server::tools::track_state::TOOL_TASK_ACCEPT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
     CardRole, NewArea, NewCard, NewTerminal, NewTrack, RequestTheme, Task, TaskKind, TaskStatus,
@@ -1865,11 +1865,10 @@ async fn planner_verdict_never_flips_rows() {
     // A duplicate-key task.completed from the PLANNER actor: the emit-tx hook lives only in the worker-gated handlers.
     call_tool(
         &boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_ACCEPT,
         planner_identity(&boot),
         json!({
             "attempt_id": task_id,
-            "status": "accepted",
             "message": "looks good"
         }),
     )

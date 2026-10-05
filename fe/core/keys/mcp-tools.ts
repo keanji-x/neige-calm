@@ -10,7 +10,9 @@ export const REPORT_WRITE_TOOLS: readonly string[] = Object.freeze([
 
 /** The retired single-op block delete, as stored history names it (#2003 migration). */
 export const REPORT_DELETE_TOOL = 'neige_report_delete';
-export const TASK_VERDICT_TOOL = 'neige_task_verdict';
+/** The Planner's two decisions on a task attempt. */
+export const TASK_ACCEPT_TOOL = 'neige_task_accept';
+export const TASK_REJECT_TOOL = 'neige_task_reject';
 export const TASK_LS_TOOL = 'neige_task_ls';
 
 /** Reads of the report. */

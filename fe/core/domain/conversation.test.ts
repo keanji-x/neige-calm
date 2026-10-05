@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { HarnessItem, HarnessPhaseTag } from '../api/generated/wire.js';
 import {
-  TASK_LS_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, DEV_PUBLISH_TOOL,
+  TASK_LS_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_ACCEPT_TOOL, TASK_REJECT_TOOL, DEV_PUBLISH_TOOL,
   TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 
@@ -597,7 +597,8 @@ describe('harnessItemToActivity', () => {
   });
 
   it.each([
-    [TASK_VERDICT_TOOL, 'Writing task verdict', 'Wrote task verdict'],
+    [TASK_ACCEPT_TOOL, 'Accepting task', 'Accepted task'],
+    [TASK_REJECT_TOOL, 'Rejecting task', 'Rejected task'],
     [TASK_LS_TOOL, 'Reading plan', 'Read plan'],
   ])('renders the known %s tool in English', (tool, running, done) => {
     expect(harnessItemToActivity(row({

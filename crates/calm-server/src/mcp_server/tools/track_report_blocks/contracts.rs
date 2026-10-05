@@ -394,14 +394,14 @@ fn preview_kind() -> Value {
             "required": ["key"],
             "additionalProperties": false,
             "properties": {
-                "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$", "description": "The `key` you passed to `neige_preview_register`." },
+                "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$", "description": "The `preview_id` you passed to `neige_preview_add`." },
                 "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
                 "path": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^/(?![/\\\\])[^\\\\]*$", "description": "Path on the preview (default `/`; `/next/` for a dev-calm FE). Same rules as the `app` block's `src`." },
                 "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Frame height in px (default chosen by the renderer)." }
             }
         },
-        "usage": "Embed a live dev server you registered with \
-             `neige_preview_register` (its `block_hint` is this block's \
+        "usage": "Embed a live dev server you added with \
+             `neige_preview_add` (its `block_hint` is this block's \
              payload). Minimal example — a commit op { \"op\": \"upsert\", \
              \"kind\": \"preview\", \"payload\": { \"key\": \"fe\", \
              \"title\": \"前端\", \"path\": \"/next/\" } }. The block names \
@@ -449,8 +449,7 @@ fn optional_message_schema() -> Value {
     json!({
         "type": "string",
         "minLength": 1,
-        "description": "Optional human-readable rationale for this write, persisted as \
-            agent_message on the emitted event."
+        "description": "Optional: why this write; stored on its event as agent_message."
     })
 }
 

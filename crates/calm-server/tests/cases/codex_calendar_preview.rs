@@ -50,61 +50,62 @@ async fn real_planner_creates_calendar_commitment() {
     );
     boot_planner_harness_via_start_op(&fx, goal).await;
     let deadline = Instant::now() + planner_planning_budget();
-    let (entry, calls) = loop {
-        let entries = fx
-            .repo
-            .plugin_kv_list("dev.neige.calendar", "entry:")
-            .await
-            .unwrap();
-        let rows = support::agent_diag::planner_transcript_rows(&fx.repo)
-            .await
-            .unwrap();
-        let calls = rows
-            .into_iter()
-            .filter(|(_, _, _, method, _)| method == "item/completed")
-            .map(|(_, _, _, _, params)| serde_json::from_str::<Value>(&params).unwrap())
-            .filter(|params| {
-                params["item"]["type"] == "mcpToolCall"
-                    && params["item"]["server"] == "neige"
-                    && params["item"]["tool"]
-                        .as_str()
-                        .is_some_and(|name| name.starts_with("neige_calendar_"))
-            })
-            .map(|params| params["item"].clone())
-            .collect::<Vec<_>>();
-        if entries.len() == 1 {
-            let entry = &entries[0].1;
-            let successful = |call: &Value| {
-                call["status"] == "completed"
-                    && call["error"].is_null()
-                    && call["result"]["isError"] != true
-            };
-            let created = calls.iter().position(|call| {
-                successful(call)
-                    && call["tool"] == "neige_calendar_create"
-                    && call["result"]["structuredContent"]["id"] == entry["id"]
-            });
-            if created.is_some_and(|index| {
-                calls.iter().skip(index + 1).any(|call| {
-                    successful(call)
-                        && call["tool"] == "neige_calendar_list"
-                        && call["result"]["structuredContent"]
-                            .as_array()
-                            .is_some_and(|listed| listed.iter().any(|item| item == entry))
+    let (entry, calls) =
+        loop {
+            let entries = fx
+                .repo
+                .plugin_kv_list("dev.neige.calendar", "entry:")
+                .await
+                .unwrap();
+            let rows = support::agent_diag::planner_transcript_rows(&fx.repo)
+                .await
+                .unwrap();
+            let calls = rows
+                .into_iter()
+                .filter(|(_, _, _, method, _)| method == "item/completed")
+                .map(|(_, _, _, _, params)| serde_json::from_str::<Value>(&params).unwrap())
+                .filter(|params| {
+                    params["item"]["type"] == "mcpToolCall"
+                        && params["item"]["server"] == "neige"
+                        && params["item"]["tool"]
+                            .as_str()
+                            .is_some_and(|name| name.starts_with("neige_calendar_"))
                 })
-            }) {
-                break (entry.clone(), calls);
+                .map(|params| params["item"].clone())
+                .collect::<Vec<_>>();
+            if entries.len() == 1 {
+                let entry = &entries[0].1;
+                let successful = |call: &Value| {
+                    call["status"] == "completed"
+                        && call["error"].is_null()
+                        && call["result"]["isError"] != true
+                };
+                let created = calls.iter().position(|call| {
+                    successful(call)
+                        && call["tool"] == "neige_calendar_add"
+                        && call["result"]["structuredContent"]["entry_id"] == entry["id"]
+                });
+                if created.is_some_and(|index| {
+                    calls.iter().skip(index + 1).any(|call| {
+                        successful(call)
+                            && call["tool"] == "neige_calendar_ls"
+                            && call["result"]["structuredContent"].as_array().is_some_and(
+                                |listed| listed.iter().any(|item| item["entry_id"] == entry["id"]),
+                            )
+                    })
+                }) {
+                    break (entry.clone(), calls);
+                }
             }
-        }
-        if Instant::now() >= deadline {
-            panic_with_agent_diag(
-                &fx,
-                "Planner did not create and verify the calendar task".into(),
-            )
-            .await;
-        }
-        sleep(Duration::from_millis(250)).await;
-    };
+            if Instant::now() >= deadline {
+                panic_with_agent_diag(
+                    &fx,
+                    "Planner did not create and verify the calendar task".into(),
+                )
+                .await;
+            }
+            sleep(Duration::from_millis(250)).await;
+        };
     assert_eq!(entry["task"]["title"], expected["title"]);
     assert_eq!(entry["task"]["description"], expected["description"]);
     assert_eq!(entry["cancelled"], false);

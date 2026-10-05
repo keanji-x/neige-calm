@@ -171,9 +171,9 @@ viewer.
 
 ## View a live development preview
 
-A Planner can register a development server listening on `127.0.0.1` and add a
-`preview` block to the Report. Ask it to start the server, register it with
-`neige_preview_register`, and embed the returned preview key. The preview offers
+A Planner can expose a development server listening on `127.0.0.1` and add a
+`preview` block to the Report. Ask it to start the server, add it with
+`neige_preview_add`, and embed the returned preview id. The preview offers
 **Desktop** and **Mobile** viewports and fullscreen. An offline notice means
 the target server is not responding; a missing-registration notice means the
 Planner needs to register it again.

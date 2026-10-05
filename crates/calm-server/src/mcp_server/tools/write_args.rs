@@ -13,6 +13,31 @@ pub(crate) fn refuse_lifecycle_key(obj: &Map<String, Value>, tool: &str) -> Resu
     Ok(())
 }
 
+/// A closed input (§4 of `docs/conventions/agent-commands.md`): the first key outside `valid` is
+/// refused with the valid keys, so a retired key never vanishes silently.
+pub(crate) fn refuse_unknown_keys(
+    args: &Value,
+    tool: &str,
+    valid: &[&str],
+) -> Result<(), RpcError> {
+    let Some(obj) = args.as_object() else {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: arguments must be an object"
+        )));
+    };
+    match obj.keys().find(|key| !valid.contains(&key.as_str())) {
+        Some(key) => Err(RpcError::invalid_params(format!(
+            "{tool}: unknown argument `{key}`; valid: {}",
+            valid
+                .iter()
+                .map(|key| format!("`{key}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// The required, non-empty `message` of a write tool.
 pub(crate) fn parse_write_args(args: &Value, tool: &str) -> Result<String, RpcError> {
     let obj = args
@@ -60,8 +85,7 @@ pub(crate) fn message_schema() -> Value {
     serde_json::json!({
         "type": "string",
         "minLength": 1,
-        "description": "Required human-readable rationale for this write. The \
-            kernel persists it on the emitted event as agent_message."
+        "description": "Why this write; stored on its event as agent_message."
     })
 }
 

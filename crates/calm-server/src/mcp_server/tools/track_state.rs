@@ -1,5 +1,5 @@
 //! Track-state tools: `neige_track_status` (Planner or Worker snapshot read, no event emission),
-//! `neige_task_verdict` (Planner-only accept/reject, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track)
+//! `neige_task_accept` / `neige_task_reject` (Planner-only verdicts, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track)
 //! and `neige_track_close` (Planner-only close of the caller's track).
 
 use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderShadowProbe};
@@ -10,7 +10,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, require_role, require_role_any, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
+use crate::mcp_server::tools::write_args::{message_schema, parse_write_args, refuse_unknown_keys};
 use crate::model::{Card, CardRole, Track, TrackPatch};
 use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::track_report::TrackReportPayload;
@@ -18,12 +18,18 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub const TOOL_TRACK_STATUS: &str = "neige_track_status";
-pub const TOOL_TASK_VERDICT: &str = "neige_task_verdict";
+pub const TOOL_TASK_ACCEPT: &str = "neige_task_accept";
+pub const TOOL_TASK_REJECT: &str = "neige_task_reject";
 pub const TOOL_TRACK_CLOSE: &str = "neige_track_close";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(track_state_descriptor(), wrap(track_state));
-    registry.register(task_verdict_descriptor(), wrap(task_verdict));
+    for verdict in [Verdict::Accept, Verdict::Reject] {
+        registry.register(
+            task_verdict_descriptor(verdict),
+            wrap(move |ctx, identity, args| task_verdict(ctx, identity, args, verdict)),
+        );
+    }
     registry.register(track_close_descriptor(), wrap(track_close));
 }
 
@@ -137,21 +143,53 @@ fn report_startup_read_required(cards: &[Card]) -> bool {
     }
 }
 
-fn task_verdict_descriptor() -> ToolDescriptor {
-    ToolDescriptor {
-        name: TOOL_TASK_VERDICT.into(),
-        description: calm_types::observation::render_task_acceptance_guidance(
-            include_str!("../../../prompts/tools/neige_task_verdict.md").trim_end(),
+/// The Planner's two decisions on an attempt; one verdict path serves both tools.
+#[derive(Clone, Copy)]
+enum Verdict {
+    Accept,
+    Reject,
+}
+
+impl Verdict {
+    fn tool(self) -> &'static str {
+        match self {
+            Verdict::Accept => TOOL_TASK_ACCEPT,
+            Verdict::Reject => TOOL_TASK_REJECT,
+        }
+    }
+
+    fn keys(self) -> &'static [&'static str] {
+        match self {
+            Verdict::Accept => &["attempt_id", "message"],
+            Verdict::Reject => &["attempt_id", "message", "reason"],
+        }
+    }
+}
+
+fn task_verdict_descriptor(verdict: Verdict) -> ToolDescriptor {
+    let mut properties = json!({
+        "attempt_id": { "type": "string", "minLength": 1 },
+        "message": message_schema()
+    });
+    let description = match verdict {
+        Verdict::Accept => calm_types::observation::render_task_acceptance_guidance(
+            include_str!("../../../prompts/tools/neige_task_accept.md").trim_end(),
         ),
+        Verdict::Reject => {
+            properties["reason"] = json!({ "type": "string" });
+            include_str!("../../../prompts/tools/neige_task_reject.md")
+                .trim_end()
+                .to_string()
+        }
+    };
+    ToolDescriptor {
+        name: verdict.tool().into(),
+        description,
         input_schema: json!({
             "type": "object",
-            "required": ["attempt_id", "status", "message"],
-            "properties": {
-                "attempt_id": { "type": "string", "minLength": 1 },
-                "status": { "type": "string", "enum": ["accepted", "rejected"] },
-                "reason": { "type": "string" },
-                "message": message_schema()
-            }
+            "required": verdict.keys(),
+            "additionalProperties": false,
+            "properties": properties
         }),
         annotations: Some(role_gated_write_annotations()),
         visible_to_roles: &[CardRole::Planner],
@@ -162,43 +200,35 @@ async fn task_verdict(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
+    verdict: Verdict,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
-    let message = parse_write_args(&args, "task_verdict")?;
+    let tool = verdict.tool();
+    let message = parse_write_args(&args, tool)?;
+    refuse_unknown_keys(&args, tool, verdict.keys())?;
+    let attempt_id = crate::mcp_server::tools::emit::required_attempt_id(&args, tool)?;
 
-    let attempt_id = crate::mcp_server::tools::emit::required_attempt_id(&args, "task_verdict")?;
-    let status = args
-        .get("status")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError::invalid_params("task_verdict: missing `status`"))?;
-    let reason = args
-        .get("reason")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let event = match status {
-        "accepted" => Event::TaskCompleted {
+    let event = match verdict {
+        Verdict::Accept => Event::TaskCompleted {
             idempotency_key: attempt_id,
-            // Structured `{status, reason}` so a consumer can tell planner verdicts (`result.status == "accepted"`) apart from workers' free-form self-reports.
-            result: json!({
-                "status": "accepted",
-                "reason": reason.unwrap_or_default(),
-            }),
+            // Structured `{status}` so a consumer can tell planner verdicts (`result.status == "accepted"`) apart from workers' free-form self-reports; the rationale is the `message`.
+            result: json!({ "status": "accepted" }),
             artifacts: vec![],
             agent_message: Some(message.clone()),
         },
-        "rejected" => Event::TaskFailed {
+        Verdict::Reject => Event::TaskFailed {
             idempotency_key: attempt_id,
-            // An empty reason is a valid value; the verdict is not second-guessed.
-            reason: reason.unwrap_or_default(),
+            reason: args
+                .get("reason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.trim().is_empty())
+                .ok_or_else(|| {
+                    RpcError::invalid_params(format!("{tool}: missing `reason` (non-empty)"))
+                })?
+                .to_string(),
             details: None,
             agent_message: Some(message.clone()),
         },
-        other => {
-            return Err(RpcError::invalid_params(format!(
-                "task_verdict: unknown status `{other}` (expected `accepted` or `rejected`)"
-            )));
-        }
     };
 
     let kind_tag = event.kind_tag();

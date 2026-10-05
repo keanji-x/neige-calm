@@ -1,1 +1,0 @@
-Replace own Track commitment: full task + expected_version from list; cancelled=true cancels. Timed: local YYYY-MM-DDTHH:mm + IANA zone or matching RFC3339 offset. DST ambiguity: ask. Conflict: reread. Own Track only. A later start wakes again; cancel stops it.

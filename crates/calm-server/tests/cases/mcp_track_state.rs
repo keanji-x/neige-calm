@@ -11,7 +11,9 @@ use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::track_state::{TOOL_TASK_VERDICT, TOOL_TRACK_STATUS};
+use calm_server::mcp_server::tools::track_state::{
+    TOOL_TASK_ACCEPT, TOOL_TASK_REJECT, TOOL_TRACK_STATUS,
+};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::mcp::RpcError;
@@ -398,19 +400,17 @@ async fn get_track_state_callable_by_worker() {
 }
 
 #[tokio::test]
-async fn task_verdict_accepted_emits_task_completed() {
+async fn task_accept_emits_task_completed() {
     let boot = boot().await;
     insert_task(&boot, "job-xyz", "job-xyz", "done", None).await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
         &boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_ACCEPT,
         planner_identity(&boot),
         json!({
             "attempt_id": "job-xyz",
-            "status": "accepted",
-            "reason": "looks great",
             "message": "accept worker result"
         }),
     )
@@ -422,39 +422,36 @@ async fn task_verdict_accepted_emits_task_completed() {
         .await
         .expect("bus delivers")
         .expect("bus open");
-    let (idem, result) = match envelope.event {
+    let (idem, result, message) = match envelope.event {
         Event::TaskCompleted {
             idempotency_key,
             result,
+            agent_message,
             ..
-        } => (idempotency_key, result),
+        } => (idempotency_key, result, agent_message),
         other => panic!("expected TaskCompleted, got {other:?}"),
     };
     assert_eq!(idem, "job-xyz");
+    assert_eq!(result, json!({"status": "accepted"}));
     assert_eq!(
-        result.get("status").and_then(Value::as_str),
-        Some("accepted")
-    );
-    assert_eq!(
-        result.get("reason").and_then(Value::as_str),
-        Some("looks great"),
-        "planner's rationale is folded into `result`",
+        message.as_deref(),
+        Some("accept worker result"),
+        "the planner's rationale is the message"
     );
 }
 
 #[tokio::test]
-async fn task_verdict_rejected_emits_task_failed() {
+async fn task_reject_emits_task_failed() {
     let boot = boot().await;
     insert_task(&boot, "job-xyz", "job-xyz", "done", None).await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
         &boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_REJECT,
         planner_identity(&boot),
         json!({
             "attempt_id": "job-xyz",
-            "status": "rejected",
             "reason": "missed acceptance criterion #3",
             "message": "reject worker result"
         }),
@@ -480,41 +477,65 @@ async fn task_verdict_rejected_emits_task_failed() {
     }
 }
 
+/// The effect is the verb: the retired `status` key, and a `reason` on an accept, are refused
+/// with the valid keys; a reject needs a non-blank `reason`. Nothing is written.
 #[tokio::test]
-async fn task_verdict_unknown_status_rejected() {
+async fn task_accept_and_reject_refuse_retired_keys_and_a_missing_reason() {
     let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_TASK_VERDICT,
-        planner_identity(&boot),
-        json!({
-            "attempt_id": "k",
-            "status": "maybe",
-            "message": "bad status",
-        }),
-    )
-    .await
-    .expect_err("unknown status rejected");
-    assert_eq!(err.code, -32602);
-    assert!(err.message.contains("maybe"), "echoes the bad status");
+    insert_task(&boot, "k", "k", "done", None).await;
+    let mut rx = boot.ctx.events.subscribe();
+    for (tool, args, refused) in [
+        (
+            TOOL_TASK_ACCEPT,
+            json!({"attempt_id": "k", "status": "accepted", "message": "m"}),
+            "neige_task_accept: unknown argument `status`; valid: `attempt_id`, `message`",
+        ),
+        (
+            TOOL_TASK_ACCEPT,
+            json!({"attempt_id": "k", "reason": "r", "message": "m"}),
+            "neige_task_accept: unknown argument `reason`; valid: `attempt_id`, `message`",
+        ),
+        (
+            TOOL_TASK_REJECT,
+            json!({"attempt_id": "k", "status": "rejected", "reason": "r", "message": "m"}),
+            "neige_task_reject: unknown argument `status`; valid: `attempt_id`, `message`, \
+             `reason`",
+        ),
+        (
+            TOOL_TASK_REJECT,
+            json!({"attempt_id": "k", "message": "m"}),
+            "neige_task_reject: missing `reason` (non-empty)",
+        ),
+        (
+            TOOL_TASK_REJECT,
+            json!({"attempt_id": "k", "reason": " \n", "message": "m"}),
+            "neige_task_reject: missing `reason` (non-empty)",
+        ),
+    ] {
+        let err = call_tool(&boot, tool, planner_identity(&boot), args)
+            .await
+            .expect_err("refused");
+        assert_eq!((err.code, err.message.as_str()), (-32602, refused));
+    }
+    let no_event = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(no_event.is_err(), "a refused verdict emitted: {no_event:?}");
 }
 
 #[tokio::test]
 async fn task_verdict_worker_refused_at_mcp_entry() {
     let boot = boot().await;
-    let err = call_tool(
-        &boot,
-        TOOL_TASK_VERDICT,
-        worker_identity(&boot),
-        json!({
-            "attempt_id": "k",
-            "status": "accepted",
-        }),
-    )
-    .await
-    .expect_err("worker can't record a planner verdict");
-    assert_eq!(err.code, -32602);
-    assert!(err.message.contains("Planner"));
+    for tool in [TOOL_TASK_ACCEPT, TOOL_TASK_REJECT] {
+        let err = call_tool(
+            &boot,
+            tool,
+            worker_identity(&boot),
+            json!({"attempt_id": "k", "reason": "r", "message": "m"}),
+        )
+        .await
+        .expect_err("worker can't record a planner verdict");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("Planner"), "{tool}: {err:?}");
+    }
 }
 
 #[tokio::test]
@@ -523,11 +544,10 @@ async fn task_verdict_requires_non_empty_message() {
 
     let err = call_tool(
         &boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_ACCEPT,
         planner_identity(&boot),
         json!({
-            "attempt_id": "missing-message",
-            "status": "accepted"
+            "attempt_id": "missing-message"
         }),
     )
     .await
@@ -540,11 +560,10 @@ async fn task_verdict_requires_non_empty_message() {
 
     let err = call_tool(
         &boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_ACCEPT,
         planner_identity(&boot),
         json!({
             "attempt_id": "empty-message",
-            "status": "accepted",
             "message": "\t \n"
         }),
     )
@@ -572,12 +591,10 @@ async fn task_verdict_records_message_and_leaves_the_track_open() {
 
     call_tool(
         &boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_ACCEPT,
         planner_identity(&boot),
         json!({
             "attempt_id": "verdict-no-lifecycle",
-            "status": "accepted",
-            "reason": "ok",
             "message": "accept without lifecycle"
         }),
     )
@@ -617,12 +634,10 @@ async fn task_verdict_with_a_lifecycle_key_is_refused_and_writes_nothing() {
 
     let err = call_tool(
         &boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_ACCEPT,
         planner_identity(&boot),
         json!({
             "attempt_id": "verdict-illegal-lifecycle",
-            "status": "accepted",
-            "reason": "ok",
             "message": "illegal verdict lifecycle",
             "lifecycle": "done"
         }),
@@ -695,11 +710,10 @@ async fn task_verdict_refuses_an_attempt_outside_the_callers_track() {
     for attempt in ["foreign-1", "no-such-attempt"] {
         let err = call_tool(
             &boot,
-            TOOL_TASK_VERDICT,
+            TOOL_TASK_ACCEPT,
             planner_identity(&boot),
             json!({
                 "attempt_id": attempt,
-                "status": "accepted",
                 "message": "verdict on an attempt this track does not own",
             }),
         )

@@ -355,4 +355,31 @@ mod tests {
             "served kernel tool names outside [A-Za-z0-9_]: {outside:?}"
         );
     }
+
+    /// #2087 §3/§8: a kernel tool's action is one verb of the closed vocabulary, written out here
+    /// so a new verb needs `docs/conventions/agent-commands.md` §3 changed first, and its object is
+    /// one word.
+    #[test]
+    fn kernel_tool_actions_are_in_the_vocabulary() {
+        const VERBS: &[&str] = &[
+            "ls", "cat", "show", "status", "log", "diff", "find", "describe", "read", "write",
+            "commit", "tag", "rename", "add", "set", "rm", "capture", "notify", "input", "control",
+            "open", "close", "cancel", "publish", "request", "accept", "reject", "done", "fail",
+            "gc", "vacuum",
+        ];
+        let word = regex::Regex::new(r"^[a-z0-9]+$").expect("word regex");
+        let outside: Vec<String> = kernel_tool_names()
+            .into_iter()
+            .filter(|name| {
+                let segments: Vec<&str> = name.split('_').collect();
+                !matches!(segments.as_slice(), ["neige", object, action]
+                    if word.is_match(object) && VERBS.contains(action))
+            })
+            .collect();
+        assert!(
+            outside.is_empty(),
+            "kernel tools whose action is not a §3 verb or whose object is not one word: \
+             {outside:?}"
+        );
+    }
 }

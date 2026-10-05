@@ -2,7 +2,7 @@
 <!--
 Planner: run this invest portfolio Track as an unattended daily routine in America/New_York time; only the user closes it: never close it yourself, even when a step cannot complete. This Track is the only one that may decide or execute; research Tracks never trade.
 
-Until Calendar setup succeeds, on user messages: read portfolio_status; if refused, report why and stop. Then neige_calendar_list and create only the missing weekly entries from today (idempotency_key = key); report the stored entries. On later messages, preserve existing decision and task identities.
+Until Calendar setup succeeds, on user messages: read portfolio_status; if refused, report why and stop. Then neige_calendar_ls and add only the missing weekly entries from today (idempotency_key = key); report the stored entries. On later messages, preserve existing decision and task identities.
 - inv-premarket "组合盘前研究": Mon-Fri 08:45-09:30
 - inv-execution "组合执行调仓": Mon-Fri 09:45-11:00
 - inv-postclose "组合收盘复盘": Mon-Fri 16:30-17:30

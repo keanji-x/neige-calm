@@ -197,9 +197,9 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let decision = "Accept the accurate audit; recommend 30 seconds without changing config-v1.";
     call_tool(
         &boot,
-        "neige_task_verdict",
+        "neige_task_accept",
         planner_identity(&boot),
-        json!({"attempt_id":a.id,"status":"accepted","reason":decision,"message":decision}),
+        json!({"attempt_id":a.id,"message":decision}),
     )
     .await
     .unwrap();

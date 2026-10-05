@@ -13,8 +13,8 @@ fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
         "neige_area_ls",
         "neige_link_ls",
-        "neige_preview_register",
-        "neige_preview_unregister",
+        "neige_preview_add",
+        "neige_preview_rm",
         "neige_ratify_request",
         "neige_report_commit",
         "neige_report_describe",
@@ -22,9 +22,10 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_report_write",
         "neige_source_capture",
         "neige_source_ls",
+        "neige_task_accept",
         "neige_task_cancel",
         "neige_task_ls",
-        "neige_task_verdict",
+        "neige_task_reject",
         "neige_terminal_control",
         "neige_terminal_input",
         "neige_terminal_open",
@@ -282,8 +283,8 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
 
     let names = tool_names_from_response(&resp);
     assert!(
-        names.contains(&"neige_task_verdict".to_string()),
-        "daemon-trust tools/list without threadId must advertise Planner task.verdict, got: {names:?}"
+        names.contains(&"neige_task_accept".to_string()),
+        "daemon-trust tools/list without threadId must advertise Planner task_accept, got: {names:?}"
     );
     assert!(
         names.contains(&"neige_report_commit".to_string()),

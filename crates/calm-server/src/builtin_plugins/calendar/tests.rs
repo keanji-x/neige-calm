@@ -222,6 +222,21 @@ fn listed(entry: &serde_json::Value) -> serde_json::Value {
     listed["occurrences"] = json!([{"start": schedule["start"], "end": schedule["end"]}]);
     listed
 }
+/// A tool's entry with the stored `id` the tools show as `entry_id`.
+fn as_stored(entry: &serde_json::Value) -> serde_json::Value {
+    let mut stored = entry.clone();
+    let obj = stored.as_object_mut().unwrap();
+    let id = obj
+        .remove("entry_id")
+        .expect("a tool entry carries entry_id");
+    obj.insert("id".into(), id);
+    stored
+}
+/// The entry of a calendar tool's result.
+fn tool_entry(result: impl serde::Serialize) -> Entry {
+    let encoded = serde_json::to_value(result).unwrap();
+    serde_json::from_value(as_stored(&encoded["structuredContent"])).unwrap()
+}
 fn window() -> Window {
     Window {
         from: "2026-10-02".into(),
@@ -245,16 +260,28 @@ async fn calendar_create_retry_update_conflict_cancel_and_durable_receipt() {
         cancelled: true,
     };
     assert_eq!(
-        store::update(&fx.ctx, human(), first.id.clone(), update.clone())
-            .await
-            .unwrap()
-            .version,
+        store::update(
+            &fx.ctx,
+            human(),
+            first.id.clone(),
+            1,
+            store::Change::Replace(update.clone())
+        )
+        .await
+        .unwrap()
+        .version,
         2
     );
     assert!(
-        store::update(&fx.ctx, human(), first.id.clone(), update)
-            .await
-            .is_err()
+        store::update(
+            &fx.ctx,
+            human(),
+            first.id.clone(),
+            1,
+            store::Change::Replace(update)
+        )
+        .await
+        .is_err()
     );
     assert!(
         store::list(&fx.ctx, &human(), window())
@@ -293,21 +320,20 @@ async fn calendar_create_retry_update_conflict_cancel_and_durable_receipt() {
 async fn calendar_native_tools_enforce_scope_role_session_and_enablement() {
     let fx = Fixture::new().await;
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("neige_calendar_create").unwrap();
-    let list = registry.lookup("neige_calendar_list").unwrap();
-    let update = registry.lookup("neige_calendar_update").unwrap();
+    let create = registry.lookup("neige_calendar_add").unwrap();
+    let list = registry.lookup("neige_calendar_ls").unwrap();
+    let rm = registry.lookup("neige_calendar_rm").unwrap();
     let owner = fx.identity(CardRole::Planner).await;
     let other = fx.identity(CardRole::Assistant).await;
     let result = create(fx.ctx.clone(), owner.clone(), json!(request()))
         .await
         .unwrap();
-    let encoded = serde_json::to_value(result).unwrap();
-    let entry: Entry = serde_json::from_value(encoded["structuredContent"].clone()).unwrap();
+    let entry = tool_entry(result);
     assert_eq!(entry.source_track_id, owner.track_id);
     let other_list = list(
         fx.ctx.clone(),
         other.clone(),
-        json!({"from":"2026-10-02","until":"2026-10-03","timezone":"Asia/Shanghai"}),
+        json!({"from":"2026-10-02","to":"2026-10-03","timezone":"Asia/Shanghai"}),
     )
     .await
     .unwrap();
@@ -316,10 +342,10 @@ async fn calendar_native_tools_enforce_scope_role_session_and_enablement() {
         json!([])
     );
     assert!(
-        update(
+        rm(
             fx.ctx.clone(),
             other.clone(),
-            json!({"id":entry.id,"expected_version":1,"task":draft(),"cancelled":true})
+            json!({"entry_id":entry.id,"expected_version":1})
         )
         .await
         .is_err()
@@ -480,8 +506,14 @@ async fn calendar_concurrent_creation_and_edits_are_serialized() {
         cancelled: false,
     };
     let (a, b) = tokio::join!(
-        store::update(&fx.ctx, human(), first.id.clone(), edit.clone()),
-        store::update(&fx.ctx, human(), first.id, edit)
+        store::update(
+            &fx.ctx,
+            human(),
+            first.id.clone(),
+            1,
+            store::Change::Replace(edit.clone())
+        ),
+        store::update(&fx.ctx, human(), first.id, 1, store::Change::Replace(edit))
     );
     assert_ne!(
         a.is_ok(),
@@ -500,9 +532,10 @@ async fn calendar_concurrent_creation_and_edits_are_serialized() {
 async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     let fx = Fixture::new().await;
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("neige_calendar_create").unwrap();
-    let list = registry.lookup("neige_calendar_list").unwrap();
-    let update = registry.lookup("neige_calendar_update").unwrap();
+    let create = registry.lookup("neige_calendar_add").unwrap();
+    let list = registry.lookup("neige_calendar_ls").unwrap();
+    let set = registry.lookup("neige_calendar_set").unwrap();
+    let rm = registry.lookup("neige_calendar_rm").unwrap();
     let planner = fx.identity(CardRole::Planner).await;
     let timed = json!({"title":"Review research","description":"Deliver recommendations","schedule":{
         "kind":"timed","start":"2026-10-02T09:00:00+08:00","end":"2026-10-02T10:00:00+08:00","timezone":"Asia/Shanghai"
@@ -523,7 +556,7 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     let visible = list(
         fx.ctx.clone(),
         planner.clone(),
-        json!({"from":"2026-10-02","until":"2026-10-03","timezone":"Asia/Shanghai"}),
+        json!({"from":"2026-10-02","to":"2026-10-03","timezone":"Asia/Shanghai"}),
     )
     .await
     .unwrap();
@@ -534,12 +567,10 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     let mut moved = timed.clone();
     moved["schedule"]["start"] = json!("2026-10-02T11:00:00+08:00");
     moved["schedule"]["end"] = json!("2026-10-02T12:00:00+08:00");
-    let revised = update(
+    let revised = set(
         fx.ctx.clone(),
         planner.clone(),
-        json!({
-            "id":first["id"],"expected_version":first["version"],"task":moved,"cancelled":false
-        }),
+        json!({"entry_id":first["entry_id"],"expected_version":first["version"],"task":moved}),
     )
     .await
     .unwrap();
@@ -551,19 +582,17 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
         serde_json::to_value(&human_view[0].entry.task).unwrap(),
         moved
     );
-    update(
+    rm(
         fx.ctx.clone(),
         planner.clone(),
-        json!({
-            "id":first["id"],"expected_version":revised["version"],"task":moved,"cancelled":true
-        }),
+        json!({"entry_id":first["entry_id"],"expected_version":revised["version"]}),
     )
     .await
     .unwrap();
     let visible = list(
         fx.ctx.clone(),
         planner.clone(),
-        json!({"from":"2026-10-02","until":"2026-10-03","timezone":"Asia/Shanghai"}),
+        json!({"from":"2026-10-02","to":"2026-10-03","timezone":"Asia/Shanghai"}),
     )
     .await
     .unwrap();
@@ -609,9 +638,9 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
 async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
     let fx = Fixture::new().await;
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("neige_calendar_create").unwrap();
-    let list = registry.lookup("neige_calendar_list").unwrap();
-    let update = registry.lookup("neige_calendar_update").unwrap();
+    let create = registry.lookup("neige_calendar_add").unwrap();
+    let list = registry.lookup("neige_calendar_ls").unwrap();
+    let update = registry.lookup("neige_calendar_set").unwrap();
     let planner = fx.identity(CardRole::Planner).await;
     let task = json!({"title":"Research","description":"Deliver findings","schedule":{
         "kind":"timed","start":"2026-10-02T09:00","end":"2026-10-02T10:00","timezone":"Asia/Shanghai"
@@ -639,7 +668,7 @@ async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
     let visible = list(
         fx.ctx.clone(),
         planner.clone(),
-        json!({"from":"2026-10-02","until":"2026-10-03","timezone":"Asia/Shanghai"}),
+        json!({"from":"2026-10-02","to":"2026-10-03","timezone":"Asia/Shanghai"}),
     )
     .await
     .unwrap();
@@ -653,7 +682,7 @@ async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
     let changed = update(
         fx.ctx.clone(),
         planner.clone(),
-        json!({"id":first["id"],"expected_version":1,"task":moved,"cancelled":false}),
+        json!({"entry_id":first["entry_id"],"expected_version":1,"task":moved}),
     )
     .await
     .unwrap();
@@ -680,7 +709,7 @@ async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
         let error = update(
             fx.ctx.clone(),
             planner.clone(),
-            json!({"id":first["id"],"expected_version":2,"task":bad,"cancelled":false}),
+            json!({"entry_id":first["entry_id"],"expected_version":2,"task":bad}),
         )
         .await
         .err()
@@ -690,7 +719,7 @@ async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
     let stored = store::list(&fx.ctx, &human(), window()).await.unwrap();
     assert_eq!(
         serde_json::to_value(stored).unwrap(),
-        json!([listed(&changed)])
+        json!([listed(&as_stored(&changed))])
     );
 }
 
@@ -712,11 +741,7 @@ async fn scoped_catalog_respects_builtin_lifecycle_and_track_owner() {
     let names = tool_descriptors_for_connection(&fx.ctx, &registry, &bound, None)
         .await
         .unwrap();
-    assert!(
-        names
-            .iter()
-            .any(|tool| tool.name == "neige_calendar_create")
-    );
+    assert!(names.iter().any(|tool| tool.name == "neige_calendar_add"));
     fx.host.stop(PLUGIN_ID).await.unwrap();
     let names = tool_descriptors_for_connection(&fx.ctx, &registry, &bound, None)
         .await
@@ -832,5 +857,6 @@ async fn calendar_reconcile_rejects_operator_disable_without_mutation() {
     assert_eq!(before.manifest, after.manifest);
 }
 
+mod verbs;
 mod wake;
 mod weekly;

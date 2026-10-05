@@ -16,7 +16,7 @@ use calm_server::mcp_server::tools::track_history::{
     TOOL_TRACK_DIFF, TOOL_TRACK_LOG, TOOL_TRACK_SHOW,
 };
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
-use calm_server::mcp_server::tools::track_state::TOOL_TASK_VERDICT;
+use calm_server::mcp_server::tools::track_state::{TOOL_TASK_ACCEPT, TOOL_TASK_REJECT};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, CardRuntimeView, NewArea, NewCard, NewTrack, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
@@ -464,16 +464,14 @@ async fn seed_task_attempt(boot: &Boot, key: &str) {
     .expect("seed the verdict's task attempt");
 }
 
-async fn accept_run(boot: &Boot, key: &str, reason: &str) {
+async fn accept_run(boot: &Boot, key: &str) {
     seed_task_attempt(boot, key).await;
     call_tool(
         boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_ACCEPT,
         planner_identity(boot),
         json!({
             "attempt_id": key,
-            "status": "accepted",
-            "reason": reason,
             "message": format!("accept {key}"),
         }),
     )
@@ -485,11 +483,10 @@ async fn reject_run(boot: &Boot, key: &str, reason: &str) {
     seed_task_attempt(boot, key).await;
     call_tool(
         boot,
-        TOOL_TASK_VERDICT,
+        TOOL_TASK_REJECT,
         planner_identity(boot),
         json!({
             "attempt_id": key,
-            "status": "rejected",
             "reason": reason,
             "message": format!("reject {key}"),
         }),
@@ -1370,7 +1367,7 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
     request_codex(&boot, "accepted-run").await;
     materialize_worker(&boot, "accepted-run").await;
     complete_run(&boot, "accepted-run", "did the thing").await;
-    accept_run(&boot, "accepted-run", "LGTM").await;
+    accept_run(&boot, "accepted-run").await;
 
     let out = call_tool(
         &boot,
@@ -1387,10 +1384,10 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
         json!({ "summary": "did the thing" })
     );
     assert_eq!(run["verdict"]["status"], json!("accepted"));
-    assert_eq!(run["verdict"]["reason"], json!("LGTM"));
+    assert!(run["verdict"]["reason"].is_null(), "run = {run:?}");
     assert_eq!(
         run["events"]["verdict"]["payload"]["result"],
-        json!({ "status": "accepted", "reason": "LGTM" })
+        json!({ "status": "accepted" })
     );
 
     let out = call_tool(
@@ -1425,10 +1422,7 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
     .expect("planner can read accepted run markdown");
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.contains("## Verdict"), "md = {md}");
-    assert!(
-        md.contains("accepted by planner at") && md.contains(": LGTM"),
-        "md = {md}"
-    );
+    assert!(md.contains("Verdict: accepted by planner at"), "md = {md}");
     assert!(md.contains("did the thing"), "md = {md}");
 }
 

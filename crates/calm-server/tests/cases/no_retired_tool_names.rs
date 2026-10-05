@@ -28,6 +28,10 @@ const RETIRED_VIEW_NAME: &str = concat!(
 /// #2087 B1b: the terminal's anchored read is `read` and its lookup is `show`.
 const RETIRED_TERMINAL_NAME: &str = r"\bneige_terminal_(?:observe|resolve)\b";
 
+/// #2087 B1c: Calendar and preview use `add`/`ls`/`set`/`rm`, and a verdict is `accept` or `reject`.
+const RETIRED_CRUD_NAME: &str =
+    r"\bneige_(?:calendar_(?:create|list|update)|preview_(?:register|unregister)|task_verdict)\b";
+
 /// The retired MCP server key as a client spells it, assembled from two literals so this file does
 /// not carry the token it hunts.
 fn retired_server_key() -> String {
@@ -46,6 +50,7 @@ fn allowlisted(path: &str) -> bool {
         || path == "crates/calm-server/tests/cases/tool_name_separator_migration.rs"
         || path == "crates/calm-server/tests/cases/tool_verbs_migration.rs"
         || path == "crates/calm-server/tests/cases/terminal_verbs_migration.rs"
+        || path == "crates/calm-server/tests/cases/crud_verbs_migration.rs"
         || path == "docs/architecture/2003-cli-mcp-naming.md"
 }
 
@@ -80,12 +85,13 @@ fn tracked_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn patterns() -> [regex::Regex; 5] {
+fn patterns() -> [regex::Regex; 6] {
     [
         regex::Regex::new(RETIRED_TOOL_NAME).expect("tool-name regex"),
         regex::Regex::new(RETIRED_DOTTED_KERNEL_NAME).expect("dotted-name regex"),
         regex::Regex::new(RETIRED_VIEW_NAME).expect("view-name regex"),
         regex::Regex::new(RETIRED_TERMINAL_NAME).expect("terminal-name regex"),
+        regex::Regex::new(RETIRED_CRUD_NAME).expect("crud-name regex"),
         regex::Regex::new(&retired_server_key()).expect("server-key regex"),
     ]
 }
@@ -100,31 +106,37 @@ fn offending(line: &str, patterns: &[regex::Regex]) -> bool {
 fn the_sweep_patterns_hit_only_retired_names() {
     let patterns = patterns();
     for hit in [
-        "neige_track_publish",                      // retired-name: rejection input
-        "`calm.track.cat_at`",                      // retired-name: rejection input
-        "calm.report.write_markdown",               // retired-name: rejection input
-        "calm.task_completed",                      // retired-name: rejection input
-        "\"calm.user.notify\"",                     // retired-name: rejection input
-        "calm.track: no such path",                 // retired-name: rejection input
-        "neige.track.cat",                          // retired-name: rejection input
-        "`neige.report.*`",                         // retired-name: rejection input
-        "(neige.task.report_success)",              // retired-name: rejection input
-        "prompts/tools/neige.dev.publish.md",       // retired-name: rejection input
-        "`neige_plan_list`",                        // retired-name: rejection input
-        "neige_plan_cancel:",                       // retired-name: rejection input
-        "(neige_source_list)",                      // retired-name: rejection input
-        "neige_area_outline.",                      // retired-name: rejection input
-        "neige_report_backlinks",                   // retired-name: rejection input
-        "neige_report_kinds",                       // retired-name: rejection input
-        "\"neige_track_state\"",                    // retired-name: rejection input
-        "prompts/tools/neige_workspace_reports.md", // retired-name: rejection input
-        "neige_workspace_report,",                  // retired-name: rejection input
-        "neige_workspace_changes",                  // retired-name: rejection input
-        "neige_workspace_edits",                    // retired-name: rejection input
-        "run `neige track state`",                  // retired-name: rejection input
-        "neige tool list --all",                    // retired-name: rejection input
-        "`neige_terminal_observe`",                 // retired-name: rejection input
-        "prompts/tools/neige_terminal_resolve.md",  // retired-name: rejection input
+        "neige_track_publish",                       // retired-name: rejection input
+        "`calm.track.cat_at`",                       // retired-name: rejection input
+        "calm.report.write_markdown",                // retired-name: rejection input
+        "calm.task_completed",                       // retired-name: rejection input
+        "\"calm.user.notify\"",                      // retired-name: rejection input
+        "calm.track: no such path",                  // retired-name: rejection input
+        "neige.track.cat",                           // retired-name: rejection input
+        "`neige.report.*`",                          // retired-name: rejection input
+        "(neige.task.report_success)",               // retired-name: rejection input
+        "prompts/tools/neige.dev.publish.md",        // retired-name: rejection input
+        "`neige_plan_list`",                         // retired-name: rejection input
+        "neige_plan_cancel:",                        // retired-name: rejection input
+        "(neige_source_list)",                       // retired-name: rejection input
+        "neige_area_outline.",                       // retired-name: rejection input
+        "neige_report_backlinks",                    // retired-name: rejection input
+        "neige_report_kinds",                        // retired-name: rejection input
+        "\"neige_track_state\"",                     // retired-name: rejection input
+        "prompts/tools/neige_workspace_reports.md",  // retired-name: rejection input
+        "neige_workspace_report,",                   // retired-name: rejection input
+        "neige_workspace_changes",                   // retired-name: rejection input
+        "neige_workspace_edits",                     // retired-name: rejection input
+        "run `neige track state`",                   // retired-name: rejection input
+        "neige tool list --all",                     // retired-name: rejection input
+        "`neige_terminal_observe`",                  // retired-name: rejection input
+        "prompts/tools/neige_terminal_resolve.md",   // retired-name: rejection input
+        "`neige_calendar_create`",                   // retired-name: rejection input
+        "neige_calendar_list and add",               // retired-name: rejection input
+        "neige_calendar_update.",                    // retired-name: rejection input
+        "\"neige_preview_register\"",                // retired-name: rejection input
+        "prompts/tools/neige_preview_unregister.md", // retired-name: rejection input
+        "call neige_task_verdict",                   // retired-name: rejection input
         concat!("mcp__", "calm__neige_report_read"),
         concat!("allowed: mcp__", "calm Edit"),
     ] {
@@ -156,6 +168,15 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "neige_terminal_show",
         "neige_terminal_observed",
         "the terminal observation",
+        "neige_calendar_ls",
+        "neige_calendar_rm",
+        "neige_calendar_lists",
+        "neige_preview_add",
+        "neige_preview_registered",
+        "neige_task_accept",
+        "neige_task_reject",
+        "my_neige_task_verdict",
+        "a task verdict",
         "xneige.track.cat",
         "dev.neige.git-forge",
         "mcp__neige__neige_track_show",
