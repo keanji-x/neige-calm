@@ -323,7 +323,7 @@ async fn worker_session_row(repo: &Arc<SqlxRepo>, id: &str, card_id: &str) {
 
 /// `(pid, start_time)` of every live process carrying one of `markers`, found without the code
 /// under test; the `start_time` is read before the environ.
-fn marked(markers: &HashSet<String>) -> Vec<(i32, u64)> {
+pub fn marked(markers: &HashSet<String>) -> Vec<(i32, u64)> {
     let prefix = format!("{MARKER_KEY}=");
     let mut found = Vec::new();
     for entry in std::fs::read_dir("/proc").expect("proc").flatten() {

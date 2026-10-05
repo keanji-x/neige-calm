@@ -251,7 +251,8 @@ impl World {
         self.role_cache
             .insert(card.id.clone(), CardRole::Planner, track_id.clone());
         let session_id = new_id();
-        let thread_id = format!("thread-{session_id}");
+        // A UUID, as a Claude Planner's session id must be.
+        let thread_id = uuid::Uuid::new_v4().to_string();
         let token = calm_server::mcp_server::auth::CardMcpToken::generate();
         let mut tx = self.repo.pool().begin().await.unwrap();
         session_start_runtime_tx(

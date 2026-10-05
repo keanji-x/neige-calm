@@ -72,5 +72,7 @@ mod planner_steer;
 mod planner_transcript_projection;
 #[path = "cases/track_mail.rs"]
 mod track_mail;
+#[path = "cases/track_mail_claude.rs"]
+mod track_mail_claude;
 #[path = "cases/track_mail_fixture.rs"]
 mod track_mail_fixture;
