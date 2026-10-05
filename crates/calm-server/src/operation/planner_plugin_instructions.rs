@@ -85,7 +85,7 @@ async fn instructing_plugins(
     Ok(stored
         .into_iter()
         .filter(|manifest| {
-            plugin_documents_track(manifest, track) || referenced.contains(&manifest.id) // MUTATION-K2-1
+            plugin_documents_track(manifest, track) || referenced.contains(&manifest.id)
         })
         .filter_map(|manifest| Some((manifest.id, manifest.planner_instructions?)))
         .collect())
@@ -119,7 +119,7 @@ async fn report_references(repo: &dyn Repo, track: &Track) -> BTreeSet<String> {
 /// Blocks are admitted in id order while they fit beside the reserved notice; once one does not,
 /// it and every later plugin are omitted, each logged, and the notice is appended once.
 fn render_section(plugins: &[(String, String)]) -> String {
-    let budget = PLUGIN_INSTRUCTIONS_CAP - OMITTED_NOTICE.len(); // MUTATION-K2-2
+    let budget = PLUGIN_INSTRUCTIONS_CAP - OMITTED_NOTICE.len();
     let mut section = String::new();
     let mut omitted = false;
     for (id, text) in plugins {
