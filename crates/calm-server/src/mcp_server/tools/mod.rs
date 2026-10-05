@@ -172,11 +172,11 @@ mod tests {
     /// compact input schema. One-sided caps; a change that shrinks the surface lowers them.
     #[test]
     fn planner_tool_surface_fits_its_byte_budget() {
-        // #2130: measured 29,999 bytes across 30 Planner tools before `neige_mail_send` (1,059
-        // bytes: description 797, schema 262); trimming restated schema facts from ten existing
-        // descriptions freed 201, and the cap rose by the remaining 857 to the measured 30,857
+        // #2130: measured 29,993 bytes across 30 Planner tools before `neige_mail_send` (1,054
+        // bytes: description 792, schema 262); trimming restated schema facts from ten existing
+        // descriptions freed 201, and the cap rose by the remaining 846 to the measured 30,846
         // across 31 tools. Keep the aggregate bound and the unchanged per-description cap.
-        const SURFACE_MAX_BYTES: usize = 30_857;
+        const SURFACE_MAX_BYTES: usize = 30_846;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);

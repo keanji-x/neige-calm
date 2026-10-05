@@ -156,7 +156,7 @@ Tool texts below use today's dotted names (D12).
   `send` means mail only.
 - §4 `text`: "verbatim text delivered to a person, typed into a terminal, or mailed to a Track".
 - `mail_id` is `<noun>_id`; `summary`, `track_id`, `cursor`/`next_cursor` already exist.
-- §8 item 7 ("keep the Planner byte budget"): S1 first trims wording of existing Planner tool descriptions to fit `neige.mail.send` (description + compact schema); only the remainder trimming cannot free raises `planner_tool_surface_fits_its_byte_budget`'s cap, recorded here and in the test comment with the measured numbers and `#2130` (owner decision, D6). Why an exception is possible at all: the surface was 91 B under the cap (F19) and `send` must be listed to be discoverable. The per-description 2,048 B cap is unchanged. S1 measured: 29,999 B before `send` (1 B under the cap, not the comment's 29,909), `send` 1,059 B (description 797, schema 262), trims 201 B across ten descriptions, new cap 30,857 B (+857).
+- §8 item 7 ("keep the Planner byte budget"): S1 first trims wording of existing Planner tool descriptions to fit `neige.mail.send` (description + compact schema); only the remainder trimming cannot free raises `planner_tool_surface_fits_its_byte_budget`'s cap, recorded here and in the test comment with the measured numbers and `#2130` (owner decision, D6). Why an exception is possible at all: the surface was 91 B under the cap (F19) and `send` must be listed to be discoverable. The per-description 2,048 B cap is unchanged. S1 measured (on `origin/main` 2badcefcf, after B0 and B1a): 29,993 B before `send` (not the comment's 29,909), `send` 1,054 B (description 792, schema 262), trims 201 B across ten descriptions, new cap 30,846 B (+846).
 
 ### 4.2 `neige_mail_send` (W, listed for the Planner, no CLI row)
 
@@ -400,8 +400,8 @@ TT=harness; TT=${TT}_items
 
 | Item | Note |
 |---|---|
-| D12 | B0 (#2117) merged first: S1 registers `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat` with B0's file naming (`prompts/tools/neige_mail_*.md`), and every name in its texts is `_`-separated. The migration is `0142_mails.sql` (0141 is B0's). |
-| F19 | The budget comment's 29,909 B was stale: the surface measured 29,999 B before `send` (§4.1 has the S1 numbers). |
+| D12 | B0 (#2117) and B1a (#2138) merged first: S1 registers `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat` with B0's file naming (`prompts/tools/neige_mail_*.md`), every name in its texts is `_`-separated, and discovery is `neige_area_ls` (B1a's name for `area.outline`). The migration is `0143_mails.sql` (0141 and 0142 are B0's and B1a's). |
+| F19 | The budget comment's 29,909 B was stale: the surface measured 29,993 B before `send` (§4.1 has the S1 numbers). |
 | D15 | `neige.area.outline` lists the Tracks that have a report card; every Track created through the routes has one, so the fixture Tracks get one too. |
 | §4.4 `next_hop` | When a send from this turn would be refused, `next_hop` is `"7/6"` (the render prints the hand-off line for any n > 6); `null` stays "no recorded turn input". |
 | `cat` | Every `cat` (sender's too) runs in one `BEGIN IMMEDIATE` transaction: lookup, `decide_recorder`, the stamp `UPDATE … AND read_at IS NULL`, the next-hop read. |
