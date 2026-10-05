@@ -849,8 +849,7 @@
     「别处改过」。只有在未知结果之后才读回，首个 409 不多一次读取；真正的并发编辑读回后内容不同，仍是 stale。
   source: fe/core/domain/failure-class.ts:132-159; fe/core/domain/track.ts:467-480;
     fe/core/domain/calendar.ts:87-116; fe/web/src/app/providers/queries.ts:611-630; fe/web/src/app/router/calendar.tsx:32-43
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:322-381; fe/web/src/app/router/calendar-writes.test.tsx:79-128;
-    fe/core/domain/cas-writes.test.ts:86-127
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:322-381; fe/web/src/app/router/calendar-writes.test.tsx:79-128
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
