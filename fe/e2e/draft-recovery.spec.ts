@@ -50,10 +50,11 @@ test('retains the original Track request after a lost acknowledgement and naviga
     const composer = page.getByRole('combobox', { name: 'What this track should do' });
     await composer.fill('Keep exactly one Track for this intention.');
     await page.getByRole('button', { name: 'Create track', exact: true }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'Transport request failed' })).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'The track creation is unconfirmed.' })).toBeVisible();
     await context.setOffline(true);
     await page.getByRole('button', { name: 'Create track', exact: true }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'original creation is still unconfirmed' })).toBeVisible();
+    /* Refused at the press (nothing sent); the earlier create is still the one awaiting confirmation. */
+    await expect(page.getByRole('alert').filter({ hasText: 'The track creation is unconfirmed.' })).toBeVisible();
     await expect(composer).toHaveAttribute('contenteditable', 'false');
     expect(attempts).toHaveLength(1);
     await context.setOffline(false);
@@ -110,7 +111,7 @@ test('does not replay an offline settings edit over another client and refreshes
     await expect(mine).toHaveValue(proxy(1));
     await context.setOffline(true);
     await mine.fill(proxy(2)); await mine.press('Tab');
-    await expect(myRow.getByText(/offline.*Reconnect/i)).toBeVisible();
+    await expect(myRow.getByText('Nothing was sent.')).toBeVisible();
     const theirs = other.getByLabel('HTTP proxy', { exact: true });
     await theirs.fill(proxy(3)); await theirs.press('Tab');
     await expect.poll(async () => (await (await request.get('/api/settings')).json() as { settings: Record<string, string> }).settings.http_proxy).toBe(proxy(3));
