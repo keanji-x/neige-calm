@@ -63,15 +63,15 @@ impl From<AreaFolderRow> for AreaFolder {
 /// The `tracks` column list every `query_as::<_, TrackRow>` SELECT must use, in `TrackRow` field order. `query_as`
 /// binds columns by name at **runtime**, so a stale hand-copied list compiles fine and blows up in production.
 pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, pinned_at, closed_at, template_id, \
-     plugin_scope, purpose, template_input, recipe_id, recipe_revision, \
-     workspace_kind, workspace_path, workspace_frozen_at, workspace_worktree_path, created_at, \
-     updated_at";
+     plugin_scope, purpose, template_input, recipe_id, recipe_revision, creator_track_id, \
+     creator_key, workspace_kind, workspace_path, workspace_frozen_at, workspace_worktree_path, \
+     created_at, updated_at";
 
 /// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias; the two lists must stay in lockstep.
 pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.pinned_at, w.closed_at, \
      w.template_id, w.plugin_scope, w.purpose, w.template_input, \
-     w.recipe_id, w.recipe_revision, w.workspace_kind, w.workspace_path, \
-     w.workspace_frozen_at, w.workspace_worktree_path, w.created_at, w.updated_at";
+     w.recipe_id, w.recipe_revision, w.creator_track_id, w.creator_key, w.workspace_kind, \
+     w.workspace_path, w.workspace_frozen_at, w.workspace_worktree_path, w.created_at, w.updated_at";
 
 /// Row mirror of [`Track`].
 #[derive(Debug, sqlx::FromRow)]
@@ -94,6 +94,9 @@ pub struct TrackRow {
     /// creation source. `recipe_id` is a record of origin, not a live reference — the recipe may since be edited or deleted.
     pub recipe_id: Option<String>,
     pub recipe_revision: Option<i64>,
+    /// Which track's Planner created this one, under which key; both NULL for every other creation.
+    pub creator_track_id: Option<String>,
+    pub creator_key: Option<String>,
     /// The four columns behind [`TrackWorkspace`]; `workspace_path` is the only stored copy of the path.
     #[sqlx(try_from = "String")]
     pub workspace_kind: TrackWorkspaceKind,
@@ -121,6 +124,8 @@ impl From<TrackRow> for Track {
             template_input: r.template_input,
             recipe_id: r.recipe_id,
             recipe_revision: r.recipe_revision,
+            creator_track_id: r.creator_track_id,
+            creator_key: r.creator_key,
             workspace: TrackWorkspace {
                 kind: r.workspace_kind,
                 path: r.workspace_path,

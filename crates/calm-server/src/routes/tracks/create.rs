@@ -8,20 +8,20 @@ use axum::{Json, http::StatusCode};
 use crate::actor::Actor;
 use crate::db::sqlite::TrackCreateRequestFingerprint;
 use crate::error::{CalmError, Result};
-use crate::ids::CardId;
+use crate::ids::ActorId;
 use crate::model::{NewTrack, RequestTheme, Track};
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
-use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key, validate_first_message,
 };
-use crate::routes::terminal_cards::{
-    calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
-};
+use crate::routes::terminal_cards::{parse_idempotency_key_header, stable_payload_hash};
 use crate::state::RouteState;
 
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
+
+mod delivery;
+use delivery::{SubmitArm, start_planner_harness_with_first_message};
 
 /// Which arm this request takes: binding miss + vacant key → `Mint`; hit + occupied →
 /// `Replay`; hit + vacant → `GenuineRetry`; miss + occupied → `BindingLost` (unreachable;
@@ -170,6 +170,46 @@ pub(super) struct FirstMessagePlan {
     _same_key_claim: crate::per_card_lock::PerCardLockGuard,
 }
 
+/// The binding-key prefix of `neige_track_add`, followed by `<creator_track_id>/<key>`. The tool
+/// owns this namespace: `POST /api/tracks` refuses a key that starts with it.
+pub(super) const TRACK_ADD_KEY_PREFIX: &str = "track-add/";
+
+/// Who a keyed create acts as. `POST /api/tracks`: the declared header actor throughout.
+/// `neige_track_add`: the Planner session for the create transaction, whose role gate resolves it
+/// live, and that session's Planner card for the first-message delivery, an operation that may
+/// outlive the session.
+pub(super) struct KeyedActor {
+    pub(super) create: ActorId,
+    pub(super) start: ActorId,
+    /// The `actor` the delivery's payload hash binds; a REST create keeps the header's spelling.
+    pub(super) start_label: String,
+}
+
+impl KeyedActor {
+    pub(super) fn rest(actor: &Actor) -> Self {
+        Self {
+            create: actor.to_actor_id(),
+            start: actor.to_actor_id(),
+            start_label: actor.as_str().to_string(),
+        }
+    }
+}
+
+/// One keyed create with a first message, as its caller derives it: the binding row's
+/// `(area_id, idempotency_key)` and the request fingerprint that key binds.
+pub(super) struct KeyedCreate {
+    pub(super) area_id: String,
+    pub(super) idempotency_key: String,
+    pub(super) create_request_sha256: String,
+    pub(super) text: String,
+}
+
+/// What [`plan_keyed_create`] decided: mint under a vacant key, or resume what it minted.
+pub(super) enum KeyedPlan {
+    Mint(FirstMessagePlan),
+    Resume(ResumeFirstMessage),
+}
+
 /// `SHA-256("track-create:{area_id}:{key}")`, prefixed `track-create-`: its own
 /// namespace, so it cannot collide with the area-chat flavour's `(area_id, key)` pair.
 fn derive_track_create_operation_key(area_id: &str, idempotency_key: &str) -> String {
@@ -191,6 +231,14 @@ pub(super) async fn plan_first_message(
     // The header is parsed BEFORE the `first_message` fork because it decides the
     // message-less fork too; a malformed key on a message-less create is a 400.
     let idempotency_key = parse_idempotency_key_header(headers)?;
+    if let Some(key) = &idempotency_key
+        && key.starts_with(TRACK_ADD_KEY_PREFIX)
+    {
+        return Err(CalmError::IdempotencyKeyInvalid(format!(
+            "the key must not start with `{TRACK_ADD_KEY_PREFIX}`: that namespace belongs to {}",
+            crate::mcp_server::tools::track_add::TOOL_TRACK_ADD
+        )));
+    }
     let Some(text) = first_message else {
         // No key means the legacy path verbatim; a key opts this shape into the same binding
         // row the `first_message` path uses.
@@ -205,11 +253,39 @@ pub(super) async fn plan_first_message(
                 .into(),
         )
     })?;
+    let create_request_sha256 = create_request_digest(&shape)?;
+    Ok(
+        match plan_keyed_create(
+            s,
+            KeyedCreate {
+                area_id: area_id.to_string(),
+                idempotency_key,
+                create_request_sha256,
+                text,
+            },
+        )
+        .await?
+        {
+            KeyedPlan::Mint(plan) => CreatePlan::Mint(plan),
+            KeyedPlan::Resume(resume) => CreatePlan::Resume(resume),
+        },
+    )
+}
+
+/// The keyed create's decision, before anything is validated or minted: the binding lookup,
+/// the fingerprint check and the arm. `POST /api/tracks` and `neige_track_add` both run it.
+pub(super) async fn plan_keyed_create(s: &RouteState, request: KeyedCreate) -> Result<KeyedPlan> {
+    let KeyedCreate {
+        area_id,
+        idempotency_key,
+        create_request_sha256,
+        text,
+    } = request;
+    let area_id = area_id.as_str();
     // Run before the folder claim, the track row, the cards and `materialize_workspace`,
     // so a rejected message leaves no track behind.
     validate_first_message(&text)?;
 
-    let create_request_sha256 = create_request_digest(&shape)?;
     let first_message_sha256 = first_message_digest(&text);
     let base_key = derive_track_create_operation_key(area_id, &idempotency_key);
     // Taken before either lookup, released when the plan is dropped at the end of the request.
@@ -249,7 +325,7 @@ pub(super) async fn plan_first_message(
 
     let selected_arm = select_arm(binding.is_some(), chosen_existing.is_some());
     match selected_arm {
-        SelectedArm::Mint => Ok(CreatePlan::Mint(plan)),
+        SelectedArm::Mint => Ok(KeyedPlan::Mint(plan)),
         SelectedArm::BindingLost => Err(CalmError::Internal(format!(
             "operation {operation_key} exists under this Idempotency-Key but no \
              track_create_idempotency row does. The binding commits inside the transaction that \
@@ -285,7 +361,7 @@ pub(super) async fn plan_first_message(
                 report_card_id: binding.report_card_id,
                 cwd,
             };
-            Ok(CreatePlan::Resume(ResumeFirstMessage { plan, prior }))
+            Ok(KeyedPlan::Resume(ResumeFirstMessage { plan, prior }))
         }
     }
 }
@@ -477,11 +553,11 @@ fn ensure_replay_message_matches(
 /// The `first_message` twin of `create_track_with_planner_harness`, for the arm that mints.
 pub(super) async fn create_track_with_first_message(
     s: RouteState,
-    actor: Actor,
+    actor: &KeyedActor,
     p: NewTrack,
     mut options: CreateTrackOptions,
     plan: FirstMessagePlan,
-) -> Result<Response> {
+) -> Result<Track> {
     // Conditioned on the plan, not on the closure running: `create_track_structure` is
     // reached by the unkeyed create too.
     // The rendezvous is `None` in production; a test seam for the cross-instance
@@ -495,11 +571,11 @@ pub(super) async fn create_track_with_first_message(
         first_message_sha256: Some(plan.first_message_sha256.clone()),
     });
     let (track, _created, planner_card_id, report_card_id) =
-        create_track_structure(s.clone(), actor.to_actor_id(), p, options).await?;
+        create_track_structure(s.clone(), actor.create.clone(), p, options).await?;
     let cwd = track.workspace.agent_cwd().to_string();
     start_planner_harness_with_first_message(
         &s,
-        &actor,
+        actor,
         SubmitArm::Mint,
         &track,
         planner_card_id,
@@ -510,7 +586,7 @@ pub(super) async fn create_track_with_first_message(
         plan.operation_key,
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(track)).into_response())
+    Ok(track)
 }
 
 /// Adopt the track a previous attempt under this `Idempotency-Key` minted, and repair
@@ -570,9 +646,9 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
 /// `CreateTrackOptions`: nothing here can mint.
 pub(super) async fn resume_prior_attempt(
     s: RouteState,
-    actor: Actor,
+    actor: &KeyedActor,
     resume: ResumeFirstMessage,
-) -> Result<Response> {
+) -> Result<Track> {
     let ResumeFirstMessage { plan, prior } = resume;
     let track = adopt_prior_track(
         &s,
@@ -591,7 +667,7 @@ pub(super) async fn resume_prior_attempt(
     };
     start_planner_harness_with_first_message(
         &s,
-        &actor,
+        actor,
         SubmitArm::Resume,
         &track,
         prior.planner_card_id,
@@ -602,7 +678,7 @@ pub(super) async fn resume_prior_attempt(
         plan.operation_key,
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(track)).into_response())
+    Ok(track)
 }
 
 /// The message-less resuming arm: 201 with the key's own track, or 409
@@ -625,231 +701,8 @@ pub(super) async fn resume_message_less(
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
-/// Which arm submitted, for the sole purpose of reading an `OperationOutcome`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SubmitArm {
-    Mint,
-    Resume,
-}
-
-/// Map an operation outcome onto this route's answer, per arm. `SucceededViaCollision`
-/// is globally unreachable today (nothing writes the `idempotency_collision`
-/// completion); the split is a fail-closed statement, not a signal the route depends on.
-fn response_for(arm: SubmitArm, outcome: OperationOutcome) -> Result<()> {
-    match outcome {
-        OperationOutcome::Succeeded { .. } => Ok(()),
-        // A fresh key cannot collide with itself; a 201 would promise a delivery this request
-        // did not make.
-        OperationOutcome::SucceededViaCollision { .. } if arm == SubmitArm::Mint => {
-            Err(CalmError::Internal(
-                "track create: a freshly minted Idempotency-Key resolved to an earlier \
-                 planner-harness-start operation, so this request delivered nothing"
-                    .to_string(),
-            ))
-        }
-        // On the resuming arms it is the expected reading: an earlier request
-        // under this key already delivered the message, and this one joins it.
-        OperationOutcome::SucceededViaCollision { .. } => Ok(()),
-        OperationOutcome::Failed {
-            last_error,
-            from_phase,
-            last_error_class,
-        } => Err(calm_error_from_operation_failure(
-            last_error_class.as_deref(),
-            harness_start_failure_message(&format!(
-                "operation failed in {from_phase:?}: {last_error}"
-            )),
-            from_phase,
-        )),
-        OperationOutcome::Stuck { reason, from_phase } => Err(CalmError::Internal(
-            harness_start_failure_message(&format!("operation stuck in {from_phase:?}: {reason}")),
-        )),
-    }
-}
-
-/// What a create that promised a delivery says when the harness start did not complete.
-/// The endpoint cannot say whether the message was delivered; it only promises that a
-/// retry under the same key creates no second track and delivers no second copy.
-fn harness_start_failure_message(reason: &str) -> String {
-    format!(
-        "track create: the track was created but its planner harness start did not complete, so \
-         the server cannot tell whether the first message reached the agent ({reason}). Nothing \
-         is rolled back — the track, its cards and its workspace are already committed, and this \
-         response does not assert that the track is usable. Retrying this create under the SAME \
-         Idempotency-Key is safe in the two senses the server can prove: it creates no second \
-         track, and it delivers no second copy of this message. Open the track and look before \
-         doing anything else."
-    )
-}
-
-/// Submit `planner-harness-start` carrying the first message. Deliberately NOT the
-/// best-effort shape `start_planner_harness` uses: a 201 for an operation that never
-/// enqueued the sentence would lie, and a 5xx is what makes the genuine-retry arm usable.
-#[allow(clippy::too_many_arguments)]
-async fn start_planner_harness_with_first_message(
-    s: &RouteState,
-    actor: &Actor,
-    arm: SubmitArm,
-    track: &Track,
-    planner_card_id: String,
-    report_card_id: String,
-    // `cwd` is NOT `track.workspace.path`: on a replay it is the chosen operation's `cwd`,
-    // so the resubmitted payload hashes to the same value after a repoint.
-    cwd: String,
-    text: String,
-    create_request_sha256: String,
-    operation_key: String,
-) -> Result<()> {
-    let request = PlannerHarnessStartOperationPayload {
-        actor: actor.to_actor_id(),
-        track_id: track.id.to_string(),
-        planner_card_id: CardId::from(planner_card_id),
-        report_card_id: Some(report_card_id),
-        sort: None,
-        cwd,
-        // The user's sentence is a `UserMessage`; `goal` stays reserved for the
-        // machine-written child-track bootstrap.
-        goal: None,
-        reset_harness_items: false,
-        force_new_thread: false,
-        profile: Default::default(),
-        create_card: None,
-        // Enqueued by `prepare_tx` inside the mint transaction; being part of the payload it
-        // also binds the body into `payload_hash`, so a different sentence under one key is a 409.
-        first_message: Some(text),
-        // Also carried in the operation payload for its local collision check; the durable
-        // authority is the binding row. Other producers leave the field `None`.
-        create_request_sha256: Some(create_request_sha256),
-        // Not a conversation create; nothing to brief.
-        opening_briefing: None,
-    };
-    let op_payload = serde_json::to_value(&request)?;
-    // Same hash shape as `start_planner_harness`, so the two paths cannot drift on what a
-    // payload is.
-    let payload_hash = stable_payload_hash(&serde_json::json!({
-        "actor": actor.as_str(),
-        "request": &request,
-    }))?;
-    let op_id = s
-        .operation_runtime
-        .submit(
-            PLANNER_HARNESS_START,
-            OperationKey {
-                operation_key: operation_key.clone(),
-                // Set, unlike the legacy path's `None`: this is the column
-                // `find_by_kind_and_idempotency` reads to recognise a replay.
-                idempotency_key: Some(operation_key),
-                payload_hash,
-            },
-            op_payload,
-        )
-        .await?;
-    let result = s.operation_runtime.wait(&op_id).await?;
-    response_for(arm, result.outcome)
-}
-
 #[cfg(test)]
 mod provider_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session_projection_repo::AgentProvider;
-
-    #[test]
-    fn cross_area_authorization_is_part_of_idempotent_create_identity() {
-        let shape = |allow_cross_area_cwd| CreateRequestShape {
-            planner_provider: AgentProvider::Codex,
-            model: None,
-            reasoning_effort: None,
-            title: "shared cwd".into(),
-            sort: None,
-            cwd: Some("/repo".into()),
-            template_id: None,
-            recipe_id: None,
-            template_input: None,
-            attach_folder: false,
-            allow_cross_area_cwd,
-            theme: RequestTheme {
-                fg: (1, 2, 3),
-                bg: (4, 5, 6),
-            },
-            fork_report_from: None,
-        };
-        let denied = create_request_digest(&shape(None)).unwrap();
-        let allowed =
-            create_request_digest(&shape(Some(super::super::CrossAreaCwdAuthorization {
-                folder_id: 7,
-                area_id: "owner".into(),
-            })))
-            .unwrap();
-        assert_ne!(
-            denied, allowed,
-            "authorization must require a distinct idempotency key"
-        );
-    }
-
-    /// Golden, not a round trip: a self-consistency check would stay green if the namespace
-    /// were merged into the conversation flavours'.
-    #[test]
-    fn the_track_create_key_is_a_pure_function_of_area_and_idempotency_key() {
-        let key = derive_track_create_operation_key("area-1", "key-a");
-        assert_eq!(
-            key,
-            // Independently computed: `sha256("track-create:area-1:key-a")`.
-            "track-create-1c14cc746b371ade3520c32701cb2ff76e25a1bab237884e200a7d528c7af95f"
-        );
-        assert_ne!(key, derive_track_create_operation_key("area-1", "key-b"));
-        assert_ne!(key, derive_track_create_operation_key("area-2", "key-a"));
-    }
-
-    /// The namespace separation, asserted by feeding ONE literal id to both derivations.
-    #[test]
-    fn the_track_create_namespace_never_collides_with_a_conversation_key() {
-        let create = derive_track_create_operation_key("id-1", "key-a");
-        let track = crate::conversation_keys::derive_track_conversation_keys("id-1", "key-a");
-        assert_ne!(create, track.operation_key);
-    }
-
-    /// [`SelectedArm`]'s table, cell by cell.
-    #[test]
-    fn the_arm_is_decided_by_the_binding_then_by_what_sits_on_the_chosen_key() {
-        let table = [
-            // (binding_hit, chosen_is_occupied, expected)
-            (false, false, SelectedArm::Mint),
-            (false, true, SelectedArm::BindingLost),
-            (true, true, SelectedArm::Replay),
-            (true, false, SelectedArm::GenuineRetry),
-        ];
-        for (binding_hit, occupied, want) in table {
-            assert_eq!(
-                select_arm(binding_hit, occupied),
-                want,
-                "binding_hit={binding_hit} occupied={occupied}"
-            );
-        }
-    }
-
-    /// A collision outcome is a success only on a resuming arm. Constructed directly: the
-    /// variant is globally unreachable, so there is no integration construction.
-    #[test]
-    fn a_collision_outcome_is_a_success_only_on_a_resume_arm() {
-        let collision = || OperationOutcome::SucceededViaCollision {
-            existing_op_id: "op-1".to_string(),
-            result: serde_json::json!({}),
-        };
-        let plain = || OperationOutcome::Succeeded {
-            result: serde_json::json!({}),
-        };
-        assert!(response_for(SubmitArm::Resume, collision()).is_ok());
-        assert!(response_for(SubmitArm::Mint, plain()).is_ok());
-        assert!(response_for(SubmitArm::Resume, plain()).is_ok());
-        let refused = response_for(SubmitArm::Mint, collision())
-            .expect_err("a fresh key cannot collide with itself");
-        assert!(
-            matches!(refused, CalmError::Internal(_)),
-            "the mint arm must fail closed, not answer 201 for a delivery it did not make: \
-             {refused:?}"
-        );
-    }
-}
+mod tests;

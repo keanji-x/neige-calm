@@ -356,6 +356,7 @@ mod tests {
             gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
             plugin_host,
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+            track_creator: Arc::new(tokio::sync::OnceCell::new()),
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),

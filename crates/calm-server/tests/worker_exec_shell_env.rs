@@ -199,6 +199,7 @@ async fn boot() -> Boot {
         gate_logs_dir: tmp.path().join("gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        track_creator: Arc::new(tokio::sync::OnceCell::new()),
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
         series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
             None,

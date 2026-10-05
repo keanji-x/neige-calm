@@ -12072,6 +12072,20 @@
             "type": "integer",
             "format": "int64"
           },
+          "creator_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The raw idempotency key that creator passed; set exactly when `creator_track_id` is."
+          },
+          "creator_track_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Track whose Planner created this one as a top-level Track; `None` for every other\ncreation. May name a Track that no longer exists."
+          },
           "cwd": {
             "type": "string",
             "description": "Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`."

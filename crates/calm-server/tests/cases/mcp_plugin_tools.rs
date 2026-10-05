@@ -1149,3 +1149,5 @@ mod invest_caller_identity;
 mod invest_series;
 #[path = "recipe_slots.rs"]
 mod recipe_slots;
+#[path = "mcp_plugin_tools/track_meta.rs"]
+mod track_meta;

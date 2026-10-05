@@ -165,6 +165,15 @@ pub struct Config {
     )]
     pub shared_codex_appserver_stop_grace_secs: u64,
 
+    /// How many open Tracks one Track's Planner may have created with `neige_track_add` at once;
+    /// a further add is refused until one closes. Flag only, no `env =`.
+    #[arg(
+        long,
+        default_value_t = 16,
+        value_parser = clap::value_parser!(u32).range(1..=256)
+    )]
+    pub track_add_max_open: u32,
+
     /// Log directory for the shared codex app-server child.
     #[arg(long, env = "CALM_SHARED_CODEX_APPSERVER_LOG_DIR")]
     pub shared_codex_appserver_log_dir: Option<PathBuf>,

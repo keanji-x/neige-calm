@@ -264,6 +264,13 @@ pub struct Track {
     /// The recipe's `revision` at the moment this track was created.
     #[serde(default)]
     pub recipe_revision: Option<i64>,
+    /// The Track whose Planner created this one as a top-level Track; `None` for every other
+    /// creation. May name a Track that no longer exists.
+    #[serde(default)]
+    pub creator_track_id: Option<String>,
+    /// The raw idempotency key that creator passed; set exactly when `creator_track_id` is.
+    #[serde(default)]
+    pub creator_key: Option<String>,
     #[serde(default)]
     pub workspace: TrackWorkspace,
     pub created_at: i64,

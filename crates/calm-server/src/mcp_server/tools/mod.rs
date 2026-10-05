@@ -13,6 +13,7 @@ pub mod report_tag;
 pub mod review;
 pub mod source;
 pub mod terminal;
+pub mod track_add;
 pub mod track_file;
 pub mod track_history;
 pub mod track_rename;
@@ -38,6 +39,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     user_notify::register_into(registry);
     preview::register_into(registry);
     track_state::register_into(registry);
+    track_add::register_into(registry);
     track_report::register_into(registry);
     track_report_blocks::register_into(registry);
     track_file::register_into(registry);
@@ -170,8 +172,8 @@ mod tests {
     /// compact input schema. One-sided caps; a change that shrinks the surface lowers them.
     #[test]
     fn planner_tool_surface_fits_its_byte_budget() {
-        // Measured 29,909 bytes across 30 Planner tools after the overlay view kind was removed
-        // (#2021 S4). Keep the aggregate bound and the unchanged per-description cap.
+        // Measured 29,950 bytes across 33 Planner tools after `neige_track_add` and the description
+        // trims that paid for it (#2104 K1). Keep the aggregate bound and the per-description cap.
         const SURFACE_MAX_BYTES: usize = 30_000;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 

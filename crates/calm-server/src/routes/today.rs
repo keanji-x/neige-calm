@@ -284,7 +284,7 @@ async fn today_launchpad_ensure_tx(
         (Track { id:id.into(), area_id:area_id.to_string().into(), title:"Today".into(), sort,
             pinned_at:None, closed_at:None, cwd_wire_alias:String::new(),
             template_id:None, plugin_scope:None, purpose:Some("launchpad".into()), template_input:None,
-            recipe_id:None, recipe_revision:None, workspace: TrackWorkspace::default(), created_at:now, updated_at:now }, true, false)
+            recipe_id:None, recipe_revision:None, creator_track_id:None, creator_key:None, workspace: TrackWorkspace::default(), created_at:now, updated_at:now }, true, false)
     };
 
     // ONE workspace writer for all three branches. The desired workspace is a pure function

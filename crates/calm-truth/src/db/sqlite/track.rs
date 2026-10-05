@@ -207,6 +207,9 @@ pub async fn track_create_tx(
         template_input: p.template_input,
         recipe_id: recipe_origin.map(|o| o.recipe_id.clone()),
         recipe_revision: recipe_origin.map(|o| o.revision),
+        // Stamped afterwards, in the same transaction, by the one create that records a creator.
+        creator_track_id: None,
+        creator_key: None,
         workspace,
         created_at: now,
         updated_at: now,

@@ -11,6 +11,8 @@ mod report_retired_kind;
 mod report_sources_track_lifecycle;
 #[path = "cases/rest_track_report.rs"]
 mod rest_track_report;
+#[path = "cases/track_add.rs"]
+mod track_add;
 #[path = "cases/track_create_first_message.rs"]
 mod track_create_first_message;
 #[path = "cases/track_create_sync_daemon.rs"]

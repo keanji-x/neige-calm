@@ -31,7 +31,7 @@ impl ForgeCallerScope {
 mod tests {
     use super::*;
     use crate::plugin_host::mcp::{
-        InitializeMeta, KERNEL_PROTOCOL_VERSION, McpClient, TRACK_META_KEY,
+        InitializeMeta, KERNEL_PROTOCOL_VERSION, McpClient, TRACK_META_KEY, TrackMeta,
     };
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -90,10 +90,16 @@ mod tests {
             track_id: "track-a".into(),
             card_id: "card-a".into(),
         };
+        let track = TrackMeta {
+            id: "track-a".into(),
+            creator_track_id: None,
+            creator_key: None,
+        };
         let result = client
             .forge_tools_call(
                 "tool-a",
                 json!({FORGE_CALLER_META_KEY:{"card_id":"spoofed-card"}}),
+                &track,
                 &caller,
             )
             .await

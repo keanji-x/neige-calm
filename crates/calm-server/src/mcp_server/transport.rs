@@ -614,13 +614,12 @@ async fn dispatch_plugin_tools_call(
                         card_id: &identity.card_id,
                         session_id: &identity.session_id,
                     };
-                    c.tools_call(
-                        &tool_name,
-                        arguments,
-                        identity.track_id.as_deref(),
-                        Some(caller),
-                    )
-                    .await
+                    let track = match identity.track_id.as_deref() {
+                        Some(track_id) => Some(track_meta(ctx, track_id).await?),
+                        None => None,
+                    };
+                    c.tools_call(&tool_name, arguments, track.as_ref(), Some(caller))
+                        .await
                 }
                 ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await,
                 // An `Ok` result carries the child's own `isError` verdict, an `Err` is a kernel-side refusal.
@@ -894,10 +893,27 @@ async fn dispatch_forge_action_plugin_tool(
     identity: ToolCallIdentity,
 ) -> Result<Value, RpcError> {
     let caller = forge_caller_scope(plugin_id, &identity)?;
+    let track = track_meta(ctx, &caller.track_id).await?;
     let result = client
-        .forge_tools_call(tool_name, arguments, &caller)
+        .forge_tools_call(tool_name, arguments, &track, &caller)
         .await?;
     dispatch_forge_action_result(ctx, result, plugin_id, identity).await
+}
+
+/// The caller Track's `_meta["dev.neige/track"]`, read from its row for every local plugin call.
+async fn track_meta(
+    ctx: &AppContext,
+    track_id: &str,
+) -> Result<crate::plugin_host::mcp::TrackMeta, RpcError> {
+    let track = ctx
+        .repo
+        .track_get(track_id)
+        .await
+        .map_err(|e| RpcError::internal(format!("plugin tools/call: track lookup: {e}")))?
+        .ok_or_else(|| {
+            RpcError::internal(format!("plugin tools/call: track {track_id} not found"))
+        })?;
+    Ok(crate::plugin_host::mcp::TrackMeta::from_track(&track))
 }
 
 async fn dispatch_forge_action_result(

@@ -1,5 +1,5 @@
 {
-  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597). #1292 S3: the populated recipe provenance pair (the other track.updated goldens pin it as null). #1893 S5: the Track policy is deleted; a row stored with a populated claude_permissions_policy still replays and re-serializes without it (canonical).",
+  "description": "track.updated: TrackUpdatedPayload flattens the Track row to top level; agent_message rides adjacent (#597). #1292 S3: the populated recipe provenance pair (the other track.updated goldens pin it as null). #2104 K1: likewise the populated creator provenance pair. #1893 S5: the Track policy is deleted; a row stored with a populated claude_permissions_policy still replays and re-serializes without it (canonical).",
   "wire": {
     "ev": "track.updated",
     "data": {
@@ -24,6 +24,8 @@
       "agent_message": "planner says hi",
       "recipe_id": "recipe-01",
       "recipe_revision": 7,
+      "creator_track_id": "track-00",
+      "creator_key": "invest-US-SPY-1",
       "claude_permissions_policy": {
         "edit": ["src/**", "tests/**"],
         "bash": ["git", "python3 -m unittest"],
@@ -54,7 +56,9 @@
       "updated_at": 2000,
       "agent_message": "planner says hi",
       "recipe_id": "recipe-01",
-      "recipe_revision": 7
+      "recipe_revision": 7,
+      "creator_track_id": "track-00",
+      "creator_key": "invest-US-SPY-1"
     }
   }
 }
