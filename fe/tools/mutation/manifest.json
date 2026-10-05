@@ -1881,5 +1881,28 @@
       "web/src/app/router/new-card.test.tsx"
     ],
     "why_more_than_one": "Measured in the exclusive worktree: reading `operation_failed` as unknown reddens only the case that answers a create with it, which then shows the fixed unknown state and a Try again under the spent key instead of the server's reason; every other card-create answer is matched by another rule and stays green."
+  },
+  {
+    "mutation_id": "s2131-s7-create-retry-shows-raw-text",
+    "defends": [
+      "oracle:INV-APP-122"
+    ],
+    "target": "core/domain/conversation.ts",
+    "patch": "diff --git a/core/domain/conversation.ts b/core/domain/conversation.ts\nindex 4cfe08b2f..d01e7bbc3 100644\n--- a/core/domain/conversation.ts\n+++ b/core/domain/conversation.ts\n@@ -791,7 +791,7 @@ export const CONVERSATION_CREATE_TEXT: WriteText = Object.freeze({\n  */\n export function conversationCreateFailure(failure: ApiFailure | null): ConversationCreateFailure {\n   const kind = classifyFailure(failure, CONVERSATION_CREATE_FAILURES);\n-  return { kind, message: kind === 'retry' ? CONVERSATION_CREATE_TEXT.unknown : refusedText(failure, CONVERSATION_CREATE_TEXT.refused) };\n+  return { kind, message: refusedText(failure, CONVERSATION_CREATE_TEXT.refused) };\n }\n \n const DIFF_PREFIX = '## Track state changes since your last turn';\n",
+    "expected_red": [
+      "track conversations says { kind: 'transport', message: 'Transport request failed' } as Starting the conversation is unconfirmed. Try again to check the same conversation.",
+      "track conversations says { kind: 'decode', message: 'API response did not match its schema' } as Starting the conversation is unconfirmed. Try again to check the same conversation.",
+      "track conversations says null as Starting the conversation is unconfirmed. Try again to check the same conversation.",
+      "track conversations says { kind: 'unauthorized', status: 401, code: 'unauthorized', message: 'signed out' } as Starting the conversation is unconfirmed. Try again to check the same conversation.",
+      "track conversations says { kind: 'http', status: 500, code: 'internal', message: 'db exploded' } as Starting the conversation is unconfirmed. Try again to check the same conversation.",
+      "track conversations says { kind: 'http', status: 503, code: 'service_unavailable', message: 'try later' } as Starting the conversation is unconfirmed. Try again to check the same conversation.",
+      "track conversations says { kind: 'http', status: 409, code: 'idempotency_key_concurrent', message: 'in flight' } as Starting the conversation is unconfirmed. Try again to check the same conversation.",
+      "track conversations [#2131 S7] a conversation create that fails a lost answer: says the create is unconfirmed and keeps the words and Try again"
+    ],
+    "selection_paths": [
+      "core/domain/conversation.test.ts",
+      "web/src/app/router/track-conversation.test.tsx"
+    ],
+    "why_more_than_one": "Measured in the exclusive worktree: conversationCreateFailure is the one place a draft create's failure gets its sentence, so reading every kind as the answer's own text reddens each ambiguous case of its sentence table (a lost, unreadable or absent answer, a 401, a 500, a 503, a concurrent key) and the one route case whose create answer is lost, which then shows the transport text. The answered refusals keep their server reason and stay green, as do the not-sent and recovery-change cases, whose sentences the route reads from CONVERSATION_CREATE_TEXT directly."
   }
 ]
