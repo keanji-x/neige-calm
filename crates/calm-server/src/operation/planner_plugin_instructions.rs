@@ -72,7 +72,7 @@ async fn instructing_plugins(
         return Ok(Vec::new());
     }
     let scope = plugin_scope_for_track_row(track, Some(plugin)).await;
-    stored.retain(|manifest| scope.allows_manifest(manifest)); // MUTATION-K2-3
+    stored.retain(|manifest| scope.allows_manifest(manifest));
     stored.sort_by(|a, b| a.id.cmp(&b.id));
     let referenced = if stored
         .iter()
@@ -85,7 +85,7 @@ async fn instructing_plugins(
     Ok(stored
         .into_iter()
         .filter(|manifest| {
-            plugin_documents_track(manifest, track) || referenced.contains(&manifest.id) // MUTATION-K2-1
+            plugin_documents_track(manifest, track) || referenced.contains(&manifest.id)
         })
         .filter_map(|manifest| Some((manifest.id, manifest.planner_instructions?)))
         .collect())
@@ -123,7 +123,7 @@ fn render_section(plugins: &[(String, String)]) -> String {
     if plugins.is_empty() {
         return String::new();
     }
-    let budget = PLUGIN_INSTRUCTIONS_CAP - OMITTED_NOTICE.len(); // MUTATION-K2-2
+    let budget = PLUGIN_INSTRUCTIONS_CAP - OMITTED_NOTICE.len();
     let mut section = String::from(JOINER);
     let mut omitted = false;
     for (id, text) in plugins {
