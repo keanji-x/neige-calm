@@ -8,7 +8,7 @@ mechanism names its hazard (§6). (4) One consistent agent-facing surface, exact
 for the Planner.
 
 **Review tier: L2.** A new table and migration (persistence), and one Track's Planner wakes another
-Track's Planner (authority boundary). **Status:** design rev 3 (review round 1 folded, §12), docs only. **Baseline:** `origin/main`
+Track's Planner (authority boundary). **Status:** implemented as S1 (§12 notes); design rev 4. **Baseline:** `origin/main`
 162aff1d1; every `file:line` below was read there. Issue: #2130.
 
 **Outcome.** A Planner sends one mail to another open Track of its Area. The send returns at once.
@@ -109,7 +109,7 @@ carries tag `nvda`. Both open, both with Planners.
 
 ## 3. Data model and mail state
 
-Migration `0NNN_mails.sql` (number assigned last; head today is 0140):
+Migration `0145_mails.sql` (renumbered twice while main moved; see §12):
 
 ```sql
 CREATE TABLE mails (
