@@ -1361,8 +1361,6 @@ function useConversationPane(
               draft={{ text: composer.text, onChange: setComposerText }}
               disabled={store.sendBlocked || !store.historyReady || edit.replacing}
               sendWaiting={edit.replacing} {...(edit.bar === undefined ? {} : { editing: edit.bar })}
-              /* `delivered` is the one outcome that licenses forgetting the images; every
-                               other one leaves the message with the reader. */
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
               showSideCommand={options?.showSideCommand}
               onSideConversation={options?.onSide === undefined || !store.historyReady ? undefined

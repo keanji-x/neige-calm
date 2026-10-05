@@ -16,7 +16,7 @@ import type {
   PlannerAttachment, UploadAttachmentResponse,
 } from '../../../../core/api/generated/wire.js';
 import {
-  ATTACHABLE_IMAGE_TYPES, MAX_ATTACHMENTS_PER_MESSAGE,
+  ATTACHABLE_IMAGE_TYPES, MAX_ATTACHMENTS_PER_MESSAGE, TOO_MANY_IMAGES,
 } from '../../../../core/domain/conversation.js';
 import styles from './attachments.module.css';
 
@@ -88,7 +88,7 @@ export function usePlannerAttachments(
     const refused = refusalFor(file.type);
     if (refused !== null) { refuse(refused); return; }
     if (live.current.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
-      refuse(`A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.`);
+      refuse(TOO_MANY_IMAGES);
       return;
     }
     editUpload(target, (current) => ({ inFlight: current.inFlight + 1, refusal: null }));
@@ -134,7 +134,7 @@ export function PlannerAttachButton({ attachments, support, disabled = false }: 
   const tooltip = unavailable
     ? (support.reason ?? ATTACHED_WORKSPACE_REASON)
     : attachments.atCapacity
-      ? `A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.`
+      ? TOO_MANY_IMAGES
       : undefined;
   return (
     <span className={styles.attach} data-nc-attach="">
