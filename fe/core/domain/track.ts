@@ -10,7 +10,7 @@ import {
   activityStateOf, type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 import { visibleAreas, type Area } from './area.js';
-import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
+import { casAttempts, type FailureTable, type Landed, type WriteClass, type WriteFailure, type WriteText } from './failure-class.js';
 
 /**
  * `cwd` and the `*_at` columns may be absent from the OpenAPI `required` set; the decoder supplies
@@ -427,6 +427,56 @@ export function deleteTrackRecipeOperation(recipeId: string): ApiOperation<undef
     path: `/api/track-recipes/${encodeURIComponent(recipeId)}`,
     responseSchema: z.undefined(),
   };
+}
+
+/**
+ * What a failed `POST /api/track-recipes` says: 400 (an empty title, a body that would not parse), 403 (not the user),
+ * 413 and 422 are answered before anything is stored. Anything else may have made the recipe, and the create sends no key
+ * yet, so it is never sent again on its own: the recipe list, read again once the write settles, shows it if it was made.
+ */
+export const RECIPE_CREATE_FAILURES: FailureTable<WriteFailure> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 413, 422]), is: 'refused' as const })]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const RECIPE_CREATE_TEXT: WriteText = Object.freeze({
+  refused: 'The recipe was not created.',
+  unknown: 'Creating the recipe is unconfirmed, so it is not sent again. Copy what you need, then check the list: it shows the recipe if it was created.',
+});
+
+/**
+ * What a failed `PUT /api/track-recipes/{id}` says. A 409 is the `if_revision` CAS lost: `stale`, nothing was stored. 400,
+ * 403, 404 (the recipe is gone), 413 and 422 are refusals answered before anything is stored. Anything else may have
+ * stored the save; saving again is safe, because it is gated on the same revision.
+ */
+export const RECIPE_SAVE_FAILURES: FailureTable<WriteFailure | 'stale'> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([409]), is: 'stale' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 404, 413, 422]), is: 'refused' as const }),
+  ]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const RECIPE_SAVE_TEXT: WriteText = Object.freeze({
+  refused: 'The recipe was not saved.', unknown: 'Saving the recipe is unconfirmed. Save again to check.',
+});
+
+/** One recipe writer's saves: a save retried after an unknown outcome and answered 409 is read back first. */
+export function recipeSaveAttempts() {
+  return casAttempts(RECIPE_SAVE_FAILURES);
+}
+
+/**
+ * Whether the recipe `listed` holds exactly what one save sent, which is how a save whose answer was lost is known to have
+ * landed. Compared as sent: a body the server rewrote on the way in (a fence re-rendered) does not match, and stays stale.
+ */
+export function recipeSaveLanded(
+  listed: readonly TrackRecipe[], recipeId: string, sent: Readonly<{ title: string; body: string }>,
+): Landed<TrackRecipe> {
+  const stored = listed.find((recipe) => recipe.id === recipeId);
+  return stored !== undefined && stored.title === sent.title && stored.body === sent.body ? { stored } : null;
 }
 
 export type TrackPatchBody = Readonly<{

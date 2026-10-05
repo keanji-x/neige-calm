@@ -58,10 +58,10 @@ type Options = Readonly<{
   /** `GET /api/track-recipes`, answered per 0-based read index, so a test can say what the list held before a write and after its refetch. */
   recipeList?: (call: number) => ApiTransportResponse;
   templates?: unknown;
-  /** What `PUT /api/track-recipes/{id}` answers. */
-  put?: ApiTransportResponse;
+  /** What `PUT /api/track-recipes/{id}` answers, or a function of each attempt that may lose the answer. */
+  put?: ApiTransportResponse | (() => Promise<ApiTransportResponse>);
   /** What `POST /api/track-recipes` answers — the create. */
-  post?: ApiTransportResponse;
+  post?: ApiTransportResponse | (() => Promise<ApiTransportResponse>);
   /** What `DELETE /api/track-recipes/{id}` answers. */
   remove?: ApiTransportResponse;
 }>;
@@ -73,12 +73,14 @@ function harness(options: Options = {}) {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
       if (request.method === 'PUT' && request.path.startsWith('/api/track-recipes/')) {
+        if (typeof options.put === 'function') return options.put();
         return Promise.resolve(options.put ?? { status: 200, statusText: 'OK', body: RECIPE });
       }
       if (request.method === 'DELETE' && request.path.startsWith('/api/track-recipes/')) {
         return Promise.resolve(options.remove ?? { status: 204, statusText: 'No Content', body: null });
       }
       if (request.method === 'POST' && request.path === '/api/track-recipes') {
+        if (typeof options.post === 'function') return options.post();
         return Promise.resolve(options.post ?? { status: 200, statusText: 'OK', body: RECIPE });
       }
       if (request.path === '/api/track-recipes') {
@@ -298,6 +300,131 @@ describe('creating a recipe', () => {
     await waitFor(() => expect(listReads()).toBeGreaterThan(1));
     expect(await screen.findByText('Canonicalised by the server.')).toBeTruthy();
     expect(screen.queryByText(/You have no recipes yet/)).toBeNull();
+  });
+});
+
+/* #2131 S5: a save is a CAS write and a create sends no key yet; each failure is read through the recipe's tables. */
+describe('a recipe write whose answer was lost', () => {
+  const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('socket hang up'));
+  const stale: ApiTransportResponse = {
+    status: 409, statusText: 'Conflict', body: { error: 'conflict: track recipe r-ship is at revision 8, not 7', code: 'conflict' },
+  };
+  const RAW = /socket hang up|Transport request failed|timed out|schema|offline|connection|conflict:/i;
+  const SAVE_UNKNOWN = 'Saving the recipe is unconfirmed. Save again to check.';
+
+  async function editAndSave(user: ReturnType<typeof userEvent.setup>, text: string) {
+    const field = await openForEditing(user);
+    await user.clear(field);
+    await user.type(field, text);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+  }
+
+  it('confirms a retried save whose 409 is its own first save, landed', async () => {
+    const user = userEvent.setup();
+    let stored = RECIPE;
+    let attempt = 0;
+    const { sent } = atRecipes({
+      recipeList: () => OK([stored]),
+      /* The first save is stored but its answer is lost; the retry, still on revision 7, meets the 409 that store caused. */
+      put: () => {
+        attempt += 1;
+        if (attempt > 1) return Promise.resolve(stale);
+        stored = { ...RECIPE, body: 'Saved once.', revision: 8 };
+        return lost();
+      },
+    });
+    await editAndSave(user, 'Saved once.');
+    expect((await screen.findByRole('alert')).textContent).toBe(SAVE_UNKNOWN);
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    /* Saved: the rendered view, the stored row, no notice. */
+    expect(await screen.findByRole('button', { name: 'Edit' })).toBeTruthy();
+    expect(screen.getByText('Saved once.')).toBeTruthy();
+    expect(screen.queryByText(/changed somewhere else/)).toBeNull();
+    expect(screen.queryAllByRole('alert')).toEqual([]);
+    expect(sent.filter((request) => request.method === 'PUT').map((request) => request.body)).toEqual([
+      { title: 'Ship checklist', body: 'Saved once.', if_revision: 7 }, { title: 'Ship checklist', body: 'Saved once.', if_revision: 7 },
+    ]);
+  });
+
+  it('still calls a retried save stale when someone else changed the recipe', async () => {
+    const user = userEvent.setup();
+    let stored = RECIPE;
+    let attempt = 0;
+    atRecipes({
+      recipeList: () => OK([stored]),
+      /* The first save never arrived; meanwhile another window saved its own text. */
+      put: () => {
+        attempt += 1;
+        if (attempt > 1) return Promise.resolve(stale);
+        stored = { ...RECIPE, body: "The other window's version.\n", revision: 8 };
+        return lost();
+      },
+    });
+    await editAndSave(user, 'Half-finished thought.');
+    expect((await screen.findByRole('alert')).textContent).toBe(SAVE_UNKNOWN);
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(/changed somewhere else/)).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: BODY_FIELD })).toHaveProperty('value', 'Half-finished thought.');
+  });
+
+  it('calls a first 409 stale without reading the recipe back', async () => {
+    const user = userEvent.setup();
+    const { listReads } = atRecipes({ put: stale });
+    await screen.findByRole('button', { name: 'Ship checklist' });
+    const before = listReads();
+    await editAndSave(user, 'Half-finished thought.');
+    expect(await screen.findByText(/changed somewhere else/)).toBeTruthy();
+    /* Only the settle's refetch of the list, never a read-back: one more read at most. */
+    await waitFor(() => expect(listReads()).toBe(before + 1));
+  });
+
+  it('shows a refused save in the server’s words and a lost one as the fixed state, never transport text', async () => {
+    const user = userEvent.setup();
+    let attempt = 0;
+    atRecipes({
+      put: () => {
+        attempt += 1;
+        return attempt === 1 ? lost() : Promise.resolve({
+          status: 400, statusText: 'Bad Request', body: { error: 'track recipe body: unclosed fence', code: 'bad_request' },
+        });
+      },
+    });
+    await editAndSave(user, 'Draft.');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(SAVE_UNKNOWN);
+    expect(alert.textContent).not.toMatch(RAW);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('track recipe body: unclosed fence')).toBeTruthy();
+  });
+
+  it('does not create a recipe again after a create whose answer was lost, and reads the list again', async () => {
+    const user = userEvent.setup();
+    const { sent, listReads } = atRecipes({ recipeList: () => OK([]), post: lost });
+    await screen.findByText(/You have no recipes yet/);
+    const before = listReads();
+    await composeAndSave(user);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('Creating the recipe is unconfirmed, so it is not sent again. Copy what you need, '
+      + 'then check the list: it shows the recipe if it was created.');
+    expect(alert.textContent).not.toMatch(RAW);
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('textbox', { name: BODY_FIELD })).toHaveProperty('value', 'What the author typed.');
+    await waitFor(() => expect(listReads()).toBeGreaterThan(before));
+    expect(sent.filter((request) => request.method === 'POST' && request.path === '/api/track-recipes')).toHaveLength(1);
+  });
+
+  it('lets a refused create be saved again once the reader fixes it', async () => {
+    const user = userEvent.setup();
+    atRecipes({
+      recipeList: () => OK([]),
+      post: { status: 400, statusText: 'Bad Request', body: { error: 'track recipe title must not be empty', code: 'bad_request' } },
+    });
+    await composeAndSave(user);
+    expect((await screen.findByRole('alert')).textContent).toBe('track recipe title must not be empty');
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveProperty('disabled', false);
   });
 });
 

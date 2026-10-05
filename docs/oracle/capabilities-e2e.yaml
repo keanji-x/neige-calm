@@ -113,7 +113,7 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:333,416-421,516-521; fe/core/domain/conversation-outbox.ts:129-171;
+  source: fe/web/src/app/router/public.tsx:330,413-418,513-518; fe/core/domain/conversation-outbox.ts:129-171;
     fe/web/src/app/conversations/outbox.ts:188-193
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
@@ -392,7 +392,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:22,33-38,81-95,115-137;
-    fe/web/src/app/router/new-track-route.tsx:73; fe/web/src/app/router/public.tsx:1288,1835-1841;
+    fe/web/src/app/router/new-track-route.tsx:73; fe/web/src/app/router/public.tsx:1285,1791-1797;
     fe/web/src/features/chat/thread/public.tsx:487,506,533,538-563
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose
@@ -423,8 +423,8 @@
     reads as their text having been changed behind their back; rendering the response makes it the
     thing they see at the moment it happens. This is the failure an implementation is likeliest to
     have, because it looks correct in every case where the server changed nothing.
-  source: fe/web/src/features/report/recipe/public.tsx:56-72,169-173
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:176,274,287
+  source: fe/web/src/features/report/recipe/public.tsx:60-76,174-179
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:178,276,289
   owner_slice: features/report/recipe
   intentional_omission: false
   runtime_layer: features
@@ -445,8 +445,8 @@
     dropping it would turn the cheap failure into an expensive one. Modelled as its own outcome
     because "keep the draft" is a behaviour, and deciding a behaviour by matching an error string
     makes it depend on wording.
-  source: fe/web/src/features/report/recipe/public.tsx:20-26,155-161
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:192,212
+  source: fe/web/src/features/report/recipe/public.tsx:20-30,160-166
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:194,214
   owner_slice: features/report/recipe
   intentional_omission: false
   runtime_layer: features
@@ -474,7 +474,7 @@
   source: fe/web/src/features/area/default-pills/public.tsx:21-27,85-98,137-155;
     fe/web/src/features/area/new-track/public.tsx:32-42,134-138,162-195,213-235
   authoritative_test: fe/web/src/features/area/new-track/recipe-picker.test.tsx:100,113,133,146;
-    fe/web/src/app/router/recipes-route.test.tsx:306-326
+    fe/web/src/app/router/recipes-route.test.tsx:433-453
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features

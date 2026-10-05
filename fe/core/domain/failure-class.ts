@@ -71,19 +71,9 @@ export type WriteFailure = 'refused' | 'unknown';
 export type WriteClass = WriteFailure | 'done';
 
 /**
- * The sentence for a refused write on the route `table` describes, or `null` when it was not refused: a refusal is the
- * server's own reason, or `refused` when it gave none, and a write that was not sent reads `refused` too. An unknown
- * outcome is the caller's fixed state, which never speaks of the connection: that is the global indicator's.
- */
-export function refusalText(failure: ApiFailure | NotSentError | null, table: FailureTable<WriteClass>, refused: string): string | null {
-  if (!(failure instanceof NotSentError) && classifyFailure(failure, table) !== 'refused') return null;
-  return refusedText(failure, refused);
-}
-
-/**
  * The words of a write its own table already read as refused: the server's reason, or `refused` when it gave none or
  * nothing was sent. For a route whose classes are its own (a create's key handling); every other route reads through
- * {@link refusalText}.
+ * {@link readWriteFailure}.
  */
 export function refusedText(failure: ApiFailure | NotSentError | null, refused: string): string {
   return failure === null || failure instanceof NotSentError || failure.message === '' ? refused : failure.message;
@@ -92,21 +82,91 @@ export function refusedText(failure: ApiFailure | NotSentError | null, refused: 
 /** One write's fixed sentences: when it was refused without a reason, and when its outcome is unknown. */
 export type WriteText = Readonly<{ refused: string; unknown: string }>;
 
+/** A compare-and-set write's classes: also `stale`, the revision it was made against has moved on and nothing was stored. */
+export type CasClass = WriteClass | 'stale';
+
+/** One failed write as its class reads it: a refusal and an unknown outcome carry their sentence, `done` and `stale` none. */
+export type WriteReading<C extends CasClass> = C extends 'refused' | 'unknown'
+  ? Readonly<{ is: C; text: string }>
+  : Readonly<{ is: C }>;
+
+/** The class of a failed write on `table`: a write that was not sent is `refused` on every route. */
+function classOf<C extends string>(failure: ApiFailure | NotSentError | null, table: FailureTable<C>): C | 'refused' {
+  return failure instanceof NotSentError ? 'refused' : classifyFailure(failure, table);
+}
+
+/**
+ * The one sentence rule for a failed write on the route `table` describes. A write that was not sent is `refused`; a
+ * refusal says the server's reason (or `text.refused`), an unknown outcome `text.unknown`, which never speaks of the
+ * connection: that is the global indicator's. No transport text shows. Every reader below projects this one.
+ */
+function readFailure<C extends CasClass>(
+  failure: ApiFailure | NotSentError | null, table: FailureTable<C>, text: WriteText,
+): WriteReading<C | 'refused'> {
+  const is = classOf(failure, table);
+  if (is === 'refused') return { is, text: refusedText(failure, text.refused) };
+  if (is === 'unknown') return { is, text: text.unknown } as WriteReading<C | 'refused'>;
+  return { is } as WriteReading<C | 'refused'>;
+}
+
+/** {@link readFailure} of a rejected write's error: what the class says, with its sentence. */
+export function readWriteFailure<C extends CasClass>(error: unknown, table: FailureTable<C>, text: WriteText): WriteReading<C | 'refused'> {
+  return readFailure(writeFailureOf(error), table, text);
+}
+
+/** What a failed write's rejection means on the route `table` describes; a write that was not sent is refused. */
+export function writeClassOf<C extends CasClass>(error: unknown, table: FailureTable<C>): C | 'refused' {
+  return classOf(writeFailureOf(error), table);
+}
+
+/**
+ * The sentence for a refused write on the route `table` describes, or `null` when it was not refused: the refusal
+ * projection of {@link readFailure}, for callers that hold the failure rather than the error.
+ */
+export function refusalText(failure: ApiFailure | NotSentError | null, table: FailureTable<CasClass>, refused: string): string | null {
+  const reading = readFailure(failure, table, { refused, unknown: '' });
+  return reading.is === 'refused' ? reading.text : null;
+}
+
 /**
  * How the non-chat write runner reads one write's rejection: `null` when the answer proves the intent already holds
  * (`done`, shown as success), else the sentence shown at the object. Only the class picks it; no transport text shows.
  */
 export function writeFailureText(table: FailureTable<WriteClass>, text: WriteText): (error: unknown) => string | null {
   return (error) => {
-    if (writeClassOf(error, table) === 'done') return null;
-    return refusalText(writeFailureOf(error), table, text.refused) ?? text.unknown;
+    const reading = readWriteFailure(error, table, text);
+    return reading.is === 'done' ? null : reading.text;
   };
 }
 
-/** What a failed write's rejection means on the route `table` describes; a write that was not sent is refused. */
-export function writeClassOf(error: unknown, table: FailureTable<WriteClass>): WriteClass {
-  const failure = writeFailureOf(error);
-  return failure instanceof NotSentError ? 'refused' : classifyFailure(failure, table);
+/** What a CAS write's read-back found: the stored value when it holds exactly what the attempt sent, else `null`. */
+export type Landed<R> = Readonly<{ stored: R }> | null;
+
+/**
+ * One CAS writer's attempts, in the order it makes them. A `stale` answer to a retry of the attempt whose previous outcome
+ * was `unknown` may be that attempt having landed, so `landed` reads the server back before it is called stale: a stored
+ * value that holds exactly this attempt's content confirms the write with it, anything else keeps the stale answer. A
+ * read-back that fails leaves the retry unknown. An attempt is its content: the same id, revision and body.
+ */
+export function casAttempts(table: FailureTable<CasClass>) {
+  let unknown: string | null = null;
+  return async <R>(attempt: unknown, write: () => Promise<R>, landed: () => Promise<Landed<R>>): Promise<R> => {
+    const id = JSON.stringify(attempt);
+    const retried = unknown === id;
+    unknown = null;
+    try {
+      return await write();
+    } catch (error) {
+      const is = writeClassOf(error, table);
+      if (is === 'stale' && retried) {
+        let found: Landed<R>;
+        try { found = await landed(); } catch (cause) { unknown = id; throw new Error('The read-back failed.', { cause }); }
+        if (found !== null) return found.stored;
+      }
+      if (is === 'unknown') unknown = id;
+      throw error;
+    }
+  };
 }
 
 /**

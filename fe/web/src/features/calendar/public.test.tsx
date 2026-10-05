@@ -21,7 +21,10 @@ it('opens a minimal form and preserves its creation key after response loss', as
   expect(screen.queryByRole('textbox', { name: 'Notes' })).toBeNull();
   await user.type(screen.getByRole('textbox', { name: 'Task title' }), 'Research');
   await user.click(screen.getByRole('button', { name: 'Create task' }));
-  expect(within(screen.getByRole('dialog')).getAllByRole('alert').map((alert) => alert.textContent).join(' ')).toContain('Response lost');
+  /* A failure that is not an answer may have been stored: the fixed state, never its own words (#2131). */
+  const alerts = within(screen.getByRole('dialog')).getAllByRole('alert').map((alert) => alert.textContent).join(' ');
+  expect(alerts).toContain('Creating the task is unconfirmed. Create it again to check; it is not added twice.');
+  expect(alerts).not.toContain('Response lost');
   await user.click(screen.getByRole('button', { name: 'Create task' }));
   expect(onSave.mock.calls[0][0]).toEqual(onSave.mock.calls[1][0]);
   expect(screen.queryByRole('dialog')).toBeNull();

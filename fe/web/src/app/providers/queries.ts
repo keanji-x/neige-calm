@@ -45,7 +45,7 @@ import {
 import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
   createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
-  overlaysByKindOperation, toTrack, updateTrackOperation, updateTrackRecipeOperation,
+  overlaysByKindOperation, recipeSaveAttempts, recipeSaveLanded, toTrack, updateTrackOperation, updateTrackRecipeOperation,
   sortAreaTracksByRecent, trackActivityFrom, trackDetailOperation, trackRecipesOperation, trackTemplatesOperation,
   tracksInAreaOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody,
@@ -598,7 +598,8 @@ export type TrackRecipeMutations = Readonly<{
   create: (body: { title: string; body: string }) => Promise<TrackRecipe>;
   /**
    * Whole-document `PUT` gated on `if_revision`. Resolves with the STORED row, which may differ from the
-   * bytes sent; rejects with `failure.status` 409 when the recipe moved under the writer.
+   * bytes sent; rejects as `RECIPE_SAVE_FAILURES` reads it, a 409 being stale unless it answers a retry of a save
+   * whose outcome was unknown and the recipe read back holds exactly what that save sent.
    */
   save: (recipeId: string, body: { title: string; body: string; if_revision: number }) => Promise<TrackRecipe>;
   remove: (recipeId: string) => Promise<void>;
@@ -609,16 +610,22 @@ export function useTrackRecipeMutations(
   unauthorized: UnauthorizedChannel,
 ): TrackRecipeMutations {
   const client = useQueryClient();
+  const [saves] = useState(() => recipeSaveAttempts());
   const invalidate = () => { void client.invalidateQueries({ queryKey: queryKeys.trackRecipes() }); };
   const create = useRecoveryMutation(transport, {
     mutationFn: (body: { title: string; body: string }, transport: ApiTransportPort) => runOperation(
       transport, createTrackRecipeOperation(body), unauthorized,
     ),
-    onSuccess: invalidate,
+    /* `onSettled`: a create whose answer was lost may have made the recipe, and the list is how the reader finds it. */
+    onSettled: invalidate,
   });
   const save = useRecoveryMutation(transport, {
-    mutationFn: (variables: { recipeId: string; body: { title: string; body: string; if_revision: number } }, transport: ApiTransportPort) =>
-      runOperation(transport, updateTrackRecipeOperation(variables.recipeId, variables.body), unauthorized),
+    mutationFn: ({ recipeId, body }: { recipeId: string; body: { title: string; body: string; if_revision: number } }, transport: ApiTransportPort) =>
+      saves(
+        { recipeId, body },
+        () => runOperation(transport, updateTrackRecipeOperation(recipeId, body), unauthorized),
+        async () => recipeSaveLanded(await runOperation(transport, trackRecipesOperation(), unauthorized), recipeId, body),
+      ),
     /* Invalidate but do not write the response through: it reaches the editor as the promise's value, and
            two homes for one fact would drift. `onSettled` so a 409 also refetches the current revision. */
     onSettled: invalidate,

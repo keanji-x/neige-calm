@@ -2,7 +2,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from '../../ui/state/public.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { CALENDAR_PLUGIN_ID, calendarListOperation, calendarWriteOperation, shiftCalendarDate, type CalendarWindow, type CalendarWrite } from '../../../../core/domain/calendar.ts';
+import {
+  CALENDAR_PLUGIN_ID, calendarListOperation, calendarReadBackWindow, calendarUpdateAttempts, calendarUpdateLanded, calendarWriteOperation,
+  shiftCalendarDate, type CalendarWindow, type CalendarWrite,
+} from '../../../../core/domain/calendar.ts';
 import { CalendarTasks } from '../../features/calendar/public.tsx';
 import { pluginsQueryOptions, runOperation } from '../providers/queries.ts';
 import { useRecoveryMutation } from '../providers/recovery-mutation.ts';
@@ -26,9 +29,18 @@ export function TodayCalendarTasks({ date, onDateChange, trackCountOn, transport
   });
   const month = useQuery(query(window));
   const day = useQuery(query({ from: date, until: shiftCalendarDate(date, 1) }));
+  const [updates] = useState(() => calendarUpdateAttempts());
   const write = useRecoveryMutation(transport, {
-    mutationFn: (input: CalendarWrite, admitted) => runOperation(admitted, calendarWriteOperation(input), unauthorized),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: ['plugin-data', CALENDAR_PLUGIN_ID] }); },
+    mutationFn: async (input: CalendarWrite, admitted) => {
+      const send = async () => { await runOperation(admitted, calendarWriteOperation(input), unauthorized); };
+      if (!('id' in input)) return send();
+      const { from, until, timezone: zone } = calendarReadBackWindow(input.task);
+      return updates(input, send, async () => calendarUpdateLanded(
+        await runOperation(admitted, calendarListOperation(from, until, zone), unauthorized), input,
+      ));
+    },
+    /* `onSettled`: a write whose answer was lost may have been stored, and only the lists say so. */
+    onSettled: () => { void client.invalidateQueries({ queryKey: ['plugin-data', CALENDAR_PLUGIN_ID] }); },
   });
   return <CalendarTasks trackCountOn={trackCountOn} date={date} timezone={timezone} enabled={enabled} pending={write.isPending}
     month={{ entries: month.data, loading: plugins.isPending || (enabled && month.isPending), error: plugins.error?.message ?? (enabled ? month.error?.message : null) ?? null }}

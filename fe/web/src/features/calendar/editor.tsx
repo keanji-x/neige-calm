@@ -7,8 +7,11 @@ import { Switch } from '@astryxdesign/core/Switch';
 import { Banner } from '@astryxdesign/core/Banner';
 import type { ISODateString } from '@astryxdesign/core/Calendar';
 import type { ISOTimeString } from '@astryxdesign/core/utils';
+import { useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { useState } from '../../ui/state/public.ts';
-import { calendarInstant, wallTime, type CalendarDraft, type CalendarEntry, type CalendarWrite } from '../../../../core/domain/calendar.ts';
+import {
+  calendarInstant, calendarWriteFailureText, wallTime, type CalendarDraft, type CalendarEntry, type CalendarWrite,
+} from '../../../../core/domain/calendar.ts';
 import styles from './calendar.module.css';
 
 export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave }: Readonly<{
@@ -27,30 +30,35 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
   const [start, setStart] = useState(initialStart.slice(11));
   const [end, setEnd] = useState(initialEnd.slice(11));
   const [zone, setZone] = useState(original?.kind === 'timed' ? original.timezone : timezone);
+  /* The draft's own checks, said before anything is sent; a sent write's failure is the feedback's. */
   const [error, setError] = useState<string | null>(null);
+  const feedback = useOperationFeedback();
   const [receipt, setReceipt] = useState<{ fingerprint: string; key: string } | null>(null);
   const changeDay = (value: string | undefined) => {
     if (value) { if (endDay === day) setEndDay(value); setDay(value); }
   };
-  const save = async (cancelled: boolean) => {
-    try {
-      if (cancelled && entry) {
-        await onSave({ id: entry.id, expected_version: entry.version, task: entry.task, cancelled: true });
-        onClose(); return;
-      }
-      if (timed && (!start || !end)) throw new Error('Choose a start and end time.');
-      if (!title.trim()) throw new Error('Give this task a name.');
-      const resolveTime = (value: string, edge: 'start' | 'end') => original?.kind === 'timed'
-        && zone === original.timezone && wallTime(Date.parse(original[edge]), zone) === value
-        ? original[edge] : calendarInstant(value, zone);
-      const task = { title, description, schedule: !timed ? { kind: 'all_day' as const, date: day } : { kind: 'timed' as const, start: resolveTime(`${day}T${start}`, 'start'), end: resolveTime(`${endDay}T${end}`, 'end'), timezone: zone } };
-      const fingerprint = JSON.stringify(task);
-      const key = receipt?.fingerprint === fingerprint ? receipt.key : crypto.randomUUID();
-      setReceipt({ fingerprint, key }); setError(null);
-      await onSave(entry ? { id: entry.id, expected_version: entry.version, task, cancelled } : { idempotency_key: key, task });
-      onClose();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save this task.'); }
+  const draftWrite = (cancelled: boolean): CalendarWrite => {
+    if (cancelled && entry) return { id: entry.id, expected_version: entry.version, task: entry.task, cancelled: true };
+    if (timed && (!start || !end)) throw new Error('Choose a start and end time.');
+    if (!title.trim()) throw new Error('Give this task a name.');
+    const resolveTime = (value: string, edge: 'start' | 'end') => original?.kind === 'timed'
+      && zone === original.timezone && wallTime(Date.parse(original[edge]), zone) === value
+      ? original[edge] : calendarInstant(value, zone);
+    const task = { title, description, schedule: !timed ? { kind: 'all_day' as const, date: day } : { kind: 'timed' as const, start: resolveTime(`${day}T${start}`, 'start'), end: resolveTime(`${endDay}T${end}`, 'end'), timezone: zone } };
+    const fingerprint = JSON.stringify(task);
+    const key = receipt?.fingerprint === fingerprint ? receipt.key : crypto.randomUUID();
+    setReceipt({ fingerprint, key });
+    return entry ? { id: entry.id, expected_version: entry.version, task, cancelled } : { idempotency_key: key, task };
   };
+  const save = async (cancelled: boolean) => {
+    let write: CalendarWrite;
+    try { write = draftWrite(cancelled); } catch (reason) {
+      feedback.clear(); setError(reason instanceof Error ? reason.message : 'Could not save this task.'); return;
+    }
+    setError(null);
+    if (await feedback.run(onSave(write), calendarWriteFailureText(write))) onClose();
+  };
+  const shown = error ?? feedback.error;
   return <form className={styles.form} onSubmit={(event) => { event.preventDefault(); void save(false); }}>
     <TextInput label="Task title" isLabelHidden placeholder="Task title" hasAutoFocus size="lg" value={title} onChange={setTitle} isDisabled={pending} width="100%" />
     <div className={styles.dateRow}>
@@ -67,7 +75,7 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
     </div>}
     {details ? <TextArea label="Notes" placeholder="Add context or an expected result" value={description} onChange={setDescription} isDisabled={pending} />
       : <div><Button label="Add notes" size="sm" variant="ghost" isDisabled={pending} onClick={() => setDetails(true)} /></div>}
-    {error && <Banner status="error" title={error} />}
+    {shown !== null && <Banner status="error" title={shown} />}
     <div className={styles.actions}>
       {entry && <Button label="Cancel task" variant="destructive" isDisabled={pending} onClick={() => { void save(true); }} />}
       <div className={styles.saveActions}>

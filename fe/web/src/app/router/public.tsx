@@ -106,7 +106,7 @@ import {
   modelCatalogQueryOptions, serverVersionOperation, runOperation,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
-  useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
+  useTrackConversationMutations, useTrackMutations,
   useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
   trackOverlaysQueryOptions, trackTaskVerdictsQueryOptions,
@@ -114,10 +114,7 @@ import {
 import { NewTrackRoute } from './new-track-route.tsx';
 import { DailyTodayRoute } from './daily-planner.tsx';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
-import {
-  RecipesPage, type RecipeDraft, type RecipeWriteOutcome,
-} from '../../features/report/recipe/public.tsx';
-import { useTheme } from '../theme/public.tsx';
+import { RecipesRoute } from './recipes-route.tsx';
 import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, useUiPreferences, useReadReceipt, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { TrackSelector } from '../shell/track-selector.tsx';
 import { AppShell, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost, useMobileTrackChoices } from '../shell/public.tsx';
@@ -1772,47 +1769,6 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     />
     {chat.drawer}
     </>
-  );
-}
-
-/**
- * `/recipes`. A 409 is the one status whose handling is "stay in edit mode and
- * keep every character", so it is decided here on `ApiError.failure.status`,
- * not on wording inside the feature.
- */
-function RecipesRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const recipes = useTrackRecipes(transport, unauthorized);
-  const mutations = useTrackRecipeMutations(transport, unauthorized);
-  const { resolved } = useTheme();
-
-  const write = async (draft: RecipeDraft, recipeId: string | null): Promise<RecipeWriteOutcome> => {
-    try {
-      const recipe = draft.if_revision === null || recipeId === null
-        ? await mutations.create({ title: draft.title, body: draft.body })
-        : await mutations.save(recipeId, {
-          title: draft.title, body: draft.body, if_revision: draft.if_revision,
-        });
-      return { kind: 'saved', recipe };
-    } catch (failure: unknown) {
-      if (failure instanceof ApiError && failure.failure.kind === 'http' && failure.failure.status === 409) {
-        return { kind: 'conflict' };
-      }
-      /* Reported verbatim: the kernel's 400 names the fence that would not parse. */
-      return { kind: 'failed', message: failure instanceof Error ? failure.message : 'Could not save this recipe.' };
-    }
-  };
-
-  return (
-    <RecipesPage
-      recipes={recipes.recipes}
-      refreshing={recipes.refreshing}
-      onRetry={recipes.refetch}
-      loaded={recipes.loaded}
-      error={recipes.error}
-      theme={resolved}
-      onWrite={write}
-      onDelete={mutations.remove}
-    />
   );
 }
 

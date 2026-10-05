@@ -18,11 +18,15 @@ import styles from './recipe.module.css';
 
 export type { RecipeEditorTheme };
 
-/** What a write attempt came back as. `conflict` is its own state because the editor stays in edit mode holding the draft. */
+/**
+ * What a write attempt came back as. `conflict` is its own state because the editor stays in edit mode holding the draft.
+ * `failed` may be pressed again; `unconfirmed` is a create that may have made the recipe, so Save stays off for its draft.
+ */
 export type RecipeWriteOutcome =
   | Readonly<{ kind: 'saved'; recipe: TrackRecipe }>
   | Readonly<{ kind: 'conflict' }>
-  | Readonly<{ kind: 'failed'; message: string }>;
+  | Readonly<{ kind: 'failed'; message: string }>
+  | Readonly<{ kind: 'unconfirmed'; message: string }>;
 
 /** `if_revision: null` is a create; a number is a `PUT` on that revision. */
 export type RecipeDraft = Readonly<{ title: string; body: string; if_revision: number | null }>;
@@ -150,6 +154,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [unconfirmed, setUnconfirmed] = useState(false);
   /* Through the shared confirm/feedback primitive rather than `onDelete().then(onClose)`: a rejected delete has to be said. */
   const deletion = useDeleteConfirm(async () => { await onDelete?.(); }, writeFailureText(DELETE_FAILURES, DELETE_TEXT), onClose);
 
@@ -165,8 +170,9 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
       setConflict(true);
       return;
     }
-    if (outcome.kind === 'failed') {
+    if (outcome.kind === 'failed' || outcome.kind === 'unconfirmed') {
       setFailure(outcome.message);
+      setUnconfirmed(outcome.kind === 'unconfirmed');
       return;
     }
     /* Reseed `title`/`body` from the stored row, or the next save would re-send the pre-normalization bytes. */
@@ -192,7 +198,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
                   variant="primary"
                   size="sm"
                   label={saving ? 'Saving…' : 'Save'}
-                  isDisabled={saving || title.trim() === ''}
+                  isDisabled={saving || unconfirmed || title.trim() === ''}
                   onClick={() => { void save(); }}
                 />
                 <Button

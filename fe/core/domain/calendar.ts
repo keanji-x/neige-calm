@@ -1,6 +1,7 @@
 import { Temporal } from 'temporal-polyfill';
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
+import { casAttempts, readWriteFailure, type FailureTable, type Landed, type WriteFailure, type WriteText } from './failure-class.js';
 
 export const CALENDAR_PLUGIN_ID = 'dev.neige.calendar';
 export const CALENDAR_WEEKDAYS = Object.freeze(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const);
@@ -25,8 +26,8 @@ export type CalendarListedEntry = z.infer<typeof calendarListedEntrySchema>;
 export type CalendarWindow = Readonly<{ from: string; until: string }>;
 export type CalendarDraft = z.infer<typeof calendarDraftSchema>;
 export type CalendarEntry = z.infer<typeof calendarEntrySchema>;
-export type CalendarWrite = Readonly<{ idempotency_key: string; task: CalendarDraft }> |
-  Readonly<{ id: string; expected_version: number; task: CalendarDraft; cancelled: boolean }>;
+export type CalendarUpdate = Readonly<{ id: string; expected_version: number; task: CalendarDraft; cancelled: boolean }>;
+export type CalendarWrite = Readonly<{ idempotency_key: string; task: CalendarDraft }> | CalendarUpdate;
 export function calendarListOperation(from: string, until: string, timezone: string): ApiOperation<CalendarListedEntry[]> {
   return { method: 'GET', path: `/api/calendar/tasks?from=${encodeURIComponent(from)}&until=${encodeURIComponent(until)}&timezone=${encodeURIComponent(timezone)}`, responseSchema: calendarListedEntrySchema.array() };
 }
@@ -36,6 +37,82 @@ export function calendarWriteOperation(write: CalendarWrite): ApiOperation<Calen
     return { method: 'POST', path: `/api/calendar/tasks/${encodeURIComponent(id)}`, body, responseSchema: calendarEntrySchema };
   }
   return { method: 'POST', path: '/api/calendar/tasks', body: write, responseSchema: calendarEntrySchema };
+}
+
+/**
+ * What a failed calendar write means. Answered before anything is stored: an invalid task or key (400), not the user (403),
+ * a body the server would not read (413, 422), and the calendar not running (503). A create's 409 is its `idempotency_key`
+ * already bound to other content: refused, and final for that key (the same content under it answers the stored task). An
+ * update's or cancel's 409 is the `expected_version` CAS lost: `stale`, nothing was stored; its 404 is the task gone.
+ * Anything else may have stored it.
+ */
+export const CALENDAR_WRITE_FAILURES: Readonly<{
+  create: FailureTable<WriteFailure>;
+  update: FailureTable<WriteFailure | 'stale'>;
+}> = Object.freeze({
+  create: Object.freeze({
+    rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 409, 413, 422, 503]), is: 'refused' as const })]),
+    unauthorized: 'refused',
+    otherwise: 'unknown',
+  }),
+  update: Object.freeze({
+    rules: Object.freeze([
+      Object.freeze({ status: Object.freeze([409]), is: 'stale' as const }),
+      Object.freeze({ status: Object.freeze([400, 403, 404, 413, 422, 503]), is: 'refused' as const }),
+    ]),
+    unauthorized: 'refused',
+    otherwise: 'unknown',
+  }),
+});
+
+export const CALENDAR_WRITE_TEXT = Object.freeze({
+  create: Object.freeze({
+    refused: 'The task was not created.', unknown: 'Creating the task is unconfirmed. Create it again to check; it is not added twice.',
+  }),
+  update: Object.freeze({ refused: 'The task was not saved.', unknown: 'Saving the task is unconfirmed. Save again to check.' }),
+  cancel: Object.freeze({ refused: 'The task was not cancelled.', unknown: 'Cancelling the task is unconfirmed. Cancel it again to check.' }),
+  stale: 'This task changed somewhere else. Close it and open it again to edit the current version.',
+}) satisfies Readonly<Record<'create' | 'update' | 'cancel', WriteText> & { stale: string }>;
+
+/** The sentence a failed calendar write shows in its editor: its table's reading, with `stale` as its fixed sentence. */
+export function calendarWriteFailureText(write: CalendarWrite): (error: unknown) => string {
+  return (error) => {
+    if (!('id' in write)) return readWriteFailure(error, CALENDAR_WRITE_FAILURES.create, CALENDAR_WRITE_TEXT.create).text;
+    const reading = readWriteFailure(error, CALENDAR_WRITE_FAILURES.update, write.cancelled ? CALENDAR_WRITE_TEXT.cancel : CALENDAR_WRITE_TEXT.update);
+    return reading.is === 'stale' ? CALENDAR_WRITE_TEXT.stale : reading.text;
+  };
+}
+
+/** One calendar's updates and cancels: one retried after an unknown outcome and answered 409 is read back first. */
+export function calendarUpdateAttempts() {
+  return casAttempts(CALENDAR_WRITE_FAILURES.update);
+}
+
+/** The list window an update is read back through: the widest the server lists (366 days), centred on the sent schedule. */
+export function calendarReadBackWindow(task: CalendarDraft): CalendarWindow & { timezone: string } {
+  const schedule = task.schedule;
+  const anchor = schedule.kind === 'all_day' ? schedule.date : schedule.kind === 'timed' ? schedule.start.slice(0, 10) : schedule.from;
+  const timezone = schedule.kind === 'all_day' ? 'UTC' : schedule.timezone;
+  return { from: shiftCalendarDate(anchor, -183), until: shiftCalendarDate(anchor, 183), timezone };
+}
+
+/**
+ * Whether the tasks `listed` through {@link calendarReadBackWindow} hold exactly what one update sent, which is how an
+ * update whose answer was lost is known to have landed. The list leaves out cancelled tasks, so a cancel has landed when
+ * the task is no longer listed around its own schedule; an edit, when the task is listed with the very task it sent.
+ */
+export function calendarUpdateLanded(listed: readonly CalendarListedEntry[], write: CalendarUpdate): Landed<undefined> {
+  const entry = listed.find((candidate) => candidate.id === write.id);
+  const held = write.cancelled ? entry === undefined : entry !== undefined && canonicalJson(entry.task) === canonicalJson(write.task);
+  return held ? { stored: undefined } : null;
+}
+
+function canonicalJson(value: unknown): string {
+  const sorted = (item: unknown): unknown => Array.isArray(item) ? item.map(sorted)
+    : item !== null && typeof item === 'object'
+      ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, sorted((item as Record<string, unknown>)[key])]))
+      : item;
+  return JSON.stringify(sorted(value));
 }
 export function calendarDate(now: number, timezone: string): string {
   return wallTime(now, timezone).slice(0, 10);
