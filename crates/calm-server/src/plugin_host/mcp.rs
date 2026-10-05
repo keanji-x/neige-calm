@@ -202,7 +202,6 @@ impl TrackMeta {
         Self {
             id: track.id.to_string(),
             creator_track_id: track.creator_track_id.clone(),
-            // MUTATION-K1-8: `creator_key`.
             creator_key: track.creator_key.clone(),
         }
     }

@@ -194,7 +194,6 @@ async fn track_add(
 ) -> Result<Value, RpcError> {
     // Before both arms: a keyed replay resumes without a create transaction, so the in-transaction
     // role gate alone would let any role replay a Planner's request.
-    // MUTATION-K1-1: the handler role check.
     if identity.role != CardRole::Planner {
         return Err(forbidden(format!(
             "only a Planner may add a Track; this caller is a {:?}",
@@ -264,7 +263,6 @@ async fn authorize_creator<'a>(
     ctx: &'a Arc<AppContext>,
     creator: &Track,
 ) -> Result<&'a sqlx::SqlitePool, RpcError> {
-    // MUTATION-K1-5: the scope check.
     let plugin_host = ctx.plugin_host.get().cloned();
     let scope = plugin_scope_for_track_row(creator, plugin_host.as_deref()).await;
     if scope != TrackPluginScope::All {
@@ -273,7 +271,6 @@ async fn authorize_creator<'a>(
             creator.id
         )));
     }
-    // MUTATION-K1-6: the `creator_track_id` half of the depth check.
     if let Some(by) = &creator.creator_track_id {
         return Err(forbidden(format!(
             "Track {} was added by Track {by}; an added Track adds none",
@@ -290,7 +287,6 @@ async fn authorize_creator<'a>(
             .fetch_one(pool)
             .await
             .map_err(internal)?;
-    // MUTATION-K1-7: the `parent_track_id` half of the depth check.
     if let Some(parent) = parent {
         return Err(forbidden(format!(
             "Track {} is a child of Track {parent}; a child Track adds none",
@@ -314,7 +310,6 @@ fn refusal_error(creator: &Track, refusal: TrackAddRefusal) -> RpcError {
                 creator.id,
                 open.len(),
             );
-            // MUTATION-K1-4: `data.open`.
             let data = json!({ "refusal": "open_cap", "cap": cap, "open": open });
             RpcError {
                 code: -32409,

@@ -36,14 +36,12 @@ impl CreatorAdmission {
     pub(super) async fn admit_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
         let open: Vec<(String, String)> = sqlx::query_as(concat!(
             "SELECT id, creator_key FROM tracks WHERE creator_track_id=?1",
-            // MUTATION-K1-3: only open Tracks count.
             " AND closed_at IS NULL",
             " ORDER BY created_at, id",
         ))
         .bind(&self.creator_track_id)
         .fetch_all(&mut **tx)
         .await?;
-        // MUTATION-K1-2: the count.
         if open.len() >= self.max_open as usize {
             let open = open
                 .into_iter()
