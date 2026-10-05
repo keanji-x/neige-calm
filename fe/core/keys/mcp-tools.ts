@@ -36,3 +36,6 @@ export const DEV_PUBLISH_TOOL = 'neige_dev_publish';
 
 /** The planner's way to speak to the reader from a background turn; rendered as an agent turn, text verbatim from `arguments.text`. */
 export const USER_NOTIFY_TOOL = 'neige_user_notify';
+
+/** Mail to another Track of the Area (#2130); its line names the mail by `arguments.summary`. */
+export const MAIL_SEND_TOOL = 'neige_mail_send';

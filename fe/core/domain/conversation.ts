@@ -8,6 +8,7 @@ import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   TASK_LS_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
   TASK_ACCEPT_TOOL, TASK_REJECT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
+  MAIL_SEND_TOOL,
 } from '../keys/mcp-tools.js';
 import { classifyFailure, type FailureTable, type WriteFailure } from './failure-class.js';
 import { sha256Hex } from './sha256.js';
@@ -151,6 +152,7 @@ const harnessInputPresentationSchema: z.ZodType<HarnessInputPresentation> = z.en
   'system_report_edited',
   'system_task_completed',
   'system_task_failed',
+  'system_mail',
 ]);
 
 const plannerAttachmentSchema: z.ZodType<PlannerAttachment> = z.object({
@@ -802,6 +804,7 @@ Record<Exclude<HarnessInputPresentation, 'user'>, string>
   system_report_edited: 'Report edited',
   system_task_completed: 'Task completed',
   system_task_failed: 'Task failed',
+  system_mail: 'Mail',
 });
 
 /* Live data uses the camelCase spellings; snake_case is accepted as a precaution since the kernel
@@ -1013,9 +1016,9 @@ type ActivityShape = Readonly<{ running: string; done: string; target: string | 
 
 /**
  * The tools whose names are worth saying in English; an unknown tool keeps its wire name rather
- * than an invented phrase.
+ * than an invented phrase. `args` is the call's `arguments`, read only by a tool whose line names one.
  */
-function toolShape(tool: string): ActivityShape {
+function toolShape(tool: string, args: unknown): ActivityShape {
   if (REPORT_WRITE_TOOLS.includes(tool)) {
     return { running: 'Writing report', done: 'Wrote report', target: null };
   }
@@ -1040,6 +1043,10 @@ function toolShape(tool: string): ActivityShape {
   }
   if (tool === DEV_PUBLISH_TOOL) {
     return { running: 'Publishing the PR', done: 'Published the PR', target: null };
+  }
+  if (tool === MAIL_SEND_TOOL) {
+    const summary = typeof args === 'object' && args !== null ? (args as { summary?: unknown }).summary : undefined;
+    return { running: 'Sending mail', done: 'Sent mail', target: typeof summary === 'string' ? clip(summary) : null };
   }
   // `cat`, `ls`, `state`, `log`, `diff` are looks; any new `neige_track_*` WRITE needs its own branch ahead of this one.
   if (tool.startsWith(TRACK_TOOL_PREFIX)) {
@@ -1066,7 +1073,7 @@ function activityShape(itemType: string, item: Record<string, unknown>): Activit
       };
     }
     case 'mcpToolCall':
-      return toolShape(typeof item.tool === 'string' ? item.tool : '');
+      return toolShape(typeof item.tool === 'string' ? item.tool : '', item.arguments);
     // Curated subset of codex's `ThreadItem` union; unknown variants fall through to the generic line.
     case 'webSearch':
       return { running: 'Searching the web', done: 'Searched the web', target: null };

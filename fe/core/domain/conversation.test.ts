@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { HarnessItem, HarnessPhaseTag } from '../api/generated/wire.js';
 import {
   TASK_LS_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_ACCEPT_TOOL, TASK_REJECT_TOOL, DEV_PUBLISH_TOOL,
-  TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX,
+  TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, MAIL_SEND_TOOL,
 } from '../keys/mcp-tools.js';
 
 import {
@@ -358,6 +358,7 @@ describe('transcriptRowToMessages', () => {
     ['system_report_edited', 'Report edited', { quiet: true }],
     ['system_task_completed', 'Task completed', {}],
     ['system_task_failed', 'Task failed', {}],
+    ['system_mail', 'Mail', {}],
     ['system', 'System update', {}],
   ] as const)('uses structured %s metadata for the system label', (inputPresentation, label, quiet) => {
     const text = 'wording may change without changing who authored this';
@@ -635,6 +636,46 @@ describe('harnessItemToActivity', () => {
       item_type: 'mcpToolCall',
       params: JSON.stringify({ item: { tool: `${TRACK_TOOL_PREFIX}state`, status: 'completed' } }),
     }))).toMatchObject({ verb: 'Read the track', state: 'done' });
+  });
+
+  describe('a mail send', () => {
+    const send = (item: Record<string, unknown>, method = 'item/completed') => harnessItemToActivity(row({
+      item_type: 'mcpToolCall', method,
+      params: JSON.stringify({ item: { tool: MAIL_SEND_TOOL, type: 'mcpToolCall', ...item } }),
+    }));
+    const args = { track_id: 'track-n', summary: 'NVDA guidance below thesis', text: 'the body' };
+
+    it('says it sent mail, named by its summary and never its body', () => {
+      expect(send({ arguments: args }, 'item/started'))
+        .toMatchObject({ verb: 'Sending mail', target: 'NVDA guidance below thesis', state: 'running' });
+      expect(send({ arguments: args, status: 'completed' }))
+        .toMatchObject({ verb: 'Sent mail', target: 'NVDA guidance below thesis', state: 'done' });
+    });
+
+    it.each([
+      ['blank', { ...args, summary: '  ' }],
+      ['absent', { track_id: 'track-n', text: 'the body' }],
+      ['not a string', { ...args, summary: 7 }],
+    ])('names no target when the summary is %s', (_label, sent) => {
+      expect(send({ arguments: sent, status: 'completed' }))
+        .toMatchObject({ verb: 'Sent mail', target: null, state: 'done' });
+    });
+
+    it('keeps the failure line when the send is refused', () => {
+      expect(send({
+        arguments: args, status: 'failed', error: { message: 'Mcp error: -32602: hop 7 exceeds 6' },
+      })).toMatchObject({
+        verb: 'Sent mail', target: 'NVDA guidance below thesis', state: 'failed',
+        detail: 'Mcp error: -32602: hop 7 exceeds 6', tool: MAIL_SEND_TOOL,
+      });
+    });
+  });
+
+  it('keeps the wire name of a tool it has no English for', () => {
+    expect(harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({ item: { tool: 'neige_mail_unknown', arguments: { summary: 'x' }, status: 'completed' } }),
+    }))).toMatchObject({ verb: 'Called', target: 'neige_mail_unknown', state: 'done' });
   });
 
   it('is running while only `item/started` has arrived', () => {
