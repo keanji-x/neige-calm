@@ -21,7 +21,7 @@ import { createDirectoryLister } from '../providers/directory.ts';
 import {
   ApiError, AreaCreatePreflightError, OfflineSubmissionError, useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
 } from '../providers/queries.ts';
-import { mintIdempotencyKey } from '../router/idempotency-key.ts';
+import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useRouteCardId, useRouteFilePath, useTrackPanelNavigation } from '../router/navigation.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { MobileWorkspaceHeader } from './mobile-header.tsx';

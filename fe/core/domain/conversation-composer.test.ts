@@ -1,10 +1,10 @@
 import { expect, it } from 'vitest';
 import type { HarnessInputSegment } from '../api/generated/wire.js';
-import { buildTranscript, type TranscriptEntry } from './conversation.js';
+import { buildTranscript, MAX_ATTACHMENTS_PER_MESSAGE, type TranscriptEntry } from './conversation.js';
 import {
   editedTurnMessageIds, editedTurnRefill, isLatestTurn, isSameComposer,
   withoutEditedTurn, withRefill,
-} from './conversation-rewind.js';
+} from './conversation-composer.js';
 
 const image = (id: string) => ({ id, contentType: 'image/png', size: 4, url: `/api/cards/c/planner/attachments/${id}` });
 
@@ -96,4 +96,14 @@ it('adds a refill to a composer that already holds something, discarding nothing
   });
   expect(withRefill({ text: 'Typed', attachments: [] }, { text: '', attachments: [image('c.png')] }))
     .toEqual({ text: 'Typed', attachments: [image('c.png')] });
+});
+
+/* #2068 item 19: the composer's one image cap holds for a refill as for a pick, so a refill never makes a send the
+   server must refuse. */
+it('never takes more images than a message carries, keeping the composer’s own first', () => {
+  const images = Array.from({ length: MAX_ATTACHMENTS_PER_MESSAGE + 1 }, (_, index) => image(`${index}.png`));
+  expect(withRefill({ text: '', attachments: [] }, { text: 'Prompt', attachments: images }).attachments)
+    .toEqual(images.slice(0, MAX_ATTACHMENTS_PER_MESSAGE));
+  expect(withRefill({ text: '', attachments: [image('own.png')] }, { text: '', attachments: images }).attachments)
+    .toEqual([image('own.png'), ...images.slice(0, MAX_ATTACHMENTS_PER_MESSAGE - 1)]);
 });

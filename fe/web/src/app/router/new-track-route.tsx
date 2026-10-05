@@ -17,7 +17,7 @@ import { createDirectoryLister } from '../providers/directory.ts';
 import { useMentionSearch } from '../providers/mentions.ts';
 import { ApiError, OfflineSubmissionError, runOperation, folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
-import { mintIdempotencyKey } from './idempotency-key.ts';
+import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useGo, useRouteParam } from './navigation.ts';
 import { useNewTrackSession, type NewTrackSession, type TrackCreationRequest } from './new-track-drafts.tsx';
 

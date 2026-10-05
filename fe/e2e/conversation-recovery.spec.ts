@@ -171,7 +171,7 @@ for (const failedFirst of [false, true]) {
         /* A lost answer is the same unconfirmed state, sent once and never narrated: the connection is the global indicator's. */
         await expect(notice).toBeVisible();
         await notice.click();
-        await expect(page.getByText('The response may still be starting or may already have ended.', { exact: true })).toBeVisible();
+        await expect(page.getByText('The stop may not have taken effect: the response may still be running or may already have ended.', { exact: true })).toBeVisible();
         await expect(page.getByText('Stop failed', { exact: true })).toHaveCount(0);
         await expect(page.locator('[data-nc-drawer]')).not.toContainText(/Transport request failed|timed out|back online|连接恢复/);
         expect(stops).toBe(1);
@@ -183,7 +183,7 @@ for (const failedFirst of [false, true]) {
       // Retrying preserves the user's open disclosure across status changes.
       await expect(notice).toHaveAttribute('aria-expanded', failedFirst ? 'true' : 'false');
       if (!failedFirst) await notice.click();
-      await expect(page.getByText('The response may still be starting or may already have ended.', { exact: true })).toBeVisible();
+      await expect(page.getByText('The stop may not have taken effect: the response may still be running or may already have ended.', { exact: true })).toBeVisible();
       await expect(page.locator('[data-nc-turn-outcome]')).toHaveCount(0);
       await expect(page.getByRole('alert')).toHaveCount(0);
       await expect(composer).toHaveText('Keep this stop request draft');

@@ -5,7 +5,7 @@ import type { Area } from '../../../../core/domain/area.ts';
 import type { NewTrackBodyWithFirstMessage, NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import type { NewTrackFormState } from '../../features/area/new-track/public.tsx';
 import { useState } from '../../ui/state/public.ts';
-import { mintIdempotencyKey } from './idempotency-key.ts';
+import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 
 export type TrackCreationRequest =
   | Readonly<{ body: NewTrackBodyWithFirstMessage; key: string }>

@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 
 import type { ConversationTurnOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { markedReplace, replacingTurn, type ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
-import { editedTurnRefill, isComposerEmpty, isLatestTurn } from '../../../../core/domain/conversation-rewind.ts';
+import { editedTurnRefill, isComposerEmpty, isLatestTurn } from '../../../../core/domain/conversation-composer.ts';
 import { useConversationRegistry } from './public.tsx';
 
 /** Beside a refused replace while its words are still in the composer: they are a new message now. */

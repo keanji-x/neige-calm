@@ -3,7 +3,7 @@ import {
   type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry,
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
-import { withoutEditedTurn } from './conversation-rewind.js';
+import { withoutEditedTurn } from './conversation-composer.js';
 
 /** The latest turn an Edit's send replaces (#2043): the turn id the server removes, and its outcome row here. */
 export type ReplacedTurn = Readonly<{ turnId: string; outcomeId: string }>;

@@ -44,7 +44,7 @@ export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stall
     const reason = feedback.kind === 'failed' ? feedback.message
       : feedback.kind === 'requesting' ? 'Waiting for the stop request to finish.'
       : feedback.kind === 'stopping' ? 'Waiting for the response to end.'
-      : 'The response may still be starting or may already have ended.';
+      : 'The stop may not have taken effect: the response may still be running or may already have ended.';
     details = <p className={styles.outcomeReason}>{reason}</p>;
   } else if (live) {
     heading = 'Running';

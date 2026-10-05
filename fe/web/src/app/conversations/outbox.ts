@@ -1,4 +1,3 @@
-import { replaceEqualDeep } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -11,13 +10,14 @@ import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conv
 import {
   outboxView, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
 } from '../../../../core/domain/conversation-outbox.ts';
-import { withRefill } from '../../../../core/domain/conversation-rewind.ts';
+import { withRefill } from '../../../../core/domain/conversation-composer.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, OfflineSubmissionError } from '../providers/queries.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
-import { mintIdempotencyKey } from '../router/idempotency-key.ts';
+import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useConversationRegistry, type RememberedConversation } from './public.tsx';
+import { numberReads } from './read-order.ts';
 
 type RunQueryOptions<T> = Readonly<{ queryFn: (context: { signal: AbortSignal }) => Promise<T> }>;
 
@@ -34,26 +34,8 @@ export type RunReads = Readonly<{
 
 export function useRunReads(nextRead: () => number): RunReads {
   const [reads] = useState<RunReads>(() => {
-    /* Structural sharing can keep the stored result when nothing changed; the kept one then takes the newer number. */
-    const starts = new WeakMap<object, number>();
-    const startOf = (result: object | undefined) => result === undefined ? 0 : starts.get(result) ?? 0;
-    return {
-      track: (options) => ({
-        ...options,
-        queryFn: async (context) => {
-          const start = nextRead();
-          const result = await options.queryFn(context);
-          starts.set(result, start);
-          return result;
-        },
-        structuralSharing: (previous, next) => {
-          const shared = replaceEqualDeep(previous, next) as object;
-          starts.set(shared, startOf(next as object));
-          return shared;
-        },
-      }),
-      startOf,
-    };
+    const { queryFn, structuralSharing, startOf } = numberReads<object, object>(nextRead, (result) => result);
+    return { track: (options) => ({ ...options, queryFn: queryFn(options.queryFn), structuralSharing }), startOf };
   });
   return reads;
 }

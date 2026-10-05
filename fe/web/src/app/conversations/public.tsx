@@ -7,7 +7,7 @@ import {
   isOptimisticConversationTurn, TOO_MANY_IMAGES, type ModelSelection, type Conversation, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { beginSendOp, withConfirmedSends, type RetiredSend, type SendOp } from '../../../../core/domain/conversation-outbox.ts';
-import { EMPTY_COMPOSER, isSameComposer, withRefill, type ComposerContent } from '../../../../core/domain/conversation-rewind.ts';
+import { EMPTY_COMPOSER, isSameComposer, withRefill, type ComposerContent } from '../../../../core/domain/conversation-composer.ts';
 import { NO_UPLOAD, type UploadState } from '../../features/planner/attachments.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 

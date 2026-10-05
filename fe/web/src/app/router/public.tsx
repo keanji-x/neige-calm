@@ -8,7 +8,7 @@ import { useLiveReplies, useTranscriptReads } from '../conversations/live-replie
 import { useConversationEdit } from '../conversations/edit.ts';
 import { useConversationOutbox, useRunReads } from '../conversations/outbox.ts';
 import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
-import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-rewind.ts';
+import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
 import { refusalText } from '../../../../core/domain/failure-class.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
@@ -42,7 +42,7 @@ import type {
 import {
   cardAddMenuEntries, isAssistantHarnessPayload, isPlannerHarnessPayload, plannerCardIn, partitionTrackCards,
 } from '../../systems/cards/public.js';
-import { mintIdempotencyKey } from './idempotency-key.ts';
+import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import footerStyles from './composer-footer.module.css';
 import { TodayCalendarTasks } from './calendar.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
@@ -412,6 +412,7 @@ export function useConversationStore(
     requestStop: mutations.interrupt,
   });
   const landedTranscript = transcriptReads.startOf(history.data);
+  /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
   const landedRun = runReads.startOf(run.data);
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
   const outbox = useConversationOutbox({

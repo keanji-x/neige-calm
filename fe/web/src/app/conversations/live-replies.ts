@@ -1,4 +1,4 @@
-import { replaceEqualDeep, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -11,6 +11,7 @@ import {
 } from '../../../../core/domain/conversation-live.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 import { harnessLiveQueryOptions } from '../providers/queries.ts';
+import { numberReads } from './read-order.ts';
 import { useState } from '../../ui/state/public.ts';
 
 const NO_COPIES: readonly LiveReplyCopy[] = Object.freeze([]);
@@ -44,35 +45,10 @@ export function useTranscriptReads(nextRead: () => number): TranscriptReads {
 }
 
 function createTranscriptReads(nextRead: () => number): TranscriptReads {
-  let started = 0;
-  /* Keyed by a result's newest page. Load earlier keeps that page, and so its number. Structural
-     sharing stores a page other than the one read (the stored one when nothing changed, a copy
-     otherwise), so each result stamps the page it keeps with its newest page's number. */
-  const pageStarts = new WeakMap<TranscriptPage, number>();
-  const startOf = (result: Readonly<{ pages: readonly TranscriptPage[] }> | undefined) => {
-    const newest = result?.pages[0];
-    return newest === undefined ? 0 : pageStarts.get(newest) ?? 0;
-  };
-  return {
-    track: (options) => ({
-      ...options,
-      queryFn: async (context) => {
-        const start = nextRead();
-        started = start;
-        const page = await options.queryFn(context);
-        pageStarts.set(page, start);
-        return page;
-      },
-      structuralSharing: (previous, next) => {
-        const shared = replaceEqualDeep(previous, next) as TranscriptResult;
-        const newest = shared.pages[0];
-        if (newest !== undefined) pageStarts.set(newest, startOf(next as TranscriptResult));
-        return shared;
-      },
-    }),
-    startOf,
-    latest: () => started,
-  };
+  /* Keyed by a result's newest page: Load earlier keeps that page, and so its number. */
+  const { queryFn, structuralSharing, startOf, latest } = numberReads<TranscriptPage, Readonly<{ pages: readonly TranscriptPage[] }>>(
+    nextRead, (result) => result.pages[0]);
+  return { track: (options) => ({ ...options, queryFn: queryFn(options.queryFn), structuralSharing }), startOf, latest };
 }
 
 /**

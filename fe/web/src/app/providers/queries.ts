@@ -258,9 +258,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
      flight from before the answer, and only a read started after it can stand for a send answered after an unknown attempt. */
   const refreshAfterSend = <T,>(result: T): T => {
-    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) {
-      void client.cancelQueries({ queryKey }).then(() => client.invalidateQueries({ queryKey })).catch(() => undefined);
-    }
+    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) cancelThenInvalidate(client, queryKey);
     return result;
   };
   return {

@@ -40,7 +40,7 @@ import { sideQuestion } from '../../../../../core/domain/side-conversation.ts';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
 import { CurrentStatusNotice } from './outcome-notice.tsx';
 import { moveIntoComposer } from './edit-motion.ts';
-import { editedTurnMessageIds } from '../../../../../core/domain/conversation-rewind.ts';
+import { editedTurnMessageIds } from '../../../../../core/domain/conversation-composer.ts';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../../core/domain/conversation-meta.ts';
 import {

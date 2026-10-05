@@ -1308,6 +1308,9 @@ describe('track conversations', () => {
       fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
       fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Stop unconfirmed', expanded: false }));
+      /* #2068 item 29: the detail also covers a stop request whose answer was lost and that may never have arrived. */
+      expect(screen.getByText('The stop may not have taken effect: the response may still be running or may already have ended.',
+        { exact: true })).toBeTruthy();
       expect(screen.queryByText('Stop failed')).toBeNull();
       expect(chatText()).not.toMatch(CONNECTIVITY);
     });
@@ -2401,7 +2404,7 @@ describe('track conversations', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     const notice = await screen.findByRole('button', { name: 'Stop unconfirmed', expanded: false });
     fireEvent.click(notice);
-    expect(screen.getByText('The response may still be starting or may already have ended.', { exact: true })).toBeTruthy();
+    expect(screen.getByText('The stop may not have taken effect: the response may still be running or may already have ended.', { exact: true })).toBeTruthy();
     expect(messageField().textContent).toBe('Keep the stop draft');
     expect(document.querySelector('[data-nc-turn-outcome]')).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
