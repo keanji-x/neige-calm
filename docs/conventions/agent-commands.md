@@ -234,7 +234,7 @@ Adding or changing a tool or command:
 7. Regenerate goldens and keep the Planner byte budget. Run the tests below. One recorded
    exception (#2130, owner): `neige_mail_send` must be listed to be discoverable, so S1 trimmed
    restated schema facts from ten Planner descriptions (201 B) and raised
-   `planner_tool_surface_fits_its_byte_budget`'s cap by the remaining 846 B, to 30,846 B.
+   `planner_tool_surface_fits_its_byte_budget`'s cap by the remaining 589 B, to 30,589 B.
 
 Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes it to §2's
 `neige_<word>_<word>`), `every_option_is_its_schema_key`, `prompt_neige_mentions_name_served_commands` (H8),
