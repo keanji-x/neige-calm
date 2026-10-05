@@ -75,7 +75,8 @@ async fn chart_series_resolves_through_invest() {
             enabled: true,
             user_config: json!({
                 "account_no": "PAPER123", "broker_home": home.path().display().to_string(),
-                "portfolio_track_id": fx.track_id(), "oauth_client_id": "fixture-client",
+                "portfolio_track_id": fx.track_id(), "instrument_recipe_id": "recipe-instrument",
+                "oauth_client_id": "fixture-client",
                 "sdk_python_path": app.join("tests/broker_fixture.py").display().to_string(),
                 "max_held": 4, "max_watched": 4, "max_weight_bps": 10000, "poll_seconds": 5
             }),

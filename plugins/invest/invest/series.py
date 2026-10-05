@@ -15,6 +15,7 @@ import math
 import re
 
 from .broker import BrokerError
+from .errors import FORBIDDEN, Refused
 from .symbols import canonical, to_sdk
 
 TOOL = 'series_show'
@@ -31,19 +32,14 @@ DATE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
 EPOCH = date(1970, 1, 1)
 
 
-class Refused(Exception):
-    """A call outside the chart resolver's shape; answered as a JSON-RPC error, not a tool result."""
-    code = -32403
-
-
 def admit(meta):
     """The chart resolver's call shape (§3.6, F4): the host's Track context and no agent caller."""
     meta = meta if isinstance(meta, dict) else {}
     track = meta.get(TRACK_KEY)
     if not isinstance(track, dict) or not isinstance(track.get('id'), str) or not track['id']:
-        raise Refused(f'{TOOL} serves only the chart resolver: host Track context required')
+        raise Refused(FORBIDDEN, f'{TOOL} serves only the chart resolver: host Track context required')
     if CALLER_KEY in meta:
-        raise Refused(f'{TOOL} serves only the chart resolver, never an agent')
+        raise Refused(FORBIDDEN, f'{TOOL} serves only the chart resolver, never an agent')
 
 
 def calendar_date(raw):

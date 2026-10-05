@@ -10,7 +10,9 @@ import time
 from . import VERSION, series
 from .runtime import Runtime
 from .broker import Broker
-from .portfolio import Portfolio
+from .errors import Refused
+from .portfolio import RESEARCH_TOOLS, VIEWS, Portfolio
+from .research_views import research_units
 from .settings import InvestConfig
 
 
@@ -67,17 +69,23 @@ def serve():
                 return
             try:
                 params = frame["params"]
-                track = params.get("_meta", {}).get("dev.neige/track", {}).get("id")
-                if not isinstance(track, str) or not track:
-                    raise ValueError("host-provided Track context required")
-                args = params.get("arguments", {})
-                result = runtime.portfolio.call(track, params.get("name"), args,
-                                                params.get("_meta", {}).get("dev.neige/caller"))
-                # Every write or refresh request wakes the loop that owns broker access.
-                if params.get("name") != "portfolio_status":
+                meta, name = params.get("_meta", {}), params.get("name")
+                result = runtime.portfolio.call(meta.get(series.TRACK_KEY), name, params.get("arguments", {}),
+                                                meta.get(series.CALLER_KEY))
+                if name in RESEARCH_TOOLS:
+                    # Statelessly onto the caller's own Track; a lost projection is redone on its next call.
+                    for kind, payload in research_units(result).items():
+                        try:
+                            runtime.publish(meta[series.TRACK_KEY]["id"], kind, payload)
+                        except Exception:
+                            pass
+                # Every write wakes the loop that owns broker access.
+                if name not in VIEWS:
                     runtime.wake.set()
                 reply(frame["id"], {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=True)}],
                                     "structuredContent": result})
+            except Refused as error:
+                rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": error.code, "message": str(error)}})
             except Exception as error:
                 message = str(error) if isinstance(error, ValueError) else "invalid request or unavailable ledger"
                 reply(frame["id"], {"isError": True, "content": [{"type": "text", "text": message}]})
@@ -91,7 +99,7 @@ def serve():
                 series.admit(params.get("_meta"))
                 reply(frame["id"], series.show(runtime.portfolio.broker, params.get("arguments", {}),
                                                time.time_ns() // 1_000_000))
-            except series.Refused as error:
+            except Refused as error:
                 rpc.send({"jsonrpc": "2.0", "id": frame["id"], "error": {"code": error.code, "message": str(error)}})
             except Exception:
                 reply(frame["id"], series.tool_error("invalid request or unavailable source"))

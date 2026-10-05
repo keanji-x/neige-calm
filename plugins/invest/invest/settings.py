@@ -7,9 +7,9 @@ from .config import exact, identifier
 from .symbols import canonical
 
 REQUIRED = frozenset(('account_no', 'broker_home', 'portfolio_track_id', 'oauth_client_id', 'sdk_python_path',
-                      'max_held', 'max_watched', 'max_weight_bps'))
+                      'instrument_recipe_id', 'max_held', 'max_watched', 'max_weight_bps'))
 OPTIONAL = frozenset(('access_region', 'poll_seconds', 'cash_buffer_bps', 'drift_bps', 'max_order_bps',
-                      'quote_max_age_seconds', 'opening_positions'))
+                      'quote_max_age_seconds', 'opening_positions', 'lease_days'))
 # The kernel's open-Track cap is 1..=256; one slot stays free for a renewal (#2104 §3.4).
 MAX_COVERED = 255
 
@@ -41,6 +41,7 @@ class InvestConfig:
     portfolio_track_id: str
     oauth_client_id: str
     sdk_python_path: str
+    instrument_recipe_id: str
     max_held: int
     max_watched: int
     max_weight_bps: int
@@ -51,6 +52,7 @@ class InvestConfig:
     max_order_bps: int = 1000
     quote_max_age_seconds: int = 60
     opening_positions: tuple = ()
+    lease_days: int = 8
 
     @classmethod
     def parse(cls, values):
@@ -64,15 +66,17 @@ class InvestConfig:
             path = getattr(obj, field)
             if not isinstance(path, str) or '\0' in path or not Path(path).is_absolute():
                 raise ValueError(f'{field} must be an absolute path')
-        if not isinstance(obj.portfolio_track_id, str) or not obj.portfolio_track_id.strip() \
-                or len(obj.portfolio_track_id) > 256:
-            raise ValueError('portfolio_track_id is required')
+        for field in ('portfolio_track_id', 'instrument_recipe_id'):
+            value = getattr(obj, field)
+            if not isinstance(value, str) or not value.strip() or len(value) > 256:
+                raise ValueError(f'{field} is required')
         if obj.access_region not in ('global', 'cn'):
             raise ValueError('access_region must be global or cn')
         for field, low, high in (('max_held', 1, MAX_COVERED), ('max_watched', 1, MAX_COVERED),
                                  ('max_weight_bps', 1, 10000), ('poll_seconds', 5, 3600),
                                  ('max_order_bps', 1, 10000), ('cash_buffer_bps', 1, 2000),
-                                 ('drift_bps', 0, 1000), ('quote_max_age_seconds', 1, 120)):
+                                 ('drift_bps', 0, 1000), ('quote_max_age_seconds', 1, 120),
+                                 ('lease_days', 1, 90)):
             value = getattr(obj, field)
             if type(value) is not int or not low <= value <= high:
                 raise ValueError(f'{field} must be an integer in {low}..{high}')

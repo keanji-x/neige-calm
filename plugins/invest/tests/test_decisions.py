@@ -2,7 +2,7 @@
 import pytest
 
 from invest import instruments
-from rig import PLANNER, WORKER, NOW, SOURCES
+from rig import OWNER, PLANNER, WORKER, NOW, SOURCES, track
 
 
 def test_weights_respect_bounds(rig):
@@ -77,7 +77,7 @@ def test_research_track_cannot_trade(rig):
                                ('execution_add', {'decision_id': 'd-1'}, WORKER),
                                ('portfolio_status', {}, PLANNER)):
         with pytest.raises(ValueError, match='portfolio Track'):
-            r.app.call('research-aaa', name, args, caller)
+            r.app.call(track('research-aaa', 'owner', 'invest-US-AAA-1'), name, args, caller)
     assert r.status() == before
     r.step()
     assert r.submits() == []
@@ -92,7 +92,7 @@ def test_roles_are_fenced(rig, name, caller, match):
     args = {'decision_id': 'd-1'} if name == 'execution_add' else {}
     before = r.status()
     with pytest.raises(ValueError, match=match):
-        r.app.call('owner', name, args, caller)
+        r.app.call(OWNER, name, args, caller)
     assert r.status() == before
 
 
@@ -100,7 +100,7 @@ def test_roles_are_fenced(rig, name, caller, match):
                                     {'role': 'assistant', 'card_id': 'a', 'session_id': 'b'}])
 def test_host_identity_is_required(rig, caller):
     with pytest.raises(ValueError, match='identity'):
-        rig.app.call('owner', 'portfolio_status', {}, caller)
+        rig.app.call(OWNER, 'portfolio_status', {}, caller)
 
 
 def test_decision_is_immutable_and_one_is_unresolved(rig):

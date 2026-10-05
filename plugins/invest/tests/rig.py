@@ -5,6 +5,7 @@ from pathlib import Path
 
 from invest import instruments
 from invest.broker import Broker
+from invest.ledger import encoded
 from invest.portfolio import Portfolio
 from invest.settings import InvestConfig
 
@@ -14,6 +15,14 @@ NOW = datetime(2026, 9, 30, 15, tzinfo=timezone.utc)  # 11:00 New York, regular 
 PLANNER = {'role': 'planner', 'card_id': 'planner-card', 'session_id': 'planner-session'}
 WORKER = {'role': 'worker', 'card_id': 'worker-card', 'session_id': 'worker-session'}
 SOURCES = ['neige://source/research-1', 'neige://source/market-1']
+
+
+def track(track_id, creator=None, key=None):
+    """The host's `_meta["dev.neige/track"]`: the Track and its creator provenance (#2104 K1)."""
+    return {'id': track_id, 'creator_track_id': creator, 'creator_key': key}
+
+
+OWNER = track('owner')  # the portfolio Track: an ordinary Track, created by no Planner
 
 
 def sdk(symbol):
@@ -30,6 +39,7 @@ class Rig:
         self.path = self.home / 'invest-broker.json'
         self.values = {'account_no': 'PAPER123', 'broker_home': str(self.home), 'portfolio_track_id': 'owner',
                        'oauth_client_id': 'sdk-client', 'sdk_python_path': str(ROOT / 'tests/broker_fixture.py'),
+                       'instrument_recipe_id': 'recipe-instrument',
                        'max_held': 8, 'max_watched': 8, 'max_weight_bps': 10000,
                        'max_order_bps': 10000, 'poll_seconds': 5, 'drift_bps': 0}
         self.write({'snapshot': {
@@ -125,10 +135,10 @@ class Rig:
                 'weights': [{'symbol': s, 'bps': b} for s, b in targets.items()],
                 'message': 'Captured research and market evidence support these weights.',
                 'source_refs': SOURCES, 'valid_until': (NOW + timedelta(hours=1)).isoformat(), **changes}
-        return self.app.call('owner', 'decision_add', args, PLANNER)
+        return self.app.call(OWNER, 'decision_add', args, PLANNER)
 
     def request(self, decision_id='d-1'):
-        return self.app.call('owner', 'execution_add', {'decision_id': decision_id}, WORKER)
+        return self.app.call(OWNER, 'execution_add', {'decision_id': decision_id}, WORKER)
 
     def step(self):
         """One background-loop pass: reconcile, verify, then act on the requested decision."""
@@ -141,5 +151,61 @@ class Rig:
         return self.step()
 
     def status(self):
-        return self.app.call('owner', 'portfolio_status', {}, PLANNER)
+        return self.app.call(OWNER, 'portfolio_status', {}, PLANNER)
+
+    # Instruments, research Tracks and theses.
+    def add(self, symbol, message='Cover this symbol with a research Track.'):
+        return self.app.call(OWNER, 'instrument_add', {'symbol': symbol, 'message': message}, PLANNER)
+
+    def cover(self, *symbols, price='100'):
+        """`instrument_add` each symbol, quote it, and let the loop verify it: live, key 1 issued."""
+        for symbol in symbols:
+            self.add(symbol)
+            self.quote(symbol, price)
+        return self.step()
+
+    def instrument(self, symbol):
+        return next(i for i in self.status()['instruments'] if i['symbol'] == symbol)
+
+    def renew(self, symbol, message='Renew: the research Track went silent.'):
+        version = self.instrument(symbol)['version']
+        return self.app.call(OWNER, 'instrument_set', {'symbol': symbol, 'expected_version': version,
+                                                       'message': message}, PLANNER)
+
+    def remove(self, symbol, message='No longer worth covering.'):
+        version = self.instrument(symbol)['version']
+        return self.app.call(OWNER, 'instrument_rm', {'symbol': symbol, 'expected_version': version,
+                                                      'message': message}, PLANNER)
+
+    def research(self, key, name, args=None, creator='owner'):
+        """`name` called by the Planner of the Track that `creator` added under `key`."""
+        return self.app.call(track(f'research-{key}', creator, key), name, {} if args is None else args, PLANNER)
+
+    def thesis(self, thesis_id, symbol, **changes):
+        args = {'thesis_id': thesis_id, 'symbol': symbol, 'stance': 'bullish', 'title': f'Thesis {thesis_id}',
+                'summary': 'Demand outruns supply through next year.', 'body': 'The full argument, sourced.',
+                'source_refs': SOURCES} | changes
+        return self.app.call(OWNER, 'thesis_add', args, PLANNER)
+
+    def open_thesis(self, thesis_id):
+        return next(t for t in self.status()['theses'] if t['thesis_id'] == thesis_id)
+
+    def assess(self, key, thesis_id, assessment, **changes):
+        thesis = self.open_thesis(thesis_id)
+        args = {'thesis_id': thesis_id, 'assessment': assessment, 'summary': thesis['summary'],
+                'source_refs': thesis['source_refs'], 'expected_version': thesis['version']} | changes
+        return self.research(key, 'thesis_set', args)
+
+    def retire(self, thesis_id, message='The catalyst has passed.'):
+        version = self.open_thesis(thesis_id)['version']
+        return self.app.call(OWNER, 'thesis_rm', {'thesis_id': thesis_id, 'expected_version': version,
+                                                  'message': message}, PLANNER)
+
+    def dump(self):
+        """Every ledger row as stored, except the access stamp `last_seen_at`: the domain state."""
+        with self.app.ledger.session() as db:
+            tables = [row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+            return {name: [encoded({k: row[k] for k in row.keys() if k != 'last_seen_at'})
+                           for row in db.execute(f'SELECT * FROM {name} ORDER BY rowid')] for name in tables}
 

@@ -7,7 +7,7 @@ import pytest
 from invest import series
 from invest.portfolio import TOOLS
 from invest.settings import OPTIONAL, REQUIRED, InvestConfig
-from recipe import slots, views
+from recipe import INSTRUMENT, PORTFOLIO, slots, views
 from rig import ROOT
 
 MANIFEST = json.loads((ROOT / 'manifest.json').read_text())
@@ -17,7 +17,7 @@ VERBS = {'ls', 'cat', 'show', 'status', 'log', 'diff', 'find', 'describe', 'read
 
 
 def test_manifest_exposes_exactly_the_app_tools_named_object_verb():
-    assert MANIFEST['id'] == 'invest'
+    assert MANIFEST['id'] == 'invest' and MANIFEST['manifest_version'] == 5
     names = [tool['name'] for tool in MANIFEST['exposes_tools']]
     assert len(names) == len(TOOLS) + 1 and set(names) == TOOLS | {series.TOOL}
     for name in names:
@@ -44,7 +44,7 @@ def test_manifest_config_schema_matches_the_parsed_keys_and_defaults():
 def _values():
     return {'account_no': 'PAPER123', 'broker_home': '/home/paper', 'portfolio_track_id': 'owner',
             'oauth_client_id': 'client', 'sdk_python_path': '/usr/bin/python3',
-            'max_held': 10, 'max_watched': 20, 'max_weight_bps': 3000}
+            'instrument_recipe_id': 'recipe-instrument', 'max_held': 10, 'max_watched': 20, 'max_weight_bps': 3000}
 
 
 @pytest.mark.parametrize('change,match', [
@@ -58,6 +58,8 @@ def _values():
     ({'max_held': 1, 'opening_positions': '[{"symbol": "US:A", "shares": 1}, {"symbol": "US:B", "shares": 1}]'},
      'max_held'),
     ({'unexpected': 1}, 'missing or unknown'),
+    ({'lease_days': 0}, 'lease_days'), ({'lease_days': 91}, 'lease_days'),
+    ({'instrument_recipe_id': ' '}, 'instrument_recipe_id'),
 ])
 def test_config_refuses_invalid_values(change, match):
     with pytest.raises(ValueError, match=match):
@@ -70,11 +72,20 @@ def test_config_canonicalizes_opening_positions():
     assert InvestConfig.parse(_values()).opening_positions == ()
 
 
-def test_recipe_views_are_native_views_over_invest_units():
+@pytest.mark.parametrize('recipe,kinds', [
+    (PORTFOLIO, ('portfolio.', 'thesis.board')), (INSTRUMENT, ('instrument.position', 'thesis.records'))])
+def test_recipe_views_are_native_views_over_invest_units(recipe, kinds):
     schema = json.loads((ROOT.parents[1] / 'crates/calm-types/src/report_blocks/native_view.schema.json').read_text())
     view_schema = {'$schema': schema['$schema'], '$defs': schema['$defs'], '$ref': '#/$defs/NativeView'}
-    for view in views():
+    for view in views(recipe):
         jsonschema.Draft202012Validator(view_schema).validate(view)
-    placed = slots()
-    assert placed and all(source.startswith('neige://plugin/invest/portfolio.') for source, _ in placed)
+    placed = slots(recipe)
+    assert placed and all(source.startswith(tuple(f'neige://plugin/invest/{k}' for k in kinds))
+                          for source, _ in placed)
     assert len({source for source, _ in placed}) == len(placed)
+
+
+def test_planner_instructions_fit_the_kernel_cap():
+    text = MANIFEST['planner_instructions']
+    # `plugin_host/manifest.rs` MAX_PLANNER_INSTRUCTIONS_BYTES, legal only at manifest_version 5.
+    assert text.strip() and len(text.encode()) <= 2048

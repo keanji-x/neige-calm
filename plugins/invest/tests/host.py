@@ -55,8 +55,9 @@ class Host:
         assert "error" not in frame, frame
         return frame["result"]
 
-    def tool(self, name, args, track, caller=None):
-        params = {"name": name, "arguments": args, "_meta": {"dev.neige/track": {"id": track}}}
+    def tool(self, name, args, track, caller=None, creator=None, key=None):
+        params = {"name": name, "arguments": args, "_meta": {"dev.neige/track": {
+            "id": track, "creator_track_id": creator, "creator_key": key}}}
         if caller is not None:
             params["_meta"]["dev.neige/caller"] = caller
         return self.request("tools/call", params)

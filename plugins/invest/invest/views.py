@@ -9,10 +9,9 @@ equity in 0.0001%, so the published entries sum exactly to equity and to 100%.
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_FLOOR
 
-from .config import timestamp
-from .reconcile import NEW_YORK
-from .report_text import bounded, money_text
+from .report_text import bounded, money_text, new_york
 from .report_views import metric, record, records, scalar, table, unit, unknown
+from .research_views import board
 from .symbols import unit_id
 
 STATES = {'queued': '等待执行', 'requested': '已请求执行', 'working': '执行中', 'done': '已完成',
@@ -52,10 +51,6 @@ def apportion(values, total, step):
 
 def percent(bps):
     return f'{Decimal(bps) / 100:.2f}%'
-
-
-def new_york(at):
-    return f"{timestamp(at).astimezone(NEW_YORK):%Y-%m-%d %H:%M} 纽约时间"
 
 
 def change(current, previous):
@@ -278,7 +273,8 @@ def account(state):
 
 
 def units(state):
-    """Every portfolio Track overlay: one data unit per kind, from the newest reconciled state."""
+    """Every portfolio Track overlay, the thesis board included: one data unit per kind, from the newest
+    reconciled state."""
     snapshot, samples = state['snapshot'], state['valuations']
     today = snapshot['date'] if snapshot else None
     previous = next((s for s in reversed(samples) if today and s['date'] < today), None)
@@ -286,5 +282,6 @@ def units(state):
              'portfolio.weights': weights(snapshot), 'portfolio.weight_history': weight_history(samples, snapshot),
              'portfolio.holdings': holdings(snapshot, previous, state['targets']),
              'portfolio.decision_log': decision_log(state['decisions']),
-             'portfolio.fill_log': fill_log(state['fills']), 'portfolio.account': account(state)}
+             'portfolio.fill_log': fill_log(state['fills']), 'portfolio.account': account(state),
+             'thesis.board': board(state)}
     return {kind: unit(state, cell) for kind, cell in cells.items()}

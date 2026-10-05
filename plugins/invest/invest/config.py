@@ -61,3 +61,26 @@ def identifier(value):
 def exact(value, required, optional=()):
     if not isinstance(value, dict) or set(value) - set(required) - set(optional) or set(required) - set(value):
         raise ValueError("missing or unknown fields")
+
+
+def text(value, field, limit):
+    """A non-blank string of at most `limit` characters."""
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        raise ValueError(f'{field} must be non-blank text of at most {limit} characters')
+    return value
+
+
+def captured(refs):
+    """Source references: 1-20 captured `neige://source/` URIs."""
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 20 or any(
+            not isinstance(r, str) or not r.startswith('neige://source/') or len(r) > 512 for r in refs):
+        raise ValueError('1-20 captured neige://source/ references required')
+    return refs
+
+
+def version(value, current):
+    """The optimistic lock of a `set` or `rm`: the entry's current version."""
+    if type(value) is not int or value < 1:
+        raise ValueError('expected_version must be a positive integer')
+    if value != current:
+        raise ValueError(f'expected_version {value} is stale: the current version is {current}; re-read and retry')

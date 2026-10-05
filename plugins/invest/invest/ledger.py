@@ -1,8 +1,8 @@
 """The invest ledger: one SQLite file, one cross-process lock and an append-only journal.
 
 The session, lock and journal are the paper plugin's (`plugins/paper-trading/paper_trading/ledger.py`);
-the tables are the multi-instrument shape of #2104 §3.7. Theses, issued keys and the research lease
-extend `instruments` in a later slice.
+the tables are the multi-instrument shape of #2104 §3.7: `instruments` carries each symbol's issued
+research key and its lease, and `theses` the portfolio's theses and their research assessments.
 """
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS orders (
     UNIQUE (decision_id, symbol));
 CREATE TABLE IF NOT EXISTS fills (id TEXT PRIMARY KEY, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS valuations (date TEXT PRIMARY KEY, body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS theses (
+    id TEXT PRIMARY KEY, symbol TEXT NOT NULL REFERENCES instruments(symbol),
+    assessment TEXT NOT NULL CHECK (assessment IN ('open', 'holding', 'at_risk', 'broken')),
+    version INTEGER NOT NULL, retired_at TEXT, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS journal (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL);
 PRAGMA user_version=1;

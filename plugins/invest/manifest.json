@@ -1,11 +1,12 @@
 {
-  "manifest_version": 4,
+  "manifest_version": 5,
   "id": "invest",
   "version": "0.1.0",
   "min_kernel_version": "0.0.1",
   "display_name": "Invest portfolio",
   "entrypoint": {"command": "run"},
   "permissions": {"overlays_write": ["track"]},
+  "planner_instructions": "invest runs one US paper portfolio. It has two kinds of Track; on any other Track ignore these instructions.\nPortfolio Track (its Report shows portfolio.* views): the only Track that decides or trades. instrument_add covers a symbol; once portfolio_status shows it live, pass its track_add to neige_track_add verbatim, never edited (a retry replays the same Track). A live instrument marked stale has no working research Track: renew it with instrument_set and pass the returned track_add to neige_track_add. If neige_track_add refuses at its open-Track cap (-32409), call neige_user_notify with the open Tracks it lists and the current keys from portfolio_status: each listed Track whose invest-* key is not current is superseded and should be closed. thesis_add raises a thesis on a live symbol (at most 3 open per symbol); thesis_rm retires one; instrument_rm retires a symbol's theses and is refused while it is held. The 研究论点 board shows each assessment; never copy an assessment into prose.\nResearch Track (added by the portfolio Track under an invest-<VENUE>-<CODE>-<n> key; its Report shows instrument.position and thesis.records): it never trades. Start every step with instrument_status. If it answers superseded (-32409), close this Track with neige_track_close and stop; if it answers forbidden (-32403), stop and say why. Assess each open thesis of your symbol with thesis_set under its version: assessment open, holding, at_risk or broken, a summary of the evidence, and captured neige://source/ references.",
   "config_schema": {
     "type": "object",
     "properties": {
@@ -14,7 +15,8 @@
       "oauth_client_id": {"type": "string", "description": "Separately authorized official SDK OAuth client; never decrypt CLI credentials."},
       "sdk_python_path": {"type": "string", "description": "Absolute Python interpreter with the official Longbridge SDK 5.2.0."},
       "access_region": {"type": "string", "enum": ["global", "cn"], "default": "global", "description": "Official SDK access point. Select cn on the mainland-China network. No endpoint override or fallback."},
-      "portfolio_track_id": {"type": "string", "description": "The portfolio Track: the only Track that may decide, execute or read the portfolio."},
+      "portfolio_track_id": {"type": "string", "description": "The portfolio Track: the only Track that may decide, execute or read the portfolio, and the creator every research Track must have."},
+      "instrument_recipe_id": {"type": "string", "description": "The stored research recipe (instrument-recipe.md) that every research Track is added from."},
       "max_held": {"type": "integer", "description": "Most symbols held at once (weighted above 0 or in a position), 1-255; max_held + max_watched <= 255."},
       "max_watched": {"type": "integer", "description": "Most covered symbols that are not held, 1-255; the kernel open-Track cap must be at least max_held + max_watched + 1."},
       "max_weight_bps": {"type": "integer", "description": "Largest target weight of one symbol, 1-10000 basis points of account value."},
@@ -23,15 +25,16 @@
       "max_order_bps": {"type": "integer", "default": 1000, "description": "Largest single order, 1-10000 basis points of account value, including a 1% price reserve."},
       "quote_max_age_seconds": {"type": "integer", "default": 60, "description": "Quote freshness required to send an order, 1-120 seconds."},
       "poll_seconds": {"type": "integer", "default": 60, "description": "Reconciliation interval, 5-3600 seconds."},
+      "lease_days": {"type": "integer", "default": 8, "description": "Days a live symbol's research Track may stay silent before portfolio_status marks it stale, 1-90. A new key must be seen within 120 minutes of issue."},
       "opening_positions": {"type": "string", "default": "[]", "description": "JSON array of {\"symbol\": \"US:SPY\", \"shares\": 13}: the holdings already in the account when this ledger starts. Must equal the broker's holdings at the first reconciliation; immutable per ledger; at most max_held symbols."}
     },
-    "required": ["account_no", "broker_home", "oauth_client_id", "sdk_python_path", "portfolio_track_id", "max_held", "max_watched", "max_weight_bps"],
+    "required": ["account_no", "broker_home", "oauth_client_id", "sdk_python_path", "portfolio_track_id", "instrument_recipe_id", "max_held", "max_watched", "max_weight_bps"],
     "additionalProperties": false
   },
   "exposes_tools": [
     {
       "name": "portfolio_status",
-      "description": "Portfolio Track Planner or Worker. Read the persisted portfolio without contacting the broker: snapshot (check its time), positions, target weights, covered instruments (pending/live/dropped, held or watched), limits, decisions with their order legs, fills and errors.",
+      "description": "Portfolio Track Planner or Worker. Read the persisted portfolio without contacting the broker: snapshot (check its time), positions, target weights, covered instruments (pending/live/dropped, held or watched, version, current research key, its track_add, last_seen_at, stale), open theses, limits, decisions with their order legs, fills and errors.",
       "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "annotations": {"title": "portfolio_status", "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
     },
@@ -68,6 +71,107 @@
       "description": "Portfolio Track Worker only. Durably request execution of the exact persisted, unexpired, queued decision (state becomes requested) and wake the App's loop; this call never contacts the broker. The loop sends one regular-session DAY market order per symbol outside the drift band to the pinned official PAPER account, one at a time, sells first, buys from settled cash only. Repeating the request records nothing. Poll portfolio_status until the decision is done, noop or expired, or your stated limit; its error says why it waits. Uncertain orders are never resubmitted.",
       "input_schema": {"type": "object", "properties": {"decision_id": {"type": "string"}}, "required": ["decision_id"], "additionalProperties": false},
       "annotations": {"title": "execution_add", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "instrument_add",
+      "description": "Portfolio Track Planner only. Cover a US symbol: it is pending until the loop sees a broker quote, then live with research key invest-<VENUE>-<CODE>-<n> and its track_add in portfolio_status, or dropped. Needs fewer than max_watched watched symbols (covered, not held). Adding a covered symbol changes nothing; re-adding a dropped one issues the next key.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {"type": "string", "description": "VENUE:CODE, US only, for example US:SPY."},
+          "message": {"type": "string", "maxLength": 2000, "description": "Why: the audit note journaled with this change."}
+        },
+        "required": ["symbol", "message"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "instrument_add", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "instrument_set",
+      "description": "Portfolio Track Planner only. Renew a live symbol's research key: issue key n+1, which supersedes every older key's Track, and return the new track_add. Pass it verbatim to neige_track_add. Use it for a stale symbol, or after a research Track was added with other arguments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {"type": "string", "description": "VENUE:CODE, US only, for example US:SPY."},
+          "expected_version": {"type": "integer", "minimum": 1, "description": "The version portfolio_status shows; a stale one is refused."},
+          "message": {"type": "string", "maxLength": 2000, "description": "Why: the audit note journaled with this change."}
+        },
+        "required": ["symbol", "expected_version", "message"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "instrument_set", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "instrument_rm",
+      "description": "Portfolio Track Planner only. Drop a covered symbol and retire its open theses; refused while it is held (weighted above 0 by the latest decision, or in a position). Its research Track is superseded and closes itself on its next call.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "symbol": {"type": "string", "description": "VENUE:CODE, US only, for example US:SPY."},
+          "expected_version": {"type": "integer", "minimum": 1, "description": "The version portfolio_status shows; a stale one is refused."},
+          "message": {"type": "string", "maxLength": 2000, "description": "Why: the audit note journaled with this change."}
+        },
+        "required": ["symbol", "expected_version", "message"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "instrument_rm", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "instrument_status",
+      "description": "Research Track Planner only. Your symbol's research view: state, key, held or watched, target weight, position, its open theses (with versions) and the 20 latest retired. Also refreshes this Track's instrument.position and thesis.records views. Allowed only on a Track the portfolio Track added under the symbol's current key: an older key or a dropped symbol answers -32409 superseded (close this Track), anything else -32403.",
+      "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "annotations": {"title": "instrument_status", "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "thesis_add",
+      "description": "Portfolio Track Planner only. Raise a thesis on a live symbol for its research Track to assess; at most 3 open theses per symbol. Starts with assessment open, version 1. Repeating the same thesis returns it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "thesis_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+          "symbol": {"type": "string", "description": "VENUE:CODE, US only, for example US:SPY."},
+          "stance": {"type": "string", "enum": ["bullish", "bearish", "neutral"]},
+          "title": {"type": "string", "maxLength": 110},
+          "summary": {"type": "string", "maxLength": 500},
+          "body": {"type": "string", "maxLength": 6000},
+          "source_refs": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string"}, "description": "Captured neige://source/ references."}
+        },
+        "required": ["thesis_id", "symbol", "stance", "title", "summary", "body", "source_refs"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "thesis_add", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "thesis_set",
+      "description": "Research Track Planner only, attested as instrument_status is. Assess one open thesis of your own symbol under its version: the new assessment, a summary of the evidence and its captured sources. The portfolio's board shows the change on its next tick.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "thesis_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+          "assessment": {"type": "string", "enum": ["open", "holding", "at_risk", "broken"]},
+          "summary": {"type": "string", "maxLength": 500},
+          "source_refs": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string"}, "description": "Captured neige://source/ references."},
+          "expected_version": {"type": "integer", "minimum": 1, "description": "The version portfolio_status shows; a stale one is refused."}
+        },
+        "required": ["thesis_id", "assessment", "summary", "source_refs", "expected_version"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "thesis_set", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "thesis_rm",
+      "description": "Portfolio Track Planner only. Retire one open thesis under its version; it leaves the board and stays in its research Track’s history.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "thesis_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+          "expected_version": {"type": "integer", "minimum": 1, "description": "The version portfolio_status shows; a stale one is refused."},
+          "message": {"type": "string", "maxLength": 2000, "description": "Why: the audit note journaled with this change."}
+        },
+        "required": ["thesis_id", "expected_version", "message"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "thesis_rm", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
     },
     {
       "name": "series_show",
