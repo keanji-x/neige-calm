@@ -400,6 +400,7 @@ TT=harness; TT=${TT}_items
 
 | Item | Note |
 |---|---|
+| D12 | B0 (#2117) merged first: S1 registers `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat` with B0's file naming (`prompts/tools/neige_mail_*.md`), and every name in its texts is `_`-separated. The migration is `0142_mails.sql` (0141 is B0's). |
 | F19 | The budget comment's 29,909 B was stale: the surface measured 29,999 B before `send` (§4.1 has the S1 numbers). |
 | D15 | `neige.area.outline` lists the Tracks that have a report card; every Track created through the routes has one, so the fixture Tracks get one too. |
 | §4.4 `next_hop` | When a send from this turn would be refused, `next_hop` is `"7/6"` (the render prints the hand-off line for any n > 6); `null` stays "no recorded turn input". |

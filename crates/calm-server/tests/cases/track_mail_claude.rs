@@ -105,7 +105,7 @@ async fn mail_trace_reaches_a_claude_planner() {
         instructions: "Planner instructions for the fake.".into(),
         calm_tools: ToolNames::new(
             calm_server::mcp_server::wiring::MCP_SERVER_KEY,
-            ["neige.mail.send".to_string()],
+            ["neige_mail_send".to_string()],
         ),
         proxy: Vec::new(),
         prior_total_tokens: 0,
@@ -183,7 +183,7 @@ async fn mail_trace_reaches_a_claude_planner() {
         3
     );
     // 11: the Codex side lists both of its mails as read by their recipients.
-    let listed = w.call(n, "neige.mail.ls", json!({})).await;
+    let listed = w.call(n, "neige_mail_ls", json!({})).await;
     let mails = super::track_mail_fixture::structured(&listed)["mails"].clone();
     assert_eq!(mails[1]["state"], json!("read"), "{mails}");
     assert_eq!(mails[2]["state"], json!("read"), "{mails}");
