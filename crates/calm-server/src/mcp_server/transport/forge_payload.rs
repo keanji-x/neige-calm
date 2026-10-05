@@ -18,6 +18,10 @@ pub(crate) struct PluginForgePayload {
     pub(crate) probe: Option<ProbeSpec>,
     #[serde(default)]
     pub(crate) parked: bool,
+    /// Plugin-authorized predecessor identities for this exact logical request.
+    /// Used only to retrieve an existing operation in the authenticated scope.
+    #[serde(default)]
+    pub(crate) compatible_payload_hashes: Vec<String>,
 }
 
 /// Construct a forge action with event extraction and recovery probes.
@@ -35,5 +39,6 @@ pub(crate) fn forge_action_payload(
         context: Map::new(),
         probe: Some(probes),
         parked: false,
+        compatible_payload_hashes: Vec::new(),
     }
 }

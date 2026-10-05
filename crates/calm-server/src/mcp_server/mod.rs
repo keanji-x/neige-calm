@@ -3,7 +3,7 @@
 
 pub mod auth;
 pub mod cli;
-mod forge_receipt;
+pub(crate) mod forge_receipt;
 pub mod framing;
 pub mod handshake;
 pub mod registry;

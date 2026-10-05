@@ -827,11 +827,25 @@ pub(crate) async fn submit_forge_action_with_key(
     let result_path = forge_result_path(gate_logs_dir, &idempotency_key)?;
     let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
 
-    let key = OperationKey {
+    let mut key = OperationKey {
         operation_key,
-        idempotency_key: Some(idempotency_key),
+        idempotency_key: Some(idempotency_key.clone()),
         payload_hash: semantic_payload_hash(&payload)?,
     };
+    // The plugin owns version compatibility; the kernel owns caller scope and
+    // lifecycle. Select only an explicitly authorized frozen predecessor, then
+    // retain the driver's strict equality check and permanent-row deduplication.
+    if !payload.compatible_payload_hashes.is_empty()
+        && let Some(existing) = runtime
+            .find_by_kind_and_idempotency(FORGE_ACTION_KIND, &idempotency_key)
+            .await
+            .map_err(|e| RpcError::internal(format!("forge predecessor lookup: {e}")))?
+        && payload
+            .compatible_payload_hashes
+            .contains(&existing.payload_hash)
+    {
+        key.payload_hash = existing.payload_hash;
+    }
     let forge_payload = ForgeActionPayload {
         track_id,
         card_id,
@@ -1466,11 +1480,13 @@ mod tests {
                 context: serde_json::Map::new(),
                 probe: None,
                 parked: true,
+                compatible_payload_hashes: Vec::new(),
             }
         }
 
         let base = payload(vec!["gh", "pr", "merge", "42"], "gh.pr.merge:owner/repo:42");
         let edited_argv = PluginForgePayload {
+            compatible_payload_hashes: Vec::new(),
             argv: vec!["gh", "pr", "merge", "42", "--squash", "--delete-branch"]
                 .into_iter()
                 .map(str::to_string)

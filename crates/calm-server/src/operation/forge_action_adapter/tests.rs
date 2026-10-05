@@ -13,6 +13,8 @@ use crate::operation::{
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
 
+mod checks_upgrade_tests;
+
 #[test]
 fn frozen_forge_six_shape_defaults_new_optional_fields() {
     let frozen: FrozenForge = serde_json::from_value(json!({

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::plugin_host::forge_caller::ForgeCallerScope;
 
+mod checks_compat;
 mod issue;
 
 pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
@@ -363,7 +364,7 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         PR_CHECKS_PAGES_JQ.into(),
     ];
     let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
-    forge_payload(
+    let mut payload = forge_payload(
         wait,
         idem_key,
         Some(event_spec(
@@ -384,14 +385,17 @@ fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
                 "view",
                 pr.to_string(),
                 "--repo",
-                repo,
+                repo.clone(),
                 "--json",
                 "state"
             ],
             "output_probe_argv": read
         })),
         true,
-    )
+    )?;
+    payload["compatible_payload_hashes"] =
+        json!([checks_compat::predecessor_hash(&payload, &repo, pr)?]);
+    Ok(payload)
 }
 
 fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {

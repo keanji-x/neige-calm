@@ -28,6 +28,64 @@ pending receipt reuse, head movement, deadline and one completion per wait.
 Keep the historical serde golden and add current and malformed snapshot checks.
 Planner will arrange both independent L2 review channels after implementation.
 
+## Upgrade identity compatibility
+
+The pre-2129 checks event extractor and deadline probe are part of the frozen
+semantic payload hash. Identical repo/pr/attempt arguments therefore conflict
+after upgrading even though the caller-scoped idempotency key is unchanged.
+The dev lowerer will declare the exact pre-2129 semantic hash for these same
+arguments as a compatible predecessor. This is a plugin-owned compatibility
+authorization, not a kernel rule about checks or GitHub identities.
+
+The forge transport may select that predecessor hash only after looking up an
+existing operation by the full plugin/track/card/idempotency scope. It then
+submits through the unchanged driver's strict hash equality check. No alias
+changes a stored row, starts a replacement action, grants access to another
+scope, or affects new operations. The compatibility declaration is optional
+for old plugins and is not persisted as execution policy. Plugins already own
+their scoped idempotency semantics; user tool arguments cannot supply this
+declaration directly. The current semantic hash field set stays byte-stable.
+
+Keep the old semantic descriptor in the dev feature as an explicit frozen
+version, used only to derive the predecessor hash. The old probe must never be
+run for a new operation. Historical pending operations finish with their own
+frozen extractor/probe, and historical completed results retain absent snapshot
+and failure details. A missing snapshot still means evidence was not recorded.
+No database migration or public event/schema change is needed.
+
+Acceptance: submit base-shaped payloads through the production forge submission
+entry point, repeat with the current lowerer while parked and after completion,
+and assert the original operation/result and unchanged frozen payload. Reject
+changed semantic parameters at the same key; changed repo/pr/attempt or caller,
+plugin, or track must never retrieve the original operation. Mutation checks
+must pin both alias matching and caller scope. This extends L2 across the forge
+transport authorization boundary; both full independent reviews remain required.
+
+The regression descriptor is frozen from base `162aff1d`: event extraction and
+both probe argument vectors retain the old semantic bytes. Tests substitute only
+the already-excluded action argv with a deterministic child, submit through
+`submit_forge_action_with_key`, and obtain real adapter completions. They do not
+write an operation row or synthesize a stored result. A same-key collision from
+different repo/pr/attempt arguments and separate plugin/track/card scopes pin
+the negative behavior.
+
+Before the repair, pending and completed retries both failed with the driver's
+`already used with different payload` error. Disabling predecessor matching
+produced exactly those two failures (the negative test stayed green); restoring
+it returned all three upgrade tests to green. Removing only the card component
+from the scoped key produced exactly the negative test's cross-caller failure.
+Both production mutations were restored by patches and compared byte-for-byte
+with the pre-mutation transport. Final checks and logs are reported by the
+worker; fresh full independent L2 reviews remain the Planner's next step.
+
+There is no migration/rollback rewrite: removing the declaration makes old
+retries conflict again while leaving every frozen operation/result intact.
+Mixed-version concurrent first submissions can still fail closed with the
+ordinary hash conflict if an older process inserts after the compatibility
+lookup; retry then finds that frozen predecessor. This does not broaden the
+current task to rolling-upgrade scheduling. Future semantic versions require
+their own explicit plugin-owned compatibility decision.
+
 gh 2.74.2's `pr view` exporter drops node IDs, so its URL-less checks cannot
 satisfy the locator contract. The dev lowerer now reads the supported GraphQL
 `statusCheckRollup.contexts` connection with node IDs and 100-node pagination.

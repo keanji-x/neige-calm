@@ -1,0 +1,55 @@
+{
+  "argv": [
+    "/bin/true"
+  ],
+  "idem_key": "gh.pr.checks:owner/repo:42:upgrade",
+  "event_spec": {
+    "event_kind": "forge.pr.checks",
+    "fields": {
+      "conclusion": {
+        "json_field": {
+          "path": "/conclusion"
+        }
+      },
+      "mergeable": {
+        "json_field": {
+          "path": "/mergeable"
+        }
+      },
+      "head_sha": {
+        "json_field": {
+          "path": "/head_sha"
+        }
+      }
+    }
+  },
+  "subject": null,
+  "context": {
+    "pr_number": 42
+  },
+  "probe": {
+    "probe_argv": [
+      "gh",
+      "pr",
+      "view",
+      "42",
+      "--repo",
+      "owner/repo",
+      "--json",
+      "state"
+    ],
+    "output_probe_argv": [
+      "gh",
+      "pr",
+      "view",
+      "42",
+      "--repo",
+      "owner/repo",
+      "--json",
+      "headRefOid,mergeable,statusCheckRollup",
+      "--jq",
+      "{conclusion: ([(.statusCheckRollup // [])[] | if .__typename == \"CheckRun\" then (if .status != \"COMPLETED\" then \"pending\" elif .conclusion == \"SUCCESS\" or .conclusion == \"NEUTRAL\" or .conclusion == \"SKIPPED\" then \"success\" else \"failure\" end) elif .state == \"SUCCESS\" then \"success\" elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" else \"failure\" end] | if any(. == \"failure\") then \"failure\" elif any(. == \"pending\") then \"pending\" elif length == 0 then \"no_checks\" else \"success\" end), mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid}"
+    ]
+  },
+  "parked": true
+}

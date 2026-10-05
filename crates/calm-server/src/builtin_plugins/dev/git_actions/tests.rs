@@ -397,6 +397,18 @@ fn lowers_gh_pr_checks() {
             "parked": true
         })
     };
+    let mut payload = payload;
+    let mut attempt_payload = attempt_payload;
+    for value in [&mut payload, &mut attempt_payload] {
+        assert_eq!(
+            value["compatible_payload_hashes"].as_array().unwrap().len(),
+            1
+        );
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("compatible_payload_hashes");
+    }
     assert_eq!(payload, expected_payload("gh.pr.checks:owner/repo:42"));
     assert_eq!(
         attempt_payload,

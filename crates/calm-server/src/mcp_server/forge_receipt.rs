@@ -20,7 +20,7 @@ struct PendingReceipt<'a> {
     completion_event: Option<&'a str>,
 }
 
-pub(super) fn pending(op_id: &str, completion_event: Option<&str>) -> Value {
+pub(crate) fn pending(op_id: &str, completion_event: Option<&str>) -> Value {
     serde_json::to_value(PendingReceipt {
         op_id,
         parked: true,
