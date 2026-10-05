@@ -153,3 +153,25 @@ fn mobile_pairing_device_revocation_removes_only_its_session_and_closes_streams(
     assert!(sessions.get(&owner_session).is_some());
     assert!(transport.is_cancelled());
 }
+
+#[test]
+fn mobile_pairing_refused_invitation_keeps_the_live_one() {
+    let mut state = enabled();
+    let (live, _, _) = state.invite().unwrap();
+    for n in 0..MAX_DEVICES {
+        state.devices.insert(
+            format!("device-{n}"),
+            Device {
+                public: PairedDevice {
+                    id: format!("device-{n}"),
+                    device_name: format!("Phone {n}"),
+                },
+                session: format!("session-{n}"),
+                pairing: None,
+            },
+        );
+    }
+    // A refusal changes nothing: the invitation already on screen stays live.
+    assert!(state.invite().is_err());
+    assert!(state.pending.contains_key(&live));
+}

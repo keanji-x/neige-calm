@@ -144,7 +144,7 @@ export function MobileAccessHost({ transport, unauthorized, onBack }: Readonly<{
     onRefresh={() => { feedback.clear(); void query.refetch(); void scanStatus.refetch(); }}
     onEnable={() => { void act(() => valueOf(setMobileAccess(transport, unauthorized, true)), state); }}
     onDisable={() => { retireEnrollment(); void act(async () => { await valueOf(setMobileAccess(transport, unauthorized, false)); setInvitation(null); setLogin(null); }, state); }}
-    onCreate={() => { void act(query.data?.provider === 'private-tailnet' ? createEnrollment : async () => { setInvitation(await valueOf(createMobileInvitation(transport, unauthorized))); },
+    onCreate={() => { void act(query.data?.provider === 'private-tailnet' ? createEnrollment : async () => { setInvitation(null); setInvitation(await valueOf(createMobileInvitation(transport, unauthorized))); },
       writeFailureText(MOBILE_INVITATION_FAILURES, MOBILE_WRITE_TEXT)); }}
     onApprove={(id) => { void act(async () => { await valueOf(approveMobilePair(transport, unauthorized, id)); setInvitation(null); },
       writeFailureText(MOBILE_APPROVE_FAILURES, MOBILE_WRITE_TEXT)); }}

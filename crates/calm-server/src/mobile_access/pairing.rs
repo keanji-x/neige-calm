@@ -146,13 +146,19 @@ impl PairingState {
         self.expire();
         let origin = self.origin.as_ref().ok_or_else(access_off)?;
         // A retry after a lost answer must not leave a second live ticket: like a new scan
-        // enrollment, a new invitation replaces the earlier ones no phone has claimed.
-        self.pending.retain(|_, row| row.claim.is_some());
-        if self.pending.len() >= MAX_PENDING || self.devices.len() >= MAX_DEVICES {
+        // enrollment, a new invitation replaces the earlier ones no phone has claimed. The cap is
+        // checked against what remains first, so a refusal leaves the live ticket alone.
+        let claimed = self
+            .pending
+            .values()
+            .filter(|row| row.claim.is_some())
+            .count();
+        if claimed >= MAX_PENDING || self.devices.len() >= MAX_DEVICES {
             return Err(CalmError::BadRequest(
                 "Pairing limit reached; revoke a device or wait for an invitation to expire".into(),
             ));
         }
+        self.pending.retain(|_, row| row.claim.is_some());
         let ticket = secret();
         let id = Uuid::new_v4().to_string();
         let payload = format!("{origin}/mobile/pair#v1.{ticket}");

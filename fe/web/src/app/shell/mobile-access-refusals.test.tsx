@@ -85,3 +85,20 @@ it('a write with no answer shows the fixed sentence, never the transport text', 
   expect(alert.textContent).not.toMatch(/transport|fetch|connection|offline/i);
   sessionKept(view);
 });
+
+it('a second QR whose answer is lost takes the first one off screen: the server may already have replaced it', async () => {
+  let creates = 0;
+  mount((request) => {
+    if (request.path !== '/api/mobile/pairings') return Promise.reject(new Error(`unexpected ${request.path}`));
+    creates += 1;
+    return creates === 1
+      ? Promise.resolve(ok({ id: 'first', qrPayload: 'p', qrImage: 'data:image/svg+xml;base64,AA==', expiresInSeconds: 180 }))
+      : Promise.reject(new TypeError('Failed to fetch'));
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Create QR code' }));
+  expect(await screen.findByAltText('Scan to pair this Neige workspace')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Create QR code' }));
+  expect((await screen.findByRole('alert')).textContent).toContain(MOBILE_WRITE_TEXT.unknown);
+  expect(screen.queryByAltText('Scan to pair this Neige workspace')).toBeNull();
+  expect(creates).toBe(2);
+});
