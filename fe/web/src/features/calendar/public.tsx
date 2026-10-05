@@ -5,7 +5,7 @@ import { useState } from '../../ui/state/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { ListText } from '../../ui/list-typography/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
-import { calendarDate, calendarOccurrenceOn, type CalendarListedEntry, type CalendarWindow, type CalendarWrite } from '../../../../core/domain/calendar.ts';
+import { calendarDate, calendarOccurrenceOn, type CalendarListedEntry, type CalendarEdit, type CalendarWindow } from '../../../../core/domain/calendar.ts';
 import { CalendarEditor, WeeklyEntryDetails } from './editor.tsx';
 import { TaskCalendar } from './calendar-view.tsx';
 import styles from './calendar.module.css';
@@ -17,7 +17,7 @@ export type CalendarTasksProps = Readonly<{
   enabled: boolean; pending: boolean;
   onDateChange(date: string): void; onWindowChange(window: CalendarWindow): void;
   onRetry(): void; onSettings(): void;
-  onOpenTrack(id: string): void; onSave(write: CalendarWrite): Promise<void>;
+  onOpenTrack(id: string): void; onSave(write: CalendarEdit): Promise<void>;
 }>;
 export function CalendarTasks({ date, timezone, trackCountOn, month, day, enabled, pending, onDateChange, onWindowChange, onRetry, onSettings, onOpenTrack, onSave }: CalendarTasksProps) {
   const [editing, setEditing] = useState<Readonly<{ entry: CalendarListedEntry | null; date: string }> | null>(null);

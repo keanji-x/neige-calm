@@ -75,11 +75,11 @@ describe('calendarWriteFailureText', () => {
 
   it('says each op’s own fixed sentence and the stale sentence, and never the runner’s offline words', () => {
     const lost = new ApiError(transport);
-    expect(calendarWriteFailureText({ idempotency_key: 'k', task: update.task })(lost)).toBe(CALENDAR_WRITE_TEXT.create.unknown);
+    expect(calendarWriteFailureText({ task: update.task })(lost)).toBe(CALENDAR_WRITE_TEXT.create.unknown);
     expect(calendarWriteFailureText(update)(lost)).toBe(CALENDAR_WRITE_TEXT.update.unknown);
     expect(calendarWriteFailureText({ ...update, cancelled: true })(lost)).toBe(CALENDAR_WRITE_TEXT.cancel.unknown);
     expect(calendarWriteFailureText(update)(new ApiError(http(409, 'conflict', 'conflict: changed')))).toBe(CALENDAR_WRITE_TEXT.stale);
-    expect(calendarWriteFailureText({ idempotency_key: 'k', task: update.task })(new NotSentError())).toBe(CALENDAR_WRITE_TEXT.create.refused);
+    expect(calendarWriteFailureText({ task: update.task })(new NotSentError())).toBe(CALENDAR_WRITE_TEXT.create.refused);
   });
 });
 

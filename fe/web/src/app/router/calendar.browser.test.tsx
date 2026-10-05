@@ -4,7 +4,7 @@ import { afterEach, expect, it } from 'vitest';
 import '../../styles/entry.css';
 import { CalendarTasks, type CalendarEntriesView } from '../../features/calendar/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
-import type { CalendarEntry, CalendarListedEntry, CalendarWrite } from '../../../../core/domain/calendar.ts';
+import type { CalendarEdit, CalendarEntry, CalendarListedEntry } from '../../../../core/domain/calendar.ts';
 
 afterEach(async () => {
   cleanup();
@@ -14,7 +14,7 @@ const ready = (entries: CalendarListedEntry[]): CalendarEntriesView => ({ entrie
 
 it('creates a task for the date selected inside the integrated sidebar week', async () => {
   await page.viewport(1440, 1000);
-  const writes: CalendarWrite[] = [];
+  const writes: CalendarEdit[] = [];
   render(<TodayPage tracks={[]} areas={[]} activityAvailable renderTrackRow={() => null} nowMs={Date.parse('2026-10-02T09:00:00+08:00')}
     renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange} onWindowChange={() => undefined}
       timezone="Asia/Shanghai" month={ready([])} day={ready([])} enabled pending={false}

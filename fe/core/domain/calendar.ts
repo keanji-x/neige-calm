@@ -28,6 +28,8 @@ export type CalendarDraft = z.infer<typeof calendarDraftSchema>;
 export type CalendarEntry = z.infer<typeof calendarEntrySchema>;
 export type CalendarUpdate = Readonly<{ id: string; expected_version: number; task: CalendarDraft; cancelled: boolean }>;
 export type CalendarWrite = Readonly<{ idempotency_key: string; task: CalendarDraft }> | CalendarUpdate;
+/** What the editor asks for: a new task, which the app keys once per intent, or an update or cancel. */
+export type CalendarEdit = Readonly<{ task: CalendarDraft }> | CalendarUpdate;
 export function calendarListOperation(from: string, until: string, timezone: string): ApiOperation<CalendarListedEntry[]> {
   return { method: 'GET', path: `/api/calendar/tasks?from=${encodeURIComponent(from)}&until=${encodeURIComponent(until)}&timezone=${encodeURIComponent(timezone)}`, responseSchema: calendarListedEntrySchema.array() };
 }
@@ -75,7 +77,7 @@ export const CALENDAR_WRITE_TEXT = Object.freeze({
 }) satisfies Readonly<Record<'create' | 'update' | 'cancel', WriteText> & { stale: string }>;
 
 /** The sentence a failed calendar write shows in its editor: its table's reading, with `stale` as its fixed sentence. */
-export function calendarWriteFailureText(write: CalendarWrite): (error: unknown) => string {
+export function calendarWriteFailureText(write: CalendarEdit): (error: unknown) => string {
   return (error) => {
     if (!('id' in write)) return readWriteFailure(error, CALENDAR_WRITE_FAILURES.create, CALENDAR_WRITE_TEXT.create).text;
     const reading = readWriteFailure(error, CALENDAR_WRITE_FAILURES.update, write.cancelled ? CALENDAR_WRITE_TEXT.cancel : CALENDAR_WRITE_TEXT.update);

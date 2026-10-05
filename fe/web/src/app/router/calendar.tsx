@@ -3,10 +3,12 @@ import { useState } from '../../ui/state/public.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  CALENDAR_PLUGIN_ID, calendarListOperation, calendarReadBackWindow, calendarUpdateAttempts, calendarUpdateLanded, calendarWriteOperation,
-  shiftCalendarDate, type CalendarWindow, type CalendarWrite,
+  CALENDAR_PLUGIN_ID, CALENDAR_WRITE_FAILURES, calendarListOperation, calendarReadBackWindow, calendarUpdateAttempts, calendarUpdateLanded,
+  calendarWriteOperation, shiftCalendarDate, type CalendarDraft, type CalendarEdit, type CalendarWindow, type CalendarWrite,
 } from '../../../../core/domain/calendar.ts';
+import { writeClassOf } from '../../../../core/domain/failure-class.ts';
 import { CalendarTasks } from '../../features/calendar/public.tsx';
+import { useKeyedIntent } from '../providers/idempotency-key.ts';
 import { pluginsQueryOptions, runOperation } from '../providers/queries.ts';
 import { useRecoveryMutation } from '../providers/recovery-mutation.ts';
 
@@ -42,11 +44,25 @@ export function TodayCalendarTasks({ date, onDateChange, trackCountOn, transport
     /* `onSettled`: a write whose answer was lost may have been stored, and only the lists say so. */
     onSettled: () => { void client.invalidateQueries({ queryKey: ['plugin-data', CALENDAR_PLUGIN_ID] }); },
   });
+  /* One new task is one `idempotency_key` (#2131): a retry of the same task after an unknown outcome resends the held
+     key, so the server answers the task the first attempt made; a final outcome releases it. */
+  const createIntent = useKeyedIntent<string, CalendarDraft>((held, next) => held === next);
+  const save = async (edit: CalendarEdit) => {
+    if ('id' in edit) { await write.mutateAsync(edit); return; }
+    const request = createIntent.request(JSON.stringify(edit.task), () => edit.task);
+    try {
+      await write.mutateAsync({ idempotency_key: request.key, task: request.body });
+    } catch (error) {
+      if (writeClassOf(error, CALENDAR_WRITE_FAILURES.create) !== 'unknown') createIntent.release(request);
+      throw error;
+    }
+    createIntent.release(request);
+  };
   return <CalendarTasks trackCountOn={trackCountOn} date={date} timezone={timezone} enabled={enabled} pending={write.isPending}
     month={{ entries: month.data, loading: plugins.isPending || (enabled && month.isPending), error: plugins.error?.message ?? (enabled ? month.error?.message : null) ?? null }}
     day={{ entries: day.data, loading: enabled && day.isPending, error: enabled ? day.error?.message ?? null : null }}
     onDateChange={onDateChange} onWindowChange={(next) => setWindow((current) => current?.from === next.from && current.until === next.until ? current : next)}
     onSettings={onSettings} onOpenTrack={onOpenTrack}
     onRetry={() => { void plugins.refetch(); if (enabled) { if (window !== null) void month.refetch(); void day.refetch(); } }}
-    onSave={async (input) => { await write.mutateAsync(input); }} />;
+    onSave={save} />;
 }

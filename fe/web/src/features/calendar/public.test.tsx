@@ -10,7 +10,7 @@ const entry: CalendarListedEntry = { id: 'one', task: { title: 'Research', descr
 function props(overrides: Partial<CalendarTasksProps> = {}): CalendarTasksProps {
   return { date: '2026-10-02', timezone: 'Asia/Shanghai', month: { entries: [], loading: false, error: null }, day: { entries: [], loading: false, error: null }, enabled: true, pending: false, onDateChange: vi.fn(), onWindowChange: vi.fn(), onRetry: vi.fn(), onSettings: vi.fn(), onOpenTrack: vi.fn(), onSave: vi.fn(() => Promise.resolve()), ...overrides };
 }
-it('opens a minimal form and preserves its creation key after response loss', async () => {
+it('opens a minimal form and resends the same draft after response loss', async () => {
   const onSave = vi.fn().mockRejectedValueOnce(new Error('Response lost')).mockResolvedValueOnce(undefined);
   render(<CalendarTasks {...props({ onSave })} />);
   const user = userEvent.setup();

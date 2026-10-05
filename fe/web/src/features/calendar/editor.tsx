@@ -10,12 +10,12 @@ import type { ISOTimeString } from '@astryxdesign/core/utils';
 import { useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  calendarInstant, calendarWriteFailureText, wallTime, type CalendarDraft, type CalendarEntry, type CalendarWrite,
+  calendarInstant, calendarWriteFailureText, wallTime, type CalendarDraft, type CalendarEdit, type CalendarEntry,
 } from '../../../../core/domain/calendar.ts';
 import styles from './calendar.module.css';
 
 export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave }: Readonly<{
-  entry: CalendarEntry | null; date: string; timezone: string; pending: boolean; onClose(): void; onSave(write: CalendarWrite): Promise<void>;
+  entry: CalendarEntry | null; date: string; timezone: string; pending: boolean; onClose(): void; onSave(write: CalendarEdit): Promise<void>;
 }>) {
   const original = entry?.task.schedule;
   const initialStart = original?.kind === 'timed' ? wallTime(Date.parse(original.start), original.timezone) : '';
@@ -33,11 +33,10 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
   /* The draft's own checks, said before anything is sent; a sent write's failure is the feedback's. */
   const [error, setError] = useState<string | null>(null);
   const feedback = useOperationFeedback();
-  const [receipt, setReceipt] = useState<{ fingerprint: string; key: string } | null>(null);
   const changeDay = (value: string | undefined) => {
     if (value) { if (endDay === day) setEndDay(value); setDay(value); }
   };
-  const draftWrite = (cancelled: boolean): CalendarWrite => {
+  const draftWrite = (cancelled: boolean): CalendarEdit => {
     if (cancelled && entry) return { id: entry.id, expected_version: entry.version, task: entry.task, cancelled: true };
     if (timed && (!start || !end)) throw new Error('Choose a start and end time.');
     if (!title.trim()) throw new Error('Give this task a name.');
@@ -45,13 +44,10 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
       && zone === original.timezone && wallTime(Date.parse(original[edge]), zone) === value
       ? original[edge] : calendarInstant(value, zone);
     const task = { title, description, schedule: !timed ? { kind: 'all_day' as const, date: day } : { kind: 'timed' as const, start: resolveTime(`${day}T${start}`, 'start'), end: resolveTime(`${endDay}T${end}`, 'end'), timezone: zone } };
-    const fingerprint = JSON.stringify(task);
-    const key = receipt?.fingerprint === fingerprint ? receipt.key : crypto.randomUUID();
-    setReceipt({ fingerprint, key });
-    return entry ? { id: entry.id, expected_version: entry.version, task, cancelled } : { idempotency_key: key, task };
+    return entry ? { id: entry.id, expected_version: entry.version, task, cancelled } : { task };
   };
   const save = async (cancelled: boolean) => {
-    let write: CalendarWrite;
+    let write: CalendarEdit;
     try { write = draftWrite(cancelled); } catch (reason) {
       feedback.clear(); setError(reason instanceof Error ? reason.message : 'Could not save this task.'); return;
     }
