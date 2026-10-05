@@ -12,7 +12,7 @@ import type { CalendarDraft, CalendarEntry } from '../../../../core/domain/calen
 import { TodayCalendarTasks } from './calendar.tsx';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-const PLUGIN = { id: 'dev.neige.calendar', version: '0.1.0', enabled: true, state: 'running', manifest_name: 'Calendar',
+const PLUGIN = { id: 'calendar', version: '0.1.0', enabled: true, state: 'running', manifest_name: 'Calendar',
   has_config: false, can_uninstall: false, can_disable: false };
 const ENTRY: CalendarEntry = { id: 'one', task: { title: 'Research', description: '', schedule: { kind: 'all_day', date: '2026-10-02' } },
   version: 3, cancelled: false, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1 };

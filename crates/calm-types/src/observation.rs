@@ -885,7 +885,7 @@ mod tests {
             HarnessInputPresentation::SystemMail
         );
         assert_eq!(
-            Observation::input_segments_for(&[wake("dev.neige.calendar")])[0].presentation,
+            Observation::input_segments_for(&[wake("calendar")])[0].presentation,
             HarnessInputPresentation::System
         );
     }
