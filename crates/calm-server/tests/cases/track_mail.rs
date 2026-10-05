@@ -4,7 +4,6 @@
 
 use std::time::{Duration, Instant};
 
-use calm_server::db::ServerRepoReadExt;
 use calm_server::harness::{ClaimMode, Observation, new_track_delete_locks};
 use calm_server::ids::ActorId;
 use calm_server::mail::{Recipient, SendRequest};
@@ -92,16 +91,21 @@ async fn mail_send_wakes_the_recipient_planner_with_one_line() {
     // The recipient's stored turn input presents the wake as mail (#2160 S2), not as the user's word.
     let stored = w
         .repo_dyn
-        .harness_item_list_by_card(n.card_id.as_str(), 0, 100, false)
+        .transcript_rows_of_thread(n.card_id.as_str(), &n.thread_id)
         .await
         .unwrap();
-    let wake_segments: Vec<_> = stored
+    let wake_segments: Vec<Value> = stored
         .iter()
-        .flat_map(|item| item.input_segments.iter().flatten())
-        .filter(|segment| segment.text.contains(&mail_id))
-        .map(|segment| segment.presentation)
+        .filter_map(|row| row.input_segments.as_deref())
+        .flat_map(|json| serde_json::from_str::<Vec<Value>>(json).unwrap())
+        .filter(|segment| {
+            segment["text"]
+                .as_str()
+                .is_some_and(|t| t.contains(&mail_id))
+        })
+        .map(|segment| segment["presentation"].clone())
         .collect();
-    assert_eq!(wake_segments, vec![HarnessInputPresentation::SystemMail]);
+    assert_eq!(wake_segments, vec![json!("system_mail")]);
     assert!(
         !turn.contains(body),
         "the body is never in the wake: {turn}"

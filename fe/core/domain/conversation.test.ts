@@ -639,10 +639,11 @@ describe('harnessItemToActivity', () => {
   });
 
   describe('a mail send', () => {
-    const send = (item: Record<string, unknown>, method = 'item/completed') => harnessItemToActivity(row({
+    /* Through the whole transcript build, as the thread reads it. */
+    const send = (item: Record<string, unknown>, method = 'item/completed') => buildTranscript([row({
       item_type: 'mcpToolCall', method,
       params: JSON.stringify({ item: { tool: MAIL_SEND_TOOL, type: 'mcpToolCall', ...item } }),
-    }));
+    })])[0];
     const args = { track_id: 'track-n', summary: 'NVDA guidance below thesis', text: 'the body' };
 
     it('says it sent mail, named by its summary and never its body', () => {
@@ -672,10 +673,10 @@ describe('harnessItemToActivity', () => {
   });
 
   it('keeps the wire name of a tool it has no English for', () => {
-    expect(harnessItemToActivity(row({
+    expect(buildTranscript([row({
       item_type: 'mcpToolCall',
       params: JSON.stringify({ item: { tool: 'neige_mail_unknown', arguments: { summary: 'x' }, status: 'completed' } }),
-    }))).toMatchObject({ verb: 'Called', target: 'neige_mail_unknown', state: 'done' });
+    })])[0]).toMatchObject({ verb: 'Called', target: 'neige_mail_unknown', state: 'done' });
   });
 
   it('is running while only `item/started` has arrived', () => {
