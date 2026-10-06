@@ -11,10 +11,14 @@
 //! - a path parameter: a value its type cannot parse (`%FF`, not UTF-8, for a string; a word for
 //!   an integer);
 //! - a query string: the required parameters dropped, or else an unparseable value for one typed
-//!   parameter (an integer, a boolean, an enum). An operation whose query parameters are all
-//!   optional strings has no unreadable query, so it has no query case.
+//!   parameter (an integer, a boolean, an enum);
+//! - a query string again: one scalar parameter given twice (`?path=x&path=x`), the rest filled
+//!   with valid values. A typed query is refused for a duplicate field whatever its types, so every
+//!   operation with a scalar query parameter has this case, optional strings included.
 //!
-//! No operation is exempt: each one's extractors run before anything it answers on its own.
+//! The case counts are checked against counts read off the document, and an operation with no case
+//! is printed with the reason. No operation is exempt: each one's extractors run before anything it
+//! answers on its own.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -34,7 +38,10 @@ use super::auth_origin::{HOST, app_and_cookie};
 enum Kind {
     Body,
     Path,
+    /// The required query parameters dropped, or an unparseable value for a typed one.
     Query,
+    /// One scalar query parameter given twice.
+    QueryDuplicate,
 }
 
 /// The schema a parameter or `$ref` names, with `$ref`s followed.
@@ -196,7 +203,57 @@ fn cases(doc: &Value, path: &str, method: &str, operation: &Value) -> Vec<Case> 
     }) {
         out.push(case(Kind::Query, uri(&path_values, &[(name, value)]), body));
     }
+    if let Some(repeated) = query_params.iter().find(|p| scalar(doc, &p["schema"])) {
+        let name = repeated["name"].as_str().unwrap().to_string();
+        let value = good(doc, &repeated["schema"]);
+        let mut query = query_values.clone();
+        if !query.iter().any(|(k, _)| *k == name) {
+            query.push((name.clone(), value.clone()));
+        }
+        query.push((name, value));
+        out.push(case(Kind::QueryDuplicate, uri(&path_values, &query), body));
+    }
     out
+}
+
+/// A parameter that is one value, so a second occurrence is a duplicate field; an array or
+/// sequence takes repeated keys legitimately.
+fn scalar(doc: &Value, schema: &Value) -> bool {
+    !types(doc, schema)
+        .iter()
+        .any(|t| t == "array" || t == "object")
+}
+
+/// The cases the document calls for, counted from its declarations alone, and the reason an
+/// operation has none.
+fn expected(doc: &Value, operation: &Value) -> (BTreeMap<Kind, usize>, Option<&'static str>) {
+    let parameters = operation["parameters"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let query: Vec<&Value> = parameters.iter().filter(|p| p["in"] == "query").collect();
+    let mut counts = BTreeMap::new();
+    if operation["requestBody"]["content"]["application/json"].is_object() {
+        counts.insert(Kind::Body, 1);
+    }
+    if parameters.iter().any(|p| p["in"] == "path") {
+        counts.insert(Kind::Path, 1);
+    }
+    if query
+        .iter()
+        .any(|p| p["required"] == true || bad(doc, &p["schema"], Kind::Query).is_some())
+    {
+        counts.insert(Kind::Query, 1);
+    }
+    if query.iter().any(|p| scalar(doc, &p["schema"])) {
+        counts.insert(Kind::QueryDuplicate, 1);
+    }
+    let reason = counts.is_empty().then_some(if query.is_empty() {
+        "no JSON body, no path parameter, no query parameter"
+    } else {
+        "no JSON body, no path parameter, and every query parameter is an array or object"
+    });
+    (counts, reason)
 }
 
 async fn send(
@@ -235,9 +292,9 @@ async fn every_documented_operation_answers_unreadable_input_with_an_error_body(
     let doc = serde_json::to_value(ApiDoc::openapi()).expect("the document serializes");
     let (app, cookie) = app_and_cookie(live_auth_state("alice", "pw")).await;
     let mut swept: BTreeMap<Kind, usize> = BTreeMap::new();
+    let mut declared: BTreeMap<Kind, usize> = BTreeMap::new();
     let mut operations = 0;
-    // Operations with no body, no path parameter and no query that can be unreadable.
-    let mut uncased = 0;
+    let mut uncased = Vec::new();
     let mut violations = Vec::new();
     for (path, item) in doc["paths"].as_object().expect("paths") {
         for (method, operation) in item.as_object().expect("path item") {
@@ -245,11 +302,14 @@ async fn every_documented_operation_answers_unreadable_input_with_an_error_body(
                 continue;
             }
             operations += 1;
-            let cases = cases(&doc, path, method, operation);
-            if cases.is_empty() {
-                uncased += 1;
+            let (counts, reason) = expected(&doc, operation);
+            for (kind, n) in counts {
+                *declared.entry(kind).or_default() += n;
             }
-            for case in cases {
+            if let Some(reason) = reason {
+                uncased.push(format!("{method} {path}: {reason}"));
+            }
+            for case in cases(&doc, path, method, operation) {
                 *swept.entry(case.kind).or_default() += 1;
                 let (status, body) = send(&app, &cookie, &case).await;
                 let error_body = body
@@ -264,13 +324,17 @@ async fn every_documented_operation_answers_unreadable_input_with_an_error_body(
             }
         }
     }
-    eprintln!("swept {operations} operations ({uncased} with nothing to refuse): {swept:?}");
-    // The sweep reaches all three kinds; a document that lost them would pass vacuously.
-    assert!(
-        swept.get(&Kind::Body).is_some_and(|n| *n > 40)
-            && swept.get(&Kind::Path).is_some_and(|n| *n > 40)
-            && swept.get(&Kind::Query).is_some_and(|n| *n > 10),
-        "{swept:?}"
+    eprintln!(
+        "swept {operations} operations: {swept:?}; {} with nothing to refuse:\n{}",
+        uncased.len(),
+        uncased.join("\n")
     );
+    // Every case the document calls for was sent, and every kind is present: a sweep that dropped
+    // cases, or a document that lost a kind, would otherwise pass vacuously.
+    assert_eq!(
+        swept, declared,
+        "cases sent vs cases the document calls for"
+    );
+    assert_eq!(swept.len(), 4, "{swept:?}");
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }

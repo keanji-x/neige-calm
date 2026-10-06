@@ -27,14 +27,16 @@ struct Annotated {
     method: String,
     path: String,
     takes_json_body: bool,
-    /// Takes `calm_server::extract`'s `Path` or `Query`, by name or by a renamed import.
+    /// Takes `calm_server::extract`'s `Path` or `Query`: a one-segment name the file imports from
+    /// `crate::extract` (renamed or not), or the path `crate::extract::{Path, Query}`. axum's own,
+    /// or any other `Path`, never counts.
     takes_params: bool,
 }
 
 #[derive(Default)]
 struct Handlers {
     file: String,
-    /// The names `Path` and `Query` have in the current file: themselves, and any `as` rename.
+    /// The names the current file imports `crate::extract`'s `Path` and `Query` under.
     param_extractors: Vec<String>,
     found: Vec<Annotated>,
 }
@@ -69,11 +71,21 @@ impl Handlers {
                 let syn::Type::Path(ty) = &*argument.ty else {
                     return false;
                 };
-                ty.path.segments.last().is_some_and(|last| {
-                    self.param_extractors
-                        .iter()
-                        .any(|name| last.ident == name.as_str())
-                })
+                let segments: Vec<String> = ty
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
+                match segments.as_slice() {
+                    [name] => self.param_extractors.contains(name),
+                    [krate, module, name] => {
+                        krate == "crate"
+                            && module == "extract"
+                            && (name == "Path" || name == "Query")
+                    }
+                    _ => false,
+                }
             });
             self.found.push(Annotated {
                 handler: format!("{}::{}", self.file, signature.ident),
@@ -96,6 +108,9 @@ impl<'ast> Visit<'ast> for Handlers {
                     if rename.ident == "Path" || rename.ident == "Query" =>
                 {
                     out.push(rename.rename.to_string());
+                }
+                syn::UseTree::Name(name) if name.ident == "Path" || name.ident == "Query" => {
+                    out.push(name.ident.to_string());
                 }
                 _ => {}
             }
@@ -178,7 +193,7 @@ fn annotated_handlers() -> Vec<Annotated> {
         let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
         let file = syn::parse_file(&source).unwrap_or_else(|e| panic!("{path:?}: {e}"));
         scan.file = path.strip_prefix(&src).unwrap().display().to_string();
-        scan.param_extractors = vec!["Path".into(), "Query".into()];
+        scan.param_extractors = Vec::new();
         scan.visit_file(&file);
     }
     scan.found
