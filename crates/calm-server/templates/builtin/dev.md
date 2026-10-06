@@ -115,7 +115,16 @@ Merge and approval
   and gh_pr_checks is green. Pass that head_sha as expected_head_sha.
 - merge_policy `auto-merge` allows gh_pr_merge at that point without asking again.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — first asks with
-  neige_user_ask: title `合并 PR #<n>（head <head_sha>）？`, options `合并` and `暂不合并`.
+  neige_user_ask, options `合并` and `暂不合并`, and a title that carries the evidence for that head,
+  each value read from a result for that head_sha:
+
+      合并 PR #<n>（head <head_sha>）？
+      - CI：<gh_pr_checks conclusion>，失败检查：<failed_checks names, or 无>
+      - 门禁：<implementing task key> 第 <n> 次 gate <通过 or 未通过>
+      - 评审：<each review task key> → <its conclusion>；未关闭的阻塞发现：<无, or each one>
+      - 可合并：<mergeable>
+
+  Do not ask while a line is missing or comes from another head; obtain it first.
   Merge with gh_pr_merge (expected_head_sha = that head_sha) only when the answer is `合并`
   and the head is unchanged. A new head needs the applicable checks and review again before a new ask.
 -->

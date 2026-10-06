@@ -1076,8 +1076,22 @@ async fn merge_hold_ask_pauses_then_merges_on_the_answer() {
         "Merge hold E2E",
     )
     .await;
-    let title = format!("Merge PR #{} (head {})?", pr.pr_number, pr.head_sha);
+    // Shaped like the dev template's merge ask: the question line, then one line per piece of
+    // evidence for that head (#2304).
+    let title = format!(
+        "Merge PR #{} (head {})?\n\
+         - CI: success, failed checks: none\n\
+         - gate: slice-760-merge-hold gate run 1 passed\n\
+         - review: review-760 -> no blocking finding; open blocking findings: none\n\
+         - mergeable: mergeable",
+        pr.pr_number, pr.head_sha
+    );
     let request = request_merge_ask(&fx, &title).await;
+    assert_eq!(
+        request.payload["questions"][0]["title"],
+        json!(title),
+        "the evidence lines reach the ask unchanged"
+    );
     assert!(
         event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
         "merge must be absent while the hold awaits the answer"
