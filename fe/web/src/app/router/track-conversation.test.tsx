@@ -622,6 +622,109 @@ describe('track conversations', () => {
       expect(messageField().textContent).toBe('the sentence a dormant harness must not eat'));
   });
 
+  describe('a fresh session (#2192)', () => {
+    const DORMANT = failure(409, 'planner_harness_dormant', "This conversation's session can't be resumed; start a fresh session (history is kept)");
+    const posts = (requests: readonly ApiRequest[], suffix: string) =>
+      requests.filter((request) => request.method === 'POST' && request.path.endsWith(suffix));
+    /** The card is dormant until a restart is answered; `restartAnswer` answers each restart, `wedged` pauses the run. */
+    function mountRecovery({ restartAnswer = () => ok({ card_id: ASSISTANT_CARD.id, terminal_id: '', new_thread_id: 't2' }),
+      wedged = false }: { restartAnswer?: () => ApiTransportResponse; wedged?: boolean } = {}) {
+      let restarted = false;
+      const mounted = setup((request) => {
+        if (request.path.endsWith('/planner/restart')) {
+          const answer = restartAnswer();
+          restarted = answer.status === 200;
+          return answer;
+        }
+        if (request.path.endsWith('/planner/run') && wedged && !restarted) {
+          return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null,
+            blocked_reason: 'The stop request timed out before the model confirmed that this turn had stopped.', running_turn: null });
+        }
+        if (request.path.endsWith('/planner/input') && !restarted) return DORMANT;
+        return undefined;
+      });
+      return mounted;
+    }
+    async function openAssistant() {
+      fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+      await screen.findByRole('complementary', { name: 'Assistant' });
+    }
+    const restartButton = () => within(drawerElement()).getByRole('button', { name: 'Start a fresh session' });
+
+    it('offers it for a dormant send, keeps the words, and lets the next Send through', async () => {
+      const { requests } = mountRecovery();
+      await openAssistant();
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+      await write('the words a dormant session must not eat');
+
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toContain('Not sent. This conversation’s session can’t be resumed. Your history is kept and your message is still below.');
+      /* The class's own words, never the server's, and none of them offers to erase the history. */
+      expect(alert.textContent).not.toMatch(/reset/i);
+      expect(alert.textContent).not.toContain('start a fresh session (history is kept)');
+      await waitFor(() => expect(messageField().textContent).toBe('the words a dormant session must not eat'));
+
+      const runReads = requests.filter((request) => request.path.endsWith('/planner/run')).length;
+      await act(async () => { fireEvent.click(restartButton()); await Promise.resolve(); });
+      const started = await within(drawerElement())
+        .findByText('Fresh session started. Earlier messages stay here, but the assistant won’t remember them unless you mention them.');
+      expect(started.closest('[role="status"]')).not.toBeNull();
+      expect(posts(requests, '/planner/restart')).toHaveLength(1);
+      expect(posts(requests, '/planner/reset')).toHaveLength(0);
+      /* The run state was read again after the restart, and nothing was sent on the reader's behalf. */
+      expect(requests.filter((request) => request.path.endsWith('/planner/run')).length).toBeGreaterThan(runReads);
+      expect(posts(requests, '/planner/input')).toHaveLength(1);
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(within(drawerElement()).queryByRole('button', { name: 'Start a fresh session' })).toBeNull();
+      expect(messageField().textContent).toBe('the words a dormant session must not eat');
+
+      await submit();
+      await waitFor(() => expect(posts(requests, '/planner/input')).toHaveLength(2));
+      expect(posts(requests, '/planner/input')[1].body).toMatchObject({ text: 'the words a dormant session must not eat' });
+      await waitFor(() => expect(messageField().textContent).toBe(''));
+      await waitFor(() => expect(within(drawerElement()).queryByText(/Fresh session started/)).toBeNull());
+      expect(posts(requests, '/planner/reset')).toHaveLength(0);
+    });
+
+    it('says why a restart failed, and keeps the offer and the words', async () => {
+      const { requests } = mountRecovery({ restartAnswer: () => failure(409, 'conflict', 'Claude is not configured') });
+      await openAssistant();
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+      await write('kept through a failed restart');
+      await screen.findByRole('alert');
+
+      await act(async () => { fireEvent.click(restartButton()); await Promise.resolve(); });
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Claude is not configured'));
+      expect(screen.getByRole('alert').textContent).toContain('Your history is kept and your message is still below.');
+      expect(restartButton()).toBeTruthy();
+      expect(messageField().textContent).toBe('kept through a failed restart');
+      expect(posts(requests, '/planner/restart')).toHaveLength(1);
+      expect(posts(requests, '/planner/input')).toHaveLength(1);
+      expect(posts(requests, '/planner/reset')).toHaveLength(0);
+    });
+
+    it('offers it while the conversation is paused, and Send works once it started', async () => {
+      const { requests } = mountRecovery({ wedged: true });
+      await openAssistant();
+      const strip = await within(drawerElement()).findByText('This conversation’s session is stuck. A fresh session keeps your history and queued messages.');
+      /* A standing condition, not something that just happened. */
+      expect(strip.closest('[role="status"]')).not.toBeNull();
+      expect(messageField().getAttribute('contenteditable')).toBe('false');
+
+      await act(async () => { fireEvent.click(restartButton()); await Promise.resolve(); });
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+      await within(drawerElement()).findByText(/Fresh session started/);
+      expect(within(drawerElement()).queryByText(/session is stuck/)).toBeNull();
+      expect(posts(requests, '/planner/restart')).toHaveLength(1);
+      expect(posts(requests, '/planner/input')).toHaveLength(0);
+
+      await write('after the pause');
+      await waitFor(() => expect(posts(requests, '/planner/input')).toHaveLength(1));
+      await waitFor(() => expect(messageField().textContent).toBe(''));
+      expect(posts(requests, '/planner/reset')).toHaveLength(0);
+    });
+  });
+
   /* `POST /planner/input` carries no `Idempotency-Key`, so a 503 cannot say whether
    * the text was stored; only a refusal the server names licenses the restore. */
   it('leaves the field empty when the send failed without saying the text was refused', async () => {

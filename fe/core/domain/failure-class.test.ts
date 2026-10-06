@@ -8,6 +8,7 @@ import {
 } from './conversation.js';
 import { SEND_FAILURES } from './conversation-delivery.js';
 import { PLANNER_INTERRUPT_FAILURES } from './conversation-stop.js';
+import { PLANNER_RESTART_FAILURES } from './conversation-restart.js';
 import { AREA_CREATE_FAILURES, AREA_PATCH_FAILURES } from './area.js';
 import { DISMISS_FAILURES } from './activity.js';
 import { ANSWER_ASK_FAILURES } from './ask.js';
@@ -38,7 +39,8 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(400), 'refused'], [http(403), 'refused'], [http(404), 'refused'], [http(413), 'refused'], [http(422), 'refused'],
     /* Answered before handling, for a reason that can pass: the same send may be tried again. */
     [http(429), 'rejected'], [unauthorized, 'rejected'],
-    [http(409, 'planner_harness_dormant'), 'refused'], [http(409, 'planner_harness_runtime_superseded'), 'refused'],
+    /* #2192: a refusal whose way out is a fresh session, told apart by its code. */
+    [http(409, 'planner_harness_dormant'), 'dormant'], [http(409, 'planner_harness_runtime_superseded'), 'refused'],
     /* An Edit's replace refused before any write (#2043): final, the server's reason is shown. */
     [http(409, 'planner_turn_not_replaceable'), 'refused'],
     /* A key bound to another message can never be stored or replayed (#2068): final. */
@@ -46,7 +48,7 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     /* Another request under the key was stored at that moment: a retry replays its answer. */
     [http(409, 'idempotency_key_concurrent'), 'unknown'],
     /* The code decides before the status: an answer naming one of these never wrote. */
-    [http(400, 'planner_harness_dormant'), 'refused'],
+    [http(400, 'planner_harness_dormant'), 'dormant'],
     [http(409, 'conflict'), 'unknown'], [http(408), 'unknown'], [http(500), 'unknown'], [http(502), 'unknown'],
     [http(503, 'service_unavailable'), 'unknown'], [http(504), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
@@ -84,6 +86,14 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     /* Only the dormant 409 is answered before a dispatch; any other may follow one. */
     [http(409, 'conflict'), 'unknown'], [http(400), 'unknown'], [http(500, 'internal'), 'unknown'],
     [http(503, 'service_unavailable'), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /planner/restart', PLANNER_RESTART_FAILURES, [
+    /* Answered before any session starts: the server's reason is shown. */
+    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [http(409, 'conflict'), 'refused'], [unauthorized, 'refused'],
+    /* May follow a started session: the run read after it says which. */
+    [http(500, 'internal'), 'unknown'], [http(503, 'service_unavailable'), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   ['POST /planner/attachments', PLANNER_ATTACHMENT_FAILURES, [

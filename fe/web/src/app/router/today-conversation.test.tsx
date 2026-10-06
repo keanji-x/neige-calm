@@ -2,7 +2,7 @@
 // Today's Conversations module lists the LAUNCHPAD TRACK's own conversations, driven through the real router.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -52,16 +52,20 @@ type Case = Readonly<{
   /** The workspace-wide track overlays (`GET /api/overlays?entity_kind=track`),
    *  read on every request; the launchpad's `kernel/track/activity` row lives here. */
   overlays?: () => readonly unknown[];
+  /** Answers a `/api/cards/…` request first; `undefined` falls through to the defaults. */
+  card?: (request: ApiRequest) => ApiTransportResponse | undefined;
 }>;
 
 function renderApp({
   launchpadResolve, launchpadRows = () => [], launchpadConversations,
-  trackRows = [], historyRows = [], userWorkspace = true, overlays = () => [],
+  trackRows = [], historyRows = [], userWorkspace = true, overlays = () => [], card,
 }: Case = {}) {
   const requests: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
+      const answered = request.path.startsWith('/api/cards/') ? card?.(request) : undefined;
+      if (answered !== undefined) return Promise.resolve(answered);
       /* `report_has_noninitial_content: false` keeps the document region empty, so the
          track detail is never read. */
       if (request.path === '/api/today/launchpad') {
@@ -133,6 +137,64 @@ function renderNoLaunchpad({
 }
 
 afterEach(cleanup);
+
+/** Write into the Astryx composer, a contenteditable with no value setter, and send it with Enter. */
+async function sendFromComposer(text: string) {
+  const field = screen.getByRole('combobox', { name: 'Message' });
+  field.textContent = text;
+  const range = document.createRange();
+  range.setStart(field.firstChild!, text.length);
+  range.collapse(true);
+  window.getSelection()!.removeAllRanges();
+  window.getSelection()!.addRange(range);
+  await act(async () => { fireEvent.input(field); await Promise.resolve(); });
+  await act(async () => { fireEvent.keyDown(field, { key: 'Enter' }); await Promise.resolve(); });
+}
+
+/* #2192: Today's conversations open the same composer, so the same recovery is offered there. */
+describe('a dormant Today conversation', () => {
+  it('offers a fresh session, keeps the words, and lets the next Send through', async () => {
+    let restarted = false;
+    const { requests } = renderApp({
+      launchpadRows: () => [conversationRow({ title: 'Today’s progress' })],
+      card: (request) => {
+        if (request.path.endsWith('/planner/restart')) {
+          restarted = true;
+          return ok({ card_id: 'conv-summary', terminal_id: '', new_thread_id: 't2' });
+        }
+        if (request.path.endsWith('/planner/input')) {
+          return restarted ? ok({ card_id: 'conv-summary', worker_session_id: 'r2' }) : {
+            status: 409, statusText: 'Conflict',
+            body: { code: 'planner_harness_dormant', error: "This conversation's session can't be resumed; start a fresh session (history is kept)" },
+          };
+        }
+        return undefined;
+      },
+    });
+    const posts = (suffix: string) => requests.filter((request) => request.method === 'POST' && request.path.endsWith(suffix));
+    await userEvent.click(await screen.findByRole('button', { name: /Conversation Today’s progress/ }));
+    const drawer = await screen.findByRole('complementary', { name: 'Today’s progress' });
+    const field = () => within(drawer).getByRole('combobox', { name: 'Message' });
+    await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
+    await sendFromComposer('a summary for a dormant session');
+
+    const alert = await within(drawer).findByRole('alert');
+    expect(alert.textContent).toContain('Not sent. This conversation’s session can’t be resumed.');
+    expect(alert.textContent).not.toMatch(/reset/i);
+    await waitFor(() => expect(field().textContent).toBe('a summary for a dormant session'));
+
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Start a fresh session' }));
+    await within(drawer).findByText(/^Fresh session started\./);
+    expect(posts('/planner/restart')).toHaveLength(1);
+    expect(posts('/planner/input')).toHaveLength(1);
+    expect(field().textContent).toBe('a summary for a dormant session');
+
+    await act(async () => { fireEvent.keyDown(field(), { key: 'Enter' }); await Promise.resolve(); });
+    await waitFor(() => expect(posts('/planner/input')).toHaveLength(2));
+    await waitFor(() => expect(field().textContent).toBe(''));
+    expect(posts('/planner/reset')).toHaveLength(0);
+  });
+});
 
 describe('#1341 Today lists the launchpad track’s conversations', () => {
   it('does not call an unresolved launchpad an empty conversation list', async () => {

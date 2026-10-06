@@ -14,13 +14,13 @@ export type ReplacedTurn = Readonly<{ turnId: string; outcomeId: string }>;
  * answered 200 after an unknown attempt, so the answer may name an entry disposed of since and is not
  * trusted; the echo stays, claiming nothing, until a transcript and a run read started after
  * `afterRead` have both landed. `failed`: the retries gave up; `unknown` delivery may have stored it.
- * A refused send is never held: its words go back to the composer, and nothing of it stays (#2068).
+ * A refused or dormant send is never held: its words go back to the composer, and nothing of it stays (#2068).
  */
 export type SendOpPhase = Readonly<
   | { phase: 'sending'; unknown: boolean }
   | { phase: 'confirmed' }
   | { phase: 'replayed'; afterRead: number }
-  | { phase: 'failed'; delivery: Exclude<SendFailureKind, 'refused'>; message: string }
+  | { phase: 'failed'; delivery: Exclude<SendFailureKind, 'refused' | 'dormant'>; message: string }
 >;
 
 /**

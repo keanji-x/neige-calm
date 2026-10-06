@@ -13,6 +13,7 @@ import { harnessItemsQueryOptions, modelCatalogQueryOptions, plannerRunQueryOpti
 import { useState } from '../../ui/state/public.ts';
 import { useConversationRegistry } from './public.tsx';
 import { useConversationStop } from './stop.ts';
+import { useConversationRestart } from './restart.ts';
 import { useLiveReplies, useTranscriptReads } from './live-replies.ts';
 import { useConversationOutbox, useRunReads } from './outbox.ts';
 import type { ConversationRouteIntent, ConversationStore, PlannerConversationScope } from './contracts.ts';
@@ -148,6 +149,7 @@ export function useConversationStore(
       ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
   });
+  const restart = useConversationRestart({ cardId, stalled, restart: mutations.restart });
   const landedTranscript = transcriptReads.startOf(history.data);
   /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
   const landedRun = runReads.startOf(run.data);
@@ -155,7 +157,7 @@ export function useConversationStore(
   const outbox = useConversationOutbox({
     cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntryIds: pendingQueueIds,
     stalled, landed, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
-    pressed: () => { setActionError(null); stop.clearFeedback(); },
+    pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
   const { view } = outbox;
   /* What the reader is looking at, and what the tab may remember: a message is the conversation's only once the
@@ -302,6 +304,7 @@ export function useConversationStore(
       });
     },
     interrupt: stop.interrupt,
+    restart: { strip: restart.strip, pending: restart.pending, start: restart.start },
     retryHistory: () => { void history.refetch().catch(() => undefined); },
     retryRun: () => { void run.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },

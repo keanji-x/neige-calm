@@ -7,7 +7,7 @@ import { editedTurnRefill, isComposerEmpty, isLatestTurn } from '../../../../cor
 import { useConversationRegistry } from './public.tsx';
 
 /** Beside a refused replace while its words are still in the composer: they are a new message now. */
-const REFILLED_NOTE = 'Your message is back in the composer; sending adds a new one.';
+export const REFILLED_NOTE = 'Your message is back in the composer; sending adds a new one.';
 
 /**
  * Edit (#1923) as a composer mode for the open conversation. The click puts the turn's message in that conversation's
@@ -40,7 +40,9 @@ export function useConversationEdit({ conversationId, transcript, historyReady, 
     if (refill === null || !beginEdit(conversationId, { turnId: outcome.turnId, outcomeId: outcome.id, refill })) return;
     focusComposer(conversationId);
   };
-  const notice = conversationId === null ? null : editNoticeOf(conversationId);
+  /* A dormant send and a restart are the restart strip's to say (`restart.ts`), with its action. */
+  const heldNotice = conversationId === null ? null : editNoticeOf(conversationId);
+  const notice = heldNotice?.kind === 'dormant' || heldNotice?.kind === 'restarted' ? null : heldNotice;
   const cancel = () => { if (conversationId !== null) cancelEdit(conversationId); };
   return {
     /** This conversation's Edit while one is held: nothing else acts on the conversation meanwhile. */

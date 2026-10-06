@@ -78,6 +78,9 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
     await pause.click();
     await expect(page.locator('[data-nc-thread]').getByText('This conversation is stuck.', { exact: true })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
+    /* #2192: the way out is offered beside the composer; it is a standing condition, so not an alert. */
+    await expect(page.getByRole('status').filter({ hasText: 'This conversation’s session is stuck.' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Start a fresh session' })).toBeVisible();
     await expect(composer).toHaveAttribute('contenteditable', 'false');
     await expect(page.getByRole('complementary').locator('[data-nc-activity="working"]')).toHaveCount(0);
     await composer.press('Enter');
@@ -90,6 +93,78 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
     await expect(composer).toHaveAttribute('contenteditable', 'false');
     await expect(composer).toHaveText('Keep this unsent draft');
     await page.screenshot({ path: testInfo.outputPath('stalled-mobile.png'), fullPage: true, animations: 'disabled' });
+  } finally {
+    await request.delete(`/api/areas/${area.id}`);
+  }
+});
+
+// #2192: only the refusal is faked; the restart and every other send reach the real stack.
+test('offers a fresh session for a dormant send and keeps the history and the words', async ({ page, request }, testInfo) => {
+  const area = await createArea(request, `Fresh session ${Date.now()}`);
+  try {
+    const track = await createTrack(request, area.id);
+    let refuseNext = false;
+    const inputs: number[] = [];
+    const restarts: number[] = [];
+    let resets = 0;
+    await page.route('**/api/cards/*/planner/reset', async (route) => { resets += 1; await route.continue(); });
+    await page.route('**/api/cards/*/planner/restart', async (route) => {
+      const response = await route.fetch();
+      restarts.push(response.status());
+      await route.fulfill({ response });
+    });
+    await page.route('**/api/cards/*/planner/input', async (route) => {
+      if (refuseNext) {
+        refuseNext = false;
+        inputs.push(409);
+        await route.fulfill({ status: 409, json: {
+          code: 'planner_harness_dormant',
+          error: "This conversation's session can't be resumed; start a fresh session (history is kept)",
+        } });
+        return;
+      }
+      const response = await route.fetch();
+      inputs.push(response.status());
+      await route.fulfill({ response });
+    });
+    await page.goto(`/next/track/${track.id}`);
+    await page.getByRole('button', { name: 'Conversation Planner' }).click();
+    const composer = page.getByRole('combobox', { name: 'Message' });
+    await expect(composer).toHaveAttribute('contenteditable', 'true');
+    const transcript = page.locator('[data-nc-thread]');
+    await composer.fill('History that must stay');
+    await composer.press('Enter');
+    await expect(transcript.getByText('History that must stay', { exact: true })).toBeVisible();
+    expect(inputs).toEqual([200]);
+
+    refuseNext = true;
+    await composer.fill('Words a dormant session must not eat');
+    await composer.press('Enter');
+    const alert = page.getByRole('alert');
+    await expect(alert).toContainText('Not sent. This conversation’s session can’t be resumed. Your history is kept and your message is still below.');
+    await expect(alert).not.toContainText(/reset/i);
+    await expect(composer).toHaveText('Words a dormant session must not eat');
+    await expect(transcript.getByText('History that must stay', { exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('dormant-desktop.png'), fullPage: true, animations: 'disabled' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const restart = page.getByRole('button', { name: 'Start a fresh session' });
+    await expect(restart).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('dormant-mobile.png'), fullPage: true, animations: 'disabled' });
+
+    await restart.click();
+    await expect(page.getByText(/^Fresh session started\./)).toBeVisible();
+    expect(restarts).toEqual([200]);
+    await expect(alert).toHaveCount(0);
+    await expect(transcript.getByText('History that must stay', { exact: true })).toBeVisible();
+    await expect(composer).toHaveText('Words a dormant session must not eat');
+    /* Nothing is sent again on the reader's behalf: the next Send is theirs. */
+    expect(inputs).toEqual([200, 409]);
+
+    await composer.press('Enter');
+    await expect.poll(() => inputs).toEqual([200, 409, 200]);
+    await expect(composer).toHaveText('');
+    await expect(page.getByText(/^Fresh session started\./)).toHaveCount(0);
+    expect(resets).toBe(0);
   } finally {
     await request.delete(`/api/areas/${area.id}`);
   }

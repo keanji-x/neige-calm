@@ -151,13 +151,15 @@ export function useConversationOutbox({
     }, (error: unknown) => {
       const failed = error instanceof KeyedSendFailure ? error : new KeyedSendFailure(error, 'unknown');
       const message = failed.cause instanceof Error && failed.cause.message !== '' ? failed.cause.message : 'Could not send the message.';
-      if (failed.delivery === 'refused') {
+      if (failed.delivery === 'refused' || failed.delivery === 'dormant') {
         /* Refused before any write, and the same body would be refused again: nothing to try again. The op is
            settled by its refill alone, its words and images back in the composer it was sent from with the server's
-           reason, and nothing of it stays in the outbox: the thread is the server's again, an Edit's turn untouched. */
+           reason, and nothing of it stays in the outbox: the thread is the server's again, an Edit's turn untouched.
+           A dormant session's notice is the class's own and offers a fresh session (#2192), never the server's words. */
         settle(null);
         refill(sentTo, echo.text, attachments);
-        registry.noteRefusedSend(sentTo, message, replaces !== null);
+        const edit = replaces !== null;
+        registry.noteRefusedSend(sentTo, failed.delivery === 'dormant' ? { kind: 'dormant', edit } : { kind: 'refused', message, edit });
         return;
       }
       /* `message` is shown only for an op that was not sent: an unknown op's footer says no more than that it is unconfirmed. */

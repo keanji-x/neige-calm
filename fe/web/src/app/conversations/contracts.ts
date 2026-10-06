@@ -4,6 +4,7 @@ import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/convers
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import type { UploadAttachment } from '../../features/planner/attachments.tsx';
+import type { RestartStrip } from './restart.ts';
 
 export type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
@@ -59,6 +60,8 @@ export type ConversationStore = Readonly<{
   runningAnchor: RunningTurnAnchor | null;
   uploadAttachment: UploadAttachment;
   interrupt: () => void;
+  /** The fresh-session strip (#2192): what it says and its action, or `null` when there is nothing to say. */
+  restart: Readonly<{ strip: RestartStrip | null; pending: boolean; start: () => void }>;
   compact: () => void;
   compacting: boolean;
   retryHistory: () => void;

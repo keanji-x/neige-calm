@@ -64,6 +64,7 @@ import {
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
+import { restartPlannerOperation } from '../../../../core/domain/conversation-restart.ts';
 import {
   ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, refusalText, writeFailureOf, writeFailureText,
 } from '../../../../core/domain/failure-class.ts';
@@ -245,6 +246,17 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
       .then((admitted) => runOperation(admitted, compactPlannerOperation(cardId), unauthorized)).then(refreshAfter),
     interrupt: () => Promise.resolve().then(() => admitTransport(transport))
       .then((admitted) => runOperation(admitted, interruptPlannerOperation(cardId), unauthorized)).then(refreshAfter),
+    /* Settles once the run read started after the answer has landed, so what follows reads the new session, not the
+       wedge it replaced (#2192). A failure refreshes too: one whose outcome is unknown may have started a session. */
+    restart: () => {
+      const reread = () => {
+        void refreshTranscript().catch(() => undefined);
+        return client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }).catch(() => undefined);
+      };
+      return Promise.resolve().then(() => admitTransport(transport))
+        .then((admitted) => runOperation(admitted, restartPlannerOperation(cardId), unauthorized))
+        .then(async (restarted) => { await reread(); return restarted; }, async (error: unknown) => { await reread(); throw error; });
+    },
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>

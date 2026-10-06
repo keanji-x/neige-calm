@@ -13,12 +13,13 @@ layout, then calls this one assembly; it contains no copy or re-export of it.
 | Cross-mount input, drafts, send records and confirmed memory | ConversationProvider |
 | Outbox delivery and view projection | conversations/outbox and core/domain/conversation-outbox |
 | Stop feedback and request lease | conversations/stop |
+| Fresh-session restart strip and request lease | conversations/restart and core/domain/conversation-restart |
 | Summary/name/state projection | core/domain/conversation-summary |
 | Queue revision visibility | core/domain/conversation-outbox |
 
 Initialization and cleanup retain the existing React hook order: tab registry,
 transcript/read tracking, history and run observations, model catalog and
-view-local state, live handoff, stop lease, then outbox reconciliation. One
+view-local state, live handoff, stop lease, restart lease, then outbox reconciliation. One
 mounted view observes one card. Changing scope disables/rekeys its queries and
 resets view-local state under the existing hooks. Closing/unmounting does not
 clear the provider's drafts, inputs or dispatched sends; late results remain

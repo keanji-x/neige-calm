@@ -1,8 +1,12 @@
 import type { ApiFailure } from '../api/types.js';
 import { classifyFailure, type FailureTable } from './failure-class.js';
 
-/** What one failed attempt of a keyed send says about whether its message was stored. */
-export type SendFailureKind = 'unknown' | 'refused' | 'rejected';
+/**
+ * What one failed attempt of a keyed send says about whether its message was stored. `dormant` is a refusal whose way
+ * out is a fresh session (#2192): the conversation's session cannot be resumed, so the same body is refused until one
+ * starts.
+ */
+export type SendFailureKind = 'unknown' | 'refused' | 'dormant' | 'rejected';
 
 /**
  * What one failed attempt of `POST /planner/input` says, taken alone. `rejected`: answered before
@@ -15,6 +19,7 @@ export type SendFailureKind = 'unknown' | 'refused' | 'rejected';
  * `idempotency_key_concurrent` among them (another request under the key was stored at that moment,
  * so a retry under it replays that answer).
  * `planner_turn_not_replaceable` is an Edit's replace refused before anything was written (#2043).
+ * `planner_harness_dormant` is told apart as `dormant`: refused the same way, but the reader is offered a fresh session.
  * `planner_harness_dormant`, `planner_harness_runtime_superseded` and `planner_turn_not_replaceable`
  * are a refusal only for an op with no unknown attempt yet: once one was unknown, a write of it may
  * still be queued and commit later while those codes come back, so {@link retryUnknownSend} keeps
@@ -23,7 +28,7 @@ export type SendFailureKind = 'unknown' | 'refused' | 'rejected';
 export const SEND_FAILURES: FailureTable<SendFailureKind> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ code: 'planner_harness_runtime_superseded', is: 'refused' as const }),
-    Object.freeze({ code: 'planner_harness_dormant', is: 'refused' as const }),
+    Object.freeze({ code: 'planner_harness_dormant', is: 'dormant' as const }),
     Object.freeze({ code: 'planner_turn_not_replaceable', is: 'refused' as const }),
     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),
     Object.freeze({ status: Object.freeze([400, 403, 404, 413, 422]), is: 'refused' as const }),

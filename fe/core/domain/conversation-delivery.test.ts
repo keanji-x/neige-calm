@@ -8,7 +8,8 @@ import {
 /** One failure the send table reads as each kind. */
 const FAILURE_OF: Readonly<Record<SendFailureKind, ApiFailure>> = {
   unknown: { kind: 'transport', message: 'dropped' },
-  refused: { kind: 'http', status: 409, code: 'planner_harness_dormant', message: 'reset' },
+  refused: { kind: 'http', status: 409, code: 'planner_harness_runtime_superseded', message: 'send it again' },
+  dormant: { kind: 'http', status: 409, code: 'planner_harness_dormant', message: 'start a fresh session' },
   rejected: { kind: 'http', status: 429, code: 'rate_limited', message: 'wait' },
 };
 
@@ -46,14 +47,14 @@ describe('retrying an unknown send', () => {
     expect(attempts()).toBe(1);
   });
 
-  it.each(['rejected', 'refused', 'unknown'] as const)('keeps an unknown outcome unknown when a later attempt ends %s', async (last) => {
+  it.each(['rejected', 'refused', 'dormant', 'unknown'] as const)('keeps an unknown outcome unknown when a later attempt ends %s', async (last) => {
     const { run, attempts } = failures(last === 'unknown' ? ['unknown'] : ['unknown', last]);
     const failure = await run.catch((error: unknown) => error) as KeyedSendFailure;
     expect(failure.delivery).toBe('unknown');
     expect(attempts()).toBe(last === 'unknown' ? SEND_RETRIES + 1 : 2);
   });
 
-  it.each(['rejected', 'refused'] as const)('keeps a resumed unknown op unknown when its first attempt ends %s', async (kind) => {
+  it.each(['rejected', 'refused', 'dormant'] as const)('keeps a resumed unknown op unknown when its first attempt ends %s', async (kind) => {
     const { run, attempts } = failures([kind], true);
     expect((await run.catch((error: unknown) => error) as KeyedSendFailure).delivery).toBe('unknown');
     expect(attempts()).toBe(1);
@@ -68,5 +69,12 @@ describe('retrying an unknown send', () => {
   it('settles a refusal as refused while nothing was unknown', async () => {
     const { run } = failures(['refused']);
     expect((await run.catch((error: unknown) => error) as KeyedSendFailure).delivery).toBe('refused');
+  });
+
+  /* #2192: told apart by its code alone, so the notice offers a fresh session instead of showing the server's words. */
+  it('settles a dormant session as dormant while nothing was unknown', async () => {
+    const { run, attempts } = failures(['dormant']);
+    expect((await run.catch((error: unknown) => error) as KeyedSendFailure).delivery).toBe('dormant');
+    expect(attempts()).toBe(1);
   });
 });

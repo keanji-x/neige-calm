@@ -700,6 +700,11 @@ function useConversationPane(
             )}
             {edit.notice !== null && <ChatFooterNotice tone={edit.notice.tone}>{edit.notice.lines.map((line) =>
               edit.notice?.tone === 'error' ? <ChatFooterError key={line} message={line} /> : <span key={line}>{line}</span>)}</ChatFooterNotice>}
+            {store.restart.strip !== null && <ChatFooterNotice tone={store.restart.strip.tone}>
+              {[...store.restart.strip.lines, ...store.restart.strip.errors].map((line) => store.restart.strip?.tone === 'error'
+                ? <ChatFooterError key={line} message={line} /> : <span key={line}>{line}</span>)}
+              {store.restart.strip.action !== null && <ChatFooterRemedy disabled={store.restart.pending}
+                onClick={store.restart.start}>{store.restart.strip.action}</ChatFooterRemedy>}</ChatFooterNotice>}
             {/* Not an `alert`: nothing just happened, the condition was already true when
                             this page opened. */}
             {!store.stalled && store.blockedReason !== null && (
