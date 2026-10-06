@@ -23,6 +23,7 @@ use crate::common;
 
 struct Boot {
     app: axum::Router,
+    state: AppState,
     _tmp: TempDir,
 }
 
@@ -64,8 +65,12 @@ async fn boot() -> Boot {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
-    Boot { app, _tmp: tmp }
+        .with_state(state.clone());
+    Boot {
+        app,
+        state,
+        _tmp: tmp,
+    }
 }
 
 async fn send(

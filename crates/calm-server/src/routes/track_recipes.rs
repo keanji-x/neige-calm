@@ -198,7 +198,7 @@ pub(crate) async fn get_recipe(
         (status = 201, description = "Recipe created", body = TrackRecipe),
         (status = 400, description = "Malformed body or empty title, or an `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 403, description = "Only `X-Calm-Actor: user` may write recipes", body = ErrorBody),
-        (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key", body = ErrorBody),
+        (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused, and the key binds nothing", body = ErrorBody),
         (status = 500, description = "Internal error; `operation_failed` when the create under this key failed and is final for it", body = ErrorBody),
     ),
 )]
@@ -223,11 +223,11 @@ pub(crate) async fn create_recipe(
         title: body.title,
         body: normalized,
     })?;
-    let op_id = s
+    let committed = s
         .operation_runtime
-        .submit(TRACK_RECIPE_CREATE, key, payload)
+        .commit_keyed(TRACK_RECIPE_CREATE, key, payload)
         .await?;
-    let created = keyed_create_result(s.operation_runtime.wait(&op_id).await?.outcome)?;
+    let created = keyed_create_result(committed.outcome)?;
     Ok((StatusCode::CREATED, Json(serde_json::from_value(created)?)))
 }
 

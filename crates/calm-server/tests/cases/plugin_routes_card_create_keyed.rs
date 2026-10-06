@@ -1,8 +1,8 @@
 //! #2131 S4: the keyed answers of `POST /api/tracks/{id}/cards`, on both of its branches. A
 //! retry under one `Idempotency-Key` is answered with the first card and calls no plugin tool
 //! again; the same key with another body is 409 `idempotency_key_reused`; a malformed key is 400
-//! `idempotency_key_invalid` before anything runs; and a duplicate that passes the dedup read is
-//! joined by the `operations` UNIQUE backstop.
+//! `idempotency_key_invalid` before anything runs; and a duplicate that misses the route's replay
+//! read is joined to the stored card by the key check inside its commit transaction.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,9 +123,9 @@ async fn an_over_long_key_is_invalid_before_the_tool_is_called() {
     fx.state.plugin.stop(&fx.plugin_id).await.ok();
 }
 
-/// The first request is held inside the operation insert, after its tool call; a retry under the
-/// same key meanwhile waits on the key's claim instead of calling the tool a second time, and is
-/// then answered with the first request's card.
+/// The first request is held just before its commit transaction, after its tool call; a retry under
+/// the same key meanwhile waits on the key's in-process lock instead of calling the tool a second
+/// time, and is then answered with the first request's card.
 #[tokio::test]
 async fn a_concurrent_retry_waits_for_the_first_tool_call_instead_of_making_its_own() {
     let fx = Arc::new(card_fixture("test.toolcall.keyed-race").await);
@@ -140,7 +140,7 @@ async fn a_concurrent_retry_waits_for_the_first_tool_call_instead_of_making_its_
     });
     tokio::time::timeout(Duration::from_secs(10), paused.entered.notified())
         .await
-        .expect("the first request reached its insert; without it the case is vacuous");
+        .expect("the first request reached its commit; without it the case is vacuous");
     assert_eq!(fx.tool_calls(), 1);
     let second = tokio::spawn({
         let fx = fx.clone();
@@ -177,9 +177,9 @@ async fn a_direct_create_replayed_under_its_key_is_the_first_card_and_another_bo
     fx.state.plugin.stop(&fx.plugin_id).await.ok();
 }
 
-/// The first request is paused inside the operation insert, after its dedup read found nothing; the
-/// second commits the operation under the same key meanwhile. The first's INSERT then hits the
-/// `(kind, idempotency_key)` UNIQUE index, and the backstop joins the stored card.
+/// The first request is paused just before its commit transaction; the second commits the operation
+/// under the same key meanwhile. The first's transaction then finds the key bound to the same
+/// request and joins the stored card instead of writing a second one.
 #[tokio::test]
 async fn a_direct_duplicate_past_the_dedup_check_joins_the_stored_card() {
     let fx = Arc::new(card_fixture("test.toolcall.direct-race").await);
@@ -193,7 +193,7 @@ async fn a_direct_duplicate_past_the_dedup_check_joins_the_stored_card() {
         async {
             tokio::time::timeout(Duration::from_secs(10), paused.entered.notified())
                 .await
-                .expect("the first request passed its dedup read; without it the case is vacuous");
+                .expect("the first request reached its commit; without it the case is vacuous");
             let second = post_keyed(&fx, direct("Notes"), Some("k-direct-race")).await;
             paused.release.notify_one();
             second
@@ -206,7 +206,126 @@ async fn a_direct_duplicate_past_the_dedup_check_joins_the_stored_card() {
     assert_eq!(
         operations_under(&fx, "k-direct-race").await,
         1,
-        "one operation: the first request's INSERT was refused by the index"
+        "one operation: the first request's transaction wrote nothing"
     );
+    fx.state.plugin.stop(&fx.plugin_id).await.ok();
+}
+
+async fn operation_row(fx: &Fixture, id: &str) -> (String, Option<String>) {
+    let pool = fx.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    sqlx::query_as("SELECT phase, lease_owner FROM operations WHERE id = ?1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+}
+
+/// #2175 K1a: a card create commits in its own transaction and never queues behind the global
+/// drive lock, which track delete holds (and a Codex thread start holds for up to 30 s).
+#[tokio::test]
+async fn a_keyed_create_does_not_wait_for_the_track_delete_lock() {
+    let fx = card_fixture("test.toolcall.keyed-unlocked").await;
+    let _guard = fx
+        .state
+        .operation_runtime
+        .lock_for_track_delete_for_test()
+        .await;
+    for (body, key) in [
+        (direct("Notes"), "k-unlocked-direct"),
+        (via(&fx, json!({})), "k-unlocked-tool"),
+    ] {
+        let (status, card) =
+            tokio::time::timeout(Duration::from_secs(5), post_keyed(&fx, body, Some(key)))
+                .await
+                .expect("the create must not wait for the drive lock");
+        assert_eq!(status, StatusCode::CREATED, "{card}");
+        assert_eq!(operations_under(&fx, key).await, 1);
+    }
+    assert_eq!(cards(&fx).await, 2);
+    fx.state.plugin.stop(&fx.plugin_id).await.ok();
+}
+
+/// #2175 K1a: a card create drives no one else's operation. A claimable pending row of another
+/// kind keeps its phase and stays unleased across the create.
+#[tokio::test]
+async fn a_create_leaves_another_kinds_pending_operation_unclaimed() {
+    use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+    let fx = card_fixture("test.toolcall.keyed-no-drive").await;
+    let pool = fx.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    let other = SqlxOperationRepo::new(pool)
+        .insert_operation(
+            "track-recipe-create",
+            OperationKey {
+                operation_key: "seeded-other-kind".into(),
+                idempotency_key: None,
+                payload_hash: "seeded".into(),
+            },
+            json!({ "title": "seeded", "body": "# Plan\n" }),
+        )
+        .await
+        .expect("seed a pending operation");
+    let (status, card) = post_keyed(&fx, direct("Notes"), Some("k-no-drive")).await;
+    assert_eq!(status, StatusCode::CREATED, "{card}");
+    assert_eq!(
+        operation_row(&fx, &other).await,
+        ("pending".to_string(), None),
+        "the card create must not claim or drive another operation"
+    );
+    fx.state.plugin.stop(&fx.plugin_id).await.ok();
+}
+
+/// #2175 K1a: a `card-create` row an older server left past its commit (`tx_committed`) is still
+/// driven to its end, and a retry under its key on either branch is answered with its card.
+#[tokio::test]
+async fn a_legacy_committed_row_replays_its_card() {
+    let fx = card_fixture("test.toolcall.keyed-legacy").await;
+    let pool = fx.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    for (body, key) in [
+        (direct("Notes"), "k-legacy-direct"),
+        (via(&fx, json!({})), "k-legacy-tool"),
+    ] {
+        let (status, first) = post_keyed(&fx, body.clone(), Some(key)).await;
+        assert_eq!(status, StatusCode::CREATED, "{first}");
+        sqlx::query("UPDATE operations SET phase = 'tx_committed' WHERE idempotency_key = ?1")
+            .bind(key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (status, replay) = post_keyed(&fx, body, Some(key)).await;
+        assert_eq!(status, StatusCode::CREATED, "{replay}");
+        assert_eq!(replay["id"], first["id"]);
+        let phase: String =
+            sqlx::query_scalar("SELECT phase FROM operations WHERE idempotency_key = ?1")
+                .bind(key)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            phase, "succeeded",
+            "the replay drove the legacy row to its end"
+        );
+    }
+    assert_eq!(cards(&fx).await, 2);
+    assert_eq!(fx.tool_calls(), 1);
+    fx.state.plugin.stop(&fx.plugin_id).await.ok();
+}
+
+/// #2175 K1a: a create refused inside its transaction stores nothing, so its key binds nothing and a
+/// corrected retry under the same key is a fresh create.
+#[tokio::test]
+async fn a_refused_create_binds_nothing_to_its_key() {
+    let fx = card_fixture("test.toolcall.keyed-refused").await;
+    // A client may not mint a track-report card; the card write refuses it inside the transaction.
+    let refused = json!({
+        "kind": "track-report",
+        "payload": calm_server::track_report::TrackReportPayload::initial(),
+    });
+    let (status, answer) = post_keyed(&fx, refused, Some("k-refused")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(operations_under(&fx, "k-refused").await, 0);
+    assert_eq!(cards(&fx).await, 0);
+    let (status, card) = post_keyed(&fx, direct("Notes"), Some("k-refused")).await;
+    assert_eq!(status, StatusCode::CREATED, "{card}");
+    assert_eq!(cards(&fx).await, 1);
     fx.state.plugin.stop(&fx.plugin_id).await.ok();
 }

@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, SqlitePool};
+use sqlx::query::Query;
+use sqlx::sqlite::{SqliteArguments, SqliteRow};
+use sqlx::{Row, Sqlite, SqlitePool};
 
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
@@ -100,30 +101,9 @@ impl OperationRepo for SqlxOperationRepo {
         }
 
         let id = new_id();
-        let now = now_ms();
-        let (target_type, target_id, target_json) = target_from_payload(&payload);
-        let target_json_text = serde_json::to_string(&target_json)?;
-        let payload_json_text = serde_json::to_string(&payload)?;
-        let inserted = sqlx::query(
-            r#"INSERT INTO operations (
-                   id, operation_key, kind, idempotency_key, payload_hash,
-                   target_type, target_id, target_json, payload_json,
-                   phase, created_at_ms, updated_at_ms
-               )
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
-        )
-        .bind(&id)
-        .bind(&key.operation_key)
-        .bind(kind)
-        .bind(&key.idempotency_key)
-        .bind(&key.payload_hash)
-        .bind(&target_type)
-        .bind(&target_id)
-        .bind(&target_json_text)
-        .bind(&payload_json_text)
-        .bind(now)
-        .execute(&self.pool)
-        .await;
+        let inserted = insert_pending_row(&id, kind, &key, &payload)?
+            .execute(&self.pool)
+            .await;
 
         match inserted {
             Ok(_) => Ok(id),
@@ -783,6 +763,34 @@ pub(super) async fn fetch_claimed_parked(
     .fetch_optional(pool)
     .await?;
     row.as_ref().map(operation_from_row).transpose()
+}
+
+/// The one `operations` INSERT: a `pending` row `id` under `key`.
+pub(super) fn insert_pending_row(
+    id: &str,
+    kind: &str,
+    key: &OperationKey,
+    payload: &Value,
+) -> Result<Query<'static, Sqlite, SqliteArguments<'static>>> {
+    let (target_type, target_id, target_json) = target_from_payload(payload);
+    Ok(sqlx::query(
+        r#"INSERT INTO operations (
+               id, operation_key, kind, idempotency_key, payload_hash,
+               target_type, target_id, target_json, payload_json,
+               phase, created_at_ms, updated_at_ms
+           )
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
+    )
+    .bind(id.to_string())
+    .bind(key.operation_key.clone())
+    .bind(kind.to_string())
+    .bind(key.idempotency_key.clone())
+    .bind(key.payload_hash.clone())
+    .bind(target_type)
+    .bind(target_id)
+    .bind(serde_json::to_string(&target_json)?)
+    .bind(serde_json::to_string(payload)?)
+    .bind(now_ms()))
 }
 
 pub(super) fn operation_from_row(row: &SqliteRow) -> Result<Operation> {

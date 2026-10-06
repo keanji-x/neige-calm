@@ -324,7 +324,7 @@ pub struct ViaToolCall {
     tag = "cards",
     params(
         ("track_id" = String, Path, description = "Track id this card belongs to"),
-        ("Idempotency-Key" = Option<String>, Header, description = "Optional; without one a retry creates another card. A retry under the key returns its card and calls no tool again."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Optional; the key binds at most one card. A retry before the card is stored may call the tool again."),
     ),
     request_body = CreateCardBody,
     responses(
@@ -332,7 +332,7 @@ pub struct ViaToolCall {
         (status = 400, description = "Missing `kind` and no `via_tool_call`, or a blank, non-ASCII or over-long `Idempotency-Key` (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 403, description = "Plugin lacks `permissions.cards_create`", body = ErrorBody),
         (status = 404, description = "Track not found, or plugin not running / not in registry", body = ErrorBody),
-        (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key", body = ErrorBody),
+        (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused, and the key binds nothing", body = ErrorBody),
         (status = 422, description = "Tool returned no `_meta.ui.resourceUri`", body = ErrorBody),
         (status = 502, description = "Plugin tool call failed", body = ErrorBody),
         (status = 500, description = "Internal error; `operation_failed` when the create under this key failed and is final for it", body = ErrorBody),
@@ -386,14 +386,14 @@ pub(crate) async fn create_card(
         payload,
         title: body.title,
     };
-    submit_card_create(&s, key, card)
+    commit_card_create(&s, key, card)
         .await
         .map_err(IntoResponse::into_response)
 }
 
 /// Kernel invokes `tools/call` on the plugin, then writes a Card row keyed off `_meta.ui.resourceUri`.
 /// plugin not running → 404; `permissions.cards_create` not granted → 403; `isError: true` → 502; no `_meta.ui.resourceUri` → 422 `not_a_card_tool`.
-/// A key that already holds a card is answered with it before any of that, so the tool runs once per key.
+/// A key that already holds a card is answered with it before any of that.
 #[allow(deprecated)]
 #[allow(clippy::result_large_err)]
 async fn create_via_tool_call(
@@ -403,9 +403,10 @@ async fn create_via_tool_call(
     via: ViaToolCall,
     key: OperationKey,
 ) -> Result<Response, Response> {
-    // Held from the replay check through the submit, so a concurrent retry under the key waits for
-    // this request and is answered by its card instead of calling the tool again. In-process only;
-    // the `operations` UNIQUE index is the cross-process wall (a second tool call, one card).
+    // Held from the replay check through the commit, so a concurrent retry under the key in this
+    // process waits for this request and is answered by its card. The key binds at most one card; a
+    // retry before the card is stored (lost answer, tool failure, a second process) may call the
+    // tool again.
     let _same_key = match key.idempotency_key.as_deref() {
         Some(idempotency_key) => Some(
             lock_key(
@@ -519,22 +520,24 @@ async fn create_via_tool_call(
         payload,
         title: None,
     };
-    submit_card_create(s, key, card)
+    commit_card_create(s, key, card)
         .await
         .map_err(IntoResponse::into_response)
 }
 
-/// Submit the card's one write under the request's key and answer with what that key holds.
-async fn submit_card_create(
+/// Commit the card's one write under the request's key and answer with what that key holds.
+async fn commit_card_create(
     s: &AppState,
     key: OperationKey,
     card: CardCreateOperationPayload,
 ) -> Result<Response> {
-    let op_id = s
+    let committed = s
         .operation_runtime
-        .submit(CARD_CREATE, key, serde_json::to_value(card)?)
+        .commit_keyed(CARD_CREATE, key, serde_json::to_value(card)?)
         .await?;
-    card_create_answer(s, op_id).await
+    Ok(keyed_card_answer(s.repo.as_ref(), committed.outcome)
+        .await?
+        .into_response())
 }
 
 /// The stored card (with its runtime projected), or the stored failure, of a `card-create` operation.

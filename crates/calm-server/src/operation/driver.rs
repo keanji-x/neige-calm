@@ -15,6 +15,7 @@ use crate::terminal_sweeper::{
     WaitForPidExit, reap_terminal_artifacts_with_renderer, wait_for_pid_exit,
 };
 
+use super::tx_only::{KeyedCommit, commit_tx_only};
 use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationId, OperationKey,
@@ -70,6 +71,13 @@ impl OperationRuntime {
     /// Operations are the common funnel for planner resets, scheduler workers, and terminal/card starts; holding this keeps any of them from creating a runtime behind deletion's snapshot.
     pub(crate) async fn lock_for_track_delete(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.drive_mutex.clone().lock_owned().await
+    }
+
+    /// Hold the production track-delete lock from an integration test.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub async fn lock_for_track_delete_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.lock_for_track_delete().await
     }
 
     pub async fn new(
@@ -130,6 +138,7 @@ impl OperationRuntime {
         // A keyed `operations` row is PERMANENT: this short-circuit is the only thing that stops a byte-identical retry from re-running an
         // operation that already succeeded (for `planner-harness-start`, delivering the user's first message twice). Never add a retention pass over keyed rows.
         if let Some(op_id) = self.keyed_replay(kind, &key).await? {
+            self.drive().await?;
             return Ok(op_id);
         }
         adapter.validate(&payload).await?;
@@ -139,9 +148,10 @@ impl OperationRuntime {
     }
 
     /// The operation that already holds this request's key: `Some` for the same payload hash (a
-    /// replay, driven on), 409 `idempotency_key_reused` for another; `None` when the key is vacant or
-    /// absent. [`Self::submit`] asks this first. A route whose work starts before it submits (a
-    /// plugin tool call) asks it before that work, so a replay does not do the work again.
+    /// replay), 409 `idempotency_key_reused` for another; `None` when the key is vacant or absent.
+    /// A read only: it drives nothing. [`Self::submit`] asks this first. A route whose work starts
+    /// before it commits (a plugin tool call) asks it before that work, so a replay does not do the
+    /// work again.
     pub async fn keyed_replay(
         &self,
         kind: &str,
@@ -153,8 +163,37 @@ impl OperationRuntime {
         if existing.payload_hash != key.payload_hash {
             return Err(idempotency_payload_conflict(key.idempotency_key.as_deref()));
         }
-        self.drive().await?;
         Ok(Some(existing.id))
+    }
+
+    /// Create a [`TxOnlyAdapter`](super::TxOnlyAdapter) kind under the request's key in one transaction (#2175 K1a): the
+    /// key's check, the `operations` row, the adapter's write and the row's `succeeded` commit
+    /// together. It takes no drive lock and drives no other operation. A replay is answered from the
+    /// key's row ([`Self::wait`] returns at once for a settled row and drives only a row an older
+    /// server left before its end). An error stores nothing, so the key binds nothing: a 5xx may be
+    /// retried under it, and a refusal is not final for it.
+    pub async fn commit_keyed(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+    ) -> Result<OperationResult> {
+        let adapter = self.adapter(kind)?;
+        let tx_only = adapter.as_tx_only().ok_or_else(|| {
+            CalmError::Internal(format!(
+                "operation kind {kind} has effects past its commit; submit it instead"
+            ))
+        })?;
+        tx_only.validate(&payload).await?;
+        match commit_tx_only(&self.repo.sqlite_pool(), tx_only, key, payload).await? {
+            KeyedCommit::Replay(op_id) => self.wait(&op_id).await,
+            KeyedCommit::Committed { result, events } => {
+                for envelope in events {
+                    self.events.emit_envelope(envelope);
+                }
+                Ok(result)
+            }
+        }
     }
 
     pub async fn start(

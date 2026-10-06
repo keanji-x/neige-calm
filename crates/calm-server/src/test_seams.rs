@@ -58,7 +58,8 @@ pub async fn pause_point(point: &str, key: &str) {
 pub const PLANNER_INPUT_REPLAY_MISSED: &str = "planner-input-replay-missed";
 
 /// Where an operation insert has found no row under its `(kind, idempotency_key)` and is about to
-/// write one; keyed by the idempotency key.
+/// write one, or where a keyed commit (`OperationRuntime::commit_keyed`) is about to begin the
+/// transaction that checks its key; keyed by the idempotency key.
 #[cfg(feature = "fixtures")]
 pub const OPERATION_DEDUP_MISSED: &str = "operation-dedup-missed";
 

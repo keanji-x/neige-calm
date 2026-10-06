@@ -1,8 +1,9 @@
 //! `card-create`: the one write of `POST /api/tracks/:track_id/cards`, a card that owns no
-//! runtime (a plugin `ui://` card, or a direct create). It runs through the operation runtime only
-//! so the route's `Idempotency-Key` binds the card it made: a retry under the key is answered
-//! from the stored row instead of making a second card. The route validates the body and calls any
-//! plugin tool before it submits; this writes the row and its `card.added`, and has no side effect.
+//! runtime (a plugin `ui://` card, or a direct create). It is an `operations` row only so the
+//! route's `Idempotency-Key` binds the card it made: a retry under the key is answered from the
+//! stored row instead of making a second card. The route validates the body and calls any plugin
+//! tool before it commits (`OperationRuntime::commit_keyed`); this writes the card and its
+//! `card.added` in that one transaction, and has no side effect.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -18,18 +19,9 @@ use crate::model::{CardRole, NewCard, new_id};
 use crate::routes::cards::card_scope_tx;
 use std::sync::Arc;
 
-use super::{
-    AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
-    ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
-};
+use super::{Operation, Tx, TxOnlyAdapter, TxOutput};
 
 pub const CARD_CREATE: &str = "card-create";
-
-const CARD_CREATE_PHASES: &[PhaseTag] = &[
-    PhaseTag::Pending,
-    PhaseTag::TxCommitted,
-    PhaseTag::Succeeded,
-];
 
 /// The card exactly as it is written. The route builds it after validation (and after the plugin
 /// tool answered); nothing here is read from mutable state.
@@ -62,13 +54,9 @@ impl CardCreateAdapter {
 }
 
 #[async_trait]
-impl ProviderAdapter for CardCreateAdapter {
+impl TxOnlyAdapter for CardCreateAdapter {
     fn kind(&self) -> &'static str {
         CARD_CREATE
-    }
-
-    fn phases(&self) -> &'static [PhaseTag] {
-        CARD_CREATE_PHASES
     }
 
     async fn validate(&self, input: &Value) -> Result<()> {
@@ -127,48 +115,5 @@ impl ProviderAdapter for CardCreateAdapter {
             event,
         });
         Ok(output)
-    }
-
-    async fn app_server_interact(
-        &self,
-        _output: &mut TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> Result<AppServerInteractOutcome> {
-        Ok(AppServerInteractOutcome::NotApplicable)
-    }
-
-    async fn spawn_side_effect(
-        &self,
-        _output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> Result<SpawnOutcome> {
-        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
-    }
-
-    async fn plan_compensation(
-        &self,
-        from_phase: PhaseTag,
-        reason: &str,
-        _output: &TxOutput,
-        _op: &Operation,
-    ) -> Result<CompensationStateVersioned> {
-        Ok(CompensationStateVersioned {
-            version: 1,
-            from_phase,
-            reason: reason.to_string(),
-            steps: vec![],
-        })
-    }
-
-    async fn compensate_step(
-        &self,
-        _step: &CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> Result<()> {
-        Ok(())
     }
 }

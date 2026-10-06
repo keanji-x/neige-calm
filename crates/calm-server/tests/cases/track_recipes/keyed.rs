@@ -1,7 +1,7 @@
 //! #2131 S4: `POST /api/track-recipes` under an `Idempotency-Key`. A retry under the key is
 //! answered with the recipe its first attempt saved; the same key with another body is 409
-//! `idempotency_key_reused`; a malformed key is 400 `idempotency_key_invalid`; and a duplicate that
-//! passes the dedup read is joined by the `operations` UNIQUE backstop.
+//! `idempotency_key_reused`; a malformed key is 400 `idempotency_key_invalid`; and a concurrent
+//! duplicate is joined to the stored recipe by the key check inside its commit transaction.
 
 use std::time::Duration;
 
@@ -82,9 +82,9 @@ async fn an_over_long_or_blank_key_is_invalid_and_saves_nothing() {
     assert_eq!(recipes(boot.app.clone()).await, 0);
 }
 
-/// The first request is paused inside the operation insert, after its dedup read found nothing; the
-/// second commits the operation under the same key meanwhile. The first's INSERT then hits the
-/// `(kind, idempotency_key)` UNIQUE index, and the backstop joins the stored recipe.
+/// The first request is paused just before its commit transaction; the second commits the operation
+/// under the same key meanwhile. The first's transaction then finds the key bound to the same
+/// request and joins the stored recipe instead of saving a second one.
 #[tokio::test]
 async fn a_duplicate_past_the_dedup_check_joins_the_stored_recipe() {
     let boot = boot().await;
@@ -98,7 +98,7 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_recipe() {
         async {
             tokio::time::timeout(Duration::from_secs(10), paused.entered.notified())
                 .await
-                .expect("the first request passed its dedup read; without it the case is vacuous");
+                .expect("the first request reached its commit; without it the case is vacuous");
             let second = create(boot.app.clone(), recipe("mine"), Some("k-recipe-race")).await;
             paused.release.notify_one();
             second
@@ -108,4 +108,69 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_recipe() {
     assert_eq!(first.0, StatusCode::CREATED, "{}", first.1);
     assert_eq!(first.1["id"], second.1["id"]);
     assert_eq!(recipes(boot.app.clone()).await, 1);
+}
+
+/// #2175 K1a: a recipe save commits in its own transaction and never queues behind the global
+/// drive lock, which track delete holds (and a Codex thread start holds for up to 30 s).
+#[tokio::test]
+async fn a_keyed_create_does_not_wait_for_the_track_delete_lock() {
+    let boot = boot().await;
+    let _guard = boot
+        .state
+        .operation_runtime
+        .lock_for_track_delete_for_test()
+        .await;
+    let (status, created) = tokio::time::timeout(
+        Duration::from_secs(5),
+        create(boot.app.clone(), recipe("mine"), Some("k-recipe-unlocked")),
+    )
+    .await
+    .expect("the save must not wait for the drive lock");
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(recipes(boot.app.clone()).await, 1);
+}
+
+/// #2175 K1a: a recipe save drives no one else's operation. A claimable pending row of another
+/// kind keeps its phase and stays unleased across the save.
+#[tokio::test]
+async fn a_create_leaves_another_kinds_pending_operation_unclaimed() {
+    use calm_server::operation::card_create_adapter::CardCreateOperationPayload;
+    use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+    let boot = boot().await;
+    let pool = boot.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    let other = SqlxOperationRepo::new(pool.clone())
+        .insert_operation(
+            "card-create",
+            OperationKey {
+                operation_key: "seeded-other-kind".into(),
+                idempotency_key: None,
+                payload_hash: "seeded".into(),
+            },
+            serde_json::to_value(CardCreateOperationPayload {
+                actor: calm_server::ids::ActorId::User,
+                correlation: None,
+                track_id: "no-such-track".into(),
+                kind: "note".into(),
+                sort: None,
+                payload: Value::Null,
+                title: None,
+            })
+            .unwrap(),
+        )
+        .await
+        .expect("seed a pending operation");
+    let (status, created) =
+        create(boot.app.clone(), recipe("mine"), Some("k-recipe-no-drive")).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let row: (String, Option<String>) =
+        sqlx::query_as("SELECT phase, lease_owner FROM operations WHERE id = ?1")
+            .bind(&other)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        row,
+        ("pending".to_string(), None),
+        "the recipe save must not claim or drive another operation"
+    );
 }

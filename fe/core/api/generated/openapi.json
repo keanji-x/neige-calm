@@ -4972,7 +4972,7 @@
             }
           },
           "409": {
-            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key",
+            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused, and the key binds nothing",
             "content": {
               "application/json": {
                 "schema": {
@@ -6917,7 +6917,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Optional; without one a retry creates another card. A retry under the key returns its card and calls no tool again.",
+            "description": "Optional; the key binds at most one card. A retry before the card is stored may call the tool again.",
             "required": false,
             "schema": {
               "type": [
@@ -6979,7 +6979,7 @@
             }
           },
           "409": {
-            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key",
+            "description": "`idempotency_key_reused`: the key names another request; `conflict`: refused, and the key binds nothing",
             "content": {
               "application/json": {
                 "schema": {

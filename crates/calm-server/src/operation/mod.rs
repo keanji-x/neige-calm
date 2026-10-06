@@ -27,6 +27,7 @@ pub mod terminal_adapter;
 pub(crate) mod terminal_disposal;
 pub(crate) mod terminal_launch;
 pub mod track_recipe_create_adapter;
+mod tx_only;
 pub(crate) mod worker_cleanup;
 
 pub use driver::{OperationCompletionBus, OperationRuntime};
@@ -36,6 +37,7 @@ pub use repo_sqlite::SqlxOperationRepo;
 pub use repo_sqlite::complete_parked_for_test;
 pub(crate) use repo_sqlite::{checkpoint_app_server_interact_tx, complete_parked_tx};
 use repo_sqlite::{fetch_claimed_parked, operation_from_row};
+pub use tx_only::TxOnlyAdapter;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -681,6 +683,12 @@ pub trait ProviderAdapter: Send + Sync {
             "{} does not declare an app_server_interact kind",
             self.kind()
         )))
+    }
+
+    /// `Some` only through the blanket impl for a [`TxOnlyAdapter`]: the kinds
+    /// [`OperationRuntime::commit_keyed`] commits in one transaction.
+    fn as_tx_only(&self) -> Option<&dyn TxOnlyAdapter> {
+        None
     }
 
     async fn validate(&self, input: &Value) -> Result<()>;
