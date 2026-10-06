@@ -164,11 +164,13 @@ fn send_request(args: &Value) -> Result<SendRequest, RpcError> {
         }
     }
     let summary = text_argument(TOOL, object, "summary")?
-        .map(|summary| summary.trim().to_string())
         .filter(|summary| {
-            (1..=MAX_SUMMARY_CHARS).contains(&summary.chars().count())
-                && !summary.contains(['\n', '\r'])
+            !summary
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
         })
+        .map(|summary| summary.trim().to_string())
+        .filter(|summary| (1..=MAX_SUMMARY_CHARS).contains(&summary.chars().count()))
         .ok_or_else(|| invalid(TOOL, "summary", "summary is 1..200 characters on one line"))?;
     let text = text_argument(TOOL, object, "text")?
         .filter(|text| !text.trim().is_empty() && text.chars().count() <= MAX_TEXT_CHARS)
@@ -216,6 +218,25 @@ mod tests {
 
     fn refusal(args: Value) -> String {
         send_request(&args).expect_err("refused").message
+    }
+
+    #[test]
+    fn send_summary_refuses_controls_and_unicode_line_separators() {
+        for c in (0..=0x9f)
+            .filter_map(char::from_u32)
+            .filter(|c| c.is_control())
+            .chain(['\u{2028}', '\u{2029}'])
+        {
+            for summary in [format!("a{c}b"), format!("{c}ab"), format!("ab{c}")] {
+                let args = json!({"track_id": "tr", "summary": summary, "text": "t"});
+                let error = send_request(&args).expect_err("single-line summary");
+                assert_eq!(error.data.unwrap()["refusal"], json!("summary"));
+            }
+        }
+        let args = json!({"track_id": "tr", "summary": "  中文 résumé  ", "text": "a\nb\t"});
+        let request = send_request(&args).unwrap();
+        assert_eq!(request.summary, "中文 résumé");
+        assert_eq!(request.text, "a\nb\t");
     }
 
     #[test]

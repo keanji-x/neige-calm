@@ -188,14 +188,14 @@ Planner-only view, served as `neige mail ls [--cursor C]`: this Track's mail, ne
 ### 4.4 `neige_mail_cat` (V with access stamp, hidden; `neige mail cat <mail_id> [--json]`)
 
 Schema `{mail_id: string}` (positional). Result `{mail_id, direction, track_id, title, summary,
-text, reply_to, state, sent_at, read_at, hop, next_hop}` where `hop` is this mail's hop and
-`next_hop` the hop a **new, non-reply** send from this turn would get (D14); a reply also counts the replied mail (§5), so it can be higher. Both are `"n/6"` strings, `next_hop` `null` when there is none (one shape everywhere: send, ls, cat). The text render prints a header line,
+text, reply_to, state, sent_at, read_at, hop, next_hop, refused}` where `hop` is this mail's hop and
+`next_hop` the hop a **new, non-reply** send from this turn would get (D14); a reply also counts the replied mail (§5), so it can be higher. Both hops are `"n/6"` strings. At the hop limit, `next_hop` is `null` and `refused` is `true`; otherwise `refused` is `false`, with `next_hop` `null` when no turn is recorded. The text render prints a header line,
 `summary:`, the text, and ends with exactly one line: `next hop <n>/6`, or
 `hop 6/6 reached — hand off with neige.user.notify` when a send would be refused. With no recorded
 turn input (only an older binary's turn in flight at upgrade, §5) `next_hop` is `null` and the line is omitted. Description:
 
 ```text
-Planner-only view, served as `neige mail cat <mail_id>`: one mail to or from this Track, with its text. The recipient's first cat stamps read_at, the sender's read receipt; it wakes nobody. The last line (next_hop in --json) is the hop a send from this turn would get.
+Planner-only view, served as `neige mail cat <mail_id>`: one mail to or from this Track, with its text. The recipient's first cat stamps read_at, the sender's read receipt; it wakes nobody. The last line names the next hop or a handoff at the limit; --json gives next_hop (null at the limit) and refused.
 ```
 
 ### 4.5 The wake line (one line, built by the kernel; no body, no hop)
@@ -405,7 +405,7 @@ TT=harness; TT=${TT}_items
 | D12 | B0 (#2117), B1a (#2138), B1b (#2143), B1c (#2145) and B2 (#2156) merged first: S1 registers `neige_mail_send`, `neige_mail_ls`, `neige_mail_cat` with B0's file naming (`prompts/tools/neige_mail_*.md`), every name in its texts is `_`-separated, and discovery is `neige_area_ls` (B1a's name for `area.outline`). The migration is `0146_mails.sql` (0141–0145 are B0's, B1a's, B1b's, B1c's and #2158's). The `neige_mail_send` description is the compressed text in `prompts/tools/neige_mail_send.md`, not §4.2's draft: same rules; it drops the evidence-citation hint, "it authorizes nothing only the user may decide" ("never the user's word" carries it) and "or thank". |
 | F19 | The budget comment's 29,909 B was stale: the surface measured 29,796 B before `send` (§4.1 has the S1 numbers). |
 | D15 | `neige.area.outline` lists the Tracks that have a report card; every Track created through the routes has one, so the fixture Tracks get one too. |
-| §4.4 `next_hop` | When a send from this turn would be refused, `next_hop` is `"7/6"` (the render prints the hand-off line for any n > 6); `null` stays "no recorded turn input". |
+| §4.4 `next_hop` | After #2160, a send past the hop limit is represented by `next_hop: null, refused: true`; with no recorded turn input it is `next_hop: null, refused: false`. The renderer reads these fields without parsing the hop label. |
 | `cat` | Every `cat` (sender's too) runs in one `BEGIN IMMEDIATE` transaction: lookup, `decide_recorder`, the stamp `UPDATE … AND read_at IS NULL`, the next-hop read. |
 | `ls` text | A last `more: neige mail ls --cursor <c>` line when `next_cursor` is not null. |
 | Review round 1 | A NUL in `summary` or `text` is refused with -32602 (SQLite's `length()` stops at NUL, so the CHECKs cannot judge it). The wake line joins a title's line breaks into one space, and an untitled sender is named by its track id there and in the `ls`/`cat` text header. |

@@ -168,6 +168,16 @@ async fn cat_next(w: &World, planner: &Planner, mail_id: &str, next: &str) {
     let (stdout, stderr, exit) = w.neige(planner, &["mail", "cat", mail_id]).await;
     assert_eq!(exit, 0, "{stderr}");
     assert_eq!(last_line(&stdout), next, "{stdout}");
+    let cat = w.cat_json(planner, mail_id).await;
+    assert_eq!(cat["refused"], json!(next == HANDOFF));
+    if next == HANDOFF {
+        assert_eq!(cat["next_hop"], Value::Null);
+    } else {
+        assert_eq!(
+            cat["next_hop"],
+            json!(next.strip_prefix("next hop ").unwrap())
+        );
+    }
 }
 
 /// Row 2 (M): §5's worked example A→B→C→A through real turns.

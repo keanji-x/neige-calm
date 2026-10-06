@@ -672,6 +672,17 @@ describe('harnessItemToActivity', () => {
         .toMatchObject({ verb: 'Sent mail', target: 'NVDA guidance below thesis', state: 'done' });
     });
 
+    it('clips a long mail summary to 64 characters including the ellipsis', () => {
+      const summary = '界'.repeat(200);
+      for (const [status, method] of [['inProgress', 'item/started'], ['completed', 'item/completed']]) {
+        const entry = send({ arguments: { ...args, summary }, status }, method);
+        expect(entry).toMatchObject({ target: `${'界'.repeat(63)}…` });
+        expect((entry as { target: string }).target).toHaveLength(64);
+      }
+      expect(send({ arguments: { ...args, summary: '界'.repeat(64) }, status: 'completed' }))
+        .toMatchObject({ target: '界'.repeat(64) });
+    });
+
     it.each([
       ['blank', { ...args, summary: '  ' }],
       ['absent', { track_id: 'track-n', text: 'the body' }],

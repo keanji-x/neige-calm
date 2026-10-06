@@ -1,1 +1,1 @@
-Planner-only view, served as `neige mail cat <mail_id>`: one mail to or from this Track, with its text. The recipient's first cat stamps read_at, the sender's read receipt; it wakes nobody. The last line (next_hop in --json) is the hop a send from this turn would get.
+Planner-only view, served as `neige mail cat <mail_id>`: one mail to or from this Track, with its text. The recipient's first cat stamps read_at, the sender's read receipt; it wakes nobody. The last line names the next hop or a handoff at the limit; --json gives next_hop (null at the limit) and refused.

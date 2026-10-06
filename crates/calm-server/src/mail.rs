@@ -336,7 +336,7 @@ const OTHER_TRACK_JOIN: &str = "JOIN tracks t ON t.id = \
      CASE WHEN m.to_track_id = ?1 THEN m.from_track_id ELSE m.to_track_id END";
 
 fn rfc3339(ms: i64) -> Value {
-    json!(crate::area_reports::rfc3339_local_ms(ms))
+    json!(crate::time_format::rfc3339_local_ms(ms))
 }
 
 impl MailRow {
@@ -424,7 +424,8 @@ pub async fn ls(
 }
 
 /// `neige_mail_cat`: one mail to or from this Track. The recipient's first cat stamps `read_at`;
-/// `next_hop` is what a new, non-reply send from this turn would get.
+/// `next_hop` is what an allowed new, non-reply send from this turn would get; it is null
+/// with `refused: true` at the hop limit, or `refused: false` when no turn is recorded.
 pub async fn cat(
     ctx: &AppContext,
     identity: &ToolCallIdentity,
@@ -485,7 +486,11 @@ pub async fn cat(
             let mut mail = row.summary_json(&caller);
             mail.insert("text".into(), json!(row.text));
             mail.insert("reply_to".into(), json!(row.reply_to));
-            mail.insert("next_hop".into(), json!(next.map(hop_label)));
+            mail.insert("refused".into(), json!(next.is_some_and(|hop| hop > MAX_HOP)));
+            mail.insert(
+                "next_hop".into(),
+                json!(next.filter(|hop| *hop <= MAX_HOP).map(hop_label)),
+            );
             Ok(Value::Object(mail))
         })
     })

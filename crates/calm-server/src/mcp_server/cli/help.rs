@@ -212,7 +212,7 @@ const HELP: &[CommandHelp] = &[
         "mail from this turn would get, `next hop <n>/6`, or that hop 6/6 is reached.",
         "",
         "Options:",
-        "      --json  Emit the mail with text, reply_to, hop and next_hop",
+        "      --json  Emit the mail with text, reply_to, hop, next_hop and refused",
         "  -h, --help  Print help",
     ),
     command_help!(

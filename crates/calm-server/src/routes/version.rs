@@ -28,8 +28,8 @@ use utoipa::ToSchema;
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor. Must equal `WEB_COMPAT_VERSION`
-/// in both bundles (`web/src/api/version.ts`, `fe/web/src/app/providers/public.tsx`);
-/// only a textual CI gate relates the three.
+/// in the maintained bundle (`fe/web/src/app/providers/public.tsx`);
+/// a textual CI gate compares the Rust and frontend values.
 /// #2160 bumps 40 -> 41: a segment `presentation` may be `system_mail`, which older bundles reject.
 pub const WEB_COMPAT_VERSION: u32 = 41;
 

@@ -72,24 +72,28 @@ pub(super) fn cat(tool: &str, json: bool, value: &Value) -> Result<String, Rende
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    match value.get("next_hop") {
-        Some(Value::Null) => {}
-        Some(Value::String(next)) => {
-            let over = next
-                .split_once('/')
-                .and_then(|(n, _)| n.parse::<i64>().ok())
-                .is_some_and(|n| n > MAX_HOP);
-            if over {
-                out.push_str(&format!(
-                    "hop {MAX_HOP}/{MAX_HOP} reached — hand off with neige_user_notify\n"
-                ));
-            } else {
-                out.push_str(&format!("next hop {}\n", escape_control(next)));
-            }
+    let refused = value
+        .get("refused")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            shape(
+                format!("{tool} returned no boolean refused"),
+                tool,
+                "mail",
+                value,
+            )
+        })?;
+    match (refused, value.get("next_hop")) {
+        (true, Some(Value::Null)) => out.push_str(&format!(
+            "hop {MAX_HOP}/{MAX_HOP} reached — hand off with neige_user_notify\n"
+        )),
+        (false, Some(Value::Null)) => {}
+        (false, Some(Value::String(next))) => {
+            out.push_str(&format!("next hop {}\n", escape_control(next)));
         }
         _ => {
             return Err(shape(
-                format!("{tool} returned no string-or-null next_hop"),
+                format!("{tool} returned invalid refused/next_hop"),
                 tool,
                 "mail",
                 value,
@@ -97,4 +101,40 @@ pub(super) fn cat(tool: &str, json: bool, value: &Value) -> Result<String, Rende
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn mail_cat_renders_structured_hop_refusal() {
+        let mut mail = json!({
+            "mail_id": "m", "direction": "in", "state": "read", "hop": "6/6",
+            "title": "Peer", "track_id": "tr", "summary": "s", "text": "body",
+            "next_hop": null, "refused": true
+        });
+        let rendered = cat("neige_mail_cat", false, &mail).unwrap();
+        assert!(rendered.ends_with("hop 6/6 reached — hand off with neige_user_notify\n"));
+        assert_eq!(cat("neige_mail_cat", true, &mail).unwrap(), compact(&mail));
+        mail["refused"] = json!(false);
+        assert!(
+            cat("neige_mail_cat", false, &mail)
+                .unwrap()
+                .ends_with("body\n")
+        );
+        mail["next_hop"] = json!("6/6");
+        assert!(
+            cat("neige_mail_cat", false, &mail)
+                .unwrap()
+                .ends_with("next hop 6/6\n")
+        );
+        for bad in [Value::Null, json!("true"), json!(1)] {
+            mail["refused"] = bad;
+            assert!(cat("neige_mail_cat", false, &mail).is_err());
+        }
+        mail.as_object_mut().unwrap().remove("refused");
+        assert!(cat("neige_mail_cat", false, &mail).is_err());
+    }
 }
