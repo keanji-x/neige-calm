@@ -15,9 +15,19 @@ One Astryx `useHoverCard` owns the whole track interaction. First entry waits
 180ms; moving between rows immediately updates the same card and anchor without
 restarting its entrance. The 120ms leave grace lets the reader enter the card or
 return to the track. Keyboard focus previews immediately; Escape and selection
-close the card; touch jumps directly. Native positioning handles viewport bounds.
+close the card; entering another row in the same warm pointer interaction reopens
+it immediately. Leaving the track restores the cold-entry delay. A fast selection
+also warms the interaction even if it cancels the first pending preview. Touch
+jumps directly and does not warm hover intent. Native positioning handles viewport bounds.
 
 The card is capped at 17rem (272px at the application's root font size). The host
 can further bound it with `--nc-rail-preview-max-inline-size`. `previewSide`
 chooses the adjacent side: reports use the document side and conversations use
 the space before the rail. State and observers belong to each mounted instance.
+
+Astryx 0.6.3 exposes its underlying layer's `hide()`, which does not cancel the
+hook's pending hover timer. Explicit selection requests one controlled closed
+commit through the public `isOpen: false` option; the hook cancels its timers,
+then the rail releases control in the following effect. The immediate public
+hide still closes a visible card. This uses no custom timers or private API and
+keeps subsequent pointer/keyboard interaction under the standard hook.

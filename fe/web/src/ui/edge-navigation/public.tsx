@@ -24,14 +24,21 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dotRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const pointerY = useRef<number | null>(null);
+  const hoverIntent = useRef<'outside' | 'cold' | 'warm'>('outside');
   const itemKey = items.map(item => item.id).join('\0');
   const [roved, setRoved] = useState<string | null>(null);
   const [previewed, setPreviewed] = useState<string | null>(null);
+  const [closeRequested, setCloseRequested] = useState(false);
   const preview = useHoverCard({
     placement: previewSide === 'after' ? 'end' : 'start',
     focusTrigger: 'always', touchTrigger: 'none', delay: 180, hideDelay: 120,
     isEnabled: items.length > 0,
+    isOpen: closeRequested ? false : undefined,
+    onShow: () => { if (hoverIntent.current !== 'outside') hoverIntent.current = 'warm'; },
   });
+  // Astryx 0.6.3's public hide() leaves hover timers armed. Its controlled effect
+  // cancels them before this effect releases the one-commit close request.
+  useEffect(() => { if (closeRequested) setCloseRequested(false); }, [closeRequested]);
   const activeIndex = items.findIndex(item => item.id === activeId);
   const rovedIndex = items.findIndex(item => item.id === roved);
   const litStop = Math.max(0, activeIndex);
@@ -141,6 +148,12 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
     <div className={`${styles.rail}${className === undefined ? '' : ` ${className}`}`} role="group" aria-label={label}>
       <div className={styles.railTrack} data-nc-rail-track=""
         ref={node => { trackRef.current = node; preview.interactionRef(node); }}
+        onPointerEnter={event => {
+          hoverIntent.current = event.pointerType === 'touch' ? 'outside' : preview.isOpen ? 'warm' : 'cold';
+        }}
+        onPointerLeave={() => { hoverIntent.current = 'outside'; }}
+        onPointerDown={event => { if (event.pointerType === 'touch') hoverIntent.current = 'outside'; }}
+        onPointerCancel={() => { hoverIntent.current = 'outside'; setCloseRequested(true); preview.hide(); }}
         onBlur={event => {
           if (!event.currentTarget.contains(event.relatedTarget)) preview.hide();
         }}
@@ -156,7 +169,13 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
             aria-describedby={preview.isOpen && item.id === selected?.id ? preview.id : undefined}
             tabIndex={index === tabStop ? 0 : -1}
             {...(item.id === activeId ? { 'aria-current': true as const } : {})}
-            onPointerEnter={event => { if (event.pointerType !== 'touch') setPreviewed(item.id); }}
+            onPointerEnter={event => {
+              if (event.pointerType === 'touch') return;
+              setPreviewed(item.id);
+              if (preview.isOpen) hoverIntent.current = 'warm';
+              // A selection or Escape dismisses the card, not the ongoing rail interaction.
+              if (hoverIntent.current === 'warm') preview.show();
+            }}
             onFocus={() => { setRoved(item.id); setPreviewed(item.id); }}
             onKeyDown={event => {
               const move = ARROW_MOVES[event.key];
@@ -164,7 +183,13 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
               event.preventDefault();
               rove(move(index, items.length));
             }}
-            onClick={() => { preview.hide(); onSelect(item.id); }}
+            onClick={() => {
+              // Also warm a fast pointer selection that cancelled the first-entry timer.
+              if (hoverIntent.current !== 'outside') hoverIntent.current = 'warm';
+              setCloseRequested(true);
+              preview.hide();
+              onSelect(item.id);
+            }}
           />
         ))}
       </div>

@@ -879,6 +879,86 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(dots().every(dot => dot.style.getPropertyValue('--nc-dot-proximity') === '')).toBe(true);
   });
 
+  it('resumes pointer previews on another row after click, Escape and keyboard selection inside the rail', async () => {
+    await page.viewport(1400, 900);
+    render(<RailPane turns={promptTurns(12, index => `Prompt ${index}`)} />);
+    await frame();
+    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+    const title = () => railPreview()?.querySelector('div')?.textContent;
+    await userEvent.hover(dots()[2]);
+    await expect.poll(title).toBe('Prompt 2');
+    await userEvent.click(dots()[2]);
+    await expect.poll(railPreview).toBeNull();
+    await userEvent.hover(dots()[3]);
+    await expect.poll(title).toBe('Prompt 3');
+    expect(document.querySelectorAll('[data-nc-rail-preview]')).toHaveLength(1);
+    expect(railPreview()!.closest('[popover]')!.getBoundingClientRect().width).toBeLessThanOrEqual(272);
+    await userEvent.keyboard('{Escape}');
+    await expect.poll(railPreview).toBeNull();
+    await userEvent.hover(dots()[4]);
+    await expect.poll(title).toBe('Prompt 4');
+    act(() => { dots()[5].focus(); });
+    await expect.poll(title).toBe('Prompt 5');
+    await userEvent.keyboard('{Enter}');
+    await expect.poll(railPreview).toBeNull();
+    await userEvent.hover(dots()[6]);
+    await expect.poll(title).toBe('Prompt 6');
+    await userEvent.keyboard('{ArrowDown}');
+    await expect.poll(title).toBe('Prompt 6');
+    expect(dots().every(dot => dot.getBoundingClientRect().height === 20)).toBe(true);
+  });
+
+  it('rearms fast selections and grace returns without adding a new cold delay', async () => {
+    await page.viewport(1400, 900);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      render(<RailPane turns={promptTurns(12, index => `Prompt ${index}`)} />);
+      await frame();
+      const title = () => railPreview()?.querySelector('div')?.textContent;
+      act(() => { dots()[2].focus(); });
+      await userEvent.keyboard('{Escape}');
+      expect(railPreview()).toBeNull();
+      await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+      await userEvent.hover(dots()[2]);
+      act(() => { vi.advanceTimersByTime(179); });
+      expect(railPreview()).toBeNull();
+      // Already focused: this fast click does not cause another native focus-show.
+      await userEvent.click(dots()[2]);
+      act(() => { vi.advanceTimersByTime(1000); });
+      expect(railPreview()).toBeNull();
+      await userEvent.hover(dots()[3]);
+      act(() => { vi.advanceTimersByTime(0); });
+      expect(title()).toBe('Prompt 3');
+      await userEvent.click(dots()[3]);
+      act(() => { vi.advanceTimersByTime(1000); });
+      expect(railPreview()).toBeNull();
+      await userEvent.hover(dots()[4]);
+      act(() => { vi.advanceTimersByTime(0); });
+      expect(title()).toBe('Prompt 4');
+      const popup = railPreview();
+      await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+      act(() => { vi.advanceTimersByTime(119); });
+      expect(railPreview()).toBe(popup);
+      await userEvent.hover(dots()[4]);
+      await userEvent.click(dots()[4]);
+      expect(railPreview()).toBeNull();
+      await userEvent.hover(dots()[5]);
+      act(() => { vi.advanceTimersByTime(0); });
+      expect(title()).toBe('Prompt 5');
+      await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+      act(() => { vi.advanceTimersByTime(120); });
+      expect(railPreview()).toBeNull();
+      await userEvent.hover(dots()[6]);
+      act(() => { vi.advanceTimersByTime(179); });
+      expect(railPreview()).toBeNull();
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(title()).toBe('Prompt 6');
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it('scans stable rows with one narrow continuous preview and a short first-entry delay', async () => {
     await page.viewport(1400, 900);
     // Only the hook's JS delays are controlled: pointer moves, CSS motion and RAF stay real.
@@ -1432,7 +1512,10 @@ describe('the exchange rail, as the engine lays it out', () => {
     render(<RailPane turns={railTurns(9, 6)} />);
     await frame();
     await scrollPaneTo(0);
-    dots()[1].focus();
+    act(() => { dots()[0].focus(); });
+    await userEvent.keyboard('{ArrowDown}');
+    await expect.poll(railPreview).not.toBeNull();
+    expect(dots()[1].matches(':focus-visible')).toBe(true);
     expect(document.activeElement).toBe(dots()[1]);
 
     await scrollPaneTo(pane().scrollHeight);
