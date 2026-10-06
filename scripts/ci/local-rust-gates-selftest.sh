@@ -120,7 +120,7 @@ if [ "$grep_rc" -gt 1 ]; then
   echo "could not inspect CI Rust nextest wiring" >&2
   exit 1
 fi
-# Once for the PR shards (from the archive), once for the self-hosted main push.
+# Once for the PR shards (from the archive), once for the hosted main push.
 if [ "$ci_call_count" -ne 2 ]; then
   echo "CI must invoke the shared Rust nextest dispatch exactly twice" >&2
   exit 1

@@ -16,8 +16,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 # Every job in this workflow only needs to read the checkout. Keep the token
-# least-privileged, especially for the persistent self-hosted runner used by
-# trusted pushes to this repository's main branch.
+# least-privileged on the ephemeral GitHub-hosted runners.
 permissions:
   contents: read
 
@@ -173,15 +172,10 @@ jobs:
           esac
 
       - name: install ripgrep for ratchets
-        if: runner.environment == 'github-hosted'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ripgrep
-
-      - name: verify self-hosted ratchet dependencies
-        if: runner.environment == 'self-hosted'
-        run: command -v rg
 
       - name: runtimes ratchet selftest
         if: env.RUN_RUST_CHECKS == 'true'
@@ -617,38 +611,31 @@ jobs:
     name: rust test (main push)
     needs: changes
     if: ${{ always() && github.event_name == 'push' && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
-    # Only trusted pushes to the canonical repository use the local machine; pushes in forks stay on hosted CI.
-    runs-on: ${{ github.repository == 'keanji-x/neige-calm' && 'neige-calm-main' || 'ubuntu-latest' }}
-    env:
-      CARGO_TARGET_DIR: ${{ github.repository == 'keanji-x/neige-calm' && '/home/runner/target-neige-calm-main' || format('{0}/target', github.workspace) }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: prepare self-hosted Rust environment
-        if: runner.environment == 'self-hosted'
-        run: |
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          # Persistent hosts can have /tmp fixtures owned by another user, and this runner does not empty RUNNER_TEMP between jobs,
-          # so the job owns a private subdirectory and removes it itself in the "remove job-private TMPDIR" step.
-          TMPDIR="$(mktemp -d "$RUNNER_TEMP/rust-XXXXXXXX")"
-          echo "TMPDIR=$TMPDIR" >> "$GITHUB_ENV"
-
       - name: install pinned Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install --no-self-update
 
-      # Two neige-app tailnet tests build the Go helper at test time; the self-hosted runner has no Go on PATH.
+      # Keep the full-suite cache separate from rust-build's archive without debuginfo.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-main
+          cache-workspace-crates: true
+          save-if: ${{ github.event_name == 'push' }}
+
+      # Two neige-app tailnet tests build the Go helper at test time.
       - uses: actions/setup-go@v5
         with:
           go-version-file: tailnet/go.mod
-          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: tailnet/go.sum
 
       - uses: taiki-e/install-action@nextest
 
       - name: install isolated provider fixture dependencies
-        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap python3
@@ -667,10 +654,10 @@ jobs:
       - name: cargo nextest run --workspace --locked
         run: |
           scripts/run-ci-rust-nextest.sh \
-            "${{ runner.environment }}"
+            github-hosted
 
       - name: restore hosted isolated provider namespace policy
-        if: always() && runner.environment == 'github-hosted'
+        if: always()
         run: |
           policy_file="$RUNNER_TEMP/isolated-provider-userns-policy"
           if [ -f "$policy_file" ]; then
@@ -688,15 +675,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # The self-hosted runner does not empty RUNNER_TEMP between jobs; only a `$RUNNER_TEMP/rust-*` directory is ever removed.
-      - name: remove job-private TMPDIR
-        if: always() && runner.environment == 'self-hosted'
-        run: |
-          case "${TMPDIR:-}" in
-            */..|*/../*) echo "refusing to remove TMPDIR='$TMPDIR' (contains ..)"; exit 1 ;;
-            "$RUNNER_TEMP"/rust-*) rm -rf -- "$TMPDIR" ;;
-            *) echo "refusing to remove TMPDIR='${TMPDIR:-}' (not under $RUNNER_TEMP/rust-)"; exit 1 ;;
-          esac
 
   worker-boundary:
     name: worker process isolation
