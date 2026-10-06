@@ -438,10 +438,7 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
         live_row(&text, &retry).ends_with("  session open"),
         "{text}"
     );
-    assert!(
-        live_row(&text, first).ends_with("  session open"),
-        "{text}"
-    );
+    assert!(live_row(&text, first).ends_with("  session open"), "{text}");
     assert_eq!(
         text.lines()
             .filter(|line| line.contains("fix-login"))
@@ -527,10 +524,7 @@ async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
         ],
         "{text}"
     );
-    assert!(
-        live_row(&text, live).ends_with("  session open"),
-        "{text}"
-    );
+    assert!(live_row(&text, live).ends_with("  session open"), "{text}");
     assert!(
         !text.contains(gone.as_str()),
         "an exited worker is not live: {text}"

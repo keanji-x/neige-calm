@@ -443,7 +443,9 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         "recovery must not have spawned a new wrapper"
     );
     assert_eq!(
-        query_event_rows(repo.pool(), "forge.pr.published").await.len(),
+        query_event_rows(repo.pool(), "forge.pr.published")
+            .await
+            .len(),
         1,
         "the setup forge.pr.published event must be untouched"
     );
