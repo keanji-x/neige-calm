@@ -8,6 +8,7 @@ import { MobileHeader } from '../mobile-header/public.tsx';
 import { useState } from '../state/public.ts';
 import { useCompactViewport } from '../viewport/public.ts';
 import styles from './drawer.module.css';
+import { useSpringPresence } from '../motion/presence.ts';
 import type { PaneResizeGroup } from './resize-group.ts';
 import { ResizeEdge, type DrawerResize } from './resize-edge.tsx';
 
@@ -54,6 +55,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   const panelRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const seamRef = useRef<HTMLDivElement | null>(null);
   const parentResizeGroup = suppliedResizeGroup;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [panes] = useState(() => new Set<HTMLElement>());
@@ -105,18 +107,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   // Compact pages disappear in this commit; no mobile transitionend is owed.
   if (compact && closing) setClosing(false);
 
-  // An already invisible card has no opacity transition to finish (for example close before first paint).
-  useLayoutEffect(() => {
-    const panel = panelRef.current;
-    if (closing && panel !== null && getComputedStyle(panel).opacity === '0') setClosing(false);
-  }, [closing]);
-
-  useEffect(() => {
-    const preference = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
-    const settle = () => { if (preference?.matches) setClosing(false); };
-    preference?.addEventListener?.('change', settle);
-    return () => { preference?.removeEventListener?.('change', settle); };
-  }, []);
+  useSpringPresence(panelRef, seamRef, open, open || closing, !compact, () => { setClosing(false); });
 
   // Keep the local escape-layer contract for unmigrated Dialog/file-viewer hosts;
   // native Astryx children still dismiss first through the shared layer stack.
@@ -175,10 +166,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       /* Labelled once: by the painted desktop title, or, compact, by the name the shared Header also paints. */
       {...(compact && !inline ? { 'aria-label': frame.title } : { 'aria-labelledby': titleId })}
       tabIndex={-1}
-      onTransitionEnd={event => {
-        if (closing && event.target === event.currentTarget && event.propertyName === 'opacity'
-          && getComputedStyle(event.currentTarget).opacity === '0') setClosing(false);
-      }}
+
     >
       {/* The header is before the scroller in the DOM, so the first Tab out of the container lands on its controls. */}
       {compact && !inline ? (
@@ -217,6 +205,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
     </div>
     {/* The seam is after the card in source order deliberately and is not marked `data-nc-drawer`: one drawer must present one marker for `app/shell`'s `:has()` rule. */}
     <div
+      ref={seamRef}
       className={`${styles.seam} ${closing ? styles.seamClosing : ''}`}
       data-nc-drawer-seam=""
     />

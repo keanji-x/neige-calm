@@ -38,8 +38,8 @@ function Preview() {
   return <main style={{ maxWidth: 1160, margin: '0 auto', padding: '40px 24px', color: 'var(--text)' }}>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 24 }}>
       <div><p style={{ color: 'var(--text-3)', fontSize: 12, letterSpacing: '.12em', marginBottom: 12 }}>NEIGE · 交互预览</p>
-        <h1 style={{ fontSize: 30, fontWeight: 500, margin: '0 0 12px' }}>让编辑平稳接上</h1>
-        <p style={{ color: 'var(--text-2)', margin: 0 }}>原消息留在原位，输入区轻柔展开，随时可以继续输入。</p></div>
+        <h1 style={{ fontSize: 30, fontWeight: 500, margin: '0 0 12px' }}>Motion · 统一弹簧预览</h1>
+        <p style={{ color: 'var(--text-2)', margin: 0 }}>同一套运动规则处理短消息、超长消息和中途反向，文字保持清晰。</p></div>
       <div style={{ display: 'flex', gap: 8 }}>
         <button onClick={() => sample(shortText)}>短消息</button>
         <button onClick={() => sample(longText)}>长消息</button>

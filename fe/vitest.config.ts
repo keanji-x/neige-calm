@@ -35,7 +35,7 @@ export default defineConfig({
         test: {
           name: 'web-dom',
           environment: 'jsdom',
-          setupFiles,
+          setupFiles: [...setupFiles, './tools/vitest/jsdom-animation.ts'],
           include: ['web/src/**/*.test.{ts,tsx}'],
           exclude: ['**/*.browser.test.{ts,tsx}'],
         },

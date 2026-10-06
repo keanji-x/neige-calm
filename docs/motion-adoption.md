@@ -11,7 +11,7 @@ The user delegates visual judgement and component-by-component implementation, r
 | Emphasis | Report arrival | One background highlight using a shared emphasis recipe |
 | Native loops | Activity indicator, brand SVG | Shared declarations/opt-out contract, distinct owner-defined rhythms |
 
-Styles owns duration/easing declarations and closed inventories; UI owns semantic recipe metadata and primitives. CSS handles small state feedback, SizeMotion handles intrinsic size with native Web Animations, and native SVG retains decorative geometry. Only add abstractions demanded by these consumers.
+Styles owns duration/easing declarations and closed inventories; UI owns semantic recipe metadata and primitives. CSS handles small state feedback, SizeMotion uses Motion's physical solver with owned native Web Animations, and native SVG retains decorative geometry. Only add abstractions demanded by these consumers.
 
 Review tier L1 per batch: presentation changes and declared token extensions, without authority or persistence changes. Run production-entry browser checks, relevant frontend/text gates, independent isolated review, then complete remote CI before squash merge. Record each merged PR in issue #2208 and close the issue only after all batches converge.
 

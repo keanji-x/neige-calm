@@ -1,5 +1,5 @@
 import { useEffectEvent, useLayoutEffect, useRef, type ReactNode } from 'react';
-import { readSizeTransition } from './transition.ts';
+import { playSpring, type SpringPlayback } from './spring.ts';
 import styles from './size.module.css';
 
 /**
@@ -12,7 +12,7 @@ export function SizeMotion({ children, motionKey }: Readonly<{ children: ReactNo
   const contentRef = useRef<HTMLDivElement>(null);
   const previousKey = useRef(motionKey);
   const naturalHeight = useRef<number | null>(null);
-  const controls = useRef<Animation | null>(null);
+  const controls = useRef<SpringPlayback | null>(null);
   const targetHeight = useRef<number | null>(null);
 
   const clear = useEffectEvent(() => {
@@ -29,19 +29,14 @@ export function SizeMotion({ children, motionKey }: Readonly<{ children: ReactNo
   const resize = useEffectEvent((from: number, to: number) => {
     const host = hostRef.current;
     if (host === null) return;
+    const velocity = controls.current?.sample().velocity ?? 0;
     clear();
     naturalHeight.current = to;
-    if (from === to || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const transition = readSizeTransition(host, from, to);
+    if ((from === to && velocity === 0) || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     host.style.height = `${from}px`;
     host.style.overflow = 'clip';
     targetHeight.current = to;
-    // Native height interpolation avoids a JS style write on every frame. Height still participates in layout.
-    const animation = host.animate([{ height: `${from}px` }, { height: `${to}px` }], {
-      duration: transition.duration * 1000,
-      easing: `cubic-bezier(${transition.ease.join(', ')})`,
-      fill: 'both',
-    });
+    const animation = playSpring([host], from, to, velocity, value => ({ height: `${Math.max(0, value)}px` }));
     controls.current = animation;
     void animation.finished.then(() => {
       if (controls.current === animation) clear();

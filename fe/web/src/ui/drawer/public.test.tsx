@@ -241,7 +241,7 @@ describe('Drawer', () => {
 
   /* `focus()` lands in an `aria-hidden` subtree and reports success, so the outcome cannot be read back. Reduced motion removes the retraction wait so only the fallback decides. */
   function withReducedMotion(run: () => void) {
-    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     try { run(); } finally { vi.unstubAllGlobals(); }
   }
 

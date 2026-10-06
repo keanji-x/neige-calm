@@ -1,35 +1,21 @@
 # Interaction motion contract
 
-## Ownership and entry points
+Styles owns small CSS feedback tokens; UI owns the generic Motion physics and playback adapters. Domain state and focus remain synchronous in callers.
 
-- `styles` owns duration and easing tokens, shared by both themes.
-- `ui/motion/transition.ts` exports `MotionIntent`, `MotionTransition` and `readMotionTransition(surface, intent)`. It converts the surface's CSS tokens into typed transition options. Enter uses medium/enter, exit uses snappy/exit, layout uses medium/layout, size uses medium/emphasis, disclosure uses snappy/layout, feedback uses quick/feedback, and emphasis uses slow/emphasis. Millisecond and second duration overrides are supported; absent or invalid tokens throw rather than silently adopting implicit defaults.
-- `ui/motion/size.tsx` exports `SizeMotion({ motionKey, children })`, an interruptible intrinsic-height primitive. The caller supplies a stable string or boolean presentation mode. No domain identifiers, field selectors, or backend state enter the primitive.
+## Physical motion
 
-CSS consumers use the same token pairs directly; hover/color changes remain CSS transitions. SizeMotion coordinates intrinsic size changes through native Web Animations. Decorative repeating SVG animation remains owned by brand components. New consumers extend this owner rather than introducing per-feature animation runners.
+`spring.ts` uses Motion 14's `spring` solver and its analytical velocity and rest criteria. One response frequency (20/s) derives critical damping with normalized mass. There are no per-component durations, reference distances, distance multipliers or duration bounds. Motion decides settlement.
 
-## SizeMotion behavior
+The library trajectory is sampled once at 10ms rendering precision and played through owned browser-native effects. This is interpolation precision, not a feel setting. Native animation time samples the same model's position and velocity for a retarget. Cancellation discards native effects; identity guards reject stale completions. The adapter owns all effects directly, avoiding a vendor completion callback that writes discarded styles. Size still requires layout; this is not a compositor-only claim.
 
-Initial mount and ordinary content updates are immediate. A mode change animates height with the size recipe through native Web Animations. The 128px reference travel takes the surface's medium duration; square-root distance scaling is bounded to 65–150% of that duration (156–360ms with default tokens). Unlike position/layout feedback, intrinsic size uses a gentle start and finish from the emphasis curve. The measuring wrapper establishes a flow root, so child margins and floats contribute to the measured height. Children remain mounted, unscaled and interactive throughout; the primitive adds no role, label, keyboard handler, or focus movement.
+`SizeMotion` measures an intrinsic flow root that contains margins/floats. Mode changes animate real height with no text scaling, unmount or focus movement. Ordinary typing/updates and initial mount are immediate; late intrinsic updates retarget while moving. Settlement restores automatic height. Reduced motion and unmount release clipping and effects. Children must not derive their height as a percentage of the animated host. Keep floating/portalled overlays outside transient clipping.
 
-Intrinsic size changes during travel retarget from the painted height. A reversed mode change interrupts the previous animation. The browser advances height without per-frame JavaScript style writes; height still requires layout and is not a compositor-only effect. Playback ownership rejects stale completions; cancellation discards even a finished effect whose completion is still pending. The primitive owns its native effect directly so a library completion handler cannot restore discarded inline styles. Finish, unmount, and a change to reduced motion release inline height and clipping. Reduced motion also bypasses new transitions. After settlement, height is automatic again.
+`useSpringPresence` gives paired surfaces one progress trajectory. Drawer and seam map it to opacity and a spacing-token lift. They keep live content and velocity through reversal. Only the current playback may finish dismissal. Compact pages/reduced motion settle directly. Native-child transition events do not own the spring lifecycle.
 
-Children must size intrinsically; do not derive their height as a percentage of the animated host. Keep floating/portalled overlays outside transient clipping. Feature owners update domain state and focus synchronously, independently of motion completion. The caller retains DOM identity and supplies accessibility semantics.
+## Other motion
 
-## First consumers and validation
+`readMotionTransition` consumes the styles-owned enter, exit, layout, disclosure, feedback and emphasis recipes for CSS/other consumers. Motion physics replaces the former size-specific distance formula. Keep simple color feedback, static controls, pointer-linear response, report emphasis and owner-defined activity/brand native loops on their existing contracts.
 
-Chat edit calls its action immediately, changes the composer's mode key, and marks the original message in place. Drawer and seam use matching enter/exit token pairs. These consumers do not impose chat policy on the primitive.
+## Verification
 
-`transition.test.ts` pins token conversion, local overrides and explicit rejection. `size.browser.test.tsx` exercises generic panels with margins, floats, live controls, dynamic content, StrictMode disposal and reduced motion. Chat edit tests additionally cover immediate refill/focus and rapid cancellation/re-entry through the production action. Future primitives should bring equivalent standalone lifecycle coverage before migrating more surfaces.
-
-Dialog consumes entry and backdrop-feedback recipes through CSS. It uses a small lift plus opacity without scaling text, dismisses immediately, and keeps focus/inert/keyboard behavior with the existing dialog owner. See `docs/motion-adoption.md` and #2208 for the staged migration.
-
-## Continuous response and native loops
-
-ContextRing uses medium/layout for arc travel; labels, percentages and over-window states update immediately. Report arrival uses slow/emphasis for a single background highlight after its anchor settles. Both explicitly suppress travel under reduced motion.
-
-EdgeNavigation keeps fixed 20px/44px hitboxes and magnifies neighboring ink only. Its accepted pointer response uses quick/ease-out sizing (100ms), while color consumes quick/feedback. This supersedes the former instant/linear sizing of moving rows; hitbox geometry is owned by the rail and does not use a layout runner. The activity ring keeps its compact 900ms linear rotation; brand SVG keeps its native 5.6s cycle and spline geometry with one frozen timing declaration. Reduced motion leaves static status marks, and unmount disposes native animation with the element. These owner-defined rhythms do not require extra interaction recipes or global tokens.
-
-Drawer and seam use native CSS transitions with `@starting-style` for initial entry. Reversal resumes from their painted opacity and lift. Only the panel's own opacity completion at zero painted opacity releases an exit; a queued entrance completion cannot dispose a newer visible exit; child transition events do not own its lifecycle. Compact pages and reduced motion dismiss immediately, including a preference change during exit. An already invisible card does not wait for a nonexistent transition.
-
-Task inventory rows retain browser scroll anchoring. Production painter coverage verifies insertion/removal above a visible task without replacing its DOM or moving its reading position. No extra list animation is introduced without a demonstrated jump.
+Unit trajectory contracts verify proportional response and analytical velocity continuity without copying the solver. Production browser tests cover real long-message refill/focus, unscaled text, native interpolation, dynamic retargeting, queued finish, reversal, paired seam disposal and reduced motion. The jsdom-only native Animation stub supplies platform controls without simulating physics or paint; actual browser behavior remains authoritative.

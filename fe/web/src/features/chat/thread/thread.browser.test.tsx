@@ -1608,24 +1608,21 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(card.contains(railTrack())).toBe(false);
 
     const timing = (element: Element) => {
-      const style = getComputedStyle(element);
-      return `${style.transitionProperty} ${style.transitionDuration} ${style.transitionTimingFunction}`;
+      const effect = element.getAnimations()[0].effect as KeyframeEffect;
+      return { duration: effect.getTiming().duration, easing: effect.getTiming().easing };
     };
-    expect(timing(seam)).toBe(timing(card));
-    const enteringTiming = timing(seam);
-    expect(getComputedStyle(seam).transitionProperty).toBe('opacity, translate');
-    expect(parseFloat(getComputedStyle(seam).transitionDuration)).toBeGreaterThan(0);
+    const target = (element: Element) => Number((element.getAnimations()[0].effect as KeyframeEffect).getKeyframes().at(-1)!.opacity);
+    expect(timing(seam)).toEqual(timing(card));
+    expect(target(seam)).toBe(1);
     await Promise.all(card.getAnimations().map(animation => animation.finished));
 
     view.rerender(<Harness open={false} />);
-    await frame();
     const leavingCard = host.querySelector<HTMLElement>('[data-nc-drawer]')!;
     const leavingSeam = host.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
-    expect(timing(leavingSeam)).not.toBe(enteringTiming);
-    expect(getComputedStyle(leavingSeam).transitionProperty).toBe('opacity, translate');
-    expect(timing(leavingSeam)).toBe(timing(leavingCard));
+    expect(target(leavingSeam)).toBe(0);
+    expect(timing(leavingSeam)).toEqual(timing(leavingCard));
 
-    /* The exit is one `--motion-snappy`; wait it out rather than guessing. */
+    /* The shared physical solver decides settlement; wait for actual disposal. */
     const startedAt = performance.now();
     while (host.querySelector('[data-nc-drawer]') !== null
       && performance.now() - startedAt < 2_000) await pause(20);

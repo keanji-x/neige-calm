@@ -116,7 +116,7 @@
     box-shadow: var(--shadow-float);
     opacity: 1;
     translate: 0 0;
-    transition: opacity var(--motion-medium) var(--ease-enter), translate var(--motion-medium) var(--ease-enter);
+    transition: none;
   }
 
   /*
@@ -188,7 +188,7 @@
        one is a change to both. */
     opacity: 1;
     translate: 0 0;
-    transition: opacity var(--motion-medium) var(--ease-enter), translate var(--motion-medium) var(--ease-enter);
+    transition: none;
     pointer-events: none;
   }
 
@@ -350,8 +350,8 @@
   }
 
   /*
-   * It rises 12px and fades, and leaves the same way — same distance, same
-   * direction, with a shorter exit.
+   * It lifts and fades along one Motion spring progress shared with its seam.
+   * Reversal inherits current progress and velocity from the same solver.
    *
    * The 12px is kept from the edge-panel shape, and it is still the right
    * motion for the card one, for a different reason. A panel welded to an edge
@@ -368,16 +368,10 @@
    * was in the way and is now gone) and wrong here: the conversation is not
    * destroyed by closing it. See the note in public.tsx.
    */
-  @starting-style {
-    .drawer,
-    .seam { opacity: 0; translate: 0 var(--space-6); }
-  }
-
   .drawerClosing {
     opacity: 0;
     translate: 0 var(--space-6);
-    transition-duration: var(--motion-snappy);
-    transition-timing-function: var(--ease-exit);
+
 
     /* It is on its way out; it must not intercept a click meant for the page
        behind it. */
@@ -391,8 +385,7 @@
   .seamClosing {
     opacity: 0;
     translate: 0 var(--space-6);
-    transition-duration: var(--motion-snappy);
-    transition-timing-function: var(--ease-exit);
+
   }
 
   .seamClosing > * {

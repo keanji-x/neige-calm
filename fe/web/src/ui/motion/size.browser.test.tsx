@@ -87,8 +87,8 @@ it('lets the browser advance a large height change without per-frame inline rewr
   const animation = animations[0];
   animation.pause();
   const effect = animation.effect as KeyframeEffect;
-  expect(Number(effect.getTiming().duration)).toBeGreaterThan(240);
-  expect(Number(effect.getTiming().duration)).toBeLessThanOrEqual(360);
+  expect(Number(effect.getTiming().duration)).toBeGreaterThan(0);
+  expect(effect.getKeyframes().length).toBeGreaterThan(2);
   const initialInline = host().style.height;
   animation.currentTime = 100;
   await frame();
@@ -118,6 +118,21 @@ it('discards a queued finish before a newer mode owns the height', async () => {
   view.rerender(<Panel mode="compact" />);
   await frame();
   expect(host().getAnimations()).toHaveLength(1);
+  await settled();
+  expect(host().getBoundingClientRect().height).toBe(40);
+});
+
+it('preserves outward velocity when an expanded panel reverses toward its compact goal', async () => {
+  const view = render(<Panel mode="compact" />);
+  view.rerender(<Panel mode="expanded" height={500} />);
+  const outward = host().getAnimations()[0];
+  outward.pause(); outward.currentTime = 80;
+  const painted = host().getBoundingClientRect().height;
+  view.rerender(<Panel mode="compact" />);
+  const reverse = host().getAnimations()[0];
+  const frames = (reverse.effect as KeyframeEffect).getKeyframes();
+  expect(parseFloat(String(frames[0].height))).toBeCloseTo(painted, 1);
+  expect(parseFloat(String(frames[1].height))).toBeGreaterThan(parseFloat(String(frames[0].height)));
   await settled();
   expect(host().getBoundingClientRect().height).toBe(40);
 });

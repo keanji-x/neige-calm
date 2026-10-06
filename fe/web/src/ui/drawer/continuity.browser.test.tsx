@@ -75,7 +75,8 @@ it('ignores a child transition ending while its own exit is in flight', async ()
 it('ignores an entrance completion queued before a new exit owns the panel', async () => {
   const view = render(<Scene open={true} />);
   const departing = panel();
-  for (const animation of departing.getAnimations()) animation.finish();
+  const seam = departing.parentElement!.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
+  for (const animation of [...departing.getAnimations(), ...seam.getAnimations()]) animation.finish();
   view.rerender(<Scene open={false} />);
   await frame();
   expect(departing.isConnected).toBe(true);
