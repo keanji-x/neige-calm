@@ -261,6 +261,21 @@ describe('ChatThread', () => {
     expect(screen.queryByText('Nothing said yet.')).toBeNull();
   });
 
+  it.each([
+    ['failed', 'Stop failed', 'The stop request was refused.'],
+    ['unconfirmed', 'Stop unconfirmed', 'The stop may not have taken effect: the response may still be running or may already have ended.'],
+    ['requesting', 'Requesting stop', 'Waiting for the stop request to finish.'],
+    ['stopping', 'Stopping', 'Waiting for the response to end.'],
+  ] as const)('retains %s stop request feedback when execution status cannot be confirmed', (kind, heading, reason) => {
+    render(<ChatThread canContinue={false} cards={{}} stalled={false} statusUnconfirmed
+      conversation={conversation()} turns={[]}
+      stopFeedback={kind === 'failed' ? { kind, message: reason } : { kind }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Status unconfirmed', expanded: false }));
+    expect(screen.getByText(heading, { exact: true })).toBeTruthy();
+    expect(screen.getByText(reason, { exact: true })).toBeTruthy();
+    expect(screen.queryByText('Running', { exact: true })).toBeNull();
+  });
+
   it('does not guess the cause or substitute raw errors for a missing readable reason', () => {
     const raw = '{"internal":"raw error payload"}';
     const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()}

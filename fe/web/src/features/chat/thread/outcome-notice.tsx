@@ -39,6 +39,10 @@ export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfir
     heading = 'Status unconfirmed'; tone = 'warning';
     details = <>
       <p className={styles.outcomeReason}>Reload the status below to check the conversation’s current state.</p>
+      {feedback !== null && <>
+        <p className={styles.outcomeReason}>{stopFeedbackHeading(feedback)}</p>
+        <StopFeedbackDetails feedback={feedback} />
+      </>}
       {outcome !== null && <>
         <p className={styles.outcomeReason}>Last recorded response: {outcome.status}.</p>
         <OutcomeDetails outcome={outcome} canContinue={false} />
@@ -48,14 +52,9 @@ export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfir
     heading = 'Paused'; tone = 'warning';
     details = <p className={styles.outcomeReason}>{stalledReason ?? 'This conversation is stuck.'}</p>;
   } else if (feedback !== null) {
-    heading = feedback.kind === 'requesting' ? 'Requesting stop' : feedback.kind === 'stopping' ? 'Stopping'
-      : feedback.kind === 'failed' ? 'Stop failed' : 'Stop unconfirmed';
+    heading = stopFeedbackHeading(feedback);
     tone = feedback.kind === 'failed' ? 'error' : 'neutral';
-    const reason = feedback.kind === 'failed' ? feedback.message
-      : feedback.kind === 'requesting' ? 'Waiting for the stop request to finish.'
-      : feedback.kind === 'stopping' ? 'Waiting for the response to end.'
-      : 'The stop may not have taken effect: the response may still be running or may already have ended.';
-    details = <p className={styles.outcomeReason}>{reason}</p>;
+    details = <StopFeedbackDetails feedback={feedback} />;
   } else if (live) {
     heading = 'Running';
     clock = { elapsedMs: runningElapsedMs, timestamp: null };
@@ -68,6 +67,20 @@ export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfir
     if (terminal !== 'completed') details = <OutcomeDetails outcome={outcome} canContinue={canContinue} />;
   } else return null;
   return <ThreadStatusNotice heading={heading} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
+}
+
+/** Request feedback is evidence about Stop, independent of whether the current run can be read. */
+function stopFeedbackHeading(feedback: ConversationStopFeedback): string {
+  return feedback.kind === 'requesting' ? 'Requesting stop' : feedback.kind === 'stopping' ? 'Stopping'
+    : feedback.kind === 'failed' ? 'Stop failed' : 'Stop unconfirmed';
+}
+
+function StopFeedbackDetails({ feedback }: { feedback: ConversationStopFeedback }) {
+  const reason = feedback.kind === 'failed' ? feedback.message
+    : feedback.kind === 'requesting' ? 'Waiting for the stop request to finish.'
+    : feedback.kind === 'stopping' ? 'Waiting for the response to end.'
+    : 'The stop may not have taken effect: the response may still be running or may already have ended.';
+  return <p className={styles.outcomeReason}>{reason}</p>;
 }
 
 /** Recorded diagnostics stay readable even when a run query cannot confirm current execution. */
