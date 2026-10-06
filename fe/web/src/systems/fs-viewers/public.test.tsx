@@ -195,6 +195,21 @@ describe('FileViewer', () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
+  /* The browser loads an image itself and says nothing of why it failed: the image's own fixed sentence. */
+  it('says an image that did not load is an image that could not be read', async () => {
+    renderViewer(port({
+      listDirectory: () => Promise.resolve({
+        path: '/repo', parent: '/', entries: [{ name: 'logo.png', is_dir: false }],
+      }),
+    }));
+    await userEvent.click(await screen.findByRole('button', { name: /logo\.png/ }));
+    fireEvent.error(await screen.findByRole('img', { name: '/repo/logo.png' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.querySelector('span:not([aria-hidden])')?.textContent).toBe('Could not read this image.');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('img', { name: '/repo/logo.png' })).toBeTruthy();
+  });
+
   it('shows the read failure instead of an empty pane', async () => {
     renderViewer(port({ readFile: () => rejectWith(DENIED) }));
     await userEvent.click(await screen.findByRole('button', { name: /notes\.txt/ }));
@@ -204,11 +219,14 @@ describe('FileViewer', () => {
   /* The sentence is the answer's class on the fs routes, never its wording (`FILE_READ_FAILURES`). */
   it.each([
     ['403 forbidden', DENIED, 'Access denied. permission denied reading /repo/notes.txt', 'Check its permissions, then try again.'],
+    ['404 path_not_found', { kind: 'http', status: 404, code: 'path_not_found', message: 'path /repo/notes.txt not found' },
+      'File or folder not found. path /repo/notes.txt not found', 'Restore it at the same path, then try again.'],
+    /* The Track is gone: restoring a path cannot bring it back, so the hint does not offer that. */
     ['404 not_found', { kind: 'http', status: 404, code: 'not_found', message: 'track w1' },
-      'File or folder not found. track w1', 'Restore it at the same path, then try again.'],
-    /* A missing path answers 400 among other refusals: generic, with the server's reason. */
-    ['400 bad_request', { kind: 'http', status: 400, code: 'bad_request', message: 'path /repo/notes.txt not found' },
-      'Could not load this file. path /repo/notes.txt not found', null],
+      'This Track no longer exists. track w1', 'Its workspace files cannot be opened from here.'],
+    /* Any other refusal: generic, with the server's reason. */
+    ['400 bad_request', { kind: 'http', status: 400, code: 'bad_request', message: 'path /repo/notes.txt is not a regular file' },
+      'Could not load this file. path /repo/notes.txt is not a regular file', null],
     /* Wording alone never picks a class, and a server fault's text never shows. */
     ['500 naming a denial', { kind: 'http', status: 500, code: 'internal', message: 'fs /repo/notes.txt: Permission denied' },
       'Could not load this file.', null],

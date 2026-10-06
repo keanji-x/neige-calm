@@ -42,3 +42,28 @@ export function readFailureText(failure: ApiFailure | null, sentence: string): s
 export function readErrorText(error: unknown, sentence: string): string {
   return readFailureText(readFailureOf(error), sentence);
 }
+
+/**
+ * What a failed read-only probe (a connector check, a provider recheck) means. A probe's failed answer is the result the
+ * reader asked for, so `answered` covers every 4xx and 5xx: the server's account of what it found. `unfinished` is a
+ * probe that never ran: a lost or unreadable answer, or a 401, which is the session's (the sign-in flow handles it) and
+ * says nothing about the thing probed; its text would read as the probed server refusing credentials.
+ */
+export type ProbeClass = 'answered' | 'unfinished';
+
+export const PROBE_FAILURES: FailureTable<ProbeClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze({ from: 400, to: 599 }), is: 'answered' as const })]),
+  unauthorized: 'unfinished',
+  otherwise: 'unfinished',
+});
+
+/** One probe's fixed sentences: an answered failure that gave no reason, and a probe that never ran. */
+export type ProbeText = Readonly<{ answered: string; unfinished: string }>;
+
+/** The one sentence rule for a failed probe: an answered failure says the server's reason (or `answered`), else `unfinished`. */
+export function probeFailureText(error: unknown, text: ProbeText): string {
+  const failure = readFailureOf(error);
+  if (failure === null || classifyFailure(failure, PROBE_FAILURES) !== 'answered') return text.unfinished;
+  const reason = failureReason(failure).trim();
+  return reason === '' ? text.answered : reason;
+}

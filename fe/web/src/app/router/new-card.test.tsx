@@ -128,7 +128,8 @@ describe('adding a card from the CARDS module', () => {
     await pickKind('terminal');
     const alert = await screen.findByRole('alert');
     /* A 500 may follow a card that was made: the fixed unknown state, not the server's words (#2131). */
-    expect(alert.textContent).toBe('Creating the terminal card is unconfirmed.Try again');
+    expect(within(alert).getByText('Creating the terminal card is unconfirmed.')).toBeTruthy();
+    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeTruthy();
     // No dialog was opened for this kind, so the message cannot have come from `NewCardForm`.
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -138,7 +139,7 @@ describe('adding a card from the CARDS module', () => {
     await pickKind('codex');
     await userEvent.click(await screen.findByRole('button', { name: 'Create codex' }));
     await waitFor(() => { expect(document.querySelectorAll('[data-nc-new-card-error]')).toHaveLength(1); });
-    expect(document.querySelectorAll('[data-nc-error-box]')).toHaveLength(0);
+    expect(document.querySelectorAll('[data-nc-operation-feedback]')).toHaveLength(0);
   });
 
   it('sends a codex card to the atomic codex endpoint', async () => {
@@ -368,7 +369,7 @@ describe('a keyed card create', () => {
     await screen.findByRole('button', { name: 'Add card' });
     onlineManager.setOnline(false);
     await pickKind('terminal');
-    expect((await screen.findByRole('alert')).textContent).toBe('The terminal card was not created.');
+    expect(within(await screen.findByRole('alert')).getByText('The terminal card was not created.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(posts()).toHaveLength(0);
   });

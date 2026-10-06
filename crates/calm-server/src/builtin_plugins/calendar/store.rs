@@ -72,6 +72,21 @@ pub async fn list(ctx: &AppContext, access: &Access, window: Window) -> Result<V
         .sort_by(|a, b| (a.entry.created_at, &a.entry.id).cmp(&(b.entry.created_at, &b.entry.id)));
     Ok(entries)
 }
+/// One entry by id, a cancelled one included: the list leaves those out, and a client reading back a cancel needs it.
+pub async fn read(ctx: &AppContext, access: &Access, id: &str) -> Result<Entry> {
+    let entry: Entry = ctx
+        .repo
+        .plugin_kv_get(PLUGIN_ID, &format!("entry:{id}"))
+        .await?
+        .map(|value| {
+            serde_json::from_value(value)
+                .map_err(|e| CalmError::Internal(format!("calendar record: {e}")))
+        })
+        .transpose()?
+        .filter(|entry: &Entry| access.permits(entry))
+        .ok_or_else(|| CalmError::NotFound("calendar task".into()))?;
+    Ok(entry)
+}
 pub async fn create(ctx: &AppContext, access: Access, mut request: Create) -> Result<Entry> {
     request.task.resolve_times()?;
     if request.idempotency_key.trim().is_empty() || request.idempotency_key.len() > 200 {

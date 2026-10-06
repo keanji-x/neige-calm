@@ -1,5 +1,7 @@
 import { useEffect, type ReactNode } from 'react';
 import { Button } from '@astryxdesign/core/Button';
+import type { ApiFailure } from '../../../../../core/api/types.ts';
+import { readFailureOf, readFailureText } from '../../../../../core/domain/read-failure.ts';
 import type { LoadTemplate, TemplateDetail } from '../../../../../core/domain/template.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
@@ -7,7 +9,8 @@ import styles from './template-preview.module.css';
 
 type PreviewState =
   | Readonly<{ id: string; source: LoadTemplate; status: 'loading' }>
-  | Readonly<{ id: string; source: LoadTemplate; status: 'error' }>
+  /* `failure` is the rejected read's, or `null` when the answer named another template. */
+  | Readonly<{ id: string; source: LoadTemplate; status: 'error'; failure: ApiFailure | null }>
   | Readonly<{ id: string; source: LoadTemplate; status: 'ready'; detail: TemplateDetail }>;
 
 /** Text-only preview: source comments and markup never execute in this surface. */
@@ -26,8 +29,8 @@ export function TemplatePreview({ id, title, recipeBody, loadTemplate, children,
     let active = true;
     setState({ id, source: loadTemplate, status: 'loading' });
     void loadTemplate(id).then((detail) => {
-      if (active) setState(detail.id === id ? { id, source: loadTemplate, status: 'ready', detail } : { id, source: loadTemplate, status: 'error' });
-    }, () => { if (active) setState({ id, source: loadTemplate, status: 'error' }); });
+      if (active) setState(detail.id === id ? { id, source: loadTemplate, status: 'ready', detail } : { id, source: loadTemplate, status: 'error', failure: null });
+    }, (error: unknown) => { if (active) setState({ id, source: loadTemplate, status: 'error', failure: readFailureOf(error) }); });
     return () => { active = false; };
   }, [id, recipeBody, loadTemplate, retry]);
   const current = state.id === id && state.source === loadTemplate ? state : { id, source: loadTemplate, status: 'loading' as const };
@@ -45,7 +48,7 @@ export function TemplatePreview({ id, title, recipeBody, loadTemplate, children,
     <div className={styles.overview}>
     {detail === null ? <div className={styles.status} aria-live="polite">
       {current.status === 'error' ? <>
-        <span>Could not load the template preview. Your selection is still available.</span>
+        <span>{readFailureText(current.failure, 'Could not load the template preview. Your selection is still available.')}</span>
         <Button label="Retry preview" size="sm" variant="ghost" onClick={() => setRetry((n) => n + 1)} />
       </> : 'Loading template preview…'}
     </div> : <>

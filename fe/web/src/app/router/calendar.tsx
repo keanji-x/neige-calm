@@ -3,7 +3,7 @@ import { useState } from '../../ui/state/public.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  CALENDAR_PLUGIN_ID, CALENDAR_WRITE_FAILURES, calendarListOperation, calendarReadBackWindow, calendarUpdateAttempts, calendarUpdateLanded,
+  CALENDAR_PLUGIN_ID, CALENDAR_WRITE_FAILURES, calendarListOperation, calendarReadOperation, calendarUpdateAttempts, calendarUpdateLanded,
   calendarWriteOperation, shiftCalendarDate, type CalendarDraft, type CalendarEdit, type CalendarWindow, type CalendarWrite,
 } from '../../../../core/domain/calendar.ts';
 import { writeClassOf } from '../../../../core/domain/failure-class.ts';
@@ -37,9 +37,8 @@ export function TodayCalendarTasks({ date, onDateChange, trackCountOn, transport
     mutationFn: async (input: CalendarWrite, admitted) => {
       const send = async () => { await runOperation(admitted, calendarWriteOperation(input), unauthorized); };
       if (!('id' in input)) return send();
-      const { from, until, timezone: zone } = calendarReadBackWindow(input.task);
       return updates(input, send, async () => calendarUpdateLanded(
-        await runOperation(admitted, calendarListOperation(from, until, zone), unauthorized), input,
+        await runOperation(admitted, calendarReadOperation(input.id), unauthorized), input,
       ));
     },
     /* `onSettled`: a write whose answer was lost may have been stored, and only the lists say so. */

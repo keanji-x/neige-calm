@@ -20,7 +20,7 @@ import {
   PLUGIN_RELOAD_BEFORE_STOP, PLUGIN_RELOAD_FAILURES, PLUGIN_TOGGLE_FAILURES, PLUGIN_UNINSTALL_FAILURES,
 } from './plugins.js';
 import { SETTINGS_FAILURES } from './settings.js';
-import { RECHECK_FAILURES } from './agent-providers.js';
+import { PROBE_FAILURES } from './read-failure.js';
 import { LAUNCHPAD_ENSURE_FAILURES, REPORT_RESET_FAILURES } from './today.js';
 import { CARD_CREATE_FAILURES, TRACK_CREATE_FAILURES, TRACK_PATCH_FAILURES } from './track.js';
 
@@ -231,11 +231,12 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(400), 'refused'], [http(413), 'refused'], [http(415), 'refused'], [http(422), 'refused'], [unauthorized, 'refused'],
     [http(500, 'db_error'), 'unknown'], [http(503), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
-  /* #2131 S7: a read-only probe; an answered failure carries the server's reason, a lost one a fixed sentence. */
-  ['GET /agent-providers?refresh=true', RECHECK_FAILURES, [
-    [http(400), 'refused'], [http(404), 'refused'], [http(500, 'internal'), 'refused'], [http(503), 'refused'],
-    [http(599), 'refused'], [unauthorized, 'refused'],
-    [http(399), 'unknown'], [http(600), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  /* #2131 S7: a read-only probe (Recheck, connector check); an answered failure carries the server's reason. A 401 is the
+     session's, not the probed server's: the probe never ran. */
+  ['GET /agent-providers?refresh=true, POST /plugins/mcp/check', PROBE_FAILURES, [
+    [http(400), 'answered'], [http(404), 'answered'], [http(500, 'internal'), 'answered'], [http(502, 'mcp_setup_failed'), 'answered'],
+    [http(503), 'answered'], [http(599), 'answered'], [unauthorized, 'unfinished'],
+    [http(399), 'unfinished'], [http(600), 'unfinished'], [transport, 'unfinished'], [decode, 'unfinished'], [null, 'unfinished'],
   ]],
 ];
 

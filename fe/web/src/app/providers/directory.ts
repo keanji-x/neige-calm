@@ -8,7 +8,7 @@ import {
 } from '../../../../core/domain/fs.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { joinDirectoryPath, type ListDirectory } from '../../ui/directory-browser/public.tsx';
+import { DIRECTORY_LIST_FAILED, joinDirectoryPath, type ListDirectory } from '../../ui/directory-browser/public.tsx';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { runOperation } from './queries.ts';
 
@@ -22,7 +22,7 @@ export function createDirectoryLister(
 ): ListDirectory {
   return async (path) => toDirectoryListing(
     await runOperation(transport, listDirectoryOperation(path), unauthorized).catch((error: unknown) => {
-      throw new Error(readErrorText(error, 'Could not list this folder.'), { cause: error });
+      throw new Error(readErrorText(error, DIRECTORY_LIST_FAILED), { cause: error });
     }),
     joinDirectoryPath,
   );

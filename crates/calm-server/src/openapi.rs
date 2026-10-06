@@ -65,6 +65,7 @@ use utoipa::OpenApi;
     paths(
         crate::auth::login_handler,
         crate::builtin_plugins::calendar::routes::list,
+        crate::builtin_plugins::calendar::routes::read,
         crate::builtin_plugins::calendar::routes::create,
         crate::builtin_plugins::calendar::routes::update,
         crate::mobile_access::routes::status,

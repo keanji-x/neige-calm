@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -18,7 +18,7 @@ it('keeps the rejected draft in edit mode and reports the owner’s reading of t
   await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
   await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
   await userEvent.type(screen.getByRole('textbox', { name: 'Track title' }), 'My unsaved name{Enter}');
-  expect((await screen.findByRole('alert')).textContent).toBe('The rename is unconfirmed.');
+  expect(within(await screen.findByRole('alert')).getByText('The rename is unconfirmed.')).toBeTruthy();
   expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Track title' }).value).toBe('My unsaved name');
 });
 

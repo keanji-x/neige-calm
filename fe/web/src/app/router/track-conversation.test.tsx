@@ -504,6 +504,34 @@ describe('track conversations', () => {
     expect(reads).toBe(2);
   });
 
+  /* #2175 M1a: both reads failing is one notice with one Try again, which reads both again. */
+  it('folds a failed history read and a failed run read into one notice whose Try again re-reads both', async () => {
+    let failing = true;
+    const { requests } = setup((request) => {
+      if (!failing) return undefined;
+      if (request.path.includes(HISTORY_PATH)) return failure(503, 'unavailable', 'history unavailable');
+      if (request.path.endsWith('/planner/run')) return failure(503, 'unavailable', 'run unavailable');
+      return undefined;
+    });
+    const reads = (suffix: string) => requests.filter((request) => request.path.includes(suffix)).length;
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => {
+      const text = within(drawerElement()).getAllByRole('alert').map((alert) => alert.textContent).join(' | ');
+      expect(text).toContain('The conversation history could not be loaded.');
+      expect(text).toContain('The conversation’s status could not be loaded.');
+    });
+    expect(within(drawerElement()).getAllByRole('alert')).toHaveLength(1);
+    expect(within(drawerElement()).getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+
+    const before = { history: reads(HISTORY_PATH), run: reads('/planner/run') };
+    failing = false;
+    fireEvent.click(within(drawerElement()).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(within(drawerElement()).queryByRole('alert')).toBeNull());
+    expect(reads(HISTORY_PATH)).toBeGreaterThan(before.history);
+    expect(reads('/planner/run')).toBeGreaterThan(before.run);
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  });
+
   it('hands a send failure to the same conversation after its drawer remounts', async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });

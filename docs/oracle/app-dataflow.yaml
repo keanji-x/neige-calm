@@ -697,9 +697,9 @@
   source: fe/web/src/app/providers/idempotency-key.ts:25-45; fe/web/src/features/track/new-card/create.ts:13-83;
     fe/core/domain/track.ts:408-486,669-705; fe/web/src/app/router/public.tsx:2094-2146;
     fe/web/src/app/router/recipes-route.tsx:1-70; fe/web/src/app/shell/public.tsx:98-100,247-256;
-    fe/web/src/app/router/calendar.tsx:47-60
+    fe/web/src/app/router/calendar.tsx:46-59
   authoritative_test: fe/web/src/app/router/new-card.test.tsx:210-414; fe/web/src/app/router/recipes-route.test.tsx:416-530;
-    fe/web/src/app/shell/area-editor-flow.test.tsx:169-199; fe/web/src/app/router/calendar-writes.test.tsx:147-168
+    fe/web/src/app/shell/area-editor-flow.test.tsx:169-199; fe/web/src/app/router/calendar-writes.test.tsx:172-193
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -851,14 +851,14 @@
   statement: >
     CAS 写（recipe 保存 `if_revision`、日历更新/取消 `expected_version`）的 409 是 `stale`，但上一次同一内容的尝试结果
     `unknown` 时，重试得到的 409 不得直接显示为 stale：必须先读回服务端当前值，仅当它恰好持有本次尝试发送的内容
-    （recipe 的 title 与 body；日历的 task，或取消后不再出现在其日程周围的列表中）时视为已确认，否则才是 stale。
+    （recipe 的 title 与 body；日历按 id 读回（`GET /api/calendar/tasks/{id}`，含已取消的任务）的 task 与 cancelled）时视为已确认，否则才是 stale。
     读回失败则仍是 unknown。`casAttempts` 是这一规则的唯一实现，按写入方各持一份。
   why: >
     #2131 类 2：首次保存已落库而应答丢失时，读者重试仍带着旧 revision，服务端只能答 409，于是读者自己的写被报成
     「别处改过」。只有在未知结果之后才读回，首个 409 不多一次读取；真正的并发编辑读回后内容不同，仍是 stale。
   source: fe/core/domain/failure-class.ts:152-184; fe/core/domain/track.ts:472-482;
-    fe/core/domain/calendar.ts:89-118; fe/web/src/app/providers/queries.ts:613-632; fe/web/src/app/router/calendar.tsx:34-45
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:329-388; fe/web/src/app/router/calendar-writes.test.tsx:81-131
+    fe/core/domain/calendar.ts:93-112; fe/web/src/app/providers/queries.ts:613-632; fe/web/src/app/router/calendar.tsx:34-44
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:329-388; fe/web/src/app/router/calendar-writes.test.tsx:91-156
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -873,12 +873,13 @@
     Track 会话创建草稿（`POST /api/tracks/{id}/conversations`）的失败必须经 `CONVERSATION_CREATE_FAILURES` 读出句子：
     结果未知（应答丢失或不可读、5xx 含 503、同 key 并发、401、请求途中恢复状态改变）只说 `CONVERSATION_CREATE_TEXT.unknown`；
     未发出的按下是拒绝句，但此 key 下已有可能落库的尝试时仍是 unknown；其余应答显示服务端原因。草稿保留原文与 Try again，
-    不得显示传输原文、恢复层原文或谈论连接。Settings › Planners 的 Recheck 是只读探测，丢失的应答同样只显示固定句。
+    不得显示传输原文、恢复层原文或谈论连接。Settings › Planners 的 Recheck 与连接器的连接检查是只读探测，共用 `probeFailureText`：
+    4xx/5xx 应答显示服务端原因（含 field），丢失或不可读的应答以及 401（会话的事，探测没有运行）只显示固定句。
   why: >
     #2131 S7：草稿曾显示 "Transport request failed"、"Connection changed. Retry after reconnecting." 与恢复层的原文，
     与 #2128（连接状态只归全局指示器）矛盾；Recheck 与 Copy 也曾显示原始失败文本。
   source: fe/core/domain/conversation.ts:766-797; fe/web/src/app/router/public.tsx:1020-1025,1050-1072,1104-1131,1137-1149;
-    fe/core/domain/agent-providers.ts:34-45; fe/web/src/app/providers/agent-providers.ts:43
+    fe/core/domain/read-failure.ts:46-69; fe/core/domain/agent-providers.ts:34-35; fe/web/src/app/providers/agent-providers.ts:43
   authoritative_test: fe/web/src/app/router/track-conversation.test.tsx:2884-2961;
     fe/web/src/app/shell/settings-planners.test.tsx:101-117
   owner_slice: app/router

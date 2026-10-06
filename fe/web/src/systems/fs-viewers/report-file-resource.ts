@@ -13,11 +13,11 @@ type ResourceState =
       format: 'markdown' | 'source';
     }>
   | Readonly<{ kind: 'image'; path: string; url: string }>
-  | Readonly<{ kind: 'error'; failure: ApiFailure | null }>;
+  | Readonly<{ kind: 'error'; failure: ApiFailure | null; resource: 'file' | 'image' }>;
 
 export type ReportFileResource =
   | Exclude<ResourceState, { kind: 'image' | 'error' }>
-  | Readonly<{ kind: 'error'; failure: ApiFailure | null; retry: () => void }>
+  | Readonly<{ kind: 'error'; failure: ApiFailure | null; resource: 'file' | 'image'; retry: () => void }>
   | Readonly<{
       kind: 'image'; path: string; url: string;
       onLoad: () => void;
@@ -55,7 +55,7 @@ export function useReportFileResource(
         onOpenedRef.current?.(path);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setState({ kind: 'error', failure: readFailureOf(error) });
+        if (!cancelled) setState({ kind: 'error', failure: readFailureOf(error), resource: 'file' });
       });
     return () => { cancelled = true; };
   }, [files, path, retryKey]);
@@ -65,6 +65,6 @@ export function useReportFileResource(
   return {
     ...state,
     onLoad: () => { onOpenedRef.current?.(state.path); },
-    onError: () => { setState({ kind: 'error', failure: null }); },
+    onError: () => { setState({ kind: 'error', failure: null, resource: 'image' }); },
   };
 }

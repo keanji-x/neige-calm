@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import type { ApiFailure } from '../api/types.js';
 import { ApiError, classifyFailure } from './failure-class.js';
 import { FILE_READ_FAILURES } from './fs.js';
-import { READ_FAILURES, readErrorText, readFailureOf, readFailureText } from './read-failure.js';
+import { RECHECK_TEXT } from './agent-providers.js';
+import { CONNECTOR_CHECK_TEXT } from './plugins.js';
+import { PROBE_FAILURES, probeFailureText, READ_FAILURES, readErrorText, readFailureOf, readFailureText } from './read-failure.js';
 
 const http = (status: number, code = 'http_error', message = 'the server said why'): ApiFailure =>
   ({ kind: 'http', status, code, message, body: { error: message, code } });
@@ -64,16 +66,41 @@ describe('the read sentence rule', () => {
 describe('the filesystem read classes', () => {
   it.each([
     [http(403, 'forbidden', 'permission denied reading /x'), 'denied'],
-    [http(404, 'not_found', 'track w1'), 'missing'],
-    /* A missing path is one of several 400 refusals; the wording does not pick a class. */
+    [http(404, 'path_not_found', 'path /x not found'), 'missing'],
+    /* A gone Track is not a missing path: restoring a path cannot bring it back. */
+    [http(404, 'not_found', 'track w1'), 'gone'],
+    /* The wording does not pick a class. */
     [http(400, 'bad_request', 'path /x not found'), 'other'],
     [http(400, 'bad_request', 'permission denied reading /x'), 'other'],
     /* Status and code together: neither alone. */
     [http(403, 'plugin_permission'), 'other'], [http(404, 'http_error'), 'other'], [http(500, 'forbidden'), 'other'],
+    [http(400, 'path_not_found'), 'other'],
     [http(500, 'internal', 'fs /x: Permission denied'), 'other'],
     [unauthorized, 'other'], [transport, 'other'], [decode, 'other'], [null, 'other'],
   ] as const)('reads %j as %s', (failure, expected) => {
     expect(Object.isFrozen(FILE_READ_FAILURES) && Object.isFrozen(FILE_READ_FAILURES.rules)).toBe(true);
     expect(classifyFailure(failure, FILE_READ_FAILURES)).toBe(expected);
+  });
+});
+
+/* #2175 S7: the one rule both read-only probes (Recheck, connector check) say their failures by. */
+describe.each([['Recheck', RECHECK_TEXT], ['connector check', CONNECTOR_CHECK_TEXT]] as const)('a failed %s', (_probe, text) => {
+  it('is frozen', () => {
+    expect(Object.isFrozen(PROBE_FAILURES) && Object.isFrozen(PROBE_FAILURES.rules) && Object.isFrozen(text)).toBe(true);
+  });
+
+  it('says an answered failure in the server’s words, its field named', () => {
+    expect(probeFailureText(new ApiError(http(502, 'mcp_setup_failed', 'HTTP 403: forbidden')), text)).toBe('HTTP 403: forbidden');
+    expect(probeFailureText(new ApiError(http(500, 'internal', 'checks are wedged')), text)).toBe('checks are wedged');
+    expect(probeFailureText(new ApiError({ kind: 'http', status: 400, code: 'bad_request', field: 'url', message: 'must use https' }), text))
+      .toBe('url: must use https');
+    expect(probeFailureText(new ApiError(http(400, 'bad_request', '  ')), text)).toBe(text.answered);
+  });
+
+  /* A 401 is the session's: the probe never ran, and the server's text would read as the probed server refusing. */
+  it('says a probe that never ran, a signed-out session included, in its fixed words', () => {
+    for (const error of [new ApiError(unauthorized), new ApiError(transport), new ApiError(decode), new Error('x'), null]) {
+      expect(probeFailureText(error, text)).toBe(text.unfinished);
+    }
   });
 });

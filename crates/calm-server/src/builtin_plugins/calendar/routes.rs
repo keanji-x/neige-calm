@@ -14,13 +14,13 @@ use crate::{
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::get,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/calendar/tasks", get(list).post(create))
-        .route("/api/calendar/tasks/{id}", post(update))
+        .route("/api/calendar/tasks/{id}", get(read).post(update))
 }
 async fn access(s: &RouteState, actor: &Actor) -> Result<Access> {
     crate::routes::track_report_blocks::require_rest_user_actor_for(
@@ -55,6 +55,22 @@ pub async fn list(
 ) -> Result<Json<Vec<Listed>>> {
     let access = access(&s, &actor).await?;
     Ok(Json(store::list(&s.mcp_context, &access, window).await?))
+}
+/// One task by id, a cancelled one included (the list leaves those out): how a client reads back an update or cancel
+/// whose answer was lost.
+#[utoipa::path(get, path="/api/calendar/tasks/{id}", tag="calendar", params(("id"=String, Path)), responses(
+    (status=200, body=Entry),
+    (status=403, description="Not the user: AI calls use neige_calendar_* tools", body=crate::error::ErrorBody),
+    (status=404, description="No such calendar task", body=crate::error::ErrorBody),
+    (status=503, description="The calendar is not running", body=crate::error::ErrorBody),
+))]
+pub async fn read(
+    State(s): State<RouteState>,
+    actor: Actor,
+    Path(id): Path<String>,
+) -> Result<Json<Entry>> {
+    let access = access(&s, &actor).await?;
+    Ok(Json(store::read(&s.mcp_context, &access, &id).await?))
 }
 #[utoipa::path(post, path="/api/calendar/tasks", tag="calendar", request_body=Create, responses((status=200, body=Entry)))]
 pub async fn create(

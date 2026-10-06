@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { TrackRecipe } from '../../../../../core/domain/track.ts';
-import { RecipeEditor, type RecipeDraft } from './public.tsx';
+import { RecipeEditor, type RecipeDraft, type RecipeWriteOutcome } from './public.tsx';
 
 afterEach(() => { document.body.replaceChildren(); });
 
@@ -43,5 +43,31 @@ describe('the recipe body editor in a browser', () => {
     expect(draft.body).toContain('One more line.');
     expect(draft.body).toContain('Ship checklist');
     expect(draft.if_revision).toBe(3);
+  });
+
+  /* #2175-18: while a create is unconfirmed the held draft is on screen, so the real CodeMirror takes no typing; the
+     jsdom tier swaps the editor for a textarea and cannot show this. */
+  it('takes no typing while a create is unconfirmed, and Try again resends the held draft', async () => {
+    const user = userEvent.setup();
+    const saved = { ...RECIPE, body: 'Held draft.' };
+    const onWrite = vi.fn<(draft: RecipeDraft) => Promise<RecipeWriteOutcome>>()
+      .mockResolvedValueOnce({ kind: 'unconfirmed', message: 'Creating the recipe is unconfirmed.' })
+      .mockResolvedValueOnce({ kind: 'saved', recipe: saved });
+    render(<RecipeEditor recipe={null} theme="light" onWrite={onWrite} onDelete={null} onClose={() => {}} onCreated={() => {}} />);
+
+    const field = await screen.findByRole('textbox', { name: 'Recipe body, Markdown' });
+    await user.click(field);
+    await user.keyboard('Held draft.');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Creating the recipe is unconfirmed.')).toBeTruthy();
+
+    expect(field.getAttribute('aria-readonly')).toBe('true');
+    await user.click(field);
+    await user.keyboard('{Control>}{End}{/Control} typed while held');
+    expect(field.textContent).toBe('Held draft.');
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(onWrite).toHaveBeenCalledTimes(2);
+    expect(onWrite.mock.calls[1][0].body).toBe('Held draft.');
   });
 });

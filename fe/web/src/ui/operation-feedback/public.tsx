@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import { Banner } from '@astryxdesign/core/Banner';
 
 import { useState } from '../state/public.ts';
 
@@ -37,12 +38,17 @@ export function useOperationFeedback(): OperationFeedbackState {
   };
 }
 
-export function OperationFeedback({ feedback, children }: {
+/**
+ * The write's failure where the write was made, as the Astryx error alert every other surface uses: its sentence, the
+ * caller's way out (`action`, such as a Try again) when it has one, and Dismiss, which clears it.
+ */
+export function OperationFeedback({ feedback, action }: {
   feedback: OperationFeedbackState;
-  children?: ReactNode;
+  action?: ReactNode;
 }) {
   if (feedback.error === null) return null;
-  return <div role="alert" data-nc-error-box="">{children ?? feedback.error}</div>;
+  return <Banner status="error" title={feedback.error} endContent={action} isDismissable onDismiss={feedback.clear}
+    data-nc-operation-feedback="" />;
 }
 
 export function useDeleteConfirm(

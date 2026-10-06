@@ -37,6 +37,12 @@ pub enum CalmError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    /// 404 — a filesystem read named a path that does not exist (ENOENT, or a component on the way that is not a
+    /// directory). Its own code because restoring the path is the remedy, which `NotFound` (the Track, card or row the
+    /// request names is gone) never offers. The message already says "path … not found", so `Display` adds no prefix.
+    #[error("{0}")]
+    PathNotFound(String),
+
     #[error("conflict: {0}")]
     Conflict(String),
 
@@ -201,6 +207,7 @@ impl CalmError {
     pub fn code(&self) -> &'static str {
         match self {
             CalmError::NotFound(_) => "not_found",
+            CalmError::PathNotFound(_) => "path_not_found",
             CalmError::Conflict(_) => "conflict",
             CalmError::IdempotencyCollision(_) => "idempotency_collision",
             CalmError::IdempotencyKeyExhausted(_) => "idempotency_key_exhausted",
@@ -244,7 +251,7 @@ impl CalmError {
 
     pub fn status(&self) -> StatusCode {
         match self {
-            CalmError::NotFound(_) => StatusCode::NOT_FOUND,
+            CalmError::NotFound(_) | CalmError::PathNotFound(_) => StatusCode::NOT_FOUND,
             CalmError::Conflict(_)
             | CalmError::IdempotencyCollision(_)
             | CalmError::IdempotencyKeyExhausted(_)
@@ -293,6 +300,7 @@ impl CalmError {
         match self {
             CalmError::CodexRefused(m)
             | CalmError::NotFound(m)
+            | CalmError::PathNotFound(m)
             | CalmError::Conflict(m)
             | CalmError::IdempotencyCollision(m)
             | CalmError::IdempotencyKeyExhausted(m)
@@ -549,6 +557,7 @@ impl From<CalmError> for calm_truth::TruthError {
             }
             // Route-only variants with no `CoreError`/`TruthError` twin collapse to Internal.
             CalmError::IdempotencyKeyInvalid(m)
+            | CalmError::PathNotFound(m)
             | CalmError::InvalidBody(m)
             | CalmError::UnsupportedMediaType(m)
             | CalmError::PluginInstall(m)

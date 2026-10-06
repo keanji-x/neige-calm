@@ -102,10 +102,13 @@ it('lists each provider with its status and reason, and Recheck replaces the ans
 describe('a failed Recheck', () => {
   const RAW_OR_CONNECTIVITY = /Transport request failed|timed out|schema|offline|reconnect|connection/i;
   it.each([
-    ['a lost answer', () => Promise.reject(new Error('socket hang up')), RECHECK_TEXT.unknown],
-    ['an unreadable answer', () => Promise.resolve({ status: 200, statusText: 'OK', body: { not: 'a list' } }), RECHECK_TEXT.unknown],
+    ['a lost answer', () => Promise.reject(new Error('socket hang up')), RECHECK_TEXT.unfinished],
+    ['an unreadable answer', () => Promise.resolve({ status: 200, statusText: 'OK', body: { not: 'a list' } }), RECHECK_TEXT.unfinished],
     ['an answered failure', () => Promise.resolve({ status: 500, statusText: 'Server Error', body: { error: 'checks are wedged', code: 'internal' } }),
       'checks are wedged'],
+    /* A refusal about one field names it, as every answered reason does (`failureReason`). */
+    ['a refusal about one field', () => Promise.resolve({ status: 400, statusText: 'Bad Request',
+      body: { error: 'must be true or false', code: 'bad_request', field: 'refresh' } }), 'refresh: must be true or false'],
   ] as const)('shows %s as its sentence and keeps the previous answer', async (_name, reply, text) => {
     renderPlanners(reply);
     await screen.findByText(LOGGED_OUT);
