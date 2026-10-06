@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -88,6 +88,23 @@ describe('PlannerAskDrawer', () => {
     await userEvent.click(answerButton());
     await screen.findByRole('radiogroup', { name: 'Merge PR #12?' });
     expect(screen.queryByText(/more ask/)).toBeNull();
+  });
+
+  it('counts the questions of the ask it shows, not of the asks waiting after it', () => {
+    renderDrawer([TWO_QUESTIONS, LATER], vi.fn<AnswerAsk>());
+    /* The collapsed summary's badge: the shown ask has 2 questions; the 1 waiting is the line below. */
+    expect(screen.getByRole('button', { name: /Questions/ }).textContent).toBe('2Questions');
+    expect(screen.getByText('1 more ask waits after this one.')).toBeTruthy();
+  });
+
+  it('keeps an answer to the server’s 2000 characters', () => {
+    renderDrawer([TWO_QUESTIONS], vi.fn<AnswerAsk>());
+    const own = screen.getByRole<HTMLInputElement>('textbox', { name: 'Your own answer: Which branch should I release from?' });
+    fireEvent.change(own, { target: { value: 'x'.repeat(2001) } });
+    expect(own.value).toHaveLength(2000);
+    const free = screen.getByRole<HTMLInputElement>('textbox', { name: 'Anything to tell the reviewers?' });
+    fireEvent.change(free, { target: { value: 'y'.repeat(2500) } });
+    expect(free.value).toHaveLength(2000);
   });
 
   it('drops an ask already answered elsewhere (409) without a word', async () => {

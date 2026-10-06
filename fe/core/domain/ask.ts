@@ -48,6 +48,18 @@ export function askAnswers(questions: readonly AskQuestion[], drafts: readonly A
   return answers;
 }
 
+/** The server's bound on one answer, in characters (Unicode scalar values, as Rust's `chars()` counts). */
+export const ASK_ANSWER_MAX_CHARS = 2000;
+
+/**
+ * An answer as the field keeps it: at most {@link ASK_ANSWER_MAX_CHARS} characters, what `maxLength` would
+ * do on a field that offers none. Counted in code points, as the server counts, never in UTF-16 units.
+ */
+export function clampAskAnswer(text: string): string {
+  const characters = Array.from(text);
+  return characters.length <= ASK_ANSWER_MAX_CHARS ? text : characters.slice(0, ASK_ANSWER_MAX_CHARS).join('');
+}
+
 /**
  * Answer every question of one ask. `204` is the answer; the row leaves the overlay when the
  * projector's `overlay.set` lands. Its failures read through {@link ANSWER_ASK_FAILURES}.

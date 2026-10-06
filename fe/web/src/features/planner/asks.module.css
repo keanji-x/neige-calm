@@ -13,4 +13,15 @@
   .ask {
     min-inline-size: 0;
   }
+
+  /* The questions' own scroll box. Bounded by the viewport so a long ask leaves the
+     transcript, the Answer row and the message field in view, on a phone too; the inset
+     keeps the radios' focus rings inside the box that clips them. */
+  .questions {
+    max-block-size: min(35dvh, 24rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: var(--space-1);
+    margin: calc(-1 * var(--space-1));
+  }
 }

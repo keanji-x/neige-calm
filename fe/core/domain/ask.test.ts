@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ActivityItem, AskQuestion } from './activity.js';
-import { answerAskOperation, askAnswers, askDraftsFor, openAsksOf } from './ask.js';
+import {
+  answerAskOperation, ASK_ANSWER_MAX_CHARS, askAnswers, askDraftsFor, clampAskAnswer, openAsksOf,
+} from './ask.js';
 
 const BRANCH: AskQuestion = { title: 'Which branch?', options: ['main', 'release'] };
 const WHY: AskQuestion = { title: 'Why?', options: [] };
@@ -60,5 +62,18 @@ describe('answerAskOperation', () => {
     expect(operation.path).toBe('/api/tracks/track%2F1/asks/42/answer');
     expect(operation.body).toEqual({ answers: ['main', 'To ship'] });
     expect(operation.responseSchema.safeParse(undefined).success).toBe(true);
+  });
+});
+
+describe('clampAskAnswer', () => {
+  it('keeps the server’s 2000 characters, counted in code points as the server counts them', () => {
+    expect(ASK_ANSWER_MAX_CHARS).toBe(2000);
+    const fits = 'a'.repeat(2000);
+    expect(clampAskAnswer(fits)).toBe(fits);
+    expect(clampAskAnswer(`${fits}b`)).toBe(fits);
+    /* 2000 astral characters are 4000 UTF-16 units, and still within the limit. */
+    const astral = '😀'.repeat(2000);
+    expect(clampAskAnswer(astral)).toBe(astral);
+    expect(Array.from(clampAskAnswer(`${astral}😀`))).toHaveLength(2000);
   });
 });

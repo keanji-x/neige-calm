@@ -31,7 +31,21 @@ const ASK = {
 /* A 1×1 PNG, so the attached image's thumbnail draws without a server behind it. */
 const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
-function setup(theme: 'light' | 'dark') {
+/** An ask of `count` questions of `count` options each, `long` making every option the server's 200 characters. */
+function largeAsk(count: number, long: boolean) {
+  const questions = Array.from({ length: count }, (_, question) => ({
+    title: `Question ${question + 1}: ${long ? 'which of these release plans should I follow, given what the checklist found? '.repeat(3) : 'which plan?'}`,
+    options: Array.from({ length: count }, (_, option) => {
+      const text = `Plan ${question + 1}.${option + 1} `;
+      return long ? `${text}${'keep the branch, tag it, and write the notes before the docs land. '.repeat(4)}`.slice(0, 200) : text.trim();
+    }),
+  }));
+  /* A short notification text: the kernel's joined titles would expand the Notifications aside over the conversation
+     row this test opens, which is that aside's layout, not the drawer's. */
+  return { ...ASK, key: 'ask:7', text: `${count} questions`, questions };
+}
+
+function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK) {
   const requests: ApiRequest[] = [];
   const transport: ApiTransportPort = { async send(request) {
     await Promise.resolve();
@@ -43,7 +57,7 @@ function setup(theme: 'light' | 'dark') {
     if (request.path === '/api/settings') body = {};
     if (request.path === `/api/tracks/${TRACK.id}`) body = { track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER],
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
-        payload: { schemaVersion: 3, working: false, attention: 'input', activity_at_ms: 5, items: [ASK], cards: [] } }] };
+        payload: { schemaVersion: 3, working: false, attention: 'input', activity_at_ms: 5, items: [ask], cards: [] } }] };
     if (request.path.endsWith('/planner/run')) body = { card_id: PLANNER.id, worker_session_id: 'session', phase: 'idle',
       model: null, reasoning_effort: null, blocked_reason: null, running_turn: null, attachments_supported: true };
     if (request.path.endsWith('/harness/live')) body = { turn_id: null, items: [] };
@@ -114,4 +128,33 @@ it('keeps the questions and the images in two drawers, each its own disclosure, 
   expect((await ask.findElement()).getBoundingClientRect().bottom).toBeLessThanOrEqual(strip.top);
   expect(strip.bottom).toBeLessThanOrEqual(field.top);
   await page.screenshot({ path: '__screenshots__/planner-asks-with-images-light-1280.png' });
+});
+
+/* #2209 U3 review: the drawer and the pane around it clip rather than scroll, so a long ask must bound itself. Read
+   before any click on the ask: a locator's click scrolls even a clipped box into view, which no wheel or touch can. */
+it.each([
+  ['4×4', 4, false, 1280, 720], ['4×4', 4, false, 390, 844],
+  ['8×8 long-option', 8, true, 1280, 720], ['8×8 long-option', 8, true, 390, 844],
+] as const)('keeps Answer and the field in view for a %s ask (%i questions, long options %s) at %ipx×%ipx, the questions scrolling', async (_name, count, long, width, height) => {
+  await page.viewport(width, height);
+  setup('light', largeAsk(count, long));
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  await expect.element(ask).toBeVisible();
+  const answer = (await ask.getByRole('button', { name: 'Answer' }).findElement()).getBoundingClientRect();
+  const field = (await page.getByRole('combobox', { name: 'Message' }).findElement()).getBoundingClientRect();
+  expect(answer.top).toBeGreaterThanOrEqual(0);
+  expect(answer.bottom).toBeLessThanOrEqual(window.innerHeight);
+  expect(field.bottom).toBeLessThanOrEqual(window.innerHeight);
+  expect(answer.bottom).toBeLessThanOrEqual(field.top);
+  const list = document.querySelector<HTMLElement>('[data-nc-ask-questions]')!;
+  expect(['auto', 'scroll']).toContain(getComputedStyle(list).overflowY);
+  expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
+  if (long && width < 600) await page.screenshot({ path: `__screenshots__/planner-asks-${count}x${count}-long-${width}.png` });
+  /* What a wheel or a swipe does: the box scrolls to its last question, which is then inside it. */
+  list.scrollTop = list.scrollHeight;
+  const last = page.getByRole('radiogroup', { name: new RegExp(`^Question ${count}:`) });
+  const box = list.getBoundingClientRect();
+  await expect.poll(async () => (await last.findElement()).getBoundingClientRect().bottom).toBeLessThanOrEqual(box.bottom + 1);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
 });

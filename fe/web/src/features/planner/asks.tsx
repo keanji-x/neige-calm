@@ -13,7 +13,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 
 import type { AskQuestion } from '../../../../core/domain/activity.ts';
 import {
-  ANSWER_ASK_FAILURES, ANSWER_ASK_TEXT, askAnswers, askDraftsFor, type AskDraft, type OpenAsk,
+  ANSWER_ASK_FAILURES, ANSWER_ASK_TEXT, askAnswers, askDraftsFor, clampAskAnswer, type AskDraft, type OpenAsk,
 } from '../../../../core/domain/ask.ts';
 import { writeFailureText } from '../../../../core/domain/failure-class.ts';
 import { OperationFeedback, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
@@ -46,7 +46,8 @@ export function PlannerAskDrawer({ asks, onAnswer }: PlannerAskDrawerProps) {
   const waiting = open.length - 1;
   const settle = (askId: number) => setSettled((previous) => new Set(previous).add(askId));
   return (
-    <ChatComposerDrawer count={open.reduce((total, ask) => total + ask.questions.length, 0)} label="Questions">
+    /* The count is the shown ask's questions; the asks after it are the line below. */
+    <ChatComposerDrawer count={current.questions.length} label="Questions">
       <VStack gap={2} className={styles.asks} data-nc-asks="">
         <AskForm key={current.askId} ask={current} onAnswer={onAnswer} onSettled={() => settle(current.askId)} />
         {waiting > 0 && (
@@ -73,15 +74,21 @@ function AskForm({ ask, onAnswer, onSettled }: {
   return (
     <div role="group" aria-label="The Planner asks" className={styles.ask} data-nc-ask={ask.askId}>
       <VStack gap={3}>
-        {ask.questions.map((question, index) => (
-          <AskQuestionField
-            /* The questions of one ask never change: the overlay re-sends the same list, in the same order. */
-            key={index}
-            question={question}
-            draft={drafts[index]}
-            onChange={(change) => edit(index, change)}
-          />
-        ))}
+        {/* An ask may be 8 questions of 8 long options. The drawer does not scroll and neither does the pane
+            around it, so the questions scroll in a box of their own and Answer and the field stay in view. */}
+        <div className={styles.questions} data-nc-ask-questions="">
+          <VStack gap={3}>
+            {ask.questions.map((question, index) => (
+              <AskQuestionField
+                /* The questions of one ask never change: the overlay re-sends the same list, in the same order. */
+                key={index}
+                question={question}
+                draft={drafts[index]}
+                onChange={(change) => edit(index, change)}
+              />
+            ))}
+          </VStack>
+        </div>
         <OperationFeedback feedback={feedback} />
         <HStack justify="end">
           <Button
@@ -121,7 +128,7 @@ function AskQuestionField({ question, draft, onChange }: {
         placeholder="Your answer"
         size="sm"
         value={draft.own}
-        onChange={(own) => onChange({ own })}
+        onChange={(own) => onChange({ own: clampAskAnswer(own) })}
       />
     );
   }
@@ -149,7 +156,7 @@ function AskQuestionField({ question, draft, onChange }: {
         placeholder="Or answer in your own words"
         size="sm"
         value={draft.own}
-        onChange={(own) => onChange({ own })}
+        onChange={(own) => onChange({ own: clampAskAnswer(own) })}
       />
     </VStack>
   );
