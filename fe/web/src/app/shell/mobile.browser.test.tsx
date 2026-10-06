@@ -156,7 +156,7 @@ describe('Track mobile presentation', () => {
     await expect.element(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
     const navigation = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement();
     const settings = await page.getByRole('button', { name: 'Settings', exact: true }).findElement();
-    const currentTrack = await page.getByRole('button', { name: 'Responsive mobile UI' }).findElement();
+    const currentTrack = await page.getByRole('button', { name: 'Responsive mobile UI', exact: true }).findElement();
     expect(currentTrack.getAttribute('aria-current')).toBe('page');
     const navHeader = navigation.querySelector('[data-nc-workspace-page="tracks"] header')!;
     expect(navHeader.contains(settings)).toBe(false);
@@ -189,7 +189,7 @@ describe('Track mobile presentation', () => {
     expect(document.querySelector('main')?.hasAttribute('inert')).toBe(true);
     openerElement.focus();
     expect(document.activeElement).not.toBe(openerElement);
-    await page.getByRole('button', { name: 'Responsive mobile UI' }).click();
+    await page.getByRole('button', { name: 'Responsive mobile UI', exact: true }).click();
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
 
     await opener.click();
@@ -258,7 +258,8 @@ describe('Track mobile presentation', () => {
     await expect.poll(() => document.querySelector('[data-nc-workspace-header]')).toBeNull();
     expect(mobileMenu.isConnected).toBe(false);
     await page.viewport(390, 844);
-    const restored = await page.getByRole('button', { name: 'Track actions' }).findElement();
+    await expect.poll(() => document.querySelector('[data-nc-workspace-header]')).not.toBeNull();
+    const restored = await page.getByRole('button', { name: 'Track actions', exact: true }).findElement();
     expect(restored.closest('[data-nc-workspace-header]')).not.toBeNull();
     expect(document.querySelectorAll('[data-nc-workspace-header] button[aria-label="Track actions"]')).toHaveLength(1);
     await page.getByRole('button', { name: 'Track actions' }).click();
@@ -507,7 +508,7 @@ describe('Track mobile presentation', () => {
     await page.getByRole('heading', { name: 'Frontend', exact: true }).findElement();
     expect(document.activeElement).not.toBe(document.body);
     expect(router.state.location.pathname).toBe('/track/w1');
-    expect(page.getByRole('button', { name: 'Responsive mobile UI' }).query()).toBeNull();
+    expect(page.getByRole('button', { name: 'Responsive mobile UI', exact: true }).query()).toBeNull();
     await page.getByText('No tracks in this area yet.').findElement();
     await page.getByRole('button', { name: 'Area actions' }).click();
     await page.getByRole('menuitem', { name: 'Edit area Frontend' }).click();
@@ -606,8 +607,8 @@ describe('Track mobile presentation', () => {
     await page.getByRole('menuitem', { name: 'Conversations', exact: true }).click();
     const panel = document.querySelector<HTMLElement>('[data-nc-mobile-page="open"]')!;
     await Promise.all(panel.getAnimations().map((animation) => animation.finished));
-    const planner = await page.getByRole('button', { name: /^Design review/ }).findElement();
-    await page.getByRole('button', { name: /^Design review/ }).click();
+    const planner = await page.getByRole('button', { name: /Design review/ }).findElement();
+    await page.getByRole('button', { name: /Design review/ }).click();
     const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
     expect(getComputedStyle(panel).visibility).toBe('visible');
     expect(drawer.getAnimations()).toHaveLength(0);

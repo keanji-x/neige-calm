@@ -118,14 +118,14 @@ it('uses Escape to close Planner before its Conversations page', async () => {
   const router = setup('/track/w1');
   await page.getByRole('button', { name: 'Track actions', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Conversations', exact: true }).click();
-  await page.getByRole('button', { name: /^Design review/ }).click();
+  await page.getByRole('button', { name: /Design review/ }).click();
   await page.getByRole('heading', { name: 'Design review', exact: true }).findElement();
   await userEvent.keyboard('{Escape}');
   await settlePaint();
   expect(router.state.location.search).toHaveProperty('panel', 'conversations');
   await expect.element(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
   expect(document.querySelector('[data-nc-drawer]')).toBeNull();
-  await expect.poll(() => document.activeElement).toBe(await page.getByRole('button', { name: /^Design review/ }).findElement());
+  await expect.poll(() => document.activeElement).toBe(await page.getByRole('button', { name: /Design review/ }).findElement());
   await userEvent.keyboard('{Escape}');
   await settlePaint();
   expect(router.state.location.search).not.toHaveProperty('panel');
@@ -195,7 +195,7 @@ describe('Unified mobile headers', () => {
     const back = await page.getByRole('button', { name: 'Back to Areas' }).findElement();
     (back as HTMLElement).focus();
     await userEvent.keyboard('{Shift>}{Tab}{/Shift}');
-    expect(document.activeElement).toBe(await page.getByRole('button', { name: 'Another track', exact: true }).findElement());
+    expect(document.activeElement).toBe(await page.getByRole('button', { name: 'Actions for track Another track', exact: true }).findElement());
     await userEvent.keyboard('{Tab}'); expect(document.activeElement).toBe(back);
     await page.elementLocator(back).click();
     expect(areas.getAnimations()).toHaveLength(0);
