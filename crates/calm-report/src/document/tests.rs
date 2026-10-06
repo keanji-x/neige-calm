@@ -469,7 +469,12 @@ fn same_block_concurrent_merge_loses_one_edit_without_a_production_merge_path() 
 /// alignment sees only the old prose blocks, and the data block's id stays reserved.
 #[test]
 fn replace_dropping_data_blocks_never_reuses_a_data_block_id() {
-    let prose = "# Notes\n\nThe report keeps the day's decisions and open questions.\n";
+    // Long enough that the caption dominates the fence's text, so similarity alone would pair them.
+    let prose = format!(
+        "# Notes\n\n{}\n",
+        "The report keeps the day's decisions and open questions. ".repeat(40)
+    );
+    let prose = prose.as_str();
     let fence = render_fence(
         "table",
         &json!({ "columns": [{ "key": "k", "label": "K" }], "rows": [], "caption": prose }),
