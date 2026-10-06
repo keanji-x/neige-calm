@@ -38,18 +38,25 @@ describe('preview in a real browser', () => {
     await page.getByTestId('outside').hover();
     await expect.poll(() => document.querySelector('[data-nc-link-preview]')).toBeNull();
   });
-  it('keeps keyboard focus inside the preview, then dismisses after focus leaves', async () => {
-    await page.viewport(1200, 900); mount();
-    const trigger = page.getByRole('button', { name: 'Long notes', exact: true });
-    (trigger.element() as HTMLElement).focus();
+  it('hands keyboard focus into the preview and dismisses after native Tab leaves', async () => {
+    await page.viewport(1200, 900);
+    const onRead = vi.fn(); mount(onRead);
+    await userEvent.tab();
+    expect(document.activeElement).toBe(page.getByRole('button', { name: 'Long notes', exact: true }).element());
     await userEvent.keyboard('{ArrowDown}');
-    await expect.poll(() => document.querySelector('[data-nc-ready]')).not.toBeNull();
-    const action = page.getByRole('button', { name: 'Continue reading' });
-    (action.element() as HTMLElement).focus();
+    const content = page.getByRole('region', { name: 'Preview content: Long notes' });
+    await expect.poll(() => document.activeElement).toBe(content.element());
+    await userEvent.tab();
+    expect(document.activeElement).toBe(page.getByRole('button', { name: 'Continue reading' }).element());
+    await userEvent.keyboard('{Enter}');
+    expect(onRead).toHaveBeenCalledOnce();
     const before = performance.now();
     await expect.poll(() => performance.now() - before).toBeGreaterThan(350);
     expect(document.querySelector('[data-nc-link-preview]')).not.toBeNull();
-    (page.getByTestId('outside').element() as HTMLElement).focus();
+    for (let step = 0; step < 6 && document.activeElement !== page.getByTestId('outside').element(); step += 1) {
+      await userEvent.tab({ shift: true });
+    }
+    expect(document.activeElement).toBe(page.getByTestId('outside').element());
     await expect.poll(() => document.querySelector('[data-nc-link-preview]')).toBeNull();
   });
   it('keeps both cards open while scrolling a nested portal preview', async () => {

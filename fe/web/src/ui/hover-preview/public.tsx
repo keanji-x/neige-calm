@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { Icon } from '../icon/public.tsx';
@@ -25,6 +25,8 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
   const id = useId();
   const anchor = useRef<HTMLSpanElement>(null);
   const card = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const focusOnOpen = useRef(false);
   const skipFocus = useRef(false);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [engaged, setEngaged] = useState(false);
@@ -46,6 +48,9 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
     }
   };
   const activate = () => { cancelLeave(); setPhase('ready'); };
+  const focusContent = useCallback(() => {
+    body.current?.focus({ preventScroll: true });
+  }, []);
   const enter = () => {
     cancelLeave();
     setEngaged(true);
@@ -67,6 +72,12 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
       phase === 'waiting' ? HOVER_DELAY : READY_DELAY);
     return () => { clearTimeout(timeout); };
   }, [phase, engaged]);
+
+  useLayoutEffect(() => {
+    if (!visible || !focusOnOpen.current) return;
+    focusOnOpen.current = false;
+    focusContent();
+  }, [visible, focusContent]);
 
   useLayoutEffect(() => {
     if (!visible) return;
@@ -139,7 +150,12 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
     }}
     onKeyDown={(event) => {
       if (event.target instanceof Node && card.current?.contains(event.target)) return;
-      if (event.key === 'ArrowDown') { event.preventDefault(); activate(); }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        activate();
+        if (card.current === null) focusOnOpen.current = true;
+        else focusContent();
+      }
       if (event.key === 'Escape' && phase === 'waiting') { event.preventDefault(); close(); }
     }}>
     {trigger(activate)}
@@ -161,7 +177,7 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
         </button>
         <button type="button" className={styles.control} aria-label="Close preview" onClick={() => close(true)}><Icon name="close" /></button>
       </div>
-      <div className={styles.body}>{children}</div>
+      <div ref={body} className={styles.body} tabIndex={0} role="region" aria-label={`Preview content: ${title}`}>{children}</div>
       <div className={styles.footer} role="status">{ready ? 'Move inside to interact · move away to dismiss' : 'Keep hovering, then move inside to interact'}</div>
     </div>, document.body)}
   </span>;
