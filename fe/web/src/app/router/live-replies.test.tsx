@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import type { HarnessLiveReplies, HarnessPhaseTag } from '../../../../core/api/generated/wire.ts';
-import type { buildTranscript } from '../../../../core/domain/conversation.ts';
+import type { PlannerRunningTurn, buildTranscript } from '../../../../core/domain/conversation.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { queryKeys } from '../providers/queries.ts';
@@ -29,7 +29,7 @@ function ok(body: unknown): ApiTransportResponse {
 /** One card's server side: what each of the three reads answers right now. */
 type Row = Parameters<typeof buildTranscript>[0][number];
 /** With `earlier` rows, the newest page is full, so Load earlier has a page to read; with `itemsFail`, every transcript read fails. */
-type CardServer = { phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[]; itemsFail?: boolean;
+type CardServer = { runningTurn: PlannerRunningTurn | null; phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[]; itemsFail?: boolean;
   /** What a send that replaces a turn (#1923 Edit, #2043) does to this card and answers; with one, a send is accepted. */
   replace?: () => ApiTransportResponse };
 
@@ -53,7 +53,7 @@ const streaming = (turnId: string | null, items: Record<string, string>): Harnes
 
 type Gate = { hold: boolean; waiting: (() => void)[] };
 
-function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, waiting: [] }) {
+function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, waiting: [] }, liveGate: Gate = { hold: false, waiting: [] }) {
   const requests: ApiRequest[] = [];
   const themeValues = new Map<string, string>();
   const transport: ApiTransportPort = {
@@ -77,13 +77,17 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
         if (gate.hold) await new Promise<void>((resolve) => { gate.waiting.push(resolve); });
         return ok(rows);
       }
-      if (server !== undefined && request.path.endsWith('/harness/live')) return ok(server.live);
+      if (server !== undefined && request.path.endsWith('/harness/live')) {
+        const reply = server.live;
+        if (liveGate.hold) await new Promise<void>((resolve) => { liveGate.waiting.push(resolve); });
+        return ok(reply);
+      }
       if (server?.replace !== undefined && request.path.endsWith('/planner/input')) {
         return (request.body as { replaces_turn?: string }).replaces_turn === undefined
           ? ok({ card_id: card, worker_session_id: 'runtime' }) : server.replace();
       }
       if (server !== undefined && request.path.endsWith('/planner/run')) return ok({
-        card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
+        card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: server.runningTurn,
       });
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
@@ -148,7 +152,7 @@ afterEach(() => {
 
 describe('a streamed reply in the Planner conversation', () => {
   it('shows the running turn\'s text at the tail and grows it with each poll', async () => {
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello' }) };
     const { requests } = setup({ [CARD.id]: server });
     await open('Planner chat');
     await screen.findByText('Hello');
@@ -160,7 +164,7 @@ describe('a streamed reply in the Planner conversation', () => {
   });
 
   it('replaces the live text with the stored reply exactly once, and stops polling', async () => {
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
     const { client, requests } = setup({ [CARD.id]: server });
     await open('Planner chat');
     await screen.findByText('Hello, wor');
@@ -175,7 +179,7 @@ describe('a streamed reply in the Planner conversation', () => {
   });
 
   it('draws an interrupted turn\'s partial row once, above the Interrupted line', async () => {
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Half a' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Half a' }) };
     const { client } = setup({ [CARD.id]: server });
     await open('Planner chat');
     await screen.findByText('Half a');
@@ -192,7 +196,7 @@ describe('a streamed reply in the Planner conversation', () => {
 
   it('retires an abandoned reply at the first transcript read that started after the turn ended', async () => {
     const gate: Gate = { hold: false, waiting: [] };
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
     const { client } = setup({ [CARD.id]: server }, gate);
     await open('Planner chat');
     await screen.findByText('Abandoned');
@@ -215,7 +219,7 @@ describe('a streamed reply in the Planner conversation', () => {
 
   it('offers Edit only once an abandoned live reply has retired, and replacing the turn brings back no live text', async () => {
     const gate: Gate = { hold: false, waiting: [] };
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
     server.replace = () => {
       /* The kernel deletes the turn's rows, discards its live text and queues the message before it answers. */
       server.rows = [];
@@ -254,7 +258,7 @@ describe('a streamed reply in the Planner conversation', () => {
 
   it('does not let a read that started before the turn ended retire the copy, however late it lands', async () => {
     const gate: Gate = { hold: false, waiting: [] };
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
     const { client } = setup({ [CARD.id]: server }, gate);
     await open('Planner chat');
     await screen.findByText('Hello, wor');
@@ -281,7 +285,7 @@ describe('a streamed reply in the Planner conversation', () => {
   it('does not let Load earlier, pressed as the turn ends, retire the copy', async () => {
     const gate: Gate = { hold: false, waiting: [] };
     const server: CardServer = {
-      phase: 'turn_running', rows: [asked(400, 'question'), replyStarted(401, 'm')],
+      runningTurn: null, phase: 'turn_running', rows: [asked(400, 'question'), replyStarted(401, 'm')],
       live: streaming('T1', { m: 'Hello, wor' }), earlier: [asked(1, 'long ago')],
     };
     const { client } = setup({ [CARD.id]: server }, gate);
@@ -309,7 +313,7 @@ describe('a streamed reply in the Planner conversation', () => {
   });
 
   it('stops re-reading after a failed transcript read, and keeps the reply so far', async () => {
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Hello, wor' }) };
     const { client, requests } = setup({ [CARD.id]: server });
     await open('Planner chat');
     await screen.findByText('Hello, wor');
@@ -331,7 +335,7 @@ describe('a streamed reply in the Planner conversation', () => {
 
   it('re-reads the transcript when the turn ends before its first read has answered', async () => {
     const gate: Gate = { hold: true, waiting: [] };
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Abandoned' }) };
     const { client } = setup({ [CARD.id]: server }, gate);
     await open('Planner chat');
     await screen.findByText('Abandoned');
@@ -348,7 +352,7 @@ describe('a streamed reply in the Planner conversation', () => {
   });
 
   it('retires the copy of a turn that wedged without any outcome', async () => {
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Stuck' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Stuck' }) };
     const { client } = setup({ [CARD.id]: server });
     await open('Planner chat');
     await screen.findByText('Stuck');
@@ -360,7 +364,7 @@ describe('a streamed reply in the Planner conversation', () => {
   });
 
   it('retires the old turn\'s copy when a poll names a new turn', async () => {
-    const server: CardServer = { phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Old turn' }) };
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question'), replyStarted(2, 'm')], live: streaming('T1', { m: 'Old turn' }) };
     setup({ [CARD.id]: server });
     await open('Planner chat');
     await screen.findByText('Old turn');
@@ -371,9 +375,9 @@ describe('a streamed reply in the Planner conversation', () => {
   });
 
   it('never shows one conversation\'s live text in another', async () => {
-    const first: CardServer = { phase: 'turn_running', rows: [asked(1, 'first question')], live: streaming('T1', { m: 'First live' }) };
+    const first: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'first question')], live: streaming('T1', { m: 'First live' }) };
     const second: CardServer = {
-      phase: 'turn_running',
+      runningTurn: null, phase: 'turn_running',
       rows: [{ ...asked(1, 'second question'), card_id: OTHER.id }],
       live: streaming('T9', { m: 'Second live' }),
     };
@@ -387,4 +391,96 @@ describe('a streamed reply in the Planner conversation', () => {
     await screen.findByText('First live');
     expect(screen.queryByText('Second live')).toBeNull();
   });
+
+  it('never shows the previous turn when its first poll answers in a new streaming stretch', async () => {
+    const server: CardServer = { runningTurn: null, phase: 'turn_running', rows: [asked(1, 'question')], live: streaming('T1', { m: 'Old delayed reply' }) };
+    const liveGate: Gate = { hold: true, waiting: [] };
+    const { client } = setup({ [CARD.id]: server }, undefined, liveGate);
+    await open('Planner chat');
+    await waitFor(() => expect(liveGate.waiting.length).toBeGreaterThan(0));
+    server.phase = 'turn_completed';
+    await phaseChanged(client, CARD.id, { transcript: false });
+    await waitFor(() => expect(screen.queryByText('Old delayed reply')).toBeNull());
+    server.phase = 'turn_running';
+    server.live = streaming('T2', { n: 'New current reply' });
+    await phaseChanged(client, CARD.id, { transcript: false });
+    let resurrected = false;
+    const observer = new MutationObserver(() => {
+      if (threadLines().includes('Old delayed reply')) resurrected = true;
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    try {
+      liveGate.hold = false;
+      await act(async () => { for (const answer of liveGate.waiting.splice(0)) answer(); await Promise.resolve(); });
+      await screen.findByText('New current reply');
+      expect(resurrected).toBe(false);
+      expect(screen.queryByText('Old delayed reply')).toBeNull();
+    } finally { observer.disconnect(); }
+  });
+
+  it('drops the previous live copy as soon as the run names another turn, even without an idle phase', async () => {
+    const server: CardServer = { runningTurn: { turn_id: 'T1', elapsed_ms: 100 }, phase: 'turn_running', rows: [asked(1, 'question')], live: streaming('T1', { m: 'Old identified reply' }) };
+    const liveGate: Gate = { hold: false, waiting: [] };
+    const { client } = setup({ [CARD.id]: server }, undefined, liveGate);
+    await open('Planner chat');
+    await screen.findByText('Old identified reply');
+    liveGate.hold = true;
+    await waitFor(() => expect(liveGate.waiting.length).toBeGreaterThan(0));
+    server.runningTurn = { turn_id: 'T2', elapsed_ms: 0 };
+    server.live = streaming('T2', { n: 'New identified reply' });
+    await phaseChanged(client, CARD.id, { transcript: false });
+    await waitFor(() => expect(screen.queryByText('Old identified reply')).toBeNull());
+    liveGate.hold = false;
+    await act(async () => { for (const answer of liveGate.waiting.splice(0)) answer(); await Promise.resolve(); });
+    await screen.findByText('New identified reply');
+    expect(screen.queryByText('Old identified reply')).toBeNull();
+  });
+
+
+  it('keeps matching live text when the first running identity is confirmed', async () => {
+    const server: CardServer = { runningTurn: null, phase: 'issuing_turn', rows: [asked(1, 'question')], live: streaming('T1', { m: 'Already streaming' }) };
+    const liveGate: Gate = { hold: false, waiting: [] };
+    const { client } = setup({ [CARD.id]: server }, undefined, liveGate);
+    await open('Planner chat');
+    await screen.findByText('Already streaming');
+    liveGate.hold = true;
+    server.phase = 'turn_running';
+    server.runningTurn = { turn_id: 'T1', elapsed_ms: 100 };
+    await phaseChanged(client, CARD.id, { transcript: false });
+    await waitFor(() => expect(liveGate.waiting.length).toBeGreaterThan(0));
+    expect(screen.queryByText('Already streaming')).not.toBeNull();
+    liveGate.hold = false;
+    await act(async () => { for (const answer of liveGate.waiting.splice(0)) answer(); await Promise.resolve(); });
+  });
+
+  it('keeps an interrupted turn streaming when its optional running clock is absent', async () => {
+    const server: CardServer = { runningTurn: { turn_id: 'T1', elapsed_ms: 100 }, phase: 'turn_running', rows: [asked(1, 'question')], live: streaming('T1', { m: 'Partial before stop' }) };
+    const { client } = setup({ [CARD.id]: server });
+    await open('Planner chat');
+    await screen.findByText('Partial before stop');
+    server.phase = 'issuing_interrupt';
+    server.runningTurn = null;
+    await phaseChanged(client, CARD.id, { transcript: false });
+    expect(screen.queryByText('Partial before stop')).not.toBeNull();
+    server.live = streaming('T1', { m: 'Partial before stop, still growing' });
+    await screen.findByText('Partial before stop, still growing');
+  });
+
+
+  it('keeps a completed live item retired while the same turn is still running and its old poll is cached', async () => {
+    const server: CardServer = { runningTurn: { turn_id: 'T1', elapsed_ms: 0 }, phase: 'turn_running', rows: [asked(1, 'question')], live: streaming('T1', { m: 'Stored during the turn' }) };
+    const liveGate: Gate = { hold: false, waiting: [] };
+    const { client } = setup({ [CARD.id]: server }, undefined, liveGate);
+    await open('Planner chat');
+    await screen.findByText('Stored during the turn');
+    liveGate.hold = true;
+    server.rows = [asked(1, 'question'), replied(2, 'm', 'Stored during the turn')];
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptKey(CARD.id) }); });
+    await waitFor(() => expect(screen.getAllByText('Stored during the turn')).toHaveLength(1));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(threadLines()).toEqual(['question', 'Stored during the turn', '[Running]']);
+    liveGate.hold = false;
+    await act(async () => { for (const answer of liveGate.waiting.splice(0)) answer(); await Promise.resolve(); });
+  });
+
 });

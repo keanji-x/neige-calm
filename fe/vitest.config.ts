@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { defineBrowserProvider } from '@vitest/browser';
 import { playwright } from '@vitest/browser-playwright';
 
@@ -58,6 +59,19 @@ export default defineConfig({
             instances: [{ browser: 'chromium' }],
             /* `prefers-reduced-motion` is a media feature only the driver can emulate, so it is exposed as a command. */
             commands: {
+              mockChatPerformanceImage: async ({ page }, enabled: boolean) => {
+                const url = 'https://chat-benchmark.invalid/image.svg';
+                await page.unroute(url);
+                if (enabled) await page.route(url, async (route) => {
+                  await new Promise<void>((resolve) => setTimeout(resolve, 75));
+                  await route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"><rect width="640" height="480" fill="#aac"/></svg>' });
+                });
+              },
+              recordChatPerformance: async (_context, count: number, report: string) => {
+                if (!Number.isInteger(count) || count < 1 || count > 10000) throw new Error('invalid benchmark row count');
+                await mkdir('test-results/chat-performance', { recursive: true });
+                await writeFile(`test-results/chat-performance/${count}.json`, report);
+              },
               wheelScroll: async ({ page, iframe }, selector: string, deltaY: number) => {
                 await iframe.locator(selector).hover();
                 await page.mouse.wheel(0, deltaY);

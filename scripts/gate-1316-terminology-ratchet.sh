@@ -32,6 +32,9 @@
 # card's start operations); harness_item/crates
 # 274 -> 275 is the predicate's one read of the existing transcript table plus two test inserts,
 # net of two `reset_harness_items` field references removed with today_summary's retry.
+# #2235 bounded exception: harness_item/fe 95 -> 97 comes solely from imports of the
+# existing wire row type and pagination limit in the production-route benchmark;
+# local names use TranscriptRow and PAGE_LIMIT. No new protocol vocabulary is defined.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

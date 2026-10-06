@@ -406,7 +406,9 @@ export function useConversationStore(
   useEffect(() => { setActionError(null); }, [cardId]);
   /* The running turn's streamed replies: drawn at the tail, never remembered, never counted. */
   const liveReplies = useLiveReplies({
-    transport, unauthorized, cardId, enabled: scope !== null, phase, transcriptKey: transcriptQuery.queryKey, transcriptReads, items,
+    transport, unauthorized, cardId, enabled: scope !== null, phase,
+    runningTurnId: run.data?.running_turn?.turn_id ?? null, nextRead: registry.nextRead,
+    transcriptKey: transcriptQuery.queryKey, transcriptReads, items,
   });
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stop = useConversationStop({

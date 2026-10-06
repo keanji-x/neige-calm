@@ -6,8 +6,8 @@ import {
   type LiveReplyCopy, type LiveReplyObservation, type LiveReplyTranscriptRow,
 } from './conversation-live.js';
 
-const poll = (turnId: string | null, items: Record<string, string>, atMs = 1): LiveReplyObservation => ({
-  kind: 'poll', atMs,
+const poll = (turnId: string | null, items: Record<string, string>, atMs = 1): Extract<LiveReplyObservation, { kind: 'poll' }> => ({
+  kind: 'poll', atMs, activeTurnId: null,
   reply: { turn_id: turnId, items: Object.entries(items).map(([item_id, text]) => ({ item_id, text })) } satisfies HarnessLiveReplies,
 });
 const phase = (tag: HarnessPhaseTag, latestReadStart: number): LiveReplyObservation =>
@@ -83,6 +83,21 @@ describe('reconcileLiveReplies', () => {
     expect(texts(run(poll('T1', { x: 'old' }), poll(null, {}), poll('T2', { y: 'new' })))).toEqual(['T2/y:new']);
     expect(texts(run(poll('T1', { x: 'old' }), poll('T2', {})))).toEqual([]);
   });
+
+  it('rejects a poll outside the confirmed active turn without changing its copies', () => {
+    const held = run(poll('T2', { y: 'current' }));
+    expect(reconcileLiveReplies(held, { ...poll('T1', { x: 'late' }), activeTurnId: 'T2' })).toBe(held);
+    expect(reconcileLiveReplies(run(poll('T1', { x: 'old' })), { ...poll('T1', { x: 'late' }), activeTurnId: 'T2' })).toEqual([]);
+    expect(texts(reconcileLiveReplies(held, { ...poll('T2', { y: 'current and growing' }), activeTurnId: 'T2' })))
+      .toEqual(['T2/y:current and growing']);
+  });
+
+  it('retires old copies on a confirmed run identity and keeps an already matching copy stable', () => {
+    const held = run(poll('T1', { x: 'old' }));
+    expect(reconcileLiveReplies(held, { kind: 'active-turn', turnId: 'T1' })).toBe(held);
+    expect(reconcileLiveReplies(held, { kind: 'active-turn', turnId: 'T2' })).toEqual([]);
+  });
+
 });
 
 describe('liveReplyTurns', () => {

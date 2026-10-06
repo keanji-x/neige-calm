@@ -63,3 +63,17 @@ it('shows a failed image as unavailable and recovers when the streamed destinati
   expect(screen.getByRole('img', { name: 'Screenshot' }).getAttribute('src'))
     .toBe('/api/tracks/track-1/workspace/readfile-raw?path=screenshots%2Fpage.png');
 });
+
+it('reuses a stored reply through unrelated parent updates and still accepts changed content', () => {
+  const rawUrl = vi.fn(() => '/bound-image.png');
+  const files: ReplyImageFiles = { root: '/work/track', files: { rawUrl } };
+  const text = '![Screenshot](image.png)';
+  const { rerender } = render(<div><Reply text={text} imageFiles={files} /><span>Parent one</span></div>);
+  const reads = rawUrl.mock.calls.length;
+  expect(reads).toBeGreaterThan(0);
+  rerender(<div><Reply text={text} imageFiles={files} /><span>Parent two</span></div>);
+  expect(rawUrl).toHaveBeenCalledTimes(reads);
+  rerender(<div><Reply text={`${text}\n\nAdded live words.`} imageFiles={files} /><span>Parent three</span></div>);
+  expect(screen.getByText('Added live words.')).toBeTruthy();
+  expect(rawUrl.mock.calls.length).toBeGreaterThan(reads);
+});

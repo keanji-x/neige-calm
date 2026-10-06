@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { Markdown } from '@astryxdesign/core/Markdown';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
@@ -32,11 +32,11 @@ function ReplyImage({ src, alt, imageFiles }: {
 /** Stored and streamed replies share one renderer. File resolution is confined to image nodes,
  * so code fences, ordinary links, and the copied response retain their original text.
  * `headingLevelStart={3}` leaves the page's h1 and sections' h2 above the reply. */
-export function Reply({ text, imageFiles }: { text: string; imageFiles: ReplyImageFiles | null }) {
+export const Reply = memo(function Reply({ text, imageFiles }: { text: string; imageFiles: ReplyImageFiles | null }) {
   const components = useMemo(() => ({
     image: ({ src, alt }: { src: string; alt: string }) => (
       <ReplyImage key={src} src={src} alt={alt} imageFiles={imageFiles} />
     ),
   }), [imageFiles]);
   return <Markdown density="compact" headingLevelStart={3} components={components}>{text}</Markdown>;
-}
+});

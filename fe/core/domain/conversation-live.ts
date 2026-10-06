@@ -57,7 +57,8 @@ export type LiveReplyCopy = Readonly<{
  * that only adds older pages keeps the number of the read before it.
  */
 export type LiveReplyObservation =
-  | Readonly<{ kind: 'poll'; reply: HarnessLiveReplies; atMs: number }>
+  | Readonly<{ kind: 'poll'; reply: HarnessLiveReplies; atMs: number; activeTurnId: string | null }>
+  | Readonly<{ kind: 'active-turn'; turnId: string }>
   | Readonly<{ kind: 'phase'; phase: HarnessPhaseTag; latestReadStart: number }>
   | Readonly<{ kind: 'transcript'; items: readonly LiveReplyTranscriptRow[]; readStart: number }>;
 
@@ -65,14 +66,15 @@ export type LiveReplyObservation =
  * The copies after one observation; the same array when nothing changed. A copy of item X of turn
  * T is retired at the first of: (a) X's `item/completed` row is in the transcript; (b) the
  * transcript's newest page comes from a read that started after a non-streaming phase was seen;
- * (c) a poll names a turn other than T. A poll that omits X does not retire it, and no poll
+ * (c) a poll or confirmed run names a turn other than T. A poll outside a known active turn is ignored. A poll that omits X does not retire it, and no poll
  * shortens a held text.
  */
 export function reconcileLiveReplies(
   copies: readonly LiveReplyCopy[], observation: LiveReplyObservation,
 ): readonly LiveReplyCopy[] {
   switch (observation.kind) {
-    case 'poll': return withPoll(copies, observation.reply, observation.atMs);
+    case 'poll': return withPoll(copies, observation.reply, observation.atMs, observation.activeTurnId);
+    case 'active-turn': return copiesForTurn(copies, observation.turnId);
     case 'phase': {
       if (!awaitsSettling(copies, observation.phase)) return copies;
       const start = observation.latestReadStart;
@@ -92,15 +94,23 @@ export function awaitsSettling(copies: readonly LiveReplyCopy[], phase: HarnessP
   return !replyMayStream(phase) && copies.some((copy) => copy.settledAt === null);
 }
 
+/** A run's confirmed identity and a live poll use the same retirement rule. */
+function copiesForTurn(copies: readonly LiveReplyCopy[], turnId: string): readonly LiveReplyCopy[] {
+  const kept = copies.filter((copy) => copy.turnId === turnId);
+  return kept.length === copies.length ? copies : kept;
+}
+
 function withPoll(
-  copies: readonly LiveReplyCopy[], reply: HarnessLiveReplies, atMs: number,
+  copies: readonly LiveReplyCopy[], reply: HarnessLiveReplies, atMs: number, activeTurnId: string | null,
 ): readonly LiveReplyCopy[] {
+  const active = activeTurnId === null ? copies : copiesForTurn(copies, activeTurnId);
+  if (activeTurnId !== null && reply.turn_id !== activeTurnId) return active;
   /* A `null` turn says only that nothing streams right now, not that the held turn is over. */
   const turnId = reply.turn_id;
-  if (turnId === null) return copies;
-  let changed = false;
-  const next = copies.filter((copy) => copy.turnId === turnId);
-  if (next.length !== copies.length) changed = true;
+  if (turnId === null) return active;
+  const current = copiesForTurn(active, turnId);
+  let changed = current !== active;
+  const next = [...current];
   for (const item of reply.items) {
     const index = next.findIndex((copy) => copy.itemId === item.item_id);
     const held = next[index];
@@ -112,7 +122,7 @@ function withPoll(
       changed = true;
     }
   }
-  return changed ? next : copies;
+  return changed ? next : active;
 }
 
 function storedItemIds(items: readonly LiveReplyTranscriptRow[]): ReadonlySet<string> {
