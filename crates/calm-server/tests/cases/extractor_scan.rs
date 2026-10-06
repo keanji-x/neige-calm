@@ -1,23 +1,26 @@
-//! Source-scan guard (#2132, #2175): outside `src/extract.rs`, calm-server's source never names
-//! axum's `Json`, `Path` or `Query`, or axum-extra's. Those answer a request rejection in plain
-//! text; `calm_server::extract` wraps them (`JsonBody`, `Path`, `Query` to extract, `Json` to
-//! answer, which is not an extractor) so a rejection answers an `ErrorBody`.
+//! Source-scan guard (#2132, #2175) against reintroducing axum's `Json`, `Path` or `Query` (or
+//! axum-extra's): they answer a request rejection in plain text, where `calm_server::extract`'s
+//! (`JsonBody`, `Path`, `Query` to extract, `Json` to answer, which cannot extract) answer an
+//! `ErrorBody`.
 //!
-//! The invariant, checked over each file's raw token stream at every depth (macro bodies and macro
-//! inputs included), identifiers compared after stripping `r#`:
-//! - no path that runs through `axum` or `axum_extra` reaches a segment `Json`, `Path` or `Query`,
-//!   with or without a leading `::`, in any position: a type, a pattern, an expression, a generic
-//!   argument, an attribute;
-//! - no `use` item that names either crate imports `Json`, `Path` or `Query`, renames anything
-//!   (`self` included), or globs; no `extern crate` renames either;
-//! - either crate's name appears only as the first segment of a literal path (`axum::…`), never bare
-//!   and never followed by a macro metavariable (`axum::$x`).
+//! Threat model: this catches the spellings a contributor would naturally write, on documented and
+//! undocumented routes alike. Deliberately evasive code is out of scope. The behavioural proof for
+//! every documented route is `request_rejections.rs`, which sends each one input its extractors
+//! cannot read and requires an `ErrorBody`; clippy's `disallowed-types` (`clippy.toml`) refuses the
+//! three types at every type position.
 //!
-//! With renames and globs refused, a reference to axum spells the literal path from its crate name,
-//! so the first rule sees every one. `calm-server`'s and the workspace's `Cargo.toml` must not rename
-//! the dependencies either. Not covered: a `macro_rules!` that assembles a path from fragments
-//! passed separately (`$($seg)::*`). `crates/calm-server/clippy.toml` is the type-level backstop:
-//! it disallows axum's three types at every type position, through any alias or macro.
+//! What it checks, over each file's raw token stream at every depth (macro bodies and inputs
+//! included), names compared without `r#`, everywhere in `src/` except `src/extract.rs`:
+//! - a path through `axum` or `axum_extra` that reaches `Json`, `Path` or `Query`, with or without
+//!   a leading `::`;
+//! - a `use` import, read with its full path, of one of those three, or of the `extract` or
+//!   `response` module that holds them; any rename or glob through either crate; an `extern crate`
+//!   rename;
+//! - either crate's name not at the head of a literal path (bare, or followed by `::$x`);
+//! - `include!`, and a `#[path = …]` that leaves `src/` (`..` or an absolute path), which would
+//!   bring in code from outside the scanned files.
+//!
+//! The manifests are parsed as TOML: no dependency gives `axum` or `axum-extra` another name.
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +29,8 @@ use syn::ext::IdentExt;
 
 const CRATES: [&str; 2] = ["axum", "axum_extra"];
 const WRAPPED: [&str; 3] = ["Json", "Path", "Query"];
+/// The modules that hold them: importing one would let `extract::Path` name axum's without `axum`.
+const MODULES: [&str; 2] = ["extract", "response"];
 
 /// An identifier's name without `r#`.
 fn name(token: &TokenTree) -> Option<String> {
@@ -44,17 +49,25 @@ fn path_sep(tokens: &[TokenTree], i: usize) -> bool {
     is_punct(tokens.get(i), ':') && is_punct(tokens.get(i + 1), ':')
 }
 
-/// Every token of `tokens`, groups opened, in order.
-fn flatten(tokens: &[TokenTree], out: &mut Vec<TokenTree>) {
-    for token in tokens {
-        match token {
-            TokenTree::Group(group) => {
-                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
-                flatten(&inner, out);
-            }
-            other => out.push(other.clone()),
-        }
+/// The rest of an attribute after its `#`, when it is `[path = "…"]` or `![path = "…"]`: the
+/// literal it names.
+fn path_attribute(rest: &[TokenTree]) -> Option<String> {
+    let rest = if is_punct(rest.first(), '!') {
+        &rest[1..]
+    } else {
+        rest
+    };
+    let Some(TokenTree::Group(group)) = rest.first() else {
+        return None;
+    };
+    let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+    if group.delimiter() != proc_macro2::Delimiter::Bracket
+        || inner.first().and_then(name).as_deref() != Some("path")
+        || !is_punct(inner.get(1), '=')
+    {
+        return None;
     }
+    Some(inner.get(2).map(ToString::to_string).unwrap_or_default())
 }
 
 fn text(tokens: &[TokenTree]) -> String {
@@ -93,7 +106,18 @@ impl Scan {
                 Some(krate) if CRATES.contains(&krate) => {
                     self.path(&tokens, i);
                 }
+                // Code from outside `src/**/*.rs` would escape the scan.
+                Some("include") if is_punct(tokens.get(i + 1), '!') => {
+                    self.hits.push("include!".into());
+                }
                 _ => {}
+            }
+            // A module file under `src/` is scanned like any other; one outside it is not.
+            if is_punct(tokens.get(i), '#')
+                && let Some(target) = path_attribute(&tokens[i + 1..])
+                && (target.contains("..") || target.trim_matches('"').starts_with('/'))
+            {
+                self.hits.push(format!("#[path = {target}]"));
             }
             if let TokenTree::Group(group) = &tokens[i] {
                 self.level(group.stream());
@@ -131,26 +155,82 @@ impl Scan {
         }
     }
 
-    /// A `use` item, its groups opened: one that names either crate may not import a wrapped
-    /// extractor, rename, or glob.
+    /// A `use` item: each import it makes, with its full path, may not reach axum's (or
+    /// axum-extra's) wrapped extractors or the modules that hold them, rename, or glob.
     fn use_item(&mut self, item: &[TokenTree]) {
-        let mut flat = Vec::new();
-        flatten(item, &mut flat);
-        let Some(from) = flat
-            .iter()
-            .position(|t| name(t).is_some_and(|n| CRATES.contains(&n.as_str())))
-        else {
-            return;
-        };
-        let after = &flat[from..];
-        let refused = after.iter().any(|t| {
-            name(t).is_some_and(|n| n == "as" || WRAPPED.contains(&n.as_str()))
-                || is_punct(Some(t), '*')
-        });
-        if refused {
-            self.hits.push(text(item));
+        let body = &item[1..item.len().saturating_sub(1)];
+        let mut found = Vec::new();
+        imports(body, &mut Vec::new(), &mut found);
+        for import in found {
+            let Some(krate) = import.path.first() else {
+                continue;
+            };
+            if !CRATES.contains(&krate.as_str()) {
+                continue;
+            }
+            let last = import.path.last().map(String::as_str).unwrap_or_default();
+            let module = import.path.len() == 2 && MODULES.contains(&last);
+            if import.renamed || import.glob || WRAPPED.contains(&last) || module {
+                self.hits.push(format!(
+                    "use {}{}{}",
+                    import.path.join("::"),
+                    if import.glob { "::*" } else { "" },
+                    if import.renamed { " as …" } else { "" }
+                ));
+            }
         }
     }
+}
+
+/// One import a `use` item makes: its full path, with `self` folded into its parent.
+struct Import {
+    path: Vec<String>,
+    glob: bool,
+    renamed: bool,
+}
+
+/// The imports of a use tree under `prefix`.
+fn imports(tokens: &[TokenTree], prefix: &mut Vec<String>, out: &mut Vec<Import>) {
+    let mut i = if path_sep(tokens, 0) { 2 } else { 0 };
+    let depth = prefix.len();
+    loop {
+        match tokens.get(i) {
+            Some(segment @ TokenTree::Ident(_)) => {
+                let segment = name(segment).unwrap();
+                if path_sep(tokens, i + 1) {
+                    prefix.push(segment);
+                    i += 3;
+                    continue;
+                }
+                let mut path = prefix.clone();
+                if segment != "self" {
+                    path.push(segment);
+                }
+                let renamed = tokens.get(i + 1).and_then(name).as_deref() == Some("as");
+                out.push(Import {
+                    path,
+                    glob: false,
+                    renamed,
+                });
+            }
+            Some(TokenTree::Punct(punct)) if punct.as_char() == '*' => out.push(Import {
+                path: prefix.clone(),
+                glob: true,
+                renamed: false,
+            }),
+            Some(TokenTree::Group(group)) => {
+                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                for tree in inner.split(|t| is_punct(Some(t), ',')) {
+                    if !tree.is_empty() {
+                        imports(tree, prefix, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+        break;
+    }
+    prefix.truncate(depth);
 }
 
 fn refused(source: &str) -> Vec<String> {
@@ -200,7 +280,46 @@ fn no_calm_server_source_names_an_axum_extractor_outside_extract() {
     );
 }
 
-/// A dependency renamed in a manifest would give axum a name the scan does not know.
+/// Every dependency in a parsed manifest that names the `axum` or `axum-extra` package under
+/// another key: such a key would be a crate name the scan does not know. Every dependency table is
+/// read, target-specific and workspace ones included, whatever the TOML spelling.
+fn renamed_axum_dependencies(manifest: &str) -> Vec<String> {
+    let manifest: toml::Table = manifest.parse().unwrap_or_else(|e| panic!("manifest: {e}"));
+    fn collect<'a>(owner: &str, table: &'a toml::Table, out: &mut Vec<(String, &'a toml::Table)>) {
+        for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if let Some(deps) = table.get(kind).and_then(toml::Value::as_table) {
+                out.push((format!("{owner}{kind}"), deps));
+            }
+        }
+    }
+    let mut tables = Vec::new();
+    collect("", &manifest, &mut tables);
+    if let Some(workspace) = manifest.get("workspace").and_then(toml::Value::as_table) {
+        collect("workspace.", workspace, &mut tables);
+    }
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for (target, table) in targets {
+            if let Some(table) = table.as_table() {
+                collect(&format!("target.{target}."), table, &mut tables);
+            }
+        }
+    }
+    let mut renamed = Vec::new();
+    for (owner, deps) in tables {
+        for (key, entry) in deps {
+            let package = entry
+                .get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key);
+            if ["axum", "axum-extra"].contains(&package) && package != key {
+                renamed.push(format!("{owner}.{key} = {package}"));
+            }
+        }
+    }
+    renamed
+}
+
+/// Neither calm-server's manifest nor the workspace's gives axum another crate name.
 #[test]
 fn no_manifest_renames_the_axum_dependencies() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -209,15 +328,23 @@ fn no_manifest_renames_the_axum_dependencies() {
         manifest.join("../../Cargo.toml"),
     ] {
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        let squeezed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        for package in ["package=\"axum\"", "package=\"axum-extra\""] {
-            assert!(
-                !squeezed.contains(package),
-                "{}: a dependency renames `{package}`",
-                path.display()
-            );
-        }
+        let renamed = renamed_axum_dependencies(&text);
+        assert!(renamed.is_empty(), "{}: {renamed:?}", path.display());
     }
+    let refused = [
+        "[dependencies]\nweb = { package = 'axum', version = '0.8' }",
+        "[dependencies.web]\npackage = \"axum\"",
+        "[dependencies]\nweb.package = \"axum\"",
+        "[dev-dependencies]\n\"web\" = { package = \"axum\" }",
+        "[target.'cfg(unix)'.dependencies]\nweb = { package = \"axum-extra\" }",
+        "[workspace.dependencies]\nweb = { package = \"axum\" }",
+    ];
+    for manifest in refused {
+        assert_eq!(renamed_axum_dependencies(manifest).len(), 1, "{manifest}");
+    }
+    let allowed = "[dependencies]\naxum = { version = \"0.8\" }\n\"axum-extra\" = \"0.10\"\n\
+                   web = { package = \"tower-http\" }";
+    assert!(renamed_axum_dependencies(allowed).is_empty());
 }
 
 /// Every form a review found, each refused; the crate's own extractors and response pass.
@@ -266,6 +393,18 @@ fn the_scan_refuses_every_spelling_of_an_axum_extractor_and_nothing_else() {
         "use axum::*;",
         "use axum::extract::*;",
         "type Params<T> = axum::extract::Path<T>;",
+        // Round 3: an unrenamed import of the module that holds them, so `extract::Path` would
+        // name axum's without `axum`.
+        "use axum::extract; fn r() { let _ = get(|p| async move { let extract::Path(id) = p; }); }",
+        "use axum::response;",
+        "use axum::extract::{self, State};",
+        "use axum::{Router, extract::{self, State}};",
+        "use axum_extra::extract;",
+        "mod m { pub use axum::extract; } use m::*;",
+        // Round 3: code pulled in from outside the scanned files.
+        "include!(\"elsewhere.rs\");",
+        "#[path = \"../elsewhere.rs\"] mod elsewhere;",
+        "#[path = \"/tmp/elsewhere.rs\"] mod elsewhere;",
     ];
     let missed: Vec<&str> = refused_forms
         .into_iter()
@@ -282,6 +421,11 @@ fn the_scan_refuses_every_spelling_of_an_axum_extractor_and_nothing_else() {
         "use axum_extra::extract::cookie::{Cookie, SameSite};",
         "#[axum::debug_handler] async fn h() -> axum::response::Response { todo!() }",
         "use std::path::Path; use serde_json::Value as Json;",
+        // Round 3: a grouped import keeps each path's own ancestry.
+        "use {axum::Router, std::path::Path};",
+        "use {axum::extract::State, crate::extract::{Json, Query}};",
+        "use axum;",
+        "#[path = \"codex_appserver/tool_names_kernel_tests.rs\"] mod tests;",
         "/// `axum::Json` in a doc comment\nfn f() { let _ = \"axum::Json\"; }",
         "macro_rules! m { () => { crate::extract::Json(1) } }",
     ];
