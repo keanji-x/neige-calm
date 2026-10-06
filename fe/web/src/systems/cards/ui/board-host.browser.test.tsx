@@ -178,9 +178,8 @@ it('hands an in-flight compaction to the pointer without jumping', async () => {
   const point = { clientX: box.left + 20, clientY: box.top + 10 };
   try {
     act(() => { handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, ...point })); });
-    expect(cell.getAnimations()).toHaveLength(0);
-    expect(cell.getBoundingClientRect().top).toBeCloseTo(before.top, 0);
     act(() => { document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: point.clientX, clientY: point.clientY + 80 })); });
+    expect(cell.getAnimations()).toHaveLength(0);
     expect(cell.getBoundingClientRect().top).toBeCloseTo(before.top + 80, 0);
   } finally {
     act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: point.clientX, clientY: point.clientY + 80 })); });
@@ -205,4 +204,72 @@ it('compacts directly when reduced motion is enabled', async () => {
   view.rerender(scene([second]));
   expect(cell.getAnimations()).toHaveLength(0);
   expect(cell.getBoundingClientRect().top).toBeLessThan(before);
+});
+
+it('holds the painted position while an in-flight compaction is resized', async () => {
+  await browserPage.viewport(1200, 800);
+  const registry = createCardRegistry(); registry.register(entry);
+  const host = createCardHost(registry);
+  const item = (id: string, originalIndex: number): BoardHostItem => ({
+    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null,
+  });
+  const first = item('resize-flight-first', 0), second = item('resize-flight-second', 1);
+  const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
+    <BoardHost host={host} items={items} activeCardId={null} visible />
+  </div>;
+  const view = render(scene([first, second]));
+  await expect.poll(() => document.querySelector('[data-nc-card-id="resize-flight-second"]')).not.toBeNull();
+  const cell = document.querySelector<HTMLElement>('[data-nc-card-id="resize-flight-second"]')!;
+  await expect.poll(() => cell.getAnimations().length).toBe(0);
+  view.rerender(scene([second]));
+  const animation = cell.getAnimations().find(animation =>
+    (animation.effect as KeyframeEffect).getKeyframes().some(frame => frame.transform !== undefined))!;
+  expect(animation).toBeDefined();
+  animation.pause(); animation.currentTime = 80;
+  const before = cell.getBoundingClientRect();
+  const handle = cell.querySelector<HTMLElement>('[data-nc-card-resize="se"]')!;
+  const box = handle.getBoundingClientRect();
+  const point = { clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 };
+  try {
+    act(() => { handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, ...point })); });
+    expect(cell.getAnimations()).toHaveLength(0);
+    expect(cell.getBoundingClientRect().top).toBeCloseTo(before.top, 0);
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: point.clientX, clientY: point.clientY + 80 })); });
+    expect(cell.getBoundingClientRect().top).toBeCloseTo(before.top, 0);
+    expect(cell.getBoundingClientRect().height).toBeGreaterThan(before.height);
+  } finally {
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: point.clientX, clientY: point.clientY + 80 })); });
+  }
+  await expect.poll(() => cell.getAnimations().length).toBe(0);
+  expect(cell.getBoundingClientRect().top).toBeLessThan(before.top);
+});
+
+it('keeps logical placement when a moving header is clicked without dragging', async () => {
+  const registry = createCardRegistry(); registry.register(entry);
+  const host = createCardHost(registry);
+  const items: readonly BoardHostItem[] = Array.from({ length: 4 }, (_, originalIndex) => ({
+    card: { type: 'board-scroll-term', id: `click-${originalIndex}`, title: null },
+    title: `click-${originalIndex}`, originalIndex, activity: null,
+  }));
+  const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
+    <BoardHost host={host} items={items} activeCardId={null} visible />
+  </div>;
+  const view = render(scene(items));
+  await expect.poll(() => document.querySelector('[data-nc-card-id="click-2"]')).not.toBeNull();
+  const cell = document.querySelector<HTMLElement>('[data-nc-card-id="click-2"]')!;
+  view.rerender(scene(items.slice(2)));
+  const animation = cell.getAnimations().find(animation =>
+    (animation.effect as KeyframeEffect).getKeyframes().some(frame => frame.transform !== undefined))!;
+  expect(animation).toBeDefined();
+  animation.pause(); animation.currentTime = 80;
+  const goal = cell.style.getPropertyValue('--nc-card-layout-y');
+  const handle = cell.querySelector<HTMLElement>('[data-nc-card-drag]')!;
+  const box = handle.getBoundingClientRect();
+  const point = { clientX: box.left + 20, clientY: box.top + 10 };
+  act(() => { handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, ...point })); });
+  act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, ...point })); });
+  await expect.poll(() => cell.getAnimations().length).toBe(0);
+  expect(cell.style.getPropertyValue('--nc-card-layout-y')).toBe(goal);
+  const next = document.querySelector<HTMLElement>('[data-nc-card-id="click-3"]')!;
+  expect(next.getBoundingClientRect().top).toBeGreaterThan(cell.getBoundingClientRect().top);
 });

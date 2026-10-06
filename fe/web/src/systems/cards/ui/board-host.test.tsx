@@ -34,17 +34,19 @@ vi.mock('react-grid-layout', () => ({
     onLayoutChange: GridCapture['onLayoutChange'];
     children?: ReactNode;
   }) => {
+    if (props.gridConfig.containerPadding === null) throw new Error('Board declares container padding');
     grid.layout = props.layout;
     grid.dragHandle = props.dragConfig?.handle;
     grid.resizeHandles = props.resizeConfig?.handles;
     grid.onLayoutChange = props.onLayoutChange;
+    const containerPadding = props.gridConfig.containerPadding;
     return <div data-testid="grid-stub">{Children.map(props.children, child => {
       if (!isValidElement(child)) throw new Error('Expected grid child');
       const item = props.layout.find(item => item.i === child.key);
       if (item === undefined) throw new Error('Missing grid layout');
       const position = calcGridItemPosition({
         containerWidth: props.width, cols: props.gridConfig.cols, margin: props.gridConfig.margin,
-        containerPadding: props.gridConfig.containerPadding, rowHeight: props.gridConfig.rowHeight, maxRows: Infinity,
+        containerPadding, rowHeight: props.gridConfig.rowHeight, maxRows: Infinity,
       }, item.x, item.y, item.w, item.h);
       return cloneElement(child as ReactElement<{ style: React.CSSProperties }>, { style: props.positionStrategy.calcStyle(position) });
     })}</div>;

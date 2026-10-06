@@ -15,7 +15,7 @@ it('reads a daily plan and yesterday’s report evidence in a real browser', asy
   const source = page.getByRole('heading', { name: /Project evidence.*2 report edits/ });
   await expect.element(source).toBeVisible();
   const marker = source.element().querySelector('span:first-child')!;
-  expect(getComputedStyle(marker).rotate).toBe('none');
+  expect(getComputedStyle(marker).rotate).toBe('0deg');
   await source.click();
   await expect.poll(() => getComputedStyle(marker).rotate).toBe('90deg');
   await page.getByText('Individual edits').click();
