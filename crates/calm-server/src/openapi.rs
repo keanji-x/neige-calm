@@ -276,6 +276,7 @@ use utoipa::OpenApi;
         CardPatch,
         HarnessInputPresentation,
         HarnessInputSegment,
+        calm_types::model::HarnessInputOrigin,
         calm_types::planner_attachment::AttachmentId,
         calm_types::planner_attachment::PlannerAttachment,
         calm_types::planner_attachment::UploadAttachmentResponse,

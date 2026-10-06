@@ -717,6 +717,7 @@ mod tests {
                 presentation: crate::model::HarnessInputPresentation::SystemReportEdited,
                 text: "report changed".into(),
                 attachments: Vec::new(),
+                origin: None,
             }]
         );
         let rewritten = serde_json::to_value(&recovered).expect("serialize snapshot");

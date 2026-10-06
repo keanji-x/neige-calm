@@ -616,10 +616,8 @@ fn mail_wake_never_presents_as_user() {
         key: "m1".into(),
         text: "\"R\": s — neige mail cat m1".into(),
     };
-    let segments = Observation::input_segments_for(&[wake]);
-    assert_eq!(segments.len(), 1);
     assert_eq!(
-        segments[0].presentation,
+        wake.input_segment(None).presentation,
         HarnessInputPresentation::SystemMail
     );
 }

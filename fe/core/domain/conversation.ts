@@ -164,6 +164,8 @@ export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.objec
   text: z.string(),
   /* Defaulted rather than required: older segments have no such key, and a row that fails to decode disappears. */
   attachments: z.array(plannerAttachmentSchema).optional().default([]),
+  /* Absent on segments recorded before the kernel named each segment's observation and event. */
+  origin: z.object({ observation: z.string(), event_id: z.number().nullable() }).optional(),
 });
 
 const harnessItemSchema: z.ZodType<HarnessItem> = z.object({

@@ -651,8 +651,8 @@ pub fn try_fold_tail(
     }
 }
 
-/// The transcript view of one issued batch, attachments included; `Observation` has no
-/// attachment field, so the batch path builds segments from entries.
+/// The transcript view of one issued batch, one segment per entry, attachments and origin
+/// included; `Observation` has neither an attachment nor an event id, so segments are built from entries.
 pub fn input_segments_for_entries(
     card_id: &CardId,
     entries: &[QueueEntry],
@@ -660,10 +660,7 @@ pub fn input_segments_for_entries(
     entries
         .iter()
         .map(|entry| {
-            let mut segments = Observation::input_segments_for(&[entry.observation()]);
-            let mut segment = segments
-                .pop()
-                .expect("input_segments_for maps one observation to exactly one segment");
+            let mut segment = entry.observation().input_segment(entry.envelope_id());
             segment.attachments = entry
                 .attachments()
                 .iter()
@@ -832,10 +829,10 @@ mod tests {
         assert_eq!(segments[0].attachments[0].content_type, "image/png");
         assert!(segments[1].attachments.is_empty());
         // Delegated, not restated: the rendered text is whatever
-        // `Observation::input_segments_for` produces for the same observation.
-        let expected = Observation::input_segments_for(&[entries[0].observation()]);
-        assert_eq!(segments[0].text, expected[0].text);
-        assert_eq!(segments[0].presentation, expected[0].presentation);
+        // `Observation::input_segment` produces for the same observation.
+        let expected = entries[0].observation().input_segment(None);
+        assert_eq!(segments[0].text, expected.text);
+        assert_eq!(segments[0].presentation, expected.presentation);
     }
 
     #[test]

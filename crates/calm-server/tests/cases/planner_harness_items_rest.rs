@@ -8,8 +8,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{
-    Card, CardRole, HarnessInputPresentation, HarnessInputSegment, HarnessItem, NewArea, NewCard,
-    NewTrack, new_id,
+    Card, CardRole, HarnessInputOrigin, HarnessInputPresentation, HarnessInputSegment, HarnessItem,
+    NewArea, NewCard, NewTrack, new_id,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -230,14 +230,24 @@ async fn transcript_route_returns_strict_structured_input_segments() {
             presentation: HarnessInputPresentation::SystemReportEdited,
             text: "wording is not the protocol".into(),
             attachments: Vec::new(),
+            origin: Some(HarnessInputOrigin {
+                observation: "report_edited".into(),
+                event_id: Some(17),
+            }),
         },
+        // Stored before #2206: no `origin` key at all.
         HarnessInputSegment {
             presentation: HarnessInputPresentation::User,
             text: "User says:\nhello".into(),
             attachments: Vec::new(),
+            origin: None,
         },
     ];
-    let segments_json = serde_json::to_string(&segments).unwrap();
+    let segments_json = r#"[
+        {"presentation":"system_report_edited","text":"wording is not the protocol","attachments":[],
+         "origin":{"observation":"report_edited","event_id":17}},
+        {"presentation":"user","text":"User says:\nhello","attachments":[]}
+    ]"#;
     let row_id = boot
         .repo
         .harness_item_insert(
@@ -257,7 +267,7 @@ async fn transcript_route_returns_strict_structured_input_segments() {
                 }
             })
             .to_string(),
-            Some(&segments_json),
+            Some(segments_json),
         )
         .await
         .unwrap();
@@ -278,6 +288,15 @@ async fn transcript_route_returns_strict_structured_input_segments() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body[0]["input_segments"][0]["origin"],
+        json!({"observation": "report_edited", "event_id": 17})
+    );
+    assert_eq!(
+        body[0]["input_segments"][1],
+        json!({"presentation": "user", "text": "User says:\nhello", "attachments": []}),
+        "#2206: a segment stored before origins were recorded is sent without one"
+    );
     let rows: Vec<HarnessItem> = serde_json::from_value(body).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].input_segments, Some(segments));

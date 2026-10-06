@@ -136,25 +136,32 @@ impl Fixture {
 
     async fn commit(&self) -> (i64, QueueEntry) {
         let inner = &self.harness.inner;
-        let event = Event::WorktreeCommitted {
+        self.event_entry(&Event::WorktreeCommitted {
             track_id: inner.track_id.clone(),
             card_id: inner.card_id.clone(),
             commit_sha: "retained-commit".into(),
             branch: "completed-slice".into(),
             delivery_id: None,
             base_is_ancestor: None,
-        };
-        let scope = harness_event_scope(inner, "worktree.committed");
+        })
+        .await
+    }
+
+    /// Append `event` to this Track's log and wrap the observation the dispatcher resolves it to
+    /// under its `events.id`, as `observe_envelope` does.
+    pub(super) async fn event_entry(&self, event: &Event) -> (i64, QueueEntry) {
+        let inner = &self.harness.inner;
+        let scope = harness_event_scope(inner, event.kind_tag());
         let mut tx = self.repo.pool().begin().await.unwrap();
         let id =
-            append_decision_event_in_tx(&mut tx, &ActorId::KernelDispatcher, &scope, None, &event)
+            append_decision_event_in_tx(&mut tx, &ActorId::KernelDispatcher, &scope, None, event)
                 .await
                 .unwrap();
         tx.commit().await.unwrap();
         let observation = crate::dispatcher::resolve_harness_observation(
             self.repo.as_ref(),
             &inner.track_id,
-            &event,
+            event,
         )
         .await
         .unwrap()
@@ -193,7 +200,7 @@ impl Fixture {
         serde_json::from_value(row.handle_state_json.unwrap()).unwrap()
     }
 
-    async fn issue(&self) {
+    pub(super) async fn issue(&self) {
         maybe_issue_turn(&self.harness.inner).await.unwrap();
     }
 }

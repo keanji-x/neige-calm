@@ -307,6 +307,11 @@ async fn a_queued_entry_is_steered_into_the_running_turn_and_its_row_is_upgraded
             .unwrap()
             .contains("second, now")
     );
+    assert_eq!(
+        projection["input_segments"][0]["origin"],
+        json!({"observation": "user_message", "event_id": null}),
+        "#2206: the steered segment names the entry it came from"
+    );
     let projection_db_id = projection["id"].as_i64().unwrap();
     let added = boot.event_payloads("harness.item.added").await;
     assert!(

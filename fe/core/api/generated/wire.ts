@@ -285,6 +285,20 @@ export type ForgeFailedCheck = { name: string, } & ({ url: string, } | { id: str
 export type ForgeMergeSubject = { pr_number: number, };
 
 /**
+ * Why a segment was in the turn: the observation that produced it and the event behind it.
+ */
+export type HarnessInputOrigin = { 
+/**
+ * The observation's serde `type` tag, e.g. `task_completed`, `track_wake`, `user_message`.
+ */
+observation: string, 
+/**
+ * The `events.id` that produced the observation (for a folded entry, the newest one);
+ * `null` when no event did, e.g. a user message or the Track goal seed.
+ */
+event_id: number | null, };
+
+/**
  * How one segment of a harness `userMessage` should be presented to a human. The rendered English
  * is not a protocol: wording changes must not turn a system update into something the UI attributes to the user.
  */
@@ -297,7 +311,14 @@ export type HarnessInputSegment = { presentation: HarnessInputPresentation, text
 /**
  * The images this segment carried into `turn/start`.
  */
-attachments: Array<PlannerAttachment>, };
+attachments: Array<PlannerAttachment>, 
+/**
+ * The queue entry this segment was built from. Every segment a turn issues or a steer
+ * delivers carries one. Absent only on rows written before #2206 and on the echo of a
+ * turn an older binary had in flight (its segments were restored from that binary's
+ * snapshot, which has no queue entry to name).
+ */
+origin?: HarnessInputOrigin, };
 
 export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, 
 /**

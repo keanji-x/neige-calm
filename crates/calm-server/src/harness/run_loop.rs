@@ -4198,3 +4198,6 @@ mod report_edit_replay_tests;
 
 #[cfg(test)]
 mod result_receipt_tests;
+
+#[cfg(test)]
+mod turn_origin_tests;

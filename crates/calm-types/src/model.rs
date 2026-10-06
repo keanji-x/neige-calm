@@ -405,6 +405,25 @@ pub struct HarnessInputSegment {
     /// The images this segment carried into `turn/start`.
     #[serde(default)]
     pub attachments: Vec<PlannerAttachment>,
+    /// The queue entry this segment was built from. Every segment a turn issues or a steer
+    /// delivers carries one. Absent only on rows written before #2206 and on the echo of a
+    /// turn an older binary had in flight (its segments were restored from that binary's
+    /// snapshot, which has no queue entry to name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub origin: Option<HarnessInputOrigin>,
+}
+
+/// Why a segment was in the turn: the observation that produced it and the event behind it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct HarnessInputOrigin {
+    /// The observation's serde `type` tag, e.g. `task_completed`, `track_wake`, `user_message`.
+    pub observation: String,
+    /// The `events.id` that produced the observation (for a folded entry, the newest one);
+    /// `null` when no event did, e.g. a user message or the Track goal seed.
+    #[schema(required = true, nullable = true)]
+    pub event_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
