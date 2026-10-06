@@ -1188,7 +1188,7 @@ impl AppState {
             mcp_context.clone(),
             mcp_socket_path,
             mcp_shim_bin,
-            mcp_registry.clone(),
+            mcp_registry,
         )
         .await?;
         if let Err(e) = codex
@@ -1350,17 +1350,14 @@ impl AppState {
             }
         }
         crate::builtin_plugins::spawn_background(&mcp_context);
-        // After autospawn, so the boot write already names the running set and a restart over an
-        // unchanged set rewrites nothing; before the daemon boots, so it starts from this config.
+        // Subscribed before the daemon boots, so its first Running refreshes every thread it
+        // adopted; plugin changes from here on are followed.
         crate::codex_mcp_toolset::CodexMcpToolset {
-            ctx: mcp_context.clone(),
-            registry: mcp_registry,
             home: codex.shared_codex_home.clone(),
             appserver: shared_codex_appserver.clone(),
             debounce: crate::codex_mcp_toolset::DEBOUNCE,
         }
-        .start(&events)
-        .await;
+        .start(&events);
 
         let worker_flow = WorkerFlowDriver::from_state_parts(
             repo.clone(),

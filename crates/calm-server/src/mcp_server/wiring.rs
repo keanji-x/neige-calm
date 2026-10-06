@@ -63,10 +63,9 @@ pub(crate) fn card_mcp_thread_start_config(
     config
 }
 
-/// The kernel entry's catalog generation in the shared CODEX_HOME `config.toml` (#2014),
-/// `<catalog digest>.<write counter>`. The shim ignores it; it exists so the entry changes when
-/// the served catalog does, because Codex restarts a loaded thread's MCP server on
-/// `config/mcpServer/reload` only when its entry changed.
+/// The kernel entry's generation counter in the shared CODEX_HOME `config.toml` (#2014). The shim
+/// ignores it; it exists so the entry changes whenever the catalog may have, because Codex restarts
+/// a loaded thread's MCP server on `config/mcpServer/reload` only when its entry changed.
 pub const MCP_TOOLSET_ENV: &str = "NEIGE_MCP_TOOLSET";
 
 /// Daemon-shim MCP environment assembler.

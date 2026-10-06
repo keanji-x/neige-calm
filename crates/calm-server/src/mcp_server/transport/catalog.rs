@@ -45,25 +45,6 @@ pub(crate) async fn tool_descriptors_for_connection(
     Ok(descriptors)
 }
 
-/// The catalog digest in the kernel MCP entry's generation (#2014): a digest of exactly what a
-/// bootstrap `tools/list` serves, sorted by name. Equal catalogs give equal values, so a restart
-/// over an unchanged running plugin set rewrites nothing; any served change (a tool added or
-/// removed, or a reload that changed a schema) gives a new one.
-pub(crate) async fn bootstrap_catalog_digest(
-    ctx: &Arc<AppContext>,
-    registry: &ToolRegistry,
-) -> String {
-    let mut tools: Vec<Value> = bootstrap_tool_descriptors(ctx, registry)
-        .await
-        .into_iter()
-        .map(ToolDescriptor::into_mcp_value)
-        .collect();
-    tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-    let canonical = serde_json::to_vec(&tools).expect("a JSON value always serializes");
-    let digest = format!("{:x}", Sha256::digest(&canonical));
-    digest[..32].to_string()
-}
-
 /// One production, two views (#2289 D2): what a resolved caller may call, and the subset its
 /// `tools/list` shows. Both come from [`SessionCatalog::of`], so `listed` can never name a tool
 /// the catalog does not.

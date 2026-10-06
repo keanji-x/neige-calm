@@ -835,26 +835,29 @@ mod boot_order_tests {
         assert!(recover < reaper);
     }
 
-    /// The Codex MCP catalog follower starts at boot, after plugin autospawn, so its boot write
-    /// already names the running set (#2014). Its readiness watch makes the order against the
-    /// daemon's boot irrelevant.
+    /// The Codex MCP catalog follower starts while the state is built, before `main` boots the
+    /// daemon, so the daemon's first Running refreshes every thread it adopted (#2014).
     #[test]
-    fn codex_mcp_toolset_starts_after_plugin_autospawn() {
+    fn codex_mcp_toolset_starts_while_the_state_is_built() {
         let state_rs = include_str!("state.rs");
-        let autospawn = state_rs
-            .find("plugin.autospawn_enabled().await")
-            .expect("boot autospawns plugins");
         let toolset = state_rs
             .find("crate::codex_mcp_toolset::CodexMcpToolset {")
             .expect("boot starts the Codex MCP catalog follower");
-        assert!(autospawn < toolset);
         let start = &state_rs[toolset..];
-        let end = start.find(".await;").expect("the start is awaited");
+        let end = start.find(';').expect("the start is one statement");
         assert!(
             start[..end].contains(".start(&events)"),
             "{}",
             &start[..end]
         );
+        let main_rs = include_str!("main.rs");
+        let state_built = main_rs
+            .find("AppState::boot(&cfg).await")
+            .expect("main builds the state");
+        let daemon_boot = main_rs
+            .find("boot_harnesses(&state).await")
+            .expect("main boots the daemon");
+        assert!(state_built < daemon_boot);
     }
 }
 

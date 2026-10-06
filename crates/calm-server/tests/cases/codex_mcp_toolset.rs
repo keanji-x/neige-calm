@@ -1,6 +1,7 @@
-//! A running-plugin-set change reaches live Codex threads (#2014): the kernel MCP entry in the
-//! shared `config.toml` gets a new catalog generation and the daemon is asked to reload MCP, once
-//! per burst. Driven through the real `PluginHost` lifecycle; the daemon is the fixtures fake.
+//! A running-plugin-set change reaches live Codex threads (#2014): every plugin-state burst and
+//! every daemon Running bumps the kernel MCP entry's generation in the shared `config.toml` and
+//! asks the daemon to reload MCP. Driven through the real `PluginHost` lifecycle; the daemon is the
+//! fixtures fake.
 //!
 //! The follower listens on its own bus. A test runs the lifecycle operations to completion, then
 //! forwards everything the host published, so each step reaches the follower as one queued burst:
@@ -8,7 +9,6 @@
 
 #![cfg(unix)]
 
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,9 +17,7 @@ use calm_server::codex_mcp_toolset::{CodexMcpToolset, DEBOUNCE};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, EventBus};
-use calm_server::mcp_server::{
-    AppContext, McpServer, McpShimConfig, ToolRegistry, build_default_registry,
-};
+use calm_server::mcp_server::{AppContext, McpServer, McpShimConfig, build_default_registry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::shared_codex_appserver::{FakeMcpServerReload, SharedCodexAppServer};
 use calm_server::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
@@ -35,17 +33,15 @@ const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
 const DAEMON_TOKEN: &str = "codex-mcp-toolset-daemon-token";
 
 struct Fx {
+    repo: Arc<dyn Repo>,
     host: Arc<PluginHost>,
     /// Everything the plugin host published, until [`Fx::forward`] passes it on.
     host_events: std::sync::Mutex<Receiver<BroadcastEnvelope>>,
     /// The bus the follower listens on.
     followed: EventBus,
-    ctx: Arc<AppContext>,
-    registry: Arc<ToolRegistry>,
     home: Arc<SharedCodexHome>,
     appserver: Arc<SharedCodexAppServer>,
-    plugins_dir: PathBuf,
-    /// The kernel MCP listener a Codex thread's shim reaches, serving from `ctx` and `registry`.
+    /// The kernel MCP listener a Codex thread's shim reaches.
     server: Arc<McpServer>,
     _tmp: TempDir,
 }
@@ -141,33 +137,32 @@ async fn fixture(plugins: &[(&str, &[&str])]) -> Fx {
     .await
     .unwrap();
     Fx {
+        repo: repo.clone(),
         host,
         host_events: std::sync::Mutex::new(events.subscribe()),
         followed: EventBus::new(),
-        ctx,
-        registry,
         home,
-        appserver: SharedCodexAppServer::new_fake_running_with_pending(repo, None),
-        plugins_dir,
+        appserver: SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
         server,
         _tmp: tmp,
     }
 }
 
 impl Fx {
-    /// The production boot entry: write the generation, then follow plugin state. What the host
-    /// published before is history the boot write already covers, so it is dropped.
-    async fn start(&self) {
+    /// The production boot entry, as a process that starts now: what the host published before
+    /// is dropped, the way a restarted calm-server never sees its predecessor's events.
+    fn start(&self) {
+        self.start_with(&self.appserver, &self.followed);
+    }
+
+    fn start_with(&self, appserver: &Arc<SharedCodexAppServer>, followed: &EventBus) {
         while self.host_events.lock().unwrap().try_recv().is_ok() {}
         CodexMcpToolset {
-            ctx: self.ctx.clone(),
-            registry: self.registry.clone(),
             home: self.home.clone(),
-            appserver: self.appserver.clone(),
+            appserver: appserver.clone(),
             debounce: DEBOUNCE,
         }
-        .start(&self.followed)
-        .await;
+        .start(followed);
     }
 
     /// Pass what the host published since the last call to the follower, as one queued burst.
@@ -190,12 +185,6 @@ impl Fx {
             .get("NEIGE_MCP_TOOLSET")?
             .as_str()
             .map(str::to_string)
-    }
-
-    /// The catalog digest part of the generation; the counter after the dot changes on every write.
-    fn digest(&self) -> String {
-        let toolset = self.toolset().unwrap();
-        toolset.split_once('.').unwrap().0.to_string()
     }
 
     /// What a new Codex thread's shim lists now: a daemon-trust `tools/list` with no thread
@@ -233,13 +222,15 @@ impl Fx {
             .collect()
     }
 
-    /// The config file's inode: the atomic writer renames a new file into place on every write.
-    fn config_inode(&self) -> u64 {
-        std::fs::metadata(self.config_path()).unwrap().ino()
-    }
-
     fn reloads(&self) -> u64 {
         self.appserver.mcp_server_reload_count_for_test()
+    }
+
+    async fn has_tool(&self) -> bool {
+        self.bootstrap_tools()
+            .await
+            .iter()
+            .any(|name| name.ends_with("probe_one"))
     }
 
     /// Wait until `want` reload calls reached the daemon, whatever they were answered.
@@ -255,20 +246,24 @@ impl Fx {
     }
 
     async fn wait_reloads(&self, want: u64) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while self.reloads() < want {
-            assert!(
-                Instant::now() < deadline,
-                "expected {want} MCP reloads, saw {}",
-                self.reloads()
-            );
-            sleep(Duration::from_millis(25)).await;
-        }
+        wait_reloads_on(&self.appserver, want).await;
     }
 
     /// Long enough for any refresh a queued burst or readiness change scheduled to have run.
     async fn settle(&self) {
         sleep(DEBOUNCE * 2 + Duration::from_millis(500)).await;
+    }
+}
+
+async fn wait_reloads_on(appserver: &SharedCodexAppServer, want: u64) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while appserver.mcp_server_reload_count_for_test() < want {
+        assert!(
+            Instant::now() < deadline,
+            "expected {want} MCP reloads, saw {}",
+            appserver.mcp_server_reload_count_for_test()
+        );
+        sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -289,31 +284,26 @@ async fn rpc(
 }
 
 #[tokio::test]
-async fn enable_and_disable_each_rewrite_the_generation_and_reload_once() {
+async fn each_plugin_change_bumps_the_generation_and_reloads_once() {
     let fx = fixture(&[("dev.tools", &["probe.one"])]).await;
-    fx.start().await;
-    let boot = fx.toolset().expect("boot writes the generation");
-    assert_eq!(fx.reloads(), 0, "the boot write sends no reload");
+    fx.start();
+    assert_eq!(
+        fx.toolset(),
+        None,
+        "the boot pass writes nothing of its own"
+    );
 
     fx.host.enable("dev.tools").await.unwrap();
     fx.forward();
     fx.wait_reloads(1).await;
-    assert_ne!(
-        fx.digest(),
-        digest_of(&boot),
-        "a new plugin tool changes the digest"
-    );
+    assert_eq!(fx.toolset().as_deref(), Some("1"));
     fx.settle().await;
     assert_eq!(fx.reloads(), 1, "one enable is one reload");
 
     fx.host.disable("dev.tools").await.unwrap();
     fx.forward();
     fx.wait_reloads(2).await;
-    assert_eq!(
-        fx.digest(),
-        digest_of(&boot),
-        "the same served catalog gives the same digest"
-    );
+    assert_eq!(fx.toolset().as_deref(), Some("2"));
     fx.settle().await;
     assert_eq!(fx.reloads(), 2, "one disable is one reload");
     fx.home
@@ -322,81 +312,29 @@ async fn enable_and_disable_each_rewrite_the_generation_and_reload_once() {
 }
 
 #[tokio::test]
-async fn a_catalog_that_changes_and_changes_back_inside_one_window_still_refreshes() {
+async fn a_catalog_that_changes_and_changes_back_still_refreshes() {
     let fx = fixture(&[("dev.tools", &["probe.one"])]).await;
     fx.host.enable("dev.tools").await.unwrap();
-    fx.start().await;
-    let before = fx.toolset().unwrap();
-    let has_tool = |names: &[String]| names.iter().any(|name| name.ends_with("probe_one"));
-    assert!(has_tool(&fx.bootstrap_tools().await));
+    fx.start();
+    assert!(fx.has_tool().await);
 
     fx.host.disable("dev.tools").await.unwrap();
     // A Codex thread starting now lists, and keeps, a catalog without the plugin's tool.
-    assert!(!has_tool(&fx.bootstrap_tools().await));
+    assert!(!fx.has_tool().await);
     fx.host.enable("dev.tools").await.unwrap();
-    assert!(has_tool(&fx.bootstrap_tools().await));
+    assert!(fx.has_tool().await);
     fx.forward();
 
     fx.wait_reloads(1).await;
-    assert_eq!(
-        fx.digest(),
-        digest_of(&before),
-        "the final catalog equals the written one"
-    );
-    assert_ne!(
-        fx.toolset().unwrap(),
-        before,
-        "the entry still changes, so the reload restarts the thread's server"
-    );
+    assert_eq!(fx.toolset().as_deref(), Some("1"));
     fx.settle().await;
     assert_eq!(fx.reloads(), 1);
-}
-
-#[tokio::test]
-async fn plugin_reload_refreshes_and_a_toolless_plugin_leaving_does_not() {
-    let fx = fixture(&[("dev.tools", &["probe.one"]), ("dev.quiet", &[])]).await;
-    fx.host.enable("dev.tools").await.unwrap();
-    fx.host.enable("dev.quiet").await.unwrap();
-    fx.start().await;
-    let before = fx.toolset().unwrap();
-    let inode = fx.config_inode();
-
-    // A plugin that serves no tools leaves Running: the served catalog never changed.
-    fx.host.disable("dev.quiet").await.unwrap();
-    fx.forward();
-    fx.settle().await;
-    assert_eq!(fx.reloads(), 0, "an unchanged catalog sends no reload");
-    assert_eq!(
-        fx.config_inode(),
-        inode,
-        "an unchanged catalog writes nothing"
-    );
-
-    // A same-manifest reload stops the plugin and brings it back: in the gap a new thread could
-    // list the catalog without it, so the window that saw it enter Running forces a refresh.
-    fx.host.reload("dev.tools").await.unwrap();
-    fx.forward();
-    fx.wait_reloads(1).await;
-    assert_eq!(fx.digest(), digest_of(&before));
-    assert_ne!(fx.toolset().unwrap(), before);
-    fx.settle().await;
-    assert_eq!(fx.reloads(), 1);
-
-    // A reload whose manifest now serves another tool.
-    write_app(&fx.plugins_dir, "dev.tools", &["probe.one", "probe.two"]);
-    fx.host.reload("dev.tools").await.unwrap();
-    fx.forward();
-    fx.wait_reloads(2).await;
-    assert_ne!(fx.digest(), digest_of(&before));
-    fx.settle().await;
-    assert_eq!(fx.reloads(), 2);
 }
 
 #[tokio::test]
 async fn a_burst_of_plugin_changes_is_one_reload() {
     let fx = fixture(&[("dev.alpha", &["probe.a"]), ("dev.beta", &["probe.b"])]).await;
-    fx.start().await;
-    let boot = fx.toolset().unwrap();
+    fx.start();
 
     let (alpha, beta) = tokio::join!(fx.host.enable("dev.alpha"), fx.host.enable("dev.beta"));
     alpha.unwrap();
@@ -406,42 +344,68 @@ async fn a_burst_of_plugin_changes_is_one_reload() {
     fx.wait_reloads(1).await;
     fx.settle().await;
     assert_eq!(fx.reloads(), 1, "the burst is gathered into one refresh");
-    assert_ne!(fx.digest(), digest_of(&boot));
-    // The one refresh wrote the final catalog: a boot pass over it writes nothing.
-    let inode = fx.config_inode();
-    fx.start().await;
-    assert_eq!(fx.config_inode(), inode);
+    assert_eq!(fx.toolset().as_deref(), Some("1"));
 }
 
 #[tokio::test]
-async fn each_daemon_running_sends_one_reload_for_an_adopted_daemon() {
+async fn each_daemon_running_bumps_the_generation_and_reloads_once() {
     let fx = fixture(&[("dev.tools", &["probe.one"])]).await;
     fx.host.enable("dev.tools").await.unwrap();
-    // A restart whose running set differs from what the adopted daemon's threads listed: the boot
-    // write changes the generation and sends nothing while no daemon is Running.
-    fx.start().await;
+    fx.start();
     assert_eq!(fx.reloads(), 0);
 
-    // The boot takeover installs Running.
+    // The boot spawn or takeover installs Running.
     fx.appserver.publish_readiness_for_test(1, true);
     fx.wait_reloads(1).await;
+    assert_eq!(fx.toolset().as_deref(), Some("1"));
     // The same incarnation re-stamped is not a new Running.
     fx.appserver.publish_readiness_for_test(1, true);
     fx.settle().await;
     assert_eq!(fx.reloads(), 1, "one Running is one reload");
+    assert_eq!(fx.toolset().as_deref(), Some("1"));
 
     // A respawn: transition entry, then the next incarnation.
     fx.appserver.publish_readiness_for_test(1, false);
     fx.appserver.publish_readiness_for_test(2, true);
     fx.wait_reloads(2).await;
+    assert_eq!(fx.toolset().as_deref(), Some("2"));
     fx.settle().await;
     assert_eq!(fx.reloads(), 2);
 }
 
 #[tokio::test]
-async fn a_reload_owed_while_no_daemon_is_connected_is_sent_at_the_next_running() {
+async fn a_restart_with_unprocessed_plugin_events_refreshes_the_adopted_daemon() {
     let fx = fixture(&[("dev.tools", &["probe.one"])]).await;
-    fx.start().await;
+    fx.host.enable("dev.tools").await.unwrap();
+    fx.start();
+    fx.appserver.publish_readiness_for_test(1, true);
+    fx.wait_reloads(1).await;
+    let before = fx.toolset();
+
+    // A plugin flap the process never gets to handle: a thread that survives in the daemon lists
+    // the catalog without the plugin, then the process exits before forwarding the events.
+    fx.host.disable("dev.tools").await.unwrap();
+    assert!(!fx.has_tool().await);
+    fx.host.enable("dev.tools").await.unwrap();
+    assert!(fx.has_tool().await);
+
+    // The next process adopts the same daemon (a new connection, so a new readiness channel).
+    let adopted = SharedCodexAppServer::new_fake_running_with_pending(fx.repo.clone(), None);
+    let next_process_bus = EventBus::new();
+    fx.start_with(&adopted, &next_process_bus);
+    adopted.publish_readiness_for_test(1, true);
+    wait_reloads_on(&adopted, 1).await;
+    assert_ne!(
+        fx.toolset(),
+        before,
+        "the takeover changes the entry, so its reload restarts the surviving thread's server"
+    );
+}
+
+#[tokio::test]
+async fn a_reload_with_no_daemon_connected_is_sent_at_the_next_running() {
+    let fx = fixture(&[("dev.tools", &["probe.one"])]).await;
+    fx.start();
     fx.appserver
         .answer_mcp_server_reload_for_test(FakeMcpServerReload::NotConnected);
 
@@ -450,11 +414,17 @@ async fn a_reload_owed_while_no_daemon_is_connected_is_sent_at_the_next_running(
     fx.wait_reload_attempts(1).await;
     fx.settle().await;
     assert_eq!(fx.reloads(), 0);
+    let written = fx.toolset();
 
     fx.appserver
         .answer_mcp_server_reload_for_test(FakeMcpServerReload::Sent);
     fx.appserver.publish_readiness_for_test(1, true);
     fx.wait_reloads(1).await;
+    assert_ne!(
+        fx.toolset(),
+        written,
+        "the Running writes a fresh generation"
+    );
     fx.settle().await;
     assert_eq!(fx.reloads(), 1);
 }
@@ -463,7 +433,7 @@ async fn a_reload_owed_while_no_daemon_is_connected_is_sent_at_the_next_running(
 async fn a_failed_reload_is_retried_at_the_next_plugin_change() {
     let fx = fixture(&[("dev.tools", &["probe.one"]), ("dev.quiet", &[])]).await;
     fx.host.enable("dev.quiet").await.unwrap();
-    fx.start().await;
+    fx.start();
     fx.appserver
         .answer_mcp_server_reload_for_test(FakeMcpServerReload::Fail);
 
@@ -472,36 +442,35 @@ async fn a_failed_reload_is_retried_at_the_next_plugin_change() {
     fx.wait_reload_attempts(1).await;
     fx.settle().await;
     assert_eq!(fx.reloads(), 0);
-    let written = fx.toolset().unwrap();
 
-    // A plugin change that neither changes the catalog nor forces a refresh still pays the owed
-    // reload: a plugin without tools leaving Running.
     fx.appserver
         .answer_mcp_server_reload_for_test(FakeMcpServerReload::Sent);
     fx.host.disable("dev.quiet").await.unwrap();
     fx.forward();
     fx.wait_reloads(1).await;
-    assert_eq!(fx.toolset().unwrap(), written);
     fx.settle().await;
     assert_eq!(fx.reloads(), 1);
 }
 
 #[tokio::test]
-async fn a_restart_over_an_unchanged_running_set_writes_nothing() {
+async fn a_failed_generation_write_is_retried_at_the_next_plugin_change() {
     let fx = fixture(&[("dev.tools", &["probe.one"])]).await;
+    fx.start();
+    // The kernel entry is gone (say, boot's config write failed): the bump is refused and no
+    // reload goes out, since one over an unchanged entry restarts nothing.
+    let config = fx.config_path();
+    let kept = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, "").unwrap();
+
     fx.host.enable("dev.tools").await.unwrap();
-    fx.start().await;
-    let first = fx.toolset().unwrap();
-    let inode = fx.config_inode();
+    fx.forward();
+    fx.settle().await;
+    assert_eq!(fx.appserver.mcp_server_reload_attempt_count_for_test(), 0);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "");
 
-    // A second boot over the same home and running set.
-    fx.start().await;
-    assert_eq!(fx.toolset().unwrap(), first);
-    assert_eq!(fx.config_inode(), inode, "the boot write is idempotent");
-    assert_eq!(fx.reloads(), 0);
-}
-
-/// The catalog digest part of a generation `<digest>.<n>`.
-fn digest_of(generation: &str) -> &str {
-    generation.split_once('.').unwrap().0
+    std::fs::write(&config, kept).unwrap();
+    fx.host.disable("dev.tools").await.unwrap();
+    fx.forward();
+    fx.wait_reloads(1).await;
+    assert_eq!(fx.toolset().as_deref(), Some("1"));
 }

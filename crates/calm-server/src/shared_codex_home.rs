@@ -274,13 +274,12 @@ impl SharedCodexHome {
         self.ensure_config(None, Some((shim, daemon_token)))
     }
 
-    /// Set the kernel entry's `env.NEIGE_MCP_TOOLSET` to `<digest>.<n>`, `n` one past the entry's
-    /// current counter, so every write changes the entry Codex compares. Without `force` an entry
-    /// whose digest already equals `digest` is left untouched (`Ok(false)`); with it the entry is
-    /// always rewritten, for a catalog that changed and changed back. `Ok(true)` when the file was
-    /// rewritten. Same lock and atomic writer as every other edit. Refuses when the kernel entry has
-    /// no `command`: a lone `env` table would leave Codex an entry it cannot start.
-    pub fn ensure_mcp_toolset(&self, digest: &str, force: bool) -> io::Result<bool> {
+    /// Bump the kernel entry's `env.NEIGE_MCP_TOOLSET` generation to one past its current value
+    /// and return the new value. An absent or unparseable value counts as 0; the counter wraps, which
+    /// still yields a value unlike the current one, the only property Codex's entry comparison needs.
+    /// Same lock and atomic writer as every other edit. Refuses when the kernel entry has no
+    /// `command`: a lone `env` table would leave Codex an entry it cannot start.
+    pub fn bump_mcp_toolset(&self) -> io::Result<u64> {
         let lock_path = self.home.join(".config.lock");
         let _lock = ConfigLock::acquire(&lock_path)?;
         let cfg_path = self.home.join("config.toml");
@@ -311,20 +310,15 @@ impl SharedCodexHome {
             ));
         };
         let toolset_key = crate::mcp_server::wiring::MCP_TOOLSET_ENV;
-        // An absent or unparseable value counts as counter 0 with no digest.
-        let (current_digest, counter) = env_table
+        let generation = env_table
             .get(toolset_key)
             .and_then(toml_edit::Item::as_str)
-            .and_then(|value| value.split_once('.'))
-            .and_then(|(digest, n)| Some((Some(digest.to_string()), n.parse::<u64>().ok()?)))
-            .unwrap_or((None, 0));
-        if !force && current_digest.as_deref() == Some(digest) {
-            return Ok(false);
-        }
-        let value = format!("{digest}.{}", counter.wrapping_add(1));
-        env_table[toolset_key] = toml_edit::value(value);
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0)
+            .wrapping_add(1);
+        env_table[toolset_key] = toml_edit::value(generation.to_string());
         write_config_0600(&cfg_path, doc.to_string().as_bytes())?;
-        Ok(true)
+        Ok(generation)
     }
 
     fn ensure_config(

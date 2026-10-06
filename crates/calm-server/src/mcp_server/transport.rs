@@ -6,8 +6,7 @@ mod forge_payload;
 pub(crate) use forge_payload::{PluginForgePayload, forge_action_payload};
 mod catalog;
 pub(crate) use catalog::{
-    PluginOwner, SessionCatalog, bootstrap_catalog_digest, card_bound_catalog,
-    tool_descriptors_for_connection, tool_owner,
+    PluginOwner, SessionCatalog, card_bound_catalog, tool_descriptors_for_connection, tool_owner,
 };
 pub(crate) mod plugin_tool_names;
 pub(crate) use call::call_registered_tool;
