@@ -3,10 +3,10 @@
 ## Ownership and entry points
 
 - `styles` owns duration and easing tokens, shared by both themes.
-- `ui/motion/transition.ts` exports `MotionIntent`, `MotionTransition` and `readMotionTransition(surface, intent)`. It converts the surface's CSS tokens into Motion options. Enter uses medium/enter, exit uses snappy/exit, layout uses medium/layout, size uses medium/emphasis, disclosure uses snappy/layout, feedback uses quick/feedback, and emphasis uses slow/emphasis. Millisecond and second duration overrides are supported; absent or invalid tokens throw rather than silently adopting library defaults.
+- `ui/motion/transition.ts` exports `MotionIntent`, `MotionTransition` and `readMotionTransition(surface, intent)`. It converts the surface's CSS tokens into typed transition options. Enter uses medium/enter, exit uses snappy/exit, layout uses medium/layout, size uses medium/emphasis, disclosure uses snappy/layout, feedback uses quick/feedback, and emphasis uses slow/emphasis. Millisecond and second duration overrides are supported; absent or invalid tokens throw rather than silently adopting implicit defaults.
 - `ui/motion/size.tsx` exports `SizeMotion({ motionKey, children })`, an interruptible intrinsic-height primitive. The caller supplies a stable string or boolean presentation mode. No domain identifiers, field selectors, or backend state enter the primitive.
 
-CSS consumers use the same token pairs directly; hover/color changes remain CSS transitions. Motion coordinates live layout where CSS alone cannot do so. Decorative repeating SVG animation remains owned by brand components. New consumers extend this owner rather than introducing per-feature animation runners.
+CSS consumers use the same token pairs directly; hover/color changes remain CSS transitions. SizeMotion coordinates intrinsic size changes through native Web Animations. Decorative repeating SVG animation remains owned by brand components. New consumers extend this owner rather than introducing per-feature animation runners.
 
 ## SizeMotion behavior
 

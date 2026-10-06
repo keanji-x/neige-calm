@@ -8,6 +8,8 @@ Review tier: L1, frontend presentation and a dependency addition with no authori
 
 Acceptance: production-component browser tests cover immediate content and focus, no document transition or text transforms, intermediate height, rapid reversal, and reduced motion. Existing composer/drawer tests and frontend/text gates pass. Preview production components interactively.
 
+This document records the original #2191/#2200 design. The #2234 follow-up replaces its Motion driver with directly owned native Web Animations; current contracts live in `fe/web/src/ui/motion/README.md`.
+
 ## Owner change request
 
 The user authorized this implementation on 2026-10-06. The root orchestrator accepts these narrowly scoped changes: register `ui/motion` and development-only `tools/preview` in `fe/module-file-inventory.yaml`; add MIT Motion to `fe/package.json` and its lockfile; extend styles tokens, public types and inventory tests with easing names. Frozen ownership controls and unrelated interfaces retain their contracts. Issue publication was subsequently authorized: https://github.com/keanji-x/neige-calm/issues/2191.
