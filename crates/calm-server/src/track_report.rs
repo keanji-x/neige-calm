@@ -737,9 +737,16 @@ pub(crate) fn apply_report_op_traced(
         }
         ReportDocOp::DeleteBlock { id, if_rev } => apply_delete(doc, id, *if_rev).map(|()| None),
         ReportDocOp::ResetToInitial { if_doc_rev } => {
+            // Only the user's reset door builds this op; any other author is a kernel bug.
+            if author != EditAuthor::User {
+                return Err(CalmError::Internal(format!(
+                    "track_report: ResetToInitial is the user's reset; {author:?} may not apply it"
+                )));
+            }
             check_doc_rev(doc, *if_doc_rev)?;
-            // The initial body is prose only, so aligning onto it removes every data block. Aligning
-            // with them still present keeps their ids reserved: no new block can be minted onto one.
+            // The initial body is prose only, so aligning onto it removes every data block. They are
+            // still present while it aligns, so this write mints no new block onto a removed id; a
+            // later write may, as after a DELETE and a DELETE of its tombstone.
             let initial = TrackReportPayload::initial();
             doc.update(&initial.summary, &initial.body)
                 .map_err(internal)?;
@@ -1243,6 +1250,15 @@ mod tests {
                 if_rev: second.2,
             },
         );
+        // Reset is the user's alone, so it is asserted under that author.
+        let mut doc = ReportDoc::from_payload(&payload);
+        apply_persisted_report_op(
+            &mut doc,
+            &ReportDocOp::ResetToInitial { if_doc_rev: 0 },
+            EditAuthor::User,
+        )
+        .unwrap();
+        assert_eq!(doc.doc_rev().unwrap(), 1, "op: ResetToInitial");
     }
 
     #[test]

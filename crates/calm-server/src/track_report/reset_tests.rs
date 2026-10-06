@@ -101,3 +101,32 @@ async fn a_reset_at_a_stale_revision_is_a_conflict_and_writes_nothing() {
         "a refused reset emits nothing"
     );
 }
+
+/// The op enforces its pairing with the user's door: under any other author it is refused and the
+/// document, its data block included, is left as it was.
+#[test]
+fn only_the_user_may_apply_a_reset() {
+    let mut doc = crate::track_report_doc::ReportDoc::from_payload(&TrackReportPayload::new(
+        "s",
+        &calm_types::report_blocks::render_fence("app", &json!({ "src": "/apps/x" })),
+    ));
+    let before = doc.project().unwrap();
+    for author in [
+        crate::event::EditAuthor::Planner,
+        crate::event::EditAuthor::Assistant,
+        crate::event::EditAuthor::Kernel,
+        crate::event::EditAuthor::Plugin,
+    ] {
+        let error = super::apply_report_op(
+            &mut doc,
+            &ReportDocOp::ResetToInitial { if_doc_rev: 0 },
+            author,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, CalmError::Internal(_)),
+            "{author:?}: {error:?}"
+        );
+        assert_eq!(doc.project().unwrap(), before, "{author:?} wrote");
+    }
+}

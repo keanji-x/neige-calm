@@ -174,6 +174,7 @@ pub struct TodayLaunchpadReportReset {
     tag = "tracks",
     responses(
         (status = 200, description = "Today's report is back to the canonical empty document. Conversations are untouched.", body = TodayLaunchpadReportReset),
+        (status = 400, description = "A malformed `X-Calm-Actor` header, refused by the actor middleware before anything is read or written", body = ErrorBody),
         (status = 401, description = "Missing or invalid session", body = ErrorBody),
         (status = 403, description = "Non-user actor (worker / plugin / planner) rejected, exactly as on `POST /api/tracks/{id}/report`", body = ErrorBody),
         (status = 404, description = "There is no launchpad track yet, so there is no report to reset", body = ErrorBody),

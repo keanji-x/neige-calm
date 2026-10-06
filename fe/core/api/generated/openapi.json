@@ -7273,6 +7273,16 @@
               }
             }
           },
+          "400": {
+            "description": "A malformed `X-Calm-Actor` header, refused by the actor middleware before anything is read or written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing or invalid session",
             "content": {

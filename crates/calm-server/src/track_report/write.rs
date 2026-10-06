@@ -78,7 +78,7 @@ pub(crate) async fn rest_user_replace(
 }
 
 /// `POST /api/today/launchpad/report/reset` — the user's reset to the canonical empty report. The
-/// one door to [`ReportDocOp::ResetToInitial`]: no other caller can clear data blocks wholesale.
+/// one production door to [`ReportDocOp::ResetToInitial`], which itself refuses any author but the user.
 pub(crate) async fn rest_user_reset(
     repo: &dyn RouteRepo,
     events: &EventBus,

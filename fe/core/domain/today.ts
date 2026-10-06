@@ -78,9 +78,9 @@ export function nameTodaySummaryConversation(trackId: string, row: Conversation)
 }
 
 /**
- * What a failed reset says. The server reads the current revision itself, so a retry is safe: 403 and 404 refuse it,
- * and so would a 400, which writes nothing either. A 409 is a revision race with a writer, and it and anything else
- * leave it unknown.
+ * What a failed reset says. The server reads the current revision itself, so a retry is safe. 400 (a malformed actor
+ * header), 403 and 404 refuse it before anything is written. A 409 is a revision race with a writer; it and anything
+ * else leave the reset unknown.
  */
 export const REPORT_RESET_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404]), is: 'refused' as const })]),
@@ -94,8 +94,8 @@ export const REPORT_RESET_TEXT: WriteText = Object.freeze({
 
 /**
  * Put today's report back to its canonical empty state. It sends no document, and there must
- * never be a parameter for one: the canonical document is kernel-owned. Destructive; touches
- * the report only.
+ * never be a parameter for one: the canonical document is kernel-owned. Destructive: the report's
+ * data blocks go too, and a task the report declared is withdrawn. Conversations are untouched.
  */
 export function todayReportResetOperation(): ApiOperation<TodayReportResetWire> {
   return {
