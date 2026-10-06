@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 
 const KIND_LITERAL: &str = "\"planner-harness-start\"";
-const KIND_CONST: &str = "PLANNER_HARNESS_START";
+/// Every exported name for the kind: the server's const and calm-truth's copy, which a route could
+/// otherwise submit with past this scan.
+const KIND_CONSTS: &[&str] = &["PLANNER_HARNESS_START", "PLANNER_START_OPERATION_KIND"];
 
 /// `(file, literal mentions, const mentions, why)`. Comment lines are not counted; imports are,
 /// so an alias cannot carry the kind past this list.
@@ -28,7 +30,7 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
     (
         "src/operation/planner_start_read_contract_tests.rs",
         0,
-        4,
+        6,
         "the read-contract test, which pins `kind()` and calm-truth's name to the const",
     ),
     (
@@ -54,8 +56,8 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
         0,
         1,
         "the one named exception: the child-track bootstrap. The scheduler holds only a `Weak` \
-         operation runtime and is built before `RouteState`'s lock maps, so it cannot reach the \
-         card's lock",
+         operation runtime and is built before `RouteState`'s lock maps, so it does not yet hold \
+         the card's lock; sharing the lock map from boot would remove this entry",
     ),
 ];
 
@@ -105,7 +107,12 @@ fn planner_harness_start_is_submitted_only_through_the_card_start_fence() {
             .sum::<usize>();
         let constant = code
             .iter()
-            .map(|line| line.matches(KIND_CONST).count())
+            .map(|line| {
+                KIND_CONSTS
+                    .iter()
+                    .map(|name| line.matches(name).count())
+                    .sum::<usize>()
+            })
             .sum::<usize>();
         let expected = ALLOWED
             .iter()

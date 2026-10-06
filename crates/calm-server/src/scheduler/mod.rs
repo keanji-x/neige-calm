@@ -1272,7 +1272,8 @@ impl Scheduler {
         let bootstrap_payload = serde_json::to_value(&bootstrap)?;
         // The one `planner-harness-start` submitted outside `CardStartFence` (#2252): the scheduler
         // holds only a `Weak` operation runtime and is built with the dispatcher before
-        // `RouteState`'s lock maps exist, so it cannot reach the card's `planner_recovery_locks`.
+        // `RouteState`'s lock maps exist, so it does not yet hold the card's `planner_recovery_locks`
+        // (sharing that map from boot would bring this start inside the fence).
         // The child's creator owns this start, so a send answers 409/503 here rather than starting
         // the card itself (`planner_session::send_owns_first_start`); a concurrent reset is not
         // fenced. `tests/cases/planner_start_fence_invariant.rs` names this exception.
