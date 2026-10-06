@@ -208,4 +208,47 @@ describe('drawer scroll intent', () => {
     x.detach();
   });
 
+
+  it('keeps pending scrollbar input across restoration without treating restored offsets as input', () => {
+    vi.useFakeTimers();
+    const x = mounted();
+    fireEvent.pointerDown(x.pane, { button: 0, pointerType: 'mouse', pointerId: 1 });
+    withScrollRestoration([x.pane], () => {
+      x.grow();
+      x.pane.scrollTop = 650;
+      fireEvent.scroll(x.pane);
+    });
+    expect(x.pane.scrollTop).toBe(650);
+    // The scrollbar default lands after the explicit restoration, as it can
+    // after pointerup. It must still belong to the original reader operation.
+    fireEvent.pointerUp(document, { pointerId: 1 });
+    x.pane.scrollTop = 400;
+    fireEvent.scroll(x.pane);
+    x.pane.dispatchEvent(new Event('scrollend'));
+    vi.advanceTimersByTime(40);
+    x.grow();
+    x.follower.followGrowth();
+    expect(x.pane.scrollTop).toBe(400);
+    x.detach();
+  });
+
+  it('retires a completed non-scrolling input after restoration rebases its offset', () => {
+    vi.useFakeTimers();
+    const x = mounted();
+    fireEvent.pointerDown(x.pane, { button: 0, pointerType: 'mouse', pointerId: 1 });
+    fireEvent.pointerUp(document, { pointerId: 1 });
+    withScrollRestoration([x.pane], () => {
+      x.grow();
+      x.pane.scrollTop = 650;
+      fireEvent.scroll(x.pane);
+    });
+    expect(x.pane.scrollTop).toBe(650);
+    vi.advanceTimersByTime(40);
+    expect(x.pane.scrollTop).toBe(700);
+    x.grow();
+    x.follower.followGrowth();
+    expect(x.pane.scrollTop).toBe(800);
+    x.detach();
+  });
+
 });

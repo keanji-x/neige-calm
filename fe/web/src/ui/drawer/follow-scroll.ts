@@ -158,10 +158,14 @@ export function createScrollFollower(options: Readonly<{
       };
       const onRestoration = (event: Event) => {
         if (!(event instanceof CustomEvent)) return;
-        // Restored geometry is not movement from a pending input operation.
-        gesture = null;
         restoring += event.detail === true ? 1 : -1;
-        if (restoring === 0) followGrowth();
+        // Keep pending input, but rebase its offset: the restored displacement
+        // must not be mistaken for movement from the scrollbar or gesture.
+        if (event.detail === false && gesture !== null) gesture.top = target.scrollTop;
+        if (restoring === 0) {
+          if (pointer === null && !touchHeld) endGesture();
+          followGrowth();
+        }
       };
       target.addEventListener('wheel', onWheel, { passive: true });
       target.ownerDocument.addEventListener('keydown', onKey);
