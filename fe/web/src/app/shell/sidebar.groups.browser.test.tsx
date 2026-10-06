@@ -306,7 +306,7 @@ it('reveals Track controls on hover or focus and lets the title use idle space',
   const track: Track = { id: 'hover', title, areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   render(<ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
-    <div style={{ inlineSize: '14rem' }}><TrackRow track={track} variant="rail" onOpen={vi.fn()} onDelete={vi.fn()}
+    <div style={{ inlineSize: '14rem' }}><TrackRow track={track} variant="rail" unread onOpen={vi.fn()} onDelete={vi.fn()}
       actions={{ areaPinned: false, onSetPinned: vi.fn(), onSetAreaPinned: vi.fn(), onMarkUnread: vi.fn() }} /></div>
     <button type="button">Outside row</button>
   </ThemeProvider>);
@@ -332,6 +332,8 @@ it('reveals Track controls on hover or focus and lets the title use idle space',
   await userEvent.keyboard('{Enter}');
   await expect.element(page.getByRole('menuitem', { name: 'Pin globally', exact: true })).toHaveFocus();
   expect(menu.element().getAttribute('aria-expanded')).toBe('true');
+  const status = row.element().parentElement!.querySelector('[data-nc-activity]')!.parentElement!;
+  await expect.poll(() => getComputedStyle(status).opacity).toBe('0');
   expect(getComputedStyle(menu.element()).opacity).toBe('1');
   await userEvent.keyboard('{Escape}');
   await expect.element(menu).toHaveFocus();

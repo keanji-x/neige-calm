@@ -339,7 +339,9 @@
   .wrapperRail:hover .statusSlot,
   .wrapperRail:focus-within .statusSlot,
   .wrapperPanel:hover .statusSlot,
-  .wrapperPanel:focus-within .statusSlot {
+  .wrapperPanel:focus-within .statusSlot,
+  .wrapperRail:has(.menuButton[aria-expanded='true']) .statusSlot,
+  .wrapperPanel:has(.menuButton[aria-expanded='true']) .statusSlot {
     opacity: 0;
   }
 
