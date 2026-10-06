@@ -10,7 +10,6 @@ import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conv
 import {
   outboxView, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
 } from '../../../../core/domain/conversation-outbox.ts';
-import { withRefill } from '../../../../core/domain/conversation-composer.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -105,7 +104,7 @@ export function useConversationOutbox({
   /** Words and images back in the composer of the card they were sent from, whichever conversation is shown: the one
    * way a send gives its words back (#2068). */
   const refill = (sentTo: string, text: string, attachments: readonly PlannerAttachment[]) => {
-    registry.editComposer(sentTo, (current) => withRefill(current, { text, attachments }));
+    registry.refillComposer(sentTo, { text, attachments });
   };
 
   /**

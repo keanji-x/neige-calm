@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 
 import type { ConversationTurnOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { markedReplace, replacingTurn, type ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
+import { notSentMessage } from '../../../../core/domain/conversation-delivery.ts';
 import { editedTurnRefill, isComposerEmpty, isLatestTurn } from '../../../../core/domain/conversation-composer.ts';
 import { useConversationRegistry } from './public.tsx';
 
@@ -60,7 +61,7 @@ export function useConversationEdit({ conversationId, transcript, historyReady, 
     notice: notice === null ? null : notice.kind === 'refused'
       ? { tone: 'error', lines: notice.edit ? [`Edit failed: ${notice.message}`,
         ...(conversationId === null || isComposerEmpty(composerOf(conversationId)) ? [] : [REFILLED_NOTE])]
-        : [`Not sent. ${notice.message}`] } as const
+        : [notSentMessage(notice.message)] } as const
       : { tone: 'neutral', lines: ['This message can no longer be replaced; sending adds a new one.'] } as const,
     start,
   };

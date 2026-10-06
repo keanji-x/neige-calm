@@ -33,6 +33,11 @@ export const SEND_FAILURES: FailureTable<SendFailureKind> = Object.freeze({
   otherwise: 'unknown',
 });
 
+/** What a send that was not stored says above the composer, with the reason it was refused or rejected. */
+export function notSentMessage(reason: string): string {
+  return `Not sent. ${reason}`;
+}
+
 /** Automatic retries of one keyed send after its first attempt; an attempt that cannot go out counts too. */
 export const SEND_RETRIES = 5;
 

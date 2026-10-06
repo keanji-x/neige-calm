@@ -8,6 +8,7 @@ import { useLiveReplies, useTranscriptReads } from '../conversations/live-replie
 import { useConversationEdit } from '../conversations/edit.ts';
 import { useConversationOutbox, useRunReads } from '../conversations/outbox.ts';
 import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
+import { notSentMessage } from '../../../../core/domain/conversation-delivery.ts';
 import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
 import { ApiError, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, writeFailureOf, writeFailureText } from '../../../../core/domain/failure-class.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
@@ -157,6 +158,8 @@ type ConversationStore = Readonly<{
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;
   deleteQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
+  /** A delete or steer of this card's queued entries is unanswered, whichever view made it. */
+  queueWriteOut: boolean;
   /** Hand a queued entry to the running turn; `undefined` outside `turn_running`, and that is the whole gate. */
   steerQueuedEntry: ((entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>) | undefined;
   historyReady: boolean;
@@ -164,6 +167,9 @@ type ConversationStore = Readonly<{
   hasEarlier: boolean;
   loadingEarlier: boolean;
   historyError: string | null;
+  /** The run read failed: phase, queue and model may be stale, and a send answered after an unknown attempt waits on it. */
+  runError: string | null;
+  runLoading: boolean;
   actionError: string | null;
   /** The send that gave up, held by this conversation's outbox until its Try again, Edit or Dismiss. */
   failedSend: FailedSendOp | null;
@@ -189,6 +195,7 @@ type ConversationStore = Readonly<{
   uploadAttachment: UploadAttachment;
   interrupt: () => void;
   retryHistory: () => void;
+  retryRun: () => void;
   loadEarlier: () => void;
   /** Why the queue is not draining, when the reader has to act; a standing condition of the conversation, unlike `actionError`. */
   blockedReason: string | null;
@@ -489,8 +496,9 @@ export function useConversationStore(
     ? listedConversations
     : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
+  /* Held in the registry, so a strip remounted on the way back still sees its conversation's write out (#2068). */
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
-    mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
+    registry.holdQueueWrite(cardId, () => mutations.deleteQueued(entry.entry_id, entry.rev)).then((outcome) => {
       /* `gone` is not a retirement: the entry drained and its transcript row is on its way. */
       if (outcome.kind === 'done') {
         outbox.forgetQueuedEntry(entry.entry_id);
@@ -502,7 +510,7 @@ export function useConversationStore(
        kernel's transcript row shows it. */
   const steerQueuedEntry = phase === 'turn_running'
     ? (entry: PendingQueueEntry) =>
-      mutations.steerQueued(entry.entry_id, entry.rev).then((outcome) => {
+      registry.holdQueueWrite(cardId, () => mutations.steerQueued(entry.entry_id, entry.rev)).then((outcome) => {
         if (outcome.kind === 'done') forgetQueuedEntry(entry);
         return outcome;
       })
@@ -521,12 +529,15 @@ export function useConversationStore(
     pendingQueue,
     pendingQueueOverflow,
     deleteQueuedEntry,
+    queueWriteOut: registry.queueWriteOutOf(cardId),
     steerQueuedEntry,
     historyReady: history.data !== undefined,
     historyLoading: history.isFetching,
     hasEarlier: history.hasNextPage,
     loadingEarlier: history.isFetchingNextPage,
     historyError: history.error === null ? null : readErrorText(history.error, 'The conversation history could not be loaded.'),
+    runError: run.error === null ? null : readErrorText(run.error, 'The conversation’s status could not be loaded.'),
+    runLoading: run.isFetching,
     actionError: actionError?.cardId === cardId ? actionError.message : null,
     failedSend: view.failed,
     retrySend: outbox.retrySend,
@@ -539,6 +550,7 @@ export function useConversationStore(
     uploadAttachment: mutations.uploadAttachment,
     interrupt: stop.interrupt,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
+    retryRun: () => { void run.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
     blockedReason: run.data?.blocked_reason ?? null,
     /* Before the first answer the conversation is following the default, which is
@@ -1019,8 +1031,6 @@ function useConversationPane(
            transcript at drain, and the item read serves it back. */
   };
 
-  const UNCONFIRMED = 'Could not check whether the last attempt went through. Try again in a moment.';
-
   /* A press that sent nothing is refused (#2131), unless an earlier attempt under this key, `sentText`, may have
      created the conversation: then it stays unconfirmed. Why nothing went out is the global indicator's to say. */
   const notSentText = (sentText: string | null): string =>
@@ -1074,41 +1084,23 @@ function useConversationPane(
     }
   };
 
-  const sendDraft = (text: string) => {
-    if (creating || draft === null) return;
+  /**
+   * One create of the draft's words, from the press's checks on. With `recheck`, the old key's row is looked for first
+   * and only a re-read saying "no row" earns a new key; while the re-read fails, the draft offers `recheck` again.
+   */
+  const createDraft = (from: ConversationDraft, text: string, current: () => boolean, recheck: ConversationDraft['remedy']) => {
     const { create, refresh, derivedCardId } = source;
     const scopeId = sourceScopeId;
-    /* The server refuses `text.trim().is_empty()` but counts `chars()` on the
-           untrimmed text, in Unicode scalar values: so the blank check trims, the
-           length check does not, and `Array.from` counts code points. */
-    if (text.trim() === '') return;
-    if (Array.from(text).length > CONVERSATION_TEXT_MAX) {
-      /* Shown back, but never recorded as sent: no request left the browser, so
-         the key is untouched and the next press is not "the text changed". */
-      amendDraft(draft, {
-        text,
-        error: `This message is too long — the limit is ${CONVERSATION_TEXT_MAX} characters.`,
-        remedy: null,
-      });
-      return;
-    }
-    if (refuseOfflineDraft(draft, text)) return;
-    const current = admitDraft(draft); if (current === null) return;
-    const previousText = draft.sentText;
     /* The draft this send is for, fixed here: a send that outlives its draft changes nothing. */
-    let attempt = draft;
+    let attempt = from;
     let previouslySentText = attempt.sentText;
-    amendDraft(attempt, { text, creating: true, error: null, remedy: null });
     void (async () => {
       try {
-        /* Editing the text after a failure has to look at the list first: the old key
-                 may have succeeded with the old text, and only a re-read saying "no new
-                 row" earns a new key. */
-        if (previousText !== null && previousText !== text) {
+        if (recheck !== null) {
           const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
           if (landing === 'landed') return;
           if (landing === 'unknown') {
-            amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
+            amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: recheck });
             return;
           }
           attempt = rekeyDraft(attempt, mintIdempotencyKey());
@@ -1134,6 +1126,30 @@ function useConversationPane(
         amendDraft(attempt, { creating: false });
       }
     })();
+  };
+
+  const sendDraft = (text: string) => {
+    if (creating || draft === null) return;
+    /* The server refuses `text.trim().is_empty()` but counts `chars()` on the
+           untrimmed text, in Unicode scalar values: so the blank check trims, the
+           length check does not, and `Array.from` counts code points. */
+    if (text.trim() === '') return;
+    if (Array.from(text).length > CONVERSATION_TEXT_MAX) {
+      /* Shown back, but never recorded as sent: no request left the browser, so
+         the key is untouched and the next press is not "the text changed". */
+      amendDraft(draft, {
+        text,
+        error: `This message is too long — the limit is ${CONVERSATION_TEXT_MAX} characters.`,
+        remedy: null,
+      });
+      return;
+    }
+    if (refuseOfflineDraft(draft, text)) return;
+    const current = admitDraft(draft); if (current === null) return;
+    amendDraft(draft, { text, creating: true, error: null, remedy: null });
+    /* Editing the text after a failure has to look at the list first: the old key may have succeeded with the old
+       text, and only a re-read saying "no new row" earns a new key. */
+    createDraft(draft, text, current, draft.sentText !== null && draft.sentText !== text ? 'retry' : null);
   };
 
   async function handleCreateFailure(
@@ -1172,7 +1188,7 @@ function useConversationPane(
         amendDraft(attempt, { error: message });
         const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
         if (landing === 'absent') amendDraft(attempt, { remedy: 'new-conversation' });
-        if (landing === 'unknown') amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
+        if (landing === 'unknown') amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
         return attempt;
       }
       case 'retry':
@@ -1188,46 +1204,13 @@ function useConversationPane(
 
   const sendAsNewConversation = () => {
     if (creating || draft === null || draft.text === null) return;
-    const { create, refresh, derivedCardId } = source;
-    const scopeId = sourceScopeId;
     const text = draft.text;
     if (refuseOfflineDraft(draft, text)) return;
     const current = admitDraft(draft); if (current === null) return;
-    let attempt = draft;
-    let previouslySentText = attempt.sentText;
-    amendDraft(attempt, { creating: true, error: null, remedy: null });
-    void (async () => {
-      try {
-        /* Pressed deliberately, but the same fence applies: a new key is only
-           safe once the list has actually said the old one produced nothing. */
-        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
-        if (landing === 'landed') return;
-        if (landing === 'unknown') {
-          amendDraft(attempt, { error: UNCONFIRMED, remedy: 'new-conversation' });
-          return;
-        }
-        attempt = rekeyDraft(attempt, mintIdempotencyKey());
-        if (!current()) { amendDraft(attempt, { error: notSentText(attempt.sentText), remedy: 'retry' }); return; }
-        if (refuseOfflineDraft(attempt, text)) return;
-        previouslySentText = attempt.sentText;
-        markDraftSent(attempt, text);
-        attempt = { ...attempt, text, sentText: text };
-        const created = await create(text, attempt.key, attempt.model, attempt.side);
-        if (current()) adopt(attempt, created);
-        else amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
-      } catch (error: unknown) {
-        if (error instanceof NotSentError) {
-          // Marking a request optimistically must not invent dispatch when the
-          // mutation's later guard refused it. Keep any earlier unknown send.
-          registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
-          amendDraft(attempt, { error: notSentText(previouslySentText), remedy: 'retry' });
-        } else {
-          attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt, current);
-        }
-      } finally {
-        amendDraft(attempt, { creating: false });
-      }
-    })();
+    amendDraft(draft, { creating: true, error: null, remedy: null });
+    /* Pressed deliberately, but the same fence applies: a new key is only
+       safe once the list has actually said the old one produced nothing. */
+    createDraft(draft, text, current, 'new-conversation');
   };
 
   /* Retry means the same draft again: same key, same words. */
@@ -1311,11 +1294,20 @@ function useConversationPane(
                 </ChatFooterRemedy>
               </ChatFooterNotice>
             )}
+            {/* A send answered after an unknown attempt holds the composer until a run read started after it lands (#2068). */}
+            {store.runError !== null && (
+              <ChatFooterNotice>
+                <ChatFooterError message={store.runError} />
+                <ChatFooterRemedy disabled={store.runLoading} onClick={store.retryRun}>
+                  {store.runLoading ? 'Loading…' : 'Try again'}
+                </ChatFooterRemedy>
+              </ChatFooterNotice>
+            )}
             {store.failedSend !== null && (
               <ChatFooterNotice>
                 {/* An unknown send says only that: why the answer was lost is the global connection indicator's to say. */}
                 <ChatFooterError message={store.failedSend.delivery === 'unknown'
-                  ? 'Delivery is unconfirmed.' : `Not sent. ${store.failedSend.message}`} />
+                  ? 'Delivery is unconfirmed.' : notSentMessage(store.failedSend.message)} />
                 {store.failedSend.delivery === 'unknown' ? <>
                   {/* Safe without asking: the retry reuses the send's key, so a message that did arrive is not queued twice.
                      No Edit here — an edited message is a new send under a new key, and the first may have arrived. */}
@@ -1377,7 +1369,7 @@ function useConversationPane(
                     key={open.id}
                     entries={store.pendingQueue}
                     overflow={store.pendingQueueOverflow}
-                    busy={store.sending}
+                    busy={store.sending || store.queueWriteOut}
                     onDelete={store.deleteQueuedEntry}
                     onSteer={store.steerQueuedEntry}
                   />

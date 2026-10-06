@@ -962,7 +962,8 @@ describe('track conversations', () => {
     const { client, requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok(rows);
       if (request.path.endsWith('/planner/run')) {
-        return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', attachments_supported: true, running_turn: null });
+        return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null,
+          blocked_reason: null, attachments_supported: true, running_turn: null });
       }
       if (request.path.endsWith('/planner/attachments')) {
         return ok({ attachmentId: ATTACHMENT_ID, contentType: 'image/png', size: 4,
@@ -1127,6 +1128,36 @@ describe('track conversations', () => {
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
   });
 
+  /* #2068 item 10: a replayed send waits for a run read started after its answer. While that read fails, the composer
+     stays closed, so the failure is said with a Try again instead of leaving nothing to press. */
+  it('[#2068] offers a Try again while a replayed send waits on a run read that failed', async () => {
+    const text = 'Replayed while the run read fails';
+    let attempts = 0;
+    let runFails = false;
+    const { requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run') && runFails) return failure(503, 'unavailable', 'Run read unavailable');
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      attempts += 1;
+      if (attempts === 1) throw new Error('response dropped');
+      runFails = true;
+      return inputAccepted();
+    });
+    const runReads = () => requests.filter((request) => request.path.endsWith('/planner/run')).length;
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write(text);
+    await waitFor(() => expect(attempts).toBe(2));
+    const alert = await within(drawerElement()).findByRole('alert');
+    expect(alert.textContent).toContain('The conversation’s status could not be loaded.');
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    const before = runReads();
+    runFails = false;
+    fireEvent.click(within(drawerElement()).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(runReads()).toBeGreaterThan(before));
+    await waitFor(() => expect(within(drawerElement()).queryByRole('alert')).toBeNull());
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  });
+
   it('[#2068] keeps a composer draft when Try again resends a rejected message', async () => {
     let attempts = 0;
     const { requests } = setup((request) => {
@@ -1229,8 +1260,8 @@ describe('track conversations', () => {
     return setup((request) => {
       if (request.path.endsWith('/planner/run')) {
         return ok({
-          card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle',
-          attachments_supported: true, running_turn: null,
+          card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null,
+          blocked_reason: null, attachments_supported: true, running_turn: null,
         });
       }
       if (request.path.endsWith('/planner/attachments')) {
@@ -1424,7 +1455,8 @@ describe('track conversations', () => {
     const held = new Promise<ApiTransportResponse>((done) => { resolve = done; });
     const { requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok([user, reply, terminal]);
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', attachments_supported: true, running_turn: null });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null,
+        reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null });
       if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: draftImageId, contentType: 'image/png', size: 4,
         url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/${draftImageId}` });
       if (request.path.endsWith('/planner/input')) return held;
@@ -1997,6 +2029,41 @@ describe('track conversations', () => {
     await act(async () => { answer(); await answered; });
   });
 
+  /* #2068 item 15: the queue strip remounts on the way back, and the delete still out is its conversation's, not the
+     strip's: the entry it is deleting offers no second delete until it is answered. */
+  it('[#2068] keeps a conversation’s queue locked across a round trip while its delete is out', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((done) => { answer = done; });
+    const { requests } = setup(async (request) => {
+      const card = pathCardId(request.path);
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ card_id: card, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null,
+          running_turn: null, pending: [{ entry_id: `entry-${card}`, text: `queued in ${card}`, rev: 1, queued_at_ms: 5 }], pending_overflow: 0 });
+      }
+      if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
+        await answered;
+        return ok({ card_id: card, entry_id: `entry-${card}`, rev: 2, text: null });
+      }
+      return undefined;
+    });
+    const deletes = () => requests.filter((request) => request.method === 'DELETE');
+    const entryOf = (card: string) => Array.from(document.querySelectorAll<HTMLElement>('[data-nc-pending-entry]'))
+      .find((entry) => entry.dataset.ncPendingEntry === `entry-${card}`);
+    const deleteIn = (card: string) => within(entryOf(card)!).getByRole('button', { name: 'Delete this message' });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+    await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
+    fireEvent.click(deleteIn(ASSISTANT_CARD.id));
+    await waitFor(() => expect(deletes()).toHaveLength(1));
+    await pickPlanner();
+    await waitFor(() => expect(entryOf(PLANNER_CARD.id)).toBeDefined());
+    await pickAssistant();
+    await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
+    expect(deleteIn(ASSISTANT_CARD.id).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(deleteIn(ASSISTANT_CARD.id));
+    await act(async () => { answer(); await answered; });
+    expect(deletes()).toHaveLength(1);
+  });
+
   it('puts an image whose upload finishes after a switch into the conversation it was picked in', async () => {
     let finish!: () => void;
     const finished = new Promise<void>((done) => { finish = done; });
@@ -2224,6 +2291,26 @@ describe('track conversations', () => {
     await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
     expect(inputBodies(requests)[0]).toEqual({ text: 'Original prompt', replaces_turn: 'turn',
       attachments: images.slice(0, MAX_ATTACHMENTS_PER_MESSAGE).map((image) => image.id) });
+  });
+
+  /* #2068 item 31: a refusal's images are added to what the composer already holds, and the cap is the merge's: the
+     images it could not take are said, never dropped silently. */
+  it('[#2068] says which images a refused Regenerate could not put back beside the composer’s own', async () => {
+    const images = Array.from({ length: MAX_ATTACHMENTS_PER_MESSAGE }, (_, index) => ({
+      ...REWIND_IMAGE, id: `image-${index}.png`, url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/image-${index}.png`,
+    }));
+    const { requests } = scriptedSetup(() => turnRows('turn', 91, 'Original prompt', 'Original answer', images), (request) =>
+      request.path.endsWith('/planner/input') ? failure(400, 'bad_request', 'The server will never take this.') : undefined);
+    await openEditableAssistant();
+    await attachAnImage();
+    await waitFor(() => expect(composerImages().map((src) => src?.split('/').pop())).toEqual([DRAFT_IMAGE_ID]));
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate response' }));
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
+    await waitFor(() => expect(messageField().textContent).toBe('Original prompt'));
+    expect(composerImages().map((src) => src?.split('/').pop()))
+      .toEqual([DRAFT_IMAGE_ID, ...images.slice(0, MAX_ATTACHMENTS_PER_MESSAGE - 1).map((image) => image.id)]);
+    expect(within(drawerElement()).getByText('That image was not attached').parentElement?.textContent)
+      .toContain(`A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.`);
   });
 
   /* #2068 items 13 and 22: a refusal gives the words back through the registry, to the composer of the conversation
@@ -2721,6 +2808,38 @@ describe('track conversations', () => {
       .not.toBe(reused?.headers?.['Idempotency-Key']);
   });
 
+  /* #2175 (S7): the new conversation's create is refused by its mutation's own guard after the press passed its
+     checks. Nothing went out under the fresh key, so the draft is "not started", never unconfirmed, and its Try again
+     sends under that fresh key. */
+  it('[#2175] says a new conversation was not started when its create is refused before it is sent', async () => {
+    const { client, requests } = setup((request) => {
+      if (request.path !== CONVERSATIONS || request.method !== 'POST') return undefined;
+      return creates(requests, CONVERSATIONS).length === 1
+        ? failure(409, 'idempotency_key_reused', 'this key was already used for another first message')
+        : created(derivedRow('w1', request));
+    });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('a key that is spent');
+    const sendAsNew = await screen.findByRole('button', { name: 'Send as a new conversation' });
+    await waitFor(() => expect(sendAsNew.hasAttribute('disabled')).toBe(false));
+    /* Offline from the moment the create's mutation is built: its own guard refuses it, after every earlier check passed. */
+    const unsubscribe = client.getMutationCache().subscribe((event) => { if (event.type === 'added') onlineManager.setOnline(false); });
+    try {
+      fireEvent.click(sendAsNew);
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(CONVERSATION_CREATE_TEXT.refused));
+    } finally {
+      unsubscribe();
+      onlineManager.setOnline(true);
+    }
+    expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Send as a new conversation' })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(2));
+    const [reused, fresh] = creates(requests, CONVERSATIONS);
+    expect(fresh?.headers?.['Idempotency-Key']).not.toBe(reused?.headers?.['Idempotency-Key']);
+  });
+
   /* At most one echo is ever unanswered: clearing the send state unconditionally
    * on a conversation switch would re-open a composer whose own message is still
    * in flight. The second POST is what this asserts. */
@@ -2906,6 +3025,23 @@ describe('track conversations', () => {
       await screen.findByRole('button', { name: 'Try again' });
       await says(CONVERSATION_CREATE_TEXT.unknown);
       expect(screen.getByText('words whose answer is lost')).toBeTruthy();
+    });
+
+    /* #2175: the look for the first attempt's row failing is the same unknown outcome, in the same words. */
+    it('changed words after a lost answer whose look-back fails: unconfirmed, with nothing sent under a new key', async () => {
+      const { requests } = setup((request) => {
+        if (request.path !== CONVERSATIONS) return undefined;
+        if (request.method === 'POST') throw new Error('socket hang up');
+        return creates(requests, CONVERSATIONS).length > 0 ? failure(503, 'unavailable', 'List unavailable') : undefined;
+      });
+      await screen.findByRole('button', { name: 'Conversation Planner chat' });
+      await openDraft();
+      await write('words whose answer is lost');
+      await screen.findByRole('button', { name: 'Try again' });
+      await write('changed words');
+      await says(CONVERSATION_CREATE_TEXT.unknown);
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+      expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
     });
 
     it('offline at the press: says the conversation was not started, and sends nothing', async () => {

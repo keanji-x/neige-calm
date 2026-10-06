@@ -71,3 +71,9 @@ export function withRefill(content: ComposerContent, refill: ComposerContent): C
   const added = refill.attachments.filter((image) => !held.has(image.id));
   return { text, attachments: added.length === 0 ? content.attachments : [...content.attachments, ...added].slice(0, MAX_ATTACHMENTS_PER_MESSAGE) };
 }
+
+/** Whether `merged`, a composer `refill` was added to, holds every image of `refill`: false when the cap left some out. */
+export function tookEveryImage(merged: ComposerContent, refill: ComposerContent): boolean {
+  const held = new Set(merged.attachments.map((image) => image.id));
+  return refill.attachments.every((image) => held.has(image.id));
+}

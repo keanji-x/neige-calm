@@ -7,7 +7,9 @@ import {
   isOptimisticConversationTurn, TOO_MANY_IMAGES, type ModelSelection, type Conversation, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { beginSendOp, withConfirmedSends, type RetiredSend, type SendOp } from '../../../../core/domain/conversation-outbox.ts';
-import { EMPTY_COMPOSER, isSameComposer, withRefill, type ComposerContent } from '../../../../core/domain/conversation-composer.ts';
+import {
+  EMPTY_COMPOSER, isSameComposer, tookEveryImage, withRefill, type ComposerContent,
+} from '../../../../core/domain/conversation-composer.ts';
 import { NO_UPLOAD, type UploadState } from '../../features/planner/attachments.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 
@@ -168,8 +170,11 @@ export type ConversationRegistry = Readonly<{
   nextRead: () => number;
   /** Each existing conversation's unsent words and images, kept across closing, switching and remounts. */
   composerOf: (conversationId: string) => ComposerContent;
-  /** Change one conversation's composer, whichever conversation is shown. */
-  editComposer: (conversationId: string, next: (current: ComposerContent) => ComposerContent) => void;
+  /** Change one conversation's composer, whichever conversation is shown; returns it as written. */
+  editComposer: (conversationId: string, next: (current: ComposerContent) => ComposerContent) => ComposerContent;
+  /** Give words and images back to one conversation's composer, added to what it holds (`withRefill`); the images the
+   * cap left out are said there, whatever the composer already held (#2068). */
+  refillComposer: (conversationId: string, refill: ComposerContent) => void;
   /** Each Track's unsent words for a conversation not created yet, kept across closing, `+` and remounts.
    * Not `ConversationDraft.text`, which holds the words after the composer clears on send. */
   newConversationComposerOf: (scopeId: string) => string;
@@ -188,6 +193,11 @@ export type ConversationRegistry = Readonly<{
   /** One card's image uploads, held here so a remount or another route sees an upload still in flight. */
   uploadOf: (cardId: string) => UploadState;
   editUpload: (cardId: string, next: (current: UploadState) => UploadState) => void;
+  /** Whether a write to one card's queued entries (a delete or a steer) is unanswered, held here so a remount or another
+   * route sees it still out (#2068). */
+  queueWriteOutOf: (cardId: string) => boolean;
+  /** Run one write to that card's queued entries, counted as out until it settles. */
+  holdQueueWrite: <T>(cardId: string, write: () => Promise<T>) => Promise<T>;
   /* Deliberately no "open the planner conversation of track W" slot: the track being left is still
        mounted when a create states it, so that intent travels in the history entry instead. */
 }>;
@@ -221,6 +231,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const outboxesRef = useRef<Readonly<Record<string, readonly SendOp[]>>>({});
   const [outboxes, setOutboxes] = useState(outboxesRef.current);
   const readsStarted = useRef(0);
+  const [spentRows, setSpentRows] = useState<Readonly<Record<string, readonly string[]>>>({});
   const [editNotices, setEditNotices] = useState<Readonly<Record<string, EditNotice>>>({});
   const clearEditNotice = useCallback((conversationId: string) => {
     setEditNotices((current) => {
@@ -239,6 +250,15 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     if (after.length === 0) delete updated[conversationId]; else updated[conversationId] = after;
     outboxesRef.current = updated;
     setOutboxes(updated);
+    /* With no send left there is nothing a row could stand for twice, whichever way the last one left (#2068). */
+    if (after.length === 0) {
+      setSpentRows((current) => {
+        if (!(conversationId in current)) return current;
+        const kept = { ...current };
+        delete kept[conversationId];
+        return kept;
+      });
+    }
     return after;
   }, []);
   const editsRef = useRef<Readonly<Record<string, ConversationEdit>>>({});
@@ -259,34 +279,32 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     return true;
   }, [clearEditNotice, editOutbox, writeEdit]);
   const outboxOf = useCallback((conversationId: string) => outboxes[conversationId] ?? NO_SENDS, [outboxes]);
-  const [spentRows, setSpentRows] = useState<Readonly<Record<string, readonly string[]>>>({});
   const retireSends = useCallback((conversationId: string, retired: readonly RetiredSend[]) => {
     const keys = new Set(retired.map(({ key }) => key));
     const left = editOutbox(conversationId, (current) => {
       const kept = current.filter((op) => !keys.has(op.key));
       return kept.length === current.length ? current : kept;
     });
-    setSpentRows((current) => {
-      const updated = { ...current };
-      /* With no send left there is nothing a row could stand for twice. */
-      if (left.length === 0) delete updated[conversationId];
-      else updated[conversationId] = [...current[conversationId] ?? [], ...retired.flatMap(({ row }) => row === null ? [] : [row])];
-      return updated;
-    });
+    const rows = retired.flatMap(({ row }) => row === null ? [] : [row]);
+    /* An emptied outbox has already dropped its rows in `editOutbox`. */
+    if (left.length === 0 || rows.length === 0) return;
+    setSpentRows((current) => ({ ...current, [conversationId]: [...current[conversationId] ?? [], ...rows] }));
   }, [editOutbox]);
   const spentRowsOf = useCallback((conversationId: string) => spentRows[conversationId] ?? NO_ROWS, [spentRows]);
   const nextRead = useCallback(() => { readsStarted.current += 1; return readsStarted.current; }, []);
-  const [composers, setComposers] = useState<Readonly<Record<string, ComposerContent>>>({});
+  /* Written through the ref first, as the outbox is: a refill reads back what it wrote. */
+  const composersRef = useRef<Readonly<Record<string, ComposerContent>>>({});
+  const [composers, setComposers] = useState(composersRef.current);
   const editComposer = useCallback((conversationId: string, next: (current: ComposerContent) => ComposerContent) => {
-    setComposers((current) => {
-      const before = current[conversationId] ?? EMPTY_COMPOSER;
-      const after = next(before);
-      if (after === before) return current;
-      const updated = { ...current };
-      /* An empty composer is no entry, so the map holds only conversations with something unsent. */
-      if (after.text === '' && after.attachments.length === 0) delete updated[conversationId]; else updated[conversationId] = after;
-      return updated;
-    });
+    const before = composersRef.current[conversationId] ?? EMPTY_COMPOSER;
+    const after = next(before);
+    if (after === before) return before;
+    const updated = { ...composersRef.current };
+    /* An empty composer is no entry, so the map holds only conversations with something unsent. */
+    if (after.text === '' && after.attachments.length === 0) delete updated[conversationId]; else updated[conversationId] = after;
+    composersRef.current = updated;
+    setComposers(updated);
+    return after;
   }, []);
   const composerOf = useCallback((conversationId: string) => composers[conversationId] ?? EMPTY_COMPOSER, [composers]);
   const [newConversationComposers, setNewConversationComposers] = useState<Readonly<Record<string, string>>>({});
@@ -312,21 +330,38 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     });
   }, []);
   const uploadOf = useCallback((cardId: string) => uploads[cardId] ?? NO_UPLOAD, [uploads]);
+  const refillComposer = useCallback((conversationId: string, refill: ComposerContent) => {
+    const merged = editComposer(conversationId, (current) => withRefill(current, refill));
+    if (!tookEveryImage(merged, refill)) editUpload(conversationId, (current) => ({ ...current, refusal: TOO_MANY_IMAGES }));
+  }, [editComposer, editUpload]);
+  const [queueWrites, setQueueWrites] = useState<Readonly<Record<string, number>>>({});
+  const holdQueueWrite = useCallback(<T,>(cardId: string, write: () => Promise<T>): Promise<T> => {
+    const count = (step: 1 | -1) => setQueueWrites((current) => {
+      const out = (current[cardId] ?? 0) + step;
+      const updated = { ...current };
+      if (out === 0) delete updated[cardId]; else updated[cardId] = out;
+      return updated;
+    });
+    return (async () => {
+      /* Counted after a tick: a press's `clickAction` runs in an async transition, which would hold an update made
+         inside it until that action ends, when the write it counts is already answered. */
+      await Promise.resolve();
+      count(1);
+      try { return await write(); } finally { count(-1); }
+    })();
+  }, []);
+  const queueWriteOutOf = useCallback((cardId: string) => cardId in queueWrites, [queueWrites]);
   const noteEdit = useCallback((conversationId: string, notice: EditNotice) => {
     setEditNotices((current) => ({ ...current, [conversationId]: notice }));
   }, []);
   const beginEdit = useCallback((conversationId: string, edit: ConversationEdit) => {
     if (conversationId in editsRef.current) return false;
-    /* What the composer can take of the turn: as a pick, no more images than a message carries, and it says so (#2068). */
-    const refill = withRefill(EMPTY_COMPOSER, edit.refill);
-    writeEdit(conversationId, { ...edit, refill });
-    editComposer(conversationId, (current) => withRefill(current, refill));
-    if (refill.attachments.length < edit.refill.attachments.length) {
-      editUpload(conversationId, (current) => ({ ...current, refusal: TOO_MANY_IMAGES }));
-    }
+    /* What the click puts in the composer, as a pick: no more images than a message carries (#2068). */
+    writeEdit(conversationId, { ...edit, refill: withRefill(EMPTY_COMPOSER, edit.refill) });
+    refillComposer(conversationId, edit.refill);
     clearEditNotice(conversationId);
     return true;
-  }, [clearEditNotice, editComposer, editUpload, writeEdit]);
+  }, [clearEditNotice, refillComposer, writeEdit]);
   const cancelEdit = useCallback((conversationId: string) => {
     const edit = editsRef.current[conversationId];
     if (edit === undefined) return;
@@ -417,11 +452,12 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
-      composerOf, editComposer, newConversationComposerOf, editNewConversationComposer,
+      composerOf, editComposer, refillComposer, newConversationComposerOf, editNewConversationComposer,
       editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, editNoticeOf, uploadOf, editUpload,
+      queueWriteOutOf, holdQueueWrite,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
+      composerOf, discardUnsentDraft, draftOf, editComposer, refillComposer, queueWriteOutOf, holdQueueWrite, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
       remember, requestOpen,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf,
       updateExisting],
