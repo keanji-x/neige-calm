@@ -49,6 +49,11 @@ async fn a_send_during_the_launchpad_restart_waits_on_the_cards_lock() {
     };
     let card_id = boot.planner_card_id.clone();
     let starts_before = boot.start_ops().await;
+    assert_eq!(
+        boot.state.planner_recovery_lock_handles_for_test(&card_id),
+        0,
+        "premise: nothing holds the card's lock"
+    );
 
     let thread_start = boot
         .state

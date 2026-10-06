@@ -5,3 +5,5 @@ test-results/
 .vitest-attachments/
 __screenshots__/
 *.tsbuildinfo
+# `npm run gen:api` writes here before its `mv`; an interrupt between the two leaves it behind.
+core/api/generated/openapi.json.tmp
