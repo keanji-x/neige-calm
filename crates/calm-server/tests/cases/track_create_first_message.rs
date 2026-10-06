@@ -761,6 +761,60 @@ impl Boot {
         )
     }
 
+    /// One `planner-harness-start` of `planner_card_id` with `force_new_thread: false`, submitted the way the
+    /// scheduler's child bootstrap submits it: straight to the operation runtime, outside any route and its
+    /// card fence. It takes the adapter's NON-deferred arm whatever session the card has.
+    async fn start_non_deferred_like_the_scheduler(&self, track: &Value, planner_card_id: &str) {
+        use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
+        use calm_server::operation::{OperationKey, OperationOutcome};
+
+        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
+            actor: calm_server::ids::ActorId::KernelDispatcher,
+            track_id: track["id"].as_str().expect("a created track").to_string(),
+            planner_card_id: planner_card_id.to_string().into(),
+            report_card_id: None,
+            sort: None,
+            cwd: track["cwd"]
+                .as_str()
+                .expect("a created track's cwd")
+                .to_string(),
+            goal: None,
+            reset_harness_items: false,
+            force_new_thread: false,
+            profile: Default::default(),
+            create_card: None,
+            first_message: None,
+            create_request_sha256: None,
+            opening_briefing: None,
+        })
+        .unwrap();
+        let op_id = self
+            .state
+            .operation_runtime
+            .submit(
+                "planner-harness-start",
+                OperationKey {
+                    operation_key: calm_server::model::new_id(),
+                    idempotency_key: None,
+                    payload_hash: calm_server::model::new_id(),
+                },
+                payload,
+            )
+            .await
+            .unwrap();
+        let outcome = self
+            .state
+            .operation_runtime
+            .wait(&op_id)
+            .await
+            .unwrap()
+            .outcome;
+        assert!(
+            matches!(outcome, OperationOutcome::Succeeded { .. }),
+            "premise: the non-deferred start must succeed: {outcome:?}"
+        );
+    }
+
     async fn shutdown_harnesses(&self) {
         let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions")
             .fetch_all(self.repo.pool())
@@ -3256,9 +3310,10 @@ async fn a_failed_restart_gives_the_harvested_sentence_back() {
     b.shutdown_harnesses().await;
 }
 
-/// The NON-deferred arm of `prepare_tx`: a message-less keyed create's resume starts the existing Planner
-/// with `force_new_thread: false`, which supersedes the card's live predecessor without inheriting anything
-/// from it. (The launchpad's second `ensure` drove this arm until its `reuse` start was deleted, #2251.)
+/// The NON-deferred arm of `prepare_tx`: a start of the existing Planner with `force_new_thread: false`
+/// supersedes the card's live predecessor without inheriting anything from it.
+/// Routes no longer reach this arm with a live predecessor (#2212); the remaining producers are the scheduler's
+/// child bootstrap and crash re-drives, so the start is submitted the way the scheduler submits it.
 #[tokio::test]
 async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
     const LAUNCHPAD_SENTENCE: &str = "check the overnight builds";
@@ -3272,7 +3327,7 @@ async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
     );
     let (runtime, planner_card_id) = b.only_runtime().await;
 
-    // Park the drain, THEN send: the sentence has to be durably queued and still undrained when the second ensure runs.
+    // Park the drain, THEN send: the sentence has to be durably queued and still undrained when the start runs.
     let (entered, release) = b.hold_the_next_drain();
     let (sent, sent_body) = b
         .send_planner_input(&planner_card_id, LAUNCHPAD_SENTENCE)
@@ -3289,16 +3344,12 @@ async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
         "premise: the sentence is durably queued on the predecessor and has not drained"
     );
 
-    // The resume under the same key takes the other arm.
-    let (second, second_body) = b.create_track(Some("idem-non-deferred"), None).await;
-    assert_eq!(
-        second,
-        StatusCode::CREATED,
-        "premise: the resume must answer the key's own track: body={second_body}"
-    );
-    assert_eq!(
-        second_body["id"], first_body["id"],
-        "premise: the resume minted nothing and never reached the arm under test"
+    b.start_non_deferred_like_the_scheduler(&first_body, &planner_card_id)
+        .await;
+    assert_ne!(
+        b.active_runtime_of_card(&planner_card_id).await,
+        runtime,
+        "premise: the start superseded the live predecessor"
     );
     release.notify_one();
 
@@ -3506,13 +3557,13 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
 
 /// A move carries the sentence to the successor but leaves the evidence row naming the replaced runtime, so
 /// `user_message_enqueued_on_active_runtime` answers `false` and the summary trigger sends its bootstrap again: an accepted, priced duplicate.
+/// Routes no longer reach the non-deferred arm with a live predecessor (#2212); the remaining producers are the
+/// scheduler's child bootstrap and crash re-drives, so the start is submitted the way the scheduler submits it.
 #[tokio::test]
 async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     let b = boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
-    // A message-less keyed create and its resume: the production starts of an existing Planner that
-    // supersede its live runtime (the launchpad's `reuse` start was deleted, #2251).
     let (first, first_body) = b.create_track(Some("idem-replaced-runtime"), None).await;
     assert_eq!(
         first,
@@ -3542,16 +3593,8 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     // The successor's own drain, parked before it exists: the hook is installed BEFORE the mint that creates
     // the successor, so "not drained yet" is a held state rather than a window.
     let (successor_entered, successor_release) = b.hold_the_next_drain();
-    let (second, second_body) = b.create_track(Some("idem-replaced-runtime"), None).await;
-    assert_eq!(
-        second,
-        StatusCode::CREATED,
-        "premise: the resume must answer the key's own track: body={second_body}"
-    );
-    assert_eq!(
-        second_body["id"], first_body["id"],
-        "premise: the resume minted nothing"
-    );
+    b.start_non_deferred_like_the_scheduler(&first_body, &planner_card_id)
+        .await;
 
     let successor = b.active_runtime_of_card(&planner_card_id).await;
     assert_ne!(successor, runtime, "premise: a replacement really happened");
