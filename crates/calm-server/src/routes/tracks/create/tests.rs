@@ -90,9 +90,11 @@ fn a_collision_outcome_is_a_success_only_on_a_resume_arm() {
     let plain = || OperationOutcome::Succeeded {
         result: serde_json::json!({}),
     };
-    assert!(response_for(SubmitArm::Resume, collision()).is_ok());
     assert!(response_for(SubmitArm::Mint, plain()).is_ok());
-    assert!(response_for(SubmitArm::Resume, plain()).is_ok());
+    for arm in [SubmitArm::Replay, SubmitArm::GenuineRetry] {
+        assert!(response_for(arm, collision()).is_ok(), "{arm:?}");
+        assert!(response_for(arm, plain()).is_ok(), "{arm:?}");
+    }
     let refused = response_for(SubmitArm::Mint, collision())
         .expect_err("a fresh key cannot collide with itself");
     assert!(

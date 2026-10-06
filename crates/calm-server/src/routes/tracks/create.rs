@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use crate::actor::Actor;
 use crate::db::sqlite::TrackCreateRequestFingerprint;
 use crate::error::{CalmError, Result};
-use crate::ids::ActorId;
+use crate::ids::{ActorId, CardId};
 use crate::model::{NewTrack, RequestTheme, Track};
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::per_card_lock::lock_card;
@@ -17,6 +17,8 @@ use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key, validate_first_message,
 };
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
+use crate::routes::planner_start_fence::CardStartFence;
+use crate::session_projection_repo::CardConversation;
 use crate::state::RouteState;
 
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
@@ -643,6 +645,33 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
     Ok(track)
 }
 
+/// What a resumed create may do with its Planner, read under the card's start fence (#2212). A
+/// start supersedes the card's session, and since the first attempt that session may have been
+/// started by that attempt itself or by a reset or re-point.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ResumedStart {
+    /// The card never started, or only failed starts ran: a start loses nothing.
+    Start,
+    /// The card holds or may hold a conversation; only a reset replaces one.
+    Conversation,
+}
+
+/// A start of the card still in flight is a 503: what it leaves is not known yet, and a second
+/// start would supersede it.
+fn resumed_start(conversation: CardConversation) -> Result<ResumedStart> {
+    match conversation {
+        CardConversation::NeverStarted | CardConversation::OnlyFailedStarts => {
+            Ok(ResumedStart::Start)
+        }
+        CardConversation::ThreadToPreserve => Ok(ResumedStart::Conversation),
+        CardConversation::StartInFlight => Err(CalmError::ServiceUnavailable(
+            "track create: a start of this track's Planner has not finished yet; retry this \
+             create under the same Idempotency-Key shortly"
+                .into(),
+        )),
+    }
+}
+
 /// The arms where this key already minted a track. Takes neither `NewTrack` nor
 /// `CreateTrackOptions`: nothing here can mint.
 pub(super) async fn resume_prior_attempt(
@@ -666,10 +695,14 @@ pub(super) async fn resume_prior_attempt(
             .unwrap_or_else(|| track.workspace.agent_cwd().to_string()),
         PriorArm::GenuineRetry => track.workspace.agent_cwd().to_string(),
     };
+    let arm = match prior.arm {
+        PriorArm::Replay => SubmitArm::Replay,
+        PriorArm::GenuineRetry => SubmitArm::GenuineRetry,
+    };
     start_planner_harness_with_first_message(
         &s,
         actor,
-        SubmitArm::Resume,
+        arm,
         &track,
         prior.planner_card_id,
         prior.report_card_id,
@@ -685,7 +718,8 @@ pub(super) async fn resume_prior_attempt(
 /// The message-less resuming arm: 201 with the key's own track, or 409
 /// `idempotency_key_exhausted` when the track was deleted or its workspace can no longer
 /// be materialized. Derives no operation key: `start_planner_harness` submits with
-/// `idempotency_key: None`, so there is nothing to join.
+/// `idempotency_key: None`, so there is nothing to join. It starts the Planner only when the
+/// first attempt's start left nothing to preserve (#2212); a card with a conversation keeps it.
 pub(super) async fn resume_message_less(
     s: RouteState,
     actor: Actor,
@@ -698,7 +732,17 @@ pub(super) async fn resume_message_less(
         _same_key_claim,
     } = resume;
     let track = adopt_prior_track(&s, &track_id, true).await?;
-    super::start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
+    // Inside the same-key claim (`state.rs` lock order), and after `adopt_prior_track` let go of
+    // `track_delete_locks`, which the fence never holds.
+    let fence = CardStartFence::lock(&s, &CardId::from(planner_card_id.clone())).await;
+    match resumed_start(fence.conversation().await?)? {
+        ResumedStart::Start => {
+            super::start_planner_harness(&fence, &actor, &track, planner_card_id, report_card_id)
+                .await?;
+        }
+        // The same 201 as the first attempt's: its start, or a reset since, already runs the card.
+        ResumedStart::Conversation => {}
+    }
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 

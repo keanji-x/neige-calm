@@ -323,6 +323,10 @@ fn refusal_error(creator: &Track, refusal: TrackAddRefusal) -> RpcError {
             }
             CalmError::BadRequest(m) | CalmError::IdempotencyKeyInvalid(m) => invalid(m),
             CalmError::NotFound(m) => RpcError::not_found(format!("{TOOL_TRACK_ADD}: {m}")),
+            // A retry that found another start of the added Track's Planner still running.
+            CalmError::ServiceUnavailable(m) => {
+                RpcError::unavailable(format!("{TOOL_TRACK_ADD}: {m}"))
+            }
             other => internal(other),
         },
     }

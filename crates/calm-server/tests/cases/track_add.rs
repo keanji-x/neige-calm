@@ -34,6 +34,9 @@ use tower::ServiceExt;
 
 struct Boot {
     app: axum::Router,
+    /// The fake app-server, for a test that fails a start; not the `AppState`, which
+    /// `track_creator_does_not_keep_the_state_alive` must be able to drop.
+    codex: Arc<SharedCodexAppServer>,
     ctx: Arc<AppContext>,
     registry: ToolRegistry,
     repo: Arc<SqlxRepo>,
@@ -91,6 +94,7 @@ async fn boot(max_open: u32) -> Boot {
     // After the last builder: the creator keeps the route state it is given.
     state.bind_track_creator(max_open);
     let ctx = state.mcp_context();
+    let codex = state.shared_codex_appserver.clone();
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -108,6 +112,7 @@ async fn boot(max_open: u32) -> Boot {
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     Boot {
         app,
+        codex,
         ctx,
         registry,
         repo,
@@ -758,3 +763,6 @@ async fn track_add_refuses_closed_creator() {
     assert!(error.message.contains("closed"), "{error:?}");
     assert_eq!(boot.track_count().await, before);
 }
+
+#[path = "track_add_retry.rs"]
+mod retry;

@@ -10,13 +10,17 @@ use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_p
 use crate::routes::planner_start_fence::CardStartFence;
 use crate::state::RouteState;
 
-use super::KeyedActor;
+use super::{KeyedActor, ResumedStart, resumed_start};
 
-/// Which arm submitted, for the sole purpose of reading an `OperationOutcome`.
+/// Which arm submitted: it decides whether the card's conversation is read first and how an
+/// `OperationOutcome` reads.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum SubmitArm {
     Mint,
-    Resume,
+    /// Joins the chosen operation under its key; submits no start of its own.
+    Replay,
+    /// Submits a new start onto a card an earlier attempt already tried to start.
+    GenuineRetry,
 }
 
 /// Map an operation outcome onto this route's answer, per arm. `SucceededViaCollision`
@@ -119,6 +123,19 @@ pub(super) async fn start_planner_harness_with_first_message(
     // Taken inside the same-key claim the plan holds (`state.rs` lock order); the card exists
     // already, so a send or a reset may be using it.
     let fence = CardStartFence::lock(s, &request.planner_card_id).await;
+    // A genuine retry follows a failed start, and a reset or re-point may have given the card a
+    // conversation since (#2212). That is the send's to continue, not this start's to supersede.
+    if arm == SubmitArm::GenuineRetry
+        && resumed_start(fence.conversation().await?)? == ResumedStart::Conversation
+    {
+        return Err(CalmError::Conflict(format!(
+            "track create: an earlier attempt under this Idempotency-Key failed to start track \
+             {}'s Planner, and the Planner has had a conversation since (a reset or a re-point \
+             started it), so this retry starts nothing and did not deliver `first_message`. Send \
+             the message through POST /api/cards/{}/planner/input instead.",
+            request.track_id, request.planner_card_id
+        )));
+    }
     let result = fence
         .start(
             &request,

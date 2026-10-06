@@ -1422,7 +1422,8 @@ async fn a_replay_survives_the_track_being_repointed_in_between() {
 }
 
 /// The counterweight: a genuine retry really starts a harness, so it must use the current cwd, not the failed
-/// attempt's (which the re-point has since moved into the trash).
+/// attempt's (which the re-point has since moved into the trash). The re-point's own restart fails too: one that
+/// started the Planner would leave it a conversation, which the retry refuses to supersede (#2212).
 #[tokio::test]
 async fn a_retry_after_a_failure_uses_the_repointed_workspace() {
     let b = boot().await;
@@ -1443,6 +1444,9 @@ async fn a_retry_after_a_failure_uses_the_repointed_workspace() {
     let (_, managed_path) = b.workspace_row(&track_id).await;
 
     let target = user_repo(&b.tmp.path().join("my-project"));
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
     let (patched, patch_body) = b.repoint_to(&track_id, &target).await;
     assert_eq!(
         patched,
@@ -1451,6 +1455,13 @@ async fn a_retry_after_a_failure_uses_the_repointed_workspace() {
     );
     let (_, path_after) = b.workspace_row(&track_id).await;
     assert_eq!(PathBuf::from(&path_after), target);
+    let live: i64 = b
+        .count(
+            "SELECT COUNT(*) FROM worker_sessions \
+             WHERE state IN ('starting','running','idle','turn_pending')",
+        )
+        .await;
+    assert_eq!(live, 0, "premise: the re-point's restart failed as well");
 
     let (retry, retry_body) = b
         .create_track(Some("idem-repoint-retry"), Some("second time lucky"))
@@ -3723,3 +3734,6 @@ async fn create_model_selection_refuses_agent_before_mint() {
 
 #[path = "track_create_first_message_keyed.rs"]
 mod keyed;
+
+#[path = "track_create_retry_live_session.rs"]
+mod retry_live_session;
