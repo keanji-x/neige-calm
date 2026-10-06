@@ -5,28 +5,28 @@ import { HoverPreview } from './public.tsx';
 beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 function mount() {
-  return render(<HoverPreview title="Notes" trigger={(pin) => <button onClick={pin}>Notes</button>}><p>Preview body</p></HoverPreview>);
+  return render(<HoverPreview title="Notes" trigger={(activate) => <button onClick={activate}>Notes</button>}><p>Preview body</p></HoverPreview>);
 }
 function advance(ms: number) { act(() => { vi.advanceTimersByTime(ms); }); }
 function hover() { fireEvent.pointerEnter(screen.getByRole('button', { name: 'Notes' }).parentElement!); }
 
 describe('HoverPreview lifecycle', () => {
-  it('delays preview, then pins after an uninterrupted dwell', () => {
+  it('delays preview, becomes ready, then dismisses when the pointer leaves', () => {
     mount(); hover(); advance(299);
     expect(screen.queryByRole('dialog')).toBeNull();
     advance(1);
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-pinned')).toBe(false);
+    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(false);
     advance(1000);
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-pinned')).toBe(true);
+    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(true);
     fireEvent.pointerLeave(screen.getByRole('button', { name: 'Notes' }).parentElement!);
     advance(2000);
-    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
-  it('does not pin after the pointer leaves just before the dwell deadline', () => {
+  it('does not become ready after the pointer leaves just before the dwell deadline', () => {
     mount(); hover(); advance(1200);
     fireEvent.pointerLeave(screen.getByRole('button', { name: 'Notes' }).parentElement!);
     advance(100);
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-pinned')).toBe(false);
+    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(false);
     advance(80);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -36,13 +36,24 @@ describe('HoverPreview lifecycle', () => {
     advance(100);
     fireEvent.pointerEnter(screen.getByRole('dialog'));
     advance(1000);
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-pinned')).toBe(true);
+    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(true);
   });
-  it('pins by keyboard, restores focus on close, and does not reopen', () => {
+  it('keeps a ready card while entering it, then closes when leaving the card', () => {
+    mount(); hover(); advance(1300);
+    fireEvent.pointerLeave(screen.getByRole('button', { name: 'Notes' }).parentElement!);
+    advance(100);
+    fireEvent.pointerEnter(screen.getByRole('dialog'));
+    advance(2000);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.pointerLeave(screen.getByRole('dialog'));
+    advance(180);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('enables interaction by keyboard, restores focus on close, and does not reopen', () => {
     mount();
     const trigger = screen.getByRole('button', { name: 'Notes' });
     fireEvent.keyDown(trigger, { key: 'ArrowDown' });
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-pinned')).toBe(true);
+    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
     advance(2000);
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -51,7 +62,7 @@ describe('HoverPreview lifecycle', () => {
   it('Escape closes only the topmost card', () => {
     mount();
     fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
-    render(<HoverPreview title="Second" trigger={(pin) => <button onClick={pin}>Second</button>}>Second body</HoverPreview>);
+    render(<HoverPreview title="Second" trigger={(activate) => <button onClick={activate}>Second</button>}>Second body</HoverPreview>);
     fireEvent.click(screen.getByRole('button', { name: 'Second' }));
     fireEvent.keyDown(screen.getByRole('button', { name: 'Notes' }), { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Preview: Second' })).toBeNull();

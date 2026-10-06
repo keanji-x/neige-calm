@@ -5,34 +5,33 @@ import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 import styles from './preview.module.css';
 
-type Phase = 'closed' | 'waiting' | 'preview' | 'pinned';
+type Phase = 'closed' | 'waiting' | 'preview' | 'ready';
 type Position = Readonly<{ x: number; y: number }>;
 const HOVER_DELAY = 300;
-const PIN_DELAY = 1000;
+const READY_DELAY = 1000;
 const LEAVE_DELAY = 180;
 const EDGE = 12;
 
 /** Transient, non-modal preview. The host owns destination admission and content.
- * Timers, portal, drag capture and listeners live only as long as this trigger.
- * ArrowDown pins from the trigger; Escape closes the topmost preview. No focus trap.
+ * Timers, portal and listeners live only as long as this trigger.
+ * ArrowDown enables interaction from the trigger; Escape closes the topmost preview. No focus trap.
  * Clicking a trigger still follows the host's ordinary navigation contract.
  */
 export function HoverPreview({ title, trigger, children }: Readonly<{
   title: string;
-  trigger: (pin: () => void) => ReactNode;
+  trigger: (activate: () => void) => ReactNode;
   children: ReactNode;
 }>) {
   const id = useId();
   const anchor = useRef<HTMLSpanElement>(null);
   const card = useRef<HTMLDivElement>(null);
   const skipFocus = useRef(false);
-  const drag = useRef<Readonly<{ pointer: number; dx: number; dy: number }> | null>(null);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [engaged, setEngaged] = useState(false);
   const [phase, setPhase] = useState<Phase>('closed');
   const [position, setPosition] = useState<Position>({ x: EDGE, y: EDGE });
-  const visible = phase === 'preview' || phase === 'pinned';
-  const pinned = phase === 'pinned';
+  const visible = phase === 'preview' || phase === 'ready';
+  const ready = phase === 'ready';
   const cancelLeave = () => {
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
     leaveTimer.current = null;
@@ -46,7 +45,7 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
       skipFocus.current = false;
     }
   };
-  const pin = () => { cancelLeave(); setPhase('pinned'); };
+  const activate = () => { cancelLeave(); setPhase('ready'); };
   const enter = () => {
     cancelLeave();
     setEngaged(true);
@@ -56,7 +55,7 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
     cancelLeave();
     setEngaged(false);
     leaveTimer.current = setTimeout(() => {
-      setPhase((current) => current === 'pinned' ? current : 'closed');
+      setPhase('closed');
     }, LEAVE_DELAY);
   };
   useEffect(() => () => {
@@ -64,8 +63,8 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
   }, []);
   useEffect(() => {
     if (!engaged || (phase !== 'waiting' && phase !== 'preview')) return;
-    const timeout = setTimeout(() => setPhase(phase === 'waiting' ? 'preview' : 'pinned'),
-      phase === 'waiting' ? HOVER_DELAY : PIN_DELAY);
+    const timeout = setTimeout(() => setPhase(phase === 'waiting' ? 'preview' : 'ready'),
+      phase === 'waiting' ? HOVER_DELAY : READY_DELAY);
     return () => { clearTimeout(timeout); };
   }, [phase, engaged]);
 
@@ -116,7 +115,7 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
       }
     };
     const scroll = (event: Event) => {
-      if (!pinned && !(event.target instanceof Node && card.current?.contains(event.target))) setPhase('closed');
+      if (!(event.target instanceof Node && card.current?.contains(event.target))) setPhase('closed');
     };
     window.addEventListener('resize', clamp);
     document.addEventListener('keydown', escape);
@@ -126,7 +125,7 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
       document.removeEventListener('keydown', escape);
       document.removeEventListener('scroll', scroll, true);
     };
-  }, [visible, pinned]);
+  }, [visible]);
 
   return <span ref={anchor} className={styles.anchor} role="presentation"
     onPointerEnter={(event) => { if (event.pointerType !== 'touch') enter(); }}
@@ -138,13 +137,13 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
     }}
     onKeyDown={(event) => {
       if (event.target instanceof Node && card.current?.contains(event.target)) return;
-      if (event.key === 'ArrowDown') { event.preventDefault(); pin(); }
+      if (event.key === 'ArrowDown') { event.preventDefault(); activate(); }
       if (event.key === 'Escape' && phase === 'waiting') { event.preventDefault(); close(); }
     }}>
-    {trigger(pin)}
+    {trigger(activate)}
     {visible && createPortal(<div ref={card} className={styles.card} role="dialog"
       aria-label={`Preview: ${title}`} id={id} data-nc-link-preview=""
-      data-nc-pinned={pinned ? '' : undefined} data-nc-escape-layer=""
+      data-nc-ready={ready ? '' : undefined} data-nc-escape-layer=""
       style={{ left: position.x, top: position.y }}
       onPointerEnter={enter} onPointerLeave={leave}
       onFocus={enter} onBlur={(event) => {
@@ -152,47 +151,16 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
         leave();
       }}>
       <div className={styles.header}>
-        <button type="button" className={styles.move} aria-label="Move preview" disabled={!pinned}
-          onPointerDown={(event) => {
-            if (!pinned || event.button !== 0) return;
-            event.preventDefault();
-            event.currentTarget.setPointerCapture(event.pointerId);
-            drag.current = { pointer: event.pointerId, dx: event.clientX - position.x, dy: event.clientY - position.y };
-          }}
-          onPointerMove={(event) => {
-            const current = drag.current;
-            const box = card.current?.getBoundingClientRect();
-            if (current === null || current.pointer !== event.pointerId || box === undefined) return;
-            setPosition({
-              x: Math.max(EDGE, Math.min(event.clientX - current.dx, window.innerWidth - box.width - EDGE)),
-              y: Math.max(EDGE, Math.min(event.clientY - current.dy, window.innerHeight - box.height - EDGE)),
-            });
-          }}
-          onPointerUp={(event) => {
-            drag.current = null;
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-          }}
-          onLostPointerCapture={() => { drag.current = null; }}
-          onKeyDown={(event) => {
-            const delta = event.shiftKey ? 40 : 10;
-            if (!event.key.startsWith('Arrow')) return;
-            event.preventDefault(); event.stopPropagation();
-            const box = card.current?.getBoundingClientRect();
-            if (box === undefined) return;
-            setPosition((current) => ({
-              x: Math.max(EDGE, Math.min(current.x + (event.key === 'ArrowRight' ? delta : event.key === 'ArrowLeft' ? -delta : 0), window.innerWidth - box.width - EDGE)),
-              y: Math.max(EDGE, Math.min(current.y + (event.key === 'ArrowDown' ? delta : event.key === 'ArrowUp' ? -delta : 0), window.innerHeight - box.height - EDGE)),
-            }));
-          }}><span>{title}</span></button>
-        <button type="button" className={styles.control} aria-label={pinned ? 'Preview pinned' : 'Pin preview'}
-          aria-pressed={pinned} onClick={pin} title={pinned ? 'Pinned · drag the title to move' : 'Keep hovering to pin, or click now'}>
-          {pinned ? <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" /></svg>
-            : <svg className={styles.ring} viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="9" /><circle key={engaged ? 'active' : 'paused'} className={styles.progress} cx="12" cy="12" r="9" pathLength="1" style={{ animationDuration: `${PIN_DELAY}ms`, animationPlayState: engaged ? 'running' : 'paused' }} /></svg>}
+        <span className={styles.title}>{title}</span>
+        <button type="button" className={styles.control} aria-label={ready ? 'Preview ready' : 'Enable preview interaction'}
+          aria-pressed={ready} onClick={activate} title={ready ? 'Move into the preview to interact; move away to dismiss' : 'Keep hovering to interact, or click now'}>
+          {ready ? <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" /></svg>
+            : <svg className={styles.ring} viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="9" /><circle key={engaged ? 'active' : 'paused'} className={styles.progress} cx="12" cy="12" r="9" pathLength="1" style={{ animationDuration: `${READY_DELAY}ms`, animationPlayState: engaged ? 'running' : 'paused' }} /></svg>}
         </button>
         <button type="button" className={styles.control} aria-label="Close preview" onClick={() => close(true)}><Icon name="close" /></button>
       </div>
       <div className={styles.body}>{children}</div>
-      <div className={styles.footer} role="status">{pinned ? 'Pinned · scroll to read · drag the title to move' : 'Keep hovering to pin this preview'}</div>
+      <div className={styles.footer} role="status">{ready ? 'Move inside to interact · move away to dismiss' : 'Keep hovering, then move inside to interact'}</div>
     </div>, document.body)}
   </span>;
 }

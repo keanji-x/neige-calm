@@ -32,7 +32,7 @@ describe('report preview admission and rendering', () => {
     expect(screen.getByRole('heading', { name: 'File contents' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'sibling' }).title).toBe('docs/other.txt');
   });
-  it('never loads an external resource on hover or automatic pin', async () => {
+  it('never loads an external resource on hover or automatic readiness', async () => {
     mount('![diagram](https://example.com/diagram.png)');
     await hover('diagram');
     act(() => { vi.advanceTimersByTime(2000); });
