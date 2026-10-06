@@ -226,9 +226,11 @@ Agent-facing JSON-RPC codes, one meaning each:
 
 ## 7. Discovery and help
 
-- `neige tool ls (--prefix P | --all) [--cursor C]` returns `{tools: [{name, cli, listed}],
-  next_cursor}`. `neige tool describe --name N` returns the MCP declaration plus `cli` and
-  `listed`.
+- `neige tool ls (--prefix P | --all) [--cursor C]` returns `{tools: [{name, cli, listed,
+  plugin, kind}], next_cursor}`. `neige tool describe --name N` returns the MCP declaration plus
+  `cli`, `listed`, `plugin` and `kind`. `plugin` is the id of the plugin serving the tool, built-in
+  natives such as `neige_dev_publish` included, or null for a kernel tool; `kind` is the kind its
+  manifest declares (`forge-action`) or null (#2227).
 - `listed` (shown in `tools/list`) is a context-budget choice. A tool is hidden when shell use
   serves it better. Listing is never a grant; the tool's role gate decides.
 - `neige help`, `neige help <object>`, `neige help <object> <action>` (and `--help`). Command help

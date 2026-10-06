@@ -98,3 +98,39 @@ async fn filter_profile(
     }
     Ok(descriptors)
 }
+
+/// The plugin that serves a discovered tool: its id and the kind its manifest declares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PluginOwner {
+    pub(crate) id: String,
+    pub(crate) kind: Option<ToolKind>,
+}
+
+/// Who serves `name`: `None` for a kernel tool. A built-in native answers by its compiled owner, a
+/// minted name by [`plugin_tool_route`] over the installed plugins, so a plugin that stops between
+/// listing and this lookup still names itself. A name nobody serves is an error, never "kernel".
+pub(crate) fn tool_owner(
+    registry: &ToolRegistry,
+    plugins: Option<&crate::plugin_host::PluginRegistry>,
+    name: &str,
+) -> Result<Option<PluginOwner>, RpcError> {
+    if let Some(plugin) = crate::builtin_plugins::owner(name) {
+        return Ok(Some(PluginOwner {
+            id: plugin.manifest().id.clone(),
+            kind: None,
+        }));
+    }
+    if registry.lookup(name).is_some() {
+        return Ok(None);
+    }
+    let route = match plugins {
+        Some(plugins) => {
+            let installed = plugins.list().into_iter().map(|m| m.id).collect();
+            plugin_tool_route(plugins, name, &installed)?
+        }
+        None => None,
+    };
+    route
+        .map(|(id, _, kind)| Some(PluginOwner { id, kind }))
+        .ok_or_else(|| RpcError::internal(format!("tool `{name}` has no owner")))
+}

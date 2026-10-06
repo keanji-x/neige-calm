@@ -895,7 +895,8 @@ async fn cli_tag_lists_for_a_worker_and_refuses_its_changes() {
 }
 
 /// #2003 §4.5: `neige tool ls` rows are this session's `tools/list` set (`listed: true`) plus every
-/// CLI-covered tool (`listed: false` when hidden), each with its derived `cli` command or null.
+/// CLI-covered tool (`listed: false` when hidden), each with its derived `cli` command or null. No
+/// plugin runs here, so every row is a kernel tool (`plugin` and `kind` null, #2227).
 #[tokio::test]
 async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions() {
     use support::mcp::{connect, handshake, recv_frame, send_frame, tools_list_frame};
@@ -936,12 +937,12 @@ async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions()
         };
         let mut expected: Vec<Value> = visible
             .iter()
-            .map(|name| json!({"name": name, "cli": cli_of(name), "listed": true}))
+            .map(|name| json!({"name": name, "cli": cli_of(name), "listed": true, "plugin": null, "kind": null}))
             .chain(
                 CLI_COVERED
                     .iter()
                     .filter(|(tool, _)| !visible.contains(tool))
-                    .map(|(tool, cli)| json!({"name": tool, "cli": cli, "listed": false})),
+                    .map(|(tool, cli)| json!({"name": tool, "cli": cli, "listed": false, "plugin": null, "kind": null})),
             )
             .collect();
         expected.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
@@ -982,6 +983,8 @@ async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions()
         let mut want = selected.clone();
         want["cli"] = json!(cli_of(name));
         want["listed"] = json!(true);
+        want["plugin"] = Value::Null;
+        want["kind"] = Value::Null;
         assert_eq!(serde_json::from_str::<Value>(&stdout).unwrap(), want);
         let (stdout, stderr, exit) = cli(
             &boot,

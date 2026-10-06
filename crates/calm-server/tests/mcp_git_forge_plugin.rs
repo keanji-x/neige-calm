@@ -5,6 +5,9 @@ mod support;
 #[path = "cases/git_forge_track_worktree.rs"]
 mod git_forge_track_worktree;
 
+#[path = "cases/git_forge_tool_catalog.rs"]
+mod git_forge_tool_catalog;
+
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
