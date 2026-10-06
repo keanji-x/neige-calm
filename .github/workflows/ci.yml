@@ -470,6 +470,9 @@ jobs:
       - name: track scorecard bypass classifier discriminates (#2170 A)
         run: ./scripts/track-scorecard.py --selftest
 
+      - name: track trace records turns, triggers, actions and windows (#2206 T2)
+        run: ./scripts/track-trace.py --selftest
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         if: env.RUN_RUST_CHECKS == 'true'
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
