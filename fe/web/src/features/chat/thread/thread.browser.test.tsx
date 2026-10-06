@@ -472,7 +472,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
   conversationSpan?: number;
 }) {
   return (
-    <div
+    <><button type="button" style={{ position: 'fixed', insetBlockStart: 0, insetInlineEnd: 0 }}>Outside navigation</button><div
       data-nc-rail-host=""
       style={{
         position: 'relative',
@@ -494,7 +494,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
         </div>
       </div>
       <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
-    </div>
+    </div></>
   );
 }
 
@@ -811,7 +811,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     // Only the hook's JS delays are controlled: pointer moves, CSS motion and RAF stay real.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
-      render(<><button type="button">Outside navigation</button><RailPane turns={promptTurns(8, index => `Prompt ${index}`)} conversationSpan={520} /></>);
+      render(<RailPane turns={promptTurns(8, index => `Prompt ${index}`)} conversationSpan={520} />);
       await frame();
       await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
       const before = dots().map(dot => dot.getBoundingClientRect().top);
@@ -935,7 +935,7 @@ describe('the exchange rail, as the engine lays it out', () => {
 
     track.scrollTop = track.scrollHeight;
     await settle();
-    await userEvent.hover(pane());
+    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
     await pause(150);
     act(() => { dots()[29].focus(); });
     await pause(150);
@@ -1003,7 +1003,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     await page.viewport(1400, 900);
     render(<RailPane turns={promptTurns()} />);
     await frame();
-    await userEvent.hover(pane());
+    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
     await pause(600);
     expect(railPreview()).toBeNull();
 
