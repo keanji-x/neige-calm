@@ -53,7 +53,10 @@ pub(super) async fn run_the_chain_through(f: &Fx, last: i64, expected: &[&str]) 
         .iter()
         .filter(|m| {
             (134..=last).contains(&m.version)
-                && !matches!(m.version, 136 | 138 | 139 | 140 | 145 | 146 | 147 | 149 | 150)
+                && !matches!(
+                    m.version,
+                    136 | 138 | 139 | 140 | 145 | 146 | 147 | 149 | 150
+                )
         })
         .collect();
     assert_eq!(
