@@ -2,7 +2,7 @@
 //! empty rows are never stored.
 
 use crate::error::{ErrorBody, Result};
-use crate::json_body::JsonBody;
+use crate::extract::JsonBody;
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};

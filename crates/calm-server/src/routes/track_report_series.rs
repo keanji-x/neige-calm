@@ -3,9 +3,10 @@
 //! A read never calls a plugin and never writes; a missing or stale row is an in-memory
 //! `enqueue`. Every read is one autocommit statement on the pool — no transaction.
 
+use crate::extract::{Path, Query};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State, rejection::QueryRejection},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -48,8 +49,6 @@ impl From<ReportSeriesDetail> for Detail {
     }
 }
 
-/// `parameter_in` is spelled out because the handler takes the extractor as
-/// `Result<Query<_>, QueryRejection>`, which utoipa's axum inference does not see through.
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ReportSeriesQuery {
@@ -161,9 +160,8 @@ pub(crate) async fn get_report_series(
     State(state): State<RouteState>,
     _principal: Principal,
     Path((id, block_id)): Path<(String, String)>,
-    query: std::result::Result<Query<ReportSeriesQuery>, QueryRejection>,
+    Query(query): Query<ReportSeriesQuery>,
 ) -> Result<Response> {
-    let Query(query) = query.map_err(|rejection| CalmError::BadRequest(rejection.body_text()))?;
     state
         .repo
         .track_get(&id)

@@ -74,6 +74,15 @@ const LIFECYCLE_DB_READ_RETRIES: u32 = 5;
 
 const LIFECYCLE_DB_READ_RETRY_DELAY: Duration = Duration::from_millis(200);
 
+/// Whether a spawn refused for a template or minted-name conflict publishes `crashed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictReport {
+    /// The plugin stays enabled and is not running; the live state says why.
+    Publish,
+    /// The caller undoes its own enable on this refusal, so the request changes nothing at all.
+    Silent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginRuntimeStatus {
     Installing,
@@ -993,6 +1002,17 @@ impl PluginHost {
         lifecycle: &LifecycleGuard,
         inherit: Option<CrashWindow>,
     ) -> Result<(), HostError> {
+        self.spawn_under_reporting(lifecycle, inherit, ConflictReport::Publish)
+            .await
+    }
+
+    /// [`Self::spawn_under`], with the caller deciding whether a conflict refusal publishes `crashed`.
+    async fn spawn_under_reporting(
+        self: &Arc<Self>,
+        lifecycle: &LifecycleGuard,
+        inherit: Option<CrashWindow>,
+        report: ConflictReport,
+    ) -> Result<(), HostError> {
         let id = lifecycle.id();
         let manifest = self.spawn_admission_check(id)?;
 
@@ -1064,8 +1084,10 @@ impl PluginHost {
                     "refusing to spawn plugin with a conflicting template id or minted name"
                 );
                 // Surface the refusal as a failed `PluginState` event so operators see why the plugin isn't running.
-                self.emit_crashed_under(lifecycle, &conflict.to_string())
-                    .await;
+                if report == ConflictReport::Publish {
+                    self.emit_crashed_under(lifecycle, &conflict.to_string())
+                        .await;
+                }
                 return Err(conflict);
             }
         };

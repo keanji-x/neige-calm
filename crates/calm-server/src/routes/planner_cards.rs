@@ -5,6 +5,7 @@
 use crate::actor::Actor;
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::extract::Path;
 use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage};
 use crate::ids::CardId;
 use crate::model::{Card, CardRole, Track, new_id};
@@ -20,10 +21,7 @@ use crate::session_projection_lookup::card_is_shared_planner;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{CodexShellState, RouteState};
 
-use axum::{
-    Json,
-    extract::{Path, State},
-};
+use axum::{Json, extract::State};
 use calm_types::planner_attachment::PlannerAttachment;
 use serde::Serialize;
 use serde_json::Value;
