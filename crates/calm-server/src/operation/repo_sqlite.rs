@@ -309,7 +309,8 @@ impl OperationRepo for SqlxOperationRepo {
                    completed_at_ms = COALESCE(?3, completed_at_ms),
                    updated_at_ms = ?4
                WHERE id = ?5
-                 AND lease_owner = ?6"#,
+                 AND lease_owner = ?6
+                 AND (?1 <> 'awaiting_retry' OR (phase = 'app_server_interact' AND lease_until_ms >= ?4))"#,
         )
         .bind(tag.as_str())
         .bind(detail_text)
@@ -746,7 +747,8 @@ pub(super) async fn write_phase_and_tx_output<'e>(
                completed_at_ms = COALESCE(?7, completed_at_ms),
                updated_at_ms = ?8
            WHERE id = ?9
-             AND lease_owner IS ?10"#,
+             AND lease_owner IS ?10
+             AND (?1 <> 'awaiting_retry' OR (phase = 'app_server_interact' AND lease_until_ms >= ?8))"#,
     )
     .bind(tag.as_str())
     .bind(optional_json_text(detail.as_ref())?)

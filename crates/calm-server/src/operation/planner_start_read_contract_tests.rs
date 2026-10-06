@@ -77,6 +77,9 @@ phases! {
     AppServerInteract => Phase::AppServerInteract {
         kind: AppServerInteractKind::MintAndAwait { thread_id: None },
     },
+    AwaitingRetry => Phase::AwaitingRetry {
+        kind: AppServerInteractKind::MintAndAwait { thread_id: None },
+    },
     SpawnStarted => Phase::SpawnStarted,
     SpawnSucceeded => Phase::SpawnSucceeded,
     Parked => Phase::Parked,

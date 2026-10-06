@@ -5,6 +5,8 @@ pub(crate) mod launch_cleanup_test_support;
 mod parked_fence_model;
 
 mod driver;
+mod interaction_retry;
+pub use interaction_retry::OperationReceipt;
 pub(crate) mod owned_parked;
 mod repo_sqlite;
 pub(crate) mod workspace_lease;
@@ -376,8 +378,14 @@ pub struct SpawnArtifacts {
 #[derive(Clone, Debug)]
 pub enum AppServerInteractOutcome {
     NotApplicable,
-    MintedAndAwaited { thread_id: String },
-    RegisteredPendingForLaterAttribution { entry_id: String },
+    MintedAndAwaited {
+        thread_id: String,
+    },
+    RegisteredPendingForLaterAttribution {
+        entry_id: String,
+    },
+    /// Persist this interaction for an explicit keyed retry, without compensation.
+    AwaitingRetry,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -385,6 +393,7 @@ pub enum Phase {
     Pending,
     TxCommitted,
     AppServerInteract { kind: AppServerInteractKind },
+    AwaitingRetry { kind: AppServerInteractKind },
     SpawnStarted,
     SpawnSucceeded,
     Parked,
@@ -406,6 +415,7 @@ pub enum PhaseTag {
     Pending,
     TxCommitted,
     AppServerInteract,
+    AwaitingRetry,
     SpawnStarted,
     SpawnSucceeded,
     Parked,
@@ -421,6 +431,7 @@ impl PhaseTag {
             PhaseTag::Pending => "pending",
             PhaseTag::TxCommitted => "tx_committed",
             PhaseTag::AppServerInteract => "app_server_interact",
+            PhaseTag::AwaitingRetry => "awaiting_retry",
             PhaseTag::SpawnStarted => "spawn_started",
             PhaseTag::SpawnSucceeded => "spawn_succeeded",
             PhaseTag::Parked => "parked",
@@ -436,6 +447,7 @@ impl PhaseTag {
             "pending" => Ok(Self::Pending),
             "tx_committed" => Ok(Self::TxCommitted),
             "app_server_interact" => Ok(Self::AppServerInteract),
+            "awaiting_retry" => Ok(Self::AwaitingRetry),
             "spawn_started" => Ok(Self::SpawnStarted),
             "spawn_succeeded" => Ok(Self::SpawnSucceeded),
             "parked" => Ok(Self::Parked),
@@ -456,6 +468,7 @@ impl Phase {
             Phase::Pending => PhaseTag::Pending,
             Phase::TxCommitted => PhaseTag::TxCommitted,
             Phase::AppServerInteract { .. } => PhaseTag::AppServerInteract,
+            Phase::AwaitingRetry { .. } => PhaseTag::AwaitingRetry,
             Phase::SpawnStarted => PhaseTag::SpawnStarted,
             Phase::SpawnSucceeded => PhaseTag::SpawnSucceeded,
             Phase::Parked => PhaseTag::Parked,
@@ -468,7 +481,7 @@ impl Phase {
 
     pub fn serialize_split(&self) -> (PhaseTag, Option<Value>) {
         match self {
-            Phase::AppServerInteract { kind } => {
+            Phase::AppServerInteract { kind } | Phase::AwaitingRetry { kind } => {
                 let detail = match kind {
                     AppServerInteractKind::MintAndAwait { thread_id } => json!({
                         "kind": "mint_and_await",
@@ -479,7 +492,7 @@ impl Phase {
                         "entry_id": entry_id,
                     }),
                 };
-                (PhaseTag::AppServerInteract, Some(detail))
+                (self.tag(), Some(detail))
             }
             Phase::Stuck { reason, since } => (
                 PhaseTag::Stuck,
@@ -496,34 +509,37 @@ impl Phase {
         match PhaseTag::from_db_str(disc)? {
             PhaseTag::Pending => Ok(Self::Pending),
             PhaseTag::TxCommitted => Ok(Self::TxCommitted),
-            PhaseTag::AppServerInteract => {
+            PhaseTag::AppServerInteract | PhaseTag::AwaitingRetry => {
                 let detail = detail.ok_or_else(|| {
                     CalmError::Internal("app_server_interact missing phase detail".into())
                 })?;
                 let kind = detail.get("kind").and_then(Value::as_str).ok_or_else(|| {
                     CalmError::Internal("app_server_interact missing kind".into())
                 })?;
-                match kind {
-                    "mint_and_await" => Ok(Self::AppServerInteract {
-                        kind: AppServerInteractKind::MintAndAwait {
-                            thread_id: detail
-                                .get("thread_id")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
-                        },
-                    }),
-                    "register_pending" => Ok(Self::AppServerInteract {
-                        kind: AppServerInteractKind::RegisterPending {
-                            entry_id: detail
-                                .get("entry_id")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
-                        },
-                    }),
-                    other => Err(CalmError::Internal(format!(
-                        "unknown app_server_interact kind {other}"
-                    ))),
-                }
+                let continuation = match kind {
+                    "mint_and_await" => AppServerInteractKind::MintAndAwait {
+                        thread_id: detail
+                            .get("thread_id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                    },
+                    "register_pending" => AppServerInteractKind::RegisterPending {
+                        entry_id: detail
+                            .get("entry_id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                    },
+                    other => {
+                        return Err(CalmError::Internal(format!(
+                            "unknown app_server_interact kind {other}"
+                        )));
+                    }
+                };
+                Ok(if disc == "awaiting_retry" {
+                    Self::AwaitingRetry { kind: continuation }
+                } else {
+                    Self::AppServerInteract { kind: continuation }
+                })
             }
             PhaseTag::SpawnStarted => Ok(Self::SpawnStarted),
             PhaseTag::SpawnSucceeded => Ok(Self::SpawnSucceeded),
@@ -801,6 +817,13 @@ pub trait OperationRepo: Send + Sync {
     async fn get_operation(&self, op_id: &str) -> Result<Option<Operation>>;
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
+    async fn claim_interaction_retry(
+        &self,
+        op: &Operation,
+        expected_attempt: i32,
+    ) -> Result<Option<Operation>> {
+        interaction_retry::claim_retry(&self.sqlite_pool(), op, expected_attempt).await
+    }
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>>;
     async fn abandoned_running_operations_steady_state(&self) -> Result<Vec<Operation>>;
     async fn claim_operation_for_recovery(&self, op_id: &str) -> Result<Option<Operation>>;
@@ -1082,3 +1105,9 @@ mod claim_completion_deadlock_tests;
 mod planner_start_read_contract_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod awaiting_retry_tests;
+
+#[cfg(test)]
+mod awaiting_retry_migration_tests;

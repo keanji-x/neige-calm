@@ -53,12 +53,12 @@ impl Default for OperationCompletionBus {
 }
 
 pub struct OperationRuntime {
-    repo: Arc<dyn OperationRepo>,
+    pub(super) repo: Arc<dyn OperationRepo>,
     kinds: HashMap<&'static str, Arc<dyn ProviderAdapter>>,
     completion: OperationCompletionBus,
     events: EventBus,
     spawn_ctx: SpawnCtx,
-    drive_mutex: Arc<Mutex<()>>,
+    pub(super) drive_mutex: Arc<Mutex<()>>,
     wait_entered_test_hook: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
@@ -135,6 +135,13 @@ impl OperationRuntime {
         payload: Value,
     ) -> Result<OperationId> {
         let adapter = self.adapter(kind)?;
+        if adapter.phases().contains(&PhaseTag::AwaitingRetry)
+            && key.idempotency_key.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(CalmError::BadRequest(
+                "explicit-retry interactions require an idempotency key".into(),
+            ));
+        }
         // A keyed `operations` row is PERMANENT: this short-circuit is the only thing that stops a byte-identical retry from re-running an
         // operation that already succeeded (for `planner-harness-start`, delivering the user's first message twice). Never add a retention pass over keyed rows.
         if let Some(op_id) = self.keyed_replay(kind, &key).await? {
@@ -300,6 +307,7 @@ impl OperationRuntime {
     }
 
     pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {
+        self.refuse_deferred_wait(op_id).await?;
         if let Some(result) = self.repo.operation_result(op_id).await? {
             return Ok(result);
         }
@@ -327,6 +335,7 @@ impl OperationRuntime {
                     if let Some(result) = self.repo.operation_result(op_id).await? {
                         return Ok(result);
                     }
+                    self.refuse_deferred_wait(op_id).await?;
                     self.enforce_parked_deadline(op_id).await?;
                     self.drive().await?;
                 }
@@ -383,21 +392,29 @@ impl OperationRuntime {
                 return Ok(());
             }
             for op in batch {
-                let from_phase = op.phase.tag();
-                let adapter = self.adapter(&op.kind)?;
-                if let Err(e) = self.drive_one(adapter, op.clone()).await {
-                    if let Some(result) = self
-                        .repo
-                        .mark_stuck(&op, format!("operation drive failed: {e}"), from_phase)
-                        .await?
-                    {
-                        self.completion.complete(result);
-                    } else {
-                        log_lost_lease(&op, PhaseTag::Stuck);
-                    }
-                }
+                self.drive_claimed(self.adapter(&op.kind)?, op).await?;
             }
         }
+    }
+
+    pub(super) async fn drive_claimed(
+        &self,
+        adapter: Arc<dyn ProviderAdapter>,
+        op: Operation,
+    ) -> Result<()> {
+        let from_phase = op.phase.tag();
+        if let Err(error) = self.drive_one(adapter, op.clone()).await {
+            if let Some(result) = self
+                .repo
+                .mark_stuck(&op, format!("operation drive failed: {error}"), from_phase)
+                .await?
+            {
+                self.completion.complete(result);
+            } else {
+                log_lost_lease(&op, PhaseTag::Stuck);
+            }
+        }
+        Ok(())
     }
 
     pub async fn recover_on_boot(&self) -> Result<RecoveryPlan> {
@@ -436,7 +453,7 @@ impl OperationRuntime {
         Ok(())
     }
 
-    fn adapter(&self, kind: &str) -> Result<Arc<dyn ProviderAdapter>> {
+    pub(super) fn adapter(&self, kind: &str) -> Result<Arc<dyn ProviderAdapter>> {
         self.kinds
             .get(kind)
             .cloned()
@@ -554,6 +571,28 @@ impl OperationRuntime {
                     .app_server_interact(&mut output, &op, &self.spawn_ctx)
                     .await
                 {
+                    Ok(AppServerInteractOutcome::AwaitingRetry) => {
+                        if !adapter.phases().contains(&PhaseTag::AwaitingRetry) {
+                            return Err(CalmError::Internal(
+                                "adapter did not declare awaiting_retry".into(),
+                            ));
+                        }
+                        let Phase::AppServerInteract { kind } = &op.phase else {
+                            unreachable!()
+                        };
+                        if self
+                            .repo
+                            .set_phase_and_tx_output(
+                                &op,
+                                Phase::AwaitingRetry { kind: kind.clone() },
+                                &output,
+                            )
+                            .await?
+                            .is_none()
+                        {
+                            log_lost_lease(&op, PhaseTag::AwaitingRetry);
+                        }
+                    }
                     Ok(AppServerInteractOutcome::NotApplicable) => {
                         super::terminal_launch::initialize_prestart(&op.kind, &mut output)?;
                         if self
@@ -687,6 +726,9 @@ impl OperationRuntime {
                 }
                 Ok(())
             }
+            Phase::AwaitingRetry { .. } => Err(CalmError::Internal(
+                "awaiting_retry reached automatic drive".into(),
+            )),
             Phase::Parked => {
                 tracing::warn!(
                     op_id = %op.id,
@@ -1118,6 +1160,10 @@ impl OperationRuntime {
                     .last_error
                     .clone()
                     .unwrap_or_else(|| "resume compensation".into()),
+            },
+            Phase::AwaitingRetry { .. } => RecoveryItem::Skip {
+                op_id: op.id.clone(),
+                reason: "explicit retry required".into(),
             },
             Phase::Succeeded | Phase::Failed | Phase::Stuck { .. } => RecoveryItem::Skip {
                 op_id: op.id.clone(),

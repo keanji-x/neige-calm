@@ -1841,7 +1841,7 @@ fn live_child_spawn_artifacts() -> (ChildGuard, SpawnArtifacts) {
     (ChildGuard(child), artifacts)
 }
 
-fn test_runtime(
+pub(super) fn test_runtime(
     sqlx_repo: crate::db::sqlite::SqlxRepo,
     operation_repo: Arc<SqlxOperationRepo>,
     adapters: Vec<Arc<dyn ProviderAdapter>>,
