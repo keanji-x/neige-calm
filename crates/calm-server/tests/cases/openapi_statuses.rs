@@ -27,11 +27,15 @@ struct Annotated {
     method: String,
     path: String,
     takes_json_body: bool,
+    /// Takes `calm_server::extract`'s `Path` or `Query`, by name or by a renamed import.
+    takes_params: bool,
 }
 
 #[derive(Default)]
 struct Handlers {
     file: String,
+    /// The names `Path` and `Query` have in the current file: themselves, and any `as` rename.
+    param_extractors: Vec<String>,
     found: Vec<Annotated>,
 }
 
@@ -58,17 +62,54 @@ impl Handlers {
                 names.visit_type(&argument.ty);
                 names.found
             });
+            let takes_params = signature.inputs.iter().any(|input| {
+                let syn::FnArg::Typed(argument) = input else {
+                    return false;
+                };
+                let syn::Type::Path(ty) = &*argument.ty else {
+                    return false;
+                };
+                ty.path.segments.last().is_some_and(|last| {
+                    self.param_extractors
+                        .iter()
+                        .any(|name| last.ident == name.as_str())
+                })
+            });
             self.found.push(Annotated {
                 handler: format!("{}::{}", self.file, signature.ident),
                 method,
                 path,
                 takes_json_body,
+                takes_params,
             });
         }
     }
 }
 
 impl<'ast> Visit<'ast> for Handlers {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        fn renames(tree: &syn::UseTree, out: &mut Vec<String>) {
+            match tree {
+                syn::UseTree::Path(path) => renames(&path.tree, out),
+                syn::UseTree::Group(group) => group.items.iter().for_each(|i| renames(i, out)),
+                syn::UseTree::Rename(rename)
+                    if rename.ident == "Path" || rename.ident == "Query" =>
+                {
+                    out.push(rename.rename.to_string());
+                }
+                _ => {}
+            }
+        }
+        if let syn::UseTree::Path(root) = &item.tree
+            && root.ident == "crate"
+            && let syn::UseTree::Path(module) = &*root.tree
+            && module.ident == "extract"
+        {
+            renames(&module.tree, &mut self.param_extractors);
+        }
+        visit::visit_item_use(self, item);
+    }
+
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
         self.check(&item.attrs, &item.sig);
         visit::visit_item_fn(self, item);
@@ -137,6 +178,7 @@ fn annotated_handlers() -> Vec<Annotated> {
         let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
         let file = syn::parse_file(&source).unwrap_or_else(|e| panic!("{path:?}: {e}"));
         scan.file = path.strip_prefix(&src).unwrap().display().to_string();
+        scan.param_extractors = vec!["Path".into(), "Query".into()];
         scan.visit_file(&file);
     }
     scan.found
@@ -193,6 +235,46 @@ fn a_json_body_is_declared_exactly_where_jsonbody_answers_and_lists_its_rejectio
                     ));
                 }
             }
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+/// Whether the operation declares a path or query parameter.
+fn declares_params(operation: &Value) -> bool {
+    operation["parameters"]
+        .as_array()
+        .is_some_and(|ps| ps.iter().any(|p| p["in"] == "path" || p["in"] == "query"))
+}
+
+/// An operation declares a path or query parameter exactly when its handler takes
+/// `calm_server::extract`'s `Path` or `Query`, and then lists the 400 their rejection answers.
+#[test]
+fn parameters_are_declared_exactly_where_path_or_query_answers_and_list_their_rejection() {
+    let doc = document();
+    let handlers = annotated_handlers();
+    assert!(
+        handlers
+            .iter()
+            .any(|h| h.handler == "routes/fs.rs::read_track_workspace_file" && h.takes_params)
+            && handlers.iter().any(|h| !h.takes_params),
+        "scan lost the parameter extractors: {handlers:?}"
+    );
+    let mut violations = Vec::new();
+    for handler in &handlers {
+        let operation = &doc["paths"][&handler.path][&handler.method];
+        let declares = declares_params(operation);
+        if declares != handler.takes_params {
+            violations.push(format!(
+                "{}: takes Path/Query = {}, declares a path or query parameter = {declares}",
+                handler.handler, handler.takes_params
+            ));
+        }
+        if handler.takes_params && !lists_error(operation, "400") {
+            violations.push(format!(
+                "{}: takes Path/Query but does not list 400 ErrorBody",
+                handler.handler
+            ));
         }
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
