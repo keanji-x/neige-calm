@@ -40,7 +40,15 @@ retain their original scope/key/text and settle through the Registry, including
 unknown-result rereads and refused-before-dispatch restoration. Navigation
 destinations remain chosen by the route through its injected signals.
 
-Pane still observes capabilities, holds selection/layout/focus, and owns its
-cleanup, adoption and one-shot auto-send effects at their original Hook positions.
-Those remaining responsibilities are tracked in #2083; loaded DOM and streaming
-display work remain under #2235.
+`pane-lifecycle.ts` owns the mounted pane's draft retention cleanup, delayed
+adoption, requested-open consumption, scoped Escape interruption and one-shot
+side-draft auto-send. The router invokes each Hook at its original position;
+Registry remains the owner of cross-mount drafts and open requests. Adoption and
+open requests wait until their row belongs to this pane, inline panes do not
+consume a shared open request, and auto-send consumes its intent before delivery.
+Escape belongs to the focused conversation region and yields to source panels,
+composer menus and native overlays. Cleanup removes only undispatched drafts.
+
+Pane still observes capabilities and holds selection/layout/focus. Those remaining
+responsibilities are tracked in #2083; loaded DOM and streaming display work remain
+under #2235.

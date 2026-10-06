@@ -1,3 +1,4 @@
+import { useConversationDraftRetention, useConversationDraftAdoption, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
 import { createConversationDraftActions } from '../conversations/draft-actions.ts';
 import { useConversationStore } from '../conversations/store.ts';
 import type { ConversationCreationSource, ConversationRouteIntent, PlannerConversationScope } from '../conversations/contracts.ts';
@@ -453,20 +454,9 @@ function useConversationPane(
     editNewConversationComposer(sourceScopeId, (current) => typeof action === 'function' ? action(current) : action);
   }, [editNewConversationComposer, sourceScopeId]);
 
-  /* Preserve only a draft whose request actually left the browser; an untouched or
-       locally refused draft has no server identity. */
-  useEffect(() => {
-    return () => { discardUnsentDraft(sourceScopeId); };
-  }, [discardUnsentDraft, sourceScopeId]);
+  useConversationDraftRetention({ discardUnsentDraft, sourceScopeId });
 
-  /* Adoption: the reducer moves a matching `{ scopeId, key }` from `held` to
-       `adopted`; if the create settles while unmounted, the outcome waits here. */
-  useEffect(() => {
-    if (adoptedDraftId === null) return;
-    if (!rows.some((row) => row.id === adoptedDraftId)) return;
-    setOpenTarget({ kind: 'row', id: adoptedDraftId });
-    registry.finishDraftAdoption(sourceScopeId, adoptedDraftId);
-  }, [adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget]);
+  useConversationDraftAdoption({ adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget });
 
   const { start, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer } = createConversationDraftActions({
     registry, draft, creating, source, sourceScopeId, transport, supportsDraftModel,
@@ -476,46 +466,9 @@ function useConversationPane(
   });
   const startAnother = start;
 
-  /* Consumed only when the rows are loaded AND contain the id, never cleared on
-       absence: the list arrives a round trip after the request, and the id may
-       belong to another track. */
-  useEffect(() => {
-    const requestedOpenId = registry.requestedOpenId;
-    if (requestedOpenId === null || options?.inline === true) return;
-    /* Captured here, not read at render time: the request is cleared in the same
-           commit that opens the row. */
-    const focusComposer = registry.requestedOpenFocusesComposer;
-    if (!rows.some((row) => row.id === requestedOpenId)) return;
-    setOpenTarget({ kind: 'row', id: requestedOpenId });
-    if (focusComposer) setComposerFocusFor(requestedOpenId);
-    registry.clearOpenRequest();
-  }, [registry, rows, setOpenTarget, options?.inline]);
+  useRequestedConversationOpen({ registry, rows, setOpenTarget, setComposerFocusFor, inline: options?.inline });
 
-  useEffect(() => {
-    if (open === null) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
-      if (!store.working || store.stopping) return;
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const region = target.closest('[data-nc-drawer]');
-      if (region === null || region.id !== `conversation-${open.id}`) return;
-      /* The source panel is a second `complementary` on the same track, and its Escape
-               must not reach the planner; the region is asked whether it holds the panel's marker. */
-      if (region.querySelector('[data-nc-report-source]') !== null) return;
-      /* An open `/` or `@` menu owns Escape first; this capture-phase listener would otherwise
-               take it. The menu says it is open through `aria-expanded` on the combobox. */
-      if (target.closest('[role="combobox"][aria-expanded="true"]') !== null) return;
-      /* Native overlays own their first Escape; let their standard dismissal stack run. */
-      if (typeof HTMLElement.prototype.showPopover === 'function'
-        && document.querySelector('[popover]:popover-open') !== null) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      store.interrupt();
-    };
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [open, store]);
+  useConversationEscape({ open, store });
 
   /* A draft belonging to another Track is not open here: `draft` is read only
      from this route's provider slot. */
@@ -523,17 +476,7 @@ function useConversationPane(
   const contextSource = source.rows.find((row) => row.id === contextSourceId);
   const draftOpen = options?.enabled !== false && openTarget?.kind === 'draft' && draft !== null;
 
-  const autoSent = useRef<string | null>(null);
-  const sendDraftRef = useRef(sendDraft);
-  sendDraftRef.current = sendDraft;
-  useEffect(() => {
-    if (!draftOpen || draft?.autoSend !== true || draft.text === null || draft.sentText !== null
-      || creating || autoSent.current === draft.key) return;
-    autoSent.current = draft.key;
-    // Consume the one-shot intent before delivery; retry keys must never re-arm it.
-    registry.editDraft(draft, (current) => ({ ...current, autoSend: false }));
-    sendDraftRef.current(draft.text);
-  }, [draftOpen, draft, creating, registry]);
+  useConversationDraftAutoSend({ draftOpen, draft, creating, registry, sendDraft });
 
   const existingId = open?.id ?? null;
   const newConversation = useCommittedCallback(existingId, startAnother);
