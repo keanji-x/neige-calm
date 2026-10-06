@@ -172,7 +172,10 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   await expect.element(options).toHaveAttribute('aria-expanded', 'false');
   for (const title of recoverable) {
     await options.click();
-    await page.getByRole('menuitem', { name: 'Hidden groups' }).click();
+    const hidden = page.getByRole('menuitem', { name: 'Hidden groups' });
+    // Hover opens this submenu; a later click intentionally toggles it closed after the vendor guard.
+    await hidden.hover();
+    await expect.element(hidden).toHaveAttribute('aria-expanded', 'true');
     await page.getByRole('menuitem', { name: `Show ${title}`, exact: true }).click();
     await expect.element(page.getByRole('group', { name: title, exact: true })).toBeVisible();
   }
