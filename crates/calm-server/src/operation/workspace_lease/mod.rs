@@ -12,14 +12,16 @@ use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{TaskAccess, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
-use crate::workspace_materialize::{isolated_git_command, neige_git_command};
+use crate::workspace_materialize::neige_git_command;
 
 use super::forge_action_adapter::FORGE_ACTION_KIND;
 use super::{PhaseTag, TimestampMs, Tx};
 
 pub(crate) mod base;
 pub(crate) mod facts;
+mod metadata_lock;
 pub(crate) mod release;
+mod teardown;
 pub(crate) mod track_worktree;
 pub(crate) mod upstream;
 pub(crate) mod upstream_fetch;
@@ -36,6 +38,7 @@ pub(crate) use release::{
     ReleaseDelivery, reclaim_dead_workspace_leases_on_boot, release_workspace_lease_for_card_repo,
     release_workspace_lease_for_card_tx,
 };
+pub(crate) use teardown::remove_workspace_worktree;
 #[cfg(any(test, feature = "fixtures"))]
 pub(crate) use worker::prepare_worker_lease_as_tx;
 pub(crate) use worker::{WorkerLeasePlan, prepare_worker_lease_tx, worker_branch_tx};
@@ -373,7 +376,15 @@ async fn workspace_track_sweep_for_track_tx(
 /// The post-commit half of a track or area teardown, best effort: the track worktree, then the
 /// candidate refs, addressed by the lease rows' common dirs (not by the track cwd, which may be a
 /// moved linked worktree). Never fails the caller: the track rows are already gone.
-pub(crate) fn sweep_workspace_worktrees_for_tracks(sweeps: Vec<WorkspaceTrackSweep>) {
+pub(crate) async fn sweep_workspace_worktrees_for_tracks(sweeps: Vec<WorkspaceTrackSweep>) {
+    if let Err(error) =
+        tokio::task::spawn_blocking(move || sweep_workspace_worktrees_blocking(sweeps)).await
+    {
+        tracing::warn!(%error, "track teardown Git sweep task failed");
+    }
+}
+
+fn sweep_workspace_worktrees_blocking(sweeps: Vec<WorkspaceTrackSweep>) {
     for sweep in sweeps {
         if let Some(track_worktree) = &sweep.track_worktree {
             track_worktree::remove_track_worktree(&sweep.track_id, track_worktree);
@@ -465,93 +476,12 @@ fn remove_workspace_dir_if_exists(path: &str) -> Result<bool> {
     }
 }
 
-/// Discard a kernel-made worktree and its branch, whatever the checkout holds: a symlink leaf is
-/// unlinked (never followed) and what git registered there pruned; someone else's registration
-/// at the path's realpath is refused; else `worktree remove --force`, `branch -D`, and a plain
-/// directory removal. A repository that is gone leaves only the directory to remove. `true` when
-/// anything was removed. The track worktree teardown (#1830 S1) is the one caller.
-pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result<bool> {
-    if !git_repo_available(&target.repo_root) {
-        return remove_workspace_dir_if_exists(&target.path_string());
-    }
-
-    // A symlink leaf is never a registration of ours: unlink it and prune
-    // what git registered at the now-missing path (a worktree moved away and
-    // linked back would otherwise keep its branch checked out and fail the
-    // `branch -D` below). `worktree remove --force` through the link would
-    // delete the link's target — an external directory, the main checkout.
-    let link_removed = base::unlink_symlink_leaf(&target.path)?;
-    if link_removed {
-        git_worktree_prune(&target.repo_root)?;
-    }
-    let registration = if link_removed {
-        GitWorktreeRegistration::Absent
-    } else {
-        git_worktree_registration(target)?
-    };
-    // Someone else's worktree at our realpath: `worktree remove --force`
-    // would delete it through the alias.
-    if let GitWorktreeRegistration::Foreign {
-        registered_as,
-        branch,
-    } = registration
-    {
-        return Err(base::foreign_registration_refusal(
-            target,
-            &registered_as,
-            branch.as_deref(),
-        ));
-    }
-    let registered = registration != GitWorktreeRegistration::Absent;
-    let path_existed = !link_removed && target.path.exists();
-    if registered || path_existed {
-        let output = neige_git_command()
-            .arg("-C")
-            .arg(&target.repo_root)
-            .args(["worktree", "remove", "--force"])
-            .arg(&target.path)
-            .output()
-            .map_err(|e| {
-                CalmError::Internal(format!(
-                    "spawn git worktree remove for {}: {e}",
-                    target.path.display()
-                ))
-            })?;
-        if !output.status.success() && registered && git_worktree_registered(target)? {
-            return Err(git_failed(
-                "git worktree remove --force",
-                &target.repo_root,
-                &output,
-            ));
-        }
-    }
-
-    let branch_ref = format!("refs/heads/{}", target.branch);
-    let branch_existed = git_ref_exists(&target.repo_root, &branch_ref)?;
-    if branch_existed {
-        // Isolated: a ref deletion runs the repository's `reference-transaction` hook.
-        let output = isolated_git_command()
-            .arg("-C")
-            .arg(&target.repo_root)
-            .args(["branch", "-D", &target.branch])
-            .output()
-            .map_err(|e| {
-                CalmError::Internal(format!(
-                    "spawn git branch -D {} in {}: {e}",
-                    target.branch,
-                    target.repo_root.display()
-                ))
-            })?;
-        if !output.status.success() && git_ref_exists(&target.repo_root, &branch_ref)? {
-            return Err(git_failed("git branch -D", &target.repo_root, &output));
-        }
-    }
-
-    let dir_removed = remove_workspace_dir_if_exists(&target.path_string())?;
-    Ok(link_removed || registered || path_existed || branch_existed || dir_removed)
-}
-
 const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
+
+#[cfg(feature = "fixtures")]
+fn metadata_test_pause(point: &str, repo_root: &Path) {
+    crate::test_seams::blocking_pause_point(point, repo_root.to_str().expect("test repo path"));
+}
 
 pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
     ensure_git_exclude_entry(repo_root, WORKTREE_EXCLUDE)

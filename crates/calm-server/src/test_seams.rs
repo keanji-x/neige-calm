@@ -53,6 +53,19 @@ pub async fn pause_point(point: &str, key: &str) {
     }
 }
 
+/// The same observation-only pause for production paths already running on a blocking thread.
+#[cfg(feature = "fixtures")]
+pub fn blocking_pause_point(point: &str, key: &str) {
+    let hook = pause_points()
+        .lock()
+        .expect("pause point mutex")
+        .remove(&(point.to_owned(), key.to_owned()));
+    if let Some(hook) = hook {
+        hook.entered.notify_one();
+        tokio::runtime::Handle::current().block_on(hook.release.notified());
+    }
+}
+
 /// Where a planner send has found no binding for its key (#2043, the UNIQUE backstop); keyed by card id.
 #[cfg(feature = "fixtures")]
 pub const PLANNER_INPUT_REPLAY_MISSED: &str = "planner-input-replay-missed";

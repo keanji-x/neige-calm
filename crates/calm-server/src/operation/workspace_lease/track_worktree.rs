@@ -74,6 +74,11 @@ pub(crate) async fn ensure_track_worktree(track: &Track) -> Result<()> {
 }
 
 fn ensure_track_worktree_blocking(target: &WorkspaceLeaseTarget) -> Result<()> {
+    #[cfg(feature = "fixtures")]
+    super::metadata_test_pause("track-metadata-before", &target.repo_root);
+    let _metadata_lock = super::metadata_lock::GitMetadataLock::acquire(&target.repo_root)?;
+    #[cfg(feature = "fixtures")]
+    super::metadata_test_pause("track-metadata-entered", &target.repo_root);
     ensure_workspace_worktree_root_excluded(&target.repo_root)?;
     // Registered and on disk: done. Anything else (a hand-removed directory, another
     // registration at the path) is left to `git worktree add` to refuse.

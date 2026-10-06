@@ -649,7 +649,7 @@ impl RecycledAreaDeletion {
             &area_id,
             &mut self.recycle_report,
         );
-        sweep_workspace_worktrees_for_tracks(sweeps);
+        sweep_workspace_worktrees_for_tracks(sweeps).await;
         Ok(())
     }
 }

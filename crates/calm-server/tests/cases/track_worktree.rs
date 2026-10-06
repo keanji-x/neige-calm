@@ -4,6 +4,9 @@
 
 #![cfg(unix)]
 
+#[path = "track_metadata_concurrency.rs"]
+mod metadata_concurrency;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

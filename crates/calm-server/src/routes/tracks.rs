@@ -3144,7 +3144,7 @@ impl RecycledTrackDeletion {
         // This sweep is post-commit. A failure here must not restore the
         // workspace: the track row is already gone and the trash path is now
         // authoritative.
-        sweep_workspace_worktrees_for_tracks(sweeps);
+        sweep_workspace_worktrees_for_tracks(sweeps).await;
         Ok(())
     }
 }
