@@ -14,7 +14,7 @@ const EDGE = 12;
 
 /** Transient, non-modal preview. The host owns destination admission and content.
  * Timers, portal and listeners live only as long as this trigger.
- * ArrowDown enables interaction from the trigger; Escape closes the topmost preview. No focus trap.
+ * ArrowDown moves focus into the preview content; Escape closes the topmost preview. No focus trap.
  * Clicking a trigger still follows the host's ordinary navigation contract.
  */
 export function HoverPreview({ title, trigger, children }: Readonly<{
@@ -149,7 +149,8 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
       leave();
     }}
     onKeyDown={(event) => {
-      if (event.target instanceof Node && card.current?.contains(event.target)) return;
+      // React portals bubble through this span; only its actual trigger owns activation.
+      if (!(event.target instanceof Node) || !anchor.current?.contains(event.target)) return;
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         activate();
@@ -177,7 +178,7 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
         </button>
         <button type="button" className={styles.control} aria-label="Close preview" onClick={() => close(true)}><Icon name="close" /></button>
       </div>
-      <div ref={body} className={styles.body} tabIndex={0} role="region" aria-label={`Preview content: ${title}`}>{children}</div>
+      <div ref={body} className={styles.body} tabIndex={-1} role="region" aria-label={`Preview content: ${title}`}>{children}</div>
       <div className={styles.footer} role="status">{ready ? 'Move inside to interact · move away to dismiss' : 'Keep hovering, then move inside to interact'}</div>
     </div>, document.body)}
   </span>;

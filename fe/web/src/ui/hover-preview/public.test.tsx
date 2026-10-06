@@ -79,7 +79,7 @@ describe('HoverPreview lifecycle', () => {
     fireEvent.scroll(screen.getByTestId('child-scroll'));
     expect(screen.getAllByRole('dialog')).toHaveLength(2);
     const parent = screen.getByRole('dialog', { name: 'Preview: Parent' });
-    fireEvent.scroll(parent.children[1]!);
+    fireEvent.scroll(parent.children[1]);
     expect(screen.queryByRole('dialog', { name: 'Preview: Child' })).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Preview: Parent' })).toBeTruthy();
     fireEvent.scroll(document);

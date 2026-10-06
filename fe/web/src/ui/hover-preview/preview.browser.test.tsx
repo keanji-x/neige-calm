@@ -78,6 +78,29 @@ describe('preview in a real browser', () => {
     await expect.poll(() => performance.now() - before).toBeGreaterThan(350);
     expect(page.getByRole('dialog').length).toBe(2);
   });
+  it('keeps nested keyboard scrolling in the child instead of activating its parent', async () => {
+    await page.viewport(1200, 900);
+    render(<div style={{ padding: 80 }}>
+      <HoverPreview title="Parent" trigger={(activate) => <button onClick={activate}>Parent</button>}>
+        <HoverPreview title="Child" trigger={(activate) => <button onClick={activate}>Child</button>}>
+          <div>{Array.from({ length: 70 }, (_, i) => <p key={i}>Child reading {i}</p>)}</div>
+        </HoverPreview>
+      </HoverPreview>
+    </div>);
+    await userEvent.tab();
+    await userEvent.keyboard('{ArrowDown}');
+    await userEvent.tab();
+    expect(document.activeElement).toBe(page.getByRole('button', { name: 'Child', exact: true }).element());
+    await userEvent.keyboard('{ArrowDown}');
+    const childContent = page.getByRole('region', { name: 'Preview content: Child' }).element() as HTMLElement;
+    await expect.poll(() => document.activeElement).toBe(childContent);
+    await userEvent.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(childContent);
+    await expect.poll(() => childContent.scrollTop).toBeGreaterThan(0);
+    const before = performance.now();
+    await expect.poll(() => performance.now() - before).toBeGreaterThan(350);
+    expect(page.getByRole('dialog').length).toBe(2);
+  });
   it('clamps a ready preview after viewport resize and closes with Escape', async () => {
     await page.viewport(1200, 900); mount();
     await page.getByRole('button', { name: 'Long notes', exact: true }).click();
