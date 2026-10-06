@@ -1009,7 +1009,7 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
-  /* HoverCard owns the 300 ms hover delay; exercise its native event listener. */
+  /* HoverCard owns the 180 ms initial hover delay; exercise its native event listener. */
   it('holds the prompt back for the whole delay, then floats it out', () => {
     vi.useFakeTimers();
     try {
@@ -1019,10 +1019,11 @@ describe('ChatThread’s exchange rail', () => {
         { container: pane },
       );
       const preview = () => document.querySelector('[data-nc-rail-preview]');
-      fireEvent.mouseEnter(railDots()[2]);
+      fireEvent.mouseEnter(document.querySelector('[data-nc-rail-track]')!);
+      fireEvent.pointerEnter(railDots()[2], { pointerType: 'mouse' });
       expect(preview()).toBeNull();
 
-      act(() => { vi.advanceTimersByTime(299); });
+      act(() => { vi.advanceTimersByTime(179); });
       expect(preview()).toBeNull();
       act(() => { vi.advanceTimersByTime(1); });
       expect(preview()?.querySelector('div')?.textContent).toBe('Ask 2');

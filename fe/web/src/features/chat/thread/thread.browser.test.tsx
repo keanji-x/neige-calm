@@ -601,65 +601,10 @@ async function scrollPaneTo(top: number) {
 
 const railPreview = () => document.querySelector<HTMLElement>('[data-nc-rail-preview]');
 
-/** The painted diameter of a dot's ink — the `::before`, not the button, which
- *  is the pitch tall whatever the envelope is doing. */
-function dotInk(index: number): number {
-  return Number.parseFloat(getComputedStyle(dots()[index], '::before').width);
-}
-
 /** Wait out a real interval inside `act`, so a `setTimeout` that lands in
  *  component state is flushed rather than warned about. */
 async function pause(ms: number) {
   await act(async () => { await new Promise((resolve) => { setTimeout(resolve, ms); }); });
-}
-
-/** Put the pointer at a client-Y inside the rail and let the envelope settle: the wait outlasts the `--motion-instant` transition on the dot's size. */
-async function pointRailAt(clientY: number) {
-  railTrack().dispatchEvent(new PointerEvent('pointermove', {
-    bubbles: true, pointerType: 'mouse', clientY,
-  }));
-  await settle();
-  await pause(150);
-}
-
-/** One rule written against one of `element`'s own classes, with its media conditions, pseudo-element and document order. */
-type RailRule = Readonly<{
-  rule: CSSStyleRule;
-  at: number;
-  conditions: readonly string[];
-  pseudo: string;
-}>;
-
-/** Every style rule in the document written against one of `element`'s own classes, in document order. `at` counts every rule the walk passes: `@media (prefers-reduced-motion)` wins over `(pointer: fine)` only by coming later. */
-function ruleLedgerFor(element: Element): RailRule[] {
-  const own = new Set([...element.classList].map((name) => `.${name}`));
-  const found: RailRule[] = [];
-  let at = 0;
-  const walk = (rules: CSSRuleList, conditions: readonly string[]) => {
-    for (const rule of [...rules]) {
-      if (rule instanceof CSSMediaRule) {
-        walk(rule.cssRules, [...conditions, rule.conditionText]);
-        continue;
-      }
-      if (rule instanceof CSSLayerBlockRule) { walk(rule.cssRules, conditions); continue; }
-      if (!(rule instanceof CSSStyleRule)) continue;
-      at += 1;
-      const pseudo = /::[a-z-]+$/.exec(rule.selectorText)?.[0] ?? '';
-      const base = rule.selectorText.slice(0, rule.selectorText.length - pseudo.length);
-      if (own.has(base)) found.push({ rule, at, conditions, pseudo });
-    }
-  };
-  for (const sheet of [...document.styleSheets]) {
-    let rules: CSSRuleList;
-    try { rules = sheet.cssRules; } catch { continue; }
-    walk(rules, []);
-  }
-  return found;
-}
-
-/** The subset of a ledger sitting under a condition naming `needle`. */
-function under(ledger: readonly RailRule[], needle: string): RailRule[] {
-  return ledger.filter((entry) => entry.conditions.some((text) => text.includes(needle)));
 }
 
 describe('the exchange rail, as the engine lays it out', () => {
@@ -691,7 +636,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     const pitch = Number.parseFloat(
       getComputedStyle(railTrack()).getPropertyValue('--nc-rail-pitch'),
     );
-    expect(pitch).toBe(12);
+    expect(pitch).toBe(20);
     const dot = dots()[0].getBoundingClientRect();
     expect(Math.round(dot.height)).toBe(pitch);
     expect(Math.round(dot.width)).toBe(24);
@@ -700,7 +645,7 @@ describe('the exchange rail, as the engine lays it out', () => {
       return box.top + box.height / 2;
     });
     for (let index = 1; index < centres.length; index += 1) {
-      expect(centres[index] - centres[index - 1]).toBeCloseTo(12, 1);
+      expect(centres[index] - centres[index - 1]).toBeCloseTo(20, 1);
     }
 
     const card = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
@@ -861,352 +806,43 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 
   /* The falloff is a smoothstep: at one dot out it is above a straight ramp (0.844 vs 0.750) and at three below (0.156 vs 0.250); at two they agree exactly, so the discriminating pair is 1 and 3. */
-  it('swells the dots around the pointer and settles back to rest', async () => {
+  it('scans stable rows with one narrow continuous preview and a short first-entry delay', async () => {
     await page.viewport(1400, 900);
-    render(<RailPane turns={railTurns(12, 2)} />);
+    render(<><button type="button">Outside navigation</button><RailPane turns={promptTurns(8, index => `Prompt ${index}`)} conversationSpan={520} /></>);
     await frame();
-    await scrollPaneTo(0);
-    /* Park the real pointer off the rail: the engine fires boundary events when the element under a stationary cursor changes. */
-    await userEvent.hover(pane());
-    await pause(150);
-    const rest = dotInk(11);
-    expect(rest).toBe(4);
-
-    const aimed = dots()[5].getBoundingClientRect();
-    await pointRailAt(aimed.top + aimed.height / 2);
-
-    const peak = Number.parseFloat(
-      getComputedStyle(railTrack()).getPropertyValue('--nc-rail-dot-peak'),
-    );
-    expect(peak).toBe(8);
-    expect(dotInk(5)).toBeCloseTo(peak, 1);
-
-    expect(dotInk(6)).toBeGreaterThan(dotInk(7));
-    expect(dotInk(7)).toBeGreaterThan(dotInk(8));
-    expect(dotInk(8)).toBeGreaterThan(dotInk(9));
-    expect(dotInk(6)).toBeGreaterThan(rest + 1);
-    expect(dotInk(7)).toBeGreaterThan(rest + 0.5);
-    expect(dotInk(9)).toBeCloseTo(rest, 1);
-    expect(dotInk(6)).toBeGreaterThan(7.2);
-    expect(dotInk(8)).toBeLessThan(4.8);
-    expect(dotInk(4)).toBeCloseTo(dotInk(6), 1);
-
-    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-    await settle();
-    await pause(150);
-    /* Dot 0 is the lit one and rests at `--nc-rail-dot-current`. */
-    expect(dotInk(0)).toBeCloseTo(6, 1);
-    for (let index = 1; index < 12; index += 1) expect(dotInk(index)).toBeCloseTo(rest, 1);
-    for (const dot of dots()) expect(dot.style.getPropertyValue('--nc-dot-lift')).toBe('');
-  });
-
-  /* Measured between rendered target centres with a real pointer on the middle dot; ≥24 is the criterion's number, not this build's. Not a claim of conformance: at rest the targets are 12px apart. */
-  it('opens at least 24px of aim between the hovered dot and its neighbours', async () => {
-    await page.viewport(1400, 900);
-    render(<RailPane turns={railTurns(12, 2)} />);
-    await frame();
-    await scrollPaneTo(0);
-    await userEvent.hover(pane());
-    await pause(150);
-
-    const centre = (index: number) => {
-      const box = dots()[index].getBoundingClientRect();
-      return box.top + box.height / 2;
-    };
-    expect(centre(6) - centre(5)).toBeCloseTo(12, 1);
-
-    const aimed = dots()[5].getBoundingClientRect();
-    await pointRailAt(aimed.top + aimed.height / 2);
-
-    expect(centre(5) - centre(4)).toBeGreaterThanOrEqual(24);
-    expect(centre(6) - centre(5)).toBeGreaterThanOrEqual(24);
-    expect(dots()[5].getBoundingClientRect().height).toBeGreaterThanOrEqual(24);
-
-    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-    await settle();
-    await pause(150);
-    expect(centre(6) - centre(5)).toBeCloseTo(12, 1);
-  });
-
-  /* A shoulder of blank at each end is exactly the growth missing from its side, so the column's length — and the track's `scrollHeight` — do not depend on the pointer. */
-  it('holds every dot still when the pointer arrives, at both alignments', async () => {
-    await page.viewport(1400, 900);
-    const centres = () => dots().map((each) => {
-      const box = each.getBoundingClientRect();
-      return box.top + box.height / 2;
-    });
-    const holdsStillAt = async (index: number) => {
-      const before = centres();
-      const extentBefore = railTrack().scrollHeight;
-      const box = dots()[index].getBoundingClientRect();
-      const y = box.top + box.height / 2;
-      await pointRailAt(y);
-      expect(centres()[index]).toBeCloseTo(before[index], 0);
-      const after = dots()[index].getBoundingClientRect();
-      expect(y).toBeGreaterThanOrEqual(after.top);
-      expect(y).toBeLessThanOrEqual(after.bottom);
-      expect(railTrack().scrollHeight).toBe(extentBefore);
-      railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-      await settle();
-      await pause(150);
-    };
-
-    render(<RailPane turns={railTurns(8, 2)} />);
-    await frame();
-    await scrollPaneTo(0);
-    await userEvent.hover(pane());
+    const before = dots().map(dot => dot.getBoundingClientRect().top);
+    await userEvent.hover(dots()[2]);
+    await pause(100);
+    expect(railPreview()).toBeNull();
+    await pause(140);
+    const preview = railPreview();
+    expect(preview).not.toBeNull();
+    const popup = preview!.closest('[popover]')!;
+    expect(popup.getBoundingClientRect().width).toBeLessThanOrEqual(272);
+    expect(getComputedStyle(popup).animationDuration).toBe('0.1s');
+    expect(preview!.querySelector('div')?.textContent).toBe('Prompt 2');
+    expect(dots()[2].getBoundingClientRect().height).toBe(20);
+    await userEvent.hover(dots()[3]);
+    await pause(20);
+    expect(railPreview()).toBe(preview);
+    expect(document.querySelectorAll('[data-nc-rail-preview]')).toHaveLength(1);
+    expect(preview!.querySelector('div')?.textContent).toBe('Prompt 3');
+    expect(dots().map(dot => dot.getBoundingClientRect().top)).toEqual(before);
+    await userEvent.hover(preview!);
+    await pause(160);
+    expect(railPreview()).toBe(preview);
+    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+    await pause(50);
+    expect(railPreview()).toBe(preview);
+    await userEvent.hover(dots()[4]);
+    await pause(20);
+    expect(railPreview()).toBe(preview);
+    expect(preview!.querySelector('div')?.textContent).toBe('Prompt 4');
+    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
     await pause(200);
-    expect(railTrack().scrollHeight).toBeLessThanOrEqual(railTrack().clientHeight + 1);
-    for (const index of [0, 3, 6, 7]) await holdsStillAt(index);
-
-    cleanup(); document.body.replaceChildren();
-    render(<RailPane turns={railTurns(40, 0)} paneHeight={400} />);
-    await frame();
-    await userEvent.hover(pane());
-    await pause(200);
-    railTrack().scrollTop = 100;
-    await settle();
-    expect(railTrack().scrollHeight).toBeGreaterThan(railTrack().clientHeight + 1);
-    for (const index of [4, 12, 30]) await holdsStillAt(index);
-    expect(railTrack().scrollTop).toBe(100);
+    expect(railPreview()).toBeNull();
   });
 
-  it('keeps the end dots reachable while the rail is spread open', async () => {
-    await page.viewport(1400, 900);
-    render(<RailPane turns={railTurns(40, 0)} paneHeight={400} />);
-    await frame();
-    const track = railTrack();
-    expect(dots()).toHaveLength(40);
-    expect(track.scrollHeight).toBeGreaterThan(track.clientHeight + 1);
-
-    const aimed = dots()[20].getBoundingClientRect();
-    await pointRailAt(aimed.top + aimed.height / 2);
-
-    track.scrollTop = 0;
-    await settle();
-    const atTop = track.getBoundingClientRect();
-    const first = dots()[0].getBoundingClientRect();
-    expect(first.top).toBeGreaterThanOrEqual(atTop.top - 0.5);
-    expect(first.bottom).toBeLessThanOrEqual(atTop.bottom + 0.5);
-
-    track.scrollTop = track.scrollHeight;
-    await settle();
-    const atBottom = track.getBoundingClientRect();
-    const last = dots()[39].getBoundingClientRect();
-    expect(last.bottom).toBeLessThanOrEqual(atBottom.bottom + 0.5);
-    expect(last.top).toBeGreaterThanOrEqual(atBottom.top - 0.5);
-
-    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-    await settle();
-    await pause(150);
-  });
-
-  /* The component publishes the shoulder only from a pointer event, so on an untouched rail the stylesheet's `var(…, 2)` fallback is the layout — and that number is `RAIL_SPREAD_SPAN ÷ 2`, written in the other file. */
-  it('rests on a shoulder of half the spread span, before any pointer', async () => {
-    await page.viewport(1400, 900);
-    render(<RailPane turns={railTurns(8, 2)} paneHeight={400} />);
-    await frame();
-    const track = railTrack();
-    const number = (name: string) =>
-      Number.parseFloat(getComputedStyle(track).getPropertyValue(name));
-    const opening = number('--nc-rail-pitch-open') - number('--nc-rail-pitch');
-    expect(opening).toBe(16);
-
-    expect(track.style.getPropertyValue('--nc-rail-lead')).toBe('2');
-    expect(track.style.getPropertyValue('--nc-rail-tail')).toBe('2');
-    expect(Number.parseFloat(getComputedStyle(dots()[0]).marginBlockStart)).toBe(2 * opening);
-    expect(Number.parseFloat(getComputedStyle(dots()[7]).marginBlockEnd)).toBe(2 * opening);
-
-    track.style.removeProperty('--nc-rail-lead');
-    track.style.removeProperty('--nc-rail-tail');
-    expect(Number.parseFloat(getComputedStyle(dots()[0]).marginBlockStart)).toBe(2 * opening);
-    expect(Number.parseFloat(getComputedStyle(dots()[7]).marginBlockEnd)).toBe(2 * opening);
-    expect(Math.round(track.getBoundingClientRect().height)).toBe(320);
-    expect(getComputedStyle(track).paddingBlockStart).toBe('0px');
-  });
-
-  /* A laptop with a touchscreen matches `(pointer: fine)`, so the component's `pointerType` check is the whole guard there. */
-  it('does not swell the dots for a touch pointer', async () => {
-    await page.viewport(1400, 900);
-    render(<RailPane turns={railTurns(12, 2)} />);
-    await frame();
-    await scrollPaneTo(0);
-    await userEvent.hover(pane());
-    await pause(150);
-    const aimed = dots()[5].getBoundingClientRect();
-    const at = aimed.top + aimed.height / 2;
-
-    const move = (pointerType: string) => {
-      railTrack().dispatchEvent(new PointerEvent('pointermove', {
-        bubbles: true, pointerType, clientY: at,
-      }));
-    };
-
-    move('touch');
-    await settle();
-    await pause(150);
-    for (let index = 1; index < 12; index += 1) expect(dotInk(index)).toBeCloseTo(4, 1);
-    for (const dot of dots()) expect(dot.style.getPropertyValue('--nc-dot-lift')).toBe('');
-
-    move('mouse');
-    await settle();
-    await pause(150);
-    expect(dotInk(5)).toBeCloseTo(8, 1);
-
-    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-    await settle();
-    await pause(150);
-  });
-
-  it('re-centres the envelope when the track scrolls under the pointer', async () => {
-    await page.viewport(1400, 900);
-    render(<RailPane turns={promptTurns(30, () => 'Ask about the rewrite')} />);
-    await frame();
-    await scrollPaneTo(0);
-    await userEvent.hover(pane());
-    await pause(150);
-    const track = railTrack();
-    const pitch = Number.parseFloat(getComputedStyle(track).getPropertyValue('--nc-rail-pitch'));
-    expect(track.scrollHeight).toBeGreaterThan(track.clientHeight + pitch * 4);
-
-    track.scrollTop = 0;
-    await settle();
-    const aimed = dots()[8].getBoundingClientRect();
-    const at = aimed.top + aimed.height / 2;
-    await pointRailAt(at);
-    expect(dotInk(8)).toBeCloseTo(8, 1);
-
-    track.scrollTop = pitch * 8;
-    await settle();
-    await pause(150);
-
-    /* Which index is under the pointer is read off the boxes: while the rail is spread the rows are not all a pitch tall. */
-    const under = dots().findIndex((dot) => {
-      const box = dot.getBoundingClientRect();
-      return at >= box.top && at <= box.bottom;
-    });
-    expect(under).toBeGreaterThan(8);
-    /* Not `toBeCloseTo(8)`: the pointer is wherever the scroll left it relative to a row, not on a centre. */
-    const inks = dots().map((_dot, index) => dotInk(index));
-    expect(dotInk(under)).toBe(Math.max(...inks));
-    expect(dotInk(under)).toBeGreaterThan(7.5);
-    expect(dotInk(8)).toBeCloseTo(4, 1);
-
-    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-    await settle();
-    await pause(150);
-  });
-
-  /* History arrives in front of what is on screen, so the fixture prepends; appending moves nothing. */
-  it('re-centres the envelope when the exchange set changes under the pointer', async () => {
-    await page.viewport(1400, 900);
-    const later = (index: number) => `later-${index}`;
-    const turns = (from: number) => Array.from({ length: 12 - from }).flatMap((_u, index) => [
-      { id: later(from + index), author: 'you' as const, text: `Ask ${from + index}`,
-        atMs: (from + index) * 2_000 },
-      { id: `agent-${from + index}`, author: 'agent' as const, text: 'Short.',
-        atMs: (from + index) * 2_000 + 1 },
-    ]);
-    const { rerender } = render(<RailPane turns={turns(2)} />);
-    await frame();
-    await scrollPaneTo(0);
-    await userEvent.hover(pane());
-    await pause(150);
-    expect(dots()).toHaveLength(10);
-
-    const aimed = dots()[5].getBoundingClientRect();
-    const at = aimed.top + aimed.height / 2;
-    await pointRailAt(at);
-    expect(dotInk(5)).toBeCloseTo(8, 1);
-
-    rerender(<RailPane turns={turns(0)} />);
-    await settle();
-    await pause(150);
-
-    expect(dots()).toHaveLength(12);
-    const under = dots().findIndex((dot) => {
-      const box = dot.getBoundingClientRect();
-      return at >= box.top && at <= box.bottom;
-    });
-    expect(under).toBeGreaterThan(5);
-    const inks = dots().map((_dot, index) => dotInk(index));
-    expect(dotInk(under)).toBe(Math.max(...inks));
-    expect(dotInk(under)).toBeGreaterThan(7.5);
-    expect(dots()[7].getAttribute('aria-label')).toContain('Ask 7');
-    expect(dotInk(7)).toBeLessThan(7.5);
-    expect(dotInk(7)).toBeGreaterThan(4);
-    expect(dotInk(under)).toBeGreaterThan(dotInk(under - 1));
-    expect(dotInk(under)).toBeGreaterThan(dotInk(under + 1));
-    expect(dotInk(under - 1)).toBeGreaterThan(dotInk(under - 2));
-    expect(dotInk(under + 1)).toBeGreaterThan(dotInk(under + 2));
-
-    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-    await settle();
-    await pause(150);
-  });
-
-  /* The envelope's write cache watches only the dot array's length; React keys dots by exchange id, so a same-length id swap remounts every button without inline styles while the cache still holds the old lifts. Not reachable from the product, so the fixture constructs it directly. */
-  it('keeps the envelope when the ids change under the pointer', async () => {
-    await page.viewport(1400, 900);
-    const turns = (era: string) => Array.from({ length: 12 }).flatMap((_unused, index) => [
-      { id: `${era}-you-${index}`, author: 'you' as const, text: `Ask ${index}`,
-        atMs: index * 2_000 },
-      { id: `${era}-agent-${index}`, author: 'agent' as const, text: 'Short.',
-        atMs: index * 2_000 + 1 },
-    ]);
-    const { rerender } = render(<RailPane turns={turns('a')} />);
-    await frame();
-    await scrollPaneTo(0);
-    await userEvent.hover(pane());
-    await pause(150);
-    expect(dots()).toHaveLength(12);
-
-    const centre = (index: number) => {
-      const box = dots()[index].getBoundingClientRect();
-      return box.top + box.height / 2;
-    };
-    const aimed = dots()[5].getBoundingClientRect();
-    await pointRailAt(aimed.top + aimed.height / 2);
-    expect(dotInk(5)).toBeCloseTo(8, 1);
-
-    rerender(<RailPane turns={turns('b')} />);
-    await settle();
-    await pause(150);
-
-    expect(dots()).toHaveLength(12);
-    expect(dots()[5].getAttribute('aria-label')).toContain('Ask 5');
-
-    const inks = dots().map((_dot, index) => dotInk(index));
-    expect(dotInk(5)).toBeGreaterThan(Math.max(...inks.filter((_ink, index) => index !== 5)));
-    expect(dotInk(5)).toBeCloseTo(8, 1);
-    expect(dotInk(6)).toBeGreaterThan(dotInk(7));
-    expect(dotInk(7)).toBeGreaterThan(dotInk(8));
-    expect(dotInk(8)).toBeGreaterThan(dotInk(9));
-    expect(dotInk(9)).toBeCloseTo(4, 1);
-    expect(centre(6) - centre(5)).toBeGreaterThanOrEqual(24);
-
-    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
-    await settle();
-    await pause(150);
-  });
-
-  /* `prefers-reduced-motion` cannot be emulated on this shared page without poisoning every file after it, so the declaration and its ordinal are read instead. */
-  it('drops the dot transition under reduced motion, after the fine block', async () => {
-    await page.viewport(1400, 900);
-    render(<RailPane turns={railTurns(8)} />);
-    await frame();
-    const ledger = ruleLedgerFor(dots()[1]).filter((entry) => entry.pseudo === '::before');
-    const still = under(ledger, 'prefers-reduced-motion');
-    const moving = under(ledger, 'pointer: fine');
-    expect(still).toHaveLength(1);
-    expect(moving).toHaveLength(1);
-
-    expect(still[0].rule.style.transition).toBe('none');
-    expect(moving[0].rule.style.transition).not.toBe('');
-    expect(still[0].at).toBeGreaterThan(moving[0].at);
-  });
-
-  /* The delay's number is pinned on fake timers in `public.test.tsx`; a wall-clock band ran out on a shared runner. Here: not up at 150ms, up inside a discoverability ceiling. */
   it('floats the prompt out only after the pointer has rested', async () => {
     await page.viewport(1400, 900);
     render(<RailPane turns={promptTurns(8, (index) => (index === 6 ? OVERLONG_PROMPT : LONG_PROMPT))} />);
@@ -1311,16 +947,11 @@ describe('the exchange rail, as the engine lays it out', () => {
     const track = railTrack();
     expect(track.scrollHeight).toBeGreaterThan(track.clientHeight + 80);
 
-    /* Armed with a synthetic `pointerover` and the real cursor parked off the rail: a real mouse on the rail would swap the panel to whichever dot scrolls under it. */
-    await userEvent.hover(pane());
-    await pause(600);
-    expect(railPreview()).toBeNull();
+    // Park on the shared card so the real pointer does not select another row during scrolling.
     track.scrollTop = 0;
-    dots()[8].dispatchEvent(new PointerEvent('pointerenter', {
-      bubbles: true, pointerType: 'mouse',
-    }));
-    dots()[8].dispatchEvent(new MouseEvent('mouseenter'));
-    await pause(600);
+    await userEvent.hover(dots()[8]);
+    await pause(300);
+    await userEvent.hover(railPreview()!);
     const clear = () => {
       const box = railPreview()!.getBoundingClientRect();
       const bounds = railTrack().getBoundingClientRect();
@@ -1369,7 +1000,8 @@ describe('the exchange rail, as the engine lays it out', () => {
 
     const enter = (pointerType: string) => {
       dots()[3].dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType }));
-      dots()[3].dispatchEvent(new MouseEvent('mouseenter'));
+      railTrack().dispatchEvent(new PointerEvent('pointerenter', { pointerType }));
+      railTrack().dispatchEvent(new MouseEvent('mouseenter'));
     };
 
     enter('touch');

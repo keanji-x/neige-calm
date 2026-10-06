@@ -3,7 +3,7 @@
  * declines to compute it. `focus()` on a `visibility: hidden` element is a silent
  * no-op, so the seam between `ui/drawer` and `app/shell`'s `[data-nc-panel]` rule is tested here.
  */
-import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -25,7 +25,7 @@ import { useDrawerWidthHost } from './drawer-width.tsx';
 import { DrawerResizeProvider, useConversationDrawerResize } from './public.tsx';
 import shell from './shell.module.css';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 /**
  * The cascade order the document ended up with, read off the first top-level
@@ -520,7 +520,7 @@ describe('dragged conversation width', () => {
     const dragged = widthOf(drawer());
 
     /* A fresh app instance on the same browser opens at the dragged width. */
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
     mount({ initiallyOpen: true }, remembered());
     await settled();
     expect(widthOf(drawer())).toBeCloseTo(dragged, 0);
@@ -606,7 +606,7 @@ describe('dragged conversation width', () => {
     expect(spanOf(drawer())).toBeCloseTo(0.4, 2);
     expect(drawer().querySelector('[role="separator"]')).toBeNull();
 
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
     mount({ source: true, initiallyOpen: true }, preferences);
     await settled();
     const [conversationCard, stacked] = [...document.querySelectorAll<HTMLElement>('[data-nc-drawer]')];

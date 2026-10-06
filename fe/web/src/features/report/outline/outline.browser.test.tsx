@@ -42,7 +42,7 @@ it.each([40, 130])('keeps long chapter previews within the report with a %ipx ma
   expect(preview.bottom).toBeLessThanOrEqual(window.innerHeight);
 });
 
-it('centres a dense first-level rail beside the report edge and magnifies the aimed dot', async () => {
+it('centres stable first-level rows beside the report edge and emphasizes only the aimed ink', async () => {
   await page.viewport(1400, 900);
   render(
     <div style={{ containerType: 'inline-size', inlineSize: 1200 }}>
@@ -69,7 +69,7 @@ it('centres a dense first-level rail beside the report edge and magnifies the ai
   expect(edge.getBoundingClientRect().left - rail.getBoundingClientRect().right).toBeCloseTo(4, 0);
   expect(list.getBoundingClientRect().top + list.getBoundingClientRect().height / 2)
     .toBeCloseTo(window.innerHeight / 2, 0);
-  expect(rows[0]?.getBoundingClientRect().height).toBeCloseTo(12, 0);
+  expect(rows[0]?.getBoundingClientRect().height).toBeCloseTo(20, 0);
   expect(rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().bottom).toBeCloseTo(0, 0);
   const heading = document.querySelector<HTMLElement>('h2')!;
   expect(getComputedStyle(heading, '::before').opacity).toBe('0');
@@ -86,10 +86,10 @@ it('centres a dense first-level rail beside the report edge and magnifies the ai
   });
   const preview = document.querySelector<HTMLElement>('[data-nc-rail-preview]')!;
   expect(getComputedStyle(heading, '::before').opacity).toBe('0');
-  expect(first.getBoundingClientRect().height).toBeCloseTo(28, 0);
+  expect(first.getBoundingClientRect().height).toBeCloseTo(20, 0);
   expect(Number.parseFloat(getComputedStyle(dot, '::before').width)).toBeCloseTo(8, 0);
   expect(rows[1].getBoundingClientRect().top + rows[1].getBoundingClientRect().height / 2
-    - (first.getBoundingClientRect().top + first.getBoundingClientRect().height / 2)).toBeGreaterThanOrEqual(24);
+    - (first.getBoundingClientRect().top + first.getBoundingClientRect().height / 2)).toBeGreaterThanOrEqual(20);
   expect(preview.getBoundingClientRect().left).toBeGreaterThanOrEqual(rail.getBoundingClientRect().right + 3);
 });
 
