@@ -63,6 +63,7 @@ use utoipa::OpenApi;
         description = "Wire-format contract between calm-server (Rust) and web-calm (TS). Source of truth for generated TypeScript types.",
     ),
     paths(
+        crate::auth::login_handler,
         crate::builtin_plugins::calendar::routes::list,
         crate::builtin_plugins::calendar::routes::create,
         crate::builtin_plugins::calendar::routes::update,
@@ -344,6 +345,7 @@ use utoipa::OpenApi;
         ErrorBody,
     )),
     tags(
+        (name = "auth", description = "Owner password login"),
         (name = "areas", description = "Area CRUD"),
         (name = "area_folders", description = "Area ↔ folder mapping: claim filesystem paths for an area, resolve a cwd to its owning area"),
         (name = "tracks", description = "Track CRUD + composite detail"),

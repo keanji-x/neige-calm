@@ -542,6 +542,10 @@ async fn rest_boot() -> RestBoot {
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
+                .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    4444,
+                ))))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({"username": "alice", "password": "hunter2"}).to_string(),

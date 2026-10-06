@@ -20,6 +20,10 @@ async fn app_and_cookie(auth: AuthState) -> (axum::Router, String) {
         .clone()
         .oneshot(
             Request::post("/api/auth/login")
+                .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    4444,
+                ))))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(r#"{"username":"alice","password":"pw"}"#))
                 .unwrap(),

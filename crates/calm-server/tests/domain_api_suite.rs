@@ -13,6 +13,8 @@ mod area_folders;
 mod area_system_endpoint;
 #[path = "cases/auth.rs"]
 mod auth;
+#[path = "cases/auth_login_throttle.rs"]
+mod auth_login_throttle;
 #[path = "cases/auth_origin.rs"]
 mod auth_origin;
 #[path = "cases/briefing_in_mint_tx.rs"]

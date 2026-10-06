@@ -678,6 +678,67 @@
         }
       }
     },
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "POST /api/auth/login — verify credentials, mint a session, set cookie.",
+        "operationId": "login_handler",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; `Set-Cookie` carries the session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhoamiBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong username or password.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`login_throttled`: this peer failed too often and the credentials were not evaluated.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds until this peer may try again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/calendar/tasks": {
       "get": {
         "tags": [
@@ -9558,6 +9619,21 @@
           }
         }
       },
+      "LoginBody": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
       "McpCheckResult": {
         "type": "object",
         "required": [
@@ -13599,6 +13675,29 @@
           }
         }
       },
+      "WhoamiBody": {
+        "type": "object",
+        "required": [
+          "userId",
+          "displayName",
+          "role",
+          "sessionId"
+        ],
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          }
+        }
+      },
       "WorkerSessionKind": {
         "type": "string",
         "enum": [
@@ -13624,6 +13723,10 @@
     }
   },
   "tags": [
+    {
+      "name": "auth",
+      "description": "Owner password login"
+    },
     {
       "name": "areas",
       "description": "Area CRUD"

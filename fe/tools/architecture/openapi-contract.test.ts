@@ -27,6 +27,8 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'TemplatePluginGuide',
   // Builtin-owned DTO decoded by core/domain/calendar.ts.
   'CalendarEntry',
+  // Login answer, decoded by `sessionIdentitySchema` in core/api/auth.ts.
+  'WhoamiBody',
   'ReportSeriesResolved', 'ReportSeriesRevConflict', 'TrackPreviews',
 ]);
 

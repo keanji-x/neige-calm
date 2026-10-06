@@ -24,6 +24,18 @@ describe('production login assembly', () => {
     expect(broadcast).not.toHaveBeenCalled();
   });
 
+  it('a throttled sign-in shows the server reason', async () => {
+    const reason = 'Too many failed sign-in attempts. Try again in 32 seconds.';
+    const transport = { send: vi.fn().mockResolvedValue({
+      status: 429, statusText: 'Too Many Requests', body: { code: 'login_throttled', error: reason },
+    }) };
+    render(<LoginPage login={(username, password, signal) => loginWithTransport(transport, username, password, signal)} reload={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText('Username'), 'owner');
+    await userEvent.type(screen.getByLabelText('Password'), 'secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(reason);
+  });
+
   it.each([
     ['a lost answer', () => Promise.reject(new TypeError('Failed to fetch'))],
     ['a 5xx', () => Promise.resolve({ status: 502, statusText: 'Bad Gateway', body: null })],

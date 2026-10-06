@@ -1,21 +1,28 @@
 //! Global session gate: single-user owner login, in-memory sessions keyed by an unsigned `calm-session` cookie (HttpOnly, SameSite=Strict, dies on restart).
 //! `dev_autologin` promotes every request to the owner without a cookie; production must never enable it.
 
+pub mod login_throttle;
+
 use crate::config::Config;
-use crate::error::{CalmError, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Body,
-    extract::{FromRequestParts, Request, State},
+    extract::{ConnectInfo, FromRequestParts, Request, State},
     http::{HeaderMap, Method, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
+use login_throttle::{LoginAttempt, LoginThrottle};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use subtle::ConstantTimeEq;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// Name of the session cookie. Frontend and backend MUST agree on this.
@@ -139,6 +146,8 @@ pub struct AuthState {
     pub mobile: crate::mobile_access::MobileAccess,
     /// `CALM_ALLOWED_ORIGIN`: the one foreign origin (dev frontend) trusted beside calm's own.
     pub allowed_origin: Option<String>,
+    /// Per-peer limit on failed password logins; process-local, see [`login_throttle`].
+    pub login_throttle: LoginThrottle,
 }
 
 impl AuthState {
@@ -149,7 +158,14 @@ impl AuthState {
             mobile: crate::mobile_access::MobileAccess::new(sessions.clone()),
             sessions,
             allowed_origin: None,
+            login_throttle: LoginThrottle::default(),
         }
+    }
+
+    /// Replace the login throttle, e.g. with one on a test clock.
+    pub fn with_login_throttle(mut self, throttle: LoginThrottle) -> Self {
+        self.login_throttle = throttle;
+        self
     }
 
     /// Production wiring: auth config plus the configured `CALM_ALLOWED_ORIGIN`, if any.
@@ -326,13 +342,13 @@ pub async fn require_session_ws(
     Ok(next.run(request).await)
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct LoginBody {
     pub username: String,
     pub password: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WhoamiBody {
     pub user_id: String,
@@ -364,9 +380,31 @@ pub fn session_router() -> Router<AuthState> {
         .route("/api/auth/logout", post(logout_handler))
 }
 
+/// Both comparisons always run and are combined without short-circuit, over fixed-size digests, so
+/// neither which field was wrong nor the configured lengths show in the timing.
+fn credentials_match(body: &LoginBody, want_user: &str, want_pass: &str) -> bool {
+    let same = |given: &str, want: &str| {
+        Sha256::digest(given.as_bytes()).ct_eq(&Sha256::digest(want.as_bytes()))
+    };
+    let user = same(&body.username, want_user);
+    let pass = same(&body.password, want_pass);
+    bool::from(user & pass)
+}
+
 /// POST /api/auth/login — verify credentials, mint a session, set cookie.
-async fn login_handler(
+#[utoipa::path(
+    post, path = "/api/auth/login", tag = "auth", request_body = LoginBody,
+    responses(
+        (status = 200, body = WhoamiBody, description = "Signed in; `Set-Cookie` carries the session."),
+        (status = 401, body = ErrorBody, description = "Wrong username or password."),
+        (status = 429, body = ErrorBody,
+            description = "`login_throttled`: this peer failed too often and the credentials were not evaluated.",
+            headers(("Retry-After" = u64, description = "Seconds until this peer may try again."))),
+    )
+)]
+pub async fn login_handler(
     State(auth): State<AuthState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Result<Response> {
@@ -384,8 +422,24 @@ async fn login_handler(
         return Err(CalmError::Unauthorized);
     };
 
-    if body.username != want_user || body.password != want_pass {
-        return Err(CalmError::Unauthorized);
+    // Every listener that mounts this route attaches the peer; without it there is nothing to key the throttle on.
+    let Some(Extension(ConnectInfo(peer))) = peer else {
+        return Err(CalmError::Internal(
+            "login requires the peer address of the connection".into(),
+        ));
+    };
+    match auth
+        .login_throttle
+        .attempt(peer.ip(), || credentials_match(&body, want_user, want_pass))
+    {
+        LoginAttempt::Accepted => {}
+        LoginAttempt::Rejected => return Err(CalmError::Unauthorized),
+        LoginAttempt::Throttled { retry_after } => {
+            return Err(CalmError::LoginThrottled {
+                // Round up: a client that waits exactly this long must not be refused again.
+                retry_after_secs: retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0),
+            });
+        }
     }
 
     // Tear down any previous session on this request so a successful login leaves no zombie sessions.

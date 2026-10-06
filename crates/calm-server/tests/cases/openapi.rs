@@ -8,6 +8,7 @@ use utoipa::OpenApi;
 fn document_contains_every_annotated_path() {
     let doc = ApiDoc::openapi();
     let expected_paths = [
+        "/api/auth/login",
         "/api/areas",
         "/api/areas/{id}",
         "/api/areas/{area_id}/tracks",

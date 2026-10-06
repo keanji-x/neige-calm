@@ -130,6 +130,10 @@ async fn login(app: &axum::Router) -> String {
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
+                .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    4444,
+                ))))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),

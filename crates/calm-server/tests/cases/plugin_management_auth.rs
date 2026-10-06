@@ -82,6 +82,10 @@ impl Fixture {
             .clone()
             .oneshot(
                 Request::post("/api/auth/login")
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        4444,
+                    ))))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({"username": "owner", "password": "fixture-password"}).to_string(),

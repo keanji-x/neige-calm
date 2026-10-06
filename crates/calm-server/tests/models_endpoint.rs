@@ -443,6 +443,10 @@ async fn models_read_is_behind_the_session_gate() {
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
+                .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    4444,
+                ))))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({ "username": "owner", "password": "pw" }).to_string(),

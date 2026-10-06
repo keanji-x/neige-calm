@@ -214,6 +214,7 @@ async fn login_success_issues_cookie_and_returns_whoami() {
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
+                .extension(connect_info("127.0.0.1:4444"))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -261,6 +262,7 @@ async fn login_wrong_password_returns_401_with_standard_payload() {
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
+                .extension(connect_info("127.0.0.1:4444"))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -316,6 +318,7 @@ async fn whoami_with_valid_cookie_returns_owner_payload() {
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
+                .extension(connect_info("127.0.0.1:4444"))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -569,6 +572,7 @@ async fn protected_route_with_valid_session_returns_200() {
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
+                .extension(connect_info("127.0.0.1:4444"))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -627,6 +631,7 @@ async fn logout_clears_cookie_and_invalidates_session() {
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
+                .extension(connect_info("127.0.0.1:4444"))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),

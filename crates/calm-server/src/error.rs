@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,11 @@ pub enum CalmError {
 
     #[error("unauthorized")]
     Unauthorized,
+
+    /// 429 — this peer failed to log in too often; its credentials were not evaluated. The response
+    /// carries `Retry-After`.
+    #[error("Too many failed sign-in attempts. Try again in {retry_after_secs} seconds.")]
+    LoginThrottled { retry_after_secs: u64 },
 
     /// 403 — non-plugin permission gate (filesystem read denied, etc.).
     #[error("forbidden: {0}")]
@@ -172,6 +177,7 @@ impl CalmError {
             CalmError::TodaySummaryNoActivity(_) => "today_summary_no_activity",
             CalmError::BadRequest(_) => "bad_request",
             CalmError::Unauthorized => "unauthorized",
+            CalmError::LoginThrottled { .. } => "login_throttled",
             CalmError::Forbidden(_) => "forbidden",
             CalmError::PluginInstall(_) => "plugin_install",
             CalmError::PluginPermission(_) => "plugin_permission",
@@ -220,6 +226,7 @@ impl CalmError {
             | CalmError::PluginInstall(_)
             | CalmError::PluginConfigTooLarge(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
+            CalmError::LoginThrottled { .. } => StatusCode::TOO_MANY_REQUESTS,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
             CalmError::PluginKernelTooOld(_)
             | CalmError::PlannerResetUnsupportedInSharedMode(_) => StatusCode::UNPROCESSABLE_ENTITY,
@@ -242,7 +249,13 @@ impl IntoResponse for CalmError {
             "error": self.to_string(),
             "code": self.code(),
         });
-        (self.status(), Json(body)).into_response()
+        let mut response = (self.status(), Json(body)).into_response();
+        if let CalmError::LoginThrottled { retry_after_secs } = self {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
+        }
+        response
     }
 }
 
@@ -351,6 +364,9 @@ impl From<CalmError> for calm_truth::TruthError {
             }
             CalmError::BadRequest(m) => calm_types::error::CoreError::BadRequest(m).into(),
             CalmError::Unauthorized => calm_types::error::CoreError::Unauthorized.into(),
+            refused @ CalmError::LoginThrottled { .. } => {
+                calm_truth::TruthError::Internal(refused.to_string())
+            }
             CalmError::Forbidden(m) => calm_truth::TruthError::Forbidden(m),
             CalmError::ServiceUnavailable(m) => {
                 calm_types::error::CoreError::ServiceUnavailable(m).into()

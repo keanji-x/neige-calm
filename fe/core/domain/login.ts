@@ -2,7 +2,8 @@ import type { FailureTable, WriteText } from './failure-class.js';
 
 /**
  * What a failed `POST /api/auth/login` means. `credentials`: the 401 the server answers for a wrong username or
- * password, which the form words itself. `refused`: another answered 4xx, shown with its reason. `unknown`: no
+ * password, which the form words itself. `refused`: another answered 4xx, shown with its reason; among them the 429
+ * `login_throttled` a peer gets after repeated failures, whose reason says when to try again. `unknown`: no
  * trustworthy answer (lost, a 5xx, unreadable), shown as `LOGIN_TEXT.unknown`. A retry is safe: each success only
  * mints a new session.
  */
