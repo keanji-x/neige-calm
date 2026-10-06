@@ -13,10 +13,14 @@ import { Sidebar } from './sidebar.tsx';
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
-it('places view options before collapse and shares group disclosure, keyboard actions and live membership', async () => {
+async function scene(activitiesVisible: boolean) {
   await page.viewport(1400, 900);
   const preferences = createUiPreferences();
   preferences.setReadScope('db', 1);
+  if (activitiesVisible) {
+    preferences.setSidebarGroupVisible('unread', true);
+    preferences.setSidebarGroupVisible('running', true);
+  }
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
   const reading: Area = { ...area, id: 'reading', name: 'Reading', sort: 2 };
@@ -42,17 +46,22 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   </UiPreferencesProvider>;
   const view = render(sidebar(tracks));
 
+  const options = page.getByRole('button', { name: 'Sidebar view options' });
+  const collapse = page.getByRole('button', { name: 'Collapse sidebar' });
+  const today = page.getByRole('button', { name: 'Go to Today' });
+  const areasDisclosure = page.getByRole('button', { name: 'Collapse Areas', exact: true });
+  const areasMarker = areasDisclosure.element().querySelector<HTMLElement>('span[aria-hidden="true"]')!;
+  return { preferences, tracks, sidebar, view, onGo, onSetPinned, options, collapse, today, areasDisclosure, areasMarker };
+}
+
+it('places view options and preserves disclosure and keyboard navigation', async () => {
+  const { onGo, options, collapse, today, areasDisclosure, areasMarker } = await scene(false);
   const areasTitle = page.getByRole('button', { name: 'Collapse Areas', exact: true }).element()
     .querySelector<HTMLElement>('[title="Areas"]')!;
   const areaTitle = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element()
     .querySelector<HTMLElement>('[title="Work"]')!;
   expect(areaTitle.getBoundingClientRect().left).toBeGreaterThan(areasTitle.getBoundingClientRect().left);
 
-  const options = page.getByRole('button', { name: 'Sidebar view options' });
-  const collapse = page.getByRole('button', { name: 'Collapse sidebar' });
-  const today = page.getByRole('button', { name: 'Go to Today' });
-  const areasDisclosure = page.getByRole('button', { name: 'Collapse Areas', exact: true });
-  const areasMarker = areasDisclosure.element().querySelector<HTMLElement>('span[aria-hidden="true"]')!;
   const motion = readMotionTransition(areasMarker, 'disclosure');
   expect(parseFloat(getComputedStyle(areasMarker).transitionDuration)).toBe(motion.duration);
   expect(getComputedStyle(areasMarker).transitionTimingFunction).toBe(`cubic-bezier(${motion.ease.join(', ')})`);
@@ -98,6 +107,11 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   await expect.element(page.getByRole('menu')).not.toBeInTheDocument();
   await expect.element(options).toHaveFocus();
 
+
+});
+
+it('manages group ordering, visibility and pointer restoration', async () => {
+  const { options, onGo } = await scene(true);
   for (const title of ['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']) {
     const button = page.getByRole('button', { name: `Collapse ${title}`, exact: true });
     expect(button.element().getBoundingClientRect().height).toBeCloseTo(28, 0);
@@ -132,6 +146,11 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   await options.click();
   await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toHaveAttribute('aria-disabled', 'true');
   await userEvent.keyboard('{Escape}');
+
+});
+
+it('keeps pin controls usable and updates live group membership', async () => {
+  const { today, onGo, onSetPinned, preferences, tracks, sidebar, view } = await scene(true);
   await today.hover();
   const pinNext = page.getByRole('button', { name: 'Pin Next task' });
   expect(getComputedStyle(pinNext.element()).opacity).toBe('0');
@@ -157,6 +176,18 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   await page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track Build frontend/ }).click();
   expect(onGo).toHaveBeenCalledWith({ name: 'track', trackId: 'running' });
   expect(document.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+  act(() => { preferences.markRead('track', 'review', 10); preferences.markRead('track', 'running', 10); });
+  await expect.element(page.getByRole('group', { name: 'Unread', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('group', { name: 'Unread', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('group', { name: 'Waiting on you', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
+  view.rerender(sidebar(tracks.map((track) => ({ ...track, working: false }))));
+  await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
+});
+
+it('recovers hidden groups through the full pointer list and Escape layers', async () => {
+  const { options } = await scene(true);
   // Pointer recovery remains usable even after inspecting and closing the full hidden list.
   const recoverable = ['Pinned', 'Waiting on you', 'Unread', 'Running', 'Areas'];
   for (const title of recoverable) {
@@ -179,12 +210,6 @@ it('places view options before collapse and shares group disclosure, keyboard ac
     await page.getByRole('menuitem', { name: `Show ${title}`, exact: true }).click();
     await expect.element(page.getByRole('group', { name: title, exact: true })).toBeVisible();
   }
-  act(() => { preferences.markRead('track', 'review', 10); preferences.markRead('track', 'running', 10); });
-  await expect.element(page.getByRole('group', { name: 'Unread', exact: true })).toBeVisible();
-  await expect.element(page.getByRole('group', { name: 'Unread', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
-  await expect.element(page.getByRole('group', { name: 'Waiting on you', exact: true })).toBeVisible();
-  await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
-  view.rerender(sidebar(tracks.map((track) => ({ ...track, working: false }))));
-  await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
-  await expect.element(page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
+
 });
+
