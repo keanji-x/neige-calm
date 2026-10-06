@@ -993,6 +993,9 @@ function useConversationPane(
       /* An open `/` or `@` menu owns Escape first; this capture-phase listener would otherwise
                take it. The menu says it is open through `aria-expanded` on the combobox. */
       if (target.closest('[role="combobox"][aria-expanded="true"]') !== null) return;
+      /* Native overlays own their first Escape; let their standard dismissal stack run. */
+      if (typeof HTMLElement.prototype.showPopover === 'function'
+        && document.querySelector('[popover]:popover-open') !== null) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       store.interrupt();

@@ -1,3 +1,4 @@
+import { markdownExcerpt } from '../../../../../core/markdown/public.ts';
 // The conversation itself: a transcript and the box you write into. The unit is the
 // exchange — one thing you said and everything that came back.
 
@@ -350,7 +351,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         <EdgeNavigator
           className={styles.edgeNavigation}
           label="Jump to an exchange"
-          items={exchanges.map((item, index) => ({ ...item,
+          items={exchanges.map((item, index) => ({ id: item.id, title: item.text.trim() === '' ? `Exchange ${index + 1}` : item.text, excerpt: item.excerpt,
             label: `Jump to exchange ${index + 1}${railLabel(item.text) === '' ? '' : `: ${railLabel(item.text)}`}`,
           }))}
           activeId={active}
@@ -406,7 +407,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
 
 /** One thing you said and everything that came back — as far as the rail needs
  *  it: something to point at, and the words to call it by. */
-type Exchange = Readonly<{ id: string; text: string }>;
+type Exchange = Readonly<{ id: string; text: string; excerpt: string }>;
 
 /** How far below the pane's top a marker may still count as "scrolled past": absorbs the subpixel gap between the scroll asked for and the one the engine performs, at both ends. */
 const ACTIVE_MARKER_SLACK_PX = 4;
@@ -424,7 +425,11 @@ function exchangesOf(turns: readonly TranscriptEntry[]): readonly Exchange[] {
     /* `opensExchange` already implies `author === 'you'`; the narrowing below is
        for the type checker, which cannot read that from the domain function. */
     if (!opensExchange(turns, index) || turn.author !== 'you') return;
-    found.push({ id: turn.id, text: turn.text });
+    const following = turns.slice(index + 1);
+    const nextPrompt = following.findIndex(entry => entry.author === 'you');
+    const exchange = nextPrompt < 0 ? following : following.slice(0, nextPrompt);
+    const reply = exchange.find(entry => entry.author === 'agent');
+    found.push({ id: turn.id, text: turn.text, excerpt: markdownExcerpt(reply !== undefined && reply.author === 'agent' ? reply.text : '') });
   });
   return found;
 }

@@ -1,6 +1,7 @@
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
 
 import { Icon } from '../icon/public.tsx';
 import { MobileHeader } from '../mobile-header/public.tsx';
@@ -117,24 +118,18 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
     return () => { preference?.removeEventListener?.('change', settle); };
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      /* Escape during IME composition is the IME's Escape; closing on it would take the draft. `keyCode === 229` is kept only to match the router's copy of this guard — `isComposing` is the working fence. WebKit may dispatch `compositionend` before that Escape; unverified. */
-      if (event.isComposing || event.keyCode === 229) return;
-      const origin = event.target instanceof Element ? event.target.closest('[data-nc-drawer]') : null;
-      if (origin !== null) {
-        if (origin === panelRef.current) onClose();
-        return;
-      }
+  // Keep the local escape-layer contract for unmigrated Dialog/file-viewer hosts;
+  // native Astryx children still dismiss first through the shared layer stack.
+  useLayerDismissal({
+    isActive: open,
+    onDismiss: onClose,
+    getContainer: () => panelRef.current,
+    isPresent: () => {
       const layers = [...document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]')]
-        .filter((layer) => layer.closest('[hidden]') === null);
-      if (layers.at(-1) === panelRef.current) onClose();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => { document.removeEventListener('keydown', onKeyDown); };
-  }, [open, onClose]);
+        .filter(layer => layer.closest('[hidden]') === null);
+      return open && panelRef.current !== null && layers.at(-1) === panelRef.current;
+    },
+  });
 
   // `preventScroll` is load-bearing on open: the card enters translated, so a default `focus()` pans the page for a frame. Close restores without it so a scrolled-away opener is brought back into view.
   useEffect(() => {
@@ -227,10 +222,10 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
     />
     </>
   );
-  if (companion === undefined && !stacked) return card;
+  if (companion === undefined && !stacked) return <LayerDepthProvider>{card}</LayerDepthProvider>;
   return (
     <div ref={hostRef} className={styles.stack} data-nc-drawer-stack="">
-      <div className={styles.cell}>{card}</div>
+      <div className={styles.cell}><LayerDepthProvider>{card}</LayerDepthProvider></div>
       <div className={styles.cell} hidden={companion === undefined}>{companion?.(ownResizeGroup)}</div>
       {open && width !== undefined && parentResizeGroup === null
         && <ResizeEdge resize={width} panelRef={hostRef} scrollRef={scrollRef} group={resizeGroup} />}

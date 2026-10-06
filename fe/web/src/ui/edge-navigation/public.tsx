@@ -1,13 +1,13 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useRef, type ComponentProps } from 'react';
+import { useHoverCard } from '@astryxdesign/core/HoverCard';
 import { useState } from '../state/public.ts';
 import { observeResize } from './resize.ts';
 import styles from './edge-navigation.module.css';
 
-export type NavigationItem = Readonly<{ id: string; text: string; label: string }>;
+export type NavigationItem = Readonly<{ id: string; title: string; excerpt: string; label: string }>;
 const NOTHING_TO_REPAINT = () => {};
 const RAIL_SPREAD_SPAN = 4;
 const RAIL_SETTLE_STEPS = 4;
-const RAIL_PREVIEW_DELAY_MS = 450;
 const RAIL_PREVIEW_MAX = 240;
 function railPreviewText(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim();
@@ -24,13 +24,9 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
   className?: string;
   previewSide?: 'before' | 'after';
 }>) {
-  const railRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dotRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const previewRef = useRef<HTMLDivElement | null>(null);
   const [roved, setRoved] = useState<string | null>(null);
-  const [previewed, setPreviewed] = useState<string | null>(null);
-  const previewDelay = useRef<number | null>(null);
   const repaintEnvelope = useRef(NOTHING_TO_REPAINT);
   const itemKey = items.map((item) => item.id).join('\0');
   const activeIndex = items.findIndex((item) => item.id === activeId);
@@ -152,56 +148,6 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
     };
   }, []);
   useEffect(() => { repaintEnvelope.current(); }, [itemKey]);
-  useLayoutEffect(() => {
-    const preview = previewRef.current;
-    const rail = railRef.current;
-    const track = trackRef.current;
-    if (preview === null || rail === null || track === null) return;
-    const dot = dotRefs.current[items.findIndex((item) => item.id === previewed)];
-    if (dot == null) return;
-    const place = () => {
-      const trackBox = track.getBoundingClientRect();
-      const dotBox = dot.getBoundingClientRect();
-      const height = preview.getBoundingClientRect().height;
-      const wanted = dotBox.top + dotBox.height / 2 - height / 2;
-      const lowest = Math.max(trackBox.top, trackBox.bottom - height);
-      const top = Math.min(Math.max(wanted, trackBox.top), lowest);
-      preview.style.insetBlockStart = `${top - rail.getBoundingClientRect().top}px`;
-    };
-    place();
-    track.addEventListener('scroll', place, { passive: true });
-    return () => { track.removeEventListener('scroll', place); };
-  }, [previewed, items]);
-  useEffect(() => () => {
-    if (previewDelay.current !== null) clearTimeout(previewDelay.current);
-  }, []);
-  const dropPreview = () => {
-    if (previewDelay.current !== null) {
-      clearTimeout(previewDelay.current);
-      previewDelay.current = null;
-    }
-    setPreviewed(null);
-  };
-  const showPreview = (id: string) => {
-    if (previewDelay.current !== null) clearTimeout(previewDelay.current);
-    previewDelay.current = null;
-    setPreviewed(id);
-  };
-  const previewOnRest = (id: string) => {
-    if (previewDelay.current !== null) clearTimeout(previewDelay.current);
-    if (previewRef.current !== null) {
-      previewDelay.current = null;
-      setPreviewed(id);
-      return;
-    }
-    previewDelay.current = window.setTimeout(() => {
-      previewDelay.current = null;
-      setPreviewed(id);
-    }, RAIL_PREVIEW_DELAY_MS);
-  };
-  const previewText = previewed === null
-    ? ''
-    : railPreviewText(items.find((item) => item.id === previewed)?.text ?? '');
   const rove = (to: number) => {
     const next = Math.max(0, Math.min(items.length - 1, to));
     setRoved(items[next]?.id ?? null);
@@ -214,19 +160,12 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
       className={`${styles.rail}${className === undefined ? '' : ` ${className}`}`}
       role="group"
       aria-label={label}
-      ref={railRef}
-      onPointerLeave={() => {
-        const focused = dotRefs.current.findIndex(dot => dot === document.activeElement && dot?.matches(':focus-visible'));
-        if (focused >= 0) showPreview(items[focused].id);
-        else dropPreview();
-      }}
     >
       <div className={styles.railTrack} data-nc-rail-track="" ref={trackRef}>
         {items.map((item, index) => {
           return (
-            <button
-              key={item.id}
-              ref={(node) => {
+            <NavigationDot key={item.id} item={item} previewSide={previewSide}
+              onNode={(node) => {
                 dotRefs.current[index] = node;
                 if (node !== null) return;
                 while (dotRefs.current.length > 0 && dotRefs.current.at(-1) === null) {
@@ -234,16 +173,11 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
                 }
               }}
               type="button"
-              className={`${styles.railDot} ${item.id === activeId ? styles.railDotActive : ''}`}
+              className={`${styles.railDot} ${item.id === activeId ? styles.railDotActive : ''} ${index === 0 ? styles.railDotFirst : ''} ${index === items.length - 1 ? styles.railDotLast : ''}`}
               aria-label={item.label}
               tabIndex={index === tabStop ? 0 : -1}
               {...(item.id === activeId ? { 'aria-current': true as const } : {})}
-              onPointerEnter={(event) => {
-                if (event.pointerType === 'touch') return;
-                previewOnRest(item.id);
-              }}
-              onFocus={() => { setRoved(item.id); showPreview(item.id); }}
-              onBlur={dropPreview}
+              onFocus={() => { setRoved(item.id); }}
               onKeyDown={(event) => {
                 const move = ARROW_MOVES[event.key];
                 if (move === undefined) return;
@@ -251,26 +185,36 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
                 rove(move(index, items.length));
               }}
               onClick={() => {
-                dropPreview();
                 onSelect(item.id);
               }}
             />
           );
         })}
       </div>
-      {previewText !== '' && (
-        <div
-          className={`${styles.railPreview} ${previewSide === 'after' ? styles.previewAfter : ''}`}
-          data-nc-rail-preview=""
-          aria-hidden="true"
-          ref={previewRef}
-        >
-          {previewText}
-        </div>
-      )}
     </div>
   );
 }
+/** Astryx owns preview lifecycle and positioning; the rail keeps its button geometry. */
+function NavigationDot({ item, previewSide, onNode, onClick, ...buttonProps }: Readonly<{
+  item: NavigationItem;
+  previewSide: 'before' | 'after';
+  onNode: (node: HTMLButtonElement | null) => void;
+}> & ComponentProps<'button'>) {
+  const preview = useHoverCard({
+    placement: previewSide === 'after' ? 'end' : 'start',
+    focusTrigger: 'always', touchTrigger: 'none',
+  });
+  return <>
+    <button {...buttonProps} ref={node => { onNode(node); preview.ref(node); }}
+      aria-describedby={preview.isOpen ? preview.id : undefined}
+      onClick={event => { preview.hide(); onClick?.(event); }} />
+    {preview.renderHoverCard(<div data-nc-rail-preview="">
+      <div className={styles.previewTitle}>{railPreviewText(item.title)}</div>
+      {item.excerpt.trim() !== '' && <p className={styles.previewExcerpt}>{railPreviewText(item.excerpt)}</p>}
+    </div>, { className: styles.railPreview })}
+  </>;
+}
+
 const ARROW_MOVES: Readonly<Record<string, ((from: number, count: number) => number) | undefined>> =
   Object.freeze({
     ArrowDown: (from: number) => from + 1,

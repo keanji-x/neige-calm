@@ -12,7 +12,7 @@ export { isCalendarDate } from './report-date.js';
 import type { CurrentTaskExecution } from './task-execution.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
-  extractOutline, parse, REPORT_MAX_DEPTH, reportHeadingIdPolicy,
+  extractOutline, markdownExcerpt, parse, REPORT_MAX_DEPTH, reportHeadingIdPolicy,
 } from '../markdown/public.js';
 import type { CardWire } from './track.js';
 
@@ -310,6 +310,8 @@ export type ReportOutlineItem = Readonly<{
   /** The anchor to scroll to: a heading id inside a prose block, or a block id. */
   blockId: string;
   label: string;
+  /** Visible prose owned by this section; empty when it has no body text. */
+  excerpt: string;
   /** Continuous across blocks; `null` for a non-prose block with no section above it. */
   number: number | null;
   children: readonly ReportOutlineChild[];
@@ -350,14 +352,17 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
         referenceText: 'visible',
         traversal: 'recursive',
       });
-      for (const heading of headings) {
+      for (const [index, heading] of headings.entries()) {
+        const next = headings.slice(index + 1).find(candidate => candidate.depth <= heading.depth);
+        const section = block.payload.markdown.slice(heading.position.end.offset, next?.position.start.offset);
+        const excerpt = markdownExcerpt(section);
         if (heading.depth === 2 && lastH1 !== null) {
           lastH1.children.push({ blockId: heading.id, label: heading.text });
           continue;
         }
         sectionNumber += 1;
         const children: ReportOutlineChild[] = [];
-        outline.push({ blockId: heading.id, label: heading.text, number: sectionNumber, children });
+        outline.push({ blockId: heading.id, label: heading.text, excerpt, number: sectionNumber, children });
         lastNumbered = { children };
         if (heading.depth === 1) lastH1 = { children };
       }
@@ -367,7 +372,7 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
     if (isTaskBlock(block)) continue;
     const child: ReportOutlineChild = { blockId: block.id, label: blockLabel(block) };
     if (lastNumbered === null) {
-      outline.push({ blockId: block.id, label: child.label, number: null, children: [] });
+      outline.push({ blockId: block.id, label: child.label, excerpt: '', number: null, children: [] });
       continue;
     }
     lastNumbered.children.push(child);

@@ -1,5 +1,5 @@
 /* The composer, the exchange rail and the reply's type, measured against a real rendering engine. */
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,7 +15,7 @@ import { Drawer } from '../../../ui/drawer/public.tsx';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
 import { useState } from '../../../ui/state/public.ts';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 /** The cascade order the document ended up with, read off the first top-level `@layer` rule in sheet order (registration is first-come). It stops at the first top-level statement, so `@import layer()` and conditional layers are invisible to it. */
 function registeredLayerOrder(): readonly string[] {
@@ -672,7 +672,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     // clientLeft includes the scroll pane's leading gutter on classic-scrollbar platforms.
     expect(Math.round(bare)).toBe(Math.round(pane().getBoundingClientRect().left + pane().clientLeft + 8));
 
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
     render(<RailPane turns={railTurns(8)} />);
     await frame();
     expect(dots()).toHaveLength(8);
@@ -959,7 +959,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(railTrack().scrollHeight).toBeLessThanOrEqual(railTrack().clientHeight + 1);
     for (const index of [0, 3, 6, 7]) await holdsStillAt(index);
 
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
     render(<RailPane turns={railTurns(40, 0)} paneHeight={400} />);
     await frame();
     await userEvent.hover(pane());
@@ -1225,12 +1225,13 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(shownAfter).toBeLessThan(1_200);
 
     const name = dots()[3].getAttribute('aria-label')!;
-    expect(preview.textContent).toBe(LONG_PROMPT);
+    expect(preview.querySelector('div')?.textContent).toBe(LONG_PROMPT);
+    expect(preview.querySelector('p')?.textContent).toBe('Short.');
     expect(name.length).toBeLessThan(LONG_PROMPT.length);
     expect(name).toContain('…');
 
-    expect(preview.getAttribute('aria-hidden')).toBe('true');
-    expect(getComputedStyle(preview).pointerEvents).toBe('none');
+    expect(preview.closest('[popover]')?.getAttribute('role')).toBe('group');
+    expect(getComputedStyle(preview).pointerEvents).toBe('auto');
 
     const box = preview.getBoundingClientRect();
     const seamBox = document.querySelector<HTMLElement>('[data-nc-drawer-seam]')!
@@ -1246,22 +1247,25 @@ describe('the exchange rail, as the engine lays it out', () => {
 
     /* Back to rest first: `userEvent.hover` teleports the cursor to where the target's box is when called, and with the rail spread the seventh dot's box is displaced. */
     await userEvent.hover(replies()[0]);
-    await pause(150);
+    await pause(250);
     await userEvent.hover(dots()[6]);
     await pause(600);
-    const capped = railPreview()!.textContent;
+    await userEvent.hover(railPreview()!);
+    await pause(250);
+    expect(railPreview()).not.toBeNull();
+    const capped = railPreview()!.querySelector('div')!.textContent;
     expect(OVERLONG_PROMPT.length).toBeGreaterThan(240);
     expect(capped).toHaveLength(240);
     expect(capped.endsWith('…')).toBe(true);
     expect(OVERLONG_PROMPT.startsWith(capped.slice(0, -1))).toBe(true);
 
     await userEvent.hover(replies()[0]);
-    await pause(150);
+    await pause(250);
     expect(railPreview()).toBeNull();
   });
 
-  /* The clamp only bites when the panel is taller than twice the room from the track's edge to the dot's centre, so the end dots carry the overlong prompt at a narrow width; the premise is asserted. */
-  it('holds the preview inside the track at the first dot and at the last', async () => {
+  /* Native anchor positioning keeps end-dot cards in the viewport even in a narrow conversation. */
+  it('keeps end-dot previews readable inside the viewport', async () => {
     await page.viewport(1400, 900);
     render(<RailPane
       turns={promptTurns(30, (index) => (
@@ -1278,27 +1282,25 @@ describe('the exchange rail, as the engine lays it out', () => {
     await userEvent.hover(dots()[0]);
     await pause(600);
     const first = railPreview()!.getBoundingClientRect();
-    const top = track.getBoundingClientRect();
     expect(first).not.toBeNull();
-    const firstDot = dots()[0].getBoundingClientRect();
-    expect(first.height / 2).toBeGreaterThan(firstDot.top + firstDot.height / 2 - top.top);
-    expect(first.top).toBeGreaterThanOrEqual(top.top - 1);
-    expect(first.top).toBeCloseTo(top.top, 0);
+    expect(first.top).toBeGreaterThanOrEqual(0);
+    expect(first.bottom).toBeLessThanOrEqual(window.innerHeight);
 
     track.scrollTop = track.scrollHeight;
     await settle();
-    await userEvent.hover(dots()[29]);
-    await pause(600);
+    await userEvent.hover(pane());
+    await pause(150);
+    await act(async () => { dots()[29].focus(); });
+    await pause(150);
     const last = railPreview()!.getBoundingClientRect();
-    const bottom = railTrack().getBoundingClientRect();
-    expect(last.bottom).toBeLessThanOrEqual(bottom.bottom + 1);
-    expect(last.bottom).toBeCloseTo(bottom.bottom, 0);
+    expect(last.top).toBeGreaterThanOrEqual(0);
+    expect(last.bottom).toBeLessThanOrEqual(window.innerHeight);
 
     await userEvent.hover(replies()[0]);
-    await pause(150);
+    await pause(250);
   });
 
-  /* The track is a scrollport; the panel is positioned against `.rail`, which does not scroll. */
+  /* Native CSS anchor positioning follows its button as the rail scrolls. */
   it('keeps the preview on its dot when the rail scrolls under it', async () => {
     await page.viewport(1400, 900);
     render(<RailPane turns={promptTurns(30, () => 'Ask about the rewrite')} />);
@@ -1312,9 +1314,10 @@ describe('the exchange rail, as the engine lays it out', () => {
     await pause(600);
     expect(railPreview()).toBeNull();
     track.scrollTop = 0;
-    dots()[8].dispatchEvent(new PointerEvent('pointerover', {
+    dots()[8].dispatchEvent(new PointerEvent('pointerenter', {
       bubbles: true, pointerType: 'mouse',
     }));
+    dots()[8].dispatchEvent(new MouseEvent('mouseenter'));
     await pause(600);
     const clear = () => {
       const box = railPreview()!.getBoundingClientRect();
@@ -1343,35 +1346,14 @@ describe('the exchange rail, as the engine lays it out', () => {
     await pause(150);
   });
 
-  /* A prompt that collapses to `''` arms the preview and renders nothing; the warm-up must not be spent on it. */
-  it('still waits the full delay after resting on a dot with nothing to show', async () => {
+  it('shows an ordinal and the reply for an exchange with an empty prompt', async () => {
     await page.viewport(1400, 900);
-    render(<RailPane turns={promptTurns(8, (index) => (index === 2 ? '   ' : LONG_PROMPT))} />);
+    render(<RailPane turns={promptTurns(8, index => index === 2 ? '   ' : LONG_PROMPT)} />);
     await frame();
-    await scrollPaneTo(0);
-    await userEvent.hover(pane());
-    await pause(600);
-    expect(railPreview()).toBeNull();
-
-    expect(dots()).toHaveLength(8);
-    expect(dots()[2].getAttribute('aria-label')).toBe('Jump to exchange 3');
-
     await userEvent.hover(dots()[2]);
     await pause(600);
-    expect(railPreview()).toBeNull();
-
-    await userEvent.hover(dots()[4]);
-    await pause(150);
-    expect(railPreview()).toBeNull();
-    await pause(450);
-    expect(railPreview()!.textContent).toBe(LONG_PROMPT);
-
-    await userEvent.hover(dots()[5]);
-    await pause(120);
-    expect(railPreview()).not.toBeNull();
-
-    await userEvent.hover(replies()[0]);
-    await pause(150);
+    expect(railPreview()?.querySelector('div')?.textContent).toBe('Exchange 3');
+    expect(railPreview()?.querySelector('p')).not.toBeNull();
   });
 
   /* A touchscreen's first pointer event on a control is the press; a laptop with a touchscreen reports `pointer: fine`, so the component's own check is the guard. */
@@ -1384,7 +1366,8 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(railPreview()).toBeNull();
 
     const enter = (pointerType: string) => {
-      dots()[3].dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType }));
+      dots()[3].dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType }));
+      dots()[3].dispatchEvent(new MouseEvent('mouseenter'));
     };
 
     enter('touch');
@@ -1686,7 +1669,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     const content = document.querySelector<HTMLElement>('[data-nc-rail-pane-inner]')!
       .getBoundingClientRect().height;
 
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
     /* An overflow smaller than the second marker's distance below the first, so no scroll the pane can make brings it to the edge. */
     render(<RailPane turns={railTurns(6, 0)} paneHeight={content - 30} />);
     await frame();
@@ -1758,6 +1741,40 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(currentDot()).toBe(8);
     expect(document.activeElement).toBe(elsewhere);
     elsewhere.remove();
+  });
+
+  it('dismisses the standard preview with Escape and selection while keeping the drawer open', async () => {
+    await page.viewport(1400, 900);
+    const onClose = vi.fn();
+    render(<div style={{ position: 'relative', blockSize: 600, inlineSize: 900 }}>
+      <Drawer open title="Ship the rewrite" onClose={onClose}>
+        <ChatThread canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={railTurns(8)} />
+        <textarea aria-label="Preview test composer" />
+      </Drawer>
+    </div>);
+    await pause(300);
+    await act(async () => { dots()[0].focus(); });
+    await frame();
+    expect(railPreview()).not.toBeNull();
+    await userEvent.keyboard('{Escape}');
+    await frame();
+    expect(railPreview()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await userEvent.keyboard('{ArrowDown}');
+    await frame();
+    expect(railPreview()).not.toBeNull();
+    await userEvent.keyboard('{Enter}');
+    await frame();
+    expect(railPreview()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { screen.getByRole('textbox', { name: 'Preview test composer' }).focus(); });
+    await userEvent.hover(dots()[3]);
+    await pause(600);
+    expect(railPreview()).not.toBeNull();
+    await userEvent.keyboard('{Escape}');
+    await frame();
+    expect(railPreview()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   /* The one case that drives the real `<Drawer>`: the seam is rendered, found by `drawerSeamAround`, animates with the card, and leaves with it. */

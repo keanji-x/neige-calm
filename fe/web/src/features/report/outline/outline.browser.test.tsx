@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from '@testing-library/react';
+import { fireEvent, cleanup, render, waitFor } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 
@@ -7,16 +7,16 @@ import type { ReportOutlineItem } from '../../../../../core/domain/report.ts';
 import documentStyles from '../document/document.module.css';
 import { ReportOutline } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); delete document.documentElement.dataset.theme; });
+afterEach(() => { cleanup(); document.body.replaceChildren(); delete document.documentElement.dataset.theme; });
 
 const ITEMS: ReportOutlineItem[] = [
-  { blockId: 'one', label: 'First section', number: 1, children: [{ blockId: 'child', label: 'Child block' }] },
-  { blockId: 'two', label: 'Second section', number: 2, children: [] },
+  { blockId: 'one', label: 'First section', excerpt: 'First section body.', number: 1, children: [{ blockId: 'child', label: 'Child block' }] },
+  { blockId: 'two', label: 'Second section', excerpt: '', number: 2, children: [] },
 ];
 
 const MANY_ITEMS: ReportOutlineItem[] = Array.from({ length: 100 }, (_, index) => ({
   blockId: `section-${index + 1}`,
-  label: `Section ${index + 1}`,
+  label: `Section ${index + 1}`, excerpt: '',
   number: index + 1,
   children: [],
 }));
@@ -28,7 +28,7 @@ it.each([40, 130])('keeps long chapter previews within the report with a %ipx ma
     ['--conversation-span' as string]: '480px' }}>
     <div data-testid="report-boundary" style={{ position: 'relative', inlineSize: 900, blockSize: 600,
       ['--document-start' as string]: `${margin}px`, ['--header-band' as string]: '0px', ['--header-h' as string]: '0px' }}>
-      <ReportOutline items={[{ blockId: 'long-section', label, number: 1, children: [] }]} />
+      <ReportOutline items={[{ blockId: 'long-section', label, excerpt: 'A readable supporting paragraph.', number: 1, children: [] }]} />
     </div>
   </div>);
   await page.getByRole('button', { name: label }).hover();

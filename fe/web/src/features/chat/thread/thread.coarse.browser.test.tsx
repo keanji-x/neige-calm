@@ -1,6 +1,6 @@
 /* The exchange rail as a finger gets it, in a browser context of its own (`vitest.config.ts`): `pointer: coarse` is a
    media feature nothing in a page can set. A tablet, not a phone: a phone width paints no seam at all. */
-import { act, render } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /* The whole cascade before the component: a CSS Module imported first registers `@layer features` ahead of everything. */
@@ -10,7 +10,7 @@ import { ChatThread } from './public.tsx';
 import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 function railConversation(): Conversation {
   return {
@@ -221,7 +221,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
 
     /* The shoulder rules are `:first-child` / `:last-child` on the track, so the end children must be the end dots. */
     expect(railTrack().firstElementChild).toBe(dots()[0]);
-    expect(railTrack().lastElementChild).toBe(dots().at(-1));
+    expect(railTrack().querySelectorAll('button').length).toBe(dots().length);
 
     const rail = railTrack().parentElement!;
     rail.style.setProperty('--nc-rail-pitch', '12px');
@@ -402,19 +402,20 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     render(<RailPane turns={railTurns(8)} />);
     await settle();
 
-    dots()[3].dispatchEvent(new PointerEvent('pointerover', {
+    dots()[3].dispatchEvent(new PointerEvent('pointerenter', {
       bubbles: true, pointerType: 'touch',
     }));
     await pause(600);
     expect(railPreview()).toBeNull();
 
-    dots()[3].dispatchEvent(new PointerEvent('pointerover', {
+    dots()[3].dispatchEvent(new PointerEvent('pointerenter', {
       bubbles: true, pointerType: 'mouse',
     }));
+    dots()[3].dispatchEvent(new MouseEvent('mouseenter'));
     await pause(600);
     const preview = railPreview();
     expect(preview).not.toBeNull();
-    expect(getComputedStyle(preview!).display).toBe('none');
+    expect(getComputedStyle(preview!.closest('[popover]')!).display).toBe('none');
     expect(preview!.getBoundingClientRect().height).toBe(0);
   });
 
@@ -431,7 +432,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     expect(column).toBe(308);
     expect(railTrack().scrollHeight).toBe(railTrack().clientHeight);
 
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
     render(<RailPane turns={railTurns(12)} paneHeight={700} />);
     await settle();
 

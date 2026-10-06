@@ -633,7 +633,7 @@ describe('TrackPage card inventory', () => {
     renderPage({
       cards: MENU_CARDS,
       tasks: MENU_TASKS,
-      outlineItems: [{ blockId: 'section-1', label: 'What changed', number: 1, children: [] }],
+      outlineItems: [{ blockId: 'section-1', label: 'What changed', excerpt: '', number: 1, children: [] }],
     });
     const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY, openableCards: new Set(['card-1']) }).rowModules;
     expect(modules.length).toBeGreaterThan(1);
@@ -672,7 +672,7 @@ describe('TrackPage card inventory', () => {
     const onOpenOutline = vi.fn();
     renderPage({
       outlineItems: [{
-        blockId: 'section-1', label: 'What changed', number: 1,
+        blockId: 'section-1', label: 'What changed', excerpt: '', number: 1,
         children: [{ blockId: 'benchmark', label: 'Read path benchmark' }],
       }],
       onOpenOutline,

@@ -476,6 +476,21 @@ function inlineText(nodes: readonly NormalizedInline[], referenceText: 'visible'
   }).join('').replace(/\s+/g, ' ').trim();
 }
 
+/** Plain visible body text for compact previews; headings and raw HTML are omitted. */
+export function markdownExcerpt(markdown: string): string {
+  const parsed = parse(markdown);
+  if (parsed.status === 'failed') return '';
+  const text = (nodes: readonly NormalizedBlock[]): string[] => nodes.flatMap(node => {
+    if (node.type === 'paragraph') return [inlineText(node.children, 'visible')];
+    if (node.type === 'code') return [node.value];
+    if (node.type === 'blockquote') return text(node.children);
+    if (node.type === 'list') return node.children.flatMap(item => text(item.children));
+    if (node.type === 'table') return node.children.flatMap(row => row.children.map(cell => inlineText(cell.children, 'visible')));
+    return [];
+  });
+  return text(parsed.value.children).join(' ').replace(/\s+/g, ' ').trim();
+}
+
 export function extractOutline<Context>(
   inputs: readonly OutlineInput<Context>[],
   options: ExtractOutlineOptions<Context>,

@@ -115,7 +115,7 @@ function Page({ onClose }: { onClose?: () => void }) {
 }
 
 const OUTLINE_ITEMS: ReportOutlineItem[] = [
-  { blockId: 'section', label: 'Section', number: 1, children: [] },
+  { blockId: 'section', label: 'Section', excerpt: '', number: 1, children: [] },
 ];
 
 function TrackGeometryPage({ open = true, withOutline = true }: { open?: boolean; withOutline?: boolean }) {

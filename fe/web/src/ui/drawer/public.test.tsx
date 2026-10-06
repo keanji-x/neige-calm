@@ -197,6 +197,20 @@ describe('Drawer', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it('closes from its own focused panel', () => {
+    const onClose = vi.fn();
+    open({ onClose });
+    fireEvent.keyDown(screen.getByRole('complementary'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])('keeps the drawer open for an IME Escape %o', properties => {
+    const onClose = vi.fn();
+    open({ onClose });
+    fireEvent.keyDown(screen.getByRole('complementary'), { key: 'Escape', ...properties });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('does not consume Escape already handled by an inner menu', () => {
     const onClose = vi.fn();
     open({ onClose });

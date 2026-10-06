@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,10 +12,11 @@ const ITEMS: ReportOutlineItem[] = [
   {
     blockId: 'b-1-h1',
     label: 'Valuation conclusion',
+    excerpt: 'The base case supports a fair value of 120.',
     number: 1,
     children: [{ blockId: 'b-comps', label: 'Comparables' }],
   },
-  { blockId: 'b-2-h1', label: 'How the rate is taken', number: 2, children: [] },
+  { blockId: 'b-2-h1', label: 'How the rate is taken', excerpt: '', number: 2, children: [] },
 ];
 
 describe('ReportOutline', () => {
@@ -58,12 +59,12 @@ describe('ReportOutline', () => {
     render(<><ReportOutline items={ITEMS} /><button type="button">After outline</button></>);
     const preview = () => document.querySelector('[data-nc-rail-preview]')?.textContent;
     await userEvent.tab();
-    expect(preview()).toBe('Valuation conclusion');
+    expect(preview()).toBe('Valuation conclusionThe base case supports a fair value of 120.');
     await userEvent.keyboard('{ArrowDown}');
     expect(preview()).toBe('How the rate is taken');
     await userEvent.tab();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'After outline' }));
-    expect(preview()).toBeUndefined();
+    await waitFor(() => expect(preview()).toBeUndefined());
   });
 
   it('emits no native link', () => {

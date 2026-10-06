@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  extractOutline, fileViewerHeadingIdPolicy, parse, reportHeadingIdPolicy, type MarkdownDepth,
+  extractOutline, markdownExcerpt, fileViewerHeadingIdPolicy, parse, reportHeadingIdPolicy, type MarkdownDepth,
 } from './public.js';
 
 function outline(markdown: string, maxDepth: MarkdownDepth = 6) {
@@ -320,5 +320,14 @@ describe('core/markdown behavior', () => {
     expect(result.value.diagnostics).not.toContainEqual(expect.objectContaining({
       message: 'Unclosed fenced code block',
     }));
+  });
+});
+
+describe('markdownExcerpt', () => {
+  it('keeps visible labels and body structure without raw markup or headings', () => {
+    expect(markdownExcerpt('# Heading\n\nA **strong** [link](https://example.com) and `code`.\n\n- First\n- Second\n\n<div>hidden</div>')).toBe('A strong link and code. First Second');
+  });
+  it('leaves an empty body empty', () => {
+    expect(markdownExcerpt('# Heading\n\n<!-- metadata -->')).toBe('');
   });
 });

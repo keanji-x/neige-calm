@@ -15,7 +15,7 @@ export function ReportOutline({ items, onSelect = revealOutlineAnchor }: ReportO
   return <nav className={styles.rail} aria-label="Outline" data-nc-report-outline="">
     <div className={styles.viewport}><div className={styles.navigator}>
       <EdgeNavigator label="Jump to a section" activeId={null} onSelect={onSelect} previewSide="after"
-        items={items.map(item => ({ id: item.blockId, text: item.label, label: item.label }))} />
+        items={items.map(item => ({ id: item.blockId, title: item.label, excerpt: item.excerpt, label: item.label }))} />
     </div></div>
   </nav>;
 }
