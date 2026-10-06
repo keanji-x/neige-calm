@@ -6,17 +6,17 @@
 //! [`FIRST_LOCKOUT`] up to [`MAX_LOCKOUT`]. The cap is deliberately low: a neighbour who fails on
 //! purpose locks the owner out of that address for at most a minute, never longer.
 //!
-//! The key is the host the TCP peer address names, not the address itself: every loopback address
-//! (all of 127.0.0.0/8, `::1`, and their `::ffff:` mappings) is one peer, and an IPv6 address is keyed
-//! by its /64. Any local process can bind any 127.x source address, and one IPv6 interface can pick
-//! any address in its prefix, so keying by address would hand such a peer a fresh budget per address
-//! and let [`MAX_PEERS`] of them push its throttled record out.
+//! The key is the host the TCP peer address names, not the address itself: every loopback
+//! address (all of 127.0.0.0/8, `::1`, and their `::ffff:` mappings) is one peer, and an IPv6
+//! address is keyed by its /64. Any local process can bind any 127.x source address, and one IPv6
+//! interface can pick any address in its prefix, so keying by address would hand such a peer a
+//! fresh budget per address and let [`MAX_PEERS`] of them push its throttled record out.
 //!
 //! Not covered: state is process-local and in memory (a restart forgets it, there is no persistent
-//! lockout). Traffic that arrives through a local reverse proxy
-//! (e.g. `tailscale serve` forwarding to the listener) shares the proxy's address, so every client
-//! behind it shares one budget: a failing client throttles all of them, the owner included, for at
-//! most [`MAX_LOCKOUT`]. Forwarded-for headers are not trusted, since any client can write them.
+//! lockout). Traffic that arrives through a local reverse proxy (e.g. `tailscale serve` forwarding
+//! to the listener) shares the proxy's address, so every client behind it shares one budget: a
+//! failing client throttles all of them, the owner included, for at most [`MAX_LOCKOUT`].
+//! Forwarded-for headers are not trusted, since any client can write them.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
