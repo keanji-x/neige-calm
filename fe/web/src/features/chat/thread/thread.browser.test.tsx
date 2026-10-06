@@ -808,39 +808,49 @@ describe('the exchange rail, as the engine lays it out', () => {
   /* The falloff is a smoothstep: at one dot out it is above a straight ramp (0.844 vs 0.750) and at three below (0.156 vs 0.250); at two they agree exactly, so the discriminating pair is 1 and 3. */
   it('scans stable rows with one narrow continuous preview and a short first-entry delay', async () => {
     await page.viewport(1400, 900);
-    render(<><button type="button">Outside navigation</button><RailPane turns={promptTurns(8, index => `Prompt ${index}`)} conversationSpan={520} /></>);
-    await frame();
-    const before = dots().map(dot => dot.getBoundingClientRect().top);
-    await userEvent.hover(dots()[2]);
-    await pause(100);
-    expect(railPreview()).toBeNull();
-    await pause(140);
-    const preview = railPreview();
-    expect(preview).not.toBeNull();
-    const popup = preview!.closest('[popover]')!;
-    expect(popup.getBoundingClientRect().width).toBeLessThanOrEqual(272);
-    expect(getComputedStyle(popup).animationDuration).toBe('0.1s');
-    expect(preview!.querySelector('div')?.textContent).toBe('Prompt 2');
-    expect(dots()[2].getBoundingClientRect().height).toBe(20);
-    await userEvent.hover(dots()[3]);
-    await pause(20);
-    expect(railPreview()).toBe(preview);
-    expect(document.querySelectorAll('[data-nc-rail-preview]')).toHaveLength(1);
-    expect(preview!.querySelector('div')?.textContent).toBe('Prompt 3');
-    expect(dots().map(dot => dot.getBoundingClientRect().top)).toEqual(before);
-    await userEvent.hover(preview!);
-    await pause(160);
-    expect(railPreview()).toBe(preview);
-    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
-    await pause(50);
-    expect(railPreview()).toBe(preview);
-    await userEvent.hover(dots()[4]);
-    await pause(20);
-    expect(railPreview()).toBe(preview);
-    expect(preview!.querySelector('div')?.textContent).toBe('Prompt 4');
-    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
-    await pause(200);
-    expect(railPreview()).toBeNull();
+    // Only the hook's JS delays are controlled: pointer moves, CSS motion and RAF stay real.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      render(<><button type="button">Outside navigation</button><RailPane turns={promptTurns(8, index => `Prompt ${index}`)} conversationSpan={520} /></>);
+      await frame();
+      await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+      const before = dots().map(dot => dot.getBoundingClientRect().top);
+      await userEvent.hover(dots()[2]);
+      act(() => { vi.advanceTimersByTime(179); });
+      expect(railPreview()).toBeNull();
+      act(() => { vi.advanceTimersByTime(1); });
+      const preview = railPreview();
+      expect(preview).not.toBeNull();
+      const popup = preview!.closest('[popover]')!;
+      expect(popup.getBoundingClientRect().width).toBeLessThanOrEqual(272);
+      expect(getComputedStyle(popup).animationDuration).toBe('0.1s');
+      expect(preview!.querySelector('div')?.textContent).toBe('Prompt 2');
+      expect(dots()[2].getBoundingClientRect().height).toBe(20);
+      await userEvent.hover(dots()[3]);
+      act(() => { vi.advanceTimersByTime(0); });
+      expect(railPreview()).toBe(preview);
+      expect(document.querySelectorAll('[data-nc-rail-preview]')).toHaveLength(1);
+      expect(preview!.querySelector('div')?.textContent).toBe('Prompt 3');
+      expect(dots().map(dot => dot.getBoundingClientRect().top)).toEqual(before);
+      await userEvent.hover(preview!);
+      act(() => { vi.advanceTimersByTime(160); });
+      expect(railPreview()).toBe(preview);
+      await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+      act(() => { vi.advanceTimersByTime(119); });
+      expect(railPreview()).toBe(preview);
+      await userEvent.hover(dots()[4]);
+      act(() => { vi.advanceTimersByTime(0); });
+      expect(railPreview()).toBe(preview);
+      expect(preview!.querySelector('div')?.textContent).toBe('Prompt 4');
+      await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+      act(() => { vi.advanceTimersByTime(119); });
+      expect(railPreview()).toBe(preview);
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(railPreview()).toBeNull();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it('floats the prompt out only after the pointer has rested', async () => {
@@ -851,8 +861,7 @@ describe('the exchange rail, as the engine lays it out', () => {
 
     const startedAt = performance.now();
     await userEvent.hover(dots()[3]);
-    await pause(150);
-    expect(railPreview()).toBeNull();
+    // Exact entry timing is pinned with native pointer moves and controlled JS timers above.
     while (railPreview() === null && performance.now() - startedAt < 2_000) await pause(20);
     const shownAfter = performance.now() - startedAt;
     const preview = railPreview()!;
