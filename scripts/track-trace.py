@@ -56,7 +56,8 @@ error as JSON text), and each top-level field of an event payload or of an actio
 result. The cap is per top-level field: a string field is cut on its own, and a nested object or
 array is cut as one JSON text. So short top-level fields (failing_step, exit_code, head_sha, a
 short error or reason) always survive whole, and only long bodies, logs and nested snapshots are
-cut. A task's error is cut at TASK_ERROR_CHARS instead. Per-turn token usage is not recorded yet.
+cut. A nested object or array is JSON text under --full too, then uncut. A task's error is cut at
+TASK_ERROR_CHARS instead. Per-turn token usage is not recorded yet.
 
 Usage: scripts/track-trace.py --db PATH [--since MS] [--until MS] [--full] (--area AREA_ID | TRACK_ID...)
        scripts/track-trace.py --selftest   (builds a tiny database and checks the records; CI runs it)
@@ -324,6 +325,8 @@ def selftest_db():
         (8, "track.updated", {}, "User", 3500),
         # A later failure of the same task: its reason is the task's error.
         (9, "task.failed", {"idempotency_key": "t:b", "reason": "worker: " + "r" * 4100}, "AiPlannerSession", 2700),
+        # Task d failed once, then was done: a task that did not fail has no error.
+        (10, "task.failed", {"idempotency_key": "t:d", "reason": "rejected"}, "AiPlannerSession", 3100),
     ]
     for i, kind, payload, actor, at in event_rows:
         db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, 't', NULL)",
@@ -331,6 +334,7 @@ def selftest_db():
     db.execute("INSERT INTO tasks VALUES ('t', 'fix', 'codex', ?, 'running', 1050, 't:fix', NULL)", ("x" * 400,))
     db.execute("INSERT INTO tasks VALUES ('t', 'gate', 'codex', 'g', 'failed', 1060, 't:gate', 'gate-red')")
     db.execute("INSERT INTO tasks VALUES ('t', 'b', 'codex', 'b', 'failed', 2000, 't:b', 'worker-reported: w')")
+    db.execute("INSERT INTO tasks VALUES ('t', 'd', 'codex', 'd', 'done', 3050, 't:d', NULL)")
     segments_1 = [
         {"presentation": "system", "text": "Task a completed.", "attachments": [],
          "origin": {"observation": "task_completed", "event_id": 3}},
@@ -425,7 +429,9 @@ def selftest():
            [{"log_tail": "z" * 300 + "…[+100 chars]", "error": "step lint exited 1", "exit_code": 1,
              "target": '{"head": "abc"}'}])
     expect("turn 2 events (losses kept)", [e["id"] for e in two.get("events", [])], [6, 7, 9])
-    expect("turn 3 events", [e["id"] for e in three.get("events", [])], [8])
+    expect("turn 3 events", [e["id"] for e in three.get("events", [])], [8, 10])
+    expect("turn 3 task error (done after a failure)",
+           [(t["key"], t["status"], t.get("error")) for t in three.get("tasks", [])], [("d", "done", None)])
     expect("turn 1 bypass", one.get("bypass"), [{"source": "planner shell", "command": "git push origin x"}])
     expect("turn 2 bypass", two.get("bypass"), [])
     expect("--since picks turns 2 and 3", [r.get("turn_id") for r in trace(db, ["t"], since=1500)],
