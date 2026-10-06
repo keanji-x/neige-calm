@@ -4018,7 +4018,7 @@ it('adopts a side conversation whose create reply was lost in its own draft slot
   expect(within(branch).queryByText('reply lost')).toBeNull();
 });
 
-it('interrupts only the focused pane when parent and side turns both run', async () => {
+it.each(['parent', 'side'] as const)('interrupts only the focused %s pane when parent and side turns both run', async (focused) => {
   const child = { ...assistantRow({ id: 'child-running', title: 'Running side', updatedAt: 40 }), sourceCardId: ASSISTANT_CARD.id };
   const { requests } = setup((request) => {
     if (request.path === '/api/version') return sideVersion();
@@ -4032,12 +4032,15 @@ it('interrupts only the focused pane when parent and side turns both run', async
   await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
   await write('/side');
   const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
-  const field = within(branch).getByRole('combobox', { name: 'Message' });
+  const field = within(focused === 'side' ? branch : screen.getByRole('complementary', { name: 'Assistant' }))
+    .getByRole('combobox', { name: 'Message' });
   await waitFor(() => expect(within(branch).getByRole('button', { name: 'Stop' })).toBeTruthy());
+  await waitFor(() => expect(within(screen.getByRole('complementary', { name: 'Assistant' })).getByRole('button', { name: 'Stop' })).toBeTruthy());
   field.focus();
   fireEvent.keyDown(field, { key: 'Escape' });
   await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1));
-  expect(requests.find((request) => request.path.endsWith('/planner/interrupt'))?.path).toBe('/api/cards/child-running/planner/interrupt');
+  const stoppedCard = focused === 'side' ? 'child-running' : ASSISTANT_CARD.id;
+  expect(requests.find((request) => request.path.endsWith('/planner/interrupt'))?.path).toBe(`/api/cards/${stoppedCard}/planner/interrupt`);
   expect(screen.getByRole('complementary', { name: 'Assistant' })).toBeTruthy();
 });
 

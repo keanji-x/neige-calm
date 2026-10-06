@@ -54,7 +54,7 @@ export function useRequestedConversationOpen({ registry, rows, setOpenTarget, se
     setOpenTarget({ kind: 'row', id: requestedOpenId });
     if (focusComposer) setComposerFocusFor(requestedOpenId);
     registry.clearOpenRequest();
-  }, [registry, rows, setOpenTarget, inline]);
+  }, [registry, rows, setOpenTarget, setComposerFocusFor, inline]);
 }
 
 export function useConversationEscape({ open, store }: Readonly<{
