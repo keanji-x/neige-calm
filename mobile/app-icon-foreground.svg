@@ -5,7 +5,7 @@
       <stop offset="1" stop-color="#6260aa" />
     </linearGradient>
   </defs>
-  <rect width="512" height="512" fill="#ffffff" />
+  <path d="M128 0H384C472 0 512 40 512 128V384C512 472 472 512 384 512H128C40 512 0 472 0 384V128C0 40 40 0 128 0Z" fill="#ffffff" />
   <circle cx="256" cy="256" r="190" fill="url(#app-background)" />
   <svg x="116" y="116" width="280" height="280" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 384" role="img" aria-labelledby="title description">
   <title id="title">Neige mark</title>

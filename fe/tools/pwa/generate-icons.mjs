@@ -14,7 +14,7 @@ const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role
       <stop offset="1" stop-color="#6260aa" />
     </linearGradient>
   </defs>
-  <rect width="512" height="512" fill="#ffffff" />
+  <path d="M128 0H384C472 0 512 40 512 128V384C512 472 472 512 384 512H128C40 512 0 472 0 384V128C0 40 40 0 128 0Z" fill="#ffffff" />
   <circle cx="256" cy="256" r="190" fill="url(#app-background)" />
   ${snowflake}
 </svg>
@@ -31,7 +31,7 @@ try {
   for (const size of [192, 512]) {
     const page = await browser.newPage({ viewport: { width: size, height: size }, deviceScaleFactor: 1 });
     await page.setContent(`<style>body { margin: 0; } body > svg { width: 100vw; height: 100vh; }</style>${icon}`);
-    await page.screenshot({ path: fileURLToPath(new URL(`neige-${size}.png`, output)) });
+    await page.screenshot({ path: fileURLToPath(new URL(`neige-${size}.png`, output)), omitBackground: true });
     await page.close();
   }
 } finally {
