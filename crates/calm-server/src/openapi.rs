@@ -54,7 +54,7 @@ use crate::track_fs_dto::{
 };
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry};
 use axum::http::{Method, StatusCode};
-use utoipa::openapi::path::Operation;
+use utoipa::openapi::path::{Operation, ParameterIn};
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme};
 use utoipa::openapi::{ContentBuilder, Ref, ResponseBuilder};
 use utoipa::{Modify, OpenApi, ToSchema};
@@ -373,12 +373,14 @@ pub struct ApiDoc;
 
 /// Adds the answers an operation gives because of what it declares, so no annotation lists them by
 /// hand: a JSON request body brings `JsonBody`'s rejections ([`crate::extract::JSON_BODY_REJECTIONS`]),
+/// a path or query parameter brings `Path`'s and `Query`'s ([`crate::extract::PARAM_REJECTION`]),
 /// and requiring the session brings `require_session`'s refusals ([`crate::auth::NO_SESSION`], and
 /// [`crate::auth::CROSS_ORIGIN_WRITE`] on a write). The session is required of every operation that
 /// does not declare `security(())`. A status the annotation already describes keeps its own
-/// description. `tests/cases/openapi_statuses.rs` pins both premises: a JSON request body is
-/// declared exactly where the handler takes `JsonBody`, and `security(())` exactly where the
-/// router does not apply `require_session`.
+/// description. `tests/cases/openapi_statuses.rs` pins each premise: a JSON request body is
+/// declared exactly where the handler takes `JsonBody`, a path or query parameter exactly where it
+/// takes `Path` or `Query`, and `security(())` exactly where the router does not apply
+/// `require_session`.
 struct DeclaredResponses;
 
 impl Modify for DeclaredResponses {
@@ -412,10 +414,30 @@ impl Modify for DeclaredResponses {
                     .request_body
                     .as_ref()
                     .is_some_and(|body| body.content.contains_key("application/json"));
+                let params = operation.parameters.as_ref().is_some_and(|parameters| {
+                    parameters.iter().any(|parameter| {
+                        matches!(
+                            parameter.parameter_in,
+                            ParameterIn::Path | ParameterIn::Query
+                        )
+                    })
+                });
                 if json_body {
                     for answer in crate::extract::JSON_BODY_REJECTIONS {
+                        // One 400 answers both; say so where both can give it.
+                        let answer = match answer {
+                            (StatusCode::BAD_REQUEST, _) if params => (
+                                StatusCode::BAD_REQUEST,
+                                "`bad_request`: the body is not parseable JSON, or a path or query \
+                                 parameter does not parse.",
+                            ),
+                            answer => answer,
+                        };
                         add_error_response(operation, answer);
                     }
+                }
+                if params {
+                    add_error_response(operation, crate::extract::PARAM_REJECTION);
                 }
                 // An operation's own `security` replaces the document's; `security(())` is the one
                 // empty requirement, which lets a request through without the session.

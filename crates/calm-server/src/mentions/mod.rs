@@ -45,7 +45,7 @@ pub struct MentionsQuery {
     params(("area_id" = String, Path, description = "Area id"), MentionsQuery),
     responses(
         (status = 200, description = "The area's tags, reports and report blocks matching `q`, best first, at most 8 per group", body = MentionCandidates),
-        (status = 400, description = "Missing `q` (plain-text query rejection)"),
+        (status = 400, description = "`bad_request`: `q` is missing, or a parameter does not parse", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
