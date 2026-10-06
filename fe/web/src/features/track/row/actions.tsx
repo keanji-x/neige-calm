@@ -14,7 +14,7 @@ export type TrackActionsProps = Readonly<{
 }>;
 
 export function TrackActions({ track, areaPinned, onSetPinned, onSetAreaPinned, onMarkUnread, onDelete, className }: TrackActionsProps) {
-  return <DropdownMenu placement="below" button={{
+  return <DropdownMenu placement="below" alignment="end" button={{
     label: `Actions for track ${trackDisplayTitle(track.title)}`, icon: <Icon name="more" size="sm" />,
     isIconOnly: true, variant: 'ghost', size: 'sm', className,
   }}>

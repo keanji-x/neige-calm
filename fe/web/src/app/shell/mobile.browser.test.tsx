@@ -679,3 +679,27 @@ it('acknowledges a repeated desktop selection only in the rendered Track view', 
   await group.getByRole('button', { name: 'Track Responsive mobile UI', exact: true }).click();
   await expect.poll(() => preferences.isUnread('track', 'w1', 0)).toBe(false);
 });
+
+
+it('keeps every mobile Track action label readable within the viewport', async () => {
+  await page.viewport(390, 844);
+  setup('/track/w1');
+  await openTrackNavigation();
+  await page.getByRole('button', { name: 'Actions for track Responsive mobile UI', exact: true }).click();
+  const menu = page.getByRole('menu', { exact: true }).element();
+  const bounds = menu.getBoundingClientRect();
+  expect(bounds.left).toBeGreaterThanOrEqual(0);
+  expect(bounds.right).toBeLessThanOrEqual(390);
+  for (const label of ['Unpin globally', 'Pin within area', 'Mark as unread']) {
+    const item = page.getByRole('menuitem', { name: label, exact: true }).element();
+    const nodes = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+    let node: Node | null;
+    while ((node = nodes.nextNode()) !== null && node.textContent?.trim() !== label) { /* find the actual label */ }
+    expect(node).not.toBeNull();
+    const range = document.createRange();
+    range.selectNodeContents(node!);
+    const text = range.getBoundingClientRect();
+    expect(text.left).toBeGreaterThanOrEqual(bounds.left);
+    expect(text.right).toBeLessThanOrEqual(bounds.right);
+  }
+});
