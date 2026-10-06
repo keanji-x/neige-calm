@@ -81,7 +81,7 @@ function ReferenceContent({ destination, resources, renderMarkdown }: Readonly<{
     : report !== null && target?.blockId === null ? report.body || report.summary : null;
   return <div className={styles.content}>
     <p className={styles.destination}>{destination.destination}</p>
-    {text ? renderMarkdown(text) : <p>Open this reference in the workspace to read its contents.</p>}
+    {text ? renderMarkdown(text, '') : <p>Open this reference in the workspace to read its contents.</p>}
   </div>;
 }
 

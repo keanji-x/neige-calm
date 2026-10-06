@@ -66,6 +66,28 @@ describe('report preview admission and rendering', () => {
     await hover('details');
     expect(within(screen.getByRole('dialog')).getByText('The actual content.')).toBeTruthy();
   });
+  it('resets the source directory across file to report to file previews', async () => {
+    const report: TrackReport = { summary: '', body: '', blocks: [
+      { id: 'b_1', kind: 'prose', payload: { markdown: '[notes](./docs/notes.md)' } },
+      { id: 'b_2', kind: 'prose', payload: { markdown: '[root asset](./assets/chart.png)' } },
+    ] };
+    vi.mocked(files.readFile).mockResolvedValueOnce({ path: 'docs/notes.md', size: 40, truncated: false,
+      text: `[reference](${trackReportLinkUrl('t1')}#b_2)` });
+    render(<ReportDocument report={report} empty={null} fileRoot="/repo" linkPreview={{ files, trackId: 't1', report }}
+      onOpenFileLink={vi.fn()} onOpenLink={vi.fn()} />);
+    await hover('notes');
+    await hover('reference');
+    expect(within(screen.getByRole('dialog', { name: 'Preview: reference' })).getByRole('button', { name: 'root asset' }).title).toBe('assets/chart.png');
+  });
+  it('allows report reference previews when the host has no navigation callback', async () => {
+    const report: TrackReport = { summary: '', body: '', blocks: [
+      { id: 'b_1', kind: 'prose', payload: { markdown: `[reference](${trackReportLinkUrl('t1')}#b_2)` } },
+      { id: 'b_2', kind: 'prose', payload: { markdown: 'Report-owned content.' } },
+    ] };
+    render(<ReportDocument report={report} empty={null} linkPreview={{ files, trackId: 't1', report }} />);
+    await hover('reference');
+    expect(within(screen.getByRole('dialog')).getByText('Report-owned content.')).toBeTruthy();
+  });
   it('keeps an image inside a link as a single accessible preview trigger', async () => {
     mount('[![linked image](./assets/chart.png)](https://example.com)');
     expect(document.querySelector('button button')).toBeNull();

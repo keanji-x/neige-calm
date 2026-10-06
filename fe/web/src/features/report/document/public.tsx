@@ -420,10 +420,10 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
           trigger={trigger} onOpen={onOpen} renderMarkdown={renderMarkdown} />
       );
       const target = image ? null : parseReportLink(node.destination);
-      if (target !== null && onOpenLink !== undefined) {
-        const open = () => onOpenLink(target);
+      if (target !== null && (onOpenLink !== undefined || linkPreview !== undefined)) {
+        const open = onOpenLink === undefined ? undefined : () => onOpenLink(target);
         return wrap({ kind: 'reference', destination: node.destination, target },
-          () => <button type="button" className={styles.link} onClick={open}>{body}</button>, open);
+          (pin) => <button type="button" className={styles.link} onClick={open ?? pin}>{body}</button>, open);
       }
       const sourceTarget = image ? null : parseReportSourceLink(node.destination);
       if (sourceTarget !== null) {
