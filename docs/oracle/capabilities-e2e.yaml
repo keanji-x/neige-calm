@@ -393,7 +393,7 @@
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:22,33-38,81-95,115-137;
     fe/web/src/app/router/new-track-route.tsx:73; fe/web/src/app/conversations/pane-lifecycle.ts:44-57; fe/web/src/app/router/public.tsx:528-533,1215-1221;
-    fe/web/src/features/chat/thread/public.tsx:487,506,533,538-563
+    fe/web/src/features/chat/thread/public.tsx:440,459,486,491-516
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose
   # landing failed arms it again, 327 that redeeming is one-shot, 355 that the mark is struck off even

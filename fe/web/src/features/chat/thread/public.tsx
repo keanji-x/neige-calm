@@ -12,7 +12,6 @@ import {
   type ChatComposerTrigger,
   type ChatToolCallItem,
 } from '@astryxdesign/core/Chat';
-import { Badge } from '@astryxdesign/core/Badge';
 import { Code } from '@astryxdesign/core/Code';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 import { Button } from '@astryxdesign/core/Button';
@@ -29,7 +28,6 @@ import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
 import { useState } from '../../../ui/state/public.ts';
 
 import { activityLabelOf, cardActivityOf, type CardActivity } from '../../../../../core/domain/activity.ts';
-import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
 import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
   isQueuedConversationTurn, opensAfterGap, opensExchange,
@@ -37,7 +35,8 @@ import {
   type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
-import { Reply, type ReplyImageFiles } from './reply.tsx';
+import type { ReplyImageFiles } from './reply.tsx';
+import { MessageEntry } from './message-entry.tsx';
 import styles from './thread.module.css';
 import { sideQuestion } from '../../../../../core/domain/side-conversation.ts';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
@@ -283,58 +282,12 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     }
     // Outcomes retain their grouping boundary; only the current metadata row paints status.
     if (turn.author === 'turn') return null;
-    const opens = opensExchange(turns, index);
     return (
-      <div
-        key={turn.id}
-        className={opens ? styles.exchange : undefined}
-        data-nc-entry={key}
-        {...(opens ? { 'data-nc-exchange': turn.id } : {})}
-      >
-        {/* A time only where the conversation restarted. */}
-        {opensAfterGap(turns, index) && index > 0 && (
-          <p className={styles.gap}>{clockTime(turn.atMs)}</p>
-        )}
-        {turn.author === 'you' ? (
-          <>
-            {/* The caption is outside the message; persisted references recover their display pills. */}
-            <p
-              className={styles.said}
-              data-nc-turn="you"
-              {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
-              {...(edited.has(turn.id) ? { 'data-nc-editing': '' } : {})}
-              {...(turn.id === replacement ? { 'data-nc-replacement': '' } : {})}
-            >{sentMentionParts(turn.text).map((part, index) => part.label === null ? part.text : (
-              <span key={index} data-nc-sent-mention="" title={part.text}>
-                <Badge className={styles.mentionPill}
-                  label={<span className={styles.mentionLabel}>{part.label}</span>} />
-              </span>
-            ))}</p>
-            {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}
-            {(turn.attachments ?? []).length > 0 && (
-              <ul className={styles.attachments} data-nc-turn-attachments="" {...(edited.has(turn.id) ? { 'data-nc-editing': '' } : {})}>
-                {(turn.attachments ?? []).map((attachment) => (
-                  <li key={attachment.id} className={styles.attachment}>
-                    <img src={attachment.url} alt="" />
-                  </li>
-                ))}
-              </ul>
-            )}
-            {isQueuedConversationTurn(turn) && (
-              /* `role="status"`: it appears in response to the reader's own press, answering "did that go anywhere?". */
-              <p className={styles.queuedNote} data-nc-queued-note="" role="status">
-                Queued · sends when this turn ends
-              </p>
-            )}
-            {turn.id === replacement && <p className={styles.queuedNote}>Replaces the marked message above</p>}
-          </>
-        ) : (
-          <div className={styles.reply} data-nc-turn="agent">
-            <Reply text={turn.text} imageFiles={imageFiles} />
-            {showLive && last && <ActivityIndicator state="working" motion="thinking" />}
-          </div>
-        )}
-      </div>
+      <MessageEntry key={turn.id} id={turn.id} entryKey={key} author={turn.author} text={turn.text}
+        attachments={turn.attachments} opens={opensExchange(turns, index)}
+        gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(turn.atMs) : null}
+        queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}
+        working={showLive && last} imageFiles={imageFiles} />
     );
   };
 

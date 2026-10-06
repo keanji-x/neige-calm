@@ -24,3 +24,16 @@ contracts. The image renderer owns sizing so screenshots fit narrow drawers.
 
 Review tier: L1. This consumes the existing workspace read boundary without
 changing authorization, persistence, or server file access.
+
+`message-entry.tsx` owns ordinary user/agent message presentation. The transcript
+owner supplies scalar visual fields, attachments, the gap caption, queued/edit/
+replacement marks, live status and the existing scoped image port. Memoization
+leaves unchanged stored rows alone while the live tail grows, even if upstream
+replaces transcript objects. Changed words or marks still update the same node.
+All history remains mounted: this optimization reduces React work, not DOM count,
+and preserves exchange markers, browser selection and existing navigation.
+
+Measured through `app/router/chat-performance.browser.test.tsx`, with identical
+20/120/300/900-row fixtures and no CI timing threshold. True DOM windowing needs a
+separate contract for variable heights, history anchors, jumps, focus and cross-row
+selection; #2235 tracks that remaining decision.
