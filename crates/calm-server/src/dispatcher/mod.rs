@@ -1120,9 +1120,8 @@ impl Inner {
             | Event::TaskDispatched { .. }
             | Event::TaskContextFrozen { .. }
             | Event::TaskContextAdvanced { .. }
-            | Event::RatifyRequested { .. }
             | Event::ForgePrPublished { .. }
-        | Event::ForgePrDiffRead { .. }
+            | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
             | Event::RatifyRequested { .. }
             // Proposal lifecycle events reach the planner via the plugin-authored
