@@ -10,8 +10,11 @@
     min-inline-size: 0;
   }
 
+  /* A question may span lines (the dev template's merge ask puts its evidence one per line,
+     #2304); keep them as the Planner wrote them. */
   .ask {
     min-inline-size: 0;
+    white-space: pre-line;
   }
 
   /* The questions' own scroll box. Bounded by the viewport so a long ask leaves the
