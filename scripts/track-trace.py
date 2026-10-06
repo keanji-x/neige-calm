@@ -12,7 +12,7 @@ loss is listed in the track record's transcript_losses, so the reader knows wher
 
 {"type": "track", "track", "title", "area_id", "created_at", "closed_at", "creator_track_id",
  "planner_card" (null: the Track has no Planner, so it has no turns), "excerpt_chars" (the cap
- on every excerpt below, null under --full),
+ on every excerpt below except a task's error, null under --full),
  "transcript_losses": [{"id", "at", "kind", "payload"}]  every reset or rewind of this Track's
      transcript (payload: the stored payload as an object, e.g. cleared_item_count, or
      removed_item_count and turn_id),
@@ -30,21 +30,32 @@ loss is listed in the track record's transcript_losses, so the reader knows wher
      "event_kind" (that event's kind, or null), "source" (track_wake only: the wake event's
      source, e.g. dev.neige.mail)}. Rows written before #2206 T1 have "origin": null: not
      recorded, not guessed from the text.
- "actions": [action...]  every Planner transcript item except its messages and reasoning
+ "messages": [{"at", "text"}]  the Planner's own text (its completed agentMessage items: what it
+     tells or asks the user, why it chose a step), in order; reasoning items are left out,
+ "actions": [action...]  every Planner transcript item except its input, messages and reasoning
      (userMessage, agentMessage, reasoning), in order. action = {"at", "item_type", "tool"
      (null for a shell command or an item without a tool), "finished" (false: the item started
      but never completed), "ok" (false when its status is failed, null when unfinished),
-     "duration_ms", "error", "args", "result"}. args/result: a shell command and its output, a
-     tool call's arguments and result; any other item type passes its whole item as args.
- "tasks": [{"at", "key", "kind", "status", "goal"}]  task attempts created in the turn's window,
- "events": [{"id", "at", "kind", "actor" (actor kind), "payload"}]  this Track's events in the
-     turn's window, minus NOISE_EVENT_KINDS,
+     "duration_ms", "error", "args", "result"}. args/result: a shell command and its output
+     (strings), a tool call's arguments and result (objects, or the result's text); any other
+     item type passes its whole item as args.
+ "tasks": [{"at", "key", "kind", "status", "error", "goal"}]  task attempts created in the turn's
+     window. error (null unless status is failed): the reason of the task's latest task.failed
+     event (a worker's report, a kernel timeout or spawn error, or the Planner's rejection), whole
+     up to TASK_ERROR_CHARS; without one, the task row's status_detail (a gate failure records
+     only the classifier gate-red there; its failing_step, exit_code and log_tail are in the
+     task.gate_result event). status_detail itself keeps only the first ~480 chars of a reason.
+ "events": [{"id", "at", "kind", "actor" (actor kind), "payload" (the stored payload as an
+     object)}]  this Track's events in the turn's window, minus NOISE_EVENT_KINDS,
  "bypass": [{"source", "command"}]  track-scorecard's bypass hits in the turn's window}
 
 A turn's window runs from its start to the next remaining turn's start (no end for the last
-turn): what the turn caused and what arrived before the next one. Event payloads, args, results,
-errors, goals and segment texts are strings (structured values as JSON text) and are cut to
-EXCERPT_CHARS with a "…[+N chars]" tail unless --full. Per-turn token usage is not recorded yet.
+turn): what the turn caused and what arrived before the next one. Unless --full, every text is cut
+to EXCERPT_CHARS with a "…[+N chars]" tail: segment texts, messages, goals, errors (a structured
+error as JSON text), and each string leaf of an event payload or of an action's args and result.
+The cap is per leaf, so short fields (failing_step, exit_code, head_sha, a short error or reason)
+always survive whole and only long bodies and logs are cut. A task's error is cut at
+TASK_ERROR_CHARS instead. Per-turn token usage is not recorded yet.
 
 Usage: scripts/track-trace.py --db PATH [--since MS] [--until MS] [--full] (--area AREA_ID | TRACK_ID...)
        scripts/track-trace.py --selftest   (builds a tiny database and checks the records; CI runs it)
@@ -61,6 +72,7 @@ sys.dont_write_bytecode = True  # importing track_db must not leave scripts/__py
 from track_db import REQUIRED_COLUMNS, bypass_hits, check_schema, open_db, planner_card, planner_turns  # noqa: E402
 
 EXCERPT_CHARS = 300
+TASK_ERROR_CHARS = 2000
 NO_END = 1 << 62
 # Projections of rows the trace already reads (transcript items, phases) and UI or hook state.
 # Never add harness.transcript.cleared/rewound: they mark the turns the trace cannot show.
@@ -81,6 +93,15 @@ def excerpt(value, cap):
     if cap is None or len(text) <= cap:
         return text
     return text[:cap] + f"…[+{len(text) - cap} chars]"
+
+
+def capped(value, cap):
+    """`value` with every string leaf cut by excerpt(); short leaves survive whole, whatever their depth."""
+    if isinstance(value, dict):
+        return {k: capped(v, cap) for k, v in value.items()}
+    if isinstance(value, list):
+        return [capped(v, cap) for v in value]
+    return excerpt(value, cap) if isinstance(value, str) else value
 
 
 def tool_result(result):
@@ -116,8 +137,8 @@ def action(rows, cap):
         "ok": ok,
         "duration_ms": item.get("durationMs"),
         "error": excerpt(error, cap),
-        "args": excerpt(args, cap),
-        "result": excerpt(result, cap),
+        "args": capped(args, cap),
+        "result": capped(result, cap),
     }
 
 
@@ -131,6 +152,17 @@ def actions(db, card, turn_id, cap):
     ):
         items.setdefault(uuid, []).append((method, params, at))
     return [action(rows, cap) for rows in items.values()]
+
+
+def messages(db, card, turn_id, cap):
+    return [
+        {"at": at, "text": excerpt(json.loads(params)["item"]["text"], cap)}
+        for params, at in db.execute(
+            "SELECT params, created_at_ms FROM harness_items WHERE card_id = ? AND turn_id = ?"
+            " AND item_type = 'agentMessage' AND method = 'item/completed' ORDER BY id",
+            (card, turn_id),
+        )
+    ]
 
 
 def origin(db, raw):
@@ -170,7 +202,8 @@ def trigger(db, card, turn_id, cap):
 def events(db, track_id, start, end, cap):
     marks = ",".join("?" * len(NOISE_EVENT_KINDS))
     return [
-        {"id": i, "at": at, "kind": kind, "actor": json.loads(actor)["kind"], "payload": excerpt(payload, cap)}
+        {"id": i, "at": at, "kind": kind, "actor": json.loads(actor)["kind"],
+         "payload": capped(json.loads(payload), cap)}
         for i, at, kind, actor, payload in db.execute(
             "SELECT id, at, kind, actor, payload FROM events WHERE scope_track = ? AND at >= ? AND at < ?"
             f" AND kind NOT IN ({marks}) ORDER BY id",
@@ -179,11 +212,24 @@ def events(db, track_id, start, end, cap):
     ]
 
 
+def task_error(db, track_id, task_id, status_detail):
+    """The latest task.failed reason for the task, else its status_detail."""
+    row = db.execute(
+        "SELECT payload FROM events WHERE scope_track = ? AND kind = 'task.failed'"
+        " AND json_extract(payload, '$.idempotency_key') = ? ORDER BY id DESC LIMIT 1",
+        (track_id, task_id),
+    ).fetchone()
+    return status_detail if row is None else json.loads(row[0])["reason"]
+
+
 def tasks(db, track_id, start, end, cap):
+    error_cap = None if cap is None else TASK_ERROR_CHARS
     return [
-        {"at": at, "key": key, "kind": kind, "status": status, "goal": excerpt(goal, cap)}
-        for at, key, kind, status, goal in db.execute(
-            "SELECT created_at_ms, key, kind, status, goal FROM tasks WHERE track_id = ?"
+        {"at": at, "key": key, "kind": kind, "status": status,
+         "error": excerpt(task_error(db, track_id, task_id, detail), error_cap) if status == "failed" else None,
+         "goal": excerpt(goal, cap)}
+        for at, task_id, key, kind, status, detail, goal in db.execute(
+            "SELECT created_at_ms, id, key, kind, status, status_detail, goal FROM tasks WHERE track_id = ?"
             " AND created_at_ms >= ? AND created_at_ms < ? ORDER BY created_at_ms, key",
             (track_id, start, end),
         )
@@ -228,6 +274,7 @@ def track_trace(db, track_id, since, until, cap):
             "duration_ms": None if completed is None else completed - started,
             "status": params.get("status"), "error": excerpt(params.get("error"), cap),
             "trigger": trigger(db, card, turn_id, cap),
+            "messages": messages(db, card, turn_id, cap),
             "actions": actions(db, card, turn_id, cap),
             "tasks": tasks(db, track_id, started, stop, cap),
             "events": events(db, track_id, started, stop, cap),
@@ -264,16 +311,18 @@ def selftest_db():
         (1, "harness.transcript.cleared", {"cleared_item_count": 9}, "Kernel", 800),
         (2, "track.wake_requested", {"source": "dev.neige.mail"}, "Kernel", 900),
         (3, "task.completed", {"key": "a"}, "Kernel", 950),
-        (4, "forge.pr.opened", {"head_sha": "abc"}, "Kernel", 1500),
+        (4, "task.gate_result", {"log_tail": "z" * 400, "error": "step lint exited 1", "exit_code": 1}, "Kernel", 1500),
         (5, "overlay.set", {}, "Kernel", 1600),
-        (6, "task.failed", {"key": "b"}, "AiPlannerSession", 2500),
+        (6, "task.failed", {"idempotency_key": "t:b", "reason": "worker: " + "r" * 2100}, "AiPlannerSession", 2500),
         (7, "harness.transcript.rewound", {"removed_item_count": 2, "turn_id": "gone"}, "Kernel", 2600),
         (8, "track.updated", {}, "User", 3500),
     ]
     for i, kind, payload, actor, at in event_rows:
         db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, 't', NULL)",
                    (i, kind, json.dumps(payload), json.dumps({"kind": actor}), at))
-    db.execute("INSERT INTO tasks VALUES ('t', 'fix', 'codex', ?, 'running', 1050)", ("x" * 400,))
+    db.execute("INSERT INTO tasks VALUES ('t', 'fix', 'codex', ?, 'running', 1050, 't:fix', NULL)", ("x" * 400,))
+    db.execute("INSERT INTO tasks VALUES ('t', 'gate', 'codex', 'g', 'failed', 1060, 't:gate', 'gate-red')")
+    db.execute("INSERT INTO tasks VALUES ('t', 'b', 'codex', 'b', 'failed', 2000, 't:b', 'worker-reported: w')")
     segments_1 = [
         {"presentation": "system", "text": "Task a completed.", "attachments": [],
          "origin": {"observation": "task_completed", "event_id": 3}},
@@ -281,17 +330,21 @@ def selftest_db():
          "origin": {"observation": "track_wake", "event_id": 2}},
     ]
     segments_2 = [{"presentation": "user", "text": "User says: go", "attachments": [{"path": "a.png"}]}]
-    failed = {"type": "mcpToolCall", "tool": "neige_task_declare", "status": "failed", "arguments": {"key": "fix"},
+    failed = {"type": "mcpToolCall", "tool": "neige_task_declare", "status": "failed",
+              "arguments": {"key": "fix", "goal": "g" * 400},
               "error": {"message": "tool call failed: DB locked"}, "result": None, "durationMs": 7}
     shell = {"type": "commandExecution", "command": "git push origin x", "status": "completed",
              "aggregatedOutput": "y" * 400, "exitCode": 0, "durationMs": 3}
     hung = {"type": "commandExecution", "command": "sleep 99", "status": "inProgress"}
     user = {"item": {"type": "userMessage"}}
+    said = {"type": "agentMessage", "phase": "commentary", "text": "Declaring fix first."}
     rows = [
         ("turn-1", "u1", "userMessage", "item/completed", user, 1000, segments_1),
         ("turn-1", "m1", "mcpToolCall", "item/started", {"item": dict(failed, status="inProgress")}, 1005, None),
         ("turn-1", "m1", "mcpToolCall", "item/completed", {"item": failed}, 1010, None),
         ("turn-1", "r1", "reasoning", "item/completed", {"item": {"type": "reasoning"}}, 1015, None),
+        ("turn-1", "a1", "agentMessage", "item/started", {"item": dict(said, text="")}, 1016, None),
+        ("turn-1", "a1", "agentMessage", "item/completed", {"item": said}, 1018, None),
         ("turn-1", "c1", "commandExecution", "item/completed", {"item": shell}, 1020, None),
         # Two turn/completed rows: the latest one counts, whatever its params sort as.
         ("turn-1", None, None, "turn/completed", {"status": "interrupted", "error": None}, 1090, None),
@@ -346,13 +399,22 @@ def selftest():
         ("mcpToolCall", "neige_task_declare", True, False, "tool call failed: DB locked"),
         ("commandExecution", None, True, True, None),
     ])
-    expect("action args", [a["args"] for a in acts], ['{"key": "fix"}', "git push origin x"])
+    expect("action args (a tool call's per leaf)", [a["args"] for a in acts],
+           [{"key": "fix", "goal": "g" * 300 + "…[+100 chars]"}, "git push origin x"])
+    expect("turn 1 messages (not actions)", one.get("messages"), [{"at": 1018, "text": "Declaring fix first."}])
+    expect("turn 2 messages", two.get("messages"), [])
     expect("result excerpt", acts[1]["result"] if len(acts) > 1 else None, "y" * 300 + "…[+100 chars]")
     expect("turn 2 actions (unfinished)",
            [(a["at"], a["args"], a["finished"], a["ok"]) for a in two.get("actions", [])], [(2050, "sleep 99", False, None)])
-    expect("turn 1 tasks", [(t["key"], t["goal"]) for t in one.get("tasks", [])], [("fix", "x" * 300 + "…[+100 chars]")])
-    expect("turn 2 tasks", two.get("tasks"), [])
+    expect("turn 1 tasks", [(t["key"], t["status"], t.get("error"), t["goal"]) for t in one.get("tasks", [])], [
+        ("fix", "running", None, "x" * 300 + "…[+100 chars]"),
+        ("gate", "failed", "gate-red", "g"),
+    ])
+    expect("turn 2 task error (latest task.failed reason)", [(t["key"], t.get("error")) for t in two.get("tasks", [])],
+           [("b", "worker: " + "r" * 1992 + "…[+108 chars]")])
     expect("turn 1 events (noise left out)", [(e["id"], e["actor"]) for e in one.get("events", [])], [(4, "Kernel")])
+    expect("event payload capped per leaf", [e["payload"] for e in one.get("events", [])],
+           [{"log_tail": "z" * 300 + "…[+100 chars]", "error": "step lint exited 1", "exit_code": 1}])
     expect("turn 2 events (losses kept)", [e["id"] for e in two.get("events", [])], [6, 7])
     expect("turn 3 events", [e["id"] for e in three.get("events", [])], [8])
     expect("turn 1 bypass", one.get("bypass"), [{"source": "planner shell", "command": "git push origin x"}])
@@ -360,7 +422,9 @@ def selftest():
     expect("--since picks turns 2 and 3", [r.get("turn_id") for r in trace(db, ["t"], since=1500)],
            [None, "turn-2", "turn-3"])
     expect("--until picks turn 1 and changes no record", trace(db, ["t"], until=1200), [header, one])
-    expect("--full keeps the whole text", trace(db, ["t"], cap=None)[1]["tasks"][0]["goal"], "x" * 400)
+    full = trace(db, ["t"], cap=None)
+    expect("--full keeps the whole text", [full[1]["tasks"][0]["goal"], full[2]["tasks"][0].get("error")],
+           ["x" * 400, "worker: " + "r" * 2100])
     for failure in failures:
         print("FAIL " + failure, file=sys.stderr)
     if failures:

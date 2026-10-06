@@ -14,7 +14,7 @@ REQUIRED_COLUMNS = {
     "tracks": ["id", "area_id", "title", "created_at", "closed_at", "creator_track_id"],
     "cards": ["id", "track_id", "role"],
     "events": ["id", "kind", "payload", "actor", "at", "scope_track", "scope_card"],
-    "tasks": ["track_id", "key", "kind", "goal", "status", "created_at_ms"],
+    "tasks": ["track_id", "key", "kind", "goal", "status", "created_at_ms", "id", "status_detail"],
     "harness_items": ["id", "card_id", "turn_id", "item_uuid", "item_type", "method", "params", "created_at_ms", "input_segments"],
     "worker_flow_items": ["track_id", "kind", "payload", "created_at_ms"],
 }
