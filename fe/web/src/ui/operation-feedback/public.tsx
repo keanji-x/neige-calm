@@ -40,7 +40,8 @@ export function useOperationFeedback(): OperationFeedbackState {
 
 /**
  * The write's failure where the write was made, as the Astryx error alert every other surface uses: its sentence, the
- * caller's way out (`action`, such as a Try again) when it has one, and Dismiss, which clears it.
+ * caller's way out (`action`, such as a Try again) when it has one, and Dismiss, which clears it (the banner returns
+ * focus to where it came from). A host that closes on blur must treat this as inside itself (see `ui/editable-title`).
  */
 export function OperationFeedback({ feedback, action }: {
   feedback: OperationFeedbackState;

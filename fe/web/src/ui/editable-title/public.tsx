@@ -104,18 +104,30 @@ export function EditableTitle({
     );
   }
 
+  /* The input and its failure are one focus boundary: moving into the failure's controls (Dismiss) is not leaving the
+     editor, so it neither commits nor closes it. A press there keeps focus in the input, which also covers browsers
+     whose buttons take no focus on click; leaving the boundary is what blurs the editor. Dismissing from the keyboard
+     needs nothing here: the Astryx banner hands focus back to where it came from, the input. */
   return (
-    <><input
+    <span
+      className={styles.editing}
+      /* No semantics of its own: the input and the alert inside keep theirs. */
+      role="presentation"
+      onMouseDown={(event) => { if (event.target !== inputRef.current) event.preventDefault(); }}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget)) return;
+        if (feedback.error === null) commit(false); else setEditing(false);
+      }}
+    ><input
       ref={inputRef}
       className={`${styles.input} ${className ?? ''}`}
       aria-label={inputLabel}
       value={draft}
       onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => { if (feedback.error === null) commit(false); else setEditing(false); }}
       onKeyDown={(event) => {
         if (event.key === 'Enter') { event.preventDefault(); commit(true); }
         else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditing(false); restoreTitleFocus(); }
       }}
-    /><OperationFeedback feedback={feedback} /></>
+    /><OperationFeedback feedback={feedback} /></span>
   );
 }

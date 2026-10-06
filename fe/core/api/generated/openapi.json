@@ -1298,7 +1298,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The task, cancelled or not",
             "content": {
               "application/json": {
                 "schema": {
@@ -1307,8 +1307,18 @@
               }
             }
           },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Not the user: AI calls use neige_calendar_* tools",
+            "description": "`forbidden`: the caller is not `X-Calm-Actor: user`; AI calls use the calendar tools",
             "content": {
               "application/json": {
                 "schema": {
@@ -1318,7 +1328,17 @@
             }
           },
           "404": {
-            "description": "No such calendar task",
+            "description": "`not_found`: no calendar task with this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
@@ -1328,7 +1348,7 @@
             }
           },
           "503": {
-            "description": "The calendar is not running",
+            "description": "`service_unavailable`: the Calendar plugin is not running",
             "content": {
               "application/json": {
                 "schema": {
@@ -3322,7 +3342,7 @@
             }
           },
           "400": {
-            "description": "Path is not inside a git repository or file is binary/non-UTF-8",
+            "description": "Path is invalid or not inside a git repository, or the file is binary/non-UTF-8",
             "content": {
               "application/json": {
                 "schema": {
@@ -3403,7 +3423,7 @@
             }
           },
           "400": {
-            "description": "Path is not a directory or not inside a git repository",
+            "description": "Path is invalid, not a directory, or not inside a git repository",
             "content": {
               "application/json": {
                 "schema": {
@@ -3484,7 +3504,7 @@
             }
           },
           "400": {
-            "description": "Path is not a directory",
+            "description": "Path is invalid or not a directory",
             "content": {
               "application/json": {
                 "schema": {
@@ -3565,7 +3585,7 @@
             }
           },
           "400": {
-            "description": "Path is not a file, or is binary/non-UTF-8",
+            "description": "Path is invalid, not a file, or binary/non-UTF-8",
             "content": {
               "application/json": {
                 "schema": {
@@ -3651,7 +3671,7 @@
             }
           },
           "400": {
-            "description": "Path is not a file, has an unsupported extension, or exceeds the image cap",
+            "description": "Path is invalid, not a file, has an unsupported extension, or exceeds the image cap",
             "content": {
               "application/json": {
                 "schema": {

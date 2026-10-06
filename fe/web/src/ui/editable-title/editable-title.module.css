@@ -16,6 +16,11 @@
     text-align: start;
   }
 
+  /* The editor's focus boundary (input and its failure) adds no box: the input lays out as before. */
+  .editing {
+    display: contents;
+  }
+
   .title:hover {
     border-color: var(--hairline);
     background: var(--overlay-hover-faint);
