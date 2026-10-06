@@ -1894,6 +1894,11 @@ async fn connector_reinstall_conflicts_without_touching_the_installed_tree() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CONFLICT, "duplicate id is a 409");
+    assert_eq!(
+        body_to_json(resp).await["code"],
+        "plugin_conflict",
+        "an id already installed is the one 409 a retried install may read as its own"
+    );
 
     let secrets = plugins_dir.join("testdup").join("secrets.json");
     assert_eq!(
@@ -1920,6 +1925,11 @@ async fn connector_install_refuses_a_directory_the_kernel_did_not_write() {
         resp.status(),
         StatusCode::CONFLICT,
         "an occupied directory is a conflict, not an overwrite"
+    );
+    assert_eq!(
+        body_to_json(resp).await["code"],
+        "plugin_dir_occupied",
+        "not `plugin_conflict`: nothing is installed, so a retried install must not read it as done"
     );
     assert_eq!(
         std::fs::read_to_string(dir.join("work.txt")).unwrap(),

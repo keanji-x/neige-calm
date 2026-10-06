@@ -110,6 +110,11 @@ pub enum CalmError {
     #[error("plugin conflict: {0}")]
     PluginConflict(String),
 
+    /// 409 — `plugins_dir/<id>` holds a directory the kernel did not write. Nothing was installed,
+    /// so unlike `PluginConflict` it is never an earlier install of the same plugin.
+    #[error("plugin directory occupied: {0}")]
+    PluginDirOccupied(String),
+
     /// 409 — another lifecycle operation holds this plugin id's lifecycle lock; unlike
     /// `PluginConflict`, the identical request will succeed shortly.
     #[error("plugin busy: {0}")]
@@ -207,6 +212,7 @@ impl CalmError {
             CalmError::PluginInstall(_) => "plugin_install",
             CalmError::PluginPermission(_) => "plugin_permission",
             CalmError::PluginConflict(_) => "plugin_conflict",
+            CalmError::PluginDirOccupied(_) => "plugin_dir_occupied",
             CalmError::PluginBusy(_) => "plugin_busy",
             CalmError::PluginManifestUnloaded(_) => "plugin_manifest_unloaded",
             CalmError::PluginConfigCorrupt(_) => "plugin_config_corrupt",
@@ -239,6 +245,7 @@ impl CalmError {
             | CalmError::IdempotencyKeyReused(_)
             | CalmError::IdempotencyKeyConcurrent(_)
             | CalmError::PluginConflict(_)
+            | CalmError::PluginDirOccupied(_)
             | CalmError::PluginBusy(_)
             | CalmError::PluginManifestUnloaded(_)
             | CalmError::PluginConfigCorrupt(_)
@@ -293,6 +300,7 @@ impl CalmError {
             | CalmError::PluginInstall(m)
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)
+            | CalmError::PluginDirOccupied(m)
             | CalmError::PluginBusy(m)
             | CalmError::PluginManifestUnloaded(m)
             | CalmError::PluginConfigCorrupt(m)
@@ -538,6 +546,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginInstall(m)
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)
+            | CalmError::PluginDirOccupied(m)
             | CalmError::PluginBusy(m)
             | CalmError::PluginManifestUnloaded(m)
             | CalmError::PluginConfigCorrupt(m)

@@ -3554,7 +3554,7 @@
             }
           },
           "409": {
-            "description": "Plugin id already installed (`plugin_conflict`), or another lifecycle operation holds this id (`plugin_busy`)",
+            "description": "`plugin_conflict` (installed), `plugin_busy`, or `plugin_dir_occupied` (a tree the kernel did not write holds its path)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3914,11 +3914,21 @@
         ],
         "responses": {
           "200": {
-            "description": "Plugin disabled and stopped",
+            "description": "Plugin disabled and stopped, or already stopped",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PluginDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An always-enabled built-in component (`bad_request`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -3975,7 +3985,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Plugin enabled and spawned",
+            "description": "Plugin enabled and spawned, or already running or spawning",
             "content": {
               "application/json": {
                 "schema": {
@@ -3995,7 +4005,7 @@
             }
           },
           "409": {
-            "description": "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
+            "description": "A template id or minted tool name a running plugin already holds (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`); its `enabled` is as the request found it",
             "content": {
               "application/json": {
                 "schema": {
@@ -4005,7 +4015,7 @@
             }
           },
           "422": {
-            "description": "Manifest min_kernel_version exceeds kernel version",
+            "description": "Manifest min_kernel_version exceeds kernel version; its `enabled` is as the request found it",
             "content": {
               "application/json": {
                 "schema": {
@@ -4015,7 +4025,17 @@
             }
           },
           "500": {
-            "description": "Spawn failed / internal error",
+            "description": "Spawn failed / internal error; the plugin stays enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Enabled, but waiting on its connector or configuration (`service_unavailable`); the list shows why as `last_error`",
             "content": {
               "application/json": {
                 "schema": {

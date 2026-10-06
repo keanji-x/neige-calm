@@ -1832,7 +1832,7 @@
       "oracle:INV-APP-120"
     ],
     "target": "core/domain/plugins.ts",
-    "patch": "diff --git a/core/domain/plugins.ts b/core/domain/plugins.ts\nindex 7753bb47a..8756ba33d 100644\n--- a/core/domain/plugins.ts\n+++ b/core/domain/plugins.ts\n@@ -88,7 +88,7 @@ export const PLUGIN_INSTALL_FAILURES: FailureTable<WriteClass> = Object.freeze({\n /** The same install after an `unknown` answer: \"already installed\" is the earlier attempt having landed, so `done`. */\n export const PLUGIN_INSTALL_RETRY_FAILURES: FailureTable<WriteClass> = Object.freeze({\n   rules: Object.freeze([\n-    Object.freeze({ status: Object.freeze([409]), code: 'plugin_conflict', is: 'done' as const }),\n+    Object.freeze({ status: Object.freeze([409]), code: 'plugin_conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 409, 413, 415, 422]), is: 'refused' as const }),\n   ]),\n   unauthorized: 'refused',\n",
+    "patch": "diff --git a/core/domain/plugins.ts b/core/domain/plugins.ts\n--- a/core/domain/plugins.ts\n+++ b/core/domain/plugins.ts\n@@ -95,7 +95,7 @@ export const PLUGIN_INSTALL_FAILURES: FailureTable<WriteClass> = Object.freeze({\n  */\n export const PLUGIN_INSTALL_RETRY_FAILURES: FailureTable<WriteClass> = Object.freeze({\n   rules: Object.freeze([\n-    Object.freeze({ status: Object.freeze([409]), code: 'plugin_conflict', is: 'done' as const }),\n+    Object.freeze({ status: Object.freeze([409]), code: 'plugin_conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 409, 413, 415, 422]), is: 'refused' as const }),\n   ]),\n   unauthorized: 'refused',\n",
     "expected_red": [
       "a retry that meets proof of the intent is done an add answered \"already installed\" after a lost answer leaves the form for the re-read list",
       "classifying a failed POST /plugins/install, after an unknown answer reads { kind: 'http', status: 409, code: 'plugin_conflict', message: 'answered', body: { error: 'answered', code: 'plugin_conflict' } } as done"
@@ -1842,6 +1842,23 @@
       "core/domain/failure-class.test.ts"
     ],
     "why_more_than_one": "PLUGIN_INSTALL_RETRY_FAILURES is the only place a repeated install's 409 plugin_conflict becomes done, so reading it as refused reddens the table case for that answer and the one route case that adds again after a lost answer; the first-attempt conflict case already expects a refusal and stays green."
+  },
+  {
+    "mutation_id": "i2175-plugin-enable-wait-refused",
+    "defends": [
+      "oracle:INV-APP-120"
+    ],
+    "target": "core/domain/plugins.ts",
+    "patch": "diff --git a/core/domain/plugins.ts b/core/domain/plugins.ts\n--- a/core/domain/plugins.ts\n+++ b/core/domain/plugins.ts\n@@ -56,7 +56,7 @@ export function pluginsOperation(): ApiOperation<PluginListItem[]> {\n  */\n export const PLUGIN_TOGGLE_FAILURES: FailureTable<WriteClass> = Object.freeze({\n   rules: Object.freeze([\n-    Object.freeze({ status: Object.freeze([503]), code: 'service_unavailable', is: 'done' as const }),\n+    Object.freeze({ status: Object.freeze([503]), code: 'service_unavailable', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 404, 409, 422]), is: 'refused' as const }),\n   ]),\n   unauthorized: 'refused',\n",
+    "expected_red": [
+      "a retry that meets proof of the intent is done an enable answered 503 landed: the row shows the kernel's reason once, as the plugin's state",
+      "classifying a failed POST /plugins/{id}/enable|disable reads { kind: 'http', status: 503, code: 'service_unavailable', message: 'answered', body: { error: 'answered', code: 'service_unavailable' } } as done"
+    ],
+    "selection_paths": [
+      "web/src/app/shell/settings-write-failures.contract.test.tsx",
+      "core/domain/failure-class.test.ts"
+    ],
+    "why_more_than_one": "PLUGIN_TOGGLE_FAILURES is the only place an enable's 503 service_unavailable becomes done, so reading it as refused reddens the table case for that answer and the one route case where the enable landed and the row shows the kernel's reason once; a 503 without that code stays unknown either way."
   },
   {
     "mutation_id": "s2131-cas-retry-skips-read-back",

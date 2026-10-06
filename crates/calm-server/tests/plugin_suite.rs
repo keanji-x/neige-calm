@@ -8,6 +8,8 @@ mod minted_name_claims;
 mod plugin_auth;
 #[path = "cases/plugin_config_delivery.rs"]
 mod plugin_config_delivery;
+#[path = "cases/plugin_enable_answers.rs"]
+mod plugin_enable_answers;
 #[path = "cases/plugin_host_callbacks.rs"]
 mod plugin_host_callbacks;
 #[path = "cases/plugin_host_smoke.rs"]

@@ -40,13 +40,16 @@ const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('sock
 type Write = (request: ApiRequest, attempt: number) => Promise<ApiTransportResponse>;
 
 /** The real app over a fake server: reads answer from fixtures; every write goes to `write` with its attempt number. */
-function renderSettings(path: string, write: Write, detail: () => Promise<ApiTransportResponse> = () => Promise.resolve(ok(DETAIL))) {
+function renderSettings(
+  path: string, write: Write, detail: () => Promise<ApiTransportResponse> = () => Promise.resolve(ok(DETAIL)),
+  list: () => unknown[] = () => [ROW],
+) {
   const writes: ApiRequest[] = [];
   const reads: string[] = [];
   const transport: ApiTransportPort = { send(request) {
     if (request.method !== 'GET') { writes.push(request); return write(request, writes.length); }
     reads.push(request.path);
-    if (request.path === '/api/plugins') return Promise.resolve(ok([ROW]));
+    if (request.path === '/api/plugins') return Promise.resolve(ok(list()));
     if (request.path === '/api/plugins/git-forge') return detail();
     if (request.path === '/api/settings') return Promise.resolve(ok({ settings: { http_proxy: 'http://one' } }));
     return Promise.resolve(ok([]));
@@ -168,6 +171,34 @@ describe('a retry that meets proof of the intent is done', () => {
     await waitFor(() => expect(screen.queryByLabelText('MCP configuration')).toBeNull());
     expect(writes).toHaveLength(2);
     expect(reads.filter((path) => path === '/api/plugins').length).toBeGreaterThan(1);
+  });
+
+  it('an enable answered 503 landed: the row shows the kernel\'s reason once, as the plugin\'s state', async () => {
+    const reason = 'plugin `git-forge` cannot start: required configuration key `token` has no value';
+    let enabled = false;
+    const { writes } = renderSettings('/settings/plugins', () => {
+      enabled = true;
+      return Promise.resolve(answer(503, 'service_unavailable', reason));
+    }, undefined, () => [enabled
+      ? { ...ROW, enabled: true, state: 'unavailable', last_error: reason }
+      : { ...ROW, enabled: false, state: 'disabled' }]);
+    await toggle();
+    await waitFor(() => expect(screen.getByRole<HTMLInputElement>('switch', { name: 'Enable Git forge' }).checked).toBe(true));
+    expect(writes).toHaveLength(1);
+    expect(screen.getAllByRole('alert').map((node) => node.textContent)).toEqual([reason]);
+    expect(screen.queryByText('The plugin was not changed.')).toBeNull();
+  });
+
+  it('an add answered "occupied" after a lost answer stays a refusal on the form', async () => {
+    const occupied = '/plugins/todo already exists and was not created by the kernel — refusing to overwrite it';
+    const { writes } = renderSettings('/settings/plugins', (_request, attempt) => (attempt === 1
+      ? lost() : Promise.resolve(answer(409, 'plugin_dir_occupied', occupied))));
+    await openAdd(); await add();
+    await alerts();
+    await add();
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(await alerts()).toContain('was not created by the kernel');
+    expect(screen.getByLabelText('MCP configuration')).toBeTruthy();
   });
 
   it('a first add answered "already installed" stays a refusal on the form', async () => {

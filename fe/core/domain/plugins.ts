@@ -48,13 +48,17 @@ export function pluginsOperation(): ApiOperation<PluginListItem[]> {
  */
 
 /**
- * `POST /api/plugins/{id}/enable|disable`. Refusals: 400 (an always-on built-in, or a kind that cannot), 404, 409
- * `plugin_busy` or `plugin_conflict`, 422 (kernel too old), and 503 (enabled, but a connector is unavailable or a
- * required key is missing). A 500 may follow a partial change, including the one an enable of a running plugin
- * answers (#2132), so it is `unknown`.
+ * `POST /api/plugins/{id}/enable|disable`, which set the state they name. Refusals leave the plugin as they found it:
+ * 400 (an always-on built-in), 404, 409 `plugin_busy` or `plugin_conflict`, and 422 (kernel too old). A 503
+ * `service_unavailable` is an enable that landed while the plugin waits on its connector or a required key, so it is
+ * `done`: the re-read list shows that reason as the plugin's `last_error`. A 500 may follow a partial change, so it is
+ * `unknown`.
  */
 export const PLUGIN_TOGGLE_FAILURES: FailureTable<WriteClass> = Object.freeze({
-  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 404, 409, 422, 503]), is: 'refused' as const })]),
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([503]), code: 'service_unavailable', is: 'done' as const }),
+    Object.freeze({ status: Object.freeze([400, 404, 409, 422]), is: 'refused' as const }),
+  ]),
   unauthorized: 'refused',
   otherwise: 'unknown',
 });
@@ -76,8 +80,8 @@ export const PLUGIN_UNINSTALL_FAILURES: FailureTable<WriteClass> = Object.freeze
 
 /**
  * `POST /api/plugins/install`, a first attempt. Refusals: 400 `plugin_install` (and the extractor's 4xx), 409
- * `plugin_conflict` (the id is already installed) or `plugin_busy`, 422. A retry after an `unknown` answer reads
- * {@link PLUGIN_INSTALL_RETRY_FAILURES} instead.
+ * `plugin_conflict` (the id is already installed), `plugin_dir_occupied` (a directory the kernel did not write holds the
+ * id's place) or `plugin_busy`, 422. A retry after an `unknown` answer reads {@link PLUGIN_INSTALL_RETRY_FAILURES}.
  */
 export const PLUGIN_INSTALL_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 409, 413, 415, 422]), is: 'refused' as const })]),
@@ -85,7 +89,10 @@ export const PLUGIN_INSTALL_FAILURES: FailureTable<WriteClass> = Object.freeze({
   otherwise: 'unknown',
 });
 
-/** The same install after an `unknown` answer: "already installed" is the earlier attempt having landed, so `done`. */
+/**
+ * The same install after an `unknown` answer: "already installed" (`plugin_conflict`) is the earlier attempt having
+ * landed, so `done`. `plugin_dir_occupied` installed nothing and stays a refusal.
+ */
 export const PLUGIN_INSTALL_RETRY_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ status: Object.freeze([409]), code: 'plugin_conflict', is: 'done' as const }),

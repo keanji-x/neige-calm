@@ -278,7 +278,7 @@ pub(crate) async fn get_plugin_detail(
     responses(
         (status = 201, description = "Plugin installed (disabled by default)", body = PluginDetail),
         (status = 400, description = "Manifest invalid / unsupported source", body = ErrorBody),
-        (status = 409, description = "Plugin id already installed (`plugin_conflict`), or another lifecycle operation holds this id (`plugin_busy`)", body = ErrorBody),
+        (status = 409, description = "`plugin_conflict` (installed), `plugin_busy`, or `plugin_dir_occupied` (a tree the kernel did not write holds its path)", body = ErrorBody),
         (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -337,11 +337,12 @@ pub(crate) async fn install_plugin(
     tag = "plugins",
     params(("id" = String, Path, description = "Plugin id")),
     responses(
-        (status = 200, description = "Plugin enabled and spawned", body = PluginDetail),
+        (status = 200, description = "Plugin enabled and spawned, or already running or spawning", body = PluginDetail),
         (status = 404, description = "Plugin not found", body = ErrorBody),
-        (status = 409, description = "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)", body = ErrorBody),
-        (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
-        (status = 500, description = "Spawn failed / internal error", body = ErrorBody),
+        (status = 409, description = "A template id or minted tool name a running plugin already holds (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`); its `enabled` is as the request found it", body = ErrorBody),
+        (status = 422, description = "Manifest min_kernel_version exceeds kernel version; its `enabled` is as the request found it", body = ErrorBody),
+        (status = 500, description = "Spawn failed / internal error; the plugin stays enabled", body = ErrorBody),
+        (status = 503, description = "Enabled, but waiting on its connector or configuration (`service_unavailable`); the list shows why as `last_error`", body = ErrorBody),
     ),
 )]
 pub(crate) async fn enable_plugin(
@@ -358,7 +359,8 @@ pub(crate) async fn enable_plugin(
     tag = "plugins",
     params(("id" = String, Path, description = "Plugin id")),
     responses(
-        (status = 200, description = "Plugin disabled and stopped", body = PluginDetail),
+        (status = 200, description = "Plugin disabled and stopped, or already stopped", body = PluginDetail),
+        (status = 400, description = "An always-enabled built-in component (`bad_request`)", body = ErrorBody),
         (status = 404, description = "Plugin not found", body = ErrorBody),
         (status = 409, description = "Another lifecycle operation holds this plugin (`plugin_busy`)", body = ErrorBody),
         (status = 500, description = "Stop failed / internal error", body = ErrorBody),

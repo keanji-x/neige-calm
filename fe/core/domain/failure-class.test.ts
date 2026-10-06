@@ -173,10 +173,11 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
   /* #2131 S6: Settings. `plugin_busy` touched nothing: a refusal with the kernel's reason. */
   ['POST /plugins/{id}/enable|disable', PLUGIN_TOGGLE_FAILURES, [
     [http(400, 'bad_request'), 'refused'], [http(404, 'not_found'), 'refused'], [http(409, 'plugin_busy'), 'refused'],
-    [http(409, 'plugin_conflict'), 'refused'], [http(422, 'plugin_kernel_too_old'), 'refused'],
-    [http(503, 'service_unavailable'), 'refused'], [unauthorized, 'refused'],
-    /* An enable of a running plugin answers 500 (#2132); any 500 may follow a partial change. */
-    [http(500, 'internal'), 'unknown'], [http(403), 'unknown'],
+    [http(409, 'plugin_conflict'), 'refused'], [http(422, 'plugin_kernel_too_old'), 'refused'], [unauthorized, 'refused'],
+    /* The enable landed and the plugin waits on its connector or a required key; its row shows why. */
+    [http(503, 'service_unavailable'), 'done'],
+    /* Any 500 may follow a partial change. */
+    [http(500, 'internal'), 'unknown'], [http(403), 'unknown'], [http(503), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   ['DELETE /plugins/{id}', PLUGIN_UNINSTALL_FAILURES, [
@@ -186,12 +187,14 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
   ]],
   ['POST /plugins/install, first attempt', PLUGIN_INSTALL_FAILURES, [
     [http(400, 'plugin_install'), 'refused'], [http(409, 'plugin_conflict'), 'refused'], [http(409, 'plugin_busy'), 'refused'],
-    [http(413), 'refused'], [http(415), 'refused'], [http(422, 'plugin_kernel_too_old'), 'refused'], [unauthorized, 'refused'],
+    [http(409, 'plugin_dir_occupied'), 'refused'], [http(413), 'refused'], [http(415), 'refused'], [http(422, 'plugin_kernel_too_old'), 'refused'], [unauthorized, 'refused'],
     [http(404), 'unknown'], [http(500, 'internal'), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   ['POST /plugins/install, after an unknown answer', PLUGIN_INSTALL_RETRY_FAILURES, [
     /* "Already installed": the earlier attempt landed. Only that code; a busy 409 is still a refusal. */
     [http(409, 'plugin_conflict'), 'done'], [http(409, 'plugin_busy'), 'refused'],
+    /* A directory the kernel did not write: nothing was installed, by this attempt or the earlier one. */
+    [http(409, 'plugin_dir_occupied'), 'refused'],
     [http(400, 'plugin_install'), 'refused'], [http(422), 'refused'], [unauthorized, 'refused'],
     [http(500, 'internal'), 'unknown'], [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],

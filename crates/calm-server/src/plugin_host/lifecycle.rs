@@ -102,7 +102,7 @@ impl PluginHost {
                     wrote_tree.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 written.map_err(|e| match e {
-                    managed::WriteError::Occupied(_) => CalmError::PluginConflict(e.to_string()),
+                    managed::WriteError::Occupied(_) => CalmError::PluginDirOccupied(e.to_string()),
                     managed::WriteError::Io(_) => CalmError::PluginInstall(e.to_string()),
                 })
             })
@@ -168,15 +168,30 @@ impl PluginHost {
         Ok(plug)
     }
 
-    /// Flip `enabled = true` and spawn; returns the row re-read after the spawn.
-    /// Spawn errors leave `enabled = true` so autospawn keeps trying.
+    /// Set the plugin enabled and running; returns the row re-read after the spawn. A plugin already
+    /// running (or spawning) is in that state, so it answers its row.
+    /// A spawn refused with a 4xx restores the bit this call found, inside the guard, so the refusal
+    /// changed nothing. A 503 wait or a 5xx keeps `enabled = true`, so autospawn keeps trying.
     pub async fn enable(self: &Arc<Self>, id: &str) -> Result<Plugin> {
         // The 404 probe stays before the guard: a guard taken first would turn "unknown id AND busy" into a 409.
         self.plugin_row_or_404(id).await?;
         let guard = self.try_lock_lifecycle(id).map_err(spawn_error_to_calm)?;
+        // Read inside the guard: it is the value a refusal restores.
+        let found = self
+            .lifecycle_db
+            .enabled_row(id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
         self.lifecycle_db.set_enabled(id, true).await?;
-        if let Err(e) = self.spawn_under(&guard, None).await {
-            return Err(spawn_error_to_calm(e));
+        match self.spawn_under(&guard, None).await {
+            Ok(()) | Err(HostError::AlreadyRunning(_)) => {}
+            Err(e) => {
+                let answer = spawn_error_to_calm(e);
+                if answer.status().is_client_error() && !found {
+                    self.lifecycle_db.set_enabled(id, false).await?;
+                }
+                return Err(answer);
+            }
         }
         self.plugin_row_or_404(id).await
     }
