@@ -7,6 +7,7 @@ import {
   ChatComposer as AstryxChatComposer,
   ChatComposerInput,
   ChatSendButton,
+  ChatLayoutScrollButton,
   type ChatComposerTrigger,
   type ChatToolCallItem,
 } from '@astryxdesign/core/Chat';
@@ -158,6 +159,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   const readActive = useRef<() => void>(() => {});
   /** Whether the reader is parked at the end of the transcript — the only state in which a newly appended turn may move the pane. */
   const followsNewest = useRef(true);
+  const [scrolledUp, setScrolledUp] = useState(false);
   /** The turn at the end of the transcript as of this render — what the follow
    *  effect below both depends on and decides by. */
   const newestId = lastTurn?.id;
@@ -184,7 +186,9 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     const measure = () => {
       followsNewest.current = scroller.scrollHeight - scroller.scrollTop
         - scroller.clientHeight <= FOLLOW_BOTTOM_SLACK_PX;
+      setScrolledUp(!followsNewest.current);
     };
+    measure();
     scroller.addEventListener('scroll', measure, { passive: true });
     const unobserve = observeResize(scroller, measure);
     return () => {
@@ -390,6 +394,20 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         {currentMeta}
         <div ref={endRef} aria-hidden="true" />
       </div>
+      {scrolledUp && (
+        <div className={styles.scrollDock}>
+          <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
+            <div className={styles.scrollBlur} aria-hidden="true" />
+            <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={() => {
+              const scroller = endRef.current?.closest<HTMLElement>('[data-nc-drawer-scroll]');
+              if (scroller == null) return;
+              followsNewest.current = true;
+              scroller.scrollTop = scroller.scrollHeight;
+              setScrolledUp(false);
+            }} />
+          </div>
+        </div>
+      )}
     </div>
   );
 

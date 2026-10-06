@@ -1,12 +1,13 @@
 /* A reply as it streams (#1923 S2): the pane follows its growth only for a reader at the end, and
    the stored reply that replaces it lands without a jump. Measured against a real engine. */
 import { act, render } from '@testing-library/react';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
 
-import { ChatThread } from './public.tsx';
+import { ChatComposer, ChatThread } from './public.tsx';
+import { Drawer } from '../../../ui/drawer/public.tsx';
 import type { Conversation, ConversationTurn, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
 
@@ -107,5 +108,86 @@ describe('a streamed reply in a real engine', () => {
     expect(landed.innerText).toBe(before.text);
     expect(landed.getBoundingClientRect().height).toBe(before.height);
     expect(landed.getBoundingClientRect().top).toBe(before.top);
+  });
+});
+
+describe('jump to the newest message', () => {
+  it.each([320, 640])('shows a frosted dock at %spx and resumes following after a click', async (width) => {
+    const turns = [...history, asked, live('First words')];
+    const { rerender } = render(<Pane width={width} turns={turns} />);
+    await frames();
+    expect(document.querySelector('[data-nc-chat-scroll-dock]')).toBeNull();
+
+    pane().scrollTop = 120;
+    await frames();
+    const button = page.getByRole('button', { name: 'Scroll to bottom', exact: true });
+    await expect.element(button).toBeVisible();
+    const dock = document.querySelector<HTMLElement>('[data-nc-chat-scroll-dock]')!;
+    const blur = dock.firstElementChild!;
+    expect(getComputedStyle(blur).backdropFilter).toContain('blur(');
+    expect(getComputedStyle(blur).pointerEvents).toBe('none');
+    const box = (await button.findElement()).getBoundingClientRect();
+    const viewport = pane().getBoundingClientRect();
+    expect(box.top).toBeGreaterThan(viewport.top);
+    expect(box.bottom).toBeLessThanOrEqual(viewport.bottom);
+    await page.screenshot({ path: `../../../../../test-results/chat-scroll-bottom-${width}.png` });
+    const parked = pane().scrollTop;
+    rerender(<Pane width={width} turns={[...history, asked, live(LINE.repeat(20))]} />);
+    await frames();
+    expect(pane().scrollTop).toBe(parked);
+    await button.click();
+    await frames();
+    expect(pane().scrollTop).toBe(atEnd());
+    expect(document.querySelector('[data-nc-chat-scroll-dock]')).toBeNull();
+
+    rerender(<Pane width={width} turns={[...history, asked, live(LINE.repeat(24))]} />);
+    await frames();
+    expect(pane().scrollTop).toBe(atEnd());
+  });
+
+  it('supports keyboard activation and removes the control after a manual return', async () => {
+    render(<Pane turns={history} />);
+    await frames();
+    pane().scrollTop = 120;
+    await frames();
+    const button = await page.getByRole('button', { name: 'Scroll to bottom', exact: true }).findElement();
+    (button as HTMLButtonElement).focus();
+    await userEvent.keyboard('{Enter}');
+    await frames();
+    expect(pane().scrollTop).toBe(atEnd());
+    expect(document.querySelector('[data-nc-chat-scroll-dock]')).toBeNull();
+    pane().scrollTop = 0;
+    await frames();
+    expect(document.querySelector('[data-nc-chat-scroll-dock]')).not.toBeNull();
+    pane().scrollTop = atEnd();
+    await frames();
+    expect(document.querySelector('[data-nc-chat-scroll-dock]')).toBeNull();
+  });
+
+  it('keeps the control above the composer in the real mobile drawer', async () => {
+    await page.viewport(390, 844);
+    render(<Drawer open title="Review" onClose={() => {}} footer={<ChatComposer onSend={() => {}} />}>
+      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={history} />
+    </Drawer>);
+    const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+    await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
+    pane().scrollTop = 120;
+    await frames();
+    const button = page.getByRole('button', { name: 'Scroll to bottom', exact: true });
+    await expect.element(button).toBeVisible();
+    const input = await page.getByRole('textbox', { name: 'Message', exact: true }).findElement();
+    expect((await button.findElement()).getBoundingClientRect().bottom)
+      .toBeLessThan(input.getBoundingClientRect().top);
+    await page.screenshot({ path: '../../../../../test-results/chat-scroll-bottom-mobile.png' });
+    await button.click();
+    await frames();
+    expect(pane().scrollTop).toBe(atEnd());
+  });
+
+  it('does not show a jump control for a short transcript', async () => {
+    render(<Pane turns={[asked]} />);
+    await frames();
+    expect(pane().scrollHeight).toBe(pane().clientHeight);
+    expect(document.querySelector('[data-nc-chat-scroll-dock]')).toBeNull();
   });
 });
