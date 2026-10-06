@@ -21,6 +21,8 @@ mod mcp_server_handshake;
 mod mcp_shim_round_trip;
 #[path = "cases/mcp_thread_identity.rs"]
 mod mcp_thread_identity;
+#[path = "cases/mcp_tool_role_matrix.rs"]
+mod mcp_tool_role_matrix;
 #[path = "cases/mcp_tools_list_role_filter.rs"]
 mod mcp_tools_list_role_filter;
 #[path = "cases/neige_cli_area_reports.rs"]

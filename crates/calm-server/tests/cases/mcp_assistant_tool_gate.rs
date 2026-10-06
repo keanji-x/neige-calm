@@ -1,6 +1,7 @@
 //! The full role verdict for a `CardRole::Assistant` MCP token. Discovery is not inspected:
 //! `tools/call` routes by name regardless, so each denied tool gets a raw call asserting `-32403`
-//! AND the role-refusal message.
+//! AND the role-refusal message. The lists are the reviewed expectation: they must equal the
+//! tools whose declared `roles` admit the Assistant, so a declaration change is a reviewed diff here.
 
 #![cfg(unix)]
 
@@ -130,6 +131,29 @@ fn assistant_verdict_covers_every_registered_tool() {
          adjudicated but not registered (stale name): {unknown:?}"
     );
     assert_eq!(registered, adjudicated);
+}
+
+/// The reviewed allow list is exactly the set of tools whose declared `roles` admit the Assistant;
+/// the registry's gate enforces those declarations (`mcp_tool_role_matrix`).
+#[test]
+fn assistant_verdict_equals_the_declared_roles() {
+    let mut declared = calm_server::mcp_server::build_default_registry()
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.roles.contains(&CardRole::Assistant))
+        .map(|descriptor| descriptor.name)
+        .collect::<Vec<_>>();
+    declared.sort();
+    let mut reviewed = ASSISTANT_ALLOWED_TOOLS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    reviewed.sort();
+    assert_eq!(
+        declared, reviewed,
+        "the tools whose declared roles admit the Assistant must equal ASSISTANT_ALLOWED_TOOLS; \
+         review the declaration change and update the list"
+    );
 }
 
 #[tokio::test]

@@ -654,4 +654,39 @@ mod tests {
         }
     }
 
+    /// Listing is never a grant (§7): every registered tool, kernel and compiled plugin native
+    /// alike, is listed only for roles that may call it, and every tool may be called by someone.
+    #[test]
+    fn every_tool_is_listed_only_for_roles_that_may_call_it() {
+        let descriptors = crate::mcp_server::build_default_registry().descriptors();
+        assert!(
+            descriptors.len() >= 40,
+            "anti-vacuity: {} tools registered",
+            descriptors.len()
+        );
+        assert!(
+            descriptors
+                .iter()
+                .any(|d| crate::builtin_plugins::owner(&d.name).is_some()),
+            "anti-vacuity: the compiled plugin natives are registered"
+        );
+        for descriptor in &descriptors {
+            assert!(
+                !descriptor.roles.is_empty(),
+                "{}: no role may call it",
+                descriptor.name
+            );
+            let unauthorized: Vec<_> = descriptor
+                .listed_for
+                .iter()
+                .filter(|role| !descriptor.roles.contains(role))
+                .collect();
+            assert!(
+                unauthorized.is_empty(),
+                "{}: listed for {unauthorized:?}, which its roles {:?} do not admit",
+                descriptor.name,
+                descriptor.roles
+            );
+        }
+    }
 }
