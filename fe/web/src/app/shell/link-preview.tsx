@@ -35,7 +35,7 @@ function Preview() {
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   return <main className={styles.page}>
     <header className={styles.header}>
-      <div><p className={styles.eyebrow}>NEIGE · 链接预览</p><h1>悬停，停留，继续阅读。</h1><p className={styles.subtitle}>圆环转满后移入交互 · 卡片内滚动阅读 · 移到别处自动收起</p></div>
+      <div><p className={styles.eyebrow}>NEIGE · 链接预览</p><h1>悬停，停留，继续阅读。</h1><p className={styles.subtitle}>卡片优先放在正文旁边 · 沿路径移入交互 · 移到别处自动收起</p></div>
       <button type="button" className={styles.theme} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? '深色模式' : '浅色模式'}</button>
     </header>
     <div className={styles.document}>

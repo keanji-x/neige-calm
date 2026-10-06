@@ -89,7 +89,7 @@ export function ReportDocument({
       {report.blocks === null
         ? (
           <div className={styles.row}>
-            <div className={styles.block}>
+            <div className={styles.block} data-nc-report-reading="">
               <ProseBlock
                 markdown={report.body || report.summary}
                 blockId={null}
@@ -192,7 +192,7 @@ function BlockSlot({
 }) {
   return (
     <div className={styles.row}>
-      <div className={styles.block} id={block.id}>
+      <div className={styles.block} id={block.id} data-nc-report-reading="">
         {block.kind === 'prose'
           ? <ProseBlock
               markdown={block.payload.markdown}

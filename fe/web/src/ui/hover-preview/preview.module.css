@@ -19,6 +19,8 @@
     animation: appear var(--motion-quick) var(--ease-enter);
   }
 
+  .compact { overflow: hidden; }
+
   .header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); border-block-end: 1px solid var(--hairline); }
   /* A transparent edge joins the link-to-card gap, even during slow movement. */
   .card::before { content: ""; position: absolute; inset: calc(-1 * var(--space-6)); z-index: -1; }

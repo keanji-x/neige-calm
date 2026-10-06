@@ -3,6 +3,7 @@ import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../styles/entry.css';
+import { ReportDocument } from '../../features/report/document/public.tsx';
 import { HoverPreview } from './public.tsx';
 
 afterEach(cleanup);
@@ -100,6 +101,66 @@ describe('preview in a real browser', () => {
     const before = performance.now();
     await expect.poll(() => performance.now() - before).toBeGreaterThan(350);
     expect(page.getByRole('dialog').length).toBe(2);
+  });
+  it('allows slow travel to a distant side card without intercepting the original link', async () => {
+    await page.viewport(1440, 900);
+    const onRead = vi.fn();
+    render(<><section style={{ position: 'absolute', left: 100, top: 100, width: 480, paddingTop: 100 }}>
+      <HoverPreview title="Side notes" getReadingSurface={(trigger) => trigger.closest<HTMLElement>('section')}
+        trigger={(activate) => <button onClick={activate}>Side notes</button>}>
+        <button type="button" onClick={onRead}>Read details</button>
+      </HoverPreview>
+    </section><button type="button" data-testid="far-outside" style={{ position: 'fixed', left: 1100, top: 80 }}>Elsewhere</button></>);
+    const trigger = page.getByRole('button', { name: 'Side notes', exact: true });
+    await trigger.hover();
+    await expect.poll(() => document.querySelector('[data-nc-ready]'), { timeout: 3000 }).not.toBeNull();
+    const anchor = trigger.element().getBoundingClientRect();
+    const dialog = page.getByRole('dialog');
+    const card = dialog.element().getBoundingClientRect();
+    const x = (anchor.right + card.left) / 2;
+    const y = (anchor.top + anchor.bottom) / 2;
+    expect(card.left - anchor.right).toBeGreaterThan(200);
+    await dialog.hover({ position: { x: x - card.left, y: y - card.top }, force: true });
+    expect(document.elementFromPoint(x, y)?.closest('[data-nc-link-preview]')).toBeNull();
+    const before = performance.now();
+    await expect.poll(() => performance.now() - before).toBeGreaterThan(400);
+    expect(dialog.query()).not.toBeNull();
+    await page.getByRole('button', { name: 'Read details' }).click();
+    expect(onRead).toHaveBeenCalledOnce();
+    await trigger.click();
+    expect(document.activeElement).toBe(trigger.element());
+    await page.getByTestId('far-outside').hover();
+    await expect.poll(() => document.querySelector('[data-nc-link-preview]')).toBeNull();
+  });
+  it('places growing report previews beside the reading column without covering the link', async () => {
+    await page.viewport(1200, 800);
+    const report = { summary: '', body: '[Notes](./notes.md)', blocks: null };
+    render(<div style={{ position: 'absolute', left: 100, top: 640, width: 480, ['--document-start' as string]: '0px', ['--document-measure' as string]: '480px' }}>
+      <ReportDocument report={report} empty={null} fileRoot="/repo" linkPreview={{ trackId: 't1', report, files: {
+        readFile: (path) => Promise.resolve({ path, text: '# Long contents\n\n' + 'Reading content.\n\n'.repeat(60), size: 1000, truncated: false }),
+        rawUrl: (path) => path,
+      } }} />
+    </div>);
+    await page.getByRole('button', { name: 'Notes', exact: true }).hover();
+    await expect.poll(() => page.getByRole('heading', { name: 'Long contents' }).query()).not.toBeNull();
+    const link = page.getByRole('button', { name: 'Notes', exact: true }).element().getBoundingClientRect();
+    const card = page.getByRole('dialog').element().getBoundingClientRect();
+    expect(card.left).toBeGreaterThanOrEqual(592);
+    expect(card.right).toBeLessThanOrEqual(1188);
+    expect(card.left >= link.right || card.right <= link.left || card.top >= link.bottom || card.bottom <= link.top).toBe(true);
+  });
+  it('places a child preview beside its parent without covering either card trigger', async () => {
+    await page.viewport(1600, 900);
+    render(<div style={{ padding: 80 }}><HoverPreview title="Parent" trigger={(activate) => <button onClick={activate}>Parent</button>}>
+      <HoverPreview title="Child" trigger={(activate) => <button onClick={activate}>Child</button>}>
+        <div>{Array.from({ length: 70 }, (_, i) => <p key={i}>Child paragraph {i}</p>)}</div>
+      </HoverPreview>
+    </HoverPreview></div>);
+    await page.getByRole('button', { name: 'Parent', exact: true }).click();
+    await page.getByRole('button', { name: 'Child', exact: true }).click();
+    const parent = page.getByRole('dialog', { name: 'Preview: Parent' }).element().getBoundingClientRect();
+    const child = page.getByRole('dialog', { name: 'Preview: Child' }).element().getBoundingClientRect();
+    expect(child.left >= parent.right || child.right <= parent.left || child.top >= parent.bottom || child.bottom <= parent.top).toBe(true);
   });
   it('clamps a ready preview after viewport resize and closes with Escape', async () => {
     await page.viewport(1200, 900); mount();

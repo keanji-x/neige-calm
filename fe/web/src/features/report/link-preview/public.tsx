@@ -38,7 +38,7 @@ export function ReportLinkPreview({ destination, resources, label, trigger, rend
   onOpen?: () => void;
 }>) {
   const identity = destination.kind === 'file' ? destination.path : destination.kind === 'web' ? destination.url : destination.destination;
-  return <HoverPreview key={`${resources?.trackId ?? ''}:${identity}`} title={label} trigger={trigger}>
+  return <HoverPreview key={`${resources?.trackId ?? ''}:${identity}`} title={label} trigger={trigger} getReadingSurface={readingSurface} getAvoidSurfaces={() => readingAreas()}>
     {destination.kind === 'file' && (resources === undefined
       ? <p>Open this file to read its contents.</p>
       : <FileContent path={destination.path} files={resources.files} renderMarkdown={renderMarkdown} />)}
@@ -46,6 +46,15 @@ export function ReportLinkPreview({ destination, resources, label, trigger, rend
     {destination.kind === 'reference' && <ReferenceContent destination={destination} resources={resources} renderMarkdown={renderMarkdown} />}
     {onOpen !== undefined && <button type="button" className={styles.action} onClick={onOpen}>Open in workspace</button>}
   </HoverPreview>;
+}
+
+function readingSurface(trigger: HTMLElement): HTMLElement | null {
+  return trigger.closest<HTMLElement>('[data-nc-report-reading]');
+}
+
+function readingAreas(): readonly HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-nc-report-reading]'))
+    .filter((element) => element.getClientRects().length > 0);
 }
 
 function FileContent({ path, files, renderMarkdown }: Readonly<{

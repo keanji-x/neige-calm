@@ -3,24 +3,27 @@ import { createPortal } from 'react-dom';
 
 import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
+import { inPreviewBridge, placePreview, PREVIEW_GAP, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT, PREVIEW_MIN_HEIGHT, type Placement } from './placement.ts';
 import styles from './preview.module.css';
 
 type Phase = 'closed' | 'waiting' | 'preview' | 'ready';
-type Position = Readonly<{ x: number; y: number }>;
 const HOVER_DELAY = 300;
 const READY_DELAY = 1000;
 const LEAVE_DELAY = 180;
-const EDGE = 12;
+const TRAVEL_DELAY = 800;
 
 /** Transient, non-modal preview. The host owns destination admission and content.
  * Timers, portal and listeners live only as long as this trigger.
  * ArrowDown moves focus into the preview content; Escape closes the topmost preview. No focus trap.
  * Clicking a trigger still follows the host's ordinary navigation contract.
  */
-export function HoverPreview({ title, trigger, children }: Readonly<{
+export function HoverPreview({ title, trigger, children, getReadingSurface, getAvoidSurfaces }: Readonly<{
   title: string;
   trigger: (activate: () => void) => ReactNode;
   children: ReactNode;
+  /** Host-owned reading area. The primitive never infers document/application layout. */
+  getReadingSurface?: (trigger: HTMLElement) => HTMLElement | null;
+  getAvoidSurfaces?: (trigger: HTMLElement) => readonly HTMLElement[];
 }>) {
   const id = useId();
   const anchor = useRef<HTMLSpanElement>(null);
@@ -28,24 +31,27 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
   const body = useRef<HTMLDivElement>(null);
   const focusOnOpen = useRef(false);
   const skipFocus = useRef(false);
+  const travelling = useRef(false);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [engaged, setEngaged] = useState(false);
   const [phase, setPhase] = useState<Phase>('closed');
-  const [position, setPosition] = useState<Position>({ x: EDGE, y: EDGE });
+  const [placement, setPlacement] = useState<Placement>({ x: PREVIEW_GAP, y: PREVIEW_GAP, width: PREVIEW_WIDTH, maxHeight: PREVIEW_MAX_HEIGHT, side: 'right' });
   const visible = phase === 'preview' || phase === 'ready';
   const ready = phase === 'ready';
-  const cancelLeave = () => {
+  const cancelLeave = useCallback(() => {
+    travelling.current = false;
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
     leaveTimer.current = null;
-  };
+  }, []);
+  const focusTrigger = useCallback(() => {
+    skipFocus.current = true;
+    anchor.current?.querySelector<HTMLElement>('button, a, [tabindex]')?.focus({ preventScroll: true });
+    skipFocus.current = false;
+  }, []);
   const close = (restoreFocus = false) => {
     cancelLeave();
     setPhase('closed');
-    if (restoreFocus) {
-      skipFocus.current = true;
-      anchor.current?.querySelector<HTMLElement>('button, a, [tabindex]')?.focus();
-      skipFocus.current = false;
-    }
+    if (restoreFocus) focusTrigger();
   };
   const activate = () => { cancelLeave(); setPhase('ready'); };
   const focusContent = useCallback(() => {
@@ -79,66 +85,83 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
     focusContent();
   }, [visible, focusContent]);
 
-  useLayoutEffect(() => {
-    if (!visible) return;
-    const box = anchor.current?.getBoundingClientRect();
-    const size = card.current?.getBoundingClientRect();
-    if (box === undefined || size === undefined) return;
-    setPosition({
-      x: Math.max(EDGE, Math.min(box.left, window.innerWidth - size.width - EDGE)),
-      y: box.bottom + EDGE + size.height <= window.innerHeight
-        ? box.bottom + EDGE : Math.max(EDGE, box.top - size.height - EDGE),
+  const reposition = useCallback(() => {
+    const triggerElement = anchor.current;
+    const cardElement = card.current;
+    if (triggerElement === null || cardElement === null) return;
+    const parent = triggerElement.closest<HTMLElement>('[data-nc-link-preview]');
+    const reading = parent ?? getReadingSurface?.(triggerElement) ?? null;
+    const bounds = cardElement.getBoundingClientRect();
+    const next = placePreview({ readingAreas: getAvoidSurfaces?.(triggerElement).map((element) => element.getBoundingClientRect()), anchor: triggerElement.getBoundingClientRect(), reading: reading?.getBoundingClientRect() ?? null,
+      obstacles: Array.from(document.querySelectorAll<HTMLElement>('[data-nc-link-preview]'))
+        .filter((element) => element !== cardElement).map((element) => element.getBoundingClientRect()),
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      naturalHeight: bounds.height + (body.current === null ? 0 : body.current.scrollHeight - body.current.clientHeight),
     });
-  }, [visible]);
+    if (next === null) {
+      setPhase('closed');
+      if (cardElement.contains(document.activeElement)) focusTrigger();
+      cancelLeave();
+      return;
+    }
+    setPlacement((current) => current.x === next.x && current.y === next.y && current.width === next.width
+      && current.maxHeight === next.maxHeight && current.side === next.side ? current : next);
+  }, [getReadingSurface, getAvoidSurfaces, setPhase, setPlacement, focusTrigger, cancelLeave]);
+  useLayoutEffect(() => { if (visible) reposition(); }, [visible, reposition]);
   useEffect(() => {
-    if (!visible || card.current === null) return;
-    const observer = new ResizeObserver(() => {
-      const box = card.current?.getBoundingClientRect();
-      if (box === undefined) return;
-      setPosition((current) => ({
-        x: Math.max(EDGE, Math.min(current.x, window.innerWidth - box.width - EDGE)),
-        y: Math.max(EDGE, Math.min(current.y, window.innerHeight - box.height - EDGE)),
-      }));
-    });
+    if (!visible || card.current === null || anchor.current === null) return;
+    const observer = new ResizeObserver(reposition);
     observer.observe(card.current);
+    observer.observe(anchor.current);
+    const reading = anchor.current.closest<HTMLElement>('[data-nc-link-preview]') ?? getReadingSurface?.(anchor.current);
+    if (reading != null) observer.observe(reading);
+    for (const element of getAvoidSurfaces?.(anchor.current) ?? []) observer.observe(element);
     return () => { observer.disconnect(); };
-  }, [visible]);
+  }, [visible, reposition, getReadingSurface, getAvoidSurfaces]);
   useEffect(() => {
     if (!visible) return;
-    const clamp = () => {
-      const box = card.current?.getBoundingClientRect();
-      if (box === undefined) return;
-      setPosition((current) => ({
-        x: Math.max(EDGE, Math.min(current.x, window.innerWidth - box.width - EDGE)),
-        y: Math.max(EDGE, Math.min(current.y, window.innerHeight - box.height - EDGE)),
-      }));
+    const move = (event: PointerEvent) => {
+      if (event.pointerType === 'touch' || leaveTimer.current === null || anchor.current === null || card.current === null) return;
+      const target = event.target;
+      const anotherControl = target instanceof Element && target.closest('button, a[href], input, select, textarea, [role="button"], [role="link"]') !== null
+        && !anchor.current.contains(target) && !card.current.contains(target);
+      if (!anotherControl && inPreviewBridge({ x: event.clientX, y: event.clientY },
+        anchor.current.getBoundingClientRect(), card.current.getBoundingClientRect(), placement.side)) {
+        cancelLeave();
+        travelling.current = true;
+        leaveTimer.current = setTimeout(() => setPhase('closed'), TRAVEL_DELAY);
+      } else if (travelling.current) {
+        cancelLeave();
+        leaveTimer.current = setTimeout(() => setPhase('closed'), LEAVE_DELAY);
+      }
     };
+    document.addEventListener('pointermove', move);
+    return () => { document.removeEventListener('pointermove', move); };
+  }, [visible, placement.side, cancelLeave, setPhase]);
+  useEffect(() => {
+    if (!visible) return;
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       const layers = document.querySelectorAll('[data-nc-escape-layer]');
       if (layers.item(layers.length - 1) !== card.current) return;
       event.preventDefault();
       setPhase('closed');
-      if (card.current?.contains(document.activeElement)) {
-        skipFocus.current = true;
-        anchor.current?.querySelector<HTMLElement>('button, a, [tabindex]')?.focus();
-        skipFocus.current = false;
-      }
+      if (card.current?.contains(document.activeElement)) focusTrigger();
     };
     const scroll = (event: Event) => {
       // Only scrolling an ancestor moves this preview's anchor; portal children own their scrolling.
       if (event.target instanceof Node && event.target.contains(anchor.current)
         && !card.current?.contains(event.target)) setPhase('closed');
     };
-    window.addEventListener('resize', clamp);
+    window.addEventListener('resize', reposition);
     document.addEventListener('keydown', escape);
     document.addEventListener('scroll', scroll, true);
     return () => {
-      window.removeEventListener('resize', clamp);
+      window.removeEventListener('resize', reposition);
       document.removeEventListener('keydown', escape);
       document.removeEventListener('scroll', scroll, true);
     };
-  }, [visible]);
+  }, [visible, reposition, focusTrigger]);
 
   return <span ref={anchor} className={styles.anchor} role="presentation"
     onPointerEnter={(event) => { if (event.pointerType !== 'touch') enter(); }}
@@ -160,10 +183,10 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
       if (event.key === 'Escape' && phase === 'waiting') { event.preventDefault(); close(); }
     }}>
     {trigger(activate)}
-    {visible && createPortal(<div ref={card} className={styles.card} role="dialog"
+    {visible && createPortal(<div ref={card} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog"
       aria-label={`Preview: ${title}`} id={id} data-nc-link-preview=""
       data-nc-ready={ready ? '' : undefined} data-nc-escape-layer=""
-      style={{ left: position.x, top: position.y }}
+      style={{ left: placement.x, top: placement.y, width: placement.width, maxHeight: placement.maxHeight }}
       onPointerEnter={enter} onPointerLeave={leave}
       onFocus={enter} onBlur={(event) => {
         if (event.relatedTarget instanceof Node && card.current?.contains(event.relatedTarget)) return;
