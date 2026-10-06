@@ -128,8 +128,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "22",
-        "#2209: the ratify route is gone and the ask answer route is new"
+        "23",
+        "#2301: manual context compaction adds a route and a harness phase"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -142,12 +142,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 43);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 44);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 43);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 44);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
