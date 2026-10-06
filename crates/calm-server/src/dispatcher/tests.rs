@@ -270,7 +270,7 @@ fn dispatcher_filter_matches_push_kinds() {
         track_id: track.clone(),
         overlapping_prs: vec![1, 2],
     })));
-    assert!(!filter.matches(&env(Event::ForgePrOpened {
+    assert!(filter.matches(&env(Event::ForgePrOpened {
         track_id: track.clone(),
         pr_number: 1,
         head_sha: "head-sha".into(),
@@ -1344,6 +1344,11 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             track_id: track.clone(),
             overlapping_prs: vec![1, 2],
         },
+        Event::ForgePrOpened {
+            track_id: track.clone(),
+            pr_number: 1,
+            head_sha: "head-sha".into(),
+        },
         Event::ForgePrChecks {
             track_id: track.clone(),
             pr_number: 1,
@@ -1362,30 +1367,15 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             forge_event.kind_tag()
         );
     }
-    // #2170: echoes of a call the Planner already holds the answer to never wake it.
-    for (echo, actor) in [
-        (
-            Event::RatifyRequested {
-                track_id: track.clone(),
-                reason: "merge_hold".into(),
-            },
-            ActorId::AiPlanner(planner.clone()),
-        ),
-        (
-            Event::ForgePrOpened {
-                track_id: track.clone(),
-                pr_number: 1,
-                head_sha: "head-sha".into(),
-            },
-            ActorId::KernelDispatcher,
-        ),
-    ] {
-        assert!(
-            !event_warrants_planner_push(&echo, &actor, &write),
-            "{} must not wake the planner",
-            echo.kind_tag()
-        );
-    }
+    // #2170: the Planner's own ratify request echoes its call and never wakes it.
+    assert!(!event_warrants_planner_push(
+        &Event::RatifyRequested {
+            track_id: track.clone(),
+            reason: "merge_hold".into(),
+        },
+        &ActorId::AiPlanner(planner.clone()),
+        &write
+    ));
     assert!(!event_warrants_planner_push(
         &Event::ForgePrDiffRead {
             track_id: track.clone(),
@@ -1730,7 +1720,10 @@ fn harness_observation_from_event_mapping_pin() {
             },
             Some("impl-parser")
         ),
-        None
+        Some(HarnessObservation::ForgePrOpened {
+            track_id: track.clone(),
+            pr_number: 1,
+        })
     );
     assert_eq!(
         harness_observation_from_event(
@@ -2200,8 +2193,8 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 head_sha: "head-sha".into(),
             },
             ActorId::KernelDispatcher,
-            false,
-            false,
+            true,
+            true,
         ),
         row(
             Event::ForgePrChecks {

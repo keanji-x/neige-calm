@@ -134,6 +134,10 @@ pub enum Observation {
         track_id: TrackId,
         overlapping_prs: Vec<u64>,
     },
+    ForgePrOpened {
+        track_id: TrackId,
+        pr_number: u64,
+    },
     ForgePrChecks {
         track_id: TrackId,
         pr_number: u64,
@@ -218,6 +222,7 @@ impl Observation {
             | Observation::WorkspaceReleased { .. }
             | Observation::ForgePrMerged { .. }
             | Observation::ForgeScanCompleted { .. }
+            | Observation::ForgePrOpened { .. }
             | Observation::ForgePrChecks { .. }
             | Observation::ForgeIssueClosed { .. }
             | Observation::WorktreeProvisioned { .. }
@@ -238,6 +243,7 @@ impl Observation {
             | Observation::TrackWake { .. }
             | Observation::ForgePrMerged { .. }
             | Observation::ForgeScanCompleted { .. }
+            | Observation::ForgePrOpened { .. }
             | Observation::ForgePrChecks { .. }
             | Observation::ForgeIssueClosed { .. }
             | Observation::WorktreeProvisioned { .. }
@@ -415,6 +421,9 @@ impl Observation {
                 "Forge scan completed with overlapping PRs {:?}. Re-read the track status.",
                 overlapping_prs
             ),
+            Observation::ForgePrOpened { pr_number, .. } => {
+                format!("Forge PR #{pr_number} was opened. Re-read the track status.")
+            }
             Observation::ForgePrChecks {
                 pr_number,
                 conclusion,

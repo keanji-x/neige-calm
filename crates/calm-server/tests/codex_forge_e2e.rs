@@ -423,6 +423,14 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     .await;
     inject_observation(
         &harness,
+        Observation::ForgePrOpened {
+            track_id: fx.track_id.clone(),
+            pr_number,
+        },
+    )
+    .await;
+    inject_observation(
+        &harness,
         Observation::ForgePrChecks {
             track_id: fx.track_id.clone(),
             pr_number,
