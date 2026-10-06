@@ -18,7 +18,7 @@ import { admitTransport } from '../providers/recovery-mutation.ts';
 // transport and QueryClient; also the composition point for route-owned surfaces.
 
 import {
-  createRootRoute, createRoute, createRouter, useLocation, type AnyRoute,
+  createRootRoute, createRoute, createRouter, useLocation, useRouterState, type AnyRoute,
 } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
@@ -1709,10 +1709,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
           /* The same receipt key and comparison point as the rail, so a track reads as
                        unread on Today exactly when it does there. */
           unread={preferences.isUnread('track', track.id, track.activityAt ?? 0)}
-          onOpen={(trackId) => {
-            preferences.markRead('track', trackId, track.activityAt ?? 0);
-            go({ name: 'track', trackId });
-          }}
+          onOpen={(trackId) => go({ name: 'track', trackId })}
           onDelete={deletion.request}
           actions={{
             areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
@@ -1871,7 +1868,9 @@ function TrackRouteBody({
   useTrackViewState(track.id);
   // The same key and comparison point the rail uses: the overlay's completion
   // high-water mark, never the row's `updatedAt`.
-  useReadReceipt('track', track.id, track.activityAt ?? 0);
+  // A completed navigation also acknowledges a repeated selection of this already rendered Track.
+  const navigationCompletedAt = useRouterState({ select: (state) => state.loadedAt });
+  useReadReceipt('track', track.id, track.activityAt ?? 0, true, navigationCompletedAt);
   const trackMutations = useTrackMutations(transport, unauthorized);
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();

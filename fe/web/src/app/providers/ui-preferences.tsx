@@ -249,7 +249,7 @@ export function useConversationViewTarget(scopeId: string) {
 }
 
 /** A background tab never acknowledges work the reader has not seen. */
-export function useReadReceipt(kind: 'track' | 'conversation', id: string | null, updatedAt: number, enabled = true) {
+export function useReadReceipt(kind: 'track' | 'conversation', id: string | null, updatedAt: number, enabled = true, openedAt?: number) {
   const preferences = useUiPreferences();
   const scope = preferences.readScope();
   useEffect(() => {
@@ -260,5 +260,5 @@ export function useReadReceipt(kind: 'track' | 'conversation', id: string | null
     markVisible();
     document.addEventListener('visibilitychange', markVisible);
     return () => document.removeEventListener('visibilitychange', markVisible);
-  }, [preferences, scope, kind, id, updatedAt, enabled]);
+  }, [preferences, scope, kind, id, updatedAt, enabled, openedAt]);
 }

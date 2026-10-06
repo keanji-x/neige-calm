@@ -651,3 +651,31 @@ it('clears manual unread when reopening the current Track through mobile navigat
   expect(router.state.location.pathname).toBe('/track/w1');
   expect(preferences.isUnread('track', 'w1', 0)).toBe(false);
 });
+
+
+it('retains unread when a selected Track detail cannot be loaded', async () => {
+  await page.viewport(1400, 900);
+  const preferences = createUiPreferences();
+  preferences.setReadScope('db', 1_000);
+  setup('/track/w1', AREA.name, () => undefined, preferences);
+  await page.getByRole('button', { name: 'Actions for track Remote access', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
+  expect(preferences.isUnread('track', 'w2', 0)).toBe(true);
+  await page.getByRole('button', { name: 'Track Remote access', exact: true }).click();
+  await expect.element(page.getByRole('alert')).toBeVisible();
+  expect(preferences.isUnread('track', 'w2', 0)).toBe(true);
+});
+
+
+it('acknowledges a repeated desktop selection only in the rendered Track view', async () => {
+  await page.viewport(1400, 900);
+  const preferences = createUiPreferences();
+  preferences.setReadScope('db', 1_000);
+  setup('/track/w1', AREA.name, () => undefined, preferences);
+  const group = page.getByRole('group', { name: 'area Product', exact: true });
+  await group.getByRole('button', { name: 'Actions for track Responsive mobile UI', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
+  expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
+  await group.getByRole('button', { name: 'Track Responsive mobile UI', exact: true }).click();
+  await expect.poll(() => preferences.isUnread('track', 'w1', 0)).toBe(false);
+});

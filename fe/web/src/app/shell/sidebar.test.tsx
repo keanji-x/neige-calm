@@ -736,7 +736,7 @@ it('offers personal Track actions without navigation and pins before the Area li
 });
 
 
-it('acknowledges manually unread current Track when its real navigation row is selected again', async () => {
+it('keeps manually unread until the selected Track view acknowledges it', async () => {
   const preferences = createUiPreferences();
   preferences.setReadScope('db', 1_000);
   renderSidebar({ tracks: [track()], currentPath: '/track/w1' }, preferences);
@@ -744,5 +744,5 @@ it('acknowledges manually unread current Track when its real navigation row is s
   await userEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }));
   expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
   await userEvent.click(screen.getByRole('button', { name: 'Track Task' }));
-  expect(preferences.isUnread('track', 'w1', 0)).toBe(false);
+  expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
 });
