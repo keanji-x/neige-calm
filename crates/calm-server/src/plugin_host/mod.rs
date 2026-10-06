@@ -2261,6 +2261,7 @@ fn inherited_window(
 
 /// The first running or admitted plugin that already mints a name `id` would serve: the same
 /// `plugin_<id>_` prefix, or one of `tools`' `plugin_<id>_<tool>` names.
+/// Skips compiled natives; safe as built-in ids are reserved (registry.rs:173, lifecycle.rs:128).
 fn find_minted_name_conflict(
     id: &str,
     tools: &[manifest::ExposedTool],
