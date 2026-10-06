@@ -219,7 +219,7 @@ it('the shipped template form binds to its plugin and keeps merge approval by de
   const result = compileTemplateInputs(body, plugin.input_schema, { issue_url: 'https://github.com/owner/repo/issues/12' });
   expect(result.status).toBe('ready');
   if (result.status === 'unsupported') throw new Error('Shipped form is unsupported');
-  expect(result.input).toEqual({ issue_url: 'https://github.com/owner/repo/issues/12', repo: 'owner/repo', issue_number: 12, merge_policy: 'hold-for-ratify' });
+  expect(result.input).toEqual({ issue_url: 'https://github.com/owner/repo/issues/12', repo: 'owner/repo', issue_number: 12, merge_policy: 'ask' });
 });
 
 
@@ -229,5 +229,5 @@ it('the shipped development template accepts no issue while preserving merge hol
   const result = compileTemplateInputs(body, plugin.input_schema, {});
   expect(result.status).toBe('ready');
   if (result.status === 'unsupported') throw new Error('Shipped form is unsupported');
-  expect(result.input).toEqual({ merge_policy: 'hold-for-ratify' });
+  expect(result.input).toEqual({ merge_policy: 'ask' });
 });

@@ -445,6 +445,9 @@ mod track_create_request_fingerprint_migration_tests;
 mod track_template_rename_migration_tests;
 
 #[cfg(test)]
+mod track_merge_policy_ask_migration_tests;
+
+#[cfg(test)]
 mod track_closed_at_migration_tests;
 
 #[cfg(test)]

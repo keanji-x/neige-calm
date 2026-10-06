@@ -45,6 +45,10 @@ const RETIRED_PLUGIN_NAME: &str = concat!(
 /// spellings are retired.
 const RETIRED_NATIVE_NAME: &str = r"\bneige_(?:dev_publish|calendar_(?:add|ls|set|rm))\b";
 
+/// #2209: the dev merge policy that asks before merging is `ask`, the one way the Planner asks the
+/// user; the value named after the retired ratify mechanism is retired with it.
+const RETIRED_MERGE_POLICY: &str = r"\bhold-for-ratify\b";
+
 /// The retired MCP server key as a client spells it, assembled from two literals so this file does
 /// not carry the token it hunts.
 fn retired_server_key() -> String {
@@ -68,6 +72,7 @@ fn allowlisted(path: &str) -> bool {
         || path == "crates/calm-server/tests/cases/native_plugin_tool_names_migration.rs"
         || path == "crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs"
         || path == "crates/calm-truth/src/db/sqlite/track_template_rename_migration_tests.rs"
+        || path == "crates/calm-truth/src/db/sqlite/track_merge_policy_ask_migration_tests.rs"
         || path == "crates/calm-server/tests/goldens/events/forge_pr_merged.historical_subject.json"
         || path == "docs/architecture/2003-cli-mcp-naming.md"
 }
@@ -103,7 +108,7 @@ fn tracked_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn patterns() -> [regex::Regex; 8] {
+fn patterns() -> [regex::Regex; 9] {
     [
         regex::Regex::new(RETIRED_TOOL_NAME).expect("tool-name regex"),
         regex::Regex::new(RETIRED_DOTTED_KERNEL_NAME).expect("dotted-name regex"),
@@ -112,6 +117,7 @@ fn patterns() -> [regex::Regex; 8] {
         regex::Regex::new(RETIRED_CRUD_NAME).expect("crud-name regex"),
         regex::Regex::new(RETIRED_PLUGIN_NAME).expect("plugin-name regex"),
         regex::Regex::new(RETIRED_NATIVE_NAME).expect("native-name regex"),
+        regex::Regex::new(RETIRED_MERGE_POLICY).expect("merge-policy regex"),
         regex::Regex::new(&retired_server_key()).expect("server-key regex"),
     ]
 }
@@ -170,6 +176,8 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "\"neige_calendar_ls\"",                     // retired-name: rejection input
         "prompts/tools/neige_calendar_set.md",       // retired-name: rejection input
         "then neige_calendar_rm.",                   // retired-name: rejection input
+        "\"default\": \"hold-for-ratify\",",         // retired-name: rejection input
+        "- `hold-for-ratify` — also the semantics",  // retired-name: rejection input
         concat!("mcp__", "calm__neige_report_read"),
         concat!("allowed: mcp__", "calm Edit"),
     ] {
@@ -213,7 +221,9 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "neige_task_reject",
         "neige_user_ask",
         "ratify.requested",
-        "hold-for-ratify",
+        "ask",
+        "auto-merge",
+        "merge_policy `ask`",
         "my_neige_task_verdict",
         "a task verdict",
         "xneige.track.cat",

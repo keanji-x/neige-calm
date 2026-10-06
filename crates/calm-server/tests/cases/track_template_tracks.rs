@@ -1534,7 +1534,7 @@ async fn listed_template_keys_create_their_exact_recipes() {
 #[tokio::test]
 async fn dev_create_without_issue_preserves_binding_and_optional_input() {
     let boot = boot().await;
-    for input in [None, Some(json!({"merge_policy": "hold-for-ratify"}))] {
+    for input in [None, Some(json!({"merge_policy": "ask"}))] {
         let mut extra = json!({"template_id": DEV});
         if let Some(value) = input.clone() {
             extra["template_input"] = value;

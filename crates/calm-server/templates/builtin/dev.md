@@ -114,7 +114,7 @@ Merge and approval
 - Merge only a head inspected with gh_pr_diff and reviewed as repository policy requires, when no blocking finding is open
   and gh_pr_checks is green. Pass that head_sha as expected_head_sha.
 - merge_policy `auto-merge` allows gh_pr_merge at that point without asking again.
-- `hold-for-ratify` — also the semantics whenever merge_policy is absent — first asks with
+- merge_policy `ask` — also the semantics whenever merge_policy is absent — first asks with
   neige_user_ask, options `合并` and `暂不合并`, and a title that carries the evidence for that head,
   each value read from a result for that head_sha:
 
@@ -163,9 +163,9 @@ Merge and approval
           "kind": "toggle",
           "key": "merge_policy",
           "label": "Merge automatically",
-          "default": "hold-for-ratify",
+          "default": "ask",
           "on_value": "auto-merge",
-          "off_value": "hold-for-ratify",
+          "off_value": "ask",
           "on_description": "Allows the agent to merge after reviews and checks pass, without asking again.",
           "off_description": "The agent prepares the PR and waits for your approval to merge."
         }

@@ -3884,7 +3884,7 @@ mod tests {
                     "issue_url": { "type": "string" },
                     "merge_policy": {
                         "type": "string",
-                        "enum": ["hold-for-ratify", "auto-merge"]
+                        "enum": ["ask", "auto-merge"]
                     }
                 },
                 "required": required,

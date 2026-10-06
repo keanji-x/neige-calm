@@ -1075,7 +1075,7 @@ describe('the new-track page is a route reached from Area groups', () => {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
         repo: 'keanji-x/neige-calm',
         issue_number: 1209,
-        merge_policy: 'hold-for-ratify',
+        merge_policy: 'ask',
       },
     });
   });

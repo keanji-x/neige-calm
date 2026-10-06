@@ -1936,12 +1936,9 @@ mod tests {
         assert_eq!(schema["properties"]["merge_policy"]["type"], "string");
         assert_eq!(
             schema["properties"]["merge_policy"]["enum"],
-            serde_json::json!(["hold-for-ratify", "auto-merge"])
+            serde_json::json!(["ask", "auto-merge"])
         );
-        assert_eq!(
-            schema["properties"]["merge_policy"]["default"],
-            "hold-for-ratify"
-        );
+        assert_eq!(schema["properties"]["merge_policy"]["default"], "ask");
         assert_eq!(schema["properties"]["notes"]["type"], "string");
     }
 
@@ -2054,8 +2051,8 @@ mod tests {
                 "issue_url": { "type": "string", "description": "Canonical issue URL" },
                 "merge_policy": {
                     "type": "string",
-                    "enum": ["hold-for-ratify", "auto-merge"],
-                    "default": "hold-for-ratify"
+                    "enum": ["ask", "auto-merge"],
+                    "default": "ask"
                 }
             },
             "required": ["issue_url"],

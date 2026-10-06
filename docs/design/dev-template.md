@@ -4,7 +4,7 @@ Outcome: replace the issue-required `issue-development` template with `dev`. Dev
 
 Review tier: L2 because the template identity is persisted and merge authorization must remain unchanged.
 
-Inputs: optional issue URL with its existing derived repo/issue number fields; merge approval continues to default to hold-for-ratify. No issue means no GitHub issue reads, comments, or closure. Blank optional formatted fields emit no values; malformed nonblank values still block submission. When issue repo is present, retain the origin cross-check before writes. Without issue, use the track checkout and user request; surface actual repository ambiguity before writes.
+Inputs: optional issue URL with its existing derived repo/issue number fields; merge approval continues to default to `ask`. No issue means no GitHub issue reads, comments, or closure. Blank optional formatted fields emit no values; malformed nonblank values still block submission. When issue repo is present, retain the origin cross-check before writes. Without issue, use the track checkout and user request; surface actual repository ambiguity before writes.
 
 Rename all live registrations and callers to dev; preserve released migrations and historical design records. A new migration updates tracks and area defaults while preserving bound input, plugin scope, report body, approval, planner snapshots, and execution history. Existing report methods remain as saved; do not rewrite user reports.
 

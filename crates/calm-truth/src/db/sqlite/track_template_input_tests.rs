@@ -21,7 +21,7 @@ async fn track_create_round_trips_template_input() {
     let input = json!({
         "issue_url": "https://github.com/o/r/issues/891",
         "issue_number": 891,
-        "merge_policy": "hold-for-ratify"
+        "merge_policy": "ask"
     });
     let with_input = track_create_tx(
         &mut tx,

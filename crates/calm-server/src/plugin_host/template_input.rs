@@ -446,8 +446,8 @@ mod tests {
                 "issue_number": { "type": "integer" },
                 "merge_policy": {
                     "type": "string",
-                    "enum": ["hold-for-ratify", "auto-merge"],
-                    "default": "hold-for-ratify"
+                    "enum": ["ask", "auto-merge"],
+                    "default": "ask"
                 },
                 "dry_run": { "type": "boolean" },
                 "weight": { "type": "number" }
@@ -696,7 +696,7 @@ mod tests {
             .unwrap_err(),
         );
         assert_eq!(field, "template_input.merge_policy");
-        assert!(reason.contains("hold-for-ratify"), "{reason}");
+        assert!(reason.contains("ask"), "{reason}");
         assert!(reason.contains("auto-merge"), "{reason}");
     }
 

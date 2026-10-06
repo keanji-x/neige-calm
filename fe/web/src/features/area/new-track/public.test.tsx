@@ -564,7 +564,7 @@ describe('Start from — issue development expands under the group', () => {
     await userEvent.click(submitButton());
     expect(onSubmit).toHaveBeenCalledWith({
       message: 'Ship the thing', template_id: 'dev',
-      template_input: { merge_policy: 'hold-for-ratify' },
+      template_input: { merge_policy: 'ask' },
     });
   });
 
@@ -585,7 +585,7 @@ describe('Start from — issue development expands under the group', () => {
         repo: 'keanji-x/neige-calm',
         issue_number: 1209,
         // The direction that matters: unchecked means a human approves.
-        merge_policy: 'hold-for-ratify',
+        merge_policy: 'ask',
       },
     });
   });
