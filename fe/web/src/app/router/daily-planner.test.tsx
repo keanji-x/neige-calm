@@ -43,7 +43,9 @@ it('reads yesterday’s report changes and individual edits with the server snap
 it('keeps report history failures distinct from no changes', async () => {
   renderDailyFixture({ failChanges: true });
   await userEvent.click(await screen.findByText('Report changes'));
-  await screen.findByText('Report history unavailable');
+  /* A 500's text is the server's internals: only the fixed sentence shows. */
+  await screen.findByText('Report changes could not be loaded.');
+  expect(screen.queryByText(/Report history unavailable/)).toBeNull();
   expect(screen.queryByText('No report changes recorded for visible Tracks on this day.')).toBeNull();
 });
 

@@ -9,15 +9,21 @@ import {
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { joinDirectoryPath, type ListDirectory } from '../../ui/directory-browser/public.tsx';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { runOperation } from './queries.ts';
 
-/** `joinDirectoryPath` is passed in: the directory browser owns how a listing's rows are addressed, and the decoder must agree. */
+/**
+ * `joinDirectoryPath` is passed in: the directory browser owns how a listing's rows are addressed, and the decoder must
+ * agree. A failed listing rejects with the sentence the shared read rule gives it, which is what the browser shows.
+ */
 export function createDirectoryLister(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
 ): ListDirectory {
   return async (path) => toDirectoryListing(
-    await runOperation(transport, listDirectoryOperation(path), unauthorized),
+    await runOperation(transport, listDirectoryOperation(path), unauthorized).catch((error: unknown) => {
+      throw new Error(readErrorText(error, 'Could not list this folder.'), { cause: error });
+    }),
     joinDirectoryPath,
   );
 }

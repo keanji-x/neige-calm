@@ -303,7 +303,8 @@ describe('Unified mobile headers', () => {
     setup('/track/w1', AREA.name, () => undefined, 'Second Area track', { trackAreaId: 'c2', failTracks: failure === 'tracks', failAreas: failure === 'areas' });
     const selector = page.getByRole('button', { name: 'Switch track, Second Area track', exact: true });
     await selector.click();
-    await page.getByRole('menuitem', { name: /Could not read tracks/ }).findElement();
+    /* The 500's text ("List unavailable") is the server's: the item is the fixed sentence alone. */
+    await page.getByRole('menuitem', { name: 'Could not read tracks.', exact: true }).findElement();
     expect(page.getByRole('menuitem', { name: 'Another track', exact: true }).query()).toBeNull();
     await page.getByRole('menuitem', { name: 'Retry', exact: true }).findElement();
     await userEvent.keyboard('{Escape}');

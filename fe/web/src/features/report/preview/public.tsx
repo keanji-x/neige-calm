@@ -20,6 +20,7 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
 import type { PreviewBlockPayload, PreviewResolution } from '../../../../../core/domain/report.ts';
+import { readFailureText } from '../../../../../core/domain/read-failure.ts';
 import styles from './preview.module.css';
 import {
   PREVIEW_PRESETS, presetSize, readPreset, viewportScale, writePreset, type PreviewPresetId, type PreviewViewportStore,
@@ -70,7 +71,7 @@ export function ReportPreviewBlock({ payload, resolve, viewports }: {
     case 'loading':
       return <PreviewNotice title={title} height={height} text="Loading …" />;
     case 'error':
-      return <PreviewNotice title={title} height={height} text={`Could not read previews: ${resolution.message}`} />;
+      return <PreviewNotice title={title} height={height} text={readFailureText(resolution.failure, 'Could not read previews.')} />;
     case 'missing':
       return <PreviewNotice title={title} height={height}
         text={`No preview is registered under “${payload.key}”.`} />;

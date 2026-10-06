@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 
+import type { ApiFailure } from '../../../../core/api/types.ts';
 import type { WorkspaceFilePort } from '../../../../core/domain/fs.ts';
+import { readFailureOf } from '../../../../core/domain/read-failure.ts';
 import { useState } from '../../ui/state/public.ts';
 import { isImagePath, isMarkdownPath } from './file-kind.ts';
 
@@ -11,20 +13,16 @@ type ResourceState =
       format: 'markdown' | 'source';
     }>
   | Readonly<{ kind: 'image'; path: string; url: string }>
-  | Readonly<{ kind: 'error'; message: string }>;
+  | Readonly<{ kind: 'error'; failure: ApiFailure | null }>;
 
 export type ReportFileResource =
   | Exclude<ResourceState, { kind: 'image' | 'error' }>
-  | Readonly<{ kind: 'error'; message: string; retry: () => void }>
+  | Readonly<{ kind: 'error'; failure: ApiFailure | null; retry: () => void }>
   | Readonly<{
       kind: 'image'; path: string; url: string;
       onLoad: () => void;
       onError: () => void;
     }>;
-
-function messageOf(error: unknown): string {
-  return error instanceof Error && error.message !== '' ? error.message : 'Could not read this file.';
-}
 
 /** Owns classification, async read/cancellation, and image load completion. */
 export function useReportFileResource(
@@ -57,7 +55,7 @@ export function useReportFileResource(
         onOpenedRef.current?.(path);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setState({ kind: 'error', message: messageOf(error) });
+        if (!cancelled) setState({ kind: 'error', failure: readFailureOf(error) });
       });
     return () => { cancelled = true; };
   }, [files, path, retryKey]);
@@ -67,6 +65,6 @@ export function useReportFileResource(
   return {
     ...state,
     onLoad: () => { onOpenedRef.current?.(state.path); },
-    onError: () => { setState({ kind: 'error', message: 'Could not read this image.' }); },
+    onError: () => { setState({ kind: 'error', failure: null }); },
   };
 }

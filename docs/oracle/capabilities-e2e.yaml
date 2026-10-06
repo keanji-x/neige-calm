@@ -141,7 +141,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/new-track-route.tsx:85-95
+  source: fe/web/src/app/router/new-track-route.tsx:86-96
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:837-857
   owner_slice: features/track/create
   intentional_omission: false
@@ -225,7 +225,7 @@
     The kernel names an entry without placing it (`fs.rs` `DirEntry` is name + is_dir), while the
     picker navigates by entry path. A second copy of the join rule would drift from the one the
     picker's own input bar uses; core may not import ui, so the owner's function is injected.
-  source: fe/core/domain/fs.ts:127-140; fe/web/src/app/providers/directory.ts:15-21
+  source: fe/core/domain/fs.ts:127-140; fe/web/src/app/providers/directory.ts:19-29
   authoritative_test: fe/web/src/app/providers/directory.test.ts:34
   owner_slice: app/providers
   intentional_omission: false

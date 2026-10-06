@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 
-import type { ApiOperation } from '../api/types.js';
+import type { ApiFailure, ApiOperation } from '../api/types.js';
 import type { SourceProvenance, TrackSourceDetail } from '../api/generated/wire.js';
 import { parse, sanitizeAstPolicy, type SafeInline } from '../markdown/public.js';
 
@@ -139,7 +139,7 @@ export function trackSourceOperation(trackId: string, sourceId: string): ApiOper
 export type SourceResolution =
   | Readonly<{ status: 'loading' }>
   | Readonly<{ status: 'missing' }>
-  | Readonly<{ status: 'error'; message: string }>
+  | Readonly<{ status: 'error'; failure: ApiFailure | null }>
   | Readonly<{ status: 'ok'; source: TrackSourceDetail }>;
 
 /**

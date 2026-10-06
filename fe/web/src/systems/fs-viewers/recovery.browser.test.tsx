@@ -2,6 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
 import '../../styles/entry.css';
 import { FileViewer, type ViewerSlots } from './public.tsx';
 
@@ -17,7 +18,8 @@ it('recovers a missing selected file in the real code viewer', async () => {
     },
     set: (key, value) => { values.set(key, value); },
   };
-  const readFile = vi.fn().mockRejectedValueOnce(new Error('Path not found: /repo/notes.txt'))
+  /* What `/api/fs/readfile` answers for a missing path: a 400 refusal whose reason the read rule shows. */
+  const readFile = vi.fn().mockRejectedValueOnce(new ApiError({ kind: 'http', status: 400, code: 'bad_request', message: 'path /repo/notes.txt not found' }))
     .mockResolvedValueOnce({ path: '/repo/notes.txt', size: 8, text: 'RESTORED_FILE', truncated: false });
   render(<div style={{ height: 500 }}><FileViewer path="/repo" theme="dark" slots={slots} files={{
     listDirectory: () => Promise.resolve({ path: '/repo', parent: '/', entries: [{ name: 'notes.txt', is_dir: false }] }),
@@ -26,8 +28,8 @@ it('recovers a missing selected file in the real code viewer', async () => {
     gitDiff: vi.fn(), rawUrl: (path) => path,
   }} /></div>);
   await userEvent.click(await screen.findByRole('button', { name: /notes\.txt/ }));
-  expect(await screen.findByText('File or folder not found.')).toBeTruthy();
-  expect(screen.getByText('Path not found: /repo/notes.txt').checkVisibility()).toBe(false);
+  expect((await screen.findByText('Could not load this file. path /repo/notes.txt not found')).checkVisibility()).toBe(true);
+  expect(screen.getByRole('alert').querySelector('details')).toBeNull();
   await page.screenshot({ path: 'test-results/file-read-failed.png' });
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(await screen.findByText('RESTORED_FILE', {}, { timeout: 10_000 })).toBeTruthy();

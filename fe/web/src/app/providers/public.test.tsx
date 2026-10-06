@@ -26,6 +26,8 @@ describe('provider behavior', () => {
     expect(status.textContent).toContain('Live updates unavailable');
     expect(screen.getByText('route')).toBeTruthy();
     expect(screen.queryByText('bridge')).toBeNull();
+    /* A failed preflight is read by the shared rule: its thrown text is not the reader's. */
+    expect(screen.getByRole('button', { name: 'Retry live updates' }).getAttribute('title')).toBe('Reconnect to restore live updates.');
     await userEvent.click(screen.getByRole('button', { name: 'Retry live updates' }));
     await screen.findByText('bridge');
     expect(screen.queryByRole('status')).toBeNull();

@@ -7,6 +7,7 @@ import { templateDetailOperation } from '../../../../core/domain/template.ts';
 import { availabilityOf } from '../../../../core/domain/agent-providers.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { ApiError, classifyFailure, NotSentError, refusedText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { isBlankForKernel, TRACK_CREATE_FAILURES, TRACK_CREATE_TEXT, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
@@ -32,7 +33,7 @@ export function NewTrackRoute({ transport, unauthorized }: RouteProps) {
   const go = useGo();
   if (session === null) {
     if (workspace.areasLoading) return null;
-    if (workspace.areasError !== null) return <ErrorBox message={workspace.areasError.message} onRetry={workspace.retryAreas} />;
+    if (workspace.areasError !== null) return <ErrorBox message={readErrorText(workspace.areasError, 'Areas are unavailable.')} onRetry={workspace.retryAreas} />;
     if (area !== undefined) return null; // The provider initializes the Area draft after this read.
     return <ErrorBox message="This area could not be found." onRetry={() => go({ name: 'today' })} />;
   }
@@ -148,7 +149,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     }, key);
   };
   const areaFailure = workspace.areasError !== null
-    ? `Areas could not be refreshed. Your draft is kept here. ${workspace.areasError.message}`
+    ? readErrorText(workspace.areasError, 'Areas could not be refreshed. Your draft is kept here.')
     : !available ? 'Area unavailable. Your draft is kept here; select and copy it to use elsewhere.' : null;
   const createdTrackId = session.createdTrackId;
   const configurationLocked = session.creating || session.request !== null || !available || createdTrackId !== null;

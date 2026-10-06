@@ -2,7 +2,9 @@
 
 import { Suspense, lazy, useCallback, useEffect, useRef, type ReactNode } from 'react';
 
+import type { ApiFailure } from '../../../../core/api/types.ts';
 import type { CardFilesPort, DirectoryListingWire, GitChangedFileWire, GitDiffWire } from '../../../../core/domain/fs.ts';
+import { readFailureOf } from '../../../../core/domain/read-failure.ts';
 import { joinDirectoryPath } from '../../ui/directory-browser/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { PaneSearchAdapter, PaneTheme } from './code-pane.tsx';
@@ -31,7 +33,10 @@ type FileState =
   | Readonly<{ kind: 'loading' }>
   | Readonly<{ kind: 'loaded'; path: string; text: string; truncated: boolean }>
   | Readonly<{ kind: 'image'; path: string }>
-  | Readonly<{ kind: 'error'; message: string }>;
+  | Readonly<{ kind: 'error'; failure: ApiFailure | null }>;
+
+/** A failed read, kept for {@link FileReadError} to read: the failure it carried, or `null` when it carried none. */
+type ReadFailed = Readonly<{ failure: ApiFailure | null }>;
 
 const NAV_SLOT = 'fs-viewer-nav';
 
@@ -44,10 +49,6 @@ function parentPath(path: string): string | null {
   const index = trimmed.lastIndexOf('/');
   if (index <= 0) return index === 0 ? '/' : null;
   return trimmed.slice(0, index);
-}
-
-function messageOf(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
 
 function statusLabel(status: string): string {
@@ -90,12 +91,12 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
   const [diffRetry, setDiffRetry] = useState(0);
   const [listing, setListing] = useState<DirectoryListingWire | null>(null);
   const [listingLoading, setListingLoading] = useState(false);
-  const [listingError, setListingError] = useState<string | null>(null);
+  const [listingError, setListingError] = useState<ReadFailed | null>(null);
   const [fileState, setFileState] = useState<FileState>({ kind: 'idle' });
   const [gitRoot, setGitRoot] = useState<string | null>(null);
   const [changedFiles, setChangedFiles] = useState<readonly GitChangedFileWire[]>([]);
   const [diffListLoading, setDiffListLoading] = useState(false);
-  const [diffError, setDiffError] = useState<string | null>(null);
+  const [diffError, setDiffError] = useState<ReadFailed | null>(null);
   const [diff, setDiff] = useState<GitDiffWire | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
 
@@ -125,7 +126,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
           return;
         }
         setListing(null);
-        setListingError(messageOf(error, 'Failed to list directory'));
+        setListingError({ failure: readFailureOf(error) });
       })
       .finally(() => { if (!cancelled) setListingLoading(false); });
     return () => { cancelled = true; };
@@ -155,7 +156,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setFileState({ kind: 'error', message: messageOf(error, 'Failed to read file') });
+        setFileState({ kind: 'error', failure: readFailureOf(error) });
       });
     return () => { cancelled = true; };
   }, [files, selectedCodePath, tab, fileRetry]);
@@ -185,7 +186,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
         setGitRoot(null);
         setChangedFiles([]);
         setNav((current) => ({ ...current, diffSelected: null }));
-        setDiffError(messageOf(error, 'Failed to load git status'));
+        setDiffError({ failure: readFailureOf(error) });
       })
       .finally(() => { if (!cancelled) setDiffListLoading(false); });
     return () => { cancelled = true; };
@@ -206,7 +207,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
       .catch((error: unknown) => {
         if (cancelled) return;
         setDiff(null);
-        setDiffError(messageOf(error, 'Failed to load diff'));
+        setDiffError({ failure: readFailureOf(error) });
       })
       .finally(() => { if (!cancelled) setDiffLoading(false); });
     return () => { cancelled = true; };
@@ -246,7 +247,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
           {listingLoading
             ? <p className="fv-state">Loading…</p>
             : listingError !== null
-              ? <FileReadError message={listingError} resource="folder" onRetry={() => setListingRetry((value) => value + 1)} />
+              ? <FileReadError failure={listingError.failure} resource="folder" onRetry={() => setListingRetry((value) => value + 1)} />
               : entries.length === 0
                 ? <p className="fv-state">Empty directory</p>
                 : entries.map((entry) => {
@@ -310,7 +311,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
               theme={theme}
               rawUrl={files.rawUrl}
               onRetry={() => setFileRetry((value) => value + 1)}
-              onImageError={() => setFileState({ kind: 'error', message: 'Could not read this image.' })}
+              onImageError={() => setFileState({ kind: 'error', failure: null })}
             />
           )
           : (
@@ -345,7 +346,7 @@ function CodeTab({ state, selectedPath, theme, rawUrl, onRetry, onImageError }: 
   if (state.kind === 'idle' || state.kind === 'loading') {
     return <p className="fv-state">Loading file…</p>;
   }
-  if (state.kind === 'error') return <FileReadError message={state.message} onRetry={onRetry} />;
+  if (state.kind === 'error') return <FileReadError failure={state.failure} onRetry={onRetry} />;
   if (state.kind === 'image') {
     return (
       <div className="fv-image-wrap">
@@ -470,7 +471,7 @@ function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme
   files: readonly GitChangedFileWire[];
   selected: string | null;
   listLoading: boolean;
-  error: string | null;
+  error: ReadFailed | null;
   diff: GitDiffWire | null;
   diffLoading: boolean;
   theme: PaneTheme;
@@ -501,7 +502,7 @@ function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme
       </div>
       <div className="fv-diff-pane">
         {error !== null
-          ? <FileReadError message={error} resource="changes" onRetry={onRetry} />
+          ? <FileReadError failure={error.failure} resource="changes" onRetry={onRetry} />
           : diffLoading || diff === null
             ? <p className="fv-state">{selected === null ? 'Select a changed file' : 'Loading diff…'}</p>
             : (

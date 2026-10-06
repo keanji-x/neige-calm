@@ -132,7 +132,9 @@ it('keeps the failed first history read recovery action focused during retry', a
   render(<QueryClientProvider client={client}><TaskRecovery trackId="w1" taskKey="b" expanded
     transport={transport} unauthorized={unauthorized} openableWorkerIds={new Set()} openWorker={() => {}} />
   </QueryClientProvider>);
-  await expect.element(page.getByText('Could not refresh execution history: History is unavailable.')).toBeVisible();
+  await expect.element(page.getByText('Could not refresh execution history.', { exact: true })).toBeVisible();
+  /* A 500's text is the server's internals: only the fixed sentence shows. */
+  expect(page.getByText('History is unavailable.').query()).toBeNull();
   const action = screen.getByRole('button', { name: 'Refresh execution history' });
   await userEvent.click(action);
   await expect.poll(() => action.getAttribute('aria-busy')).toBe('true');

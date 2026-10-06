@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { useEffect, type ReactNode } from 'react';
 import { DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -94,7 +95,7 @@ export function ServerCompatGate({ children: routeContent, runtime, client, rend
         <span>{query.fetchStatus === 'paused' ? 'Offline · Live updates paused'
           : query.isFetching ? 'Reconnecting live updates…' : 'Live updates unavailable'}</span>
         <button type="button" className={styles.retry} aria-label="Retry live updates"
-          title={query.error instanceof Error ? query.error.message : 'Reconnect to restore live updates'}
+          title={readErrorText(query.error, 'Reconnect to restore live updates.')}
           disabled={query.isFetching} onClick={() => { void query.refetch(); }}>Retry</button>
       </div>
     )}

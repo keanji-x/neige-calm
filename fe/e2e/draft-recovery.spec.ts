@@ -12,10 +12,12 @@ test('keeps Today usable without claiming zero activity when Areas is unavailabl
   });
   await page.goto('/next/today/legacy');
   const main = page.getByRole('main');
-  const failure = main.getByRole('alert').filter({ hasText: 'Areas temporarily unavailable' });
+  /* A 503's text is the server's internals: the Today notice is the fixed sentence alone. */
+  const failure = main.getByRole('alert').filter({ hasText: 'Areas are unavailable.' });
   // Wait for the stub's answer first so a slow load reports as "stub never asked", not "failure state never rendered".
   await expect.poll(() => served, { timeout: 15_000 }).toBeGreaterThan(0);
   await expect(failure).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('Areas temporarily unavailable')).toHaveCount(0);
   const header = main.locator('header[data-nc-header-rows]').first();
   // Existence first: `not.toContainText` alone passes for a header that never rendered.
   await expect(header).toBeVisible();

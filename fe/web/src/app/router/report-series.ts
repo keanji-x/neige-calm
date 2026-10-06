@@ -8,7 +8,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ReportBlock } from '../../../../core/domain/report.ts';
 import type { SeriesResolution } from '../../../../core/domain/report-series.ts';
-import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { readFailureOf } from '../../../../core/domain/read-failure.ts';
 import { trackReportSeriesQueryOptions, type SeriesRead } from '../providers/queries.ts';
 
 export type SeriesResolver = (blockId: string, rev: number) => SeriesResolution | undefined;
@@ -21,8 +21,7 @@ function seriesKey(blockId: string, rev: number): string {
 export function seriesResolutionOf(result: Pick<UseQueryResult<SeriesRead>, 'data' | 'isError' | 'error'>): SeriesResolution {
   if (result.data !== undefined) return result.data;
   if (result.isError) {
-    const message = result.error instanceof ApiError ? result.error.failure.message : String(result.error);
-    return { status: 'error', message };
+    return { status: 'error', failure: readFailureOf(result.error) };
   }
   return { status: 'loading' };
 }

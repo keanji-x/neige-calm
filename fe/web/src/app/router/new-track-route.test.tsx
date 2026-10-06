@@ -1161,8 +1161,10 @@ describe('the route refuses an area id that no longer exists', () => {
            `waitFor`, because the failure needs a tick to land. */
     const main = await screen.findByRole('main');
     await waitFor(() => {
-      expect(within(main).getByRole('alert').textContent).toContain('areas are unreadable');
+      expect(within(main).getByRole('alert').textContent).toContain('Areas are unavailable.');
     });
+    // A 500's text is the server's internals, never the reader's.
+    expect(within(main).getByRole('alert').textContent).not.toContain('areas are unreadable');
     // Not the deletion wording: the server never said this area is gone.
     expect(within(main).getByRole('alert').textContent).not.toContain('This area could not be found.');
     expect(within(main).getByRole('button', { name: 'Retry' })).toBeTruthy();

@@ -4,7 +4,7 @@ import type { ApiFailure } from '../api/types.js';
 import { ApiError, classifyFailure, writeFailureText, type FailureTable } from './failure-class.js';
 import { LOGIN_FAILURES, LOGIN_TEXT } from './login.js';
 import {
-  MOBILE_APPROVE_FAILURES, MOBILE_INVITATION_FAILURES, MOBILE_READ_FAILURES, MOBILE_READ_TEXT, MOBILE_REVOKE_FAILURES,
+  MOBILE_APPROVE_FAILURES, MOBILE_INVITATION_FAILURES, MOBILE_REVOKE_FAILURES,
   MOBILE_STATE_FAILURES, MOBILE_WRITE_TEXT,
 } from './mobile-access.js';
 
@@ -38,9 +38,6 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(404, 'not_found'), 'done'], [http(403, 'forbidden'), 'refused'],
     [http(404, 'http_error'), 'unknown'], [unauthorized, 'refused'], ...lost,
   ]],
-  ['GET /api/mobile/access, GET /api/mobile/enrollments', MOBILE_READ_FAILURES, [
-    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [unauthorized, 'refused'], ...lost,
-  ]],
   ['POST /api/auth/login', LOGIN_FAILURES, [
     [unauthorized, 'credentials'], [http(400), 'refused'], [http(403), 'refused'], [http(422), 'refused'], ...lost,
   ]],
@@ -63,11 +60,8 @@ describe('mobile access pane sentences', () => {
     expect(read(MOBILE_REVOKE_FAILURES, http(403, 'forbidden', ''))).toBe(MOBILE_WRITE_TEXT.refused);
     for (const failure of [transport, decode, http(500)]) {
       expect(read(MOBILE_STATE_FAILURES, failure)).toBe(MOBILE_WRITE_TEXT.unknown);
-      expect(read(MOBILE_READ_FAILURES, failure, MOBILE_READ_TEXT)).toBe(MOBILE_READ_TEXT.unknown);
     }
-    expect(read(MOBILE_READ_FAILURES, http(400, 'bad_request', 'Private remote access could not initialize'), MOBILE_READ_TEXT))
-      .toBe('Private remote access could not initialize');
-    for (const sentence of [MOBILE_WRITE_TEXT, MOBILE_READ_TEXT, LOGIN_TEXT].flatMap((text) => [text.refused, text.unknown])) {
+    for (const sentence of [MOBILE_WRITE_TEXT, LOGIN_TEXT].flatMap((text) => [text.refused, text.unknown])) {
       expect(sentence).not.toMatch(/connect|network|offline|transport/i);
     }
   });

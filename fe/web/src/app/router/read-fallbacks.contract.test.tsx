@@ -89,7 +89,9 @@ describe('degraded workspace reads stay usable', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
     const sheet = screen.getByRole('dialog', { name: 'Tracks and settings' });
     const alert = await within(sheet).findByRole('alert');
-    expect(alert.textContent).toContain(resource === 'areas' ? 'Areas are unavailable' : 'Tracks temporarily unavailable');
+    expect(alert.textContent).toContain(resource === 'areas' ? 'Areas are unavailable.' : 'Tracks are unavailable.');
+    /* A 500's text is the server's internals: only the fixed sentence shows. */
+    expect(alert.textContent).not.toMatch(/Area storage unavailable|Tracks temporarily unavailable/);
     expect(within(sheet).queryByText('No tracks in this area yet.')).toBeNull();
     broken = false;
     await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
@@ -122,6 +124,17 @@ describe('degraded workspace reads stay usable', () => {
     expect(screen.queryByRole('dialog', { name: '连接详情' })).toBeNull();
   });
 
+  /* A refusal is the server's answer to this read: its reason follows the fixed sentence in the indicator. */
+  it('says a refused Areas read with its reason behind the indicator', async () => {
+    renderRoute('/today/legacy', (request) => {
+      if (request.path === '/api/areas') return { status: 403, statusText: 'Forbidden', body: { error: 'owner login required', code: 'forbidden' } };
+      return ok([]);
+    });
+    const rail = await screen.findByRole('navigation', { name: 'Workspace' });
+    await userEvent.click(await within(rail).findByRole('button', { name: '连接状态：连接异常' }));
+    expect(screen.getByRole('dialog', { name: '连接详情' }).textContent).toContain('Areas are unavailable. owner login required');
+  });
+
   it('keeps cached Areas while a refresh fails and recovers locally', async () => {
     let broken = false;
     const { client } = renderRoute('/today/legacy', (request) => {
@@ -137,7 +150,8 @@ describe('degraded workspace reads stay usable', () => {
     expect(within(rail).getByRole('button', { name: 'Collapse area One' })).toBeTruthy();
     await userEvent.click(indicator);
     const details = screen.getByRole('dialog', { name: '连接详情' });
-    expect(details.textContent).toContain('Area refresh unavailable');
+    expect(details.textContent).toContain('Areas could not be refreshed.');
+    expect(details.textContent).not.toContain('Area refresh unavailable');
     broken = false;
     await userEvent.click(within(details).getByRole('button', { name: '重试读取' }));
     await waitFor(() => expect(within(rail).queryByRole('button', { name: '连接状态：连接异常' })).toBeNull());
@@ -201,7 +215,9 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     const main = await screen.findByRole('main');
-    expect((await within(main).findAllByRole('alert')).some((node) => node.textContent?.includes('Track activity is unavailable: overlays down'))).toBe(true);
+    const alerts = await within(main).findAllByRole('alert');
+    expect(alerts.some((node) => node.textContent?.includes('Track activity is unavailable.'))).toBe(true);
+    expect(alerts.some((node) => node.textContent?.includes('overlays down'))).toBe(false);
   });
 
   it('finishes an offline conversation submission without waiting for delivery reconciliation', async () => {
@@ -338,7 +354,9 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     await waitFor(() => expect(screen.getAllByText('Reliable').length).toBeGreaterThan(1));
-    expect(within(screen.getByRole('main')).getAllByRole('alert').some((node) => node.textContent?.includes('area two down'))).toBe(true);
+    const alerts = within(screen.getByRole('main')).getAllByRole('alert');
+    expect(alerts.some((node) => node.textContent?.includes('Tracks are unavailable.'))).toBe(true);
+    expect(alerts.some((node) => node.textContent?.includes('area two down'))).toBe(false);
     expect(within(screen.getByRole('main')).getByRole('heading', { level: 1 })).toBeTruthy();
   });
 

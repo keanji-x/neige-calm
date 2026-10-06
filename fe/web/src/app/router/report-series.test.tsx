@@ -4,11 +4,13 @@ import { cleanup, renderHook, waitFor } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { ApiFailure, ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ReportBlock } from '../../../../core/domain/report.ts';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { seriesResolutionOf, useReportSeriesResolver } from './report-series.ts';
+
+const BOOM: ApiFailure = Object.freeze({ kind: 'http', status: 500, code: 'internal', message: 'boom' });
 
 afterEach(cleanup);
 
@@ -29,10 +31,10 @@ describe('seriesResolutionOf', () => {
       .toEqual({ status: 'stale-rev', current_rev: 2 });
     expect(seriesResolutionOf({
       data: undefined, isError: true,
-      error: new ApiError({ kind: 'http', status: 500, code: 'internal', message: 'boom' }),
-    })).toEqual({ status: 'error', message: 'boom' });
+      error: new ApiError(BOOM),
+    })).toEqual({ status: 'error', failure: BOOM });
     expect(seriesResolutionOf({ data: undefined, isError: true, error: new Error('plain') }))
-      .toEqual({ status: 'error', message: 'Error: plain' });
+      .toEqual({ status: 'error', failure: null });
     expect(seriesResolutionOf({ data: undefined, isError: false, error: null })).toEqual({ status: 'loading' });
   });
 });

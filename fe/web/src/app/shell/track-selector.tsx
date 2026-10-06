@@ -12,6 +12,7 @@ export function TrackSelector({ track, tracks, loading, error, onRetry, onSelect
   track: Track;
   tracks: readonly Track[];
   loading: boolean;
+  /** The failed track read's sentence, as the shared read rule says it. */
   error: string | null;
   onRetry: () => void;
   onSelectTrack: (trackId: string) => void;
@@ -21,7 +22,7 @@ export function TrackSelector({ track, tracks, loading, error, onRetry, onSelect
     <Menu wrapClassName={styles.area} menuClassName={styles.menu} itemClassName={styles.item}
       items={[...tracks.map((choice) => ({ label: `${trackDisplayTitle(choice.title)}${choice.closedAt === null ? '' : ', closed'}`, labelContent: <TrackTitle track={choice} />, current: choice.id === track.id, icon: <Icon name="file" />,
         onSelect: () => { if (choice.id !== track.id) onSelectTrack(choice.id); } })),
-        ...(error === null ? [] : [{ label: `Could not read tracks: ${error}`, disabled: true, onSelect: () => undefined }, { label: 'Retry', onSelect: onRetry }]),
+        ...(error === null ? [] : [{ label: error, disabled: true, onSelect: () => undefined }, { label: 'Retry', onSelect: onRetry }]),
         ...(tracks.length > 0 || error !== null ? [] : [{ label: loading ? 'Loading tracks…' : 'No tracks in this area yet.', disabled: true, onSelect: () => undefined }]),
       ]}
       trigger={(props) => <h1 className={styles.trackHeading}><Button {...props} ref={(node) => { props.ref(node); controls.titleRef(node); }} label={`Switch track, ${trackDisplayTitle(track.title)}`}

@@ -31,6 +31,14 @@ describe('DirectoryBrowser behavior', () => {
   it('Enter confirms the clean current path when no item is highlighted', async () => {
     const { input, onSelect } = await ready(); fireEvent.change(input, { target: { value: '/work/s' } }); fireEvent.change(input, { target: { value: '/work/' } }); fireEvent.keyDown(input, { key: 'Enter' }); expect(onSelect).toHaveBeenCalledWith('/work');
   });
+  /* The port says what a failed listing shows (`createDirectoryLister` applies the read rule); the banner says it. */
+  it('says a failed listing in its banner, with a fixed sentence for a rejection that carries none', async () => {
+    render(<DirectoryBrowser listDirectory={() => Promise.reject(new Error('Could not list this folder. path /gone not found'))} initialPath="/gone" onCancel={vi.fn()} onSelect={vi.fn()}/>);
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not list this folder. path /gone not found');
+    cleanup();
+    render(<DirectoryBrowser listDirectory={() => Promise.reject(new Error(''))} initialPath="/gone" onCancel={vi.fn()} onSelect={vi.fn()}/>);
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not list this folder.');
+  });
   it('rejects a non-absolute Enter path', async () => {
     const { input } = await ready(); fireEvent.change(input, { target: { value: 'relative' } }); fireEvent.keyDown(input, { key: 'Enter' }); expect(screen.getByRole('alert').textContent).toBe('Enter an absolute path');
   });

@@ -10,7 +10,7 @@ export { inlineTableBlockPayloadSchema } from './report-table.js';
 export { isCalendarDate } from './report-date.js';
 
 import type { CurrentTaskExecution } from './task-execution.js';
-import type { ApiOperation } from '../api/types.js';
+import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   extractOutline, parse, REPORT_MAX_DEPTH, reportHeadingIdPolicy,
 } from '../markdown/public.js';
@@ -714,7 +714,7 @@ export function trackPreviewsOperation(trackId: string): ApiOperation<TrackPrevi
 /** What a `preview` block knows about its key: still loading, unreadable, not registered, or registered. */
 export type PreviewResolution =
   | Readonly<{ status: 'loading' }>
-  | Readonly<{ status: 'error'; message: string }>
+  | Readonly<{ status: 'error'; failure: ApiFailure | null }>
   | Readonly<{ status: 'missing' }>
   | Readonly<{ status: 'registered'; preview: TrackPreview }>;
 

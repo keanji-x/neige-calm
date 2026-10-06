@@ -26,6 +26,7 @@ import {
 } from '../../../../core/domain/report-series.ts';
 import { trackSourceOperation, type TrackSourceDetail } from '../../../../core/domain/report-source.ts';
 import { dismissActivityItemOperation } from '../../../../core/domain/activity.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import {
   checkConnectorOperation, connectorCheckFailureText, type ConnectorCheckResult,
   installConnectorOperation, installLocalPathOperation, patchPluginConfigOperation,
@@ -555,7 +556,7 @@ export function useTrackTemplates(transport: ApiTransportPort, unauthorized: Una
   const query = useQuery(trackTemplatesQueryOptions(transport, unauthorized));
   return {
     templates: query.data ?? [],
-    error: query.isError ? 'Could not load templates.' : null,
+    error: query.isError ? readErrorText(query.error, 'Could not load templates.') : null,
     // `[]` must not read as "loaded and empty", and a FAILED read is not loaded either: `!isPending` alone
     // is true once a read has errored, making a dead server look like a server with no templates.
     loaded: !query.isPending && !query.isError,
@@ -589,7 +590,7 @@ export function useTrackRecipes(transport: ApiTransportPort, unauthorized: Unaut
     refreshing: query.isFetching,
     refetch: () => { void query.refetch(); },
     recipes: query.data ?? [],
-    error: hasReadFailure(query) ? 'Could not load your recipes.' : null,
+    error: hasReadFailure(query) ? readErrorText(query.error, 'Could not load your recipes.') : null,
     loaded: !query.isPending && !query.isError,
   };
 }
