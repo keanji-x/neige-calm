@@ -1112,7 +1112,7 @@ async fn merge_hold_ratify_pauses_then_merges_on_grant() {
 }
 
 #[tokio::test]
-async fn ratify_events_recover_into_pending_queue() {
+async fn ratify_resolution_recovers_into_pending_queue() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1159,15 +1159,8 @@ async fn ratify_events_recover_into_pending_queue() {
     .installed()
     .expect("recovered harness");
 
+    // #2170: the Planner's own ratify.requested is not replayed; only the user's decision is.
     let pending = wait_for_recovered_pending(&handle).await;
-    assert!(
-        pending.iter().any(|obs| matches!(
-            obs,
-            Observation::RatifyRequested { reason, .. }
-                if reason == "merge_hold: pr #760 at head-sha-recovery"
-        )),
-        "ratify.requested must recover into pending queue: {pending:?}"
-    );
     assert!(
         pending.iter().any(|obs| matches!(
             obs,
@@ -2143,10 +2136,7 @@ async fn wait_for_recovered_pending(
         let pending = handle.pending_queue_for_test().await;
         if pending
             .iter()
-            .any(|obs| matches!(obs, Observation::RatifyRequested { .. }))
-            && pending
-                .iter()
-                .any(|obs| matches!(obs, Observation::RatifyResolved { .. }))
+            .any(|obs| matches!(obs, Observation::RatifyResolved { .. }))
         {
             return pending;
         }

@@ -134,10 +134,6 @@ pub enum Observation {
         track_id: TrackId,
         overlapping_prs: Vec<u64>,
     },
-    ForgePrOpened {
-        track_id: TrackId,
-        pr_number: u64,
-    },
     ForgePrChecks {
         track_id: TrackId,
         pr_number: u64,
@@ -163,10 +159,6 @@ pub enum Observation {
         card_id: CardId,
         commit_sha: String,
         branch: String,
-    },
-    RatifyRequested {
-        track_id: TrackId,
-        reason: String,
     },
     RatifyResolved {
         track_id: TrackId,
@@ -226,12 +218,10 @@ impl Observation {
             | Observation::WorkspaceReleased { .. }
             | Observation::ForgePrMerged { .. }
             | Observation::ForgeScanCompleted { .. }
-            | Observation::ForgePrOpened { .. }
             | Observation::ForgePrChecks { .. }
             | Observation::ForgeIssueClosed { .. }
             | Observation::WorktreeProvisioned { .. }
             | Observation::WorktreeCommitted { .. }
-            | Observation::RatifyRequested { .. }
             | Observation::RatifyResolved { .. } => HarnessInputPresentation::System,
         }
     }
@@ -248,12 +238,10 @@ impl Observation {
             | Observation::TrackWake { .. }
             | Observation::ForgePrMerged { .. }
             | Observation::ForgeScanCompleted { .. }
-            | Observation::ForgePrOpened { .. }
             | Observation::ForgePrChecks { .. }
             | Observation::ForgeIssueClosed { .. }
             | Observation::WorktreeProvisioned { .. }
             | Observation::WorktreeCommitted { .. }
-            | Observation::RatifyRequested { .. }
             | Observation::RatifyResolved { .. } => true,
             Observation::TrackGoal { .. }
             | Observation::ReportEdited { .. }
@@ -427,9 +415,6 @@ impl Observation {
                 "Forge scan completed with overlapping PRs {:?}. Re-read the track status.",
                 overlapping_prs
             ),
-            Observation::ForgePrOpened { pr_number, .. } => {
-                format!("Forge PR #{pr_number} was opened. Re-read the track status.")
-            }
             Observation::ForgePrChecks {
                 pr_number,
                 conclusion,
@@ -471,9 +456,6 @@ impl Observation {
                 format!(
                     "A worker git worktree committed branch {branch}. Re-read the track status."
                 )
-            }
-            Observation::RatifyRequested { reason, .. } => {
-                format!("Ratification was requested: {reason}. Re-read the track status.")
             }
             Observation::RatifyResolved {
                 decision, message, ..
@@ -876,9 +858,9 @@ mod tests {
             HarnessInputPresentation::SystemReportEdited
         );
 
-        let generic = Observation::RatifyRequested {
+        let generic = Observation::ForgeIssueClosed {
             track_id: TrackId::from("track-1"),
-            reason: "review cap".into(),
+            issue_number: 1,
         };
         assert_eq!(
             Observation::input_segments_for(&[generic])[0].presentation,
@@ -1186,14 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn ratify_observations_are_hard_fire() {
-        let requested = Observation::RatifyRequested {
-            track_id: TrackId::from("track-1"),
-            reason: "cap_exhausted".into(),
-        };
-        assert!(requested.is_hard_fire());
-        assert!(requested.to_turn_text().contains("cap_exhausted"));
-
+    fn ratify_resolution_is_hard_fire() {
         let resolved = Observation::RatifyResolved {
             track_id: TrackId::from("track-1"),
             decision: RatifyDecision::Grant,

@@ -69,11 +69,9 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "track.report_edited",
     "track.wake_requested",
     "forge.scan.completed",
-    "forge.pr.opened",
     "forge.pr.checks",
     "forge.issue.closed",
     "forge.pr.merged",
-    "ratify.requested",
     "ratify.resolved",
     "codex.hook",
     "claude.hook",
@@ -131,12 +129,14 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // Kernel-only at the role gate; waking the Planner is the event's only purpose.
         Event::TrackWakeRequested { .. } => true,
         Event::ForgePrMerged { .. }
-        | Event::RatifyRequested { .. }
         | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }
-        | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. } => true,
+        // #2170: echoes of a call the Planner already holds the answer to. Only the Planner
+        // authors `ratify.requested` (role gate), and `forge.pr.opened`'s one producer,
+        // `neige_dev_publish`, waits for the operation and returns the PR to its caller.
+        Event::RatifyRequested { .. } | Event::ForgePrOpened { .. } => false,
         // Workspace / worktree lifecycle notices are read back on demand (`neige_task_ls`);
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
@@ -1059,10 +1059,8 @@ impl Inner {
                 });
             }
             Event::ForgePrMerged { track_id, .. }
-            | Event::RatifyRequested { track_id, .. }
             | Event::RatifyResolved { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
-            | Event::ForgePrOpened { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
             | Event::ForgeIssueClosed { track_id, .. }
             | Event::TrackWakeRequested { track_id, .. } => {
@@ -1122,6 +1120,8 @@ impl Inner {
             | Event::TaskContextAdvanced { .. }
             | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
+            | Event::RatifyRequested { .. }
+            | Event::ForgePrOpened { .. }
             // Proposal lifecycle events reach the planner via the plugin-authored
             // `track.report_edited` landed in the same tx.
             | Event::ProposalSubmitted { .. }
@@ -1528,10 +1528,6 @@ pub(crate) fn harness_observation_from_event(
             track_id: track_id.clone(),
             pr_number: subject.pr_number,
         }),
-        Event::RatifyRequested { reason, .. } => Some(HarnessObservation::RatifyRequested {
-            track_id: track_id.clone(),
-            reason: reason.clone(),
-        }),
         Event::RatifyResolved {
             decision, message, ..
         } => Some(HarnessObservation::RatifyResolved {
@@ -1544,10 +1540,6 @@ pub(crate) fn harness_observation_from_event(
         } => Some(HarnessObservation::ForgeScanCompleted {
             track_id: track_id.clone(),
             overlapping_prs: overlapping_prs.clone(),
-        }),
-        Event::ForgePrOpened { pr_number, .. } => Some(HarnessObservation::ForgePrOpened {
-            track_id: track_id.clone(),
-            pr_number: *pr_number,
         }),
         Event::ForgePrChecks {
             pr_number,
@@ -1616,6 +1608,7 @@ pub(crate) fn harness_observation_from_event(
             idempotency_key: hook_idempotency_key.clone(),
         }),
         Event::CodexHook { .. } | Event::ClaudeHook { .. } => None,
+        Event::RatifyRequested { .. } | Event::ForgePrOpened { .. } => None,
         Event::AreaUpdated(_)
         | Event::AreaDeleted { .. }
         | Event::TrackUpdated(_)

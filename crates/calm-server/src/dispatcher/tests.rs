@@ -270,7 +270,7 @@ fn dispatcher_filter_matches_push_kinds() {
         track_id: track.clone(),
         overlapping_prs: vec![1, 2],
     })));
-    assert!(filter.matches(&env(Event::ForgePrOpened {
+    assert!(!filter.matches(&env(Event::ForgePrOpened {
         track_id: track.clone(),
         pr_number: 1,
         head_sha: "head-sha".into(),
@@ -311,7 +311,7 @@ fn dispatcher_filter_matches_push_kinds() {
         head_sha: "head-sha".into(),
         merge_sha: "merge-sha".into(),
     })));
-    assert!(filter.matches(&env(Event::RatifyRequested {
+    assert!(!filter.matches(&env(Event::RatifyRequested {
         track_id: track.clone(),
         reason: "cap_exhausted".into(),
     })));
@@ -1335,10 +1335,6 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             head_sha: "head-sha".into(),
             merge_sha: "merge-sha".into(),
         },
-        Event::RatifyRequested {
-            track_id: track.clone(),
-            reason: "cap_exhausted".into(),
-        },
         Event::RatifyResolved {
             track_id: track.clone(),
             decision: RatifyDecision::Grant,
@@ -1347,11 +1343,6 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         Event::ForgeScanCompleted {
             track_id: track.clone(),
             overlapping_prs: vec![1, 2],
-        },
-        Event::ForgePrOpened {
-            track_id: track.clone(),
-            pr_number: 1,
-            head_sha: "head-sha".into(),
         },
         Event::ForgePrChecks {
             track_id: track.clone(),
@@ -1369,6 +1360,30 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             event_warrants_planner_push(&forge_event, &ActorId::KernelDispatcher, &write),
             "{} must still wake the planner",
             forge_event.kind_tag()
+        );
+    }
+    // #2170: echoes of a call the Planner already holds the answer to never wake it.
+    for (echo, actor) in [
+        (
+            Event::RatifyRequested {
+                track_id: track.clone(),
+                reason: "merge_hold".into(),
+            },
+            ActorId::AiPlanner(planner.clone()),
+        ),
+        (
+            Event::ForgePrOpened {
+                track_id: track.clone(),
+                pr_number: 1,
+                head_sha: "head-sha".into(),
+            },
+            ActorId::KernelDispatcher,
+        ),
+    ] {
+        assert!(
+            !event_warrants_planner_push(&echo, &actor, &write),
+            "{} must not wake the planner",
+            echo.kind_tag()
         );
     }
     assert!(!event_warrants_planner_push(
@@ -1673,10 +1688,7 @@ fn harness_observation_from_event_mapping_pin() {
             },
             Some("impl-parser")
         ),
-        Some(HarnessObservation::RatifyRequested {
-            track_id: track.clone(),
-            reason: "cap_exhausted".into(),
-        })
+        None
     );
     assert_eq!(
         harness_observation_from_event(
@@ -1718,10 +1730,7 @@ fn harness_observation_from_event_mapping_pin() {
             },
             Some("impl-parser")
         ),
-        Some(HarnessObservation::ForgePrOpened {
-            track_id: track.clone(),
-            pr_number: 1,
-        })
+        None
     );
     assert_eq!(
         harness_observation_from_event(
@@ -2161,9 +2170,9 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 track_id: track.clone(),
                 reason: "cap_exhausted".into(),
             },
-            ActorId::KernelDispatcher,
-            true,
-            true,
+            ActorId::AiPlanner(planner.clone()),
+            false,
+            false,
         ),
         row(
             Event::RatifyResolved {
@@ -2191,8 +2200,8 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 head_sha: "head-sha".into(),
             },
             ActorId::KernelDispatcher,
-            true,
-            true,
+            false,
+            false,
         ),
         row(
             Event::ForgePrChecks {
