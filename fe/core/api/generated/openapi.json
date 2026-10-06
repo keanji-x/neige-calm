@@ -3378,6 +3378,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
