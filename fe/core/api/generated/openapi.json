@@ -41,6 +41,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -81,6 +91,16 @@
                   "items": {
                     "$ref": "#/components/schemas/Area"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -390,6 +410,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -573,6 +603,16 @@
           "204": {
             "description": "Folder removed"
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -666,7 +706,14 @@
             }
           },
           "400": {
-            "description": "Missing `q` (plain-text query rejection)"
+            "description": "`bad_request`: `q` is missing, or a parameter does not parse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
@@ -732,6 +779,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -775,6 +832,16 @@
         "responses": {
           "204": {
             "description": "Area deleted"
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
@@ -1527,6 +1594,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -1580,6 +1657,16 @@
         "responses": {
           "204": {
             "description": "Card deleted"
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
@@ -1781,6 +1868,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -1900,6 +1997,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -1967,6 +2074,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HarnessLiveReplies"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -2416,7 +2533,7 @@
             }
           },
           "400": {
-            "description": "`bad_request`: the body is not parseable JSON.",
+            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2715,7 +2832,7 @@
             }
           },
           "400": {
-            "description": "`bad_request`: the body is not parseable JSON.",
+            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2842,6 +2959,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InterruptPlannerCardResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -3048,6 +3175,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -3126,6 +3263,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetPlannerRunResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -3879,7 +4026,7 @@
             "description": "Revoked"
           },
           "400": {
-            "description": "`bad_request`: the body is not parseable JSON.",
+            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4748,7 +4895,7 @@
             "description": "Approved, also when it already was or its phone already joined"
           },
           "400": {
-            "description": "`bad_request`: the body is not parseable JSON.",
+            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5087,6 +5234,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -5158,6 +5315,16 @@
                   "items": {
                     "$ref": "#/components/schemas/Overlay"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -5711,6 +5878,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -6087,6 +6264,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -6199,6 +6386,16 @@
                   "items": {
                     "type": "string"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -7561,6 +7758,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -7740,6 +7947,16 @@
           "204": {
             "description": "Recipe deleted"
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -7854,6 +8071,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -7904,6 +8131,16 @@
                   "items": {
                     "$ref": "#/components/schemas/TemplatePluginGuide"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -8184,6 +8421,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -8235,6 +8482,16 @@
         "responses": {
           "204": {
             "description": "Track deleted"
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
@@ -8696,6 +8953,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
             "content": {
@@ -8946,6 +9213,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing or invalid session",
             "content": {
@@ -9003,6 +9280,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TrackReportReadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -9850,6 +10137,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing or invalid session",
             "content": {
@@ -9920,6 +10217,16 @@
               }
             }
           },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing or invalid session",
             "content": {
@@ -9984,6 +10291,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskRecoveryView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -10068,6 +10385,16 @@
                   "items": {
                     "$ref": "#/components/schemas/Card"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -10561,6 +10888,16 @@
                   "items": {
                     "$ref": "#/components/schemas/TrackConversationSummary"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }

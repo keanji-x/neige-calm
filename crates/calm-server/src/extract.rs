@@ -55,6 +55,15 @@ pub(crate) const JSON_BODY_REJECTIONS: [(StatusCode, &str); 4] = [
     ),
 ];
 
+/// The status a [`Path`] or [`Query`] rejection answers for a value that does not parse, with its
+/// OpenAPI description. The document adds it to every operation that declares a path or query
+/// parameter (`openapi::DeclaredResponses`). Their other rejection, a 500 for a route whose
+/// parameters do not fit its handler, is a server fault and is not documented.
+pub(crate) const PARAM_REJECTION: (StatusCode, &str) = (
+    StatusCode::BAD_REQUEST,
+    "`bad_request`: a path or query parameter does not parse.",
+);
+
 /// The path parameters; `Path(id): Path<String>` in a handler's arguments.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Path<T>(pub T);
