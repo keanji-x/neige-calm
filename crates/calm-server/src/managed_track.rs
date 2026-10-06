@@ -142,23 +142,26 @@ pub(crate) async fn require_workspace_reports(
         .map_err(|e| RpcError::internal(format!("report time zone: {e}")))
 }
 
+/// The one read of whether a Track has a kernel-owned creation identity.
+async fn has_creation_identity(pool: &sqlx::SqlitePool, track_id: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM managed_track_identities WHERE track_id=?1)",
+    )
+    .bind(track_id)
+    .fetch_one(pool)
+    .await?)
+}
+
 pub(crate) async fn refuse_track_delete(
     pool: Option<sqlx::SqlitePool>,
     track_id: &str,
 ) -> Result<()> {
-    if let Some(pool) = pool {
-        let owned: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM managed_track_identities WHERE track_id=?1)",
-        )
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await?;
-        if owned {
-            return Err(CalmError::Conflict(
-                "This Track has a kernel-owned creation identity; its history must be retained."
-                    .into(),
-            ));
-        }
+    if let Some(pool) = pool
+        && has_creation_identity(&pool, track_id).await?
+    {
+        return Err(CalmError::Conflict(
+            "This Track has a kernel-owned creation identity; its history must be retained.".into(),
+        ));
     }
     Ok(())
 }
@@ -244,12 +247,7 @@ pub(crate) async fn planner_starts_on_first_send(ctx: &AppContext, track_id: &st
     let Some(pool) = ctx.sqlite_pool.as_ref() else {
         return Ok(false);
     };
-    Ok(sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM managed_track_identities WHERE track_id=?1)",
-    )
-    .bind(track_id)
-    .fetch_one(pool)
-    .await?)
+    has_creation_identity(pool, track_id).await
 }
 
 pub(crate) async fn kernel_controls_lifecycle(ctx: &AppContext, track_id: &str) -> Result<bool> {

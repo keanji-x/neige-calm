@@ -1131,12 +1131,9 @@ pub(crate) async fn reset_planner_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if !card_runs_headless_harness(&card, role) {
-        return Err(CalmError::Forbidden(format!(
-            "card {id} is not a planner codex card",
-        )));
-    }
-    let response = reset_planner_card_shared(s, actor, card).await?;
+    let binding = crate::harness::profile::PlannerBinding::from_card(&card, role)
+        .ok_or_else(|| CalmError::Forbidden(format!("card {id} is not a planner codex card")))?;
+    let response = reset_planner_card_shared(s, actor, card, binding.profile).await?;
     Ok(Json(response))
 }
 
@@ -1144,6 +1141,7 @@ async fn reset_planner_card_shared(
     s: RouteState,
     actor: Actor,
     card: Card,
+    profile: HarnessProfile,
 ) -> Result<ResetPlannerCardResponse> {
     // Reset takes the SAME per-card lock as `/planner/input` lazy recovery, or a reset racing a registry-miss Send could resurrect the reset-away session. Deadlock-free: neither adapter re-enters `planner_recovery_locks`.
     let _recovery_guard = lock_card(&s.planner_recovery_locks, card.id.as_str()).await;
@@ -1151,16 +1149,17 @@ async fn reset_planner_card_shared(
         .repo
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
-    reset_planner_harness_card(s, actor, card, active_runtime).await
+    reset_planner_harness_card(s, actor, card, profile, active_runtime).await
 }
 
 async fn reset_planner_harness_card(
     s: RouteState,
     actor: Actor,
     card: Card,
+    profile: HarnessProfile,
     runtime: Option<WorkerSessionProjection>,
 ) -> Result<ResetPlannerCardResponse> {
-    start_harness_card(&s, &actor, &card, HarnessCardStart::Reset).await?;
+    start_harness_card(&s, &actor, &card, profile, HarnessCardStart::Reset).await?;
 
     if let Some(runtime) = runtime {
         let shutdown_payload = serde_json::to_value(PlannerHarnessShutdownOperationPayload {
@@ -1203,26 +1202,16 @@ pub(crate) enum HarnessCardStart {
     Fresh,
 }
 
-/// The profile an existing harness card (re)starts under: its OWN. Starting an assistant under
-/// `Planner` would mint its thread with the planner prompt while the card row still says
-/// `assistant`.
-pub(crate) fn harness_card_profile(card: &Card, role: Option<CardRole>) -> HarnessProfile {
-    if crate::plain_chat::card_is_plain_chat(card, role, true) {
-        HarnessProfile::PlainChat
-    } else if crate::plain_chat::card_is_track_assistant(card, role, true) {
-        HarnessProfile::Assistant
-    } else {
-        HarnessProfile::Planner
-    }
-}
-
 /// Run one `planner-harness-start` for an existing harness card and wait for it. The one
 /// derivation of that start's payload, shared by reset and a send's fresh start; the caller holds the
-/// card's `planner_recovery_locks` guard.
+/// card's `planner_recovery_locks` guard. `profile` is the card's OWN, from its
+/// [`PlannerBinding`](crate::harness::profile::PlannerBinding): starting an assistant under
+/// `Planner` would mint its thread with the planner prompt while the card row still says `assistant`.
 pub(crate) async fn start_harness_card(
     s: &RouteState,
     actor: &Actor,
     card: &Card,
+    profile: HarnessProfile,
     start: HarnessCardStart,
 ) -> Result<()> {
     let track = s
@@ -1230,9 +1219,9 @@ pub(crate) async fn start_harness_card(
         .track_get(card.track_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
-    let role = s.write.verify_role(&card.id);
     // The start adapter refuses this too; answering here keeps the HTTP 403 contract rather than a generic operation failure.
-    if role == Some(CardRole::Planner) && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
+    if profile == HarnessProfile::Planner
+        && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
     {
         return Err(CalmError::Forbidden(format!(
             "planner harness is disabled for area chat track {}",
@@ -1240,7 +1229,6 @@ pub(crate) async fn start_harness_card(
         )));
     }
     // No profile inherits the track title as a goal on these user-driven paths.
-    let profile = harness_card_profile(card, role);
     let reset = start == HarnessCardStart::Reset;
     let start_request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),

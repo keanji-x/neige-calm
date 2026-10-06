@@ -4,18 +4,17 @@
 
 use crate::actor::Actor;
 use crate::error::{CalmError, Result};
-use crate::harness::profile::PlannerBinding;
-use crate::harness::{PlannerHarness, is_harness_snapshot_value};
+use crate::harness::profile::{HarnessProfile, PlannerBinding};
+use crate::harness::{PlannerHarness, effective_runtime_thread_id, is_harness_snapshot_value};
 use crate::ids::CardId;
 use crate::model::Card;
 use crate::operation::planner_harness_start_adapter::profile_mints_its_own_card;
 use crate::per_card_lock::{PerCardLockGuard, lock_card};
-use crate::routes::cards::{HarnessCardStart, harness_card_profile, start_harness_card};
+use crate::routes::cards::{HarnessCardStart, start_harness_card};
 use crate::session_projection_repo::{
     AgentProvider, CardConversation, WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
 };
 use crate::state::{CodexShellState, RouteState, WorkerState};
-use serde_json::Value;
 
 use super::planner_recovery;
 
@@ -103,15 +102,15 @@ pub(crate) async fn ensure_planner_session(
         return Err(starting());
     }
     // Pre-validate the snapshot: the strict deserializer inside recovery panics on unknown shapes.
-    let snapshot_value = match runtime.handle_state_json.as_ref() {
-        Some(value) if is_harness_snapshot_value(value) => value,
-        _ => return Err(dormant(card_id)),
-    };
-    // A half-failed start can leave an active row without a thread; mirror boot recovery's fallback to the snapshot's `last_thread_id`, and only when BOTH are absent is the row unrecoverable.
-    let has_thread = |t: Option<&str>| t.map(str::trim).is_some_and(|trimmed| !trimmed.is_empty());
-    if !has_thread(runtime.thread_id.as_deref())
-        && !has_thread(snapshot_value.get("last_thread_id").and_then(Value::as_str))
+    if !runtime
+        .handle_state_json
+        .as_ref()
+        .is_some_and(is_harness_snapshot_value)
     {
+        return Err(dormant(card_id));
+    }
+    // A half-failed start can leave an active row without a thread; boot recovery's rule falls back to the snapshot's `last_thread_id`, and only when BOTH are absent is the row unrecoverable.
+    if effective_runtime_thread_id(&runtime).is_none() {
         return Err(dormant(card_id));
     }
     // A recovered harness can't issue turns without its backend; surface that instead of spawning a silently-wedged task.
@@ -156,6 +155,7 @@ pub(crate) async fn ensure_planner_session(
 async fn send_owns_first_start(
     s: &RouteState,
     card: &Card,
+    profile: HarnessProfile,
     conversation: CardConversation,
 ) -> Result<bool> {
     if crate::managed_track::planner_starts_on_first_send(&s.mcp_context, card.track_id.as_str())
@@ -163,7 +163,6 @@ async fn send_owns_first_start(
     {
         return Ok(true);
     }
-    let profile = harness_card_profile(card, s.write.verify_role(&card.id));
     Ok(conversation == CardConversation::OnlyFailedStarts && profile_mints_its_own_card(profile))
 }
 
@@ -197,20 +196,20 @@ async fn start_fresh(
         CardConversation::StartInFlight => return Err(starting()),
         CardConversation::NeverStarted | CardConversation::OnlyFailedStarts => {}
     }
-    if !send_owns_first_start(s, &card, conversation).await? {
+    // The card as re-read under the lock: what it is (the start's profile) and which backend runs it.
+    let binding = s
+        .write
+        .verify_role(&card.id)
+        .and_then(|role| PlannerBinding::from_card(&card, role))
+        .ok_or_else(|| CalmError::Forbidden(format!("card {card_id} is not a harness card")))?;
+    if !send_owns_first_start(s, &card, binding.profile, conversation).await? {
         return Err(dormant(card_id));
     }
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(crate::test_seams::PLANNER_FIRST_START, card_id.as_str()).await;
     // The start adapter's own readiness refusal is a 500; this is the send's 503, as for recovery.
-    let provider = s
-        .write
-        .verify_role(&card.id)
-        .and_then(|role| PlannerBinding::from_card(&card, role))
-        .ok_or_else(|| CalmError::Forbidden(format!("card {card_id} is not a harness card")))?
-        .provider;
-    require_backend(s, cs, provider).await?;
-    start_harness_card(s, actor, &card, HarnessCardStart::Fresh).await?;
+    require_backend(s, cs, binding.provider).await?;
+    start_harness_card(s, actor, &card, binding.profile, HarnessCardStart::Fresh).await?;
     let runtime = s
         .repo
         .session_projection_active_for_card(&card_id.to_string())
