@@ -196,6 +196,33 @@ mod tests {
         ));
     }
 
+    /// The window check, `verify` and the record share one lock: of 64 parallel failing attempts
+    /// whose verification is slow enough for every other thread to reach the check meanwhile,
+    /// exactly the free budget is verified and every other attempt is throttled.
+    #[test]
+    fn parallel_attempts_from_one_peer_verify_one_at_a_time() {
+        let throttle = LoginThrottle::default();
+        let start = Arc::new(std::sync::Barrier::new(64));
+        let attempts: Vec<_> = (0..64)
+            .map(|_| {
+                let (throttle, start) = (throttle.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    throttle.attempt("100.64.0.9".parse().unwrap(), || {
+                        std::thread::sleep(Duration::from_millis(5));
+                        false
+                    })
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = attempts.into_iter().map(|t| t.join().unwrap()).collect();
+        let rejected = outcomes
+            .iter()
+            .filter(|o| **o == LoginAttempt::Rejected)
+            .count();
+        assert_eq!(rejected, FREE_FAILURES as usize, "{outcomes:?}");
+    }
+
     #[test]
     fn a_quiet_peer_is_forgotten() {
         let (clock, now) = manual_clock();
