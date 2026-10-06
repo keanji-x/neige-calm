@@ -1113,6 +1113,7 @@ pub(crate) async fn get_planner_run(
         (status = 200, description = "Planner session reset", body = ResetPlannerCardResponse),
         (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 409, description = "The card's provider cannot start now: Claude is not configured or its version cannot be confirmed (`conflict`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -1312,7 +1313,9 @@ pub(crate) async fn run_planner_card_operation(
     params(("id" = String, Path, description = "Card id")),
     responses(
         (status = 204, description = "Card deleted"),
+        (status = 403, description = "The card is kernel-owned (`deletable = false`); delete its track instead", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
+        (status = 409, description = "The card's terminal launch is not resolved yet (`conflict`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]

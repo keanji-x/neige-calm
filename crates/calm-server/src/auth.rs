@@ -10,7 +10,7 @@ use axum::{
     Extension, Json, Router,
     body::Body,
     extract::{ConnectInfo, FromRequestParts, Request, State},
-    http::{HeaderMap, Method, header, request::Parts},
+    http::{HeaderMap, Method, StatusCode, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -308,6 +308,28 @@ fn check_origin(state: &AuthState, headers: &HeaderMap) -> Result<()> {
     )))
 }
 
+/// The OpenAPI security scheme for [`SESSION_COOKIE`]: the document requires it of every operation
+/// except those that declare `security(())`, and those must be exactly the routes outside
+/// [`require_session`] (`tests/cases/openapi_statuses.rs`).
+pub(crate) const SESSION_SCHEME: &str = "session";
+
+/// What [`require_session`] answers before any handler runs, with its OpenAPI description: 401
+/// without a session, and 403 for a write whose `Origin` is not this server's
+/// ([`checks_origin`]). The document adds them to every operation that requires the session.
+pub(crate) const NO_SESSION: (StatusCode, &str) = (
+    StatusCode::UNAUTHORIZED,
+    "`unauthorized`: no valid session cookie.",
+);
+pub(crate) const CROSS_ORIGIN_WRITE: (StatusCode, &str) = (
+    StatusCode::FORBIDDEN,
+    "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+);
+
+/// Whether [`require_session`] checks a request's `Origin`: every method but the reads.
+pub(crate) fn checks_origin(method: &Method) -> bool {
+    !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
 /// Axum middleware: gate every protected endpoint. Login, whoami, logout, version and openapi.json must NOT have this layer applied.
 pub async fn require_session(
     State(auth): State<AuthState>,
@@ -318,10 +340,7 @@ pub async fn require_session(
     let Some(principal) = resolve_principal(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
-    if !matches!(
-        *request.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    ) {
+    if checks_origin(request.method()) {
         check_origin(&auth, &headers)?;
     }
     request.extensions_mut().insert(principal);
@@ -394,13 +413,14 @@ fn credentials_match(body: &LoginBody, want_user: &str, want_pass: &str) -> bool
 
 /// POST /api/auth/login — verify credentials, mint a session, set cookie.
 #[utoipa::path(
-    post, path = "/api/auth/login", tag = "auth", request_body = LoginBody,
+    post, path = "/api/auth/login", tag = "auth", request_body = LoginBody, security(()),
     responses(
         (status = 200, body = WhoamiBody, description = "Signed in; `Set-Cookie` carries the session."),
         (status = 401, body = ErrorBody, description = "Wrong username or password."),
         (status = 429, body = ErrorBody,
             description = "`login_throttled`: this peer failed too often and the credentials were not evaluated.",
             headers(("Retry-After" = u64, description = "Seconds until this peer may try again."))),
+        (status = 500, body = ErrorBody, description = "The connection carries no peer address."),
     )
 )]
 pub async fn login_handler(

@@ -762,6 +762,7 @@ async fn finish_prepared_area_deletion_owned(
         (status = 204, description = "Area deleted"),
         (status = 403, description = "Area is system-owned and cannot be deleted via REST", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
+        (status = 409, description = "A child track has an in-flight forge-action, or an unresolved terminal launch (`conflict`); retry after it settles", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]

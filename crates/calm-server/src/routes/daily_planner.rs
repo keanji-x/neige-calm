@@ -29,7 +29,7 @@ pub struct DailyQuery {
 
 #[utoipa::path(get,path="/api/today/daily",tag="tracks",
     params(("date"=Option<String>,Query,description="Asia/Shanghai date; omitted means today")),
-    responses((status=200,body=Option<DailyTrackResolved>,description="Daily Track, or null when the date has no Track"),(status=400,body=ErrorBody,description="Invalid date")))]
+    responses((status=200,body=Option<DailyTrackResolved>,description="Daily Track, or null when the date has no Track"),(status=400,body=ErrorBody,description="Invalid date"),(status=500,body=ErrorBody,description="Internal error")))]
 pub(crate) async fn resolve_daily_track(
     State(state): State<RouteState>,
     Query(query): Query<DailyQuery>,
@@ -57,7 +57,7 @@ fn pool(state: &RouteState) -> Result<&sqlx::SqlitePool> {
 
 #[utoipa::path(get,path="/api/today/report-changes",tag="tracks",
     params(("date"=String,Query,description="YYYY-MM-DD in Asia/Shanghai"),("cursor"=Option<String>,Query,description="The previous page's next_cursor"),("through_event_id"=Option<i64>,Query,description="Snapshot cursor from the first page")),
-    responses((status=200,body=ReportChangesPage,description="Report changes, including net reverts"),(status=400,body=ErrorBody,description="Invalid date or cursor")))]
+    responses((status=200,body=ReportChangesPage,description="Report changes, including net reverts"),(status=400,body=ErrorBody,description="Invalid date or cursor"),(status=500,body=ErrorBody,description="Internal error")))]
 pub(crate) async fn report_changes(
     State(state): State<RouteState>,
     Query(query): Query<ReportChangesQuery>,
@@ -69,7 +69,7 @@ pub(crate) async fn report_changes(
 
 #[utoipa::path(get,path="/api/today/report-edits",tag="tracks",
     params(("date"=String,Query,description="YYYY-MM-DD"),("track_id"=String,Query,description="Track id"),("cursor"=Option<String>,Query,description="The previous page's next_cursor"),("through_event_id"=i64,Query,description="Snapshot cursor from report changes")),
-    responses((status=200,body=ReportEditsPage,description="Individual report edits in event order"),(status=400,body=ErrorBody,description="Invalid date or cursor")))]
+    responses((status=200,body=ReportEditsPage,description="Individual report edits in event order"),(status=400,body=ErrorBody,description="Invalid date or cursor"),(status=500,body=ErrorBody,description="Internal error")))]
 pub(crate) async fn report_edits(
     State(state): State<RouteState>,
     Query(query): Query<ReportEditsQuery>,

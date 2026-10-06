@@ -49,6 +49,8 @@ mod neige_cli_task_report;
 mod neige_tool_name_migration;
 #[path = "cases/openapi.rs"]
 mod openapi;
+#[path = "cases/openapi_statuses.rs"]
+mod openapi_statuses;
 #[path = "cases/payload_validation.rs"]
 mod payload_validation;
 #[path = "cases/plugin_names_migration.rs"]

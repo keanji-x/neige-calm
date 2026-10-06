@@ -28,13 +28,15 @@ pub fn router() -> Router<AppState> {
     get,
     path = "/api/threads/{thread_id}/card",
     tag = "threads",
+    security(()),
     params(
         ("thread_id" = String, Path, description = "Provider thread/session id"),
         ("provider" = Option<String>, Query, description = "Agent provider: codex or claude; defaults to codex"),
     ),
     responses(
         (status = 200, description = "Owning card for this provider thread/session", body = ThreadCardResolution),
-        (status = 400, description = "Invalid provider", body = ErrorBody),
+        (status = 400, description = "Invalid provider, or an invalid `X-Calm-Actor`", body = ErrorBody),
+        (status = 403, description = "The caller is not a loopback peer: this is an internal worker hook", body = ErrorBody),
         (status = 404, description = "No card is mapped to this thread", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),

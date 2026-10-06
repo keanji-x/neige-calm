@@ -16,7 +16,13 @@ pub fn router() -> Router<AppState> {
 
 #[utoipa::path(get, path = "/api/tracks/{id}/tasks/{key}/attempts",
     params(("id" = String, Path), ("key" = String, Path)),
-    responses((status = 200, body = TaskRecoveryView), (status = 404, body = ErrorBody)), tag = "tracks")]
+    responses(
+        (status = 200, body = TaskRecoveryView),
+        (status = 403, body = ErrorBody, description = "Only `X-Calm-Actor: user` may read task attempts"),
+        (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody, description = "The task's declaration is ambiguous or invalid (`conflict`)"),
+        (status = 500, body = ErrorBody),
+    ), tag = "tracks")]
 pub async fn get_attempts(
     State(state): State<RouteState>,
     _principal: Principal,

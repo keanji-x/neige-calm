@@ -29,6 +29,28 @@ where
     }
 }
 
+/// Every status a [`JsonBody`] rejection answers, with its OpenAPI description. The document adds
+/// each one to every operation that declares a JSON request body (`openapi::DeclaredResponses`),
+/// so a route annotation names a JSON body once and these follow.
+pub(crate) const REJECTIONS: [(StatusCode, &str); 4] = [
+    (
+        StatusCode::BAD_REQUEST,
+        "`bad_request`: the body is not parseable JSON.",
+    ),
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "`payload_too_large`: the body is over the request size limit.",
+    ),
+    (
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+    ),
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+    ),
+];
+
 /// A rejection keeps axum's status, so only the body changes shape: 400 unparseable JSON
 /// (`bad_request`), 413 over the body limit (`payload_too_large`), 415 no JSON content type
 /// (`unsupported_media_type`), 422 JSON of the wrong shape (`invalid_body`). The reason is axum's
@@ -136,6 +158,14 @@ mod tests {
                 "Failed to buffer the request body",
             ),
         ];
+        let mut answered: Vec<u16> = cases.iter().map(|case| case.2.as_u16()).collect();
+        let mut documented: Vec<u16> = REJECTIONS.iter().map(|(s, _)| s.as_u16()).collect();
+        answered.sort_unstable();
+        documented.sort_unstable();
+        assert_eq!(
+            answered, documented,
+            "the documented rejections are exactly the ones answered"
+        );
         for (content_type, body, status, code, needle) in cases {
             let (actual, answer) = answer(content_type, body).await;
             assert_eq!(actual, status, "{code}: {answer}");

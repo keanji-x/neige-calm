@@ -109,6 +109,7 @@ pub(super) fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec
     request_body = NewOverlay,
     responses(
         (status = 200, description = "Overlay upserted", body = Overlay),
+        (status = 400, description = "A kernel-owned overlay kind whose payload does not match its shape", body = ErrorBody),
         (status = 403, description = "Reserved kernel namespace (plugin_id or entity_kind)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -157,6 +158,7 @@ pub struct OverlayDeleteBody {
     responses(
         (status = 204, description = "Overlay deleted"),
         (status = 403, description = "Reserved kernel namespace (plugin_id or entity_kind)", body = ErrorBody),
+        (status = 404, description = "No such overlay", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]

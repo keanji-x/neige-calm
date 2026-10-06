@@ -112,7 +112,8 @@ fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
 /// browsers log every 404 as a console error.
 #[utoipa::path(get, path = "/api/today/launchpad", tag = "tracks", responses(
     (status = 200, description = "The launchpad track and whether its report has been written, or `null` when no launchpad track exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.", body = Option<TodayLaunchpadResolved>),
-    (status = 404, description = "The launchpad track exists but carries no `track-report` card. Not a reachable state; see the handler docs.", body = ErrorBody)
+    (status = 404, description = "The launchpad track exists but carries no `track-report` card. Not a reachable state; see the handler docs.", body = ErrorBody),
+    (status = 500, description = "Internal error", body = ErrorBody)
 ))]
 pub(crate) async fn resolve_today_launchpad(
     State(app): State<AppState>,
@@ -172,6 +173,7 @@ pub struct TodayLaunchpadReportReset {
     tag = "tracks",
     responses(
         (status = 200, description = "Today's report is back to the canonical empty document. Conversations are untouched.", body = TodayLaunchpadReportReset),
+        (status = 400, description = "The report holds a non-prose block, which the report write guard lets no whole-document replace remove", body = ErrorBody),
         (status = 401, description = "Missing or invalid session", body = ErrorBody),
         (status = 403, description = "Non-user actor (worker / plugin / planner) rejected, exactly as on `POST /api/tracks/{id}/report`", body = ErrorBody),
         (status = 404, description = "There is no launchpad track yet, so there is no report to reset", body = ErrorBody),
@@ -427,7 +429,7 @@ async fn today_launchpad_ensure_tx(
 #[utoipa::path(post,path="/api/today/launchpad/ensure",tag="tracks",responses(
     (status=200,description="Existing live launchpad",body=TodayLaunchpad),
     (status=201,description="Launchpad minted or adopted; harness start may still be dormant",body=TodayLaunchpad),
-    (status=503,description="Launchpad exists but harness failed to start",body=ErrorBody)
+    (status=500,description="Internal error, including a launchpad whose harness failed to start",body=ErrorBody)
 ))]
 pub(crate) async fn ensure_today_launchpad(
     State(app): State<AppState>,

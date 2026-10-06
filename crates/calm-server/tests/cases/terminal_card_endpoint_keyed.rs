@@ -187,12 +187,13 @@ async fn stamp_stuck(boot: &super::Boot, key: &str, from_phase: &str) {
     assert_eq!(updated, 1, "premise: the create's own operation went stuck");
 }
 
-/// #2175: a stuck operation is never driven again, so a replay under its key answers the same
-/// thing every time and drives nothing. Stuck at `pending`, it wrote nothing (its effects commit
-/// with the lease cleared), so the create failed for good: `operation_failed`, the answer the
-/// client mints a new key after.
+/// #2175: how a replay classifies a key whose operation is stuck at `pending`. The premise is
+/// stamped onto a create that succeeded (its card exists), so this pins the replay's answer, not
+/// that a create stopped at `pending` wrote nothing; that rests on the pending arm committing its
+/// effects with the lease cleared. A stuck operation is never driven again, so every replay answers
+/// the same `operation_failed` (the answer the client mints a new key after) and makes no card.
 #[tokio::test]
-async fn a_create_stuck_before_its_commit_replays_as_failed_and_makes_no_card() {
+async fn a_key_stuck_at_pending_replays_as_failed_and_drives_nothing() {
     let boot = boot_happy().await;
     let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
     let (status, answer) = post_with_idempotency(
@@ -232,7 +233,7 @@ async fn a_create_stuck_before_its_commit_replays_as_failed_and_makes_no_card() 
         .await
         .unwrap()
         .len();
-    assert_eq!(after, before, "a replay of a stuck create makes no card");
+    assert_eq!(after, before, "a replay under a stuck key makes no card");
 }
 
 /// #2175: stuck past `pending`, what the create made may exist, so the replay says so with its own

@@ -59,6 +59,7 @@ pub(crate) async fn list_folders(
     responses(
         (status = 201, description = "Folder claimed", body = AreaFolder),
         (status = 400, description = "Path is not absolute", body = ErrorBody),
+        (status = 404, description = "Area not found", body = ErrorBody),
         (status = 409, description = "Path overlaps with an existing claim", body = FolderConflict),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),

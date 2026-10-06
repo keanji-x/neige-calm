@@ -577,6 +577,7 @@ pub(crate) async fn tail_plugin_log(
         (status = 409, description = "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)", body = ErrorBody),
         (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
+        (status = 503, description = "Reloaded, but its restart is waiting on its connector or configuration (`service_unavailable`), as on enable", body = ErrorBody),
     ),
 )]
 pub(crate) async fn reload_plugin(
@@ -769,6 +770,7 @@ fn csp_header_from_meta(meta: Option<&Value>) -> Option<String> {
     request_body = ToolCallBody,
     responses(
         (status = 200, description = "Tool result JSON (shape depends on dispatched neige.* callback)", body = Object),
+        (status = 400, description = "An unknown callback or bad arguments (`bad_request`), or a plugin not callable now, e.g. crashed (`plugin_install`)", body = ErrorBody),
         (status = 403, description = "Tool outside iframe-allowed scope (non-neige.* namespace, or not in manifest's permissions.tools)", body = ErrorBody),
         (status = 404, description = "Plugin not running", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -846,8 +848,9 @@ pub(crate) async fn plugin_tool_call(
     params(("id" = String, Path, description = "Plugin id")),
     responses(
         (status = 200, description = "Token rotated", body = PluginDetail),
+        (status = 400, description = "A connector has no token to rotate (`bad_request`)", body = ErrorBody),
         (status = 404, description = "Plugin not found", body = ErrorBody),
-        (status = 409, description = "Another lifecycle operation holds this plugin (`plugin_busy`)", body = ErrorBody),
+        (status = 409, description = "Another lifecycle operation holds this plugin (`plugin_busy`), or the operator disabled it (`plugin_conflict`)", body = ErrorBody),
         (status = 500, description = "Rotate failed", body = ErrorBody),
     ),
 )]

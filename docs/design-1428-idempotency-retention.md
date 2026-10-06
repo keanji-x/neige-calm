@@ -165,6 +165,12 @@ replacement it performs is on the structured exhausted code (`:1852-1856`,
 they reload the page; after this change, their next submit carries a fresh key
 and works. **Zero frontend lines.**
 
+> Later code (#2141): `trackCreateKeyAction` is gone. `TRACK_CREATE_FAILURES` in
+> `fe/core/domain/track.ts` classifies a failed create, and
+> `fe/web/src/app/router/new-track-route.tsx` keeps the per-draft key and mints a
+> fresh one on `exhausted`. The line citations above are at this document's base
+> commit.
+
 A binding-row deleter (an admin MCP tool, or a `neige` subcommand beside
 `track-gc` / `vacuum`, `crates/neige-cli/src/main.rs:1198`) would introduce the
 tree's first `DELETE FROM track_create_idempotency` to buy a recovery the client
@@ -393,7 +399,10 @@ Total ≈ 45 production lines. This does not need a design phase per
    the HTTP header limit, not by the schema. Unimportant for capacity (§1.3: a
    row still costs a whole track) but it means "370 B/row" is a typical value,
    not a bound. Whether a cap belongs there is a separate question from this
-   issue.
+   issue. (Later code, #2141: the parser moved to
+   `crates/calm-server/src/routes/idempotency_key.rs` and caps a key at
+   `IDEMPOTENCY_KEY_MAX_LEN`, 128 bytes, answering 400
+   `idempotency_key_invalid` past it.)
 3. **Does any non-`POST /api/tracks` route depend on a keyed `operations` row
    surviving?** §3.2's argument covers `submit`, which is generic, so the answer
    does not change the criterion. But the *severity* of a future reap (double

@@ -26,7 +26,15 @@ pub fn management_router() -> Router<AuthState> {
         }))
 }
 
-#[utoipa::path(get, path="/api/mobile/enrollments", tag="mobile", responses((status=200,body=EnrollmentCleanup),(status=403,body=ErrorBody)))]
+#[utoipa::path(
+    get, path="/api/mobile/enrollments", tag="mobile",
+    responses(
+        (status=200, body=EnrollmentCleanup),
+        (status=400, body=ErrorBody, description="`bad_request`: private Tailnet enrollment is not configured, or its control call failed"),
+        (status=403, body=ErrorBody, description="`forbidden`: not a real owner login"),
+        (status=500, body=ErrorBody),
+    )
+)]
 pub async fn status(State(auth): State<AuthState>, principal: Principal) -> Result<Response> {
     owner(&auth, &principal)?;
     let result = auth
@@ -87,6 +95,7 @@ impl Drop for Reservation {
         (status=400, body=ErrorBody, description="`bad_request`: a create is already in progress, a limit is reached, or the issuer failed"),
         (status=403, body=ErrorBody, description="`forbidden`: not a real owner login"),
         (status=409, body=ErrorBody, description="`conflict`: mobile access is off, or the slot was cancelled or expired before it was ready"),
+        (status=500, body=ErrorBody),
     )
 )]
 pub async fn create(
@@ -196,7 +205,15 @@ pub async fn create(
     }
 }
 
-#[utoipa::path(delete, path="/api/mobile/enrollments/{id}", tag="mobile", params(("id"=String,Path)), request_body=MobileAction, responses((status=200,body=EnrollmentCleanup),(status=403,body=ErrorBody)))]
+#[utoipa::path(
+    delete, path="/api/mobile/enrollments/{id}", tag="mobile", params(("id"=String,Path)), request_body=MobileAction,
+    responses(
+        (status=200, body=EnrollmentCleanup),
+        (status=400, body=ErrorBody, description="`bad_request`: private Tailnet enrollment is not configured, or its control call failed"),
+        (status=403, body=ErrorBody, description="`forbidden`: not a real owner login"),
+        (status=500, body=ErrorBody),
+    )
+)]
 pub async fn cancel(
     State(auth): State<AuthState>,
     principal: Principal,
@@ -219,7 +236,15 @@ pub async fn cancel(
     })))
 }
 
-#[utoipa::path(post, path="/api/mobile/enrollments/claim", tag="mobile", request_body=EnrollmentClaim, responses((status=200,body=EnrollmentClaimed),(status=401,body=ErrorBody)))]
+#[utoipa::path(
+    post, path="/api/mobile/enrollments/claim", tag="mobile", request_body=EnrollmentClaim, security(()),
+    responses(
+        (status=200, body=EnrollmentClaimed),
+        (status=400, body=ErrorBody, description="`bad_request`: the scan request limit is reached, or the device name is not 1-80 printable bytes"),
+        (status=401, body=ErrorBody),
+        (status=500, body=ErrorBody),
+    )
+)]
 pub async fn claim(
     State(auth): State<AuthState>,
     JsonBody(body): JsonBody<EnrollmentClaim>,
@@ -230,7 +255,15 @@ pub async fn claim(
     Ok(no_store(Json(auth.mobile.lock()?.claim_scan(body)?)))
 }
 
-#[utoipa::path(post, path="/api/mobile/enrollments/redeem", tag="mobile", request_body=EnrollmentRedeem, responses((status=200,body=EnrollmentRedeemed),(status=401,body=ErrorBody)))]
+#[utoipa::path(
+    post, path="/api/mobile/enrollments/redeem", tag="mobile", request_body=EnrollmentRedeem, security(()),
+    responses(
+        (status=200, body=EnrollmentRedeemed),
+        (status=400, body=ErrorBody, description="`bad_request`: the scan request limit or the device limit is reached"),
+        (status=401, body=ErrorBody),
+        (status=500, body=ErrorBody),
+    )
+)]
 pub async fn redeem(
     State(auth): State<AuthState>,
     JsonBody(body): JsonBody<EnrollmentRedeem>,

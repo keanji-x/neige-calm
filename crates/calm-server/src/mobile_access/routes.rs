@@ -70,14 +70,20 @@ pub(super) fn no_store(value: impl IntoResponse) -> Response {
 #[utoipa::path(
     get, path = "/api/mobile/access", tag = "mobile",
     responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody),
-        (status = 401, body = ErrorBody), (status = 403, body = ErrorBody))
+        (status = 401, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 500, body = ErrorBody))
 )]
 pub async fn status(State(auth): State<AuthState>, principal: Principal) -> Result<Response> {
     owner(&auth, &principal)?;
     Ok(no_store(Json(auth.mobile.status().await?)))
 }
 
-#[utoipa::path(post, path = "/api/mobile/access", tag = "mobile", request_body = MobileAction, responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody)))]
+#[utoipa::path(
+    post, path = "/api/mobile/access", tag = "mobile", request_body = MobileAction,
+    responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody),
+        (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
+        (status = 500, body = ErrorBody))
+)]
 pub async fn enable(
     State(auth): State<AuthState>,
     principal: Principal,
@@ -88,7 +94,12 @@ pub async fn enable(
     Ok(no_store(Json(auth.mobile.status().await?)))
 }
 
-#[utoipa::path(delete, path = "/api/mobile/access", tag = "mobile", request_body = MobileAction, responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody)))]
+#[utoipa::path(
+    delete, path = "/api/mobile/access", tag = "mobile", request_body = MobileAction,
+    responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody),
+        (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
+        (status = 500, body = ErrorBody))
+)]
 pub async fn disable(
     State(auth): State<AuthState>,
     principal: Principal,
@@ -106,6 +117,7 @@ pub async fn disable(
         (status = 400, body = ErrorBody, description = "`bad_request`: the pairing limit is reached"),
         (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
         (status = 409, body = ErrorBody, description = "`conflict`: mobile access is off"),
+        (status = 500, body = ErrorBody),
     )
 )]
 pub async fn create(
@@ -140,6 +152,7 @@ pub async fn create(
         (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
         (status = 404, body = ErrorBody, description = "`not_found`: no pending request with this id (expired, never claimed, or unknown)"),
         (status = 409, body = ErrorBody, description = "`conflict`: mobile access is off"),
+        (status = 500, body = ErrorBody),
     )
 )]
 pub async fn approve(
@@ -159,6 +172,7 @@ pub async fn approve(
         (status = 204, description = "Revoked"),
         (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
         (status = 404, body = ErrorBody, description = "`not_found`: no paired device with this id; a repeated revoke is answered so"),
+        (status = 500, body = ErrorBody),
     )
 )]
 pub async fn revoke(
@@ -172,7 +186,12 @@ pub async fn revoke(
     Ok(no_store(StatusCode::NO_CONTENT))
 }
 
-#[utoipa::path(post, path = "/api/mobile/pairings/claim", tag = "mobile", request_body = PairingClaim, responses((status = 200, body = PairingClaimed), (status = 401, body = ErrorBody)))]
+#[utoipa::path(
+    post, path = "/api/mobile/pairings/claim", tag = "mobile", request_body = PairingClaim, security(()),
+    responses((status = 200, body = PairingClaimed),
+        (status = 400, body = ErrorBody, description = "`bad_request`: the device name is not 1–80 printable bytes"),
+        (status = 401, body = ErrorBody), (status = 500, body = ErrorBody))
+)]
 pub async fn claim(
     State(auth): State<AuthState>,
     JsonBody(body): JsonBody<PairingClaim>,
@@ -183,7 +202,12 @@ pub async fn claim(
     Ok(no_store(Json(auth.mobile.lock()?.claim(body)?)))
 }
 
-#[utoipa::path(post, path = "/api/mobile/pairings/redeem", tag = "mobile", request_body = PairingRedeem, responses((status = 204), (status = 202), (status = 401, body = ErrorBody)))]
+#[utoipa::path(
+    post, path = "/api/mobile/pairings/redeem", tag = "mobile", request_body = PairingRedeem, security(()),
+    responses((status = 204), (status = 202),
+        (status = 400, body = ErrorBody, description = "`bad_request`: the device limit is reached"),
+        (status = 401, body = ErrorBody), (status = 500, body = ErrorBody))
+)]
 pub async fn redeem(
     State(auth): State<AuthState>,
     JsonBody(body): JsonBody<PairingRedeem>,
@@ -231,7 +255,9 @@ async fn bootstrap_css() -> Response {
 
 #[utoipa::path(
     post, path = "/api/mobile/tailnet/login", tag = "mobile", request_body = MobileAction,
-    responses((status = 200, body = calm_types::tailnet::TailnetLogin), (status = 400, body = ErrorBody))
+    responses((status = 200, body = calm_types::tailnet::TailnetLogin), (status = 400, body = ErrorBody),
+        (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
+        (status = 500, body = ErrorBody))
 )]
 pub async fn tailnet_login(
     State(auth): State<AuthState>,
@@ -252,7 +278,12 @@ pub async fn tailnet_login(
     })))
 }
 
-#[utoipa::path(post, path = "/api/mobile/tailnet/logout", tag = "mobile", request_body = MobileAction, responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody)))]
+#[utoipa::path(
+    post, path = "/api/mobile/tailnet/logout", tag = "mobile", request_body = MobileAction,
+    responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody),
+        (status = 403, body = ErrorBody, description = "`forbidden`: not a real owner login"),
+        (status = 500, body = ErrorBody))
+)]
 pub async fn tailnet_logout(
     State(auth): State<AuthState>,
     principal: Principal,

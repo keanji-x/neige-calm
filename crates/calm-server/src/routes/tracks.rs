@@ -3388,6 +3388,7 @@ impl From<report_backlinks::BacklinkPage> for TrackBacklinksResponse {
     responses(
         (status = 200, description = "Report links from tracks in the same area", body = TrackBacklinksResponse),
         (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn get_track_backlinks(
@@ -3435,7 +3436,8 @@ pub struct TrackReportReadResponse {
     responses(
         (status = 200, description = "Current report with derived task diagnostics", body = TrackReportReadResponse),
         (status = 401, description = "Missing or invalid session", body = ErrorBody),
-        (status = 404, description = "Track not found", body = ErrorBody)
+        (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn get_track_report(
@@ -3470,6 +3472,7 @@ pub(crate) async fn get_track_report(
     request_body = UpdateTrackReportBody,
     responses(
         (status = 200, description = "Updated track-report payload", body = TrackReportPayload),
+        (status = 400, description = "An invalid header or `neige-block` fence, or a write that would change a non-prose block (use the block endpoints)", body = ErrorBody),
         (status = 401, description = "Missing or invalid session", body = ErrorBody),
         (status = 403, description = "Non-user actor (worker / plugin / planner) rejected", body = ErrorBody),
         (status = 409, description = "Report document revision conflict", body = ErrorBody),

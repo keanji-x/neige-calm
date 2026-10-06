@@ -954,7 +954,10 @@ test went red, not how many.
    `idempotency_key_exhausted`. The new-track route mints one key per draft
    (`fe/web/src/app/router/public.tsx:1841-1861`) and replaces it in place on
    exactly that code (#1435). So a reader whose track was deleted was pinned to
-   a dead key until they reloaded the page.
+   a dead key until they reloaded the page. (Later code, #2141:
+   `trackCreateKeyAction` is gone; `TRACK_CREATE_FAILURES` in
+   `fe/core/domain/track.ts` classifies the failure, and
+   `fe/web/src/app/router/new-track-route.tsx` keeps the per-draft key.)
 
    **The closing mechanism: 409 `idempotency_key_exhausted` instead of 500**,
    naming the dead track. The fence does not move — the branch still mints

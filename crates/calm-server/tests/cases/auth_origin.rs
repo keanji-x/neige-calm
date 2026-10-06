@@ -12,9 +12,9 @@ use tower::ServiceExt;
 
 use super::auth::{fresh_state, live_auth_state};
 
-const HOST: &str = "192.168.1.5:4040";
+pub(super) const HOST: &str = "192.168.1.5:4040";
 
-async fn app_and_cookie(auth: AuthState) -> (axum::Router, String) {
+pub(super) async fn app_and_cookie(auth: AuthState) -> (axum::Router, String) {
     let app = routes::application_router(fresh_state().await, auth);
     let resp = app
         .clone()

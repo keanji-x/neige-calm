@@ -6,7 +6,7 @@ use serde::Deserialize;
 use utoipa::IntoParams;
 
 use crate::agent_providers::{Freshness, ProviderAvailability};
-use crate::error::{ErrorBody, Result};
+use crate::error::Result;
 use crate::state::{AppState, CodexShellState, RouteState};
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -35,7 +35,6 @@ pub fn router() -> Router<AppState> {
     params(AgentProvidersQuery),
     responses(
         (status = 200, description = "One entry per Planner provider: Codex, then Claude", body = [ProviderAvailability]),
-        (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn list_agent_providers(

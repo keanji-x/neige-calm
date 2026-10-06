@@ -182,6 +182,7 @@ pub(crate) async fn list_recipes(State(s): State<RouteState>) -> Result<Json<Vec
     responses(
         (status = 200, description = "One recipe", body = TrackRecipe),
         (status = 404, description = "No such recipe", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn get_recipe(
@@ -247,6 +248,7 @@ pub(crate) async fn create_recipe(
         (status = 403, description = "Only `X-Calm-Actor: user` may write recipes", body = ErrorBody),
         (status = 404, description = "No such recipe", body = ErrorBody),
         (status = 409, description = "`if_revision` is stale", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn update_recipe(
@@ -279,6 +281,7 @@ pub(crate) async fn update_recipe(
         (status = 204, description = "Recipe deleted"),
         (status = 403, description = "Only `X-Calm-Actor: user` may write recipes", body = ErrorBody),
         (status = 404, description = "No such recipe", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn delete_recipe(

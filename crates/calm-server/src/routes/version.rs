@@ -121,6 +121,7 @@ pub fn current_version_info(db_instance_id: String, database_id: String) -> Vers
     get,
     path = "/api/version",
     tag = "version",
+    security(()),
     responses(
         (status = 200, description = "Kernel + protocol version metadata", body = VersionInfo),
     ),

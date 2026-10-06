@@ -53,10 +53,15 @@ use crate::track_fs_dto::{
     TrackFsRunIndexEntry, TrackFsRunStatus, TrackFsRunVerdict, TrackFsRunVerdictSummary,
 };
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry};
-use utoipa::OpenApi;
+use axum::http::{Method, StatusCode};
+use utoipa::openapi::path::Operation;
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme};
+use utoipa::openapi::{ContentBuilder, Ref, ResponseBuilder};
+use utoipa::{Modify, OpenApi, ToSchema};
 
 #[derive(OpenApi)]
 #[openapi(
+    modifiers(&DeclaredResponses),
     info(
         title = "calm-server",
         version = env!("CARGO_PKG_VERSION"),
@@ -365,3 +370,85 @@ use utoipa::OpenApi;
     ),
 )]
 pub struct ApiDoc;
+
+/// Adds the answers an operation gives because of what it declares, so no annotation lists them by
+/// hand: a JSON request body brings `JsonBody`'s rejections ([`crate::json_body::REJECTIONS`]),
+/// and requiring the session brings `require_session`'s refusals ([`crate::auth::NO_SESSION`], and
+/// [`crate::auth::CROSS_ORIGIN_WRITE`] on a write). The session is required of every operation that
+/// does not declare `security(())`. A status the annotation already describes keeps its own
+/// description. `tests/cases/openapi_statuses.rs` pins both premises: a JSON request body is
+/// declared exactly where the handler takes `JsonBody`, and `security(())` exactly where the
+/// router does not apply `require_session`.
+struct DeclaredResponses;
+
+impl Modify for DeclaredResponses {
+    fn modify(&self, doc: &mut utoipa::openapi::OpenApi) {
+        doc.components
+            .get_or_insert_with(Default::default)
+            .add_security_scheme(
+                crate::auth::SESSION_SCHEME,
+                SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(
+                    crate::auth::SESSION_COOKIE,
+                ))),
+            );
+        let required = [SecurityRequirement::new(
+            crate::auth::SESSION_SCHEME,
+            Vec::<String>::new(),
+        )];
+        doc.security = Some(required.to_vec());
+        for item in doc.paths.paths.values_mut() {
+            for (method, operation) in [
+                (Method::GET, &mut item.get),
+                (Method::PUT, &mut item.put),
+                (Method::POST, &mut item.post),
+                (Method::DELETE, &mut item.delete),
+                (Method::OPTIONS, &mut item.options),
+                (Method::HEAD, &mut item.head),
+                (Method::PATCH, &mut item.patch),
+                (Method::TRACE, &mut item.trace),
+            ] {
+                let Some(operation) = operation else { continue };
+                let json_body = operation
+                    .request_body
+                    .as_ref()
+                    .is_some_and(|body| body.content.contains_key("application/json"));
+                if json_body {
+                    for answer in crate::json_body::REJECTIONS {
+                        add_error_response(operation, answer);
+                    }
+                }
+                // An operation's own `security` replaces the document's; `security(())` is the one
+                // empty requirement, which lets a request through without the session.
+                let session = operation.security.as_ref().is_none_or(|anyof| {
+                    !anyof.is_empty() && !anyof.contains(&SecurityRequirement::default())
+                });
+                if session {
+                    add_error_response(operation, crate::auth::NO_SESSION);
+                    if crate::auth::checks_origin(&method) {
+                        add_error_response(operation, crate::auth::CROSS_ORIGIN_WRITE);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// An `ErrorBody` answer under `status`, unless the operation already describes that status.
+fn add_error_response(operation: &mut Operation, (status, description): (StatusCode, &str)) {
+    operation
+        .responses
+        .responses
+        .entry(status.as_u16().to_string())
+        .or_insert_with(|| {
+            ResponseBuilder::new()
+                .description(description)
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .schema(Some(Ref::from_schema_name(ErrorBody::name())))
+                        .build(),
+                )
+                .build()
+                .into()
+        });
+}
