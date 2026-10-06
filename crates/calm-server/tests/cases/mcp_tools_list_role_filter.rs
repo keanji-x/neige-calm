@@ -93,18 +93,18 @@ async fn tools_list_for_planner_role_returns_planner_toolset() {
 fn removed_aliases_and_retired_shims_are_not_registered() {
     let registry = calm_server::mcp_server::build_default_registry();
     for removed in [
-        "calm.get_track_state",      // retired-name: rejection input
-        "calm.update_task_meta",     // retired-name: rejection input
-        "calm.task_completed",       // retired-name: rejection input
-        "calm.task_failed",          // retired-name: rejection input
-        "calm.dispatch_request",     // retired-name: rejection input
-        "calm.plan.upsert",          // retired-name: rejection input
-        "neige.task.complete",       // retired-name: rejection input
-        "neige.task.fail",           // retired-name: rejection input
-        "neige.task.report_success", // retired-name: rejection input
-        "neige.task.report_failure", // retired-name: rejection input
-        "neige_task_complete",
-        "neige_task_report_success",
+        "calm.get_track_state",                    // retired-name: rejection input
+        "calm.update_task_meta",                   // retired-name: rejection input
+        "calm.task_completed",                     // retired-name: rejection input
+        "calm.task_failed",                        // retired-name: rejection input
+        "calm.dispatch_request",                   // retired-name: rejection input
+        "calm.plan.upsert",                        // retired-name: rejection input
+        "neige.task.complete",                     // retired-name: rejection input
+        "neige.task.fail",                         // retired-name: rejection input
+        "neige.task.report_success",               // retired-name: rejection input
+        "neige.task.report_failure",               // retired-name: rejection input
+        "neige_task_complete",                     // retired-name: rejection input
+        "neige_task_report_success",               // retired-name: rejection input
         "neige_plan_list",                         // retired-name: rejection input
         "neige_plan_cancel",                       // retired-name: rejection input
         "neige_source_list",                       // retired-name: rejection input
@@ -138,8 +138,8 @@ async fn unknown_tool_error_lists_the_sessions_tools() {
         (CardRole::Worker, "neige.task.complete"),    // retired-name: rejection input
         (CardRole::Worker, "neige.task.report_success"), // retired-name: rejection input
         (CardRole::Planner, "neige.track.cat"),       // retired-name: rejection input
-        (CardRole::Worker, "neige_task_report_success"),
-        (CardRole::Planner, "neige_plan_list"), // retired-name: rejection input
+        (CardRole::Worker, "neige_task_report_success"), // retired-name: rejection input
+        (CardRole::Planner, "neige_plan_list"),       // retired-name: rejection input
     ] {
         let boot = boot_with_role(role).await;
         let (mut rd, mut wr) = connect(&boot.socket_path).await;

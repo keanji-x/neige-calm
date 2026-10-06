@@ -19,7 +19,7 @@ use crate::mcp_server::framing::{
 use crate::mcp_server::handshake::{TOKEN_NOT_RECOGNIZED_CODE, handle_initialize};
 use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolDescriptor, ToolRegistry,
-    require_role_any,
+    refuse_unknown_schema_keys, require_role_any,
 };
 use crate::mcp_server::tool_visibility::{
     ToolDiscoveryScope, TrackPluginScope, plugin_scope_for_track,
@@ -31,7 +31,7 @@ use crate::operation::forge_action_adapter::{
 };
 use crate::operation::{OperationKey, OperationOutcome, OperationResult, OperationRuntime};
 use crate::plugin_host::ConnectorClient;
-use crate::plugin_host::manifest::ToolKind;
+use crate::plugin_host::manifest::{ConnectorKind, ToolKind};
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use calm_types::event::{ForgeEventSpec, ForgeMergeSubject};
@@ -590,6 +590,16 @@ async fn dispatch_plugin_tools_call(
         .allows_manifest(&manifest)
     {
         return Err(unknown_tool().await);
+    }
+    // Closed input (§4) for a manifest-authored tool, before the role gate as for a kernel tool; a
+    // connector's materialized upstream tools are left to their server.
+    if matches!(manifest.kind, ConnectorKind::App | ConnectorKind::Builtin) {
+        let schema = manifest
+            .exposes_tools
+            .iter()
+            .find(|entry| entry.name == tool_name)
+            .and_then(|entry| entry.input_schema.as_ref());
+        refuse_unknown_schema_keys(schema, &arguments, name)?;
     }
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
     match kind {

@@ -179,3 +179,54 @@ async fn compiled_plugin_tools_dispatch_under_their_minted_names() {
         assert_eq!(unknown["error"]["code"], json!(-32601), "{old}: {unknown}");
     }
 }
+
+/// #2087 C1: gitforge's manifest tools are not kernel tools (its compiled `publish` is, and
+/// `every_kernel_tool_refuses_unknown_arguments` covers it); they reach the plugin dispatch, which
+/// refuses an unknown key from each closed manifest schema the same way, under the minted name,
+/// before the forge runtime is asked.
+#[tokio::test]
+async fn every_gitforge_tool_refuses_unknown_arguments() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    bind_running_builtins(&boot).await;
+    scope_track(&boot, Some("gitforge")).await;
+    let manifest = calm_server::builtin_plugins::catalog()
+        .iter()
+        .map(|plugin| plugin.manifest().clone())
+        .find(|manifest| manifest.id == "gitforge")
+        .expect("the gitforge built-in");
+    assert_eq!(manifest.exposes_tools.len(), 10, "anti-vacuity");
+    for tool in &manifest.exposes_tools {
+        let schema = tool.input_schema.as_ref().expect("a declared schema");
+        assert_eq!(
+            schema["additionalProperties"],
+            json!(false),
+            "{}: the manifest schema is closed",
+            tool.name
+        );
+        let mut keys: Vec<&str> = schema["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let name = calm_server::plugin_results::registry_name(&manifest.id, &tool.name);
+        let resp = call_tool_via_socket(
+            &boot.socket_path,
+            &boot.raw_token,
+            &boot.thread_id,
+            7,
+            &name,
+            json!({ "zz": 1 }),
+        )
+        .await;
+        assert_eq!(
+            (&resp["error"]["code"], resp["error"]["message"].as_str()),
+            (
+                &json!(-32602),
+                Some(format!("{name}: unknown argument `zz`; valid: {}", keys.join(", ")).as_str())
+            ),
+            "{name}: {resp}"
+        );
+    }
+}

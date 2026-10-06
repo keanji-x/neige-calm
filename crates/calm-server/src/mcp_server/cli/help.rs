@@ -10,7 +10,6 @@ use crate::mail::{TOOL_MAIL_CAT, TOOL_MAIL_LS};
 use crate::mcp_server::tools::{
     admin, area_reports, emit, report_tag, track_file, track_history, track_state,
 };
-use crate::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP;
 
 #[derive(Clone, Copy, Debug)]
 pub enum HelpRequest<'a> {
@@ -248,11 +247,11 @@ const HELP: &[CommandHelp] = &[
     command_help!(
         admin::TOOL_ADMIN_GC,
         "Prune track history and sweep unreferenced objects",
-        "Usage: neige admin gc --track-id <id> [--keep <count>] [--dry-run] [--force] [--json]",
+        "Usage: neige admin gc --track-id <id> --keep <count> [--dry-run] [--force] [--json]",
         "",
         "Options:",
         "      --track-id <id>  Track to prune",
-        "      --keep <count>   Number of recent commits to keep [default: {default_keep}]",
+        "      --keep <count>   Number of recent commits to keep",
         "      --dry-run        Report what would be pruned without changing data",
         "      --force          Confirm destructive pruning (required without --dry-run)",
         "      --json           Emit errors as JSON",
@@ -347,10 +346,7 @@ pub fn render(request: HelpRequest<'_>) -> Option<String> {
             help_for(command.tool)?.text
         }
     };
-    Some(text.replace(
-        "{default_keep}",
-        &DEFAULT_TRACK_HISTORY_PRUNE_KEEP.to_string(),
-    ))
+    Some(text.to_string())
 }
 
 fn object_help(object: &str) -> Option<String> {

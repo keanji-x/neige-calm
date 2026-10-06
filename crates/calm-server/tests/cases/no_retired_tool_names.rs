@@ -12,11 +12,27 @@ const RETIRED_TOOL_NAME: &str = concat!(
     r"(?:track_publish|ratify_request|user_notify))\b"
 );
 
-/// #2087 B0: a kernel tool name never contains `.`, so a dotted `neige.<object>.` on any kernel
-/// object (or a family such as `neige.<object>.*`) is retired. The plugin-to-host callbacks
-/// `neige.kv.*`, `neige.overlay.*`, `neige.card.*` and `neige.event.subscribe` are JSON-RPC
-/// methods, not tools, and use none of these objects.
-const RETIRED_DOTTED_KERNEL_NAME: &str = r"(?:^|[^A-Za-z0-9_.\-])neige\.(?:admin|area|calendar|dev|dispatch|plan|preview|ratify|report|review|source|task|terminal|track|user|workspace)\.";
+/// #2087 B0: a kernel tool name never contains `.`, so a dotted `neige.<object>.` on any object
+/// (or a family such as `neige.<object>.*`) is retired. Matched generically by
+/// [`dotted_kernel_name`]; the regex crate has no lookahead, so the exempt objects are checked there.
+const DOTTED_NEIGE_NAME: &str = r"(?:^|[^A-Za-z0-9_.\-])neige\.([a-z0-9]+)\.";
+
+/// The objects a dotted `neige.<object>.` may still name: the plugin-to-host callbacks
+/// `neige.kv.*`, `neige.overlay.*`, `neige.card.*` and `neige.event.subscribe` (JSON-RPC methods,
+/// not tools), the tailnet host name `neige.tail.<domain>` and the systemd unit
+/// `neige.worker.service`.
+const DOTTED_NON_TOOL_OBJECTS: &[&str] = &["kv", "overlay", "card", "event", "tail", "worker"];
+
+/// #2087 B0/B5: a minted plugin tool name starts `plugin_`, so the retired `plugin.<id>_<tool>`
+/// form of an id with `.` or `-` (the market plugin's quote tool before B0) is red. A one-word id's
+/// `plugin.<id>_` is not distinguishable from a field access (`plugin.manifest_name`) and is not
+/// matched.
+const RETIRED_PLUGIN_PREFIX: &str =
+    r"(?:^|[^A-Za-z0-9_.\-$])plugin\.[a-z0-9]+[.\-][a-z0-9.\-]*_[A-Za-z]";
+
+/// #2053/#2087 B0: the Worker's claims are `neige_task_done` / `neige_task_fail`; the earlier
+/// completion tool and the two report compounds are retired.
+const RETIRED_WORKER_NAME: &str = r"\bneige_task_(?:complete|report_success|report_failure)\b";
 
 /// #2087 B1a: a view tool's action is its Unix/git verb, so the B0 names with a noun or synonym
 /// action are retired, as are the CLI spellings of the old track view and tool listing.
@@ -60,7 +76,7 @@ const REJECTION_INPUT_MARKER: &str = "// retired-name: rejection input";
 
 /// The closed allowlist: released migrations and the #2003 and #2087 migrations (one directory,
 /// byte-frozen once released), the migrations' tests, a golden of an event written before #2016,
-/// and the design document that records the old names.
+/// and the two design documents whose rename tables record the old names.
 fn allowlisted(path: &str) -> bool {
     path.starts_with("crates/calm-truth/migrations/")
         || path == "crates/calm-server/tests/cases/neige_tool_name_migration.rs"
@@ -75,10 +91,37 @@ fn allowlisted(path: &str) -> bool {
         || path == "crates/calm-truth/src/db/sqlite/track_merge_policy_ask_migration_tests.rs"
         || path == "crates/calm-server/tests/goldens/events/forge_pr_merged.historical_subject.json"
         || path == "docs/architecture/2003-cli-mcp-naming.md"
+        || path == "docs/conventions/agent-commands.md"
+        || path == "crates/calm-server/tests/cases/recipe_minted_names_migration.rs"
 }
 
-/// The scanned roots, relative to the workspace root.
-const SCANNED: &[&str] = &["crates", "fe", "plugins", "docs/using-neige-calm.md"];
+/// The scanned roots, relative to the workspace root (git pathspecs): everything the product ships
+/// or runs, the repository guidance, and the living docs: the user guides `docs/README.md` lists
+/// under "Use and operate", the conventions and the design notes of `docs/design/`. Numbered
+/// design records (`docs/*.md`, `docs/architecture/`) and `docs/archive/` are history and keep the
+/// names of their time.
+const SCANNED: &[&str] = &[
+    "crates",
+    "fe",
+    "plugins",
+    "e2e",
+    "scripts",
+    ".github",
+    "README*",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "docs/README.md",
+    "docs/using-neige-calm.md",
+    "docs/recipe-body-format.md",
+    "docs/alpha-release.md",
+    "docs/deploy-and-upgrade.md",
+    "docs/neige-app-config.md",
+    "docs/plugin-security.md",
+    "docs/events-retention.md",
+    "docs/upgrade-stability.md",
+    "docs/conventions",
+    "docs/design",
+];
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -108,10 +151,11 @@ fn tracked_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn patterns() -> [regex::Regex; 9] {
+fn patterns() -> [regex::Regex; 10] {
     [
         regex::Regex::new(RETIRED_TOOL_NAME).expect("tool-name regex"),
-        regex::Regex::new(RETIRED_DOTTED_KERNEL_NAME).expect("dotted-name regex"),
+        regex::Regex::new(RETIRED_PLUGIN_PREFIX).expect("plugin-prefix regex"),
+        regex::Regex::new(RETIRED_WORKER_NAME).expect("worker-name regex"),
         regex::Regex::new(RETIRED_VIEW_NAME).expect("view-name regex"),
         regex::Regex::new(RETIRED_TERMINAL_NAME).expect("terminal-name regex"),
         regex::Regex::new(RETIRED_CRUD_NAME).expect("crud-name regex"),
@@ -122,8 +166,17 @@ fn patterns() -> [regex::Regex; 9] {
     ]
 }
 
+/// A dotted `neige.<object>.` whose object is not one of [`DOTTED_NON_TOOL_OBJECTS`].
+fn dotted_kernel_name(line: &str) -> bool {
+    static DOTTED: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(DOTTED_NEIGE_NAME).expect("dotted regex"));
+    DOTTED
+        .captures_iter(line)
+        .any(|name| !DOTTED_NON_TOOL_OBJECTS.contains(&&name[1]))
+}
+
 fn offending(line: &str, patterns: &[regex::Regex]) -> bool {
-    patterns.iter().any(|pattern| pattern.is_match(line))
+    (dotted_kernel_name(line) || patterns.iter().any(|pattern| pattern.is_match(line)))
         && !line.trim_end().ends_with(REJECTION_INPUT_MARKER)
 }
 
@@ -178,6 +231,15 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "then neige_calendar_rm.",                   // retired-name: rejection input
         "\"default\": \"hold-for-ratify\",",         // retired-name: rejection input
         "- `hold-for-ratify` — also the semantics",  // retired-name: rejection input
+        "neige.mail.send: hop 6/6",                  // retired-name: rejection input
+        "`neige.mail.{send,ls,cat}`",                // retired-name: rejection input
+        "https://x/neige.track.cat",                 // retired-name: rejection input
+        "call neige_task_complete",                  // retired-name: rejection input
+        "neige_task_report_success",                 // retired-name: rejection input
+        "(neige_task_report_failure)",               // retired-name: rejection input
+        "plugin.dev-neige-market_market.quote",      // retired-name: rejection input
+        "`plugin.mcp-wisburg_list-reports`",         // retired-name: rejection input
+        "plugin.dev.neige.git-forge_gh.pr.checks",   // retired-name: rejection input
         concat!("mcp__", "calm__neige_report_read"),
         concat!("allowed: mcp__", "calm Edit"),
     ] {
@@ -189,6 +251,12 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "neige.overlay.delete",
         "neige.card.create",
         "neige.event.subscribe",
+        "https://neige.tail.example",
+        "plugin.manifest_name",
+        "plugin.tool.registered",
+        "plugin_dev_neige_market_market_quote",
+        "neige_task_done",
+        "neige_task_completed",
         "calendar",
         "neige.worker.service",
         "neige.track: path not available",
@@ -253,7 +321,11 @@ fn no_retired_tool_names_remain() {
         files.len()
     );
     let mut hits = Vec::new();
-    for path in files.iter().filter(|path| !allowlisted(path)) {
+    // Tracked Python bytecode is a stale build artifact, not text anyone reads.
+    for path in files
+        .iter()
+        .filter(|path| !allowlisted(path) && !path.ends_with(".pyc"))
+    {
         let bytes = match std::fs::read(root.join(path)) {
             Ok(bytes) => bytes,
             // A tracked file deleted in the working tree has nothing left to say.

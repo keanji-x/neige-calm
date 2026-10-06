@@ -235,7 +235,7 @@ impl<'a> TrackFsView<'a> {
             .ok_or_else(|| path_not_available(&format!("cards/{card_id}")))?;
         if card.track_id != track.id {
             return Err(TrackFsError::Forbidden(format!(
-                "track_file: forbidden: card {} is not in the caller's bound track {}",
+                "card {} is not in the caller's bound track {}",
                 card.id.as_str(),
                 track.id.as_str()
             )));

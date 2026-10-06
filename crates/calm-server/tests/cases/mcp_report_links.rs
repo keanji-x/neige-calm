@@ -111,7 +111,7 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
     let tracks = value["tracks"].as_array().unwrap();
     let sibling = tracks
         .iter()
-        .find(|track| track["id"] == sibling.id.as_str())
+        .find(|track| track["track_id"] == sibling.id.as_str())
         .expect("an empty same-area report is still listed");
     let blocks = sibling["blocks"].as_array().expect("outline blocks");
     assert_eq!(blocks.len(), 1);
@@ -120,7 +120,7 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
     assert!(
         !tracks
             .iter()
-            .any(|track| track["id"] == outside.id.as_str())
+            .any(|track| track["track_id"] == outside.id.as_str())
     );
 }
 
@@ -143,7 +143,7 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|track| track["id"] == legacy.id.as_str())
+        .find(|track| track["track_id"] == legacy.id.as_str())
         .unwrap();
     assert_eq!(track["blocks"][0]["heading"], "Legacy heading");
     assert!(track["blocks"][0]["id"].as_str().unwrap().starts_with("b_"));
@@ -194,7 +194,7 @@ async fn outline_labels_live_and_tombstone_tasks_at_the_mcp_boundary() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|track| track["id"] == task_track.id.as_str())
+        .find(|track| track["track_id"] == task_track.id.as_str())
         .unwrap()["blocks"]
         .as_array()
         .unwrap();
@@ -226,7 +226,7 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|candidate| candidate["id"] == track.id.as_str())
+        .find(|candidate| candidate["track_id"] == track.id.as_str())
         .unwrap();
     let blocks = entry["blocks"].as_array().unwrap();
     assert_eq!(
@@ -293,7 +293,7 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
     let mut verified = 0usize;
     let mut foreign = Vec::new();
     for track in tracks {
-        let id = track["id"].as_str().unwrap();
+        let id = track["track_id"].as_str().unwrap();
         if !seeded.iter().any(|seed| seed.id.as_str() == id) {
             foreign.push(id.to_string());
             continue;

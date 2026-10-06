@@ -685,7 +685,7 @@ async fn mail_trace_of_the_investment_case() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|track| track["id"] == json!(n.track_id.as_str())
+            .any(|track| track["track_id"] == json!(n.track_id.as_str())
                 && track["title"] == json!("NVDA research")),
         "{outline}"
     );

@@ -23,7 +23,7 @@ pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
         "gh_issue_close" => lower_gh_issue_close(args),
         "gh_issue_comment" => Err("issue comments require trusted forge caller metadata".into()),
         "gh_issue_comments" => issue::comments(args),
-        _ => Err(format!("unknown git-forge tool `{tool}`")),
+        _ => Err(format!("unknown {} tool `{tool}`", super::PLUGIN_ID)),
     }
 }
 
@@ -35,7 +35,10 @@ pub fn lower_for_caller(
 ) -> Result<Value, String> {
     caller.validate()?;
     if caller.plugin_id != super::PLUGIN_ID {
-        return Err("forge caller plugin does not match development plugin".into());
+        return Err(format!(
+            "forge caller plugin does not match the {} plugin",
+            super::PLUGIN_ID
+        ));
     }
     match tool {
         "gh_issue_comment" => issue::comment(args, caller),

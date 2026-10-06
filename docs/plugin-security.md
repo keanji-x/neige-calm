@@ -119,7 +119,7 @@ process, plugin token or supervisor. New code arrives through a release;
 runtime enablement remains dynamic. Disk and remote
 installation cannot replace a compiled identity. Development is `gitforge` and
 Calendar is `calendar`; migration 0148 moved their rows, Track bindings and
-stored names from `dev.neige.git-forge` and `dev.neige.calendar` (#2087 B5).
+stored names from the dotted ids they had before #2087 B5.
 
 `agent_tools_scope` declares agent visibility separately from the backend.
 Version 4 is required for `bound-track`; older manifests keep existing enabled

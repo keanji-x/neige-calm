@@ -2,7 +2,7 @@ use super::*;
 #[test]
 fn rejects_unknown_tool() {
     let err = lower("git.push", &json!({})).expect_err("unknown tool rejected");
-    assert!(err.contains("unknown git-forge tool"));
+    assert!(err.contains("unknown gitforge tool"));
 }
 
 #[test]

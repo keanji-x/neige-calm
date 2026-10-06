@@ -148,6 +148,23 @@ pub(crate) fn refuse_unknown_keys<S: AsRef<str>>(
     )))
 }
 
+/// Closed input for a native plugin tool, from its manifest `inputSchema`: a schema that declares
+/// `additionalProperties: false` refuses an unknown top-level key through [`refuse_unknown_keys`],
+/// as the registry does for a kernel tool. An open or absent schema leaves the plugin to decide.
+pub(crate) fn refuse_unknown_schema_keys(
+    schema: Option<&Value>,
+    args: &Value,
+    at: &str,
+) -> Result<(), RpcError> {
+    let (Some(schema), Some(obj)) = (schema, args.as_object()) else {
+        return Ok(());
+    };
+    if schema.get("additionalProperties") != Some(&Value::Bool(false)) {
+        return Ok(());
+    }
+    refuse_unknown_keys(obj, &schema_keys(schema), at)
+}
+
 /// The top-level keys a tool's declared input schema accepts: the one source of its closed input.
 fn schema_keys(schema: &Value) -> Vec<String> {
     schema

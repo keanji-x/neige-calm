@@ -47,7 +47,8 @@ const KEPT: &[&str] = &["Read", "mcp__calm__plugin_dev_x_unknown", "neige_track_
 /// chain is red. 0136 only creates tables and an index, 0138 only adds a column, 0139 only creates
 /// a table, which the fixture's schema already has, and 0140 only renames template ids; none holds
 /// a tool name. 0145 and 0147 only add columns (0147 also an index), 0146 only creates tables and
-/// 0149 and 0150 only bump an event version, likewise.
+/// 0149 and 0150 only bump an event version, likewise, 0152 rebuilds `operations` with its rows
+/// unchanged and 0153 rewrites only `tracks.template_input`'s merge policy.
 pub(super) async fn run_the_chain_through(f: &Fx, last: i64, expected: &[&str]) {
     let chain: Vec<_> = calm_truth::MIGRATOR
         .iter()
@@ -55,7 +56,7 @@ pub(super) async fn run_the_chain_through(f: &Fx, last: i64, expected: &[&str]) 
             (134..=last).contains(&m.version)
                 && !matches!(
                     m.version,
-                    136 | 138 | 139 | 140 | 145 | 146 | 147 | 149 | 150
+                    136 | 138 | 139 | 140 | 145 | 146 | 147 | 149 | 150 | 152 | 153
                 )
         })
         .collect();

@@ -35,7 +35,7 @@ function schema(): unknown {
 describe('plugin list rows', () => {
   it('requires plugin configuration and removal capabilities', () => {
     const row = {
-      id: 'git-forge', version: '0.1.0', enabled: true, state: 'running', manifest_name: 'Git forge',
+      id: 'gitforge', version: '0.1.0', enabled: true, state: 'running', manifest_name: 'Git forge',
     };
     expect(pluginListItemSchema.safeParse(row).success).toBe(false);
     expect(pluginListItemSchema.safeParse({ ...row, has_config: false }).success).toBe(false);
@@ -46,11 +46,11 @@ describe('plugin list rows', () => {
 describe('plugin detail', () => {
   it('decodes a user_config the kernel refuses to merge into, instead of failing', () => {
     const decoded = pluginDetailSchema.parse({
-      id: 'git-forge',
+      id: 'gitforge',
       version: '0.1.0',
       enabled: true,
       state: 'running',
-      manifest: { id: 'git-forge' },
+      manifest: { id: 'gitforge' },
       config_schema: schema(),
       user_config: 'not an object',
       effective_config: {},
@@ -192,14 +192,14 @@ describe('configPatchFrom (#1284 §2.2.5)', () => {
 
 describe('the operations', () => {
   it('names ?reset=true in the URL only when it is asked for', () => {
-    expect(patchPluginConfigOperation('git-forge', { token: 'a' }).path)
-      .toBe('/api/plugins/git-forge/config');
-    expect(patchPluginConfigOperation('git-forge', { token: 'a' }, { reset: true }).path)
-      .toBe('/api/plugins/git-forge/config?reset=true');
+    expect(patchPluginConfigOperation('gitforge', { token: 'a' }).path)
+      .toBe('/api/plugins/gitforge/config');
+    expect(patchPluginConfigOperation('gitforge', { token: 'a' }, { reset: true }).path)
+      .toBe('/api/plugins/gitforge/config?reset=true');
   });
 
   it('sends the patch as the body, and PATCH as the method', () => {
-    const operation = patchPluginConfigOperation('git-forge', { token: null });
+    const operation = patchPluginConfigOperation('gitforge', { token: null });
     expect(operation.method).toBe('PATCH');
     expect(operation.body).toEqual({ token: null });
   });
@@ -220,7 +220,7 @@ const lost = new ApiError({ kind: 'transport', message: 'Transport request faile
 async function kernelRefusal(status: number, body: Readonly<Record<string, string>>): Promise<ApiError> {
   const result = await performApiRequest(
     { send: () => Promise.resolve({ status, statusText: '', body }) },
-    { method: 'PATCH', path: '/api/plugins/git-forge/config', body: {}, responseSchema: z.unknown() },
+    { method: 'PATCH', path: '/api/plugins/gitforge/config', body: {}, responseSchema: z.unknown() },
   );
   if (result.status !== 'failed') throw new Error('the kernel answer must be a failure');
   return new ApiError(result.error);
@@ -251,7 +251,7 @@ describe('configWriteError', () => {
   it('offers the reset for the byte-cap refusal too, without reading the prose', async () => {
     const tooLarge = configWriteError(
       await kernelRefusal(400, {
-        error: 'config: storing this patch would make plugin `git-forge`\'s user_config 40000 '
+        error: 'config: storing this patch would make plugin `gitforge`\'s user_config 40000 '
           + 'bytes, over the 32768-byte cap. Resend this request with `?reset=true`',
         code: 'plugin_config_too_large',
       }),
@@ -285,8 +285,8 @@ describe('configWriteError', () => {
   });
 
   it('shows a held lock in the kernel’s words, as a refusal like any other', () => {
-    const error = configWriteError(answered(409, 'plugin_busy', 'plugin `git-forge` is busy'), fields);
-    expect(error).toEqual({ message: 'plugin `git-forge` is busy', fieldKey: null, offersReset: false });
+    const error = configWriteError(answered(409, 'plugin_busy', 'plugin `gitforge` is busy'), fields);
+    expect(error).toEqual({ message: 'plugin `gitforge` is busy', fieldKey: null, offersReset: false });
   });
 
   it('offers the reset only for the refusal whose exit it is', () => {
@@ -311,17 +311,17 @@ describe('configWriteError', () => {
 
 describe('reloadOutcome (#1284 §2.4)', () => {
   it('reports a refusal before the stop as saved-but-not-restarted, in the kernel’s words', () => {
-    const outcome = reloadOutcome({ rejection: { error: answered(409, 'plugin_busy', 'plugin `git-forge` is busy') }, state: 'running' });
+    const outcome = reloadOutcome({ rejection: { error: answered(409, 'plugin_busy', 'plugin `gitforge` is busy') }, state: 'running' });
     expect(outcome.kind).toBe('refused');
     expect(outcome.tone).toBe('warning');
     expect(outcome.message).toMatch(/saved/i);
     expect(outcome.message).toMatch(/did not run, so the plugin keeps the configuration it last started with/);
-    expect(outcome.message).toContain('plugin `git-forge` is busy');
+    expect(outcome.message).toContain('plugin `gitforge` is busy');
   });
 
   it.each(['spawning', 'unknown', 'disabled', 'crashed'] as const)(
     'reads a busy or missing plugin as refused before the stop, whatever reads back (%s)', (state) => {
-      for (const error of [answered(409, 'plugin_busy', 'plugin `git-forge` is busy'), answered(404, 'not_found', 'plugin git-forge')]) {
+      for (const error of [answered(409, 'plugin_busy', 'plugin `gitforge` is busy'), answered(404, 'not_found', 'plugin gitforge')]) {
         const outcome = reloadOutcome({ rejection: { error }, state });
         expect(outcome.kind).toBe('refused');
         expect(outcome.message).not.toMatch(/has stopped|still running/);

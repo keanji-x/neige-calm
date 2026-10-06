@@ -32,6 +32,7 @@ diagnoses, proposed changes, or explicitly deferred work.
 | Track open/closed state | [Track state](architecture/1876-track-open-closed.md) |
 | Built-in capabilities, fixed template ownership, and additional Track tools | [Built-in Development](architecture/1897-builtin-dev.md) |
 | Kernel-served agent CLI | [CLI architecture](architecture/1801-kernel-served-cli.md) |
+| Agent command and MCP naming convention (normative) | [Agent commands](conventions/agent-commands.md) |
 | Reports as executable plans | [Doc-as-plan design](architecture/985-doc-as-plan.md) |
 | Worker evidence, verification directories, and deferred recovery work | [Long task reliability](architecture/long-task-reliability.md) |
 | Continuing task identity, recovery, and reliable delivery proposal | [Task continuity design](architecture/1501-task-continuity.md) |

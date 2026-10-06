@@ -24,7 +24,8 @@
         },
         "required": [
           "target"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "Git Worktree Add",
@@ -56,7 +57,8 @@
         "required": [
           "message",
           "idem"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "Git Commit",
@@ -89,7 +91,8 @@
           "repo",
           "base",
           "head"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "List Pull Requests",
@@ -125,7 +128,8 @@
           "pr",
           "base_sha",
           "head_sha"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "Read Pull Request Diff",
@@ -158,7 +162,8 @@
         "required": [
           "repo",
           "pr"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "Read Pull Request Checks",
@@ -188,7 +193,8 @@
         "required": [
           "repo",
           "pr"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "Merge Pull Request",
@@ -223,7 +229,8 @@
         "required": [
           "repo",
           "issue"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "View Issue",
@@ -249,7 +256,8 @@
         "required": [
           "repo",
           "issue"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "Close Issue",
@@ -291,7 +299,8 @@
           "issue",
           "body",
           "idem"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "Comment on Issue",
@@ -328,7 +337,8 @@
         "required": [
           "repo",
           "issue"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "title": "Read Issue Comments",

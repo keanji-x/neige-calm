@@ -163,7 +163,7 @@ class Allocation:
         if decision['state'] == 'requested':
             return
         if decision['state'] != 'queued':
-            raise ValueError(f"SPY decision is {decision['state']}, not awaiting execution; read spy.status")
+            raise ValueError(f"SPY decision is {decision['state']}, not awaiting execution; read plugin_dev_neige_paper_trading_spy_status")
         if timestamp(decision['body']['valid_until']) <= self.clock():
             raise ValueError('SPY decision expired; the Planner must save a new target')
         self.ledger.change(db, key, 'requested')

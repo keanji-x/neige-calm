@@ -16,7 +16,7 @@ fn rejects_removed_gh_pr_create() {
         lower("gh_pr_create", &args),
         lower_for_caller("gh_pr_create", &args, &caller),
     ] {
-        assert_eq!(result.unwrap_err(), "unknown git-forge tool `gh_pr_create`");
+        assert_eq!(result.unwrap_err(), "unknown gitforge tool `gh_pr_create`");
     }
 }
 

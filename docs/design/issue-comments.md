@@ -1,13 +1,13 @@
-# Issue communication through git-forge
+# Issue communication through gitforge
 
-Planner issue communication uses the existing development plugin and kernel
+Planner issue communication uses the existing `gitforge` plugin and kernel
 forge-action runtime. No plugin subprocess receives forge credentials. Plugin
 scope, role checks, the recorded operation, and the durable pre-write handshake
 remain the authority boundary; this feature adds no permission bypass.
 
 ## Contract
 
-- `gh.issue.comment` requires `repo`, a positive `issue`, nonblank `body`, and
+- `gh_issue_comment` requires `repo`, a positive `issue`, nonblank `body`, and
   nonblank `idem`. A logical comment keeps its idem and body on every retry;
   another comment uses a new idem. The kernel scopes the operation to its caller.
 - The body carries a hidden SHA-256 marker derived from the structured tuple
@@ -23,8 +23,8 @@ remain the authority boundary; this feature adds no permission bypass.
   Editing/deleting the posted body prevents proof of landing.
 - Completion is recorded by the existing operation lifecycle and result receipt;
   no new domain event or persisted schema is introduced.
-- `gh.issue.comments` returns the discussion as JSON, requires `repo` and positive
-  `issue`, and accepts `attempt` for fresh reads. `gh.issue.view` also accepts
+- `gh_issue_comments` returns the discussion as JSON, requires `repo` and positive
+  `issue`, and accepts `attempt` for fresh reads. `gh_issue_view` also accepts
   `attempt` while preserving its existing default key and body-only result.
 
 ## Acceptance

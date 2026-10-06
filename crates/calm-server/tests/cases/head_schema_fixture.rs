@@ -91,6 +91,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0151_native_plugin_tool_names.sql",
     "0152_operations_awaiting_retry.sql",
     "0153_merge_policy_ask.sql",
+    "0154_recipe_minted_names.sql",
 ];
 
 #[test]

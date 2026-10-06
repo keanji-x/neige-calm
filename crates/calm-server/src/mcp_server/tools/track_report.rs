@@ -315,7 +315,7 @@ pub(crate) fn updated_report_doc_rev(card: &Card, tool: &str) -> Result<u64, Rpc
     card.payload
         .get("docRev")
         .and_then(Value::as_u64)
-        .ok_or_else(|| RpcError::internal(format!("{tool}: updated report payload has no docRev")))
+        .ok_or_else(|| RpcError::internal(format!("{tool}: updated report payload has no doc_rev")))
 }
 
 #[cfg(test)]

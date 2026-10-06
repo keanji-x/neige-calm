@@ -159,7 +159,10 @@ async fn cross_track_card_path_returns_403() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["code"], json!("forbidden"));
     assert!(
-        body["error"].as_str().unwrap().contains("forbidden: card"),
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("is not in the caller's bound track"),
         "{body}"
     );
 }

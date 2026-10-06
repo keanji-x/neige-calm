@@ -24,9 +24,7 @@ pub fn task_gate_log_path(attempt_id: &str, gate_attempt: i64) -> Result<String,
 impl TrackFsView<'_> {
     fn gate_logs_directory(&self, path: &str) -> Result<&Path, TrackFsError> {
         self.gate_log_access.as_deref().ok_or_else(|| {
-            TrackFsError::Forbidden(format!(
-                "track_file: forbidden: {path} is not available on this surface"
-            ))
+            TrackFsError::Forbidden(format!("{path} is not available on this surface"))
         })
     }
 
@@ -54,7 +52,7 @@ impl TrackFsView<'_> {
         // The boundary for every caller: a card reads gate logs of its own bound track only.
         if task.track_id != track.id.as_str() {
             return Err(TrackFsError::Forbidden(format!(
-                "track_file: forbidden: execution {attempt_id} is not in the caller's bound track {}",
+                "execution {attempt_id} is not in the caller's bound track {}",
                 track.id.as_str()
             )));
         }

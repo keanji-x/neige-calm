@@ -28,7 +28,7 @@ loss is listed in the track record's transcript_losses, so the reader knows wher
      segment = {"at", "presentation", "text", "attachment_count", "origin"}; origin = {"observation" (the Observation
      type tag, e.g. task_completed, track_wake, user_message), "event_id" (events.id or null),
      "event_kind" (that event's kind, or null), "source" (track_wake only: the wake event's
-     source, e.g. dev.neige.mail)}. Rows written before #2206 T1 have "origin": null: not
+     source, e.g. mail)}. Rows written before #2206 T1 have "origin": null: not
      recorded, not guessed from the text.
  "messages": [{"at", "text"}]  the Planner's own text (its completed agentMessage items: what it
      tells or asks the user, why it chose a step), in order; reasoning items are left out,

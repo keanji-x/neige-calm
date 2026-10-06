@@ -278,7 +278,7 @@ def test_spy_recipe_contract_matches_body_and_published_units(allocation_rig):
     assert 'neige --json mail cat <mail_id>' in text and 'its track_id is the research Track' in text
     assert 'its summary starts with "SPY 盘前研究 <today\'s New York date>"' in text
     assert "Capture the reply as this Track's own source with neige_source_capture (provenance manual" in text
-    assert 'The pre-market decision reads spy.status without refreshing' in text
+    assert 'The pre-market decision reads plugin_dev_neige_paper_trading_spy_status without refreshing' in text
 
 
 def test_spy_research_recipe_is_a_report_without_live_views_or_trading():

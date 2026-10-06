@@ -1075,7 +1075,10 @@ async fn card_hook_events_from_other_track_are_forbidden() {
     .await
     .expect_err("other track must not read bound-track card hook events");
     assert_eq!(err.code, -32403);
-    assert!(err.message.contains("forbidden"), "err = {err:?}");
+    assert!(
+        err.message.contains("is not in the caller's bound track"),
+        "err = {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -2065,7 +2068,10 @@ async fn card_payload_from_other_track_is_forbidden() {
         .await
         .unwrap_err();
         assert_eq!(err.code, -32403);
-        assert!(err.message.contains("forbidden"), "err = {err:?}");
+        assert!(
+            err.message.contains("is not in the caller's bound track"),
+            "err = {err:?}"
+        );
     }
 
     let worker_payload_path = format!("cards/{}/.payload.json", boot.other_track_card_id.as_str());
@@ -2078,7 +2084,10 @@ async fn card_payload_from_other_track_is_forbidden() {
     .await
     .expect_err("worker cross-track card payload read must be denied");
     assert_eq!(err.code, -32403);
-    assert!(err.message.contains("forbidden"), "err = {err:?}");
+    assert!(
+        err.message.contains("is not in the caller's bound track"),
+        "err = {err:?}"
+    );
 
     let path = format!("cards/{}", boot.other_track_card_id.as_str());
     let err = call_tool(
@@ -2090,7 +2099,10 @@ async fn card_payload_from_other_track_is_forbidden() {
     .await
     .expect_err("cross-track card directory listing must be denied");
     assert_eq!(err.code, -32403);
-    assert!(err.message.contains("forbidden"), "err = {err:?}");
+    assert!(
+        err.message.contains("is not in the caller's bound track"),
+        "err = {err:?}"
+    );
 }
 
 #[tokio::test]

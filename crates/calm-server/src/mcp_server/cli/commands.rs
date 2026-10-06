@@ -1,5 +1,5 @@
 //! The `neige` command table (#1801, #2003): `neige <object> <action>` spelled from each row's tool,
-//! `--<key>` options, the `admin gc` keep default and the two `--force` gates.
+//! `--<key>` options and the two `--force` gates.
 //! Values reach the tool unchecked; range and non-empty rules belong to the tool alone.
 
 use serde_json::{Map, Value};
@@ -14,7 +14,6 @@ use crate::mcp_server::tools::{
     track_state,
 };
 use crate::track_fs_view::normalize_path;
-use crate::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP;
 
 /// One CLI command: `neige <object> <action>`, the tool name `neige_<object>_<action>` split at `_`.
 pub(crate) struct Command {
@@ -105,9 +104,7 @@ pub(crate) enum OptValue {
     /// Present means `true`.
     Flag,
     Text,
-    Integer {
-        default: Option<u64>,
-    },
+    Integer,
     /// JSON when the text parses as JSON, otherwise the text as a JSON string.
     JsonOrText,
     /// Repeatable; collected into an array.
@@ -184,12 +181,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         tool: track_history::TOOL_TRACK_LOG,
         positionals: &[pos("path", false)],
         options: &[
-            opt(
-                "--limit",
-                "limit",
-                OptValue::Integer { default: None },
-                false,
-            ),
+            opt("--limit", "limit", OptValue::Integer, false),
             opt("--include-empty", "include_empty", OptValue::Flag, false),
         ],
         confirm: None,
@@ -270,14 +262,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         positionals: &[],
         options: &[
             opt("--track-id", "track_id", OptValue::Text, true),
-            opt(
-                "--keep",
-                "keep",
-                OptValue::Integer {
-                    default: Some(DEFAULT_TRACK_HISTORY_PRUNE_KEEP as u64),
-                },
-                false,
-            ),
+            opt("--keep", "keep", OptValue::Integer, true),
             opt("--dry-run", "dry_run", OptValue::Flag, false),
         ],
         confirm: Some(Confirm {
@@ -397,7 +382,7 @@ pub(crate) fn parse(argv: &[String], registry: &ToolRegistry) -> Result<Parsed, 
         let value = match value {
             OptValue::Flag | OptValue::View => unreachable!("flags take no value"),
             OptValue::Text => Value::String(raw.clone()),
-            OptValue::Integer { .. } => raw
+            OptValue::Integer => raw
                 .parse::<u64>()
                 .map(Value::from)
                 .map_err(|_| fail(format!("{cmd} {flag} must be a non-negative integer"), json))?,
@@ -447,12 +432,6 @@ pub(crate) fn parse(argv: &[String], registry: &ToolRegistry) -> Result<Parsed, 
     for opt in command.options {
         if opt.required && !args.contains_key(opt.key) {
             return Err(fail(format!("{cmd} requires {}", opt.flag), json));
-        }
-        if let OptValue::Integer {
-            default: Some(default),
-        } = opt.value
-        {
-            args.entry(opt.key).or_insert(Value::from(default));
         }
     }
     if let Some(confirm) = &command.confirm {

@@ -108,7 +108,7 @@ async fn area_outline(
             })
             .collect();
         tracks.push(json!({
-            "id": track.id,
+            "track_id": track.id,
             "title": track.title,
             "closed_at": track.closed_at,
             "blocks": blocks,
@@ -124,7 +124,11 @@ async fn area_outline(
     let target_bytes = MAX_RESPONSE_BYTES.saturating_sub(4096);
     if bytes_truncated {
         for track in tracks.iter_mut().rev() {
-            let Some(track_id) = track.get("id").and_then(Value::as_str).map(str::to_owned) else {
+            let Some(track_id) = track
+                .get("track_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
                 continue;
             };
             let Some(blocks) = track.get_mut("blocks").and_then(Value::as_array_mut) else {
@@ -148,7 +152,7 @@ async fn area_outline(
                 serde_json::to_vec(&track).map_or(0, |serialized| serialized.len() + 1),
             );
             omitted_tracks += 1;
-            if let Some(track_id) = track.get("id").and_then(Value::as_str) {
+            if let Some(track_id) = track.get("track_id").and_then(Value::as_str) {
                 block_truncations.remove(track_id);
             }
         }

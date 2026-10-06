@@ -61,6 +61,8 @@ mod payload_validation;
 mod plugin_names_migration;
 #[path = "cases/preview_gateway.rs"]
 mod preview_gateway;
+#[path = "cases/recipe_minted_names_migration.rs"]
+mod recipe_minted_names_migration;
 #[path = "cases/repo.rs"]
 mod repo;
 #[path = "cases/request_rejections.rs"]

@@ -34,7 +34,7 @@ async fn outline_ids(boot: &Boot, reader: &Side, side: &Side) -> Vec<String> {
         .as_array()
         .expect("tracks")
         .iter()
-        .find(|track| track["id"] == side.track_id.as_str())
+        .find(|track| track["track_id"] == side.track_id.as_str())
         .expect("the track is outlined");
     track["blocks"]
         .as_array()

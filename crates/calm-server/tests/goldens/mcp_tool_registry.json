@@ -43,7 +43,7 @@
   },
   {
     "name": "neige_area_ls",
-    "description_sha256": "7d503be5c80b91f66968e6b0bace8e043cf1a72913351f0e3fe3bf226a293d34",
+    "description_sha256": "4360cabc664acf82bbad5a0208fc0ea6e289007018e3ed1a798219addf8a398d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -1718,7 +1718,7 @@
   },
   {
     "name": "plugin_calendar_add",
-    "description_sha256": "7a1b32aa5285b94c82c91cd56e89494a05c7cf25063ba7a5716de2ac7a534877",
+    "description_sha256": "4ff61b2f4e3615c1b73284415aa45de9032fda841b51bbd046eb97bbe9fac025",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

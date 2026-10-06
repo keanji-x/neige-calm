@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::mcp_server::build_default_registry;
-use crate::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -350,11 +349,12 @@ fn values_reach_the_tool_unchecked() {
     );
 }
 
+/// `keep` is required by `neige_admin_gc`, so the CLI mirrors it and supplies no default.
 #[test]
-fn track_gc_defaults_keep_to_the_prune_constant() {
+fn admin_gc_requires_keep_as_its_tool_does() {
     assert_eq!(
-        tool_args(&["admin", "gc", "--track-id", "w-1", "--force"]),
-        json!({ "track_id": "w-1", "keep": DEFAULT_TRACK_HISTORY_PRUNE_KEEP })
+        refusal(&["admin", "gc", "--track-id", "w-1", "--force"]),
+        "admin gc requires --keep"
     );
     let parsed = parse_args(&[
         "admin",
@@ -385,9 +385,21 @@ fn track_gc_requires_track_id() {
 #[test]
 fn track_gc_requires_force_unless_dry_run() {
     assert!(
-        refusal(&["admin", "gc", "--track-id", "w-1"]).contains("re-run with --force to confirm")
+        refusal(&["admin", "gc", "--track-id", "w-1", "--keep", "5"])
+            .contains("re-run with --force to confirm")
     );
-    assert!(parse_args(&["admin", "gc", "--track-id", "w-1", "--dry-run"]).is_ok());
+    assert!(
+        parse_args(&[
+            "admin",
+            "gc",
+            "--track-id",
+            "w-1",
+            "--keep",
+            "5",
+            "--dry-run"
+        ])
+        .is_ok()
+    );
 }
 
 #[test]

@@ -32,6 +32,9 @@ const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
 const EXPOSED_NAME: &str = "plugin_dev_echo_do_thing";
 const SECRET_NAME: &str = "plugin_dev_echo_secret";
+/// A tool whose manifest schema is closed (`additionalProperties: false`).
+const CLOSED_TOOL_NAME: &str = "closed.thing";
+const CLOSED_EXPOSED_NAME: &str = "plugin_dev_echo_closed_thing";
 /// An id that is a prefix of [`PLUGIN_ID`]'s minted segment, with a tool that mints a near miss
 /// (two plugins minting one name are refused at spawn, #2087 §6).
 const COLLIDING_PLUGIN_ID: &str = "dev";
@@ -977,7 +980,16 @@ async fn boot_plugin_host(
             }
         },
         "exposes_tools": [
-            { "name": TOOL_NAME, "description": "noop" }
+            { "name": TOOL_NAME, "description": "noop" },
+            {
+                "name": CLOSED_TOOL_NAME,
+                "description": "closed input",
+                "input_schema": {
+                    "type": "object",
+                    "properties": { "note": { "type": "string" } },
+                    "additionalProperties": false
+                }
+            }
         ],
         "permissions": {}
     });
@@ -1146,6 +1158,8 @@ async fn wait_for_running(host: &Arc<PluginHost>, id: &str) {
 
 #[path = "mcp_plugin_tools/caller_identity.rs"]
 mod caller_identity;
+#[path = "mcp_plugin_tools/closed_input.rs"]
+mod closed_input;
 #[path = "mcp_plugin_tools/invest_caller_identity.rs"]
 mod invest_caller_identity;
 #[path = "mcp_plugin_tools/invest_research.rs"]

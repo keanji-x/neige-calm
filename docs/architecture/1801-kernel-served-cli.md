@@ -43,7 +43,7 @@
 | `vacuum --force` | `calm.admin.vacuum`，`admin.rs:134-147`（仅 Planner） | **确认门 `--force`**（`:1070-1075`） | 短 | `commands.rs` 确认门 |
 | `--json`（全局或命令后） | — | 前置或出现在任意位置（`:634-637`、各分支）；ls/state/diff/log 输出紧凑 JSON；其余命令只把**错误**转成 JSON（`:617-623`，`AppError.structured` 在 `:1175-1180`） | — | `commands.rs` 解析；`mcp/cli/mod.rs::error_output` |
 | usage / help / `--version` / 未知命令 | — | `help::request` 在任何网络连接**之前**处理（`main.rs:32-48`，`help.rs:170-185`）；usage 串（`:1191`）；未知命令提示（`help.rs:205-210`）；`--version` 打印客户端版本（`:32-35`） | 短 | `help.rs` 原样搬到 `mcp/cli/help.rs`；`--version` **留在转发器本地**（§3.4，打包依赖它） |
-| 退出码 | — | 0 成功；1 usage；2 缺环境变量（`:1200-1207`）；3 连接失败（`:104-111`）；4 rpc/工具/协议错误（`:1209-1221`） | — | 内核只给出 0、1、4（§3.2）；转发器本地的固定失败是 2、3、4、5、141（§3.3），其中 4 与内核共用 |
+| 退出码 | — | 0 成功；1 usage；2 缺环境变量（`:1200-1207`）；3 连接失败（`:104-111`）；4 rpc/工具/协议错误（`:1209-1221`） | — | 内核只给出 0、1、4（§3.2）；转发器本地的固定失败是 2、3、141（§3.3，#2087 B4），与内核的 0、1、4 不相交 |
 
 结论：10 个命令都只调用**一个**工具，没有哪条命令组合多个工具。不属于纯工具调用的逻辑有：默认值（ls path 与工具重复→删；keep=50 与 `gc.rs` 重复→共用常量）、
 `--result` 的 JSON-或-文本转换、两个 `--force` 确认门、diff 状态重命名、`cat` 的 JSON pretty 打印和三条渲染规则（`content_type` 缺失、`message`/`event_id` 为 null）、
@@ -163,7 +163,7 @@ CLI 层从 `ToolResult::into_structured()`（`mcp/result.rs:77`）拿数据，�
 | H7 | 工具描述（`srv/prompts/tools/calm.track.*.md` 等） | 实测这些描述都不提 `neige`，所以不需要改。`track_file.rs:36` 和 `track_history.rs:5-6` 注释里的"consumed by `neige`"改为"consumed by `mcp/cli`"。 |
 | H8 | 提示词和模板里的 `neige` 用法：`prompts/planner.md:56,60,120,140-145`、`prompts/worker/head-cli.md:5-9`、`head-mcp.md:5`、`tail.md:3`、`templates/builtin/*.md:9`、`calm-types/src/report/default.md:5`；以及钉住它们的 golden：`tests/goldens/issue_development_planner_prompt.txt`、`worker_prompt_cli.txt` | 命令面**不变**，所以这些文件和 golden 都不改。新增测试 `prompt_neige_mentions_name_served_commands`：扫描 `prompts/**`、`templates/builtin/**` 和 `calm-types/src/report/*.md` 里的 `` `neige <word>`` ``，`<word>` 必须在 `COMMANDS` 中。以后改名时这条测试会先失败。扫描范围之外的无害命中：`docs/events-retention.md:122`（`neige vacuum --force`，命令面不变）、`docker/Dockerfile.server:9`（注释）、`calm-truth/src/track_vcs/gc.rs:16`（注释，随 keep 常量改写，见 §1）。 |
 | H9 | 现有测试：`crates/neige-cli/tests/neige_cli.rs`（719 行，用假服务器钉客户端的解析和渲染）、`main.rs:1224-1570` 的单测 | 这两处测试本身就是第二份规格，全部删除。解析测试搬进 `mcp/cli/commands.rs`；渲染和 help 测试改为针对真内核运行（沿用 `tests/cases/neige_cli_task_report.rs` 的做法）。转发器只保留协议测试（§7 T6、T7）。 |
-| H10 | 转发器内置的环境变量名和退出码 2/3/4/5/141 | 这属于冻结协议的一部分（§3.3），不算命令语义。 |
+| H10 | 转发器内置的环境变量名和退出码 2/3/141（#2087 B4 前为 2/3/4/5/141） | 这属于冻结协议的一部分（§3.3），不算命令语义。 |
 | H11 | `neige --version`：发布打包 `crates/neige-app/src/package.rs:135,294-305`、`scripts/release/build-alpha.sh:73-83`、`crates/neige-app/src/identity.rs:31` 都跑它 | 转发器本地回答，报的是转发器 crate 版本（二进制身份），内核不提供 `--version` 命令，因此只有一个来源（§3.4）。 |
 | H12 | keep=50：`cli/main.rs:1046` 与 `calm-truth/src/track_vcs/gc.rs:16-17` | 删除客户端那份；内核 CLI 表引用 `DEFAULT_TRACK_HISTORY_PRUNE_KEEP`（改 `pub`，经 `track_vcs` 再导出，§1），注释反转为"CLI 默认值即此常量"。 |
 
@@ -189,7 +189,7 @@ CLI 层从 `ToolResult::into_structured()`（`mcp/result.rs:77`）拿数据，�
 先复制进 stage 目录，再 rename 整个 `bin/`（`apply.py:142-179`），不需要新机制。owner 已批准这条规则，由协调者在仓库外落实：#1801 之后禁止单个二进制的临时替换（例如预览换装）。
 （实测：当前 `bin/` 的 6 个二进制与 `c5abb3c3d` 构建产物 sha256 全部相同；`bin/neige` 的 mtime 较早，是因为 cargo 没有重新链接它，而 `shutil.copy2` 保留 mtime。今天不存在拆分。）
 
-**验收**：发布后先核对 `bin/` 下所有二进制的 sha256 与本次构建产物一致（不一致即拆分，验收失败）；然后，`neige-next/bin/neige state` 输出与发布前逐字节相同；运行任意 `release-backups/*/bin/neige state` 都得到 §4.1 的消息，退出码 4；
+**验收**：发布后先核对 `bin/` 下所有二进制的 sha256 与本次构建产物一致（不一致即拆分，验收失败）；然后，`neige-next/bin/neige state` 输出与发布前逐字节相同；运行任意 `release-backups/*/bin/neige state` 都得到 §4.1 的消息，退出码 3（#2087 B4 前为 4）；
 Planner（codex 和 claude 两种）、终端 PTY、claude worker 的 `neige task-completed` 都能端到端跑通（Tier 2 栈在专用主机上跑，本机不跑真 codex）。
 
 **必须先红的测试**（标 M 的做单因子变异，预测失败集合只包含该测试）：
@@ -265,7 +265,7 @@ M5 只能改共用函数：CLI 与 `tools/call` 走同一个 `call_registered_to
 ## 10. KNOWN GAPS
 
 - K1 在卡片 shell 以外（没有 socket 或 token）运行 `neige --help`，只会得到缺环境变量的提示。
-- K2 转发器本地失败（退出码 2、3、4、5、141；141 不输出任何内容）即使带了 `--json` 也输出纯文本。
+- K2 转发器本地失败（退出码 2、3、141；141 不输出任何内容）即使带了 `--json` 也输出纯文本。
 - K3 新转发器连接 #1801 之前的内核时，只会得到 `neige/cli: Method not found`，不带路径提示；兼容只看 4140，这种情况靠原子发布排除。
 - K4 未来需要 stdin、流式输出或 cwd 的命令要用 v2 协议，当前没有这样的命令。
 - K5 直接用 `tools/call` 调隐藏的 `calm.admin.*` 仍然不经过 `--force` 确认门，与今天相同；本设计不改工具。

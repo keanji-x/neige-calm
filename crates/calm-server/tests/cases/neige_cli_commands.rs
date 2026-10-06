@@ -685,10 +685,8 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
     ] {
         assert_eq!(cli(&boot, argv).await, (want, String::new(), 0), "{argv:?}");
     }
-    assert!(gc.contains(&format!(
-        "[default: {}]",
-        calm_server::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP
-    )));
+    assert!(gc.contains("--keep <count>"), "{gc}");
+    assert!(!gc.contains("[default:"), "{gc}");
     for action in ["ls", "cat", "show", "diff", "log", "status", "close"] {
         assert!(track.contains(&format!("\n  {action} ")), "{track}");
     }

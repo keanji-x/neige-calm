@@ -1,10 +1,11 @@
 # Agent command and MCP naming convention
 
 Status: normative for every new or changed kernel tool, `neige` command and native plugin tool.
-Appendices A–B are the plan that brings the current surface into line; Appendix C records the
-owner's decisions (2026-10-04; revised the same day to the `_` separator, C9; B5 descoped
-2026-10-05, C10). Builds on #2003 (`docs/architecture/2003-cli-mcp-naming.md`: brand, grammar,
-mechanical CLI) and #2053 (Worker report actions). Verified at `24102733a` (2026-10-04). Issue: #2087.
+The served surface conforms as of the merge of slices B0–B5 and the C1 cleanup, except the gaps
+§9 records. Appendices A–B record the conformance work and the PR of each slice; Appendix C
+records the owner's decisions (2026-10-04; revised the same day to the `_` separator, C9; B5
+descoped 2026-10-05, C10). Builds on #2003 (`docs/architecture/2003-cli-mcp-naming.md`: brand,
+grammar, mechanical CLI) and #2053 (Worker report actions). Issue: #2087.
 
 ## 1. Principles
 
@@ -48,8 +49,11 @@ model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_tr
 - The kernel mints every name it serves, plugin tools included (§6), in this alphabet. No adapter
   respells a name; the only provider rule left is Codex's 128-byte cap on
   `mcp__<server>__<name>` (§9).
-- MCP is the complete surface. A CLI row exists only for a shell-native view, a Worker report in
-  CLI mode, or an operation that needs `--force` (#2003 §4.4).
+- MCP is the complete surface. A CLI row exists only for a shell-native view (`track
+  ls/cat/show/diff/log/status`, `report find`, `report tag`, `mail ls/cat`), a Worker report in CLI
+  mode (`task done/fail`), the Track's close (`track close --message`, no `--force`) or
+  maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag` is the one view
+  that also writes: `tag` is a W/V verb (§3), so `--add`/`--remove` are its write.
 
 ## 3. Verb vocabulary (closed)
 
@@ -150,7 +154,11 @@ Decisions, one line each:
   is a verb. On the CLI a flag takes no value.
 - **Closed input:** a kernel tool refuses an unknown top-level key with the valid keys. Every
   kernel schema declares `additionalProperties: false`, and the registry refuses the key from that
-  schema's `properties` for every tool (B4), so no tool keeps its own list.
+  schema's `properties` for every tool (B4), so no tool keeps its own list. A native plugin tool
+  (a manifest-authored tool of an app or built-in plugin) whose manifest schema declares
+  `additionalProperties: false` is refused the same way, with the same check, at the plugin
+  dispatch, after its scope and before its role gate (C1); every repository manifest is closed.
+  A connector's upstream tools are left to their server.
 
 ## 5. Results and errors
 
@@ -180,8 +188,9 @@ Agent-facing JSON-RPC codes, one meaning each:
   managed-track grant (-32403), a built-in plugin's visibility fence (-32601 or -32503), closed
   input (-32602), then the tool's declared `roles` (-32403), and only then the handler: its
   arguments and its state. Closed input precedes the role gate for every tool alike: it names only
-  the keys of the public schema (`neige tool describe`), reads no state, and the role gate still
-  runs before any state read or write.
+  the keys of the tool's static schema (public in the repository, though `tools/list` hides a tool
+  from a role that may not call it), reads no state, and the role gate still runs before any state
+  read or write.
 - Error `data` carries machine fields (`refusal`, current revisions). Text and data say the same.
 - **CLI exit codes:** `0` success, `1` usage (unknown object, action, option, missing `--force`),
   `4` the tool refused or its result could not be rendered. The forwarder alone uses `2` (its
@@ -278,10 +287,10 @@ Adding or changing a tool or command:
 7. Regenerate goldens and keep the Planner byte budget. Run the tests below. One recorded
    exception (#2130, owner): `neige_mail_send` must be listed to be discoverable, so S1 trimmed
    restated schema facts from eight Planner descriptions (164 B) and raised
-   `planner_tool_surface_fits_its_byte_budget`'s cap by the remaining 430 B, to 30,430 B. B5 lowered it
-   to the measured 30,398 B.
+   `planner_tool_surface_fits_its_byte_budget`'s cap by the remaining 430 B, to 30,430 B. #2209
+   lowered it to the measured 30,120 B; C1 measured 30,118 B across 33 Planner tools.
 
-Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes it to §2's
+Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changed it to §2's
 `neige_<word>_<word>`), `every_option_is_its_schema_key`, `prompt_neige_mentions_name_served_commands` (H8),
 `no_retired_tool_names_remain`, `kernel_tool_callables_are_injective_and_unhashed`,
 `unknown_tool_error_lists_the_sessions_tools`, `kernel_exit_codes_are_exactly_0_1_4`.
@@ -289,7 +298,7 @@ Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes
 Added by the slices (registry-driven, Appendix B):
 
 - `served_tool_names_use_the_word_alphabet`: every name in `tools/list` matches `[A-Za-z0-9_]+`,
-  kernel and plugin tools alike (B5 adds the built-ins, the repository manifests and a connector
+  kernel and plugin tools alike (B5 added the built-ins, the repository manifests and a connector
   whose id and tools carry `.` and `-`).
 - `served_tool_names_fit_the_codex_cap`: the `mcp__neige__` form of every kernel and native
   plugin tool is within 128 bytes. Connector tools are exempt (§9).
@@ -297,9 +306,10 @@ Added by the slices (registry-driven, Appendix B):
   every retired verb is gone).
 - `plugin_ids_are_words`: every built-in manifest id, and every id the install route accepts for
   a new plugin, matches `[a-z0-9]{2,32}` (installed external ids are grandfathered, §9).
-- `minted_tool_names_refuse_collisions` and `a_connector_tool_with_a_dot_is_called_upstream_by_its_raw_name`
-  (B5): colliding tools and ids are refused, and `foo.bar` is served as `plugin_<id>_foo_bar` and
-  called upstream as `foo.bar`.
+- `minted_tool_names_refuse_collisions` and
+  `a_dotted_connector_tool_is_minted_with_underscores_and_routes_to_its_raw_name` (B5): colliding
+  tools and ids are refused, and `foo.bar` is served as `plugin_<id>_foo_bar` and called upstream
+  as `foo.bar`.
 - `kernel_tool_params_use_the_vocabulary`: every input key, recursively, is snake_case (opaque
   payloads skipped, §4), and no top-level key is a retired name (`id`, `after`, `cancelled`,
   `time_zone`, `request_id`, `select`, `until`).
@@ -313,14 +323,26 @@ Added by the slices (registry-driven, Appendix B):
   schema declares `additionalProperties: false`.
 - `forwarder_exit_codes_are_exactly_2_3_141` (B4): the forwarder's own exits, disjoint from the
   kernel's.
+- `every_gitforge_tool_refuses_unknown_arguments` and
+  `a_closed_native_plugin_tool_refuses_unknown_arguments_before_the_plugin` (C1): a closed native
+  plugin tool answers `{"zz": 1}` with -32602 ``<minted tool>: unknown argument `zz`; valid: …``
+  before its plugin is asked; an open schema reaches the plugin.
+- `shipped_recipes_name_plugin_tools_by_their_minted_names` (C1): every `plugins/*/*recipe.md`
+  and built-in template names a plugin tool by its minted name; a raw name stays only as a
+  `neige://plugin/<id>/<raw>` segment.
 
 ## 9. Known gaps
 
 - `track ls area/reports/`, `report_find` and `area_ls` list the same reports with different fields.
 - Terminal snapshots are "observations", which is also the Planner's wake-item word.
 - Inside a terminal `input` step, `{type: "key", key: "Enter"}` is a keyboard key, not a task key.
-- `report_write` and `track_rename` take an optional `message`; other writes require one.
-- `admin` is not a thing acted on (cut, Appendix B).
+- `message` is required by `report_commit`, `task_accept`, `task_reject`, `task_cancel`,
+  `track_add` and `track_close`, and optional on `report_write` and `track_rename`. The other
+  writes take none: their record is the call itself (calendar, preview, mail, terminal,
+  `source_capture`, `report_tag`, `user_ask`, `plugin_gitforge_publish`), and `task_fail` records
+  a `reason`.
+- `admin` is not a thing acted on: `admin_gc`/`admin_vacuum` maintain the database. It stays:
+  renaming it changes recorded names without an observed pain (cut, Appendix B).
 - Plugin host-callback error codes (-32001/-32003/-32004) differ from §5; plugin channel only.
 - KNOWN GAP (B4): the terminal tools answer every runtime failure -32403, a stale observation
   included; their errors are untyped, so §5's split (-32409 for a stale anchor) needs typed
@@ -345,8 +367,13 @@ Added by the slices (registry-driven, Appendix B):
   it, so each keeps its id until it is reinstalled under a word. The five are the closed
   `plugin_host::manifest::LEGACY_PLUGIN_IDS`, which the install route accepts besides a word, so
   the repository's `plugins/market`, `plugins/barra` and `plugins/paper-trading` still install on
-  a fresh host; the list is never extended. Their minted names are already in the word alphabet. Recipe bodies are rewritten only for the built-in names; on 4140 no recipe
-  names a minted external tool.
+  a fresh host; the list is never extended. Their minted names are already in the word alphabet.
+  Migration 0154 (C1) rewrote the raw names of their native tools in stored recipe bodies to the
+  minted names, as 0148 did for the built-ins.
+- External manifests keep their dotted raw tool names (`market.quote`, `spy.status`,
+  `barra.series`): the minted names the model sees are already in the word alphabet, and a raw
+  name is a protocol id that stored `neige://plugin/<id>/<raw>` report sources cite, so renaming
+  one rewrites stored report sources without a pain at the model.
 - A call to a minted name that two installed but not running plugins both mint answers the
   ambiguity error, naming both, before the scope and role checks (the disabled-plugin lookup in
   `dispatch_plugin_tools_call`), so it can reveal that a plugin is installed. Spawn-time refusal
@@ -354,75 +381,79 @@ Added by the slices (registry-driven, Appendix B):
 - Native plugin tools repeat their id's last word as the first word
   (`plugin_dev_neige_market_market_quote`, `plugin_dev_neige_barra_barra_series`). Dropping it would rename recipe-named tools (cut, Appendix B).
 
-## Appendix A — Conformance table (proposal)
+## Appendix A — Conformance table
 
 Persisted counts are calls stored in the Planner transcript's `$.item.tool` on the production 4140
-database, read-only, 2026-10-04, while it was at migration 133 (`calm.` names). It has since
-been deployed past 0134, so the same calls are stored under the `neige.` names of 0134. B0's migration respells every
-`neige.<o>.<a>` as `neige_<o>_<a>`, and B1's migration maps the old words to the new ones. The
-Current column gives today's dotted names; Proposed gives the new names without the `neige_`
-prefix. Consumers: P prompts and templates, G goldens, F `fe`, T tests, R recipes.
+database, read-only, 2026-10-04, while it was at migration 133 (`calm.` names). Each renaming
+slice's migration respelled the stored calls and recipe bodies (0141 B0, 0142 B1a, 0143 B1b, 0144
+B1c, 0148 B5, 0151 #2227, 0154 C1). Was gives the names before the slices; Now gives the served
+names without the `neige_` prefix; Done names the slice and its PR. Consumers: P prompts and
+templates, G goldens, F `fe`, T tests, R recipes.
 
-| Current | Proposed | 4140 stored calls | Consumers |
-|---|---|---|---|
-| every kernel tool `neige.<o>.<a>`; `plugin.<id>_<tool>` | `neige_<o>_<a>`; `plugin_<id>_<tool>` | every stored call (count at B0 start) | P, G, F, T, R, the CLI derivation, `codex_appserver/tool_names.rs` |
-| `task.report_success` / `task.report_failure` | `task_done` / `task_fail` | count at B0 start | P (Worker heads), templates, CLI `task report-success`, T |
-| `plan.list` | `task_ls` | 204 | P (55 refs), G, F `PLAN_LIST_TOOL`, T |
-| `plan.cancel` | `task_cancel` | 18 | P (`prompts/plan-cancel/`), T |
-| `task.verdict {status}` | `task_accept` / `task_reject` (C1); the migration maps each stored call by its `status` argument | 110 | P, G, F `TASK_VERDICT_TOOL`, T |
-| `terminal.observe` + flag `observe` | `terminal_read` + flag `read` | 18 | P (93 refs, guides/terminal), T |
-| `terminal.resolve` | `terminal_show` | 8 | P, T |
-| `report.kinds` | `report_describe` | 22 | P, G, F `REPORT_READ_TOOLS`, T |
-| `report.backlinks` | `link_ls` | 2 | P, F `REPORT_READ_TOOLS`, T |
-| `area.outline` | `area_ls` | 2 | P, T |
-| `source.list` | `source_ls` | 8 | P, T |
-| `track.state`, `neige track state` | `track_status`, `neige track status` | 0 (CLI) | P (21 CLI refs, 21 turn texts in `observation.rs`), CLI render, T |
-| `calendar.create` / `list` / `update` | `calendar_add` / `ls` / `set` | 8 / 2 / 0 | P, builtin instructions, R (1 recipe: `calendar.list`), T |
-| `calendar.update {cancelled: true}` | `calendar_rm {entry_id, expected_version}` | — | P, T |
-| `preview.register` / `unregister` | `preview_add` / `preview_rm` | 2 / 2 | P, T |
-| `workspace.reports` / `report` / `changes` / `edits` | `workspace_ls` / `cat` / `diff` / `log` | 0 (unreleased) | P, T |
-| `neige tool list --after` | `neige tool ls --cursor` | 0 | P (`tool-discovery.md`), help, T |
-| params: calendar `id`; preview `key` | `entry_id`; `preview_id` | params are not migrated | P, T |
-| params: `after` (workspace ×3; edits takes an integer) | `cursor` (string); `workspace_log` `next_cursor` becomes a string | — | P, T, F wire types `ReportEditsPage` |
-| param: calendar.list `until` | `to` | — | P, T |
-| param: terminal `request_id` | `idempotency_key` | — | P, T |
-| param: `ratify_request` `reason` (a question for a person) | `text`; the tool is retired by `user_ask` (#2209) | — | P, T |
-| param: `report_read` `select` | `blocks` / `sections` / `detail: full\|index` | — | P (report guides), T |
-| output: `time_zone` (workspace, creation identity) | `timezone` | unreleased (0136) | P, F wire types |
-| output: `docRev`, `schemaVersion`, `taskDiagnostics` (report read/write/commit) | `doc_rev`, `schema_version`, `task_diagnostics` | — | P, refusal texts, T |
-| output: `trackId`, `updatedAt` (`report_find`, `track ls area/reports/`) | `track_id`, `updated_at`; wrapped as `{reports: […]}` | — | P, CLI render, T |
-| error: role refusal -32602 (`require_role`) | -32403 (done, B4) | — | T |
-| error: report revision conflict -32001 | -32409 (data unchanged) (done, B4) | — | P, T |
-| error: plugin disabled / not running -32002 | -32503 (done, B4) | — | T, `routes/plugins.rs` mapping |
-| error: calendar store -32000 | -32602/-32404/-32409 by cause (done, B4) | — | T |
-| error prefixes `plan_cancel:`, `track_report:`, `task_verdict:`, … | the tool name (done, B4) | — | T |
-| 18 schemas without closed input; shared parsers ignore unknown keys | refuse unknown keys (§4) (done, B4) | — | T |
-| forwarder exit 4 for transport failures | 3 (done, B4) | — | T, `1801` doc |
-| forwarder exit 5 for a non-UTF-8 argument (`neige-cli/src/main.rs:70`) | 2 (done, B4) | — | T (`neige-cli/tests/forwarder.rs`), `1801` doc |
+| Was | Now | 4140 stored calls | Consumers | Done |
+|---|---|---|---|---|
+| every kernel tool `neige.<o>.<a>`; `plugin.<id>_<tool>` | `neige_<o>_<a>`; `plugin_<id>_<tool>` | every stored call (count at B0 start) | P, G, F, T, R, the CLI derivation, `codex_appserver/tool_names.rs` | B0 #2117 |
+| `task.report_success` / `task.report_failure` | `task_done` / `task_fail` | count at B0 start | P (Worker heads), templates, CLI `task report-success`, T | B0 #2117 |
+| `plan.list` | `task_ls` | 204 | P (55 refs), G, F `PLAN_LIST_TOOL`, T | B1a #2138 |
+| `plan.cancel` | `task_cancel` | 18 | P (`prompts/plan-cancel/`), T | B1a #2138 |
+| `task.verdict {status}` | `task_accept` / `task_reject`; the migration maps each stored call by its `status` argument | 110 | P, G, F `TASK_VERDICT_TOOL`, T | B1c #2145 |
+| `terminal.observe` + flag `observe` | `terminal_read` + flag `read` | 18 | P (93 refs, guides/terminal), T | B1b #2143 |
+| `terminal.resolve` | `terminal_show` | 8 | P, T | B1b #2143 |
+| `report.kinds` | `report_describe` | 22 | P, G, F `REPORT_READ_TOOLS`, T | B1a #2138 |
+| `report.backlinks` | `link_ls` | 2 | P, F `REPORT_READ_TOOLS`, T | B1a #2138 |
+| `area.outline` | `area_ls` | 2 | P, T | B1a #2138 |
+| `source.list` | `source_ls` | 8 | P, T | B1a #2138 |
+| `track.state`, `neige track state` | `track_status`, `neige track status` | 0 (CLI) | P (21 CLI refs, 21 turn texts in `observation.rs`), CLI render, T | B1a #2138 |
+| `calendar.create` / `list` / `update` | `calendar_add` / `ls` / `set` | 8 / 2 / 0 | P, builtin instructions, R (1 recipe: `calendar.list`), T | B1c #2145 |
+| `calendar.update {cancelled: true}` | `calendar_rm {entry_id, expected_version}` | — | P, T | B1c #2145 |
+| `preview.register` / `unregister` | `preview_add` / `preview_rm` | 2 / 2 | P, T | B1c #2145 |
+| `workspace.reports` / `report` / `changes` / `edits` | `workspace_ls` / `cat` / `diff` / `log` | 0 (unreleased) | P, T | B1a #2138 |
+| `neige tool list --after` | `neige tool ls --cursor` | 0 | P (`tool-discovery.md`), help, T | B1a #2138 |
+| params: calendar `id`; preview `key` | `entry_id`; `preview_id` | params are not migrated | P, T | B1c #2145 |
+| params: `after` (workspace ×3; edits takes an integer) | `cursor` (string); `workspace_log` `next_cursor` becomes a string | — | P, T, F wire types `ReportEditsPage` | B2 #2156 |
+| param: calendar.list `until` | `to` | — | P, T | B1c #2145 |
+| param: terminal `request_id` | `idempotency_key` | — | P, T | B1b #2143 |
+| param: `ratify_request` `reason` (a question for a person) | `text`; the tool is retired by `user_ask` (#2209) | — | P, T | B2 #2156 |
+| param: `report_read` `select` | `blocks` / `sections` / `detail: full\|index` | — | P (report guides), T | B2 #2156 |
+| output: `time_zone` (workspace, creation identity) | `timezone` | unreleased (0136) | P, F wire types | B2 #2156 |
+| output: `docRev`, `schemaVersion`, `taskDiagnostics` (report read/write/commit) | `doc_rev`, `schema_version`, `task_diagnostics` | — | P, refusal texts, T | B3 #2202 |
+| output: `trackId`, `updatedAt` (`report_find`, `track ls area/reports/`) | `track_id`, `updated_at`; wrapped as `{reports: […]}` | — | P, CLI render, T | B3 #2202 |
+| error: role refusal -32602 (`require_role`) | -32403 | — | T | B4 #2233 |
+| error: report revision conflict -32001 | -32409 (data unchanged) | — | P, T | B4 #2233 |
+| error: plugin disabled / not running -32002 | -32503 | — | T, `routes/plugins.rs` mapping | B4 #2233 |
+| error: calendar store -32000 | -32602/-32404/-32409 by cause | — | T | B4 #2233 |
+| error prefixes `plan_cancel:`, `track_report:`, `task_verdict:`, … | the tool name | — | T | B4 #2233 |
+| 18 schemas without closed input; shared parsers ignore unknown keys | refuse unknown keys (§4) | — | T | B4 #2233 |
+| forwarder exit 4 for transport failures | 3 | — | T, `1801` doc | B4 #2233 |
+| forwarder exit 5 for a non-UTF-8 argument (`neige-cli/src/main.rs:70`) | 2 | — | T (`neige-cli/tests/forwarder.rs`), `1801` doc | B4 #2233 |
+| `ratify_request`, `user_notify` | `user_ask` | history events kept, not rewritten | P, templates, F, T | #2209 #2263 |
+| `dev_publish`, `calendar_add` / `ls` / `set` / `rm` (compiled built-in tools) | `plugin_gitforge_publish`, `plugin_calendar_add` / `ls` / `set` / `rm` | rewritten by 0151 | P, templates, R, F `DEV_PUBLISH_TOOL`, T | #2227 #2274 |
 
-## Appendix B — Implementation slices (proposal)
+## Appendix B — Implementation slices
 
 Common gates per slice: `scripts/local-ratchet-gates.sh`; targeted
 `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server <filter> --test-threads 8`;
 the whole `-p calm-server` run for tool or prompt changes; `scripts/local-rust-gates.sh --quick`;
-the `fe` gate when `fe/` changes. Measure the Planner tool budget (29,458 / 30,000 B) and the
-guide budget (7,489 / 7,500 B) before and after; trim wording, never raise a cap.
+the `fe` gate when `fe/` changes. Measure the Planner tool budget
+(`planner_tool_surface_fits_its_byte_budget`, cap 30,120 B) and the Planner prompt and guide
+budgets (7,500 B each) before and after; trim wording, never raise a cap.
 
-| # | Slice | Pain | Acceptance | Must go red first |
-|---|---|---|---|---|
-| B0 | Separator: every kernel tool `neige_<o>_<a>`, plugin prefix `plugin_`, `task_done` / `task_fail`; CLI split at `_`; the kernel-tool part of `tool_names.rs` goes (kernel names are no longer respelled); `source_capture` keeps resolving sanitized plugin spellings until B5; one migration (numbered last) respelling the stored `$.item.tool` values and recipe bodies (revision bump); the retired-name sweep rejects dotted kernel names (host callbacks excepted) | the model sees a different name than prompts and docs | `tools/list` names equal the prompt names byte for byte; CLI commands unchanged except `task done` / `task fail` | New `served_tool_names_use_the_word_alphabet` (kernel tools) and `served_tool_names_fit_the_codex_cap`; mutation: mint one kernel tool with `.` → red: the alphabet test, the grammar test and the sweep |
-| B1a | View verbs: `task_ls`/`task_cancel`, `source_ls`, `area_ls`, `link_ls`, `report_describe`, `track_status`, `workspace_ls`/`cat`/`diff`/`log`, `tool ls`; its own migration (numbered last) maps B0's output names (`neige_plan_list` …), renaming the stored `$.item.tool` values and the 1 recipe (revision bump); its test runs the real chain 0134 → B0 → B1 on seeded rows | synonyms, noun actions | No retired view name in the registry, prompts or `fe`; the migration rewrites only the tool field | Retired-name sweep extended with the B1a names; mutation: register `neige_plan_list` again → red: the sweep, the golden and the direct-call tests using the literal |
-| B1b | Terminal: `observe` → `read`, `resolve` → `show`, flag `observe` → `read`, `request_id` → `idempotency_key` | anchored read named two ways | Input still refuses without a prior read; approvals unchanged | `stale_observation` and "read first" refusal tests name `neige_terminal_read`; mutation: keep `observe` in the refusal text → red |
-| B1c | Calendar and preview: `add/ls/set/rm`, `entry_id`, `to`, `preview_id`; `task_accept` / `task_reject` | CRUD words, effect in a flag | `calendar_set` no longer takes `cancelled`; `rm` stops wakes | Migration test seeds accepted and rejected `task.verdict` rows and a `calendar.list` row and the recipe, and reads back the new names; new `kernel_tool_actions_are_in_the_vocabulary`; mutation: drop one map row → red, and register `neige_task_verdict` again → red |
-| B2 | Parameters and paging: `cursor` everywhere (string), `report_read` `blocks`/`sections`/`detail`, `ratify_request` `text` (retired by `user_ask`, #2209), outputs `timezone`, plus the parameter vocabulary test | `after` with two types; one selection spelled two ways | `workspace_log` pages with a string cursor; `fe` wire regenerated with `npm run gen:api` | New `kernel_tool_params_use_the_vocabulary`; mutation: rename `cursor` back to `after` on one tool → red |
-| B3 | Results: snake_case report outputs; `{reports: […]}` with `track_id`/`updated_at` | `docRev` beside `updated_at` | CLI `--json` and MCP agree; refusal texts say `doc_rev` | New `report_tool_results_are_snake_case` over real `read`/`write`/`commit`/`find` calls (recursion skips `payload`); mutation: restore `docRev` → red |
-| B4 | Errors and exits: transport-level unknown-key refusal for every kernel tool, codes per §5, tool-name prefixes, forwarder exits 3 (transport) and 2 (non-UTF-8 argument) | silent unknown keys; overloaded codes | Every kernel tool refuses `{"zz": 1}` with its valid keys | New `every_kernel_tool_refuses_unknown_arguments`; mutation: skip the check for one tool → red; existing `kernel_exit_codes_are_exactly_0_1_4` plus a forwarder twin |
-| B5 | Plugin ids and minted names, descoped (Appendix C, item 10): the two built-in ids become words (`calendar`, `gitforge`) in the manifests, kernel references, `fe` and one migration (0148: `plugins` row copy with `plugin_kv`/`plugin_tokens`, `tracks.plugin_scope`, the `operations.idempotency_key` prefix, transcript `plugin_<id>_…` names respelled as minted, recipes); git-forge's tool names respelled `_` (`gh.pr.checks` → `gh_pr_checks`) with its `idem_key` literals unchanged; every plugin tool name minted in `[A-Za-z0-9_]` by one function for discovery, routing and recorded results (§6); colliding minted tools and ids refused; the install route takes only `[a-z0-9]{2,32}` for a new id; `source_capture` drops its sanitized-spelling fallback and keeps only stripping the `mcp__<server>__` qualifier | ids in three shapes; `-` and `.` rewritten by Codex but not by Claude | Every served plugin name passes `served_tool_names_use_the_word_alphabet`; a connector tool named `foo.bar` is served as `…_foo_bar` and called upstream as `foo.bar`; nothing on 4140 holds an old built-in id outside history | New `plugin_ids_are_words`; mutation: restore `dev.neige.calendar` as the built-in id → red; mutation: route by the raw tool name → the `foo.bar` dispatch test red |
+| # | Slice | Pain | Acceptance | Must go red first | Done |
+|---|---|---|---|---|---|
+| B0 | Separator: every kernel tool `neige_<o>_<a>`, plugin prefix `plugin_`, `task_done` / `task_fail`; CLI split at `_`; the kernel-tool part of `tool_names.rs` goes (kernel names are no longer respelled); `source_capture` keeps resolving sanitized plugin spellings until B5; one migration (numbered last) respelling the stored `$.item.tool` values and recipe bodies (revision bump); the retired-name sweep rejects dotted kernel names (host callbacks excepted) | the model sees a different name than prompts and docs | `tools/list` names equal the prompt names byte for byte; CLI commands unchanged except `task done` / `task fail` | New `served_tool_names_use_the_word_alphabet` (kernel tools) and `served_tool_names_fit_the_codex_cap`; mutation: mint one kernel tool with `.` → red: the alphabet test, the grammar test and the sweep | #2117 |
+| B1a | View verbs: `task_ls`/`task_cancel`, `source_ls`, `area_ls`, `link_ls`, `report_describe`, `track_status`, `workspace_ls`/`cat`/`diff`/`log`, `tool ls`; its own migration (numbered last) maps B0's output names (`neige_plan_list` …), renaming the stored `$.item.tool` values and the 1 recipe (revision bump); its test runs the real chain 0134 → B0 → B1 on seeded rows | synonyms, noun actions | No retired view name in the registry, prompts or `fe`; the migration rewrites only the tool field | Retired-name sweep extended with the B1a names; mutation: register `neige_plan_list` again → red: the sweep, the golden and the direct-call tests using the literal | #2138 |
+| B1b | Terminal: `observe` → `read`, `resolve` → `show`, flag `observe` → `read`, `request_id` → `idempotency_key` | anchored read named two ways | Input still refuses without a prior read; approvals unchanged | `stale_observation` and "read first" refusal tests name `neige_terminal_read`; mutation: keep `observe` in the refusal text → red | #2143 |
+| B1c | Calendar and preview: `add/ls/set/rm`, `entry_id`, `to`, `preview_id`; `task_accept` / `task_reject` | CRUD words, effect in a flag | `calendar_set` no longer takes `cancelled`; `rm` stops wakes | Migration test seeds accepted and rejected `task.verdict` rows and a `calendar.list` row and the recipe, and reads back the new names; new `kernel_tool_actions_are_in_the_vocabulary`; mutation: drop one map row → red, and register `neige_task_verdict` again → red | #2145 |
+| B2 | Parameters and paging: `cursor` everywhere (string), `report_read` `blocks`/`sections`/`detail`, `ratify_request` `text` (retired by `user_ask`, #2209), outputs `timezone`, plus the parameter vocabulary test | `after` with two types; one selection spelled two ways | `workspace_log` pages with a string cursor; `fe` wire regenerated with `npm run gen:api` | New `kernel_tool_params_use_the_vocabulary`; mutation: rename `cursor` back to `after` on one tool → red | #2156 |
+| B3 | Results: snake_case report outputs; `{reports: […]}` with `track_id`/`updated_at` | `docRev` beside `updated_at` | CLI `--json` and MCP agree; refusal texts say `doc_rev` | New `report_tool_results_are_snake_case` over real `read`/`write`/`commit`/`find` calls (recursion skips `payload`); mutation: restore `docRev` → red | #2202 |
+| B4 | Errors and exits: transport-level unknown-key refusal for every kernel tool, codes per §5, tool-name prefixes, forwarder exits 3 (transport) and 2 (non-UTF-8 argument) | silent unknown keys; overloaded codes | Every kernel tool refuses `{"zz": 1}` with its valid keys | New `every_kernel_tool_refuses_unknown_arguments`; mutation: skip the check for one tool → red; existing `kernel_exit_codes_are_exactly_0_1_4` plus a forwarder twin | #2233 |
+| B5 | Plugin ids and minted names, descoped (Appendix C, item 10): the two built-in ids become words (`calendar`, `gitforge`) in the manifests, kernel references, `fe` and one migration (0148: `plugins` row copy with `plugin_kv`/`plugin_tokens`, `tracks.plugin_scope`, the `operations.idempotency_key` prefix, transcript `plugin_<id>_…` names respelled as minted, recipes); git-forge's tool names respelled `_` (`gh.pr.checks` → `gh_pr_checks`) with its `idem_key` literals unchanged; every plugin tool name minted in `[A-Za-z0-9_]` by one function for discovery, routing and recorded results (§6); colliding minted tools and ids refused; the install route takes only `[a-z0-9]{2,32}` for a new id; `source_capture` drops its sanitized-spelling fallback and keeps only stripping the `mcp__<server>__` qualifier | ids in three shapes; `-` and `.` rewritten by Codex but not by Claude | Every served plugin name passes `served_tool_names_use_the_word_alphabet`; a connector tool named `foo.bar` is served as `…_foo_bar` and called upstream as `foo.bar`; nothing on 4140 holds an old built-in id outside history | New `plugin_ids_are_words`; mutation: restore `dev.neige.calendar` as the built-in id → red; mutation: route by the raw tool name → the `foo.bar` dispatch test red | #2178 |
 
 **Approved scope (owner, 2026-10-04):** B0, B1 (B1a–B1c) and B2 first, then B5. Each slice that
 renames stored names adds its own migration: a merged migration is frozen, and main deploys between
 slices, so B1b and B1c cannot extend B1a's.
-B0, B1 and B5 carry migrations (L2). B3 and B4 come later. Order: B0 → B1a → B1b → B1c → B2 → B5.
+B0, B1 and B5 carry migrations (L2). Order: B0 → B1a → B1b → B1c → B2 → B5, then B3 and B4, then
+the C1 cleanup (migration 0154 for the grandfathered plugins' recipe names).
 B0 is a mechanical respelling (≈ 1,360 occurrences of a dotted kernel name outside `docs/`, 804 of
 them in `crates/calm-server/tests`). The other slices stay near 1k lines; B1a is the largest
 (≈ 260 name occurrences in crates, fe, plugins and docs).

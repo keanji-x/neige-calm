@@ -79,7 +79,7 @@
     },
     {
       "name": "spy.execute",
-      "description": "SPY/cash profile only. Worker-only: durably request execution of the exact persisted, unexpired, queued decision (state becomes requested) and wake the App's background loop; this call itself never contacts the broker. The loop reconciles, then submits at most one regular-session DAY SPY.US market order to the pinned official PAPER account with no per-order confirmation; the App computes integer shares and cash-only sizing. Repeating the request for a requested decision records nothing; any other state is refused. Poll spy.status until the decision is settled, noop, rejected, canceled, expired or unknown, or until your stated limit; a requested decision's error says why it is waiting. Uncertain submissions are NEVER resubmitted.",
+      "description": "SPY/cash profile only. Worker-only: durably request execution of the exact persisted, unexpired, queued decision (state becomes requested) and wake the App's background loop; this call itself never contacts the broker. The loop reconciles, then submits at most one regular-session DAY SPY.US market order to the pinned official PAPER account with no per-order confirmation; the App computes integer shares and cash-only sizing. Repeating the request for a requested decision records nothing; any other state is refused. Poll plugin_dev_neige_paper_trading_spy_status until the decision is settled, noop, rejected, canceled, expired or unknown, or until your stated limit; a requested decision's error says why it is waiting. Uncertain submissions are NEVER resubmitted.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -117,7 +117,7 @@
     },
     {
       "name": "spy.refresh",
-      "description": "Wake the App's background loop to read the broker and atomically reconcile SPY allocation orders/fills; returns the persisted status immediately. Never submits. Poll spy.status for the new snapshot time. Unknown broker outcomes remain blocked until exact order identity is recovered.",
+      "description": "Wake the App's background loop to read the broker and atomically reconcile SPY allocation orders/fills; returns the persisted status immediately. Never submits. Poll plugin_dev_neige_paper_trading_spy_status for the new snapshot time. Unknown broker outcomes remain blocked until exact order identity is recovered.",
       "input_schema": {
         "type": "object",
         "properties": {},

@@ -1,5 +1,5 @@
 <!-- neige:contract {"version":1,"sections":[{"h1":"美股风格与风险"},{"h1":"风格轮动"},{"h1":"暴露最突出的股票"},{"h1":"预测风险与实际波动"},{"h1":"等权参考组合"},{"h1":"口径"}]} -->
-<!-- Planner: 普通 Recipe，无 template_id/forge 绑定。用户确认后在当前 Track 调用 barra.start，使用已安装的 dev-neige-barra 插件。方法是公开价格因子子集，不是 MSCI 官方模型或投资建议。数值和图表均由插件维护，不要抄写动态数据，不要加运行日志、任务回顾或免责声明大段前言。正常运行时不显示技术状态；更新异常由概览提示。详细运维信息通过 barra.status 查询。不要把因子回归系数当作可交易策略收益。归档或删除 Track 前调用 barra.stop。 -->
+<!-- Planner: 普通 Recipe，无 template_id/forge 绑定。用户确认后在当前 Track 调用 plugin_dev_neige_barra_barra_start，使用已安装的 dev-neige-barra 插件。方法是公开价格因子子集，不是 MSCI 官方模型或投资建议。数值和图表均由插件维护，不要抄写动态数据，不要加运行日志、任务回顾或免责声明大段前言。正常运行时不显示技术状态；更新异常由概览提示。详细运维信息通过 plugin_dev_neige_barra_barra_status 查询。不要把因子回归系数当作可交易策略收益。归档或删除 Track 前调用 plugin_dev_neige_barra_barra_stop。 -->
 
 # 美股风格与风险
 
