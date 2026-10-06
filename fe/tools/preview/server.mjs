@@ -1,11 +1,21 @@
 import { createServer as createHttpServer } from 'node:http';
 import { resolve } from 'node:path';
 import { createServer } from 'vite';
+import react from '@vitejs/plugin-react';
 
 // A development-only surface composed from production components; no API or user data.
 const port = Number(process.argv[2] ?? 5198);
-const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 const entry = resolve(import.meta.dirname, 'edit-motion.tsx');
+const vite = await createServer({
+  configFile: false,
+  root: resolve(import.meta.dirname, '../../web'),
+  base: '/next/',
+  plugins: [react()],
+  define: { __NC_BUNDLED__: 'false', __NC_VERSION__: JSON.stringify('preview'), __NC_BUILD__: JSON.stringify('preview') },
+  optimizeDeps: { entries: [entry] },
+  server: { middlewareMode: true, fs: { allow: [resolve(import.meta.dirname, '../..')] } },
+  appType: 'custom',
+});
 const server = createHttpServer(async (request, response) => {
   if (request.url?.split('?')[0] === '/next/motion-preview') {
     try {

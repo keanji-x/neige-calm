@@ -219,6 +219,7 @@
    * the composer well takes: same material, same corner.
    */
   .said {
+    transition: color var(--motion-snappy) var(--ease-layout), outline-color var(--motion-snappy) var(--ease-layout);
     inline-size: fit-content;
     max-inline-size: 88%;
     min-inline-size: 0;
@@ -241,10 +242,6 @@
    * 8.10 dark, over the 4.5:1 floor. The dashed edge is decoration; the edit
    * bar above the composer is what says it in words.
    */
-  .said {
-    transition: color var(--motion-snappy) var(--ease-layout), outline-color var(--motion-snappy) var(--ease-layout);
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .said { transition: none; }
   }
