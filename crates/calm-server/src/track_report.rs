@@ -744,11 +744,10 @@ pub(crate) fn apply_report_op_traced(
                 )));
             }
             check_doc_rev(doc, *if_doc_rev)?;
-            // The initial body is prose only, so aligning onto it removes every data block. They are
-            // still present while it aligns, so this write mints no new block onto a removed id; a
-            // later write may, as after a DELETE and a DELETE of its tombstone.
+            // Every data block is dropped and none can lend its id or kind to the initial prose. A
+            // later write may mint a dropped id again, as after a DELETE and a DELETE of its tombstone.
             let initial = TrackReportPayload::initial();
-            doc.update(&initial.summary, &initial.body)
+            doc.replace_dropping_data_blocks(&initial.summary, &initial.body)
                 .map_err(internal)?;
             written = Written::AllProse;
             Ok(None)

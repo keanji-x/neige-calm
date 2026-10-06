@@ -464,3 +464,39 @@ fn same_block_concurrent_merge_loses_one_edit_without_a_production_merge_path() 
         "object replacement currently resolves the conflict by losing replica A's edit"
     );
 }
+
+/// A data block's text that resembles the new prose cannot pull the prose onto its id: the
+/// alignment sees only the old prose blocks, and the data block's id stays reserved.
+#[test]
+fn replace_dropping_data_blocks_never_reuses_a_data_block_id() {
+    let prose = "# Notes\n\nThe report keeps the day's decisions and open questions.\n";
+    let fence = render_fence(
+        "table",
+        &json!({ "columns": [{ "key": "k", "label": "K" }], "rows": [], "caption": prose }),
+    );
+    let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", &fence));
+    let data_id = doc.blocks_snapshot().unwrap()[0].id.clone();
+
+    doc.replace_dropping_data_blocks("", prose).unwrap();
+
+    let blocks = doc.blocks_snapshot().unwrap();
+    assert_eq!(doc.project().unwrap(), (String::new(), prose.to_string()));
+    assert!(
+        blocks.iter().all(|block| block.kind == KIND_PROSE),
+        "{blocks:?}"
+    );
+    assert!(blocks.iter().all(|block| block.id != data_id), "{blocks:?}");
+}
+
+/// The prose blocks still align as on any replace: an unchanged one keeps its id and rev.
+#[test]
+fn replace_dropping_data_blocks_keeps_matching_prose_ids() {
+    let body = "# A\n\nalpha\n";
+    let fence = render_fence("app", &json!({ "src": "/apps/x" }));
+    let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", &format!("{body}{fence}")));
+    let prose = doc.blocks_snapshot().unwrap()[0].clone();
+
+    doc.replace_dropping_data_blocks("s", body).unwrap();
+
+    assert_eq!(doc.blocks_snapshot().unwrap(), vec![prose]);
+}

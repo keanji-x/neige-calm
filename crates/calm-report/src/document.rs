@@ -216,6 +216,30 @@ impl ReportDoc {
         self.apply_aligned_blocks(&current, &aligned)
     }
 
+    /// Wholesale replace that drops every current non-prose block. `new_body` is aligned onto the
+    /// current prose blocks only, with every current data block's id reserved, so no block of the
+    /// result can carry a dropped data block's id or inherit its kind.
+    pub fn replace_dropping_data_blocks(
+        &mut self,
+        new_summary: &str,
+        new_body: &str,
+    ) -> Result<()> {
+        let summary_id = self.summary_text_id()?;
+        self.0
+            .update_text(&summary_id, new_summary)
+            .context("update summary text")?;
+
+        let current = self.blocks_snapshot()?;
+        let (prose, data): (Vec<ReportBlock>, Vec<ReportBlock>) = current
+            .iter()
+            .cloned()
+            .partition(|block| block.kind == KIND_PROSE);
+        let reserved: HashSet<String> = data.into_iter().map(|block| block.id).collect();
+        let aligned =
+            reassign_ids_with_hints_reserving(&prose, &split_body(new_body), &[], &reserved);
+        self.apply_aligned_blocks(&current, &aligned)
+    }
+
     /// [`Self::update_with_hints`] bounded to `range` of the current block list (#1877 section replace):
     /// only that part is matched against `slices`, every other block is kept as it is, and the
     /// summary is untouched. Returns the blocks that now stand in `range`'s place.
