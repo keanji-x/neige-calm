@@ -411,7 +411,9 @@ pub fn recycle_area_workspaces(
             Err(error) => {
                 if let Err(restore_error) = restore_area_recycle_report(&report) {
                     return Err(CalmError::Internal(format!(
-                        "area workspace recycle failed ({error}), and partial rollback failed: {restore_error}"
+                        "area workspace recycle failed ({}), and partial rollback failed: {}",
+                        error.reason(),
+                        restore_error.reason()
                     )));
                 }
                 return Err(error);

@@ -4,6 +4,7 @@
 use crate::actor::Actor;
 use crate::codex_appserver::Notification;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use crate::model::{Card, new_id};
 use crate::operation::OperationKey;
 use crate::operation::codex_adapter::{
@@ -81,7 +82,7 @@ pub(crate) async fn create_codex_card(
     actor: Actor,
     headers: HeaderMap,
     Path(track_id): Path<String>,
-    Json(p): Json<NewCodexCardBody>,
+    JsonBody(p): JsonBody<NewCodexCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
     let request = normalize_codex_create_request(CodexCreateRequestInput {
         track_id,

@@ -163,7 +163,7 @@ fn resolve_template_contract(
         return TemplateContract::Broken(ContractFailure::InputRejected {
             plugin_id: plugin_id.to_string(),
             template_id: template_id.to_string(),
-            reason,
+            reason: reason.to_string(),
         });
     }
 

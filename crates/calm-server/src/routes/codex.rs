@@ -5,13 +5,14 @@ use crate::actor::Actor;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
+use crate::json_body::JsonBody;
 use crate::model::Terminal;
 use crate::role_gate::RoleViolation;
 use crate::session_projection_lookup::resolve_session_for_thread;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
 use axum::{
-    Json, Router,
+    Router,
     extract::{Query, State},
     http::StatusCode,
     routing::post,
@@ -97,7 +98,7 @@ pub(crate) async fn ingest_hook(
     State(s): State<RouteState>,
     _actor: Actor,
     Query(q): Query<IngestQuery>,
-    Json(payload): Json<Value>,
+    JsonBody(payload): JsonBody<Value>,
 ) -> Result<StatusCode> {
     let card_id = resolve_ingest_card_id(q.card_id)?;
     ingest_provider_hook(&s, card_id, payload, HookProvider::Codex).await?;

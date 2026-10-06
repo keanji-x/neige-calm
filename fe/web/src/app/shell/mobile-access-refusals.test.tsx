@@ -55,7 +55,7 @@ it('a double Revoke is done: the second answer, the device already gone, keeps t
     revokes.push(request.path);
     return Promise.resolve(revokes.length === 1
       ? { status: 204, statusText: 'No Content', body: null }
-      : answered(404, 'not_found', 'not found: No paired device with this id'));
+      : answered(404, 'not_found', 'No paired device with this id'));
   });
   for (const press of [1, 2]) {
     const reads = view.reads();
@@ -70,7 +70,7 @@ it('a double Revoke is done: the second answer, the device already gone, keeps t
 });
 
 it('a stale Approve shows the server reason in the pane and keeps the session', async () => {
-  const reason = 'not found: No pending pairing request with this id';
+  const reason = 'No pending pairing request with this id';
   const view = mount(() => Promise.resolve(answered(404, 'not_found', reason)));
   fireEvent.click(await screen.findByRole('button', { name: 'Approve 123456' }));
   expect((await screen.findByRole('alert')).textContent).toContain(reason);

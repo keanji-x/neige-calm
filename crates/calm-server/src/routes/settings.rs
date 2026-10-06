@@ -2,6 +2,7 @@
 //! empty rows are never stored.
 
 use crate::error::{ErrorBody, Result};
+use crate::json_body::JsonBody;
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
@@ -54,7 +55,7 @@ pub(crate) async fn get_settings(State(s): State<RouteState>) -> Result<Json<Set
 pub(crate) async fn put_settings(
     State(s): State<RouteState>,
     State(cs): State<CodexShellState>,
-    Json(p): Json<SettingsPutBody>,
+    JsonBody(p): JsonBody<SettingsPutBody>,
 ) -> Result<Json<SettingsBag>> {
     let before = load_settings(s.repo.as_ref()).await?;
     let mut proxy_changed = false;

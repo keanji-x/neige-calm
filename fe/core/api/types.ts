@@ -53,6 +53,11 @@ export type HttpFailure = Readonly<{
   status: number;
   code: string;
   message: string;
+  /**
+   * The dotted path of the one request field the refusal is about (`config.retries`), whose reason `message` then
+   * is. Absent on every refusal of the request as a whole, the only answers the server sends without it.
+   */
+  field?: string;
   body?: unknown;
 }>;
 

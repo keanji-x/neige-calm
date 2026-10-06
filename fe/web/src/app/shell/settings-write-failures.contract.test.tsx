@@ -34,7 +34,7 @@ const DETAIL = {
 };
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const answer = (status: number, code: string, error: string): ApiTransportResponse => ({ status, statusText: '', body: { error, code } });
-const BUSY = answer(409, 'plugin_busy', 'plugin busy: plugin `git-forge` is busy: another lifecycle operation holds it');
+const BUSY = answer(409, 'plugin_busy', 'plugin `git-forge` is busy: another lifecycle operation holds it');
 const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('socket hang up'));
 
 type Write = (request: ApiRequest, attempt: number) => Promise<ApiTransportResponse>;
@@ -150,7 +150,7 @@ describe('a lost answer shows the write’s fixed state, never transport text', 
 
 describe('a retry that meets proof of the intent is done', () => {
   it('a remove answered 404 shows nothing and re-reads the list', async () => {
-    const { reads } = renderSettings('/settings/plugins', () => Promise.resolve(answer(404, 'not_found', 'not found: plugin git-forge')));
+    const { reads } = renderSettings('/settings/plugins', () => Promise.resolve(answer(404, 'not_found', 'plugin git-forge')));
     const lists = () => reads.filter((path) => path === '/api/plugins').length;
     await screen.findByRole('button', { name: 'Remove Git forge' });
     const before = lists();
@@ -161,7 +161,7 @@ describe('a retry that meets proof of the intent is done', () => {
 
   it('an add answered "already installed" after a lost answer leaves the form for the re-read list', async () => {
     const { writes, reads } = renderSettings('/settings/plugins', (_request, attempt) => (attempt === 1
-      ? lost() : Promise.resolve(answer(409, 'plugin_conflict', 'plugin conflict: plugin `todo` already installed at version `0.1.0`'))));
+      ? lost() : Promise.resolve(answer(409, 'plugin_conflict', 'plugin `todo` already installed at version `0.1.0`'))));
     await openAdd(); await add();
     await alerts();
     await add();
@@ -171,7 +171,7 @@ describe('a retry that meets proof of the intent is done', () => {
   });
 
   it('a first add answered "already installed" stays a refusal on the form', async () => {
-    renderSettings('/settings/plugins', () => Promise.resolve(answer(409, 'plugin_conflict', 'plugin conflict: plugin `todo` already installed at version `0.1.0`')));
+    renderSettings('/settings/plugins', () => Promise.resolve(answer(409, 'plugin_conflict', 'plugin `todo` already installed at version `0.1.0`')));
     await openAdd(); await add();
     expect(await alerts()).toContain('already installed');
     expect(screen.getByLabelText('MCP configuration')).toBeTruthy();

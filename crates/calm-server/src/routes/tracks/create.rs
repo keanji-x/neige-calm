@@ -628,8 +628,9 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
         CalmError::IdempotencyKeyExhausted(format!(
             "this Idempotency-Key names track {}, whose workspace can no longer be materialized, \
              so no retry under this key can produce a working track; retry under a new \
-             Idempotency-Key, which mints a fresh track at a different path ({error})",
-            track.id
+             Idempotency-Key, which mints a fresh track at a different path ({})",
+            track.id,
+            error.reason()
         ))
     })?;
     // Inside the same fence as the materialization above. Its own error, never the

@@ -6,18 +6,25 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use thiserror::Error;
 use utoipa::ToSchema;
 
-/// JSON shape returned for every error response — `{error, code}`.
+/// JSON shape returned for every error response — `{error, code}`, plus `field` when the refusal
+/// names one field of the request.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
-    /// Human-readable error message.
+    /// The reason, without the variant's log prefix (`CalmError::reason`): a 404 says `plugin x`,
+    /// not `not found: plugin x`; the `code` already says which kind of failure it is.
     pub error: String,
     /// Stable machine-readable code (see `CalmError::code`). Three more are written by routes
     /// directly: `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
     pub code: String,
+    /// The dotted path of the one field the refusal is about (`config.retries`,
+    /// `template_input.issue_url`); `error` is then that field's reason alone. Absent rather than
+    /// required because only `CalmError::InvalidField` names a field: every other error is about
+    /// the request as a whole, and an empty path would be a second way to say so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -63,6 +70,22 @@ pub enum CalmError {
 
     #[error("bad request: {0}")]
     BadRequest(String),
+
+    /// 400 `bad_request` about one field of the body: `field` is its dotted path
+    /// (`config.retries`), `reason` what is wrong with it. The body carries both, so a client puts
+    /// the reason on the field without parsing the text. A violation of the body as a whole has no
+    /// field and stays a plain `BadRequest`.
+    #[error("bad request: {field}: {reason}")]
+    InvalidField { field: String, reason: String },
+
+    /// 422 — the request body is well-formed JSON that does not deserialize into the route's type
+    /// (a missing or mistyped field), as `JsonBody` reports it.
+    #[error("invalid body: {0}")]
+    InvalidBody(String),
+
+    /// 415 — the request carries a JSON body extractor's input without `Content-Type: application/json`.
+    #[error("unsupported media type: {0}")]
+    UnsupportedMediaType(String),
 
     #[error("unauthorized")]
     Unauthorized,
@@ -175,7 +198,9 @@ impl CalmError {
             CalmError::IdempotencyKeyReused(_) => "idempotency_key_reused",
             CalmError::IdempotencyKeyConcurrent(_) => "idempotency_key_concurrent",
             CalmError::TodaySummaryNoActivity(_) => "today_summary_no_activity",
-            CalmError::BadRequest(_) => "bad_request",
+            CalmError::BadRequest(_) | CalmError::InvalidField { .. } => "bad_request",
+            CalmError::InvalidBody(_) => "invalid_body",
+            CalmError::UnsupportedMediaType(_) => "unsupported_media_type",
             CalmError::Unauthorized => "unauthorized",
             CalmError::LoginThrottled { .. } => "login_throttled",
             CalmError::Forbidden(_) => "forbidden",
@@ -222,6 +247,7 @@ impl CalmError {
             | CalmError::PlannerTurnNotReplaceable(_)
             | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_)
+            | CalmError::InvalidField { .. }
             | CalmError::IdempotencyKeyInvalid(_)
             | CalmError::PluginInstall(_)
             | CalmError::PluginConfigTooLarge(_) => StatusCode::BAD_REQUEST,
@@ -229,7 +255,9 @@ impl CalmError {
             CalmError::LoginThrottled { .. } => StatusCode::TOO_MANY_REQUESTS,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
             CalmError::PluginKernelTooOld(_)
+            | CalmError::InvalidBody(_)
             | CalmError::PlannerResetUnsupportedInSharedMode(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            CalmError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             CalmError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             CalmError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             CalmError::Db(_)
@@ -243,13 +271,72 @@ impl CalmError {
     }
 }
 
+impl CalmError {
+    /// The variant's reason without the prefix `Display` adds: what an HTTP body's `error` says.
+    /// `Display` keeps the prefix for logs, persisted operation errors and MCP answers, where the
+    /// text is all a reader gets; an HTTP answer has `code` beside it.
+    pub fn reason(&self) -> String {
+        match self {
+            CalmError::CodexRefused(m)
+            | CalmError::NotFound(m)
+            | CalmError::Conflict(m)
+            | CalmError::IdempotencyCollision(m)
+            | CalmError::IdempotencyKeyExhausted(m)
+            | CalmError::IdempotencyKeyInvalid(m)
+            | CalmError::IdempotencyKeyReused(m)
+            | CalmError::IdempotencyKeyConcurrent(m)
+            | CalmError::TodaySummaryNoActivity(m)
+            | CalmError::BadRequest(m)
+            | CalmError::InvalidBody(m)
+            | CalmError::UnsupportedMediaType(m)
+            | CalmError::Forbidden(m)
+            | CalmError::PluginInstall(m)
+            | CalmError::PluginPermission(m)
+            | CalmError::PluginConflict(m)
+            | CalmError::PluginBusy(m)
+            | CalmError::PluginManifestUnloaded(m)
+            | CalmError::PluginConfigCorrupt(m)
+            | CalmError::PluginConfigTooLarge(m)
+            | CalmError::PluginKernelTooOld(m)
+            | CalmError::PlannerResetUnsupportedInSharedMode(m)
+            | CalmError::PlannerHarnessDormant(m)
+            | CalmError::PlannerHarnessRuntimeSuperseded(m)
+            | CalmError::PlannerTurnNotReplaceable(m)
+            | CalmError::CodexAppServer(m)
+            | CalmError::ServiceUnavailable(m)
+            | CalmError::PayloadTooLarge(m)
+            | CalmError::OperationFailed(m)
+            | CalmError::Internal(m) => m.clone(),
+            CalmError::InvalidField { reason, .. } => reason.clone(),
+            // Their `Display` carries no prefix: it is the whole sentence.
+            CalmError::Unauthorized | CalmError::LoginThrottled { .. } => self.to_string(),
+            CalmError::Db(e) => e.to_string(),
+            CalmError::Io(e) => e.to_string(),
+            CalmError::Serde(e) => e.to_string(),
+        }
+    }
+
+    /// The field an `InvalidField` names; every other variant concerns the request as a whole.
+    pub fn field(&self) -> Option<&str> {
+        match self {
+            CalmError::InvalidField { field, .. } => Some(field),
+            _ => None,
+        }
+    }
+
+    /// The JSON body an HTTP answer carries for this error.
+    pub fn body(&self) -> ErrorBody {
+        ErrorBody {
+            error: self.reason(),
+            code: self.code().to_string(),
+            field: self.field().map(str::to_string),
+        }
+    }
+}
+
 impl IntoResponse for CalmError {
     fn into_response(self) -> Response {
-        let body = json!({
-            "error": self.to_string(),
-            "code": self.code(),
-        });
-        let mut response = (self.status(), Json(body)).into_response();
+        let mut response = (self.status(), Json(self.body())).into_response();
         if let CalmError::LoginThrottled { retry_after_secs } = self {
             response
                 .headers_mut()
@@ -295,6 +382,62 @@ mod provider_error_tests {
         assert_eq!(serde.code(), "serde_error");
         assert_eq!(serde.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(serde.to_string(), format!("serde: {message}"));
+    }
+}
+
+#[cfg(test)]
+mod response_body_tests {
+    use super::*;
+
+    async fn answer(error: CalmError) -> (StatusCode, serde_json::Value) {
+        let response = error.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// The body says the reason and leaves the kind to `code`; `Display` keeps its prefix for logs.
+    #[tokio::test]
+    async fn the_body_carries_the_reason_and_display_keeps_the_prefix() {
+        let not_found = CalmError::NotFound("plugin git-forge".into());
+        assert_eq!(not_found.to_string(), "not found: plugin git-forge");
+        assert_eq!(
+            answer(not_found).await,
+            (
+                StatusCode::NOT_FOUND,
+                serde_json::json!({ "error": "plugin git-forge", "code": "not_found" })
+            )
+        );
+        assert_eq!(
+            answer(CalmError::Unauthorized).await.1,
+            serde_json::json!({ "error": "unauthorized", "code": "unauthorized" })
+        );
+    }
+
+    /// Only a field violation carries `field`; its `error` is that field's reason alone.
+    #[tokio::test]
+    async fn a_field_violation_answers_its_field_beside_its_reason() {
+        let violation = CalmError::InvalidField {
+            field: "config.retries".into(),
+            reason: "expected type `integer`".into(),
+        };
+        assert_eq!(
+            violation.to_string(),
+            "bad request: config.retries: expected type `integer`"
+        );
+        assert_eq!(
+            answer(violation).await,
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({
+                    "error": "expected type `integer`",
+                    "code": "bad_request",
+                    "field": "config.retries",
+                })
+            )
+        );
     }
 }
 
@@ -363,6 +506,10 @@ impl From<CalmError> for calm_truth::TruthError {
                 calm_types::error::CoreError::IdempotencyCollision(m).into()
             }
             CalmError::BadRequest(m) => calm_types::error::CoreError::BadRequest(m).into(),
+            // The storage layer has no field-shaped refusal; the path stays in the text.
+            CalmError::InvalidField { field, reason } => {
+                calm_types::error::CoreError::BadRequest(format!("{field}: {reason}")).into()
+            }
             CalmError::Unauthorized => calm_types::error::CoreError::Unauthorized.into(),
             refused @ CalmError::LoginThrottled { .. } => {
                 calm_truth::TruthError::Internal(refused.to_string())
@@ -386,6 +533,8 @@ impl From<CalmError> for calm_truth::TruthError {
             }
             // Route-only variants with no `CoreError`/`TruthError` twin collapse to Internal.
             CalmError::IdempotencyKeyInvalid(m)
+            | CalmError::InvalidBody(m)
+            | CalmError::UnsupportedMediaType(m)
             | CalmError::PluginInstall(m)
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)

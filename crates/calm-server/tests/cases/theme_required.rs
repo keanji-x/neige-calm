@@ -97,8 +97,7 @@ async fn boot() -> Boot {
     }
 }
 
-/// Returns `(status, json_or_null, raw_text)`. Axum's 422 from a serde-rejected `Json<T>` is
-/// `text/plain`, not JSON, so the raw text is kept for the missing-field substring assertion.
+/// Returns `(status, json_or_null, raw_text)`; the raw text is kept for failure messages.
 async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, String) {
     let resp = app
         .oneshot(
@@ -118,11 +117,22 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, 
     (status, json, text)
 }
 
+/// The body extractor's 422 answers the `ErrorBody` contract: `invalid_body`, with serde's reason.
+fn assert_invalid_body_naming_theme(body: &Value, text: &str) {
+    assert_eq!(body["code"], "invalid_body", "body={text}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("theme")),
+        "422 must name `theme` as the rejected field; got body={text}",
+    );
+}
+
 #[tokio::test]
 async fn post_tracks_without_theme_is_rejected_with_422() {
     let boot = boot().await;
     // Body includes every other required field so the 422 fires on the missing `theme` and not some other field.
-    let (status, _body, text) = post(
+    let (status, body, text) = post(
         boot.app.clone(),
         "/api/tracks",
         json!({
@@ -139,10 +149,7 @@ async fn post_tracks_without_theme_is_rejected_with_422() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "expected 422 on missing `theme` field; body={text}",
     );
-    assert!(
-        text.contains("theme"),
-        "422 must name `theme` as the rejected field; got body={text}",
-    );
+    assert_invalid_body_naming_theme(&body, &text);
 }
 
 /// JSON `null` must NOT deserialize into `RequestTheme` (no `Option`, no `#[serde(default)]`).
@@ -150,7 +157,7 @@ async fn post_tracks_without_theme_is_rejected_with_422() {
 async fn post_tracks_with_null_theme_is_rejected_with_422() {
     let boot = boot().await;
     // Body includes every other required field so the 422 fires on `theme: null` and not a missing field.
-    let (status, _body, text) = post(
+    let (status, body, text) = post(
         boot.app.clone(),
         "/api/tracks",
         json!({
@@ -168,16 +175,13 @@ async fn post_tracks_with_null_theme_is_rejected_with_422() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "expected 422 on `theme: null`; body={text}",
     );
-    assert!(
-        text.contains("theme"),
-        "422 must name `theme` as the rejected field; got body={text}",
-    );
+    assert_invalid_body_naming_theme(&body, &text);
 }
 
 #[tokio::test]
 async fn post_codex_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;
-    let (status, _body, text) = post(
+    let (status, body, text) = post(
         boot.app.clone(),
         &format!("/api/tracks/{}/codex-cards", boot.track_id),
         json!({ "cwd": "/tmp" }),
@@ -188,12 +192,13 @@ async fn post_codex_cards_without_theme_is_rejected_with_422() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "expected 422 on `codex-cards` body missing `theme`; body={text}",
     );
+    assert_invalid_body_naming_theme(&body, &text);
 }
 
 #[tokio::test]
 async fn post_terminal_cards_without_theme_is_rejected_with_422() {
     let boot = boot().await;
-    let (status, _body, text) = post(
+    let (status, body, text) = post(
         boot.app.clone(),
         &format!("/api/tracks/{}/terminal-cards", boot.track_id),
         json!({ "program": "/bin/sh" }),
@@ -204,4 +209,5 @@ async fn post_terminal_cards_without_theme_is_rejected_with_422() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "expected 422 on `terminal-cards` body missing `theme`; body={text}",
     );
+    assert_invalid_body_naming_theme(&body, &text);
 }

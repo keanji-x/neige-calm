@@ -153,10 +153,7 @@ async fn retired_view_kind_is_refused_by_rest_block_upsert() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{method}: {error}");
         assert_eq!(
             error_text(&error),
-            format!(
-                "bad request: invalid `{RETIRED_KIND}` payload: {}",
-                unknown_kind_text()
-            ),
+            format!("invalid `{RETIRED_KIND}` payload: {}", unknown_kind_text()),
             "{method}"
         );
     }
@@ -183,7 +180,7 @@ async fn retired_view_kind_is_refused_by_rest_replace() {
     assert_eq!(
         error_text(&error),
         format!(
-            "bad request: invalid `{RETIRED_KIND}` block payload: {} (see neige_report_describe)",
+            "invalid `{RETIRED_KIND}` block payload: {} (see neige_report_describe)",
             unknown_kind_text()
         )
     );
@@ -194,9 +191,9 @@ async fn retired_view_kind_is_refused_by_rest_replace() {
 async fn retired_view_kind_is_refused_by_recipe_ingress() {
     let boot = boot().await;
     let body = format!("# Performance\n\n{}", retired_fence());
-    // `BadRequest` nests: the recipe prefix wraps the fence validator's own `bad request:`.
+    // The recipe prefix wraps the fence validator's reason, never its `bad request:` log prefix.
     let expected = format!(
-        "bad request: track recipe body: bad request: invalid `{RETIRED_KIND}` block payload: {} \
+        "track recipe body: invalid `{RETIRED_KIND}` block payload: {} \
          (see neige_report_describe)",
         unknown_kind_text()
     );
@@ -250,7 +247,7 @@ async fn retired_view_kind_is_refused_by_fork() {
     assert_eq!(
         error_text(&error),
         format!(
-            "bad request: track create: invalid forked report block {stored}: {}",
+            "track create: invalid forked report block {stored}: {}",
             unknown_kind_text()
         )
     );

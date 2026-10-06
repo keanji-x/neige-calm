@@ -5,6 +5,7 @@ pub mod login_throttle;
 
 use crate::config::Config;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use axum::{
     Extension, Json, Router,
     body::Body,
@@ -406,7 +407,7 @@ pub async fn login_handler(
     State(auth): State<AuthState>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(body): Json<LoginBody>,
+    JsonBody(body): JsonBody<LoginBody>,
 ) -> Result<Response> {
     // Dev autologin: any login is a no-op success with a synthetic whoami; no cookie set, the middleware promotes every request anyway.
     if auth.config.dev_autologin {

@@ -3833,7 +3833,7 @@
             }
           },
           "400": {
-            "description": "Plugin declares no `config_schema`, or the patched config violates it (`bad_request`); or the whole stored document would exceed its byte cap because of residue no ordinary patch can shrink (`plugin_config_too_large`, clearable with `?reset=true`)",
+            "description": "Plugin declares no `config_schema`, or the patched config violates it (`bad_request`; a violation of one key names it in `field`, e.g. `config.retries`, and `error` is that key's reason); or the whole stored document would exceed its byte cap because of residue no ordinary patch can shrink (`plugin_config_too_large`, clearable with `?reset=true`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3863,10 +3863,24 @@
             }
           },
           "415": {
-            "description": "Extractor-level rejection (missing/!= `application/json` content type). Raised by axum's `Json` extractor **before** this handler runs, so the body is plain text and carries no `code` — outside the `ErrorBody` contract"
+            "description": "The body is not sent as `application/json` (`unsupported_media_type`), answered by the body extractor before this handler runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "422": {
-            "description": "Extractor-level rejection (well-formed JSON that is not deserializable into the request type). Same caveat as 415: plain text, no `code`"
+            "description": "Well-formed JSON that does not deserialize into the request type (`invalid_body`), answered by the body extractor before this handler runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal error",
@@ -9063,7 +9077,7 @@
       },
       "ErrorBody": {
         "type": "object",
-        "description": "JSON shape returned for every error response — `{error, code}`.",
+        "description": "JSON shape returned for every error response — `{error, code}`, plus `field` when the refusal\nnames one field of the request.",
         "required": [
           "error",
           "code"
@@ -9075,7 +9089,14 @@
           },
           "error": {
             "type": "string",
-            "description": "Human-readable error message."
+            "description": "The reason, without the variant's log prefix (`CalmError::reason`): a 404 says `plugin x`,\nnot `not found: plugin x`; the `code` already says which kind of failure it is."
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The dotted path of the one field the refusal is about (`config.retries`,\n`template_input.issue_url`); `error` is then that field's reason alone. Absent rather than\nrequired because only `CalmError::InvalidField` names a field: every other error is about\nthe request as a whole, and an empty path would be a second way to say so."
           }
         }
       },

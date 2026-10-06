@@ -10,6 +10,7 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::harness::{SendKey, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId};
+use crate::json_body::JsonBody;
 use crate::per_card_lock::{PerCardLockGuard, lock_card, lock_key};
 use crate::routes::cards::{card_runs_headless_harness, validate_planner_input};
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
@@ -103,7 +104,7 @@ pub(crate) async fn send_planner_input(
     actor: Actor,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<SendPlannerInputRequest>,
+    JsonBody(body): JsonBody<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {
     let idempotency_key = parse_idempotency_key_header(&headers)?.ok_or_else(|| {
         CalmError::BadRequest(

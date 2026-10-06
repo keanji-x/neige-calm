@@ -7,11 +7,19 @@ function errorText(body: unknown, key: 'code' | 'error', fallback: string): stri
   return typeof value === 'string' ? value : fallback;
 }
 
+/** The `ErrorBody`'s `field`, sent only when the refusal is about one field of the request. */
+function errorField(body: unknown): string | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const value: unknown = (body as Record<string, unknown>).field;
+  return typeof value === 'string' ? value : undefined;
+}
+
 function normalizeHttpFailure(status: number, statusText: string, body: unknown): ApiFailure {
   const code = errorText(body, 'code', 'http_error');
   const message = errorText(body, 'error', statusText);
   if (status === 401) return { kind: 'unauthorized', status: 401, code, message, body };
-  return { kind: 'http', status, code, message, body };
+  const field = errorField(body);
+  return { kind: 'http', status, code, message, ...(field === undefined ? {} : { field }), body };
 }
 
 function isTimeoutError(cause: unknown): boolean {

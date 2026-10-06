@@ -321,7 +321,7 @@ describe('creating a recipe', () => {
 describe('a recipe write whose answer was lost', () => {
   const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('socket hang up'));
   const stale: ApiTransportResponse = {
-    status: 409, statusText: 'Conflict', body: { error: 'conflict: track recipe r-ship is at revision 8, not 7', code: 'conflict' },
+    status: 409, statusText: 'Conflict', body: { error: 'track recipe r-ship is at revision 8, not 7', code: 'conflict' },
   };
   const RAW = /socket hang up|Transport request failed|timed out|schema|offline|connection|conflict:/i;
   const SAVE_UNKNOWN = 'Saving the recipe is unconfirmed. Save again to check.';
@@ -484,8 +484,8 @@ describe('a keyed recipe create', () => {
 
   it.each([
     ['a create that failed for good under its key', { status: 500, statusText: 'Internal Server Error', body: {
-      error: 'operation failed: storage refused the row.', code: 'operation_failed',
-    } }, 'operation failed: storage refused the row.'],
+      error: 'storage refused the row.', code: 'operation_failed',
+    } }, 'storage refused the row.'],
     ['a key bound to another recipe', { status: 409, statusText: 'Conflict', body: {
       error: 'This key was already used for a different recipe.', code: 'idempotency_key_reused',
     } }, 'This key was already used for a different recipe.'],

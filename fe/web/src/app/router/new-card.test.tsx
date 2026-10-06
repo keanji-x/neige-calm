@@ -224,7 +224,7 @@ describe('a keyed card create', () => {
   } };
   /* A create that failed for good after its commit; a retry under its key is answered the same. */
   const failed: ApiTransportResponse = { status: 500, statusText: 'Internal Server Error', body: {
-    error: 'operation failed: the daemon did not start.', code: 'operation_failed',
+    error: 'the daemon did not start.', code: 'operation_failed',
   } };
 
   async function fillTitle(title: string) {
@@ -307,7 +307,7 @@ describe('a keyed card create', () => {
     ['an invalid key', invalid, 'The card request key is not valid.'],
     ['a refused body', unprocessable, 'The theme is missing.'],
     ['a create refused before it committed', conflict, 'The track is closed.'],
-    ['a create that failed for good under its key', failed, 'operation failed: the daemon did not start.'],
+    ['a create that failed for good under its key', failed, 'the daemon did not start.'],
   ])('reads %s as a final refusal with the server’s reason: no Try again, and the next press mints a new key', async (_name, answer, reason) => {
     const { posts } = setup({ answers: [answer] });
     await pickKind('codex');

@@ -3,7 +3,7 @@
 //! from its track's items, and the same source happening again has a new key, so it lights up again.
 
 use axum::{
-    Json, Router,
+    Router,
     extract::{Path, State},
     http::StatusCode,
     routing::post,
@@ -16,6 +16,7 @@ use crate::db::sqlite::track_get_tx;
 use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::ids::TrackId;
+use crate::json_body::JsonBody;
 use crate::model::now_ms;
 use crate::state::{AppState, RouteState};
 use crate::track_activity::notifications::is_item_key;
@@ -55,7 +56,7 @@ pub(crate) async fn dismiss_activity_item(
     State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
-    Json(body): Json<DismissActivityItemRequest>,
+    JsonBody(body): JsonBody<DismissActivityItemRequest>,
 ) -> Result<StatusCode> {
     super::track_report_blocks::require_rest_user_actor_for(
         &actor,

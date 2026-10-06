@@ -56,9 +56,9 @@ describe('mobile access pane sentences', () => {
   const read = (table: FailureTable<'refused' | 'done' | 'unknown'>, failure: ApiFailure, text = MOBILE_WRITE_TEXT) =>
     writeFailureText(table, text)(new ApiError(failure));
   it('a refusal is the server reason, done says nothing, and unknown is the fixed sentence', () => {
-    expect(read(MOBILE_APPROVE_FAILURES, http(404, 'not_found', 'not found: No pending pairing request')))
-      .toBe('not found: No pending pairing request');
-    expect(read(MOBILE_REVOKE_FAILURES, http(404, 'not_found', 'not found: No paired device'))).toBeNull();
+    expect(read(MOBILE_APPROVE_FAILURES, http(404, 'not_found', 'No pending pairing request')))
+      .toBe('No pending pairing request');
+    expect(read(MOBILE_REVOKE_FAILURES, http(404, 'not_found', 'No paired device'))).toBeNull();
     expect(read(MOBILE_REVOKE_FAILURES, http(403, 'forbidden', ''))).toBe(MOBILE_WRITE_TEXT.refused);
     for (const failure of [transport, decode, http(500)]) {
       expect(read(MOBILE_STATE_FAILURES, failure)).toBe(MOBILE_WRITE_TEXT.unknown);

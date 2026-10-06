@@ -831,7 +831,7 @@
   why: >
     #2131 S6：应答丢失时各窗格曾显示 "Transport request failed" 或 "check the connection"；安装在应答丢失后重试会因自己的安装
     得到 409 "already installed" 并显示为失败；重复的移除答 404 也显示为失败。连接状态只归全局指示器。
-  source: fe/core/domain/plugins.ts:44-151,531-582; fe/core/domain/settings.ts:22-32; fe/web/src/features/settings/plugin-add.tsx:83-102
+  source: fe/core/domain/plugins.ts:44-151,527-578; fe/core/domain/settings.ts:22-32; fe/web/src/features/settings/plugin-add.tsx:83-102
   authoritative_test: fe/web/src/app/shell/settings-write-failures.contract.test.tsx:89-245
   owner_slice: features/settings
   intentional_omission: false

@@ -7,6 +7,7 @@ use crate::db::sqlite::{overlay_delete_tx, overlay_upsert_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
+use crate::json_body::JsonBody;
 use crate::model::{NewOverlay, Overlay};
 use crate::state::{AppState, RouteState};
 use crate::validation::{
@@ -115,7 +116,7 @@ pub(super) fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec
 pub(crate) async fn upsert_overlay(
     State(s): State<RouteState>,
     actor: Actor,
-    Json(p): Json<NewOverlay>,
+    JsonBody(p): JsonBody<NewOverlay>,
 ) -> Result<Json<Overlay>> {
     // Reserved namespaces first — permission before shape.
     ensure_overlay_write_allowed(&p.plugin_id, &p.entity_kind)?;
@@ -162,7 +163,7 @@ pub struct OverlayDeleteBody {
 pub(crate) async fn delete_overlay(
     State(s): State<RouteState>,
     actor: Actor,
-    Json(b): Json<OverlayDeleteBody>,
+    JsonBody(b): JsonBody<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
     // Deleting a kernel-authored row is the second half of a forge, so the gate applies
     // on the delete side too.

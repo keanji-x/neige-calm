@@ -18,7 +18,7 @@ const ENTRY: CalendarEntry = { id: 'one', task: { title: 'Research', description
   version: 3, cancelled: false, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1 };
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const stale: ApiTransportResponse = { status: 409, statusText: 'Conflict',
-  body: { error: 'conflict: calendar task changed; reload before editing', code: 'conflict' } };
+  body: { error: 'calendar task changed; reload before editing', code: 'conflict' } };
 const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('socket hang up'));
 const RAW = /socket hang up|Transport request failed|timed out|schema|offline|connection|Nothing was sent|conflict:/i;
 /** Where the read-back window around ENTRY's date starts. */
@@ -131,9 +131,9 @@ describe('a calendar update whose answer was lost', () => {
   });
 
   it('shows a refused update in the server’s words', async () => {
-    renderCalendar(() => Promise.resolve({ status: 404, statusText: 'Not Found', body: { error: 'not found: calendar task', code: 'not_found' } }));
+    renderCalendar(() => Promise.resolve({ status: 404, statusText: 'Not Found', body: { error: 'calendar task', code: 'not_found' } }));
     await renameTo('Research done');
-    expect(await alertText()).toBe('not found: calendar task');
+    expect(await alertText()).toBe('calendar task');
   });
 });
 
@@ -185,9 +185,9 @@ describe('a calendar create', () => {
 
   it('shows a key bound to other content in the server’s words', async () => {
     renderCalendar(() => Promise.resolve({ status: 409, statusText: 'Conflict',
-      body: { error: 'conflict: idempotency key already used for different content', code: 'conflict' } }));
+      body: { error: 'idempotency key already used for different content', code: 'conflict' } }));
     await create('Write it up');
-    expect(await alertText()).toBe('conflict: idempotency key already used for different content');
+    expect(await alertText()).toBe('idempotency key already used for different content');
   });
 
   it('refuses an offline create at the press in the table’s words, not the runner’s', async () => {

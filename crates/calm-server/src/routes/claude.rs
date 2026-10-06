@@ -3,6 +3,7 @@
 
 use crate::actor::Actor;
 use crate::error::Result;
+use crate::json_body::JsonBody;
 use crate::routes::codex::{
     HookProvider, IngestQuery, ingest_provider_hook, resolve_ingest_card_id,
 };
@@ -22,7 +23,7 @@ pub(crate) async fn ingest_hook(
     State(s): State<RouteState>,
     _actor: Actor,
     Query(q): Query<IngestQuery>,
-    Json(payload): Json<Value>,
+    JsonBody(payload): JsonBody<Value>,
 ) -> Result<Json<Value>> {
     let card_id = resolve_ingest_card_id(q.card_id)?;
     ingest_provider_hook(&s, card_id, payload, HookProvider::Claude).await?;

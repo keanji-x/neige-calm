@@ -3,6 +3,7 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use crate::state::{AppState, RouteState};
 use crate::track_report::{self, ReportDocOp, ReportEditTarget};
 use axum::{
@@ -157,7 +158,7 @@ pub async fn create_block(
     _principal: Principal,
     actor: Actor,
     Path(id): Path<String>,
-    Json(body): Json<CreateReportBlockBody>,
+    JsonBody(body): JsonBody<CreateReportBlockBody>,
 ) -> Result<Json<ReportBlockWriteResponse>> {
     let content = block_content(&body.kind, body.markdown, body.payload)?;
     commit(
@@ -189,7 +190,7 @@ pub async fn update_block(
     _principal: Principal,
     actor: Actor,
     Path((id, block_id)): Path<(String, String)>,
-    Json(body): Json<UpdateReportBlockBody>,
+    JsonBody(body): JsonBody<UpdateReportBlockBody>,
 ) -> Result<Json<ReportBlockWriteResponse>> {
     let content = block_content(&body.kind, body.markdown, body.payload)?;
     commit(
@@ -221,7 +222,7 @@ pub async fn delete_block(
     _principal: Principal,
     actor: Actor,
     Path((id, block_id)): Path<(String, String)>,
-    Json(body): Json<DeleteReportBlockBody>,
+    JsonBody(body): JsonBody<DeleteReportBlockBody>,
 ) -> Result<Json<ReportBlockWriteResponse>> {
     commit(
         &state,
@@ -248,7 +249,7 @@ pub async fn move_block(
     _principal: Principal,
     actor: Actor,
     Path((id, block_id)): Path<(String, String)>,
-    Json(body): Json<MoveReportBlockBody>,
+    JsonBody(body): JsonBody<MoveReportBlockBody>,
 ) -> Result<Json<ReportBlockWriteResponse>> {
     commit(
         &state,

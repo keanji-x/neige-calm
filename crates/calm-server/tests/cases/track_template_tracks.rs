@@ -121,7 +121,7 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     (status, json)
 }
 
-/// Like [`post`], but returns the body as raw text: extractor-level rejections are `text/plain`, not the JSON envelope.
+/// Like [`post`], but returns the body as raw text, so a rejection's whole answer is searched.
 async fn post_text(app: axum::Router, uri: &str, body: Value) -> (StatusCode, String) {
     let resp = app
         .oneshot(
@@ -1303,6 +1303,9 @@ async fn assert_old_spelling_is_an_unknown_field(leg: &str, body_json: Value, un
         StatusCode::UNPROCESSABLE_ENTITY,
         "{leg}: body={text}"
     );
+    let answer: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("{leg}: the rejection is an `ErrorBody` ({e}): {text}"));
+    assert_eq!(answer["code"], "invalid_body", "{leg}: body={text}");
     assert!(
         text.contains("unknown field"),
         "{leg}: expected a serde unknown-field rejection, body={text}"

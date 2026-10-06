@@ -14,6 +14,7 @@ use utoipa::ToSchema;
 use crate::actor::Actor;
 use crate::conversation_keys::derive_track_conversation_keys;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use crate::model::{CardRole, TrackConversationSummary};
 use crate::operation::planner_harness_start_adapter::{
     ASSISTANT_HARNESS_PROFILE_MARKER, HarnessProfile, LazyMintCardSeed, OpeningBriefing,
@@ -108,7 +109,7 @@ pub(crate) async fn create_track_conversation(
     actor: Actor,
     headers: HeaderMap,
     Path(track_id): Path<String>,
-    Json(body): Json<NewTrackConversationBody>,
+    JsonBody(body): JsonBody<NewTrackConversationBody>,
 ) -> Result<(StatusCode, Json<TrackConversationSummary>)> {
     create_track_conversation_inner(
         s,

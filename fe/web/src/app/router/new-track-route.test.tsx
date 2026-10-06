@@ -439,7 +439,7 @@ describe('New track model selection', () => {
   });
 
   it('shows a refused Claude create readably and lets the reader create on Codex instead', async () => {
-    const refusal = 'bad request: track create: `planner_provider` `claude` is unavailable: '
+    const refusal = 'track create: `planner_provider` `claude` is unavailable: '
       + 'calm-server was started without --claude-planner-config';
     const { sent } = harness({ templates: [], claudePlanner: true, trackCreateSequence: [
       { status: 400, statusText: 'Bad Request', body: { error: refusal, code: 'bad_request' } },

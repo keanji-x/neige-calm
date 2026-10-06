@@ -59,7 +59,7 @@ describe.each(cases)('classifying a failed %s', (_route, table, expected) => {
 
 describe('readWriteFailure', () => {
   it('reads a stale answer with no sentence, a refusal in the server’s words and an unknown outcome in the fixed one', () => {
-    expect(readWriteFailure(new ApiError(http(409, 'conflict', 'conflict: revision 8')), RECIPE_SAVE_FAILURES, RECIPE_SAVE_TEXT)).toEqual({ is: 'stale' });
+    expect(readWriteFailure(new ApiError(http(409, 'conflict', 'revision 8')), RECIPE_SAVE_FAILURES, RECIPE_SAVE_TEXT)).toEqual({ is: 'stale' });
     expect(readWriteFailure(new ApiError(http(400, 'bad_request', 'unclosed fence')), RECIPE_SAVE_FAILURES, RECIPE_SAVE_TEXT))
       .toEqual({ is: 'refused', text: 'unclosed fence' });
     expect(readWriteFailure(new ApiError(transport), RECIPE_SAVE_FAILURES, RECIPE_SAVE_TEXT)).toEqual({ is: 'unknown', text: RECIPE_SAVE_TEXT.unknown });
@@ -78,7 +78,7 @@ describe('calendarWriteFailureText', () => {
     expect(calendarWriteFailureText({ task: update.task })(lost)).toBe(CALENDAR_WRITE_TEXT.create.unknown);
     expect(calendarWriteFailureText(update)(lost)).toBe(CALENDAR_WRITE_TEXT.update.unknown);
     expect(calendarWriteFailureText({ ...update, cancelled: true })(lost)).toBe(CALENDAR_WRITE_TEXT.cancel.unknown);
-    expect(calendarWriteFailureText(update)(new ApiError(http(409, 'conflict', 'conflict: changed')))).toBe(CALENDAR_WRITE_TEXT.stale);
+    expect(calendarWriteFailureText(update)(new ApiError(http(409, 'conflict', 'changed')))).toBe(CALENDAR_WRITE_TEXT.stale);
     expect(calendarWriteFailureText({ task: update.task })(new NotSentError())).toBe(CALENDAR_WRITE_TEXT.create.refused);
   });
 });

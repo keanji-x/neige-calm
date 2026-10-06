@@ -1,6 +1,7 @@
 //! `/api/plugins/*` — plugin install, configuration, and lifecycle.
 
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use crate::model::Plugin;
 use crate::plugin_host::managed::{self, ConnectorInstall};
 use crate::plugin_host::template_input::{
@@ -284,7 +285,7 @@ pub(crate) async fn get_plugin_detail(
 )]
 pub(crate) async fn install_plugin(
     State(cs): State<CodexShellState>,
-    Json(body): Json<InstallBody>,
+    JsonBody(body): JsonBody<InstallBody>,
 ) -> Result<(StatusCode, Json<PluginDetail>)> {
     let raw_path = match body.source {
         InstallSource::LocalPath { path } => path,
@@ -391,11 +392,11 @@ pub(crate) async fn disable_plugin(
     ),
     responses(
         (status = 200, description = "Config updated", body = PluginDetail),
-        (status = 400, description = "Plugin declares no `config_schema`, or the patched config violates it (`bad_request`); or the whole stored document would exceed its byte cap because of residue no ordinary patch can shrink (`plugin_config_too_large`, clearable with `?reset=true`)", body = ErrorBody),
+        (status = 400, description = "Plugin declares no `config_schema`, or the patched config violates it (`bad_request`; a violation of one key names it in `field`, e.g. `config.retries`, and `error` is that key's reason); or the whole stored document would exceed its byte cap because of residue no ordinary patch can shrink (`plugin_config_too_large`, clearable with `?reset=true`)", body = ErrorBody),
         (status = 404, description = "Plugin not found", body = ErrorBody),
         (status = 409, description = "Another lifecycle operation holds this plugin (`plugin_busy`); or the plugin row exists but its manifest is not loaded in the kernel registry (`plugin_manifest_unloaded`); or its stored `user_config` is not a JSON object (`plugin_config_corrupt`, clearable with `?reset=true`)", body = ErrorBody),
-        (status = 415, description = "Extractor-level rejection (missing/!= `application/json` content type). Raised by axum's `Json` extractor **before** this handler runs, so the body is plain text and carries no `code` — outside the `ErrorBody` contract"),
-        (status = 422, description = "Extractor-level rejection (well-formed JSON that is not deserializable into the request type). Same caveat as 415: plain text, no `code`"),
+        (status = 415, description = "The body is not sent as `application/json` (`unsupported_media_type`), answered by the body extractor before this handler runs", body = ErrorBody),
+        (status = 422, description = "Well-formed JSON that does not deserialize into the request type (`invalid_body`), answered by the body extractor before this handler runs", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -404,7 +405,7 @@ pub(crate) async fn patch_plugin_config(
     State(cs): State<CodexShellState>,
     Path(id): Path<String>,
     Query(q): Query<ConfigPatchQuery>,
-    Json(body): Json<Value>,
+    JsonBody(body): JsonBody<Value>,
 ) -> Result<Json<PluginDetail>> {
     // The lifecycle guard: this is a read-modify-write over `user_config`. Without it two
     // concurrent PATCHes drop each other's keys, and a PATCH interleaved with `reload`
@@ -463,8 +464,7 @@ pub(crate) async fn patch_plugin_config(
 
     // Key names are judged before `null` may mean anything, so an undeclared key cannot
     // slip past validation by being sent as a deletion.
-    reject_undeclared_keys("config", &schema, patch.keys().map(String::as_str))
-        .map_err(CalmError::BadRequest)?;
+    reject_undeclared_keys("config", &schema, patch.keys().map(String::as_str))?;
 
     // Absent = unchanged, explicit null = delete.
     for (key, value) in patch {
@@ -487,8 +487,7 @@ pub(crate) async fn patch_plugin_config(
     if let Some(obj) = structural.as_object_mut() {
         obj.remove("required");
     }
-    validate_instance("config", &structural, &Value::Object(judged))
-        .map_err(CalmError::BadRequest)?;
+    validate_instance("config", &structural, &Value::Object(judged))?;
 
     // A second cap on the whole stored document: residue only ever accumulates, so
     // without it a schema that narrows repeatedly grows the row without limit.
@@ -776,7 +775,7 @@ fn csp_header_from_meta(meta: Option<&Value>) -> Option<String> {
 pub(crate) async fn plugin_tool_call(
     State(cs): State<CodexShellState>,
     Path(id): Path<String>,
-    Json(body): Json<ToolCallBody>,
+    JsonBody(body): JsonBody<ToolCallBody>,
 ) -> Response {
     // Hard gate: the plugin's own tools are unreachable from the iframe.
     if !body.name.starts_with("neige.") {
@@ -1078,7 +1077,7 @@ mod rotate_error_mapping_tests {
 #[utoipa::path(post, path = "/api/plugins/mcp/check", request_body = ConnectorInstall,
     responses((status = 200, body = crate::plugin_host::mcp_setup::McpCheckResult),
         (status = 400, body = ErrorBody), (status = 502, body = ErrorBody)), tag = "plugins")]
-pub(crate) async fn check_mcp_connection(Json(body): Json<ConnectorInstall>) -> Response {
+pub(crate) async fn check_mcp_connection(JsonBody(body): JsonBody<ConnectorInstall>) -> Response {
     match crate::plugin_host::mcp_setup::check(body).await {
         Ok(result) => Json(result).into_response(),
         Err((network, message)) => (

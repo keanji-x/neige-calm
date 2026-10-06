@@ -19,6 +19,7 @@ use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::ids::CardId;
+use crate::json_body::JsonBody;
 use crate::model::CardPatch;
 use crate::operation::codex_adapter::card_payload_get_tx;
 use crate::planner_model::CardModelSelection;
@@ -99,7 +100,7 @@ pub(crate) async fn set_planner_model(
     _principal: Principal,
     actor: Actor,
     Path(id): Path<String>,
-    Json(body): Json<SetPlannerModelBody>,
+    JsonBody(body): JsonBody<SetPlannerModelBody>,
 ) -> Result<(StatusCode, Json<SetPlannerModelResponse>)> {
     // The actor check runs first, so an agent probing card ids learns nothing from the status.
     require_rest_user_actor_for(&actor, ACTOR_SUBJECT, ACTOR_REDIRECT)?;

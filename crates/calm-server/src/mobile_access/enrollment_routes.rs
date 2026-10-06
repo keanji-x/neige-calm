@@ -2,6 +2,7 @@
 use super::routes::{MobileAction, no_store, owner};
 use crate::auth::{AuthState, Principal, build_session_cookie};
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, State},
@@ -91,7 +92,7 @@ impl Drop for Reservation {
 pub async fn create(
     State(auth): State<AuthState>,
     principal: Principal,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     let _creating = auth
@@ -202,7 +203,7 @@ pub async fn cancel(
     State(auth): State<AuthState>,
     principal: Principal,
     Path(id): Path<String>,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     auth.mobile.lock()?.cancel_scan(&id);
@@ -223,7 +224,7 @@ pub async fn cancel(
 #[utoipa::path(post, path="/api/mobile/enrollments/claim", tag="mobile", request_body=EnrollmentClaim, responses((status=200,body=EnrollmentClaimed),(status=401,body=ErrorBody)))]
 pub async fn claim(
     State(auth): State<AuthState>,
-    Json(body): Json<EnrollmentClaim>,
+    JsonBody(body): JsonBody<EnrollmentClaim>,
 ) -> Result<Response> {
     if auth.config.dev_autologin {
         return Err(CalmError::Unauthorized);
@@ -234,7 +235,7 @@ pub async fn claim(
 #[utoipa::path(post, path="/api/mobile/enrollments/redeem", tag="mobile", request_body=EnrollmentRedeem, responses((status=200,body=EnrollmentRedeemed),(status=401,body=ErrorBody)))]
 pub async fn redeem(
     State(auth): State<AuthState>,
-    Json(body): Json<EnrollmentRedeem>,
+    JsonBody(body): JsonBody<EnrollmentRedeem>,
 ) -> Result<Response> {
     if auth.config.dev_autologin {
         return Err(CalmError::Unauthorized);

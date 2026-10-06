@@ -10,15 +10,16 @@ use crate::mcp_track_report::{
     Boot, boot as new_boot, call_tool, planner_identity, read_then_commit,
     read_then_write_markdown, upsert_block,
 };
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::{FromRef, Path, State};
 use axum::http::Request;
-use axum::{Extension, Json};
 use calm_server::actor::Actor;
 use calm_server::auth::Principal;
 use calm_server::db::sqlite::{begin_immediate_tx, project_tasks_tx, task_claim_pending_tx};
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::ActorId;
+use calm_server::json_body::JsonBody;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::track_report_blocks::{
@@ -72,7 +73,7 @@ pub(super) async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value)
         principal(),
         Actor("user".into()),
         Path((boot.track_id.to_string(), id.into())),
-        Json(UpdateReportBlockBody {
+        JsonBody(UpdateReportBlockBody {
             kind: "task".into(),
             markdown: None,
             payload: Some(payload),
@@ -211,7 +212,7 @@ async fn user_delete(boot: &Boot, id: &str, rev: u64) {
         principal(),
         Actor("user".into()),
         Path((boot.track_id.to_string(), id.into())),
-        Json(DeleteReportBlockBody {
+        JsonBody(DeleteReportBlockBody {
             if_block_rev: rev as u32,
         }),
     )
@@ -1317,7 +1318,7 @@ async fn deleted_tombstone_then_same_key_reproposal_creates_a_fresh_row() {
         principal(),
         Actor("user".into()),
         Path((boot.track_id.to_string(), id.clone())),
-        Json(DeleteReportBlockBody {
+        JsonBody(DeleteReportBlockBody {
             if_block_rev: rev as u32,
         }),
     )
@@ -1337,7 +1338,7 @@ async fn deleted_tombstone_then_same_key_reproposal_creates_a_fresh_row() {
         principal(),
         Actor("user".into()),
         Path((boot.track_id.to_string(), id)),
-        Json(DeleteReportBlockBody {
+        JsonBody(DeleteReportBlockBody {
             if_block_rev: block["rev"].as_u64().unwrap() as u32,
         }),
     )

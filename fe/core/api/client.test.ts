@@ -69,6 +69,30 @@ describe('core/api client behavior', () => {
     });
   });
 
+  it('carries the field a refusal names, and adds none to a refusal of the whole request', async () => {
+    const refused = (body: unknown) => performApiRequest(
+      { send: () => Promise.resolve({ status: 400, statusText: 'Bad Request', body }) },
+      { method: 'PATCH', path: '/api/plugins/p/config', body: {}, responseSchema: z.unknown() },
+    );
+    /* The kernel's exact answers to a one-key violation and to a patch that is not an object. */
+    const fieldBody = { error: 'unknown field (schema declares additionalProperties: false)', code: 'bad_request', field: 'config.ghost' };
+    const wholeBody = { error: 'config patch must be a JSON object of the keys being edited', code: 'bad_request' };
+
+    expect(await refused(fieldBody)).toEqual({
+      status: 'failed',
+      error: {
+        kind: 'http', status: 400, code: 'bad_request', field: 'config.ghost', body: fieldBody,
+        message: 'unknown field (schema declares additionalProperties: false)',
+      },
+    });
+    const whole = await refused(wholeBody);
+    expect(whole).toEqual({
+      status: 'failed',
+      error: { kind: 'http', status: 400, code: 'bad_request', message: wholeBody.error, body: wholeBody },
+    });
+    expect(whole.status === 'failed' && 'field' in whole.error).toBe(false);
+  });
+
   it('identifies a transport timeout for actionable user feedback', async () => {
     const cause = Object.assign(new Error('Request timed out.'), { name: 'TimeoutError' });
     const result = await performApiRequest(

@@ -1,6 +1,7 @@
 use super::MobileStatus;
 use crate::auth::{AuthState, Principal, build_session_cookie};
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -80,7 +81,7 @@ pub async fn status(State(auth): State<AuthState>, principal: Principal) -> Resu
 pub async fn enable(
     State(auth): State<AuthState>,
     principal: Principal,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     auth.mobile.enable().await?;
@@ -91,7 +92,7 @@ pub async fn enable(
 pub async fn disable(
     State(auth): State<AuthState>,
     principal: Principal,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     auth.mobile.disable().await?;
@@ -110,7 +111,7 @@ pub async fn disable(
 pub async fn create(
     State(auth): State<AuthState>,
     principal: Principal,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     let (id, payload, expires) = auth.mobile.lock()?.invite()?;
@@ -145,7 +146,7 @@ pub async fn approve(
     State(auth): State<AuthState>,
     principal: Principal,
     Path(id): Path<String>,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     auth.mobile.lock()?.approve(&id)?;
@@ -164,7 +165,7 @@ pub async fn revoke(
     State(auth): State<AuthState>,
     principal: Principal,
     Path(id): Path<String>,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     auth.mobile.lock()?.revoke(&id, &auth.sessions)?;
@@ -174,7 +175,7 @@ pub async fn revoke(
 #[utoipa::path(post, path = "/api/mobile/pairings/claim", tag = "mobile", request_body = PairingClaim, responses((status = 200, body = PairingClaimed), (status = 401, body = ErrorBody)))]
 pub async fn claim(
     State(auth): State<AuthState>,
-    Json(body): Json<PairingClaim>,
+    JsonBody(body): JsonBody<PairingClaim>,
 ) -> Result<Response> {
     if auth.config.dev_autologin {
         return Err(CalmError::Unauthorized);
@@ -185,7 +186,7 @@ pub async fn claim(
 #[utoipa::path(post, path = "/api/mobile/pairings/redeem", tag = "mobile", request_body = PairingRedeem, responses((status = 204), (status = 202), (status = 401, body = ErrorBody)))]
 pub async fn redeem(
     State(auth): State<AuthState>,
-    Json(body): Json<PairingRedeem>,
+    JsonBody(body): JsonBody<PairingRedeem>,
 ) -> Result<Response> {
     if auth.config.dev_autologin {
         return Err(CalmError::Unauthorized);
@@ -235,7 +236,7 @@ async fn bootstrap_css() -> Response {
 pub async fn tailnet_login(
     State(auth): State<AuthState>,
     principal: Principal,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     let response = auth
@@ -255,7 +256,7 @@ pub async fn tailnet_login(
 pub async fn tailnet_logout(
     State(auth): State<AuthState>,
     principal: Principal,
-    Json(_body): Json<MobileAction>,
+    JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
     auth.mobile.lock()?.disable(&auth.sessions);

@@ -29,6 +29,11 @@ afterEach(() => {
 
 /** A rejection as the hooks carry it: the kernel's `ErrorBody` answer. */
 const answered = (status: number, code: string, message: string) => new ApiError({ kind: 'http', status, code, message, body: { error: message, code } });
+/** The kernel's answer to a one-key schema violation, as the client normalizes it: the reason, and the key's path apart. */
+const violation = (field: string, reason: string) => new ApiError({
+  kind: 'http', status: 400, code: 'bad_request', message: reason, field, body: { error: reason, code: 'bad_request', field },
+});
+const INTEGER_REASON = 'expected type `integer` (an integer-encoded JSON number; float-encoded values such as `1.0` are rejected)';
 
 /** The kernel's subset: four property types, `enum` only on a string. */
 const CONFIG_SCHEMA = {
@@ -197,13 +202,13 @@ describe('a refused write, as something to act on', () => {
   it('puts a schema violation on the control it is about', async () => {
     const onSave = vi.fn().mockResolvedValue({
       ok: false,
-      error: answered(400, 'bad_request', 'config.retries: expected integer, found a string'),
+      error: violation('config.retries', INTEGER_REASON),
     });
     render(<PluginConfigPane {...props({ onSave })} />);
     await userEvent.type(screen.getByLabelText('token'), 'abc');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    const alert = await verdict('expected integer, found a string');
+    const alert = await verdict(INTEGER_REASON);
     expect(alert.getAttribute('role')).toBe('alert');
     expect(alert.closest('li')).toBe(screen.getByLabelText('retries').closest('li'));
   });
@@ -317,11 +322,11 @@ describe('Apply & restart, and the three ways it ends (§2.4)', () => {
   it('reports a write that failed on the way to the restart as a write failure', async () => {
     const onApplyRestart = vi.fn().mockResolvedValue({
       saved: false,
-      error: answered(400, 'bad_request', 'config.token: expected string, found a number'),
+      error: violation('config.token', 'expected type `string`'),
     });
     render(<PluginConfigPane {...props({ onApplyRestart })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));
-    const alert = await verdict('expected string, found a number');
+    const alert = await verdict('expected type `string`');
     expect(alert.getAttribute('role')).toBe('alert');
     expect(alert.closest('li')).toBe(screen.getByLabelText('token').closest('li'));
   });

@@ -549,6 +549,7 @@ pub mod error;
 pub mod event;
 pub mod event_cursor;
 pub mod events_prune;
+pub mod json_body;
 pub mod kernel_bin_path;
 pub mod side_conversation;
 pub use calm_types::ids;

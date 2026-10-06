@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
+import { performApiRequest } from '../api/client.js';
 import { ApiError, NotSentError } from './failure-class.js';
 import {
   EMPTY_CONNECTOR_DRAFT, PLUGIN_CONFIG_TEXT, configDraftFrom, configFieldsOf, configPatchFrom, configWriteError,
@@ -210,46 +212,75 @@ describe('the operations', () => {
 const answered = (status: number, code: string, message: string) => new ApiError({ kind: 'http', status, code, message, body: { error: message, code } });
 const lost = new ApiError({ kind: 'transport', message: 'Transport request failed' });
 
+/**
+ * A rejection as the client hands it over for the kernel's exact `ErrorBody`: `body` is what the server sends
+ * (`plugin_routes.rs` pins these bodies), normalized by the real client.
+ */
+async function kernelRefusal(status: number, body: Readonly<Record<string, string>>): Promise<ApiError> {
+  const result = await performApiRequest(
+    { send: () => Promise.resolve({ status, statusText: '', body }) },
+    { method: 'PATCH', path: '/api/plugins/git-forge/config', body: {}, responseSchema: z.unknown() },
+  );
+  if (result.status !== 'failed') throw new Error('the kernel answer must be a failure');
+  return new ApiError(result.error);
+}
+
+const INTEGER_REASON = 'expected type `integer` (an integer-encoded JSON number; float-encoded values such as `1.0` are rejected)';
+
 describe('configWriteError', () => {
   const fields = configFieldsOf(schema());
 
-  it('puts a schema violation on the field the kernel named', () => {
-    const error = configWriteError(answered(400, 'bad_request', 'config.retries: expected integer, found a string'), fields);
-    expect(error.fieldKey).toBe('retries');
-    expect(error.message).toBe('expected integer, found a string');
+  it('puts a schema violation on the field the kernel named', async () => {
+    const error = configWriteError(
+      await kernelRefusal(400, { error: INTEGER_REASON, code: 'bad_request', field: 'config.retries' }), fields,
+    );
+    expect(error).toEqual({ message: INTEGER_REASON, fieldKey: 'retries', offersReset: false });
   });
 
-  it('lands a violation on the declared key it names, not on one that starts the same', () => {
+  it('lands a violation on the declared key it names, not on one that starts the same', async () => {
     const pair = configFieldsOf({
       type: 'object',
       properties: { token: { type: 'string' }, token_extra: { type: 'string' } },
     });
-    expect(configWriteError(answered(400, 'bad_request', 'config.token_extra: expected string, found a number'), pair).fieldKey)
-      .toBe('token_extra');
-    expect(configWriteError(answered(400, 'bad_request', 'config.token: expected string, found a number'), pair).fieldKey)
-      .toBe('token');
+    const violation = (field: string) => kernelRefusal(400, { error: 'expected type `string`', code: 'bad_request', field });
+    expect(configWriteError(await violation('config.token_extra'), pair).fieldKey).toBe('token_extra');
+    expect(configWriteError(await violation('config.token'), pair).fieldKey).toBe('token');
   });
 
-  it('offers the reset for the byte-cap refusal too, without reading the prose', () => {
+  it('offers the reset for the byte-cap refusal too, without reading the prose', async () => {
     const tooLarge = configWriteError(
-      answered(400, 'plugin_config_too_large', 'config: storing this patch would make plugin `git-forge`\'s user_config 40000 '
-        + 'bytes, over the 32768-byte cap. Resend this request with `?reset=true`'),
+      await kernelRefusal(400, {
+        error: 'config: storing this patch would make plugin `git-forge`\'s user_config 40000 '
+          + 'bytes, over the 32768-byte cap. Resend this request with `?reset=true`',
+        code: 'plugin_config_too_large',
+      }),
       fields,
     );
     expect(tooLarge.offersReset).toBe(true);
     expect(tooLarge.fieldKey).toBeNull();
     expect(tooLarge.message).toContain('32768');
 
-    expect(configWriteError(answered(400, 'bad_request', 'something mentioning ?reset=true in passing'), fields).offersReset)
-      .toBe(false);
+    const passing = await kernelRefusal(400, { error: 'something mentioning ?reset=true in passing', code: 'bad_request' });
+    expect(configWriteError(passing, fields).offersReset).toBe(false);
   });
 
-  it('keeps a violation of an undeclared key off the form', () => {
+  it('keeps a violation of an undeclared key off the form, naming the key on the pane', async () => {
     const error = configWriteError(
-      answered(400, 'bad_request', 'config.ghost: unknown field (schema declares additionalProperties: false)'), fields,
+      await kernelRefusal(400, {
+        error: 'unknown field (schema declares additionalProperties: false)', code: 'bad_request', field: 'config.ghost',
+      }),
+      fields,
     );
-    expect(error.fieldKey).toBeNull();
-    expect(error.message).toContain('unknown field');
+    expect(error).toEqual({
+      message: 'config.ghost: unknown field (schema declares additionalProperties: false)', fieldKey: null, offersReset: false,
+    });
+  });
+
+  it('shows a refusal of the whole patch on the pane in the kernel’s words', async () => {
+    const error = configWriteError(
+      await kernelRefusal(400, { error: 'config: must serialize to at most 8192 bytes', code: 'bad_request' }), fields,
+    );
+    expect(error).toEqual({ message: 'config: must serialize to at most 8192 bytes', fieldKey: null, offersReset: false });
   });
 
   it('shows a held lock in the kernel’s words, as a refusal like any other', () => {
@@ -270,7 +301,7 @@ describe('configWriteError', () => {
   });
 
   it('shows the fixed sentence for an outcome it cannot know, and the fixed refusal for a write not sent', () => {
-    for (const error of [lost, answered(500, 'db_error', 'database error: locked'), new Error('stale intent')]) {
+    for (const error of [lost, answered(500, 'db_error', 'locked'), new Error('stale intent')]) {
       expect(configWriteError(error, fields)).toEqual({ message: PLUGIN_CONFIG_TEXT.unknown, fieldKey: null, offersReset: false });
     }
     expect(configWriteError(new NotSentError(), fields).message).toBe(PLUGIN_CONFIG_TEXT.refused);
@@ -289,7 +320,7 @@ describe('reloadOutcome (#1284 §2.4)', () => {
 
   it.each(['spawning', 'unknown', 'disabled', 'crashed'] as const)(
     'reads a busy or missing plugin as refused before the stop, whatever reads back (%s)', (state) => {
-      for (const error of [answered(409, 'plugin_busy', 'plugin `git-forge` is busy'), answered(404, 'not_found', 'not found: plugin git-forge')]) {
+      for (const error of [answered(409, 'plugin_busy', 'plugin `git-forge` is busy'), answered(404, 'not_found', 'plugin git-forge')]) {
         const outcome = reloadOutcome({ rejection: { error }, state });
         expect(outcome.kind).toBe('refused');
         expect(outcome.message).not.toMatch(/has stopped|still running/);

@@ -9,6 +9,7 @@ use crate::event::{Event, EventScope, RatifyDecision};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage};
 use crate::ids::{ActorId, CardId, TrackId};
+use crate::json_body::JsonBody;
 use crate::model::{Card, CardPatch, CardRole, HarnessItem, Track, new_id};
 use crate::operation::card_create_adapter::{CARD_CREATE, CardCreateOperationPayload};
 use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
@@ -346,7 +347,7 @@ pub(crate) async fn create_card(
     actor: Actor,
     headers: HeaderMap,
     Path(track_id): Path<String>,
-    Json(body): Json<CreateCardBody>,
+    JsonBody(body): JsonBody<CreateCardBody>,
 ) -> Result<Response, Response> {
     let key = OperationKey {
         operation_key: new_id(),
@@ -570,7 +571,7 @@ pub(crate) async fn update_card(
     State(s): State<AppState>,
     actor: Actor,
     Path(id): Path<String>,
-    Json(p): Json<CardPatch>,
+    JsonBody(p): JsonBody<CardPatch>,
 ) -> Result<Json<Card>> {
     // `deletable` is a kernel-owned bit, not patchable; rejected loudly with 400 so a client doesn't think it silently updated.
     if p.deletable.is_some() {
@@ -831,7 +832,7 @@ pub(crate) async fn ratify_card(
     State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
-    Json(body): Json<RatifyCardRequest>,
+    JsonBody(body): JsonBody<RatifyCardRequest>,
 ) -> Result<Json<RatifyCardResponse>> {
     if actor.as_str() != "user" {
         return Err(CalmError::Forbidden(

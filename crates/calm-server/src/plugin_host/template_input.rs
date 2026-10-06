@@ -210,21 +210,67 @@ fn validate_property(_name: &str, schema: &Value) -> Result<(), SchemaError> {
     Ok(())
 }
 
-/// Validate an instance against an already subset-validated schema. Errors carry the field path rooted at `root_path` so the route can surface them verbatim in a 400.
-pub fn validate_instance(root_path: &str, schema: &Value, input: &Value) -> Result<(), String> {
+/// Why an instance does not satisfy its schema, or a `template_input` its binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceViolation {
+    /// The instance as a whole (not an object, over the byte cap) or its binding; a whole sentence.
+    Whole(String),
+    /// One key of the instance: `field` is its path rooted at the caller's root
+    /// (`config.retries`, `template_input.issue_url`), `reason` what is wrong with it.
+    Field { field: String, reason: String },
+}
+
+impl InstanceViolation {
+    fn field(root_path: &str, key: &str, reason: impl Into<String>) -> Self {
+        InstanceViolation::Field {
+            field: format!("{root_path}.{key}"),
+            reason: reason.into(),
+        }
+    }
+}
+
+/// The text a reader without the structure gets (a persisted contract failure, a log): `<field>: <reason>`.
+impl std::fmt::Display for InstanceViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstanceViolation::Whole(sentence) => f.write_str(sentence),
+            InstanceViolation::Field { field, reason } => write!(f, "{field}: {reason}"),
+        }
+    }
+}
+
+/// A field violation answers 400 with its `field`; a whole-instance one is a plain `bad_request`.
+impl From<InstanceViolation> for crate::error::CalmError {
+    fn from(violation: InstanceViolation) -> Self {
+        match violation {
+            InstanceViolation::Whole(sentence) => crate::error::CalmError::BadRequest(sentence),
+            InstanceViolation::Field { field, reason } => {
+                crate::error::CalmError::InvalidField { field, reason }
+            }
+        }
+    }
+}
+
+/// Validate an instance against an already subset-validated schema. A violation of one key names
+/// it as a field rooted at `root_path`, so the route answers it as that field's refusal.
+pub fn validate_instance(
+    root_path: &str,
+    schema: &Value,
+    input: &Value,
+) -> Result<(), InstanceViolation> {
     if serde_json::to_string(input)
         .map(|s| s.len())
         .unwrap_or(usize::MAX)
         > TEMPLATE_INPUT_MAX_BYTES
     {
-        return Err(format!(
+        return Err(InstanceViolation::Whole(format!(
             "{root_path}: must serialize to at most {TEMPLATE_INPUT_MAX_BYTES} bytes"
-        ));
+        )));
     }
 
     let object = input
         .as_object()
-        .ok_or_else(|| format!("{root_path}: expected a JSON object"))?;
+        .ok_or_else(|| InstanceViolation::Whole(format!("{root_path}: expected a JSON object")))?;
 
     let empty = Map::new();
     let properties = schema
@@ -235,7 +281,11 @@ pub fn validate_instance(root_path: &str, schema: &Value, input: &Value) -> Resu
     if let Some(required) = schema.get("required").and_then(Value::as_array) {
         for key in required.iter().filter_map(Value::as_str) {
             if !object.contains_key(key) {
-                return Err(format!("{root_path}.{key}: required field is missing"));
+                return Err(InstanceViolation::field(
+                    root_path,
+                    key,
+                    "required field is missing",
+                ));
             }
         }
     }
@@ -246,16 +296,20 @@ pub fn validate_instance(root_path: &str, schema: &Value, input: &Value) -> Resu
         // Unreachable-by-construction after the sweep above; a `?` rather than `unwrap` so a regression fails closed.
         let schema = properties
             .get(key)
-            .ok_or_else(|| undeclared_key_error(root_path, key))?;
+            .ok_or_else(|| undeclared_key_violation(root_path, key))?;
         check_value(value, schema.as_object().unwrap_or(&empty))
-            .map_err(|reason| format!("{root_path}.{key}: {reason}"))?;
+            .map_err(|reason| InstanceViolation::field(root_path, key, reason))?;
     }
 
     Ok(())
 }
 
-fn undeclared_key_error(root_path: &str, key: &str) -> String {
-    format!("{root_path}.{key}: unknown field (schema declares additionalProperties: false)")
+fn undeclared_key_violation(root_path: &str, key: &str) -> InstanceViolation {
+    InstanceViolation::field(
+        root_path,
+        key,
+        "unknown field (schema declares additionalProperties: false)",
+    )
 }
 
 /// Reject any key `schema.properties` does not declare — the same rule `validate_instance` applies, exposed for the config PATCH, which must judge key names before a `null` (= delete) vanishes from the merged map.
@@ -263,10 +317,10 @@ pub fn reject_undeclared_keys<'a>(
     root_path: &str,
     schema: &Value,
     keys: impl Iterator<Item = &'a str>,
-) -> Result<(), String> {
+) -> Result<(), InstanceViolation> {
     for key in keys {
         if !declares_key(schema, key) {
-            return Err(undeclared_key_error(root_path, key));
+            return Err(undeclared_key_violation(root_path, key));
         }
     }
     Ok(())
@@ -280,7 +334,7 @@ pub fn declares_key(schema: &Value, key: &str) -> bool {
         .is_some_and(|properties| properties.contains_key(key))
 }
 
-pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), String> {
+pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), InstanceViolation> {
     validate_instance("template_input", schema, input)
 }
 
@@ -295,27 +349,29 @@ pub enum TemplateInputOwner<'a> {
 }
 
 /// The **whole** `(owner, template_input)` matrix, fail-closed: input is only accepted when a bound Manifest declares an `input_schema`, and required fields make input mandatory. Schema `default`s are never applied.
-/// Both the create route and the run-time re-check in `track_binding` enter this function; the error is a bare reason with no route vocabulary.
+/// Both the create route and the run-time re-check in `track_binding` enter this function; the error carries no route vocabulary.
 pub fn validate_template_input_binding(
     owner: TemplateInputOwner<'_>,
     input: Option<&Value>,
-) -> Result<(), String> {
+) -> Result<(), InstanceViolation> {
     let plugin = match owner {
         TemplateInputOwner::Plugin(plugin) => plugin,
         TemplateInputOwner::NoTemplateId => {
             if input.is_some() {
-                return Err("`template_input` requires `template_id`".into());
+                return Err(InstanceViolation::Whole(
+                    "`template_input` requires `template_id`".into(),
+                ));
             }
             return Ok(());
         }
         TemplateInputOwner::NoBoundPlugin => {
             if input.is_some() {
-                return Err(
+                return Err(InstanceViolation::Whole(
                     "`template_input` requires a `template_id` whose owning plugin is \
                      currently running and trusted; no running and trusted plugin declares \
                      this template right now, so there is no input_schema to validate against"
                         .into(),
-                );
+                ));
             }
             return Ok(());
         }
@@ -323,10 +379,10 @@ pub fn validate_template_input_binding(
     let plugin_id = &plugin.id;
     match (plugin.input_schema.as_ref(), input) {
         (None, None) => Ok(()),
-        (None, Some(_)) => Err(format!(
+        (None, Some(_)) => Err(InstanceViolation::Whole(format!(
             "plugin `{plugin_id}` does not declare an input_schema; \
              `template_input` is not accepted"
-        )),
+        ))),
         (Some(schema), None) => {
             let required: Vec<&str> = schema
                 .get("required")
@@ -336,10 +392,10 @@ pub fn validate_template_input_binding(
             if required.is_empty() {
                 Ok(())
             } else {
-                Err(format!(
+                Err(InstanceViolation::Whole(format!(
                     "plugin `{plugin_id}` requires `template_input` \
                      (required: {required:?})"
-                ))
+                )))
             }
         }
         (Some(schema), Some(input)) => validate_template_input(schema, input),
@@ -568,24 +624,50 @@ mod tests {
         .expect("conforming input accepted");
     }
 
+    /// The `(field, reason)` of a one-key violation; panics on a whole-instance one.
+    fn field_of(violation: InstanceViolation) -> (String, String) {
+        match violation {
+            InstanceViolation::Field { field, reason } => (field, reason),
+            InstanceViolation::Whole(sentence) => panic!("expected a field violation: {sentence}"),
+        }
+    }
+
+    /// The sentence of a whole-instance violation; panics on a one-key one.
+    fn whole_of(violation: InstanceViolation) -> String {
+        match violation {
+            InstanceViolation::Whole(sentence) => sentence,
+            InstanceViolation::Field { field, reason } => {
+                panic!("expected a whole-instance violation: {field}: {reason}")
+            }
+        }
+    }
+
     #[test]
     fn rejects_missing_required_field() {
         let err = validate_template_input(&schema(), &json!({ "issue_url": "u" })).unwrap_err();
-        assert!(err.starts_with("template_input.issue_number:"), "{err}");
+        assert_eq!(
+            err,
+            InstanceViolation::Field {
+                field: "template_input.issue_number".into(),
+                reason: "required field is missing".into(),
+            }
+        );
     }
 
     #[test]
     fn rejects_type_mismatches() {
-        let err =
+        let (field, reason) = field_of(
             validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": "1" }))
-                .unwrap_err();
-        assert!(err.starts_with("template_input.issue_number:"), "{err}");
-        assert!(err.contains("integer"), "{err}");
+                .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.issue_number");
+        assert!(reason.contains("integer"), "{reason}");
 
-        let err =
+        let (field, _) = field_of(
             validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.5 }))
-                .unwrap_err();
-        assert!(err.starts_with("template_input.issue_number:"), "{err}");
+                .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.issue_number");
     }
 
     #[test]
@@ -596,39 +678,46 @@ mod tests {
 
     #[test]
     fn integer_rejects_float_encoded_value_even_when_whole() {
-        let err =
+        let (field, reason) = field_of(
             validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.0 }))
-                .unwrap_err();
-        assert!(err.starts_with("template_input.issue_number:"), "{err}");
-        assert!(err.contains("float-encoded"), "{err}");
+                .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.issue_number");
+        assert!(reason.contains("float-encoded"), "{reason}");
     }
 
     #[test]
     fn rejects_enum_violation_naming_field_and_members() {
-        let err = validate_template_input(
-            &schema(),
-            &json!({ "issue_url": "u", "issue_number": 1, "merge_policy": "yolo" }),
-        )
-        .unwrap_err();
-        assert!(err.starts_with("template_input.merge_policy:"), "{err}");
-        assert!(err.contains("hold-for-ratify"), "{err}");
-        assert!(err.contains("auto-merge"), "{err}");
+        let (field, reason) = field_of(
+            validate_template_input(
+                &schema(),
+                &json!({ "issue_url": "u", "issue_number": 1, "merge_policy": "yolo" }),
+            )
+            .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.merge_policy");
+        assert!(reason.contains("hold-for-ratify"), "{reason}");
+        assert!(reason.contains("auto-merge"), "{reason}");
     }
 
     #[test]
     fn rejects_undeclared_key() {
-        let err = validate_template_input(
-            &schema(),
-            &json!({ "issue_url": "u", "issue_number": 1, "ghost": true }),
-        )
-        .unwrap_err();
-        assert!(err.starts_with("template_input.ghost:"), "{err}");
+        let (field, _) = field_of(
+            validate_template_input(
+                &schema(),
+                &json!({ "issue_url": "u", "issue_number": 1, "ghost": true }),
+            )
+            .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.ghost");
     }
 
     #[test]
     fn rejects_non_object_input() {
-        let err = validate_template_input(&schema(), &json!(["not", "an", "object"])).unwrap_err();
-        assert!(err.contains("expected a JSON object"), "{err}");
+        let sentence = whole_of(
+            validate_template_input(&schema(), &json!(["not", "an", "object"])).unwrap_err(),
+        );
+        assert_eq!(sentence, "template_input: expected a JSON object");
     }
 
     #[test]
@@ -652,50 +741,50 @@ mod tests {
     fn instance_violations_report_under_the_callers_root_path() {
         let bad = json!({ "issue_url": "u", "issue_number": "1" });
 
-        assert!(
-            validate_template_input(&schema(), &bad)
-                .unwrap_err()
-                .starts_with("template_input.issue_number:")
+        assert_eq!(
+            field_of(validate_template_input(&schema(), &bad).unwrap_err()).0,
+            "template_input.issue_number"
         );
-        assert!(
-            validate_instance("config", &schema(), &bad)
-                .unwrap_err()
-                .starts_with("config.issue_number:")
+        assert_eq!(
+            field_of(validate_instance("config", &schema(), &bad).unwrap_err()).0,
+            "config.issue_number"
         );
 
-        // The non-object and byte-cap arms are two separate `format!`s, so both are asserted.
+        // The non-object and byte-cap arms are two separate `format!`s, so both are asserted;
+        // neither names a key, so neither is a field violation.
         assert!(
-            validate_instance("config", &schema(), &json!([]))
-                .unwrap_err()
+            whole_of(validate_instance("config", &schema(), &json!([])).unwrap_err())
                 .starts_with("config: ")
         );
         let oversized = json!({
             "issue_url": "x".repeat(TEMPLATE_INPUT_MAX_BYTES),
             "issue_number": 1
         });
-        let err = validate_instance("config", &schema(), &oversized).unwrap_err();
-        assert!(err.starts_with("config: "), "{err}");
-        assert!(err.contains("8192"), "{err}");
+        let sentence = whole_of(validate_instance("config", &schema(), &oversized).unwrap_err());
+        assert!(sentence.starts_with("config: "), "{sentence}");
+        assert!(sentence.contains("8192"), "{sentence}");
     }
 
     /// Both entry points are asserted against the shipped literal, not against each other (`f(x) == f(x)` cannot fail).
     #[test]
-    fn an_undeclared_key_reports_the_same_shipped_string_at_both_entry_points() {
+    fn an_undeclared_key_reports_the_same_shipped_violation_at_both_entry_points() {
+        let shipped = InstanceViolation::Field {
+            field: "config.ghost".into(),
+            reason: "unknown field (schema declares additionalProperties: false)".into(),
+        };
         let inline = validate_instance(
             "config",
             &schema(),
             &json!({ "issue_url": "u", "issue_number": 1, "ghost": true }),
         )
         .unwrap_err();
-        assert_eq!(
-            inline,
-            "config.ghost: unknown field (schema declares additionalProperties: false)"
-        );
+        assert_eq!(inline, shipped);
         let extracted =
             reject_undeclared_keys("config", &schema(), ["issue_url", "ghost"].into_iter())
                 .unwrap_err();
+        assert_eq!(extracted, shipped);
         assert_eq!(
-            extracted,
+            extracted.to_string(),
             "config.ghost: unknown field (schema declares additionalProperties: false)"
         );
 
@@ -720,14 +809,37 @@ mod tests {
 
     #[test]
     fn rejects_oversized_input() {
-        let err = validate_template_input(
-            &schema(),
-            &json!({
-                "issue_url": "x".repeat(TEMPLATE_INPUT_MAX_BYTES),
-                "issue_number": 1
-            }),
-        )
-        .unwrap_err();
-        assert!(err.contains("8192"), "{err}");
+        let sentence = whole_of(
+            validate_template_input(
+                &schema(),
+                &json!({
+                    "issue_url": "x".repeat(TEMPLATE_INPUT_MAX_BYTES),
+                    "issue_number": 1
+                }),
+            )
+            .unwrap_err(),
+        );
+        assert!(sentence.contains("8192"), "{sentence}");
+    }
+
+    /// A one-key violation becomes the 400 that names its field; a whole-instance one stays a plain 400.
+    #[test]
+    fn a_violation_maps_to_the_error_its_shape_says() {
+        use crate::error::CalmError;
+        let field: CalmError = InstanceViolation::Field {
+            field: "config.retries".into(),
+            reason: "expected type `integer`".into(),
+        }
+        .into();
+        assert!(matches!(
+            &field,
+            CalmError::InvalidField { field, reason }
+                if field == "config.retries" && reason == "expected type `integer`"
+        ));
+        let whole: CalmError =
+            InstanceViolation::Whole("config: expected a JSON object".into()).into();
+        assert!(
+            matches!(&whole, CalmError::BadRequest(m) if m == "config: expected a JSON object")
+        );
     }
 }

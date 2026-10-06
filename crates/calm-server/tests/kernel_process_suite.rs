@@ -10,6 +10,8 @@ mod fork_guard_exemption_invariant;
 mod inv_02_killpg;
 #[path = "cases/inv_05_pid_ownership_strong.rs"]
 mod inv_05_pid_ownership_strong;
+#[path = "cases/json_body_extractor_scan.rs"]
+mod json_body_extractor_scan;
 #[path = "cases/kernel_reboot_harness.rs"]
 mod kernel_reboot_harness;
 #[path = "cases/no_retired_tool_names.rs"]

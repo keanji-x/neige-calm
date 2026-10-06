@@ -3,6 +3,7 @@ use super::{
     model::*,
     store::{self, Access},
 };
+use crate::json_body::JsonBody;
 use crate::{
     actor::Actor,
     error::{CalmError, Result},
@@ -59,7 +60,7 @@ pub async fn list(
 pub async fn create(
     State(s): State<RouteState>,
     actor: Actor,
-    Json(request): Json<Create>,
+    JsonBody(request): JsonBody<Create>,
 ) -> Result<Json<Entry>> {
     let access = access(&s, &actor).await?;
     Ok(Json(store::create(&s.mcp_context, access, request).await?))
@@ -69,7 +70,7 @@ pub async fn update(
     State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
-    Json(request): Json<Update>,
+    JsonBody(request): JsonBody<Update>,
 ) -> Result<Json<Entry>> {
     let access = access(&s, &actor).await?;
     let expected_version = request.expected_version;

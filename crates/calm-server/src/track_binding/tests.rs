@@ -533,7 +533,8 @@ fn owner_schemas_actually_disagree() {
     validate_template_input(&owner_a_input_schema(), &owner_a_input())
         .expect("A's own input must validate under A's schema");
     let rejected = validate_template_input(&owner_b_input_schema(), &owner_a_input())
-        .expect_err("A's input must NOT validate under B's schema");
+        .expect_err("A's input must NOT validate under B's schema")
+        .to_string();
     assert!(
         rejected.contains("plan_url") || rejected.contains("issue_url"),
         "the rejection should name the offending key: {rejected}"

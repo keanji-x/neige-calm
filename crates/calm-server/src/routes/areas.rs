@@ -10,6 +10,7 @@ use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
+use crate::json_body::JsonBody;
 use crate::model::{Area, AreaKind, AreaPatch, NewArea, Track};
 use crate::operation::workspace_lease::{
     any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
@@ -138,7 +139,7 @@ pub(crate) async fn create_area(
     State(s): State<RouteState>,
     actor: Actor,
     headers: HeaderMap,
-    Json(mut request): Json<CreateAreaRequest>,
+    JsonBody(mut request): JsonBody<CreateAreaRequest>,
 ) -> Result<(StatusCode, Json<Area>)> {
     let key = parse_idempotency_key_header(&headers)?;
     // Versioned identity uses the original typed inputs, before mutable path
@@ -279,7 +280,7 @@ pub(crate) async fn update_area(
     State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
-    Json(mut p): Json<AreaPatch>,
+    JsonBody(mut p): JsonBody<AreaPatch>,
 ) -> Result<Json<Area>> {
     // Resource-first: an unknown id 404s before an invalid caller-supplied path can trigger filesystem and `git` probes.
     s.repo
@@ -607,7 +608,9 @@ impl RecycledAreaDeletion {
                     workspace_recycle::restore_area_recycle_report(&self.recycle_report)
                 {
                     return Err(CalmError::Internal(format!(
-                        "area deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
+                        "area deletion rolled back ({}), but workspace compensation failed: {}",
+                        error.reason(),
+                        restore_error.reason()
                     )));
                 }
                 for thread_id in &self.quiesced.sealed_thread_ids {

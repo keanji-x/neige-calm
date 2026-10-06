@@ -2,6 +2,7 @@
 //! The claim rules live in `calm_truth::area_folder_claim`, shared with the track-create `attach_folder` path.
 
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use crate::model::{AreaFolder, AreaResolve, FolderConflict, NewAreaFolder};
 use crate::state::{AppState, RouteState};
 use axum::{
@@ -65,7 +66,7 @@ pub(crate) async fn list_folders(
 pub(crate) async fn create_folder(
     State(s): State<RouteState>,
     Path(area_id): Path<String>,
-    Json(body): Json<NewAreaFolder>,
+    JsonBody(body): JsonBody<NewAreaFolder>,
 ) -> Result<Response> {
     if !body.path.starts_with('/') {
         return Err(CalmError::BadRequest(format!(

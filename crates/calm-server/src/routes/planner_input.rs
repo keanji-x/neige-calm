@@ -17,6 +17,7 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::harness::queue::{MutationRefused, QueueEntryId, QueueMutation};
 use crate::harness::{HarnessPhaseTag, SteerRefused};
 use crate::ids::{ActorId, CardId};
+use crate::json_body::JsonBody;
 use crate::routes::cards::{card_runs_headless_harness, validate_planner_input_text};
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{RouteState, WorkerState};
@@ -253,7 +254,7 @@ pub(crate) async fn edit_planner_input(
     _principal: Principal,
     actor: Actor,
     Path((id, entry_id)): Path<(String, String)>,
-    Json(body): Json<EditPlannerInputBody>,
+    JsonBody(body): JsonBody<EditPlannerInputBody>,
 ) -> Result<Response> {
     validate_planner_input_text(&body.text)?;
     let EditPlannerInputBody { text, if_entry_rev } = body;
@@ -292,7 +293,7 @@ pub(crate) async fn delete_planner_input(
     _principal: Principal,
     actor: Actor,
     Path((id, entry_id)): Path<(String, String)>,
-    Json(body): Json<DeletePlannerInputBody>,
+    JsonBody(body): JsonBody<DeletePlannerInputBody>,
 ) -> Result<Response> {
     let if_entry_rev = body.if_entry_rev;
     mutate(state, workers, id, entry_id, actor, move |entry_id| {
@@ -332,7 +333,7 @@ pub(crate) async fn steer_planner_input(
     _principal: Principal,
     actor: Actor,
     Path((id, entry_id)): Path<(String, String)>,
-    Json(body): Json<SteerPlannerInputBody>,
+    JsonBody(body): JsonBody<SteerPlannerInputBody>,
 ) -> Result<Response> {
     let (card_id, worker_session_id, harness) = resolve(&state, &workers, &id, &actor).await?;
     match harness

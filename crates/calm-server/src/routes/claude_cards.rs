@@ -2,6 +2,7 @@
 
 use crate::actor::Actor;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::json_body::JsonBody;
 use crate::model::{Card, new_id};
 use crate::operation::claude_adapter::{
     ClaudeCreateOperationPayload, ClaudeCreateRequestInput, NormalizedClaudeCreateRequest,
@@ -88,7 +89,7 @@ pub(crate) async fn create_claude_card(
     actor: Actor,
     headers: HeaderMap,
     Path(track_id): Path<String>,
-    Json(p): Json<NewClaudeCardBody>,
+    JsonBody(p): JsonBody<NewClaudeCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
     let request = normalize_claude_create_request(track_id, p)?;
     let idempotency_key = parse_idempotency_key_header(&headers)?;

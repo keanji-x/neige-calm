@@ -3,6 +3,7 @@
 
 use crate::actor::Actor;
 use crate::error::{ErrorBody, Result};
+use crate::json_body::JsonBody;
 use crate::model::{Card, new_id};
 use crate::operation::OperationKey;
 use crate::operation::terminal_adapter::{
@@ -76,7 +77,7 @@ pub(crate) async fn create_terminal_card(
     actor: Actor,
     headers: HeaderMap,
     Path(track_id): Path<String>,
-    Json(p): Json<NewTerminalCardBody>,
+    JsonBody(p): JsonBody<NewTerminalCardBody>,
 ) -> Result<(StatusCode, Json<Card>)> {
     let request = normalize_terminal_create_request(TerminalCreateRequestPayload {
         track_id,

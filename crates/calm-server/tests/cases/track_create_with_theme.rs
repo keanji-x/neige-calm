@@ -89,8 +89,7 @@ async fn boot() -> Boot {
     }
 }
 
-/// Returns `(status, json_or_null, raw_text)`. Axum's 422 from a serde-rejected `Json<T>` is `text/plain`,
-/// not JSON, so the raw text is kept for the missing-theme substring match.
+/// Returns `(status, json_or_null, raw_text)`; the raw text is kept for the missing-theme substring match.
 async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, String) {
     let resp = app
         .oneshot(

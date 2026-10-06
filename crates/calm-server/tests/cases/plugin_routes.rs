@@ -755,6 +755,65 @@ async fn patch_config_rejects_values_that_violate_the_schema() {
     assert_eq!(det["user_config"]["theme"], "light");
 }
 
+/// The exact wire body of a config refusal (#2154): a one-key violation carries the key's path in
+/// `field` and its reason alone in `error`; a refusal of the patch as a whole carries no `field`.
+/// `fe/core/domain/plugins.test.ts` feeds these same bodies to `configWriteError`.
+#[tokio::test]
+async fn a_config_violation_answers_its_field_apart_from_its_reason() {
+    let (state, _tmp, _plugins_dir) = boot_state().await;
+    let src_root = tempfile::tempdir().unwrap();
+    let src_dir = write_stub_plugin_with_config(src_root.path(), "testfield", stub_config_schema());
+    install(&state, &src_dir).await;
+
+    let cases = [
+        (
+            json!({ "retries": "three" }),
+            json!({
+                "error": "expected type `integer` (an integer-encoded JSON number; float-encoded \
+                          values such as `1.0` are rejected)",
+                "code": "bad_request",
+                "field": "config.retries",
+            }),
+        ),
+        (
+            json!({ "theme": "neon" }),
+            json!({
+                "error": "expected one of [\"dark\", \"light\"]",
+                "code": "bad_request",
+                "field": "config.theme",
+            }),
+        ),
+        // Judged before `null` means delete, through the other entry point.
+        (
+            json!({ "ghost": null }),
+            json!({
+                "error": "unknown field (schema declares additionalProperties: false)",
+                "code": "bad_request",
+                "field": "config.ghost",
+            }),
+        ),
+        (
+            json!(["retries"]),
+            json!({
+                "error": "config patch must be a JSON object of the keys being edited",
+                "code": "bad_request",
+            }),
+        ),
+        (
+            json!({ "label": "x".repeat(9000) }),
+            json!({
+                "error": "config: must serialize to at most 8192 bytes",
+                "code": "bad_request",
+            }),
+        ),
+    ];
+    for (patch, expected) in cases {
+        let resp = patch_config(&state, "testfield", patch.clone()).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{patch}");
+        assert_eq!(body_to_json(resp).await, expected, "{patch}");
+    }
+}
+
 /// Two patches of ~5000 bytes on different keys: each is under 8192, their merge is not.
 #[tokio::test]
 async fn the_byte_cap_is_measured_on_the_merged_config_not_the_request_body() {
