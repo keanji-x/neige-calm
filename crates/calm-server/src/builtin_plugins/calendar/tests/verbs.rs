@@ -55,7 +55,7 @@ async fn calendar_rm_stops_future_wakes_and_has_no_undo() {
     let listed = call(
         &fx,
         &planner.identity,
-        "neige_calendar_ls",
+        "plugin_calendar_ls",
         json!({"from":"2026-10-01","to":"2026-10-10","timezone":"Asia/Shanghai"}),
     )
     .await
@@ -65,11 +65,11 @@ async fn calendar_rm_stops_future_wakes_and_has_no_undo() {
     // Neither a set nor a second rm brings the entry back.
     for (tool, args) in [
         (
-            "neige_calendar_set",
+            "plugin_calendar_set",
             json!({"entry_id": entry.id, "expected_version": removed.version, "task": task}),
         ),
         (
-            "neige_calendar_rm",
+            "plugin_calendar_rm",
             json!({"entry_id": entry.id, "expected_version": removed.version}),
         ),
     ] {
@@ -123,7 +123,7 @@ async fn calendar_ls_window_is_half_open() {
         let listed = call(
             &fx,
             &who,
-            "neige_calendar_ls",
+            "plugin_calendar_ls",
             json!({"from": from, "to": to, "timezone": "Asia/Shanghai"}),
         )
         .await
@@ -153,31 +153,31 @@ async fn calendar_tools_refuse_retired_keys_with_the_valid_keys() {
     let task = json!(draft());
     for (tool, args, refused) in [
         (
-            "neige_calendar_ls",
+            "plugin_calendar_ls",
             json!({"from":"2026-10-02","until":"2026-10-03","timezone":"Asia/Shanghai"}),
-            "neige_calendar_ls: unknown argument `until`; valid: from, timezone, to",
+            "plugin_calendar_ls: unknown argument `until`; valid: from, timezone, to",
         ),
         (
-            "neige_calendar_set",
+            "plugin_calendar_set",
             json!({"id": entry.id, "expected_version": 1, "task": task}),
-            "neige_calendar_set: unknown argument `id`; valid: entry_id, expected_version, task",
+            "plugin_calendar_set: unknown argument `id`; valid: entry_id, expected_version, task",
         ),
         (
-            "neige_calendar_set",
+            "plugin_calendar_set",
             json!({"entry_id": entry.id, "expected_version": 1, "task": task,
                 "cancelled": false}),
-            "neige_calendar_set: unknown argument `cancelled`; valid: entry_id, expected_version, \
+            "plugin_calendar_set: unknown argument `cancelled`; valid: entry_id, expected_version, \
              task",
         ),
         (
-            "neige_calendar_rm",
+            "plugin_calendar_rm",
             json!({"entry_id": entry.id, "expected_version": 1, "cancelled": true}),
-            "neige_calendar_rm: unknown argument `cancelled`; valid: entry_id, expected_version",
+            "plugin_calendar_rm: unknown argument `cancelled`; valid: entry_id, expected_version",
         ),
         (
-            "neige_calendar_rm",
+            "plugin_calendar_rm",
             json!({"id": entry.id, "expected_version": 1}),
-            "neige_calendar_rm: unknown argument `id`; valid: entry_id, expected_version",
+            "plugin_calendar_rm: unknown argument `id`; valid: entry_id, expected_version",
         ),
     ] {
         let error = call(&fx, &who, tool, args).await.unwrap_err();

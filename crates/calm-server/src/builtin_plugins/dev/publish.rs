@@ -1,4 +1,4 @@
-//! `neige_dev_publish` (#1830 S3, Planner-only): push `neige/track-<id>` to the checkout's
+//! `plugin_gitforge_publish` (#1830 S3, Planner-only): push `neige/track-<id>` to the checkout's
 //! upstream URL and open (or reuse) its PR, only when the branch tip is the commit of a `done`
 //! attempt of this track (`docs/architecture/1830-s3-push-pr-reclaim.md` D1–D7).
 //!
@@ -33,7 +33,8 @@ use crate::operation::forge_action_adapter::ProbeSpec;
 use crate::operation::workspace_lease::upstream::track_remote;
 use crate::workspace_materialize::isolated_git_command;
 
-pub const TOOL_DEV_PUBLISH: &str = "neige_dev_publish";
+/// The local tool name; it is served as `registry_name(PLUGIN_ID, PUBLISH)` (#2227).
+pub(crate) const PUBLISH: &str = "publish";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(dev_publish_descriptor(), wrap(dev_publish));
@@ -56,8 +57,8 @@ where
 
 fn dev_publish_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_DEV_PUBLISH.into(),
-        description: include_str!("../../../prompts/tools/neige_dev_publish.md")
+        name: PUBLISH.into(),
+        description: include_str!("../../../prompts/tools/plugin_gitforge_publish.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -75,12 +76,13 @@ fn dev_publish_descriptor() -> ToolDescriptor {
     }
 }
 
+/// Refusals carry no tool name: the registry leads each with the served name.
 fn required_string(args: &Value, name: &str, non_empty: bool) -> Result<String, RpcError> {
     args.get(name)
         .and_then(Value::as_str)
         .filter(|value| !non_empty || !value.trim().is_empty())
         .map(str::to_string)
-        .ok_or_else(|| RpcError::invalid_params(format!("neige_dev_publish: missing `{name}`")))
+        .ok_or_else(|| RpcError::invalid_params(format!("missing `{name}`")))
 }
 
 fn refused(text: String) -> RpcError {
@@ -88,7 +90,7 @@ fn refused(text: String) -> RpcError {
 }
 
 fn internal(error: impl std::fmt::Display) -> RpcError {
-    RpcError::internal(format!("neige_dev_publish: {error}"))
+    RpcError::internal(error.to_string())
 }
 
 /// D3: the tip may be published only when a `done` attempt of this track produced it. `facts`
@@ -348,13 +350,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptor_is_planner_only_and_named() {
+    fn descriptor_is_planner_only_and_declares_its_local_name() {
         let d = dev_publish_descriptor();
-        assert_eq!(d.name, "neige_dev_publish");
+        assert_eq!(d.name, "publish");
         assert_eq!(d.visible_to_roles, &[CardRole::Planner]);
         let mut registry = ToolRegistry::new();
         register_into(&mut registry);
-        assert!(registry.lookup("neige_dev_publish").is_some());
+        assert!(registry.lookup("publish").is_some());
         assert!(registry.lookup("neige_track_publish").is_none()); // retired-name: rejection input
     }
 

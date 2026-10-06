@@ -30,9 +30,9 @@ fn access(identity: &ToolCallIdentity) -> Result<Access, RpcError> {
         creator: format!("card:{}", identity.card_id),
     })
 }
-fn parse<T: serde::de::DeserializeOwned>(action: &str, value: Value) -> Result<T, RpcError> {
-    serde_json::from_value(value)
-        .map_err(|e| RpcError::invalid_params(format!("neige_calendar_{action}: {e}")))
+/// The registry leads every refusal with the served name (`plugin_calendar_ls: …`).
+fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
+    serde_json::from_value(value).map_err(|e| RpcError::invalid_params(e.to_string()))
 }
 /// The tools' half-open `[from, to)` window; the REST route and the store keep `until`.
 #[derive(Deserialize)]
@@ -88,12 +88,13 @@ pub fn register(registry: &mut ToolRegistry) {
         };
         registry.register(
             ToolDescriptor {
-                name: format!("neige_calendar_{action}"),
+                // The local name; the component serves it as `plugin_calendar_<action>` (#2227).
+                name: action.into(),
                 description: match action {
-                    "ls" => include_str!("../../../prompts/tools/neige_calendar_ls.md"),
-                    "add" => include_str!("../../../prompts/tools/neige_calendar_add.md"),
-                    "set" => include_str!("../../../prompts/tools/neige_calendar_set.md"),
-                    _ => include_str!("../../../prompts/tools/neige_calendar_rm.md"),
+                    "ls" => include_str!("../../../prompts/tools/plugin_calendar_ls.md"),
+                    "add" => include_str!("../../../prompts/tools/plugin_calendar_add.md"),
+                    "set" => include_str!("../../../prompts/tools/plugin_calendar_set.md"),
+                    _ => include_str!("../../../prompts/tools/plugin_calendar_rm.md"),
                 }
                 .trim_end()
                 .to_string(),
@@ -110,7 +111,7 @@ pub fn register(registry: &mut ToolRegistry) {
                     let access = access(&identity)?;
                     let result = match action {
                         "ls" => {
-                            let Ls { from, to, timezone } = parse(action, args)?;
+                            let Ls { from, to, timezone } = parse(args)?;
                             let window = Window {
                                 from,
                                 until: to,
@@ -123,7 +124,7 @@ pub fn register(registry: &mut ToolRegistry) {
                                 json!({ "entries": entries })
                             })
                         }
-                        "add" => store::create(&ctx, access, parse(action, args)?)
+                        "add" => store::create(&ctx, access, parse(args)?)
                             .await
                             .map(|v| entry_output(json!(v))),
                         "set" => {
@@ -131,7 +132,7 @@ pub fn register(registry: &mut ToolRegistry) {
                                 entry_id,
                                 expected_version,
                                 task,
-                            } = parse(action, args)?;
+                            } = parse(args)?;
                             store::update(
                                 &ctx,
                                 access,
@@ -146,7 +147,7 @@ pub fn register(registry: &mut ToolRegistry) {
                             let Rm {
                                 entry_id,
                                 expected_version,
-                            } = parse(action, args)?;
+                            } = parse(args)?;
                             store::update(&ctx, access, entry_id, expected_version, Change::Remove)
                                 .await
                                 .map(|v| entry_output(json!(v)))

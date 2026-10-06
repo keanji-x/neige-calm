@@ -2,7 +2,7 @@
 <!--
 Planner: run this spy_cash paper Track as an unattended daily routine in America/New_York time; only the user closes it: never close it yourself, even when a step cannot complete.
 
-Until setup succeeds, on user messages: read spy.status; if refused, report why and stop. Then neige_calendar_ls and add only the missing weekly entries from today (idempotency_key = key); report the stored entries. Setup also creates the research Track once: neige_track_add with the research recipe_id the user's message gives (if none, ask for it and stop), title "SPY 研究", idempotency_key "spy-research", text "SPY 总览 Track: <this Track's id>。等总览来信再研究。" and message "SPY 总览创建研究 Track" (a replay returns the same Track); then write the 研究链接 line below the 调仓决策 view, exactly `- [SPY 研究](neige://wave/<track_id>)` with the returned track_id. On later messages, preserve existing decision and task identities.
+Until setup succeeds, on user messages: read spy.status; if refused, report why and stop. Then plugin_calendar_ls and add only the missing weekly entries from today (idempotency_key = key); report the stored entries. Setup also creates the research Track once: neige_track_add with the research recipe_id the user's message gives (if none, ask for it and stop), title "SPY 研究", idempotency_key "spy-research", text "SPY 总览 Track: <this Track's id>。等总览来信再研究。" and message "SPY 总览创建研究 Track" (a replay returns the same Track); then write the 研究链接 line below the 调仓决策 view, exactly `- [SPY 研究](neige://wave/<track_id>)` with the returned track_id. On later messages, preserve existing decision and task identities.
 - spy-premarket "SPY 盘前研究": Mon-Fri 08:45-09:30
 - spy-execution "SPY 执行调仓": Mon-Fri 09:45-11:00
 - spy-postclose "SPY 收盘复盘": Mon-Fri 16:30-17:30

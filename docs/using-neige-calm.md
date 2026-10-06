@@ -149,7 +149,7 @@ plugins can also be referenced. A reference supplies context and does not enable
 plugin or change its permissions.
 
 For a development-bound Track with its own worktree and an upstream, the Planner can
-publish through `neige_dev_publish`: the development plugin pushes the branch without
+publish through `plugin_gitforge_publish`: the development plugin pushes the branch without
 forcing and opens or reuses its PR. The branch tip must be the candidate of a
 **done** task attempt. A later unverified commit cannot be published through
 this tool. Publication returns the PR link; merging remains a separate action.

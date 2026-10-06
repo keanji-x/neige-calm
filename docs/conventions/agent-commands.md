@@ -218,9 +218,7 @@ Agent-facing JSON-RPC codes, one meaning each:
   Track. A tool that comes and goes with a plugin's enablement or a Track's plugin scope is a
   plugin tool, `plugin_<id>_<tool>`, minted by `registry_name`, whether its manifest declares it
   or a built-in compiles it. An always-enabled built-in is still scoped: a Track bound to another
-  plugin does not see it. Known deviations, renamed together in one #2087 slice with a migration
-  (#2227): `neige_dev_publish` → `plugin_gitforge_publish`, and `neige_calendar_{add,ls,set,rm}`
-  → `plugin_calendar_{add,ls,set,rm}`.
+  plugin does not see it.
 - **Native tool names** (manifest-authored or compiled) are written in the minted form already:
   `<object>_<verb>` with §3's verbs and §4's parameters, so nothing is rewritten. When the
   plugin applies that verb to one object only, the object is left out, because the plugin id
@@ -238,8 +236,8 @@ Agent-facing JSON-RPC codes, one meaning each:
 - `neige tool ls (--prefix P | --all) [--cursor C]` returns `{tools: [{name, cli, listed,
   plugin, kind}], next_cursor}`. `neige tool describe --name N` returns the MCP declaration plus
   `cli`, `listed`, `plugin` and `kind`. `plugin` is the id of the plugin serving the tool, built-in
-  natives such as `neige_dev_publish` included, or null for a kernel tool; `kind` is the kind its
-  manifest declares (`forge-action`) or null (#2227).
+  natives such as `plugin_gitforge_publish` included, or null for a kernel tool; `kind` is the kind
+  its manifest declares (`forge-action`) or null (#2227).
 - `listed` (shown in `tools/list`) is a context-budget choice. A tool is hidden when shell use
   serves it better. Listing is never a grant; the tool's role gate decides.
 - `neige help`, `neige help <object>`, `neige help <object> <action>` (and `--help`). Command help

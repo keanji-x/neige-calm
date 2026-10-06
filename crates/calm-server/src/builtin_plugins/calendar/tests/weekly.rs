@@ -19,7 +19,7 @@ fn until(mut task: Value, last: &str) -> Value {
 
 async fn try_create(fx: &Fixture, who: &ToolCallIdentity, task: Value) -> Result<Value, String> {
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("neige_calendar_add").unwrap();
+    let create = registry.lookup("plugin_calendar_add").unwrap();
     create(
         fx.ctx.clone(),
         who.clone(),
@@ -39,7 +39,7 @@ async fn listed(
     zone: &str,
 ) -> Vec<(String, Vec<String>)> {
     let registry = crate::mcp_server::build_default_registry();
-    let list = registry.lookup("neige_calendar_ls").unwrap();
+    let list = registry.lookup("plugin_calendar_ls").unwrap();
     let result = list(
         fx.ctx.clone(),
         who.clone(),

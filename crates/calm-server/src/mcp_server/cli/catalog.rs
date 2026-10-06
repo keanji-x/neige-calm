@@ -513,9 +513,9 @@ mod tests {
         assert!(text(&page).ends_with(&format!("{FOOTER}\n")));
     }
 
-    /// #2227: every row names the plugin that serves it. A built-in native (`neige_dev_publish`)
-    /// answers to its compiled owner although it reads like a kernel tool; a manifest tool carries
-    /// its declared kind; a name nobody serves is refused rather than shown as a kernel tool.
+    /// #2227: every row names the plugin that serves it. A built-in native
+    /// (`plugin_gitforge_publish`) answers to its compiled owner with no kind; a manifest tool
+    /// carries its declared kind; a name nobody serves is refused rather than shown as a kernel tool.
     #[test]
     fn rows_name_the_serving_plugin_and_its_declared_kind() {
         let registry = build_default_registry();
@@ -530,8 +530,8 @@ mod tests {
             .with_builtins();
         let descriptor = |name: &str| tool(name.into());
         let listed = [
-            "neige_dev_publish",
-            "neige_calendar_add",
+            "plugin_gitforge_publish",
+            "plugin_calendar_add",
             "plugin_gitforge_git_commit",
             "plugin_invest_instrument_add",
             "neige_track_rename",
@@ -548,9 +548,12 @@ mod tests {
             let row = rows.iter().find(|row| row["name"] == name).unwrap();
             (row["plugin"].clone(), row["kind"].clone())
         };
-        assert_eq!(owner("neige_dev_publish"), (json!("gitforge"), Value::Null));
         assert_eq!(
-            owner("neige_calendar_add"),
+            owner("plugin_gitforge_publish"),
+            (json!("gitforge"), Value::Null)
+        );
+        assert_eq!(
+            owner("plugin_calendar_add"),
             (json!("calendar"), Value::Null)
         );
         assert_eq!(
@@ -565,7 +568,7 @@ mod tests {
         assert_eq!(owner("neige_track_cat"), (Value::Null, Value::Null));
         let page = json!({"tools": rows, "next_cursor": null});
         assert!(
-            text(&page).contains("neige_dev_publish  —  listed  plugin:gitforge  —\n"),
+            text(&page).contains("plugin_gitforge_publish  —  listed  plugin:gitforge  —\n"),
             "{}",
             text(&page)
         );

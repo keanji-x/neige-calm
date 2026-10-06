@@ -3,9 +3,10 @@ use provider::codex::tool_names::{
     strip_codex_qualifier,
 };
 
-/// Codex hashes a callable that is too long or that collides after sanitizing; a kernel tool
-/// must be neither, under every server key the shared CODEX_HOME writes. A kernel name is in
-/// Codex's alphabet, so its callable is the raw name itself: nothing respells it.
+/// Codex hashes a callable that is too long or that collides after sanitizing; a tool of the
+/// kernel registry (a kernel tool or a built-in's compiled plugin tool, #2227) must be neither,
+/// under every server key the shared CODEX_HOME writes. Such a name is in Codex's alphabet, so
+/// its callable is the raw name itself: nothing respells it.
 #[test]
 fn kernel_tool_callables_are_injective_and_unhashed() {
     let registry = crate::mcp_server::build_default_registry();
@@ -13,8 +14,11 @@ fn kernel_tool_callables_are_injective_and_unhashed() {
         .descriptors()
         .into_iter()
         .map(|descriptor| descriptor.name)
-        .filter(|name| !name.starts_with(crate::plugin_results::PLUGIN_TOOL_PREFIX))
         .collect();
+    assert!(
+        kernel.iter().any(|name| name == "plugin_gitforge_publish"),
+        "the compiled plugin tools are checked too: {kernel:?}"
+    );
     assert!(kernel.len() >= 30, "anti-vacuity: {kernel:?}");
 
     let mut by_callable = std::collections::BTreeMap::new();
@@ -38,8 +42,9 @@ fn kernel_tool_callables_are_injective_and_unhashed() {
 }
 
 /// #2087 §2: `mcp__<server>__<name>` stays within Codex's 128 bytes for every kernel tool and
-/// every native plugin tool the repository ships (the built-ins and `plugins/*/manifest.json`),
-/// so Codex never cuts and hashes one. Connector tools keep their upstream names and are exempt.
+/// every native plugin tool the repository ships (the built-ins' compiled and manifest tools and
+/// `plugins/*/manifest.json`), so Codex never cuts and hashes one. Connector tools keep their
+/// upstream names and are exempt.
 #[test]
 fn served_tool_names_fit_the_codex_cap() {
     use crate::plugin_host::Manifest;
@@ -70,12 +75,17 @@ fn served_tool_names_fit_the_codex_cap() {
         })
         .collect();
     assert!(native.len() >= 20, "anti-vacuity: {native:?}");
-    let kernel = crate::mcp_server::build_default_registry()
+    // The kernel registry: the kernel tools and the built-ins' compiled plugin tools (#2227).
+    let registered: Vec<String> = crate::mcp_server::build_default_registry()
         .descriptors()
         .into_iter()
         .map(|descriptor| descriptor.name)
-        .filter(|name| !name.starts_with(crate::plugin_results::PLUGIN_TOOL_PREFIX));
-    for name in kernel.chain(native) {
+        .collect();
+    assert!(
+        registered.iter().any(|name| name == "plugin_calendar_add"),
+        "the compiled plugin tools are checked too: {registered:?}"
+    );
+    for name in registered.into_iter().chain(native) {
         assert_eq!(codex_sanitized(&name), name, "Codex would respell `{name}`");
         for server in crate::shared_codex_home::EXPECTED_MCP_SERVERS {
             let qualified = format!("{CODEX_MCP_PREFIX}{server}{CODEX_MCP_DELIMITER}{name}");

@@ -1,6 +1,7 @@
 Calendar records user-level work commitments, not execution tasks. Use
-`neige_calendar_ls`, `neige_calendar_add`, `neige_calendar_set` and `neige_calendar_rm` only when
-the user intends to arrange work. Calendar is always enabled by the kernel.
+`plugin_calendar_ls`, `plugin_calendar_add`, `plugin_calendar_set` and
+`plugin_calendar_rm` only when the user intends to arrange work. Calendar is always
+enabled by the kernel.
 They can access only entries sourced from your authenticated Track.
 
 Resolve relative dates using the user's explicit IANA timezone; ask if the intended

@@ -64,7 +64,7 @@ async fn real_planner_creates_calendar_commitment() {
                     && params["item"]["server"] == "neige"
                     && params["item"]["tool"]
                         .as_str()
-                        .is_some_and(|name| name.starts_with("neige_calendar_"))
+                        .is_some_and(|name| name.starts_with("plugin_calendar_"))
             })
             .map(|params| params["item"].clone())
             .collect::<Vec<_>>();
@@ -77,13 +77,13 @@ async fn real_planner_creates_calendar_commitment() {
             };
             let created = calls.iter().position(|call| {
                 successful(call)
-                    && call["tool"] == "neige_calendar_add"
+                    && call["tool"] == "plugin_calendar_add"
                     && call["result"]["structuredContent"]["entry_id"] == entry["id"]
             });
             if created.is_some_and(|index| {
                 calls.iter().skip(index + 1).any(|call| {
                     successful(call)
-                        && call["tool"] == "neige_calendar_ls"
+                        && call["tool"] == "plugin_calendar_ls"
                         && call["result"]["structuredContent"]["entries"]
                             .as_array()
                             .is_some_and(|listed| {

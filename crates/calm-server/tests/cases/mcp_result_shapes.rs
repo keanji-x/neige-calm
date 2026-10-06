@@ -161,7 +161,7 @@ async fn report_tool_results_are_snake_case() {
 }
 
 /// Every read-only kernel tool, called with no arguments, answers an object or refuses; the
-/// listings that need arguments are called with them. (`neige_calendar_ls` needs the running
+/// listings that need arguments are called with them. (`plugin_calendar_ls` needs the running
 /// Calendar component; its `{entries}` shape is pinned by the calendar verb tests.)
 #[tokio::test]
 async fn no_kernel_tool_returns_a_top_level_array() {

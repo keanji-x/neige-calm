@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 const DEV: &str = "gitforge";
-const PUBLISH: &str = "neige_dev_publish";
+const PUBLISH: &str = "plugin_gitforge_publish";
 
 async fn fixture() -> (CardBoot, Arc<PluginHost>) {
     let boot = boot_shared_daemon_with_planner_thread().await;

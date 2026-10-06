@@ -216,9 +216,9 @@ the stable executable link above are prerequisites. Then:
 `--path "$PATH"` if the install shell has the wrong PATH. Warnings like
 `warning: <tool> not found on PATH` for `codex` / `claude` / `git` mean
 matching tracks will be inert until PATH includes those tools. The development
-plugin's forge tools (`neige_dev_publish` and the `gh.*` tools) also need an
-authenticated `gh` on that PATH, and its PR checks read needs `jq`; `system
-install` does not warn about either.
+plugin's forge tools (`plugin_gitforge_publish` and the `plugin_gitforge_gh_*`
+tools) also need an authenticated `gh` on that PATH, and its PR checks read needs
+`jq`; `system install` does not warn about either.
 
 ```bash
 systemctl --user daemon-reload

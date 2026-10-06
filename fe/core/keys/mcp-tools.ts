@@ -32,7 +32,7 @@ export const TRACK_TOOL_PREFIX = 'neige_track_';
 export const TRACK_RENAME_TOOL = 'neige_track_rename';
 
 /** Development publication: pushes the candidate branch and opens or reuses its PR. */
-export const DEV_PUBLISH_TOOL = 'neige_dev_publish';
+export const DEV_PUBLISH_TOOL = 'plugin_gitforge_publish';
 
 /** The planner's one way to ask the reader (#2209); rendered as an agent turn whose text is its questions. */
 export const USER_ASK_TOOL = 'neige_user_ask';

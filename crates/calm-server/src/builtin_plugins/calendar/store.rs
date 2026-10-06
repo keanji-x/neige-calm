@@ -177,9 +177,9 @@ pub async fn create(ctx: &AppContext, access: Access, mut request: Create) -> Re
 pub enum Change {
     /// The REST editor's whole replacement, its stored `cancelled` included.
     Replace(Update),
-    /// `neige_calendar_set`: a new task for an entry that is not removed.
+    /// `plugin_calendar_set`: a new task for an entry that is not removed.
     Edit(Draft),
-    /// `neige_calendar_rm`: the stored `cancelled` is set, which stops the entry's wakes and
+    /// `plugin_calendar_rm`: the stored `cancelled` is set, which stops the entry's wakes and
     /// hides it from lists. There is no undo through the tools.
     Remove,
 }

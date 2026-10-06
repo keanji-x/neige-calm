@@ -8,7 +8,9 @@ use crate::mcp_server::registry::{AppContext, ToolCallIdentity, ToolRegistry};
 use crate::mcp_server::tool_visibility::plugin_scope_for_track;
 use crate::plugin_host::forge_caller::ForgeCallerScope;
 use crate::plugin_host::{CallToolResult, Manifest};
+use crate::plugin_results::registry_name;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -20,6 +22,7 @@ enum LifecyclePolicy {
 pub struct BuiltinPlugin {
     lifecycle: LifecyclePolicy,
     manifest: Manifest,
+    /// The compiled tools under their minted names (`plugin_<id>_<tool>`).
     native: ToolRegistry,
     lower: fn(&str, &Value) -> Result<Value, String>,
     forge_lower: fn(&str, &Value, &ForgeCallerScope) -> Result<Value, String>,
@@ -30,16 +33,19 @@ pub struct BuiltinPlugin {
 }
 
 impl BuiltinPlugin {
+    /// `local` holds the compiled tools under their local names (`publish`).
     fn new(
         manifest: &str,
-        native: ToolRegistry,
+        local: ToolRegistry,
         lower: fn(&str, &Value) -> Result<Value, String>,
         forge_lower: fn(&str, &Value, &ForgeCallerScope) -> Result<Value, String>,
         instructions: &'static str,
     ) -> Self {
+        let manifest = Manifest::parse(manifest).expect("compiled manifest");
+        let native = minted(&manifest.id, &local);
         Self {
             lifecycle: LifecyclePolicy::Optional,
-            manifest: Manifest::parse(manifest).expect("compiled manifest"),
+            manifest,
             native,
             lower,
             forge_lower,
@@ -82,6 +88,34 @@ impl BuiltinPlugin {
         serde_json::from_value(result)
             .map_err(|e| RpcError::internal(format!("built-in tool result: {e}")))
     }
+}
+
+/// A tool that comes and goes with its plugin is a plugin tool, compiled or not (#2227, §6 of
+/// `docs/conventions/agent-commands.md`): each local name is served as `registry_name(id, local)`.
+fn minted(id: &str, local: &ToolRegistry) -> ToolRegistry {
+    let mut native = ToolRegistry::new();
+    for mut descriptor in local.descriptors() {
+        let handler = local.unguarded(&descriptor.name).expect("compiled handler");
+        descriptor.name = registry_name(id, &descriptor.name);
+        native.register(descriptor, handler);
+    }
+    native
+}
+
+/// Every built-in manifest tool's minted name. Manifest tools route after the kernel registry, so
+/// a compiled tool minting one of these would silently shadow it.
+fn manifest_tool_names() -> BTreeSet<String> {
+    catalog()
+        .iter()
+        .flat_map(|plugin| {
+            let id = &plugin.manifest.id;
+            plugin
+                .manifest
+                .exposes_tools
+                .iter()
+                .map(move |tool| registry_name(id, &tool.name))
+        })
+        .collect()
 }
 
 static CATALOG: LazyLock<Vec<BuiltinPlugin>> =
@@ -127,6 +161,7 @@ pub(crate) async fn require_bound(
     Ok(())
 }
 pub fn register_native_tools(registry: &mut ToolRegistry) {
+    let manifest_tools = manifest_tool_names();
     for plugin in catalog() {
         for descriptor in plugin.native.descriptors() {
             let id = plugin.manifest.id.clone();
@@ -135,6 +170,10 @@ pub fn register_native_tools(registry: &mut ToolRegistry) {
             assert!(
                 registry.lookup(&descriptor.name).is_none(),
                 "a compiled tool must not shadow another handler"
+            );
+            assert!(
+                !manifest_tools.contains(&name),
+                "compiled tool `{name}` mints a built-in manifest tool's name"
             );
             let fence: crate::mcp_server::registry::ToolFence = Arc::new(move |ctx, identity| {
                 let (id, name) = (id.clone(), name.clone());

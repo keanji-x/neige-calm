@@ -51,370 +51,6 @@
     ]
   },
   {
-    "name": "neige_calendar_add",
-    "description_sha256": "7a1b32aa5285b94c82c91cd56e89494a05c7cf25063ba7a5716de2ac7a534877",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "idempotency_key": {
-          "type": "string"
-        },
-        "task": {
-          "additionalProperties": false,
-          "properties": {
-            "description": {
-              "type": "string"
-            },
-            "schedule": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "date": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "all_day"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "date"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "end": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "timed"
-                    },
-                    "start": {
-                      "type": "string"
-                    },
-                    "timezone": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "start",
-                    "end",
-                    "timezone"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "end": {
-                      "type": "string"
-                    },
-                    "from": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "weekly"
-                    },
-                    "start": {
-                      "type": "string"
-                    },
-                    "timezone": {
-                      "type": "string"
-                    },
-                    "until": {
-                      "type": "string"
-                    },
-                    "weekdays": {
-                      "items": {
-                        "enum": [
-                          "mon",
-                          "tue",
-                          "wed",
-                          "thu",
-                          "fri",
-                          "sat",
-                          "sun"
-                        ]
-                      },
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "weekdays",
-                    "start",
-                    "end",
-                    "timezone",
-                    "from"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "title",
-            "description",
-            "schedule"
-          ],
-          "type": "object"
-        }
-      },
-      "required": [
-        "idempotency_key",
-        "task"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner",
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_calendar_ls",
-    "description_sha256": "9fbd93a3b975408372cba0313cacd2f90b5367d72273285dbd5ccb1dfe634d0d",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "from": {
-          "type": "string"
-        },
-        "timezone": {
-          "type": "string"
-        },
-        "to": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "from",
-        "to",
-        "timezone"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "visible_to_roles": [
-      "planner",
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_calendar_rm",
-    "description_sha256": "45a7c0ab6aa98dddf93a4e2c7fa813ce592d89ef6a4be7a5f33e008ad14a595c",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "entry_id": {
-          "type": "string"
-        },
-        "expected_version": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "entry_id",
-        "expected_version"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner",
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_calendar_set",
-    "description_sha256": "4c8e8323677ee0226c5c2a0170d39d78fc816c31a4b0870efde744977b1185cf",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "entry_id": {
-          "type": "string"
-        },
-        "expected_version": {
-          "type": "integer"
-        },
-        "task": {
-          "additionalProperties": false,
-          "properties": {
-            "description": {
-              "type": "string"
-            },
-            "schedule": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "date": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "all_day"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "date"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "end": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "timed"
-                    },
-                    "start": {
-                      "type": "string"
-                    },
-                    "timezone": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "start",
-                    "end",
-                    "timezone"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "end": {
-                      "type": "string"
-                    },
-                    "from": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "weekly"
-                    },
-                    "start": {
-                      "type": "string"
-                    },
-                    "timezone": {
-                      "type": "string"
-                    },
-                    "until": {
-                      "type": "string"
-                    },
-                    "weekdays": {
-                      "items": {
-                        "enum": [
-                          "mon",
-                          "tue",
-                          "wed",
-                          "thu",
-                          "fri",
-                          "sat",
-                          "sun"
-                        ]
-                      },
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "weekdays",
-                    "start",
-                    "end",
-                    "timezone",
-                    "from"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "title",
-            "description",
-            "schedule"
-          ],
-          "type": "object"
-        }
-      },
-      "required": [
-        "entry_id",
-        "expected_version",
-        "task"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner",
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_dev_publish",
-    "description_sha256": "99ea201ee839d77c7f48bd349d6c1fa3449ef0881b5b4c91652131709e904dff",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "body": {
-          "type": "string"
-        },
-        "idempotency_key": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "title": {
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "idempotency_key",
-        "title",
-        "body"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
     "name": "neige_link_ls",
     "description_sha256": "9d36b5487437516fdb5dc91024bc7ced7e1ee0a209af183e64d7e22a3c6f99ca",
     "input_schema": {
@@ -1937,6 +1573,370 @@
     },
     "annotations": {
       "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_calendar_add",
+    "description_sha256": "7a1b32aa5285b94c82c91cd56e89494a05c7cf25063ba7a5716de2ac7a534877",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotency_key": {
+          "type": "string"
+        },
+        "task": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "schedule": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "date": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "all_day"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "date"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "timed"
+                    },
+                    "start": {
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "start",
+                    "end",
+                    "timezone"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "weekly"
+                    },
+                    "start": {
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "weekdays": {
+                      "items": {
+                        "enum": [
+                          "mon",
+                          "tue",
+                          "wed",
+                          "thu",
+                          "fri",
+                          "sat",
+                          "sun"
+                        ]
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "weekdays",
+                    "start",
+                    "end",
+                    "timezone",
+                    "from"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "description",
+            "schedule"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "task"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "plugin_calendar_ls",
+    "description_sha256": "9fbd93a3b975408372cba0313cacd2f90b5367d72273285dbd5ccb1dfe634d0d",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "timezone"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "plugin_calendar_rm",
+    "description_sha256": "45a7c0ab6aa98dddf93a4e2c7fa813ce592d89ef6a4be7a5f33e008ad14a595c",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "entry_id": {
+          "type": "string"
+        },
+        "expected_version": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entry_id",
+        "expected_version"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "plugin_calendar_set",
+    "description_sha256": "4c8e8323677ee0226c5c2a0170d39d78fc816c31a4b0870efde744977b1185cf",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "entry_id": {
+          "type": "string"
+        },
+        "expected_version": {
+          "type": "integer"
+        },
+        "task": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "schedule": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "date": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "all_day"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "date"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "timed"
+                    },
+                    "start": {
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "start",
+                    "end",
+                    "timezone"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "weekly"
+                    },
+                    "start": {
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "weekdays": {
+                      "items": {
+                        "enum": [
+                          "mon",
+                          "tue",
+                          "wed",
+                          "thu",
+                          "fri",
+                          "sat",
+                          "sun"
+                        ]
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "weekdays",
+                    "start",
+                    "end",
+                    "timezone",
+                    "from"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "description",
+            "schedule"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "entry_id",
+        "expected_version",
+        "task"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "plugin_gitforge_publish",
+    "description_sha256": "99ea201ee839d77c7f48bd349d6c1fa3449ef0881b5b4c91652131709e904dff",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "title",
+        "body"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
     },
     "visible_to_roles": [
       "planner"

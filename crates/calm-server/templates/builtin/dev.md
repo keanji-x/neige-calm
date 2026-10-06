@@ -93,7 +93,7 @@ that repository policy requires. If the repository declares no review policy,
 use one independent read-only PR review before merge.
 
 Implement in a worktree, let the kernel commit worker changes, verify with the repository's required gates,
-and publish a PR with neige_dev_publish when the requested delivery calls for it.
+and publish a PR with plugin_gitforge_publish when the requested delivery calls for it.
 Create concrete delegated tasks when needed, not a fixed task list. Give reviewers
 the implementing attempt's gate result and gh_pr_checks as evidence; run additional
 checks only when required by repository policy or to resolve a review hypothesis.

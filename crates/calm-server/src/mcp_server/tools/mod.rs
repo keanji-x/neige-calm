@@ -325,6 +325,22 @@ mod tests {
         kernel
     }
 
+    /// The built-in plugins' compiled tools the kernel registry also holds, each with its
+    /// plugin's id: plugin tools (`plugin_<id>_<tool>`, #2227), so the kernel-only checks skip
+    /// them and the checks below name them.
+    fn compiled_plugin_tools() -> Vec<(String, String)> {
+        let compiled: Vec<(String, String)> = build_default_registry()
+            .descriptors()
+            .into_iter()
+            .filter_map(|descriptor| {
+                crate::builtin_plugins::owner(&descriptor.name)
+                    .map(|plugin| (plugin.manifest().id.clone(), descriptor.name))
+            })
+            .collect();
+        assert!(compiled.len() >= 5, "anti-vacuity: {compiled:?}");
+        compiled
+    }
+
     /// #2087 §2: every kernel tool is `neige_<object>_<action>`, each segment one word, so the
     /// CLI command is the name split at `_`. No kernel object is `plugin`, the word that starts
     /// every minted plugin tool name (`plugin_<id>_<tool>`).
@@ -345,8 +361,9 @@ mod tests {
         );
     }
 
-    /// The plugin names `tools/list` serves: every built-in, every repository manifest under
-    /// `plugins/` and a connector whose id and upstream tool names carry `.` and `-`, all running.
+    /// The plugin names `tools/list` serves: every built-in (manifest and compiled tools), every
+    /// repository manifest under `plugins/` and a connector whose id and upstream tool names carry
+    /// `.` and `-`, all running.
     fn served_plugin_tool_names() -> Vec<String> {
         use crate::mcp_server::tool_visibility::{ToolDiscoveryScope, TrackPluginScope};
         use crate::plugin_host::Manifest;
@@ -399,10 +416,12 @@ mod tests {
                 )
             })
             .map(|descriptor| descriptor.name)
+            .chain(compiled_plugin_tools().into_iter().map(|(_, name)| name))
             .collect();
         assert!(
             names.contains(&"plugin_mcp_wis_burg_foo_bar".to_string())
                 && names.contains(&"plugin_gitforge_gh_pr_checks".to_string())
+                && names.contains(&"plugin_gitforge_publish".to_string())
                 && names.len() >= 20,
             "anti-vacuity: {names:?}"
         );
@@ -430,10 +449,10 @@ mod tests {
         );
     }
 
-    /// #2087 §4/§8: every input key of every kernel tool, recursively through `properties`,
-    /// `items` and `oneOf`/`anyOf`/`allOf`, is snake_case (an opaque `payload` is skipped), and no
-    /// top-level key is a retired name. `until` stays legal nested (a recurrence's last day), and so
-    /// does `report_commit`'s `ops[].id` (a block id, §9).
+    /// #2087 §4/§8: every input key of every kernel tool and every compiled plugin tool (#2227),
+    /// recursively through `properties`, `items` and `oneOf`/`anyOf`/`allOf`, is snake_case (an
+    /// opaque `payload` is skipped), and no top-level key is a retired name. `until` stays legal
+    /// nested (a recurrence's last day), and so does `report_commit`'s `ops[].id` (a block id, §9).
     #[test]
     fn kernel_tool_params_use_the_vocabulary() {
         const RETIRED_TOP_LEVEL: &[&str] = &[
@@ -489,7 +508,10 @@ mod tests {
             }
         }
         let registry = build_default_registry();
-        let names = kernel_tool_names();
+        let names: Vec<String> = kernel_tool_names()
+            .into_iter()
+            .chain(compiled_plugin_tools().into_iter().map(|(_, name)| name))
+            .collect();
         let (mut off, mut keys) = (Vec::new(), 0);
         for descriptor in registry
             .descriptors()
@@ -535,6 +557,22 @@ mod tests {
             outside.is_empty(),
             "kernel tools whose action is not a §3 verb or whose object is not one word: \
              {outside:?}"
+        );
+        // §6: a compiled plugin tool's own name is `[<object>_]<verb>` in the same words, under
+        // its plugin's minted prefix.
+        let outside: Vec<String> = compiled_plugin_tools()
+            .into_iter()
+            .filter(|(id, name)| {
+                let local = name.strip_prefix(&crate::plugin_results::registry_name(id, ""));
+                let segments: Vec<&str> = local.map_or_else(Vec::new, |l| l.split('_').collect());
+                !matches!(segments.as_slice(), [.., action]
+                    if segments.iter().all(|s| word.is_match(s)) && VERBS.contains(action))
+            })
+            .map(|(_, name)| name)
+            .collect();
+        assert!(
+            outside.is_empty(),
+            "compiled plugin tools outside `plugin_<id>_[<object>_]<verb>`: {outside:?}"
         );
     }
 }

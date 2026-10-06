@@ -31,7 +31,7 @@ async fn access(s: &RouteState, actor: &Actor) -> Result<Access> {
     crate::routes::track_report_blocks::require_rest_user_actor_for(
         actor,
         "calendar tasks",
-        "AI calls use neige_calendar_* tools.",
+        "AI calls use plugin_calendar_* tools.",
     )?;
     let host = s
         .mcp_context

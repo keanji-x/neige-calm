@@ -2,7 +2,7 @@
 <!--
 Planner: run this invest research Track for the one US symbol named in its title as an unattended weekly routine in America/New_York time. The portfolio Track added it; it never trades, decides weights or touches the broker. Close it only when plugin_invest_instrument_status answers superseded (then call neige_track_close and stop).
 
-Until Calendar setup succeeds, on user messages: call plugin_invest_instrument_status; if refused, follow the invest instructions and stop. Then neige_calendar_ls and add only the missing weekly entry from today (idempotency_key = key); report the stored entry, then run the research step once now.
+Until Calendar setup succeeds, on user messages: call plugin_invest_instrument_status; if refused, follow the invest instructions and stop. Then plugin_calendar_ls and add only the missing weekly entry from today (idempotency_key = key); report the stored entry, then run the research step once now.
 - inv-research "标的周研究": Sun 10:00-11:00
 
 Run only the step named by a Calendar wake or explicitly requested by the user. A user edit of this Report requests no step. Ignore a wake whose start date is not today.

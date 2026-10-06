@@ -10,7 +10,7 @@ use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 
 const ID: &str = "gitforge";
-const NATIVE: [&str; 1] = ["neige_dev_publish"];
+const NATIVE: [&str; 1] = ["plugin_gitforge_publish"];
 struct Fixture {
     repo: Arc<SqlxRepo>,
     host: Arc<PluginHost>,
@@ -250,7 +250,7 @@ async fn builtin_issue_instructions_remain_documentation_when_dev_is_disabled() 
         crate::planner_card::SeededCardRole::Planner.prompt_template(),
         "test",
     );
-    assert!(!base.contains("neige_dev_publish"));
+    assert!(!base.contains("plugin_gitforge_publish"));
     for scope in [None, Some("foreign.plugin"), Some(ID)] {
         let track = fx.track(scope).await;
         let card = fx
@@ -393,4 +393,85 @@ fn builtin_plugin_ids_are_their_manifest_ids_and_words() {
         );
     }
     assert_eq!(catalog().len(), 2, "every built-in is checked above");
+}
+
+/// #2227: a compiled tool is a plugin tool. Each is served under the name `registry_name` mints
+/// from its plugin id and its local name, written out here, keeps its roles, and has no other
+/// spelling in the kernel registry.
+#[test]
+fn builtin_native_tools_are_served_under_their_minted_names() {
+    const PLANNER_AND_ASSISTANT: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
+    let expected: [(&str, &str, &str, &[CardRole]); 5] = [
+        (
+            "calendar",
+            "add",
+            "plugin_calendar_add",
+            PLANNER_AND_ASSISTANT,
+        ),
+        (
+            "calendar",
+            "ls",
+            "plugin_calendar_ls",
+            PLANNER_AND_ASSISTANT,
+        ),
+        (
+            "calendar",
+            "rm",
+            "plugin_calendar_rm",
+            PLANNER_AND_ASSISTANT,
+        ),
+        (
+            "calendar",
+            "set",
+            "plugin_calendar_set",
+            PLANNER_AND_ASSISTANT,
+        ),
+        (
+            "gitforge",
+            dev::publish::PUBLISH,
+            "plugin_gitforge_publish",
+            &[CardRole::Planner],
+        ),
+    ];
+    let registry = crate::mcp_server::build_default_registry();
+    let mut served: Vec<(String, String, Vec<CardRole>)> = registry
+        .descriptors()
+        .into_iter()
+        .filter_map(|d| {
+            owner(&d.name).map(|p| (p.manifest().id.clone(), d.name, d.visible_to_roles.to_vec()))
+        })
+        .collect();
+    served.sort_by(|a, b| a.1.cmp(&b.1));
+    let want: Vec<(String, String, Vec<CardRole>)> = expected
+        .iter()
+        .map(|(id, _, name, roles)| (id.to_string(), name.to_string(), roles.to_vec()))
+        .collect();
+    assert_eq!(served, want);
+    for (id, local, name, _) in expected {
+        assert_eq!(registry_name(id, local), name, "{id}/{local}");
+        assert!(
+            name.starts_with(&registry_name(id, "")),
+            "{name} is not under its plugin's prefix"
+        );
+    }
+}
+
+/// #2227: manifest tools route after the kernel registry, so a compiled tool that minted a
+/// built-in manifest tool's name would shadow it. `register_native_tools` refuses that; this pins
+/// that no shipped native does.
+#[test]
+fn builtin_native_tools_never_mint_a_manifest_tool_name() {
+    let manifest = manifest_tool_names();
+    assert!(manifest.len() >= 10, "anti-vacuity: {manifest:?}");
+    let native: Vec<String> = catalog()
+        .iter()
+        .flat_map(|plugin| plugin.native.descriptors())
+        .map(|descriptor| descriptor.name)
+        .collect();
+    assert_eq!(native.len(), 5, "anti-vacuity: {native:?}");
+    let colliding: Vec<&String> = native.iter().filter(|n| manifest.contains(*n)).collect();
+    assert!(
+        colliding.is_empty(),
+        "compiled tools mint a manifest tool's name: {colliding:?}"
+    );
 }

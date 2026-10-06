@@ -86,7 +86,7 @@ pub(super) async fn create(
     task: serde_json::Value,
 ) -> Entry {
     let registry = crate::mcp_server::build_default_registry();
-    let create = registry.lookup("neige_calendar_add").unwrap();
+    let create = registry.lookup("plugin_calendar_add").unwrap();
     let result = create(
         fx.ctx.clone(),
         who.clone(),
@@ -104,7 +104,7 @@ pub(super) async fn set(
     task: serde_json::Value,
 ) -> Entry {
     let registry = crate::mcp_server::build_default_registry();
-    let set = registry.lookup("neige_calendar_set").unwrap();
+    let set = registry.lookup("plugin_calendar_set").unwrap();
     let result = set(
         fx.ctx.clone(),
         who.clone(),
@@ -117,7 +117,7 @@ pub(super) async fn set(
 
 pub(super) async fn rm(fx: &Fixture, who: &ToolCallIdentity, entry: &Entry) -> Entry {
     let registry = crate::mcp_server::build_default_registry();
-    let rm = registry.lookup("neige_calendar_rm").unwrap();
+    let rm = registry.lookup("plugin_calendar_rm").unwrap();
     let result = rm(
         fx.ctx.clone(),
         who.clone(),

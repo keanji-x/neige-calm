@@ -13,10 +13,10 @@ use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 /// Tools an Assistant token may call. Its report writes are anchored by its own `neige_report_read`;
 /// their `lifecycle` field alone is refused.
 const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
-    "neige_calendar_ls",
-    "neige_calendar_add",
-    "neige_calendar_set",
-    "neige_calendar_rm",
+    "plugin_calendar_ls",
+    "plugin_calendar_add",
+    "plugin_calendar_set",
+    "plugin_calendar_rm",
     "neige_report_read",
     "neige_report_describe",
     "neige_report_commit",
@@ -43,7 +43,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Naming the track is a planner judgement.
     "neige_track_rename",
     // Publishing the track's verified commit is a Planner action.
-    "neige_dev_publish",
+    "plugin_gitforge_publish",
     // Closing the track is a Planner action; only the user reopens.
     "neige_track_close",
     // Opening a top-level Track from a recipe is a Planner action.
@@ -153,7 +153,7 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
         let error = resp
             .get("error")
             .unwrap_or_else(|| panic!("`{tool}` must refuse an assistant caller, got: {resp:#?}"));
-        if *tool == "neige_dev_publish" {
+        if *tool == "plugin_gitforge_publish" {
             assert_eq!(
                 error["code"].as_i64(),
                 Some(-32601),
