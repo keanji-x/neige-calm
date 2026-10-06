@@ -32,6 +32,9 @@
 # card's start operations); harness_item/crates
 # 274 -> 275 is the predicate's one read of the existing transcript table plus two test inserts,
 # net of two `reset_harness_items` field references removed with today_summary's retry.
+# #2227 bounded exception: harness_item/crates 275 -> 276 comes solely from the native plugin
+# tool-name migration's one UPDATE of the existing transcript table; its test reads rows back
+# through the same helper.
 # #2235 bounded exception: harness_item/fe 95 -> 97 comes solely from imports of the
 # existing wire row type and pagination limit in the production-route benchmark;
 # local names use TranscriptRow and PAGE_LIMIT. No new protocol vocabulary is defined.

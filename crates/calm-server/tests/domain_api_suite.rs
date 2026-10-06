@@ -43,6 +43,8 @@ mod head_schema_fixture;
 mod in_process_renderer_e2e;
 #[path = "cases/mobile_pairing.rs"]
 mod mobile_pairing;
+#[path = "cases/native_plugin_tool_names_migration.rs"]
+mod native_plugin_tool_names_migration;
 #[path = "cases/neige_cli_task_report.rs"]
 mod neige_cli_task_report;
 #[path = "cases/neige_tool_name_migration.rs"]
