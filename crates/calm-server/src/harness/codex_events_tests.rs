@@ -141,16 +141,18 @@ fn questions_of(event: PlannerEvent) -> Vec<AskQuestion> {
 #[test]
 fn a_native_question_carries_its_questions_and_keeps_its_params() {
     let params = native_question_params();
+    // Read straight from the captured JSON, not through the mapping under test.
+    let wire_question = &params["item"]["questions"][0];
     let expected = vec![AskQuestion {
-        title:
-            "#2061 正文要求消除未选中时的「100% 占比」，而你消息中的这句话也可能是在指定保留它。\
-                是否按 issue 修复：未选中时显示总量，选中切片时显示该切片占比？"
-                .into(),
-        options: vec![
-            "按 issue 修复，未选中显示总量".into(),
-            "未选中仍显示「100% 占比」".into(),
-        ],
+        title: wire_question["title"].as_str().unwrap().into(),
+        options: wire_question["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option.as_str().unwrap().into())
+            .collect(),
     }];
+    assert_eq!(expected[0].options.len(), 2);
     for method in ["item/started", "item/completed"] {
         let event = wire(method, params.clone());
         let PlannerEventKind::Item {

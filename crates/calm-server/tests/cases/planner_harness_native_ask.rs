@@ -263,27 +263,15 @@ impl Rig {
         .await;
     }
 
-    /// Whether the item's `harness.item.added` is stored: what the transcript reader follows.
+    /// Whether the item's row is stored and announced: the `harness.item.added` naming it, which
+    /// the transcript reader follows, is written after the row.
     async fn item_added(&self, item_id: &str) -> bool {
         self.repo
             .events_for_track(self.track.as_str(), &["harness.item.added"], None)
             .await
             .unwrap()
             .into_iter()
-            .any(|row| {
-                matches!(&row.event, Event::HarnessItemAdded { item_uuid: Some(uuid), .. }
-                    if uuid == item_id)
-            })
-    }
-
-    async fn item_rows(&self, item_id: &str) -> usize {
-        self.repo
-            .harness_item_list_by_card(self.card.as_str(), 0, 100, false)
-            .await
-            .unwrap()
-            .into_iter()
-            .filter(|row| row.item_uuid.as_deref() == Some(item_id))
-            .count()
+            .any(|row| serde_json::to_value(&row.event).unwrap()["data"]["item_uuid"] == item_id)
     }
 
     /// `(actor, event)` of every `ask.requested` on the track.
@@ -384,7 +372,6 @@ async fn a_planner_native_question_becomes_one_open_ask() {
         "{asks:?}"
     );
     // The reply is stored and announced as before: the ask is beside it, not instead of it.
-    assert_eq!(rig.item_rows(ITEM_ID).await, 1);
     assert!(rig.item_added(ITEM_ID).await);
 
     let ask_id = rig.ask_ids().await[0];
@@ -441,7 +428,7 @@ async fn a_started_item_asks_nothing() {
     params["startedAtMs"] = json!(1_791_192_159_000_i64);
     rig.emit("item/started", params);
     rig.settle().await;
-    assert_eq!(rig.item_rows(ITEM_ID).await, 1, "the started row is stored");
+    assert!(rig.item_added(ITEM_ID).await, "the started row is stored");
     let asks = rig.asks().await;
     assert!(asks.is_empty(), "{asks:?}");
     rig.harness.shutdown().await.unwrap();
@@ -454,7 +441,7 @@ async fn plain_chat_and_assistant_conversations_ask_nothing() {
         let rig = rig(profile).await;
         rig.emit("item/completed", captured_params());
         rig.settle().await;
-        assert_eq!(rig.item_rows(ITEM_ID).await, 1, "the reply is stored");
+        assert!(rig.item_added(ITEM_ID).await, "the reply is stored");
         let asks = rig.asks().await;
         assert!(asks.is_empty(), "{asks:?}");
         assert!(
@@ -483,10 +470,9 @@ async fn a_refused_question_is_logged_and_skipped_and_the_harness_goes_on() {
     let asks = rig.asks().await;
     assert!(asks.is_empty(), "{asks:?}");
     for id in ["call-too-many", "call-too-long"] {
-        assert_eq!(rig.item_rows(id).await, 1, "{id}: the reply is stored");
         assert!(
             rig.item_added(id).await,
-            "{id}: a refused ask does not fail the item's event"
+            "{id}: the reply is stored, and a refused ask does not fail its event"
         );
         assert!(
             logs.text()

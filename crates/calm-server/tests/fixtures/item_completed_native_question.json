@@ -1,6 +1,6 @@
 {
   "_provenance": [
-    "CAPTURED, not hand-authored: the `params` of one `item/completed` row (harness_items id 28745)",
+    "CAPTURED, not hand-authored: the `params` of one `item/completed` transcript row (id 28745)",
     "a Codex Planner stored on the 4140 instance while working on #2061, read once and copied",
     "verbatim. The model called Codex's built-in `request_user_input_async` tool; the app-server",
     "reports that call as an `agentMessage` carrying `delivery: \"async\"` and",
