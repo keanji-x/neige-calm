@@ -16,6 +16,7 @@ import {
 } from '../../../../../core/domain/report-file.ts';
 import type { SeriesResolution } from '../../../../../core/domain/report-series.ts';
 import { parseReportSourceLink, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
+import { ReportLinkPreview, externalPreviewUrl, type ReportLinkPreviewResources, type PreviewDestination } from '../link-preview/public.tsx';
 import { ReportDetails } from './details.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
@@ -49,6 +50,7 @@ export type ReportDocumentProps = Readonly<{
   fileRoot?: string;
   /** Workspace-relative directory containing the Markdown currently rendered. */
   fileBasePath?: string;
+  linkPreview?: ReportLinkPreviewResources;
   /** The anchor the reader arrived at, from a deep link or a backlink. */
   arrivalAnchorId?: string | null;
   /** The same execution diagnostics used by the task inventory. */
@@ -67,9 +69,9 @@ export type ReportDocumentProps = Readonly<{
   previewViewports?: PreviewViewportStore;
 }>;
 
-/** A report is prose, not navigation: it emits no `<a href>`; typed citations become buttons and every other link keeps its label and drops its destination. */
+/** Agent-authored destinations become admitted preview controls. Navigation stays behind typed callbacks or explicit external activation. */
 export function ReportDocument({
-  report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath,
+  report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview,
   resolveOverlay, resolveSeries, resolvePreview, previewViewports,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
@@ -96,6 +98,7 @@ export function ReportDocument({
                 onOpenSourceLink={onOpenSourceLink}
                 fileRoot={fileRoot}
                 fileBasePath={fileBasePath}
+                linkPreview={linkPreview}
               />
             </div>
           </div>
@@ -115,6 +118,7 @@ export function ReportDocument({
                   onOpenSourceLink={onOpenSourceLink}
                   fileRoot={fileRoot}
                   fileBasePath={fileBasePath}
+                  linkPreview={linkPreview}
                   resolveOverlay={resolveOverlay}
                   resolveSeries={resolveSeries}
                   resolvePreview={resolvePreview}
@@ -170,7 +174,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
 
 /** One block, plus the sidenote that belongs to it. */
 function BlockSlot({
-  block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, resolveOverlay, resolveSeries,
+  block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview, resolveOverlay, resolveSeries,
   resolvePreview, previewViewports,
 }: {
   block: ReportBlock;
@@ -180,6 +184,7 @@ function BlockSlot({
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   fileRoot?: string;
   fileBasePath?: string;
+  linkPreview?: ReportLinkPreviewResources;
   resolveOverlay?: ReportDocumentProps['resolveOverlay'];
   resolveSeries?: ReportDocumentProps['resolveSeries'];
   resolvePreview?: ReportDocumentProps['resolvePreview'];
@@ -197,6 +202,7 @@ function BlockSlot({
               onOpenSourceLink={onOpenSourceLink}
               fileRoot={fileRoot}
               fileBasePath={fileBasePath}
+              linkPreview={linkPreview}
             />
           : <BlockBody block={block} onOpenSourceLink={onOpenSourceLink}
               resolveOverlay={resolveOverlay} resolveSeries={resolveSeries} resolvePreview={resolvePreview}
@@ -247,7 +253,7 @@ function BlockBody({
 
 /** The rendered-Markdown half of a report block. Exported for the recipe editor. */
 export function ProseBlock({
-  markdown, blockId, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath,
+  markdown, blockId, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview,
 }: {
   markdown: string;
   blockId: string | null;
@@ -256,6 +262,7 @@ export function ProseBlock({
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   fileRoot?: string;
   fileBasePath?: string;
+  linkPreview?: ReportLinkPreviewResources;
 }) {
   const parsed = parse(markdown);
   if (parsed.status === 'failed') {
@@ -285,17 +292,20 @@ export function ProseBlock({
       onOpenSourceLink={onOpenSourceLink}
       fileRoot={fileRoot}
       fileBasePath={fileBasePath}
+      linkPreview={linkPreview}
     />
   ))}</>;
 }
 
 type BlockContext = Readonly<{
+  inLink?: boolean;
   headingIds: ReadonlyMap<number, string>;
   onOpenLink?: (target: ReportLinkTarget) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   fileRoot?: string;
   fileBasePath?: string;
+  linkPreview?: ReportLinkPreviewResources;
 }>;
 
 function Block({ block, headingIds, ...rest }: { block: SafeBlock } & BlockContext): ReactNode {
@@ -382,7 +392,7 @@ function Inlines({ nodes, ...context }: { nodes: readonly SafeInline[] } & Block
 }
 
 function Inline({ node, ...context }: { node: SafeInline } & BlockContext): ReactNode {
-  const { onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath } = context;
+  const { onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview } = context;
   switch (node.type) {
     case 'text':
       return node.value;
@@ -396,49 +406,54 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       return <del><Inlines nodes={node.children} {...context} /></del>;
     case 'break':
       return <br />;
-    case 'link': {
-      // A report is agent-authored, so a bare `<a href>` here would let untrusted text steer the browser.
-      const target = parseReportLink(node.destination);
+    case 'link':
+    case 'image': {
+      const image = node.type === 'image';
+      const label = image ? node.alt || 'Image' : inlineLabel(node.children);
+      const body = image ? <span className={styles.imageAlt}>{node.alt || 'Image'}</span>
+        : <Inlines nodes={node.children} {...context} inLink />;
+      if (context.inLink) return body;
+      const renderMarkdown = (text: string, basePath?: string) => <ProseBlock
+        markdown={text} blockId={null} {...context} fileBasePath={basePath ?? fileBasePath} />;
+      const wrap = (destination: PreviewDestination, trigger: (pin: () => void) => ReactNode, onOpen?: () => void) => (
+        <ReportLinkPreview destination={destination} resources={linkPreview} label={label}
+          trigger={trigger} onOpen={onOpen} renderMarkdown={renderMarkdown} />
+      );
+      const target = image ? null : parseReportLink(node.destination);
       if (target !== null && onOpenLink !== undefined) {
-        return (
-          <button type="button" className={styles.link} onClick={() => onOpenLink(target)}>
-            <Inlines nodes={node.children} {...context} />
-          </button>
-        );
+        const open = () => onOpenLink(target);
+        return wrap({ kind: 'reference', destination: node.destination, target },
+          () => <button type="button" className={styles.link} onClick={open}>{body}</button>, open);
       }
-      /* A source citation stays a control even when its id or anchor will not parse: the panel is where the typo is reported. */
-      const sourceTarget = parseReportSourceLink(node.destination);
+      const sourceTarget = image ? null : parseReportSourceLink(node.destination);
       if (sourceTarget !== null) {
-        return (
-          <ReportSourceCitation target={sourceTarget} onOpen={onOpenSourceLink}>
-            <Inlines nodes={node.children} {...context} />
-          </ReportSourceCitation>
-        );
+        return wrap({ kind: 'reference', destination: node.destination },
+          () => <ReportSourceCitation target={sourceTarget} onOpen={onOpenSourceLink}>{body}</ReportSourceCitation>,
+          onOpenSourceLink === undefined ? undefined : () => onOpenSourceLink(sourceTarget));
       }
       const fileTarget = parseReportFileLink(node.destination);
-      const resolvedFilePath = fileTarget !== null && fileRoot !== undefined
-        ? reportFilePathRelativeToRoot(fileRoot, fileTarget, fileBasePath)
-        : null;
-      if (
-        resolvedFilePath !== null
-        && onOpenFileLink !== undefined
-      ) {
-        return (
-          <button
-            type="button"
-            className={styles.link}
-            title={resolvedFilePath}
-            onClick={() => onOpenFileLink({ path: resolvedFilePath })}
-          >
-            <Inlines nodes={node.children} {...context} />
-          </button>
-        );
+      const path = fileTarget !== null && fileRoot !== undefined
+        ? reportFilePathRelativeToRoot(fileRoot, fileTarget, fileBasePath) : null;
+      if (path !== null && (onOpenFileLink !== undefined || linkPreview !== undefined)) {
+        const open = onOpenFileLink === undefined ? undefined : () => onOpenFileLink({ path });
+        return wrap({ kind: 'file', path },
+          (pin) => <button type="button" className={styles.link} title={path} onClick={open ?? pin}>{body}</button>, open);
       }
-      return <Inlines nodes={node.children} {...context} />;
+      const url = externalPreviewUrl(node.destination);
+      if (url !== null) {
+        return wrap({ kind: 'web', url, image: image || /\.(png|jpe?g|gif|webp|avif|svg)(?:[?#]|$)/i.test(url) },
+          (pin) => <button type="button" className={styles.link} onClick={pin}>{body}</button>);
+      }
+      return body;
     }
-    case 'image':
-      // Same reason, and one more: an image loads its destination without a
-      // click, so rendering one would fetch from wherever the report says.
-      return <span className={styles.imageAlt}>{node.alt}</span>;
   }
+}
+
+function inlineLabel(nodes: readonly SafeInline[]): string {
+  return nodes.map((node) => {
+    if (node.type === 'text' || node.type === 'inlineCode') return node.value;
+    if (node.type === 'image') return node.alt;
+    if (node.type === 'break') return ' ';
+    return inlineLabel(node.children);
+  }).join('');
 }

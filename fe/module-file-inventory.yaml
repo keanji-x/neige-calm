@@ -141,3 +141,5 @@
 - { path: fe/web/src/systems/recovery, type: directory, owner: systems/recovery, readonly: false, basis: "#1712 browser recovery lifecycle, cancellation, and transport capabilities" }
 
 - { path: fe/web/src/features/calendar, type: directory, owner: features/calendar, readonly: false, basis: "#1913 Calendar commitments" }
+
+- { path: fe/web/src/ui/hover-preview, type: directory, owner: ui/hover-preview, readonly: false, basis: "#2237 transient pinnable preview lifecycle with injected content and no domain policy" }

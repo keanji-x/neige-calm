@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react';
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import { FileReadError, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
+import type { ReportLinkPreviewResources } from '../link-preview/public.tsx';
 import { ReportDocument } from '../document/public.tsx';
 import styles from './report-file-viewer.module.css';
 
@@ -22,7 +23,7 @@ function parentDirectory(path: string): string {
  * card board.
  */
 export function ReportFileViewer({
-  path, files, fileRoot, wide, onClose, onFileOpened, onOpenFileLink,
+  path, files, fileRoot, wide, onClose, onFileOpened, onOpenFileLink, linkPreview,
 }: Readonly<{
   path: string;
   files: WorkspaceFilePort;
@@ -32,6 +33,7 @@ export function ReportFileViewer({
   onClose: () => void;
   onFileOpened?: (path: string) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  linkPreview?: ReportLinkPreviewResources;
 }>) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const resource = useReportFileResource(path, files, onFileOpened);
@@ -85,6 +87,7 @@ export function ReportFileViewer({
               fileRoot={fileRoot}
               fileBasePath={parentDirectory(resource.path)}
               onOpenFileLink={onOpenFileLink}
+              linkPreview={linkPreview}
             />
           </div>
         )}

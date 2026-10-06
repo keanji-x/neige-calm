@@ -2263,6 +2263,7 @@ function TrackRouteBody({
             key={requestedFilePath}
             path={requestedFilePath}
             files={reportFiles}
+            linkPreview={{ files: reportFiles, trackId: track.id, report }}
             fileRoot={track.agentCwd}
             wide={gridItems.length === 0}
             onClose={closeBoard}
@@ -2308,6 +2309,7 @@ function TrackRouteBody({
         onOpenFileLink={openReportFile}
         onOpenSourceLink={openReportSource}
         fileRoot={track.agentCwd}
+        linkPreview={{ files: reportFiles, trackId: track.id, report }}
         arrivalAnchorId={arrivalAnchorId}
         empty={<ReportEmpty
           lead="This track has not taken shape yet."

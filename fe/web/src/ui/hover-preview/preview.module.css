@@ -1,0 +1,40 @@
+@layer ui {
+  .anchor { display: inline; }
+
+  .card {
+    position: fixed;
+    z-index: var(--z-overlay);
+    display: flex;
+    flex-direction: column;
+    inline-size: min(28rem, calc(100vw - var(--space-10)));
+    max-block-size: min(34rem, calc(100dvh - var(--space-10)));
+    overflow: hidden;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: var(--surface-card);
+    box-shadow: var(--shadow-float);
+    color: var(--text);
+    font-size: var(--text-base);
+    line-height: var(--leading-base);
+    animation: appear var(--motion-quick) var(--ease-enter);
+  }
+
+  .header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); border-block-end: 1px solid var(--hairline); }
+  .move { flex: 1; min-inline-size: 0; padding: var(--space-4); text-align: start; cursor: grab; touch-action: none; }
+  .move > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .move:disabled { cursor: default; color: var(--text-2); }
+  .move:active:not(:disabled) { cursor: grabbing; }
+  .control { display: grid; place-items: center; flex-shrink: 0; inline-size: 2rem; block-size: 2rem; border-radius: var(--radius-sm); color: var(--text-2); }
+  .control:hover { background: var(--surface-code); color: var(--text); }
+  .control[aria-pressed="true"] { color: var(--accent); }
+  .body { min-block-size: 0; padding: var(--space-8); overflow: auto; overscroll-behavior: contain; }
+  .footer { padding: var(--space-4) var(--space-8); border-block-start: 1px solid var(--hairline); color: var(--text-3); font-size: var(--text-xs); }
+  .ring { fill: none; stroke: var(--hairline); stroke-width: 2; transform: rotate(-90deg); }
+  .progress { stroke: var(--accent); stroke-dasharray: 1; stroke-dashoffset: 1; animation: fill-ring linear forwards; }
+  @keyframes fill-ring { to { stroke-dashoffset: 0; } }
+  @keyframes appear { from { opacity: 0; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .card { animation: none; }
+    .progress { animation: none; stroke-dashoffset: 0; }
+  }
+}
