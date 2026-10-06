@@ -40,6 +40,11 @@ const RETIRED_PLUGIN_NAME: &str = concat!(
     r"gh\.pr\.(?:list|diff|checks|merge)|gh\.issue\.(?:view|close|comments?))(?:[^:A-Za-z0-9_\-]|$)"
 );
 
+/// #2227: a built-in's compiled tool comes and goes with its plugin, so it is the plugin tool
+/// `plugin_<id>_<tool>` (`plugin_gitforge_publish`, `plugin_calendar_ls`); its kernel-looking
+/// spellings are retired.
+const RETIRED_NATIVE_NAME: &str = r"\bneige_(?:dev_publish|calendar_(?:add|ls|set|rm))\b";
+
 /// The retired MCP server key as a client spells it, assembled from two literals so this file does
 /// not carry the token it hunts.
 fn retired_server_key() -> String {
@@ -60,6 +65,7 @@ fn allowlisted(path: &str) -> bool {
         || path == "crates/calm-server/tests/cases/terminal_verbs_migration.rs"
         || path == "crates/calm-server/tests/cases/crud_verbs_migration.rs"
         || path == "crates/calm-server/tests/cases/plugin_names_migration.rs"
+        || path == "crates/calm-server/tests/cases/native_plugin_tool_names_migration.rs"
         || path == "crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs"
         || path == "crates/calm-truth/src/db/sqlite/track_template_rename_migration_tests.rs"
         || path == "crates/calm-server/tests/goldens/events/forge_pr_merged.historical_subject.json"
@@ -97,7 +103,7 @@ fn tracked_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn patterns() -> [regex::Regex; 7] {
+fn patterns() -> [regex::Regex; 8] {
     [
         regex::Regex::new(RETIRED_TOOL_NAME).expect("tool-name regex"),
         regex::Regex::new(RETIRED_DOTTED_KERNEL_NAME).expect("dotted-name regex"),
@@ -105,6 +111,7 @@ fn patterns() -> [regex::Regex; 7] {
         regex::Regex::new(RETIRED_TERMINAL_NAME).expect("terminal-name regex"),
         regex::Regex::new(RETIRED_CRUD_NAME).expect("crud-name regex"),
         regex::Regex::new(RETIRED_PLUGIN_NAME).expect("plugin-name regex"),
+        regex::Regex::new(RETIRED_NATIVE_NAME).expect("native-name regex"),
         regex::Regex::new(&retired_server_key()).expect("server-key regex"),
     ]
 }
@@ -158,13 +165,18 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "call neige_ratify_request with",            // retired-name: rejection input
         "\"neige_user_notify\",",                    // retired-name: rejection input
         "prompts/tools/neige_user_notify.md",        // retired-name: rejection input
+        "`neige_dev_publish`",                       // retired-name: rejection input
+        "neige_calendar_add,",                       // retired-name: rejection input
+        "\"neige_calendar_ls\"",                     // retired-name: rejection input
+        "prompts/tools/neige_calendar_set.md",       // retired-name: rejection input
+        "then neige_calendar_rm.",                   // retired-name: rejection input
         concat!("mcp__", "calm__neige_report_read"),
         concat!("allowed: mcp__", "calm Edit"),
     ] {
         assert!(offending(hit, &patterns), "must be red: {hit}");
     }
     for miss in [
-        "neige_dev_publish",
+        "plugin_gitforge_publish",
         "neige.kv.set",
         "neige.overlay.delete",
         "neige.card.create",
@@ -189,9 +201,12 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "neige_terminal_show",
         "neige_terminal_observed",
         "the terminal observation",
-        "neige_calendar_ls",
-        "neige_calendar_rm",
+        "plugin_calendar_ls",
+        "plugin_calendar_rm",
         "neige_calendar_lists",
+        "neige_calendar_lsx",
+        "my_neige_dev_publish",
+        "0137_neige_dev_publish.sql",
         "neige_preview_add",
         "neige_preview_registered",
         "neige_task_accept",
