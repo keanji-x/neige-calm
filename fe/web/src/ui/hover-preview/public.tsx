@@ -115,7 +115,9 @@ export function HoverPreview({ title, trigger, children }: Readonly<{
       }
     };
     const scroll = (event: Event) => {
-      if (!(event.target instanceof Node && card.current?.contains(event.target))) setPhase('closed');
+      // Only scrolling an ancestor moves this preview's anchor; portal children own their scrolling.
+      if (event.target instanceof Node && event.target.contains(anchor.current)
+        && !card.current?.contains(event.target)) setPhase('closed');
     };
     window.addEventListener('resize', clamp);
     document.addEventListener('keydown', escape);

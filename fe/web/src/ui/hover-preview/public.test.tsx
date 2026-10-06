@@ -68,6 +68,23 @@ describe('HoverPreview lifecycle', () => {
     expect(screen.queryByRole('dialog', { name: 'Preview: Second' })).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Preview: Notes' })).toBeTruthy();
   });
+  it('keeps nested preview scrolling open and dismisses only when its anchor scrolls', () => {
+    render(<HoverPreview title="Parent" trigger={(activate) => <button onClick={activate}>Parent</button>}>
+      <HoverPreview title="Child" trigger={(activate) => <button onClick={activate}>Child</button>}>
+        <div data-testid="child-scroll">Long child contents</div>
+      </HoverPreview>
+    </HoverPreview>);
+    fireEvent.click(screen.getByRole('button', { name: 'Parent' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Child' }));
+    fireEvent.scroll(screen.getByTestId('child-scroll'));
+    expect(screen.getAllByRole('dialog')).toHaveLength(2);
+    const parent = screen.getByRole('dialog', { name: 'Preview: Parent' });
+    fireEvent.scroll(parent.children[1]!);
+    expect(screen.queryByRole('dialog', { name: 'Preview: Child' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Preview: Parent' })).toBeTruthy();
+    fireEvent.scroll(document);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
   it('unmount disposes all timers and its portal', () => {
     const view = mount(); hover(); advance(300);
     view.unmount(); advance(3000);

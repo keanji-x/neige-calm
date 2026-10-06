@@ -52,6 +52,25 @@ describe('preview in a real browser', () => {
     (page.getByTestId('outside').element() as HTMLElement).focus();
     await expect.poll(() => document.querySelector('[data-nc-link-preview]')).toBeNull();
   });
+  it('keeps both cards open while scrolling a nested portal preview', async () => {
+    await page.viewport(1200, 900);
+    render(<div style={{ padding: 80 }}>
+      <HoverPreview title="Parent" trigger={(activate) => <button onClick={activate}>Parent</button>}>
+        <HoverPreview title="Child" trigger={(activate) => <button onClick={activate}>Child</button>}>
+          <div>{Array.from({ length: 70 }, (_, i) => <p key={i}>Nested paragraph {i}</p>)}</div>
+        </HoverPreview>
+      </HoverPreview>
+    </div>);
+    await page.getByRole('button', { name: 'Parent', exact: true }).click();
+    await page.getByRole('button', { name: 'Child', exact: true }).click();
+    const child = page.getByRole('dialog', { name: 'Preview: Child' });
+    const body = child.element().children[1] as HTMLElement;
+    await child.getByText('Nested paragraph 0', { exact: true }).wheel({ delta: { y: 240 } });
+    await expect.poll(() => body.scrollTop).toBeGreaterThan(0);
+    const before = performance.now();
+    await expect.poll(() => performance.now() - before).toBeGreaterThan(350);
+    expect(page.getByRole('dialog').length).toBe(2);
+  });
   it('clamps a ready preview after viewport resize and closes with Escape', async () => {
     await page.viewport(1200, 900); mount();
     await page.getByRole('button', { name: 'Long notes', exact: true }).click();
