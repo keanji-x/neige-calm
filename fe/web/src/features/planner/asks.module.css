@@ -1,0 +1,16 @@
+/* #2209 U3 — the Planner's questions in the composer's drawer.
+
+   The drawer lays its content out as a wrapping row of chips; a question
+   form is not a chip, so it takes the whole row. Everything else — the
+   radios, the field, the button, the surface — is the design system's. */
+
+@layer features {
+  .asks {
+    flex: 1 1 100%;
+    min-inline-size: 0;
+  }
+
+  .ask {
+    min-inline-size: 0;
+  }
+}

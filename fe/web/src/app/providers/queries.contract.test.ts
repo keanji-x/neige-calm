@@ -93,6 +93,7 @@ describe('writes never queue an offline submission, in either build', () => {
     ['area delete', ({ area }) => area.remove('c1')],
     ['recipe delete', ({ recipe }) => recipe.remove('recipe-1')],
     ['notification dismiss', ({ track }) => track.dismissActivityItem('w1', 'ask:1')],
+    ['ask answer', ({ track }) => track.answerAsk('w1', 1, ['Yes'])],
     ['Today reset', ({ reset }) => reset.reset()],
   ];
   it.each(cases)('rejects %s before dispatch and does not replay it on reconnect', async (_name, submit) => {

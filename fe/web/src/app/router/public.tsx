@@ -10,7 +10,7 @@ import { useConversationEdit } from '../conversations/edit.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { notSentMessage } from '../../../../core/domain/conversation-delivery.ts';
 import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
-import { DELETE_FAILURES, DELETE_TEXT, writeFailureText } from '../../../../core/domain/failure-class.ts';
+import { DELETE_FAILURES, DELETE_TEXT, NotSentError, writeFailureText } from '../../../../core/domain/failure-class.ts';
 // Code-based TanStack Router setup, built inside a factory so a test can inject the
 // transport and QueryClient; also the composition point for route-owned surfaces.
 
@@ -129,10 +129,14 @@ import {
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
-import { PendingQueue } from '../../features/planner/public.ts';
+import { PendingQueue, PlannerAskDrawer } from '../../features/planner/public.ts';
+import { openAsksOf, type OpenAsk } from '../../../../core/domain/ask.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 
 export const APP_BASEPATH = '/next';
+
+/** A conversation that is not a Planner's asks nothing; one frozen value, so the composer's memo holds. */
+const NO_ASKS: readonly OpenAsk[] = Object.freeze([]);
 
 /** A route-owned server list whose rows open in this panel's drawer. */
 type ConversationPanelSource = ConversationCreationSource & Readonly<{
@@ -146,8 +150,12 @@ type ConversationPanelSource = ConversationCreationSource & Readonly<{
     /** Known on the Track route; Today resolves the open conversation's Track on demand. */
     workspaceRoot: string | null;
     scopeOf: (conversationId: string) => PlannerConversationScope | null;
-    /** The one row a Planner reads and the Area whose `area/reports/` it reads, which is what `@` offers; `null` where no row is a Planner's. A track conversation is an Assistant, which `area/reports/` refuses. */
-    planner: Readonly<{ cardId: string; areaId: string }> | null;
+    /** The one row a Planner reads and the Area whose `area/reports/` it reads, which is what `@` offers; `null` where no row is a Planner's. A track conversation is an Assistant, which `area/reports/` refuses.
+     * `asks` are the track's open asks, shown above that row's composer, and `answerAsk` answers one. */
+    planner: Readonly<{
+      cardId: string; areaId: string; asks: readonly OpenAsk[];
+      answerAsk: (askId: number, answers: readonly string[]) => Promise<void>;
+    }> | null;
   }>;
 
 /** The card runtime, created once at boot and injected. */
@@ -389,9 +397,10 @@ function useConversationPane(
 
   const rows = source.rows;
   const store = useConversationStore(transport, unauthorized, scope, routeIntent);
-  /* `@` only in the Planner's own row; the track the drawer is on ranks its blocks first. */
+  /* `@` and the Planner's questions only in the Planner's own row; the track the drawer is on ranks its blocks first. */
+  const plannerRow = source.planner !== null && openRowId === source.planner.cardId ? source.planner : null;
   const mentionTrigger = useMentionTrigger(useMentionSearch(transport, unauthorized,
-    source.planner !== null && openRowId === source.planner.cardId ? source.planner.areaId : null, source.scopeId));
+    plannerRow === null ? null : plannerRow.areaId, source.scopeId));
   const registry = useConversationRegistry();
   /* The open conversation's own composer: words and images live in the registry per conversation,
        so closing keeps them and switching shows the other conversation's own. */
@@ -494,6 +503,10 @@ function useConversationPane(
     if (open === null || options?.onSide === undefined || !store.historyReady) return false;
     return options.onSide(open, store.turnsOf(open.id), question);
   });
+  const plannerAsks = plannerRow?.asks ?? NO_ASKS;
+  /* Without a Planner row the drawer lists no ask, so nothing can be answered from here: nothing is sent. */
+  const answerAsk = useCommittedCallback(existingId, (askId: number, answers: readonly string[]) => plannerRow === null
+    ? Promise.reject(new NotSentError()) : plannerRow.answerAsk(askId, answers));
   const attach = useCommittedCallback(existingId, attachments.attach);
   const removeAttachment = useCommittedCallback(existingId, attachments.remove);
   const { items: attachmentItems, ids: attachmentIds, busy: attachmentBusy, error: attachmentError, atCapacity } = attachments;
@@ -548,6 +561,8 @@ function useConversationPane(
                     onDelete={composerView.deleteQueuedEntry}
                     onSteer={composerView.steerQueuedEntry}
                   />
+                  {/* Above the images: those belong to the message being written, so they stay next to its field. */}
+                  <PlannerAskDrawer key={`asks-${existingId}`} asks={plannerAsks} onAnswer={answerAsk} />
                   <PlannerAttachmentDrawer attachments={composerAttachments} />
                 </>
               )}
@@ -586,7 +601,7 @@ function useConversationPane(
             />
   ), [existingId, composerFocusFor, composerFocusRequest, composer.text, setComposerText, composerView,
     replacing, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion,
-    sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider]);
+    sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk]);
 
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
       <Drawer
@@ -1229,6 +1244,7 @@ function TrackRouteBody({
     () => plannerRow === null ? placedRows : [plannerRow, ...placedRows],
     [placedRows, plannerRow],
   );
+  const openAsks = useMemo(() => openAsksOf(track.attentionItems), [track.attentionItems]);
   /* `'rows'` unconditionally: an empty list with a `+` over it is the whole feature. */
   const chat = useConversationPanel(
     transport,
@@ -1256,7 +1272,10 @@ function TrackRouteBody({
       },
       create: conversationMutations.create,
       refresh: conversationMutations.refresh,
-      planner: plannerCard === undefined ? null : { cardId: plannerCard.id, areaId: track.areaId },
+      planner: plannerCard === undefined ? null : {
+        cardId: plannerCard.id, areaId: track.areaId, asks: openAsks,
+        answerAsk: (askId, answers) => trackMutations.answerAsk(track.id, askId, answers),
+      },
     },
     { showTrack: false },
   );

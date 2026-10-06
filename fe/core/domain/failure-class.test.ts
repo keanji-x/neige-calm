@@ -10,6 +10,7 @@ import { SEND_FAILURES } from './conversation-delivery.js';
 import { PLANNER_INTERRUPT_FAILURES } from './conversation-stop.js';
 import { AREA_CREATE_FAILURES, AREA_PATCH_FAILURES } from './area.js';
 import { DISMISS_FAILURES } from './activity.js';
+import { ANSWER_ASK_FAILURES } from './ask.js';
 import {
   ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, failureReason, NotSentError, refusalText, refusedText, writeClassOf,
   writeFailureText,
@@ -159,6 +160,14 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(422), 'refused'],
     [unauthorized, 'refused'],
     [http(409), 'unknown'], [http(500), 'unknown'],
+    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
+  ]],
+  ['POST /tracks/{id}/asks/{ask_id}/answer', ANSWER_ASK_FAILURES, [
+    /* Already answered, in another tab or by an earlier attempt whose answer was lost: no longer the reader's to answer. */
+    [http(409, 'conflict'), 'done'],
+    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
+    [http(413), 'refused'], [http(415), 'refused'], [http(422), 'refused'], [unauthorized, 'refused'],
+    [http(500), 'unknown'], [http(503), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   ['POST /today/launchpad/ensure', LAUNCHPAD_ENSURE_FAILURES, [

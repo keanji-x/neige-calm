@@ -26,6 +26,7 @@ import {
 } from '../../../../core/domain/report-series.ts';
 import { trackSourceOperation, type TrackSourceDetail } from '../../../../core/domain/report-source.ts';
 import { dismissActivityItemOperation } from '../../../../core/domain/activity.ts';
+import { answerAskOperation } from '../../../../core/domain/ask.ts';
 import { probeFailureText, readErrorText } from '../../../../core/domain/read-failure.ts';
 import {
   checkConnectorOperation, CONNECTOR_CHECK_TEXT, type ConnectorCheckResult,
@@ -800,6 +801,8 @@ export type TrackMutations = Readonly<{
   remove: (trackId: string, areaId: string, signal?: AbortSignal) => Promise<void>;
   /** Dismiss one notification item by its kernel key. A `404` rejects too: `DISMISS_FAILURES` reads it as done. */
   dismissActivityItem: (trackId: string, key: string) => Promise<void>;
+  /** Answer one ask, one answer per question in order. A `409` rejects too: `ANSWER_ASK_FAILURES` reads it as done. */
+  answerAsk: (trackId: string, askId: number, answers: readonly string[]) => Promise<void>;
 }>;
 
 export function useTrackMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackMutations {
@@ -896,6 +899,11 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     mutationFn: ({ trackId, key }: { trackId: string; key: string }, transport: ApiTransportPort) =>
       runOperation(transport, dismissActivityItemOperation(trackId, key), unauthorized),
   });
+  /* No cache write and no invalidation, for the dismissal's reason: the projector's `overlay.set` drops the ask. */
+  const answerAsk = useRecoveryMutation(transport, {
+    mutationFn: ({ trackId, askId, answers }: { trackId: string; askId: number; answers: readonly string[] }, transport: ApiTransportPort) =>
+      runOperation(transport, answerAskOperation(trackId, askId, answers), unauthorized),
+  });
   const patchTrack = async (trackId: string, areaId: string, body: TrackPatchBody) =>
     toTrack(await patch.mutateAsync({ trackId, areaId, body }));
   return {
@@ -913,6 +921,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
       patchTrack(trackId, areaId, { pinned_at: pinned ? nowMs : null }),
     remove: async (trackId, areaId, signal) => { await remove.mutateAsync({ trackId, areaId, signal }); },
     dismissActivityItem: async (trackId, key) => { await dismissItem.mutateAsync({ trackId, key }); },
+    answerAsk: async (trackId, askId, answers) => { await answerAsk.mutateAsync({ trackId, askId, answers }); },
   };
 }
 
