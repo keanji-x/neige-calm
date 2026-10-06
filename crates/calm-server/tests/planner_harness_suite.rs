@@ -70,6 +70,8 @@ mod planner_pending_queue;
 mod planner_queue_mutations;
 #[path = "cases/planner_replace.rs"]
 mod planner_replace;
+#[path = "cases/planner_repoint_restart_lock.rs"]
+mod planner_repoint_restart_lock;
 #[path = "cases/planner_steer.rs"]
 mod planner_steer;
 #[path = "cases/planner_transcript_projection.rs"]

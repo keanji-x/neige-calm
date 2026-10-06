@@ -2547,6 +2547,11 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         // No planner card on this track, so no harness to re-anchor.
         return;
     };
+    // The card's lock, held through the start as `/planner/reset` holds it, so a send's lazy
+    // recovery or first start cannot interleave with it. Every caller has already dropped its
+    // `track_delete_locks` guard, which `planner_recovery::recover` takes under this lock.
+    let _recovery_guard =
+        crate::per_card_lock::lock_card(&s.planner_recovery_locks, &planner_card_id).await;
     let request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
