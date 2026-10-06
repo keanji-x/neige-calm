@@ -9,8 +9,9 @@ import type { ApiResult, ApiTransportPort } from '../../../../core/api/types.ts'
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { createScanEnrollment, cancelScanEnrollment, readScanEnrollmentStatus, type ScanEnrollment } from '../../../../core/api/enrollment.ts';
 import { ApiError, writeFailureText } from '../../../../core/domain/failure-class.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import {
-  MOBILE_APPROVE_FAILURES, MOBILE_INVITATION_FAILURES, MOBILE_READ_FAILURES, MOBILE_READ_TEXT, MOBILE_REVOKE_FAILURES,
+  MOBILE_APPROVE_FAILURES, MOBILE_INVITATION_FAILURES, MOBILE_REVOKE_FAILURES,
   MOBILE_STATE_FAILURES, MOBILE_WRITE_TEXT,
 } from '../../../../core/domain/mobile-access.ts';
 import { MobileAccessPane } from '../../features/settings/mobile-access.tsx';
@@ -24,8 +25,9 @@ async function valueOf<T>(request: Promise<ApiResult<T>>): Promise<T> {
   return result.value;
 }
 
-function readErrorText(error: unknown): string | null {
-  return error === null ? null : writeFailureText(MOBILE_READ_FAILURES, MOBILE_READ_TEXT)(error);
+/** The status reads (`GET /api/mobile/access`, `GET /api/mobile/enrollments`) as the shared read rule says them. */
+function statusReadErrorText(error: unknown): string | null {
+  return error === null ? null : readErrorText(error, 'Mobile access status could not be read.');
 }
 
 export function MobileAccessHost({ transport, unauthorized, onBack }: Readonly<{
@@ -139,7 +141,7 @@ export function MobileAccessHost({ transport, unauthorized, onBack }: Readonly<{
     onLogin={() => { void act(async () => { setLogin(await valueOf(loginPrivateTailnet(transport, unauthorized))); }, state); }}
     onLogout={() => { retireEnrollment(); void act(async () => { setLogin(null); setInvitation(null); await valueOf(logoutPrivateTailnet(transport, unauthorized)); }, state); }}
     busy={busy}
-    error={feedback.error ?? readErrorText(query.error) ?? readErrorText(scanStatus.error)}
+    error={feedback.error ?? statusReadErrorText(query.error) ?? statusReadErrorText(scanStatus.error)}
     onBack={onBack}
     onRefresh={() => { feedback.clear(); void query.refetch(); void scanStatus.refetch(); }}
     onEnable={() => { void act(() => valueOf(setMobileAccess(transport, unauthorized, true)), state); }}

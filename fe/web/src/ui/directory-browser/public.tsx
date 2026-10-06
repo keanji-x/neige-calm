@@ -12,6 +12,7 @@ import styles from './directory-browser.module.css';
 export type DirectoryMode = 'directory' | 'file';
 export interface DirectoryEntry { name: string; path: string; isDirectory: boolean }
 export interface DirectoryListing { path: string; parent: string | null; entries: readonly DirectoryEntry[] }
+/** A failed listing rejects with an `Error` whose message is the sentence to show; the host owns what it says. */
 export type ListDirectory = (path?: string) => Promise<DirectoryListing>;
 export interface DirectoryBrowserProps {
   listDirectory: ListDirectory; initialPath: string | null; onCancel: () => void; onSelect: (path: string) => void;
@@ -45,7 +46,7 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
       setLoading(false);
       requestAnimationFrame(() => requestAnimationFrame(() => inputRef.current?.focus()));
     }).catch((reason: unknown) => {
-      if (requestSequence.current === sequence) { setLoading(false); setError(reason instanceof Error ? reason.message : 'Failed to list directory'); }
+      if (requestSequence.current === sequence) { setLoading(false); setError(reason instanceof Error && reason.message !== '' ? reason.message : 'Could not list this folder.'); }
     });
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- initialPath is a mount-time seed; navigation owns all later loads.

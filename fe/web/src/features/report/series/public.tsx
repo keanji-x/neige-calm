@@ -9,6 +9,7 @@ import {
 import {
   CandlesFigure, PAD_X, PRICE_H, VIEW_W, formatDate, movingAverage, type CandleRow,
 } from '../candles/figure.tsx';
+import { readFailureText } from '../../../../../core/domain/read-failure.ts';
 import { SERIES_STATUS_COPY } from './copy.ts';
 import styles from './series.module.css';
 
@@ -44,7 +45,7 @@ export function ReportSeriesBlock({ payload, blockId, rev, resolve }: {
     case 'stale-rev':
       return <SeriesNotice caption={caption} text="Waiting for the report to refresh." />;
     case 'error':
-      return <SeriesNotice caption={caption} text={`Could not load this chart: ${resolution.message}`} />;
+      return <SeriesNotice caption={caption} text={readFailureText(resolution.failure, 'Could not load this chart.')} />;
     case 'pending':
       return <SeriesNotice caption={caption} text={
         resolution.reason != null && resolution.reason !== ''

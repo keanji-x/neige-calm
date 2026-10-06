@@ -20,7 +20,7 @@ export function TaskRecoveryDetails({ view, current, loading, loadError,
   onRefresh, openWorker, openableWorkerIds }: TaskRecoveryProps) {
   return <section className={styles.recovery} aria-label="Task execution">
     {loading && view === undefined && <p role="status">Loading execution history…</p>}
-    {loadError !== null && <ErrorBox message={`Could not refresh execution history: ${loadError}`}
+    {loadError !== null && <ErrorBox message={loadError}
       onRetry={onRefresh} actionLabel="Refresh execution history" pending={loading} />}
     {view?.current === null && current === undefined && <p>No attempts yet</p>}
     {current !== undefined && <>

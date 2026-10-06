@@ -7,6 +7,7 @@ import type {
   ReportSourceLinkTarget, SourceResolution, TrackSourceDetail,
 } from '../../../../../core/domain/report-source.ts';
 import { sourceHighlight } from '../../../../../core/domain/report-source.ts';
+import { readFailureText } from '../../../../../core/domain/read-failure.ts';
 import { ErrorBox } from '../../../ui/error-box/public.tsx';
 import { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
 import styles from './source.module.css';
@@ -64,7 +65,7 @@ export function ReportSourcePanel({ target, resolution, onRetry }: ReportSourceP
           : resolution.status === 'loading'
             ? <p className={styles.state} role="status">{SOURCE_PANEL_COPY.loading}</p>
             : resolution.status === 'error'
-              ? <ErrorBox message="无法读取来源。" details={resolution.message} onRetry={onRetry} />
+              ? <ErrorBox message={readFailureText(resolution.failure, '无法读取来源。')} onRetry={onRetry} />
               : <Source source={resolution.source} target={target} />}
     </div>
   );

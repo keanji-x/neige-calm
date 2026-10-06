@@ -169,8 +169,14 @@ describe('ReportSeriesBlock', () => {
     draw(undefined);
     expect(screen.getByRole('note').textContent).toBe('Loading …');
     cleanup();
-    draw({ status: 'error', message: 'Internal Server Error' });
-    expect(screen.getByRole('note').textContent).toContain('Could not load this chart: Internal Server Error');
+    draw({ status: 'error', failure: { kind: 'http', status: 500, code: 'internal', message: 'Internal Server Error' } });
+    expect(screen.getByRole('note').textContent).toBe('Could not load this chart.');
+    cleanup();
+    draw({ status: 'error', failure: { kind: 'http', status: 400, code: 'bad_request', message: 'block b1 is not a chart.series' } });
+    expect(screen.getByRole('note').textContent).toBe('Could not load this chart. block b1 is not a chart.series');
+    cleanup();
+    draw({ status: 'error', failure: { kind: 'transport', message: 'Failed to fetch' } });
+    expect(screen.getByRole('note').textContent).toBe('Could not load this chart.');
   });
 
   it('stale rev 409 is a wait, not an error', () => {

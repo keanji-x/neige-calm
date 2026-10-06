@@ -4,7 +4,7 @@ import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { ApiFailure, ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { SOURCE_PANEL_COPY } from '../../features/report/source/public.tsx';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
@@ -12,6 +12,8 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { sourceResolutionOf } from './report-source.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+
+const BOOM: ApiFailure = Object.freeze({ kind: 'http', status: 500, code: 'internal', message: 'boom' });
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = { id: 'w1', area_id: 'c1', title: 'Rates', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
@@ -90,8 +92,8 @@ describe('sourceResolutionOf', () => {
       .toEqual({ status: 'ok', source: SOURCE_ROW });
     expect(sourceResolutionOf({
       data: undefined, isError: true,
-      error: new ApiError({ kind: 'http', status: 500, code: 'internal', message: 'boom' }),
-    })).toEqual({ status: 'error', message: 'boom' });
+      error: new ApiError(BOOM),
+    })).toEqual({ status: 'error', failure: BOOM });
     expect(sourceResolutionOf({ data: undefined, isError: false, error: null })).toEqual({ status: 'loading' });
   });
 });

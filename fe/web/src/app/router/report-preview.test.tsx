@@ -4,12 +4,14 @@ import { cleanup, renderHook, waitFor } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { ApiFailure, ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ReportBlock } from '../../../../core/domain/report.ts';
 import { trackPreviewsQueryOptions, TRACK_PREVIEWS_POLL_MS } from '../providers/queries.ts';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { previewResolutionOf, useReportPreviewResolver } from './report-preview.ts';
+
+const BOOM: ApiFailure = Object.freeze({ kind: 'http', status: 500, code: 'internal', message: 'boom' });
 
 afterEach(cleanup);
 
@@ -40,8 +42,8 @@ describe('previewResolutionOf', () => {
       .toEqual({ status: 'registered', preview: fe });
     expect(previewResolutionOf({
       data: undefined, isError: true,
-      error: new ApiError({ kind: 'http', status: 500, code: 'internal', message: 'boom' }),
-    }, 'fe')).toEqual({ status: 'error', message: 'boom' });
+      error: new ApiError(BOOM),
+    }, 'fe')).toEqual({ status: 'error', failure: BOOM });
     expect(previewResolutionOf({ data: undefined, isError: false, error: null }, 'fe')).toEqual({ status: 'loading' });
   });
 });

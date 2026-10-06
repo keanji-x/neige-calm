@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 
-import type { ApiOperation } from '../api/types.js';
+import type { ApiFailure, ApiOperation } from '../api/types.js';
 
 export const SERIES_DETAILS = Object.freeze(['full', 'summary'] as const);
 export type SeriesDetail = (typeof SERIES_DETAILS)[number];
@@ -85,7 +85,7 @@ export const staleRevBodySchema = z.object({ current_rev: z.number().int().nonne
 /** What a block sees when it asks for its data; `stale-rev` is the 409 turned into a wait, not an error. */
 export type SeriesResolution =
   | Readonly<{ status: 'loading' }>
-  | Readonly<{ status: 'error'; message: string }>
+  | Readonly<{ status: 'error'; failure: ApiFailure | null }>
   | Readonly<{ status: 'stale-rev'; current_rev: number }>
   | ResolvedSeries;
 

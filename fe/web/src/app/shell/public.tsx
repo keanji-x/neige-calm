@@ -19,6 +19,8 @@ import { AREA_PALETTE } from '../../features/area/palette.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
+import { workspaceActivityErrorText, workspaceReadErrorText } from '../providers/query-read-feedback.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import {
   AreaCreatePreflightError, useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
 } from '../providers/queries.ts';
@@ -110,9 +112,12 @@ export function AppShell({
   const go = useGo();
   // The report's panel is a history destination, so the shell leaves it the same way the report does.
   const { closePanel } = useTrackPanelNavigation();
-  const readError = workspace.areasError !== null
-    ? `Areas ${workspace.areas.length > 0 ? 'could not be refreshed' : 'are unavailable'}: ${workspace.areasError.message}`
-    : workspace.trackErrorsByArea.values().next().value?.message ?? null;
+  const readError = workspaceReadErrorText(workspace);
+  /* The track selector reads one area: the area list's failure, else that area's own track read. */
+  const tracksReadErrorText = (areaId: string) => {
+    const error = workspace.areasError ?? workspace.trackErrorsByArea.get(areaId) ?? null;
+    return error === null ? null : readErrorText(error, 'Could not read tracks.');
+  };
   const readLoading = workspace.areasLoading
     || [...workspace.tracksLoadingByArea.values()].some(Boolean);
   const retryRead = () => {
@@ -374,7 +379,7 @@ export function AppShell({
             currentPath={currentPath}
             readError={readError}
             readLoading={readLoading || workspace.overlaysLoading}
-            activityError={workspace.overlaysError?.message ?? null}
+            activityError={workspaceActivityErrorText(workspace)}
             onRetryRead={retryRead}
             onGo={navigateFromRail}
             onRequestCreateArea={requestCreateArea}
@@ -410,7 +415,7 @@ export function AppShell({
                 <MobileTrackChoicesContext.Provider value={(areaId) => ({
                   tracks: areas.some((area) => area.id === areaId) ? workspace.tracksByArea.get(areaId) ?? [] : [],
                   loading: workspace.areasLoading || workspace.tracksLoadingByArea.get(areaId) === true,
-                  error: workspace.areasError?.message ?? workspace.trackErrorsByArea.get(areaId)?.message ?? null,
+                  error: tracksReadErrorText(areaId),
                   onRetry: retryRead,
                 })}><DrawerResizeProvider value={drawerWidth.resize}><Outlet /></DrawerResizeProvider></MobileTrackChoicesContext.Provider>
               </MobileHeaderTitleContext.Provider>

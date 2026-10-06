@@ -9,7 +9,7 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ReportSourceLinkTarget, SourceResolution } from '../../../../core/domain/report-source.ts';
 import { ReportSourcePanel, reportSourcePanelTitle, SOURCE_PANEL_COPY } from '../../features/report/source/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
-import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { readFailureOf } from '../../../../core/domain/read-failure.ts';
 import { trackSourceQueryOptions, type SourceRead } from '../providers/queries.ts';
 
 /** Data wins while it exists; a `missing` read is data, so a dangling citation is never an error here. */
@@ -18,8 +18,7 @@ export function sourceResolutionOf(result: Pick<UseQueryResult<SourceRead>, 'dat
     return result.data.status === 'found' ? { status: 'ok', source: result.data.source } : { status: 'missing' };
   }
   if (result.isError) {
-    const message = result.error instanceof ApiError ? result.error.failure.message : String(result.error);
-    return { status: 'error', message };
+    return { status: 'error', failure: readFailureOf(result.error) };
   }
   return { status: 'loading' };
 }

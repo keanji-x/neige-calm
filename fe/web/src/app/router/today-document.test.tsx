@@ -171,7 +171,9 @@ describe('INV-TODAYDOC-002 a failed resolve surfaces as an error', () => {
   it('shows the failure instead of quietly reporting an empty day', async () => {
     renderToday({ resolve: fail('launchpad read exploded'), body: INITIAL_BODY });
     const alerts = await screen.findAllByRole('alert');
-    expect(alerts.some((alert) => alert.textContent?.includes('launchpad read exploded'))).toBe(true);
+    expect(alerts.some((alert) => alert.textContent?.includes("Today's progress is unavailable."))).toBe(true);
+    /* A 5xx's text is the server's internals, never the reader's. */
+    expect(alerts.some((alert) => alert.textContent?.includes('launchpad read exploded'))).toBe(false);
     expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 });
@@ -197,7 +199,8 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
       resolve: resolved(true), body: INITIAL_BODY, detail: fail('track detail exploded'),
     });
     const alerts = await screen.findAllByRole('alert');
-    expect(alerts.some((alert) => alert.textContent?.includes('track detail exploded'))).toBe(true);
+    expect(alerts.some((alert) => alert.textContent?.includes("Today's progress is unavailable."))).toBe(true);
+    expect(alerts.some((alert) => alert.textContent?.includes('track detail exploded'))).toBe(false);
     expect(screen.queryByText(DECODE_COPY)).toBeNull();
     expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();

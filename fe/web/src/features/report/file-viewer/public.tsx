@@ -63,7 +63,7 @@ export function ReportFileViewer({
       <div className={`${styles.body} ${wide ? styles.bodyWide : ''}`}>
         <div className={styles.fileName} title={path}>{basename(path)}</div>
         {resource.kind === 'loading' && <p className={styles.state} role="status">Loading file…</p>}
-        {resource.kind === 'error' && <FileReadError message={resource.message} onRetry={resource.retry} />}
+        {resource.kind === 'error' && <FileReadError failure={resource.failure} onRetry={resource.retry} />}
         {resource.kind === 'image' && (
           <figure className={styles.imageWrap}>
             <img

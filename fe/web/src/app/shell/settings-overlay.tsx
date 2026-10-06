@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
 import { PluginAddPane } from '../../features/settings/plugin-add.tsx';
 import { PlannersPane } from '../../features/settings/planners.tsx';
@@ -158,7 +159,7 @@ function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   return (
     <PlannersPane
       providers={providers.data}
-      loadError={providers.error instanceof Error ? providers.error.message : null}
+      loadError={providers.error === null ? null : readErrorText(providers.error, 'Planners are unavailable.')}
       onRetryLoad={() => { void providers.refetch(); }}
       onRecheck={recheck.recheck}
       rechecking={recheck.rechecking}
@@ -188,7 +189,7 @@ function NetworkPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
     <NetworkPane
       onOpenMobile={() => setMobileOpen(true)}
       settings={settings.data?.settings}
-      loadError={settings.error instanceof Error ? settings.error.message : null}
+      loadError={settings.error === null ? null : readErrorText(settings.error, 'Settings are unavailable.')}
       onRetryLoad={() => { void settings.refetch(); }}
       /* The pane follows each commit's own promise, so a failure lands on the row
                that failed; one shared triple for two rows put HTTP's failure on the HTTPS row. */
@@ -243,7 +244,7 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
         pluginName={open.manifest_name}
         enabled={open.enabled}
         detail={detail.data}
-        loadError={detail.error instanceof Error ? detail.error.message : null}
+        loadError={detail.error === null ? null : readErrorText(detail.error, 'This plugin\'s configuration is unavailable.')}
         onRetryLoad={() => { void detail.refetch(); }}
         onBack={() => setOpenId(null)}
         onSave={(patch, options) => config.save(open.id, patch, options)}
@@ -255,7 +256,7 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   return (
     <PluginsPane
       plugins={plugins.data}
-      loadError={plugins.error instanceof Error ? plugins.error.message : null}
+      loadError={plugins.error === null ? null : readErrorText(plugins.error, 'Plugins are unavailable.')}
       onRetryLoad={() => { void plugins.refetch(); }}
       pendingIds={mutations.pendingIds}
       errors={mutations.errors}

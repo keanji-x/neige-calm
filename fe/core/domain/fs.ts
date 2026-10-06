@@ -4,6 +4,7 @@
 import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
+import type { FailureTable } from './failure-class.js';
 
 export const directoryEntryWireSchema = z.object({
   name: z.string(),
@@ -161,3 +162,29 @@ export function toDirectoryListing(
     })),
   };
 }
+
+/**
+ * What a failed filesystem read is, by the answers the fs routes give (`crates/calm-server/src/routes/fs.rs`:
+ * `listdir`, `readfile`, `gitstatus`, `gitdiff`, and the Track workspace `readfile`). Only status and code decide:
+ *
+ * | answer               | when                                                                   | class      |
+ * | -------------------- | ---------------------------------------------------------------------- | ---------- |
+ * | 403 `forbidden`      | the server may not read the path (EACCES / EPERM)                      | `denied`   |
+ * | 404 `not_found`      | Track workspace reads only: the Track itself is gone                   | `missing`  |
+ * | 400 `bad_request`    | a missing path, a directory or non-regular file, binary or non-UTF-8   | `other`    |
+ * |                      | text, a path outside the workspace, a path outside any git repository  |            |
+ * | anything else        | 5xx, 401, a lost or unreadable answer                                  | `other`    |
+ *
+ * A missing path answers 400 among other refusals, so it is not told apart: the read rule shows its reason after the
+ * generic sentence instead.
+ */
+export type FileReadClass = 'denied' | 'missing' | 'other';
+
+export const FILE_READ_FAILURES: FailureTable<FileReadClass> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([403]), code: 'forbidden', is: 'denied' as const }),
+    Object.freeze({ status: Object.freeze([404]), code: 'not_found', is: 'missing' as const }),
+  ]),
+  unauthorized: 'other',
+  otherwise: 'other',
+});

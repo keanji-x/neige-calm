@@ -149,8 +149,9 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
         status: 503, statusText: 'Service Unavailable', body: { error: 'conversation read failed' },
       }),
     });
-    expect((await screen.findByRole('alert')).textContent)
-      .toContain('Conversations are unavailable: conversation read failed');
+    /* A 503's text is the server's: only the fixed sentence shows. */
+    expect((await screen.findByRole('alert')).textContent).toContain('Conversations are unavailable.');
+    expect(screen.getByRole('alert').textContent).not.toContain('conversation read failed');
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
   });
 

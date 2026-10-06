@@ -7,6 +7,7 @@ import type { TrackDetailWire } from '../../../../core/domain/track.ts';
 import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, type ReportChange } from '../../../../core/domain/daily-planner.ts';
 import { ReportDetails } from '../../features/report/document/details.tsx';
 import { ReportChangeDetails, ReportEditDetails } from '../../features/report/changes/public.tsx';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
@@ -20,10 +21,10 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
   const trackId = daily.data?.track_id;
   const detail = useQuery({ ...trackDetailQueryOptions(transport, trackId ?? '', unauthorized), enabled: trackId !== undefined });
-  if (daily.isError) return <ErrorBox message={daily.error.message} onRetry={() => { void daily.refetch(); }} />;
+  if (daily.isError) return <ErrorBox message={readErrorText(daily.error, 'The daily Planner is unavailable.')} onRetry={() => { void daily.refetch(); }} />;
   if (daily.isPending) return <p role="status">Loading daily Planner…</p>;
   if (daily.data === null) return <p role="status">{selectedDate === undefined ? 'Preparing today’s Track…' : 'No daily Track was created for this date.'}</p>;
-  if (detail.isError) return <ErrorBox message={detail.error.message} onRetry={() => { void detail.refetch(); }} />;
+  if (detail.isError) return <ErrorBox message={readErrorText(detail.error, 'The daily Track could not be loaded.')} onRetry={() => { void detail.refetch(); }} />;
   if (detail.data === undefined || detail.data.track.id !== trackId) return <p role="status">Loading daily Track…</p>;
   const date = daily.data.date;
   return renderTrack({ ...detail.data, track: { ...detail.data.track, title: date } },
@@ -42,7 +43,7 @@ function DailyReportChanges({ date, transport, unauthorized, onOpenTrack }: Read
   });
   return <ReportDetails title="Report changes" meta={date} layout="appendix" onToggle={setOpen}>
     {changes.isPending && open && <p role="status">Loading report changes…</p>}
-    {changes.isError && <ErrorBox message={changes.error.message} onRetry={() => { void changes.refetch(); }} />}
+    {changes.isError && <ErrorBox message={readErrorText(changes.error, 'Report changes could not be loaded.')} onRetry={() => { void changes.refetch(); }} />}
     {!changes.isError && changes.data?.pages[0]?.changes.length === 0 && <p>No report changes recorded for visible Tracks on this day.</p>}
     {changes.data?.pages.flatMap((page) => page.changes.map((change) => <ReportChangeItem key={change.track_id} change={change}
       date={date} timeZone={page.timezone} through={page.through_event_id} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />))}
@@ -62,7 +63,7 @@ function ReportChangeItem({ change, date, timeZone, through, transport, unauthor
   });
   return <ReportChangeDetails change={change} onOpenTrack={onOpenTrack} onToggleEdits={setOpen}>
     {edits.isPending && open && <p role="status">Loading edits…</p>}
-    {edits.isError && <ErrorBox message={edits.error.message} onRetry={() => { void edits.refetch(); }} />}
+    {edits.isError && <ErrorBox message={readErrorText(edits.error, 'Edits could not be loaded.')} onRetry={() => { void edits.refetch(); }} />}
     {edits.data?.pages.flatMap((page) => page.edits.map((entry) => <ReportEditDetails key={entry.event_id}
       entry={entry} timeZone={timeZone} onOpenTrack={onOpenTrack} />))}
     {edits.hasNextPage && <button type="button" disabled={edits.isFetchingNextPage} onClick={() => { void edits.fetchNextPage(); }}>Load more edits</button>}

@@ -95,13 +95,13 @@ describe('workspace read feedback', () => {
 
   it('collects read and activity errors behind one indicator even with a collapsed sidebar', async () => {
     const onRetryRead = vi.fn();
-    renderSidebar({ collapsed: true, readError: 'HTTP 503', activityError: 'overlays down', onRetryRead });
+    renderSidebar({ collapsed: true, readError: 'Areas are unavailable.', activityError: 'Track activity is unavailable.', onRetryRead });
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByRole('dialog', { name: '连接详情' })).toBeNull();
     expect(screen.getAllByRole('button', { name: /^连接状态/ })).toHaveLength(1);
     await userEvent.click(screen.getByRole('button', { name: /^连接状态/ }));
-    expect(within(screen.getByRole('dialog', { name: '连接详情' })).getByText('HTTP 503')).toBeTruthy();
-    expect(within(screen.getByRole('dialog', { name: '连接详情' })).getByText('Track activity is unavailable: overlays down')).toBeTruthy();
+    expect(within(screen.getByRole('dialog', { name: '连接详情' })).getByText('Areas are unavailable.')).toBeTruthy();
+    expect(within(screen.getByRole('dialog', { name: '连接详情' })).getByText('Track activity is unavailable.')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: '重试读取' }));
     expect(onRetryRead).toHaveBeenCalledTimes(1);
   });

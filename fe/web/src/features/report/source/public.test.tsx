@@ -140,8 +140,12 @@ describe('ReportSourcePanel', () => {
     const onRetry = vi.fn();
     const { rerender } = render(<ReportSourcePanel target={WELL_FORMED} resolution={{ status: 'loading' }} onRetry={onRetry} />);
     expect(screen.getByRole('status').textContent).toBe(SOURCE_PANEL_COPY.loading);
-    rerender(<ReportSourcePanel target={WELL_FORMED} resolution={{ status: 'error', message: 'boom' }} onRetry={onRetry} />);
-    expect(screen.getByRole('alert').textContent).toContain('boom');
+    rerender(<ReportSourcePanel target={WELL_FORMED} resolution={{ status: 'error', failure: { kind: 'http', status: 500, code: 'internal', message: 'boom' } }} onRetry={onRetry} />);
+    /* A server fault shows only the fixed sentence, with no raw-text disclosure. */
+    expect(screen.getByRole('alert').textContent).toBe('无法读取来源。Retry');
+    expect(screen.getByRole('alert').querySelector('details')).toBeNull();
+    rerender(<ReportSourcePanel target={WELL_FORMED} resolution={{ status: 'error', failure: { kind: 'http', status: 404, code: 'not_found', message: 'source src_1' } }} onRetry={onRetry} />);
+    expect(screen.getByRole('alert').textContent).toBe('无法读取来源。 source src_1Retry');
     screen.getByRole('button', { name: 'Retry' }).click();
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
@@ -157,7 +161,7 @@ describe('ReportSourcePanel', () => {
   it('names the drawer after the row once it is known, and generically until then', () => {
     expect(reportSourcePanelTitle({ status: 'loading' })).toBe(SOURCE_PANEL_COPY.panelTitle);
     expect(reportSourcePanelTitle({ status: 'missing' })).toBe(SOURCE_PANEL_COPY.panelTitle);
-    expect(reportSourcePanelTitle({ status: 'error', message: 'x' })).toBe(SOURCE_PANEL_COPY.panelTitle);
+    expect(reportSourcePanelTitle({ status: 'error', failure: null })).toBe(SOURCE_PANEL_COPY.panelTitle);
     expect(reportSourcePanelTitle({ status: 'ok', source: row() })).toBe('Mikko 全球市场日志 9-13');
   });
 });

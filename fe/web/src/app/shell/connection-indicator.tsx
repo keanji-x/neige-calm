@@ -4,13 +4,13 @@ import { useState } from '../../ui/state/public.ts';
 import { useConnectionStatus } from '../providers/connection-status.tsx';
 import styles from './connection-indicator.module.css';
 
-/** Connection health and workspace read failures share one quiet disclosure. */
+/** Connection health and workspace read failures share one quiet disclosure; each error is the read rule's sentence. */
 export function ConnectionIndicator({ readError, activityError, loading, onRetry }: Readonly<{
   readError: string | null; activityError: string | null; loading: boolean; onRetry: () => void;
 }>) {
   const connection = useConnectionStatus();
   const [open, setOpen] = useState(false);
-  const errors = [readError, activityError === null ? null : `Track activity is unavailable: ${activityError}`]
+  const errors = [readError, activityError]
     .filter((error): error is string => error !== null);
   const retryConnection = connection?.connected === false ? connection.retry : undefined;
   const retryRead = errors.length > 0;

@@ -10,6 +10,7 @@ import { useConversationOutbox, useRunReads } from '../conversations/outbox.ts';
 import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
 import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
 import { ApiError, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, writeFailureOf, writeFailureText } from '../../../../core/domain/failure-class.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
@@ -111,6 +112,7 @@ import {
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
   trackOverlaysQueryOptions, trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
+import { workspaceActivityErrorText, workspaceReadErrorText } from '../providers/query-read-feedback.ts';
 import { NewTrackRoute } from './new-track-route.tsx';
 import { DailyTodayRoute } from './daily-planner.tsx';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
@@ -524,7 +526,7 @@ export function useConversationStore(
     historyLoading: history.isFetching,
     hasEarlier: history.hasNextPage,
     loadingEarlier: history.isFetchingNextPage,
-    historyError: history.error instanceof Error ? history.error.message : null,
+    historyError: history.error === null ? null : readErrorText(history.error, 'The conversation history could not be loaded.'),
     actionError: actionError?.cardId === cardId ? actionError.message : null,
     failedSend: view.failed,
     retrySend: outbox.retrySend,
@@ -1621,7 +1623,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       ? null
       : launchpadConversationsQuery.isError
         ? <ErrorBox
-            message={`Conversations are unavailable: ${launchpadConversationsQuery.error.message}`}
+            message={readErrorText(launchpadConversationsQuery.error, 'Conversations are unavailable.')}
             onRetry={() => { void launchpadConversationsQuery.refetch(); }}
           />
         : chat.list;
@@ -1641,7 +1643,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const launchpadDocument = launchpadDetailQuery.isError
     ? (
       <ErrorBox
-        message={`Today's progress is unavailable: ${launchpadDetailQuery.error.message}`}
+        message={readErrorText(launchpadDetailQuery.error, 'Today\'s progress is unavailable.')}
         onRetry={() => { void launchpadDetailQuery.refetch(); }}
       />
     )
@@ -1663,20 +1665,20 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
           />}
         />
       );
-  const workspaceError = workspace.areasError
-    ?? workspace.trackErrorsByArea.values().next().value ?? null;
+  const workspaceError = workspaceReadErrorText(workspace);
+  const activityError = workspaceActivityErrorText(workspace);
   if (workspace.areasLoading
     || (workspace.tracks.length === 0 && [...workspace.tracksLoadingByArea.values()].some(Boolean))) return null;
   return (
     <>
     {workspaceError !== null && <ErrorBox
-      message={workspaceError.message}
+      message={workspaceError}
       onRetry={() => {
         workspace.retryAreas(); workspace.retryOverlays();
         for (const area of workspace.areas) workspace.retryTracks(area.id);
       }}
     />}
-    {workspace.overlaysError !== null && <ErrorBox message={`Track activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
+    {activityError !== null && <ErrorBox message={activityError} onRetry={workspace.retryOverlays} />}
     {deletion.feedback.error !== null && <div role="alert" data-nc-error-box="">
       <span>{deletion.feedback.error}</span>
       <button type="button" data-nc-action="tertiary" onClick={deletion.feedback.clear}>Dismiss</button>
@@ -1727,7 +1729,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       launchpadDocument={launchpadDocument}
       launchpadError={launchpadQuery.isError
         ? <ErrorBox
-          message={`Today's progress is unavailable: ${launchpadQuery.error.message}`}
+          message={readErrorText(launchpadQuery.error, 'Today\'s progress is unavailable.')}
           onRetry={() => { void launchpadQuery.refetch(); }}
         />
         : undefined}
@@ -1804,7 +1806,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
 
   if (!detail.data || track === null) {
     if (detail.isLoading || detail.isFetching) return null;
-    if (detail.error instanceof Error) return <ErrorBox message={detail.error.message} onRetry={() => { void detail.refetch(); }} />;
+    if (detail.error instanceof Error) return <ErrorBox message={readErrorText(detail.error, 'This track could not be loaded.')} onRetry={() => { void detail.refetch(); }} />;
     return <PendingRoute label="Track" owner="features/track" missing />;
   }
   // `detail.data` can still be the previously-viewed track while this one

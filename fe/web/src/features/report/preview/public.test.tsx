@@ -113,8 +113,11 @@ describe('ReportPreviewBlock', () => {
     expect(screen.getByRole('note').textContent).toBe('This view does not carry previews.');
     rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => ({ status: 'loading' })} />);
     expect(screen.getByRole('note').textContent).toBe('Loading …');
-    rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => ({ status: 'error', message: 'boom' })} />);
-    expect(screen.getByRole('note').textContent).toBe('Could not read previews: boom');
+    /* A server fault says only the fixed sentence; a refusal adds the server's reason. */
+    rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => ({ status: 'error', failure: { kind: 'http', status: 500, code: 'internal', message: 'boom' } })} />);
+    expect(screen.getByRole('note').textContent).toBe('Could not read previews.');
+    rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => ({ status: 'error', failure: { kind: 'http', status: 404, code: 'not_found', message: 'track w1' } })} />);
+    expect(screen.getByRole('note').textContent).toBe('Could not read previews. track w1');
   });
 });
 

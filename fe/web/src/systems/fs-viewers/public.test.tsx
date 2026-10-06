@@ -21,8 +21,14 @@ vi.mock('./code-pane.tsx', () => ({
   ),
 }));
 
+import type { ApiFailure } from '../../../../core/api/types.ts';
 import type { CardFilesPort } from '../../../../core/domain/fs.ts';
+import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { FileViewer, type ViewerSlots } from './public.tsx';
+
+/** A read rejected the way `runOperation` rejects it: the answer's failure, for the fs class table to read. */
+const rejectWith = (failure: ApiFailure): Promise<never> => Promise.reject(new ApiError(failure));
+const DENIED: ApiFailure = Object.freeze({ kind: 'http', status: 403, code: 'forbidden', message: 'permission denied reading /repo/notes.txt' });
 
 afterEach(cleanup);
 
@@ -190,9 +196,30 @@ describe('FileViewer', () => {
   });
 
   it('shows the read failure instead of an empty pane', async () => {
-    renderViewer(port({ readFile: () => Promise.reject(new Error('Permission denied')) }));
+    renderViewer(port({ readFile: () => rejectWith(DENIED) }));
     await userEvent.click(await screen.findByRole('button', { name: /notes\.txt/ }));
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Permission denied'));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Access denied.'));
+  });
+
+  /* The sentence is the answer's class on the fs routes, never its wording (`FILE_READ_FAILURES`). */
+  it.each([
+    ['403 forbidden', DENIED, 'Access denied. permission denied reading /repo/notes.txt', 'Check its permissions, then try again.'],
+    ['404 not_found', { kind: 'http', status: 404, code: 'not_found', message: 'track w1' },
+      'File or folder not found. track w1', 'Restore it at the same path, then try again.'],
+    /* A missing path answers 400 among other refusals: generic, with the server's reason. */
+    ['400 bad_request', { kind: 'http', status: 400, code: 'bad_request', message: 'path /repo/notes.txt not found' },
+      'Could not load this file. path /repo/notes.txt not found', null],
+    /* Wording alone never picks a class, and a server fault's text never shows. */
+    ['500 naming a denial', { kind: 'http', status: 500, code: 'internal', message: 'fs /repo/notes.txt: Permission denied' },
+      'Could not load this file.', null],
+    ['a lost answer', { kind: 'transport', message: 'no such file or directory' }, 'Could not load this file.', null],
+  ] as const satisfies ReadonlyArray<readonly [string, ApiFailure, string, string | null]>)('reads %s by its class', async (_name, failure, text, description) => {
+    renderViewer(port({ readFile: () => rejectWith(failure) }));
+    await userEvent.click(await screen.findByRole('button', { name: /notes\.txt/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.querySelector('span:not([aria-hidden])')?.textContent).toBe(text);
+    expect(alert.querySelector('p')?.textContent ?? null).toBe(description);
+    expect(alert.querySelector('details')).toBeNull();
   });
 
   describe('the diff tab', () => {
@@ -252,10 +279,10 @@ describe('FileViewer', () => {
 
     it('reports a folder that is not a repository rather than showing no changes', async () => {
       renderViewer(port({
-        gitStatus: () => Promise.reject(new Error('not inside a git repository')),
+        gitStatus: () => rejectWith({ kind: 'http', status: 400, code: 'bad_request', message: 'not a git repository' }),
       }));
       await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
-      expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('not inside a git repository'));
+      expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Could not load these changes. not a git repository'));
     });
 
     /* Asserted on the intermediate state, with the second `gitStatus` still pending. */
@@ -319,11 +346,11 @@ describe('FileViewer', () => {
   it('reports a folder the reader navigated into rather than climbing back out', async () => {
     const listDirectory = vi.fn((requested: string) => (requested === '/repo'
       ? Promise.resolve({ path: '/repo', parent: '/', entries: [{ name: 'src', is_dir: true }] })
-      : Promise.reject(new Error('Permission denied'))));
+      : rejectWith(DENIED)));
     renderViewer(port({ listDirectory }));
 
     await userEvent.click(await screen.findByRole('button', { name: /src/ }));
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Permission denied'));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Access denied.'));
     expect(listDirectory.mock.calls.map(([requested]) => requested))
       .toEqual(['/repo', '/repo/src']);
   });

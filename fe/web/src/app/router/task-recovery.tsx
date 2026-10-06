@@ -4,7 +4,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { taskAttemptsOperation, type TaskRecoveryView } from '../../../../core/domain/task-recovery.ts';
 import { TaskRecoveryDetails } from '../../features/report/task/recovery.tsx';
-import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { queryKeys, runOperation } from '../providers/queries.ts';
 import { hasReadFailure } from '../providers/query-read-feedback.ts';
 import { currentTaskExecution } from '../../../../core/domain/task-execution.ts';
@@ -33,7 +33,7 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
     ]);
   };
   return <TaskRecoveryDetails current={currentTaskExecution(history.data)} view={history.data} loading={history.isFetching}
-    loadError={history.error instanceof ApiError ? history.error.message : hasReadFailure(history) ? 'History is unavailable.' : null}
+    loadError={hasReadFailure(history) ? readErrorText(history.error, 'Could not refresh execution history.') : null}
     onRefresh={() => { void refresh(); }}
     openWorker={openWorker} openableWorkerIds={openableWorkerIds} />;
 }

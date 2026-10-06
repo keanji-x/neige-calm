@@ -7,6 +7,7 @@ import {
   calendarWriteOperation, shiftCalendarDate, type CalendarDraft, type CalendarEdit, type CalendarWindow, type CalendarWrite,
 } from '../../../../core/domain/calendar.ts';
 import { writeClassOf } from '../../../../core/domain/failure-class.ts';
+import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { CalendarTasks } from '../../features/calendar/public.tsx';
 import { useKeyedIntent } from '../providers/idempotency-key.ts';
 import { pluginsQueryOptions, runOperation } from '../providers/queries.ts';
@@ -58,9 +59,11 @@ export function TodayCalendarTasks({ date, onDateChange, trackCountOn, transport
     }
     createIntent.release(request);
   };
+  /* The month view also says when the plugin list (which decides whether the calendar runs) could not be read. */
+  const monthError = plugins.error ?? (enabled ? month.error : null);
   return <CalendarTasks trackCountOn={trackCountOn} date={date} timezone={timezone} enabled={enabled} pending={write.isPending}
-    month={{ entries: month.data, loading: plugins.isPending || (enabled && month.isPending), error: plugins.error?.message ?? (enabled ? month.error?.message : null) ?? null }}
-    day={{ entries: day.data, loading: enabled && day.isPending, error: enabled ? day.error?.message ?? null : null }}
+    month={{ entries: month.data, loading: plugins.isPending || (enabled && month.isPending), error: monthError === null ? null : readErrorText(monthError, 'Could not load the calendar.') }}
+    day={{ entries: day.data, loading: enabled && day.isPending, error: enabled && day.error !== null ? readErrorText(day.error, 'Could not load this day.') : null }}
     onDateChange={onDateChange} onWindowChange={(next) => setWindow((current) => current?.from === next.from && current.until === next.until ? current : next)}
     onSettings={onSettings} onOpenTrack={onOpenTrack}
     onRetry={() => { void plugins.refetch(); if (enabled) { if (window !== null) void month.refetch(); void day.refetch(); } }}

@@ -13,11 +13,6 @@ export const MOBILE_WRITE_TEXT: WriteText = Object.freeze({
   unknown: 'Neige could not confirm this change. The list below shows what is in effect.',
 });
 
-export const MOBILE_READ_TEXT: WriteText = Object.freeze({
-  refused: 'Mobile access status was refused.',
-  unknown: 'Mobile access status could not be read.',
-});
-
 /**
  * Set-to-state writes: turning access on or off, Tailnet sign-in and sign-out, and cancelling a scan enrollment
  * (a no-op when the slot is already gone). Each refuses with 400 (not configured, or the provider failed) or 403
@@ -64,15 +59,6 @@ export const MOBILE_REVOKE_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ status: Object.freeze([404]), code: 'not_found', is: 'done' as const }),
     Object.freeze({ status: Object.freeze([403]), is: 'refused' as const }),
-  ]),
-  unauthorized: 'refused',
-  otherwise: 'unknown',
-});
-
-/** The status reads (`GET /api/mobile/access`, `GET /api/mobile/enrollments`): 400 carries the server's reason. */
-export const MOBILE_READ_FAILURES: FailureTable<WriteFailure> = Object.freeze({
-  rules: Object.freeze([
-    Object.freeze({ status: Object.freeze([400, 403]), is: 'refused' as const }),
   ]),
   unauthorized: 'refused',
   otherwise: 'unknown',

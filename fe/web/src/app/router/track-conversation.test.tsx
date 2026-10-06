@@ -490,7 +490,9 @@ describe('track conversations', () => {
     });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('history unavailable');
+    expect((await screen.findByRole('alert')).textContent).toContain('The conversation history could not be loaded.');
+    /* A 503's text is the server's: only the fixed sentence shows. */
+    expect(screen.getByRole('alert').textContent).not.toContain('history unavailable');
     expect(screen.queryByText(/Nothing said yet/)).toBeNull();
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(false);

@@ -24,6 +24,16 @@ function harness(body: unknown, status = 200) {
 }
 
 describe('createDirectoryLister', () => {
+  /* The shared read rule: a refusal adds the server's reason after the fixed sentence; a fault or lost answer does not. */
+  it.each([
+    [400, { error: 'path /gone not found', code: 'bad_request' }, 'Could not list this folder. path /gone not found'],
+    [403, { error: 'permission denied reading /root', code: 'forbidden' }, 'Could not list this folder. permission denied reading /root'],
+    [500, { error: 'fs /gone: Input/output error', code: 'internal' }, 'Could not list this folder.'],
+  ] as const)('rejects a %i listing with the sentence the browser shows', async (status, body, text) => {
+    const { listDirectory } = harness(body, status);
+    await expect(listDirectory('/gone')).rejects.toThrow(new Error(text));
+  });
+
   it('asks for the server default when no path is given', async () => {
     const { sent, listDirectory } = harness({ path: '/home/kenji', parent: '/home', entries: [] });
     await listDirectory();

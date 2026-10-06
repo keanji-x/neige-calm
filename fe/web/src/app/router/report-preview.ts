@@ -9,7 +9,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { PreviewResolution, ReportBlock, TrackPreviews } from '../../../../core/domain/report.ts';
 import type { PreviewViewportStore } from '../../features/report/preview/public.tsx';
-import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { readFailureOf } from '../../../../core/domain/read-failure.ts';
 import { trackPreviewsQueryOptions } from '../providers/queries.ts';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
@@ -24,8 +24,7 @@ export function previewResolutionOf(
     return preview === undefined ? { status: 'missing' } : { status: 'registered', preview };
   }
   if (result.isError) {
-    const message = result.error instanceof ApiError ? result.error.failure.message : String(result.error);
-    return { status: 'error', message };
+    return { status: 'error', failure: readFailureOf(result.error) };
   }
   return { status: 'loading' };
 }
