@@ -210,6 +210,7 @@ const PHASE_SEND_TABLE: Readonly<Record<HarnessPhaseTag, PhaseSendPolicy>> = Obj
   turn_completed: 'issued',
   pending_thread_start: 'queued',
   issuing_turn: 'queued',
+  compacting: 'queued',
   issuing_interrupt: 'queued',
   turn_running: 'queued',
   resumed: 'queued',

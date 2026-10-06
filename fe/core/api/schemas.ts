@@ -221,6 +221,7 @@ export const harnessPhaseTagSchema = z.enum([
   'pending_thread_start',
   'idle',
   'issuing_turn',
+  'compacting',
   'issuing_interrupt',
   'turn_running',
   'turn_completed',

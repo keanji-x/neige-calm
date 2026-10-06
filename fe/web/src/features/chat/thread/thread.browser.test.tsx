@@ -1876,3 +1876,20 @@ it('keeps long mention pills inside a narrow transcript', async () => {
   await page.screenshot({ path: '../../../../../test-results/planner-long-mentions.png' });
   await page.viewport(1280, 720);
 });
+
+it('renders three distinct command icons and runs compact by keyboard', async () => {
+  const compact = vi.fn();
+  const send = vi.fn();
+  render(<ChatComposer onSend={send} onCompact={compact} onNewConversation={vi.fn()} onSideConversation={vi.fn()} />);
+  const field = page.getByRole('combobox', { name: 'Message' });
+  await field.fill('/');
+  const options = screen.getAllByRole('option');
+  expect(options).toHaveLength(3);
+  const glyphs = options.map((option) => option.querySelector('svg')?.innerHTML);
+  expect(new Set(glyphs).size).toBe(3);
+  expect(options.every((option) => option.querySelector('svg')?.getAttribute('aria-hidden') === 'true')).toBe(true);
+  await field.fill('/compact');
+  await userEvent.keyboard('{Enter}');
+  expect(compact).toHaveBeenCalledOnce();
+  expect(send).not.toHaveBeenCalled();
+});

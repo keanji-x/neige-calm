@@ -776,6 +776,7 @@ pub struct FakeSharedCodexAppServer {
     /// The `clientUserMessageId` each `turn/start` carried, in the same order as `started_turns`.
     started_turn_client_ids: std::sync::Mutex<Vec<Option<String>>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
+    compacted_threads: std::sync::Mutex<Vec<String>>,
     turn_start_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
     /// Every `turn/steer` this fake was handed, in order.
     steered_turns: std::sync::Mutex<Vec<SteeredTurnParam>>,
@@ -821,6 +822,7 @@ impl FakeSharedCodexAppServer {
             started_turn_selections: std::sync::Mutex::new(Vec::new()),
             started_turn_client_ids: std::sync::Mutex::new(Vec::new()),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
+            compacted_threads: std::sync::Mutex::new(Vec::new()),
             turn_start_return_hook: std::sync::Mutex::new(None),
             steered_turns: std::sync::Mutex::new(Vec::new()),
             reject_turn_steer: std::sync::Mutex::new(None),
@@ -1683,6 +1685,27 @@ impl SharedCodexAppServer {
         }
         self.active_turns
             .remove_if(thread_id, |_, active| active == before_turn_id);
+        Ok(())
+    }
+
+    pub async fn thread_compact_start(&self, thread_id: &str) -> Result<()> {
+        if self.thread_seals.is_sealed(thread_id) {
+            return Err(CalmError::Conflict(
+                "the conversation is being deleted".into(),
+            ));
+        }
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = &self.fake {
+            fake.compacted_threads
+                .lock()
+                .expect("fake compaction log")
+                .push(thread_id.into());
+            return Ok(());
+        }
+        self.connected_client()
+            .await?
+            .thread_compact_start(thread_id)
+            .await?;
         Ok(())
     }
 
@@ -3792,6 +3815,17 @@ impl SharedCodexAppServer {
         if let Some(fake) = self.fake.as_ref() {
             fake.fail_turn_interrupt.store(fail, Ordering::SeqCst);
         }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn compacted_threads_for_test(&self) -> Vec<String> {
+        self.fake
+            .as_ref()
+            .expect("fake daemon")
+            .compacted_threads
+            .lock()
+            .expect("fake compaction log")
+            .clone()
     }
 
     #[cfg(feature = "fixtures")]

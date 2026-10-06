@@ -257,7 +257,7 @@ pub async fn force_planner_phase(
     if to == HarnessPhaseTag::Wedged {
         return Err(CalmError::BadRequest(
             "`wedged` is not forceable (a failed runtime row is no longer projectable by \
-             GET /planner/run); supported phases: pending_thread_start, idle, issuing_turn, \
+             GET /planner/run); supported phases: pending_thread_start, idle, issuing_turn, compacting, \
              issuing_interrupt, turn_running, turn_completed, resumed"
                 .into(),
         ));

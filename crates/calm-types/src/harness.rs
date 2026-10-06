@@ -19,6 +19,7 @@ pub enum HarnessPhaseTag {
     PendingThreadStart,
     Idle,
     IssuingTurn,
+    Compacting,
     IssuingInterrupt,
     TurnRunning,
     TurnCompleted,

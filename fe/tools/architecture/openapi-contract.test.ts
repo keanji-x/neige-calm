@@ -16,6 +16,8 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ReadFileResponse', 'ReportBlockWriteResponse',
   'ResetPlannerCardResponse', 'SendPlannerInputResponse',
   'SetPlannerModelResponse',
+  // Route-owned DTO decoded by compactPlannerOperation in core/domain/conversation.ts.
+  'CompactPlannerResponse',
   'SettingsBag', 'Terminal',
   'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadReportReset', 'TodayLaunchpadResolved',
   'TodaySummaryStarted',

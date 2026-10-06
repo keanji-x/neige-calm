@@ -529,6 +529,13 @@ impl CodexAppServer {
     }
 
     /// `turn/interrupt` — cancel a running turn.
+    /// Submit context compaction; completion arrives through turn notifications.
+    pub async fn thread_compact_start(&self, thread_id: &str) -> Result<()> {
+        self.request::<Value>("thread/compact/start", json!({ "threadId": thread_id }))
+            .await?;
+        Ok(())
+    }
+
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
         let response: Result<Value> = self
             .request(
@@ -740,3 +747,6 @@ pub fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
 mod thread_revert_wire_tests;
 #[cfg(test)]
 mod thread_start_wire_tests;
+
+#[cfg(test)]
+mod thread_compact_wire_tests;

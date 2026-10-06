@@ -428,6 +428,9 @@ impl From<&HarnessState> for HarnessPhaseTag {
         match state {
             HarnessState::PendingThreadStart => Self::PendingThreadStart,
             HarnessState::Idle => Self::Idle,
+            HarnessState::Compacting { .. } | HarnessState::CompactionRunning { .. } => {
+                Self::Compacting
+            }
             HarnessState::Issuing {
                 kind: IssuingKind::TurnStart,
                 ..

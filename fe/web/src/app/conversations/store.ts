@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, serverItemHighWater, transcriptRowToTurnOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
+import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, serverItemHighWater, transcriptRowToTurnOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
 import { describeConversation, pendingConversationIds, withRememberedConversation, withRememberedTitle, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
 import { queueTombstoneHides as tombstoneHides } from '../../../../core/domain/conversation-outbox.ts';
 import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
@@ -108,6 +108,8 @@ export function useConversationStore(
   );
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
   /** What went wrong with an action of the card it names; another card's is never this one's. */
+  const [compactPending, setCompactPending] = useState<ReadonlySet<string>>(() => new Set());
+  const compactLeases = useRef(new Set<string>());
   const [actionError, setActionError] = useState<Readonly<{ cardId: string; message: string }> | null>(null);
   /** The card shown now; a model write's answer is that of the card it was made in. */
   const shownCardId = useRef(cardId);
@@ -136,7 +138,7 @@ export function useConversationStore(
     runningTurnId: run.data?.running_turn?.turn_id ?? null, nextRead: registry.nextRead,
     transcriptKey: transcriptQuery.queryKey, transcriptReads, items,
   });
-  const working = phase === 'issuing_turn' || phase === 'turn_running';
+  const working = phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running';
   const stop = useConversationStop({
     cardId, canStop: working && !stalled,
     responseEnded: phase === 'idle' || phase === 'turn_completed',
@@ -280,6 +282,25 @@ export function useConversationStore(
     contextUsage: run.data?.token_usage ?? null,
     runningAnchor: nextRunningAnchor,
     uploadAttachment: mutations.uploadAttachment,
+    compacting: compactPending.has(cardId) || phase === 'compacting',
+    compact: () => {
+      if (compactLeases.current.has(cardId) || cardId === '') return;
+      const compactFor = cardId;
+      compactLeases.current.add(compactFor);
+      setCompactPending((current) => new Set([...current, compactFor]));
+      setActionError(null);
+      void mutations.compact().catch((error: unknown) => {
+        if (shownCardId.current === compactFor) setActionError({ cardId: compactFor,
+          message: refusalText(writeFailureOf(error), COMPACT_FAILURES, COMPACT_TEXT.refused) ?? COMPACT_TEXT.unknown });
+      }).finally(() => {
+        compactLeases.current.delete(compactFor);
+        setCompactPending((current) => {
+          const next = new Set(current);
+          next.delete(compactFor);
+          return next;
+        });
+      });
+    },
     interrupt: stop.interrupt,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
     retryRun: () => { void run.refetch().catch(() => undefined); },

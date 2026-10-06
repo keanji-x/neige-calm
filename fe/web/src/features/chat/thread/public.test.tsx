@@ -1359,3 +1359,15 @@ it('shows a paused runtime with the same disclosure and separator, even without 
   expect(screen.queryByRole('button', { name: 'Start a new conversation' })).toBeNull();
   expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
 });
+
+it('selects compact as an operation, without sending a chat message', async () => {
+  const onCompact = vi.fn();
+  const onSend = vi.fn();
+  render(<ChatComposer onSend={onSend} onCompact={onCompact} />);
+  await userEvent.type(messageField(), '/compact');
+  expect(screen.getByRole('option', { name: /^compact/ })).toBeTruthy();
+  await userEvent.keyboard('{Enter}');
+  expect(onCompact).toHaveBeenCalledOnce();
+  expect(onSend).not.toHaveBeenCalled();
+  expect(fieldText(messageField())).toBe('');
+});

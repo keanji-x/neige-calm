@@ -2343,6 +2343,107 @@
         }
       }
     },
+    "/api/cards/{id}/planner/compact": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "compact_planner_card",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Context compaction submitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompactPlannerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path or provider does not support manual compaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Human user or harness-backed card required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conversation is busy or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Compaction submission failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Harness command queue is full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/input": {
       "post": {
         "tags": [
@@ -12220,6 +12321,26 @@
           }
         }
       },
+      "CompactPlannerResponse": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "worker_session_id",
+          "started"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "started": {
+            "type": "boolean",
+            "description": "Submission confirmed; the harness remains busy until the provider completes it."
+          },
+          "worker_session_id": {
+            "type": "string"
+          }
+        }
+      },
       "ConnectorInstall": {
         "type": "object",
         "description": "The operator-supplied half of an `mcp-http` connector install.",
@@ -13282,6 +13403,7 @@
           "pending_thread_start",
           "idle",
           "issuing_turn",
+          "compacting",
           "issuing_interrupt",
           "turn_running",
           "turn_completed",

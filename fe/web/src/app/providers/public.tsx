@@ -15,7 +15,7 @@ import { LiveConnectionProvider } from './connection-status.tsx';
  * This bundle's view of the negotiated wire contract. Must equal `WEB_COMPAT_VERSION` in
  * `crates/calm-server/src/routes/version.rs` and `web/src/api/version.ts`; CI compares them textually.
  */
-export const WEB_COMPAT_VERSION = 43;
+export const WEB_COMPAT_VERSION = 44;
 /** `databaseId` / `nowMs` are optional in the type so an older kernel still parses before the curtain decides; absent means a `null` receipt scope, under which nothing is ever unread. */
 export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; conversationSide?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string; nowMs?: number }>;
 export interface ProviderRuntime {

@@ -110,7 +110,7 @@ describe('liveReplyTurns', () => {
 describe('replyMayStream', () => {
   it('names exactly the phases in which a reply may still be streaming', () => {
     const all: readonly HarnessPhaseTag[] = [
-      'pending_thread_start', 'idle', 'issuing_turn', 'issuing_interrupt', 'turn_running', 'turn_completed', 'resumed', 'wedged',
+      'pending_thread_start', 'idle', 'issuing_turn', 'compacting', 'issuing_interrupt', 'turn_running', 'turn_completed', 'resumed', 'wedged',
     ];
     expect(all.filter(replyMayStream)).toEqual(['issuing_turn', 'issuing_interrupt', 'turn_running']);
     expect(replyMayStream(null)).toBe(false);

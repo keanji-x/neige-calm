@@ -178,7 +178,7 @@ const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
 });
 
 const harnessPhaseSchema = z.enum([
-  'pending_thread_start', 'idle', 'issuing_turn', 'issuing_interrupt',
+  'pending_thread_start', 'idle', 'issuing_turn', 'compacting', 'issuing_interrupt',
   'turn_running', 'turn_completed', 'resumed', 'wedged',
 ]);
 
@@ -647,6 +647,19 @@ export function plannerQueueWriteFailure(
     return { kind: 'failed', message: failure?.kind === 'http' && failure.message !== '' ? failureReason(failure) : fallback };
   }
   return { kind };
+}
+
+export const COMPACT_FAILURES: FailureTable<WriteFailure> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404, 409, 422]), is: 'refused' as const })]),
+  unauthorized: 'refused', otherwise: 'unknown',
+});
+export const COMPACT_TEXT = Object.freeze({ refused: 'Context was not compacted.', unknown: 'Context compaction is unconfirmed. Refresh before trying again.' });
+
+export function compactPlannerOperation(cardId: string): ApiOperation<{ started: boolean }> {
+  return {
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/compact`,
+    responseSchema: z.object({ card_id: z.string(), worker_session_id: z.string(), started: z.literal(true) }),
+  };
 }
 
 export function interruptPlannerOperation(cardId: string): ApiOperation<{ stopped: boolean }> {

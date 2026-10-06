@@ -54,7 +54,7 @@ import {
   type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
-  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
+  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
   createSerialWriter, deletePlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
@@ -240,6 +240,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
         .then((sent) => { answered(); return refreshAfterSend(sent); }),
     /* Admitted at the press, as every chat write is: a stop that cannot leave the browser is not sent (#2068). */
+    compact: () => Promise.resolve().then(() => admitTransport(transport))
+      .then((admitted) => runOperation(admitted, compactPlannerOperation(cardId), unauthorized)).then(refreshAfter),
     interrupt: () => Promise.resolve().then(() => admitTransport(transport))
       .then((admitted) => runOperation(admitted, interruptPlannerOperation(cardId), unauthorized)).then(refreshAfter),
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers

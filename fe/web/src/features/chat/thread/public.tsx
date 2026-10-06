@@ -497,11 +497,13 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
   label: 'New conversation',
 });
 
+export const COMPACT_CONVERSATION_COMMAND = Object.freeze({ id: 'compact-conversation', label: 'Compact context' });
+
 export const SIDE_CONVERSATION_COMMAND = Object.freeze({ id: 'side-conversation', label: 'Side conversation' });
 
 /** Astryx's ChatComposer; we own the value and the send callback so the kernel path stays a string. */
 export function ChatComposer({
-  onSend, onStop, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
+  onSend, onStop, onCompact, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
   draft: controlledDraft, footerActions, sendAdornment,
   drawer, headerActions, allowEmptyText = false, mentionTrigger,
 }: {
@@ -514,6 +516,8 @@ export function ChatComposer({
   onStop?: () => void;
   /** The same callback the module head's `+` fires; absent where the `+` is absent, which is what keeps the `/` menu from existing. */
   onNewConversation?: () => void;
+  /** Compress the current conversation context; absent on new drafts or unsupported providers. */
+  onCompact?: () => void;
   /** Starts a separate discussion using a frozen context excerpt. */
   onSideConversation?: (question: string) => void | boolean;
   /** Hide this command on surfaces that cannot open a second card. */
@@ -546,6 +550,8 @@ export function ChatComposer({
   const stopShown = onStop != null;
 
   /* Read through a ref so `triggers` can be a stable array: `useTriggerMenu` compares the active trigger by identity on every input event. */
+  const compactRef = useRef(onCompact);
+  compactRef.current = onCompact;
   const newConversationRef = useRef(onNewConversation);
   newConversationRef.current = onNewConversation;
   const sideConversationRef = useRef(onSideConversation);
@@ -585,6 +591,7 @@ export function ChatComposer({
     parkedFocus.current = document.activeElement;
   }, [sendCount, disabled, focusRequest]);
 
+  const hasCompactCommand = onCompact !== undefined;
   const hasNewCommand = onNewConversation !== undefined;
   const hasSideCommand = onSideConversation !== undefined && showSideCommand;
   const commandTrigger = useMemo<ChatComposerTrigger>(() => ({
@@ -592,26 +599,27 @@ export function ChatComposer({
     searchSource: createStaticSource([
       ...(hasNewCommand ? [NEW_CONVERSATION_COMMAND] : []),
       ...(hasSideCommand ? [SIDE_CONVERSATION_COMMAND] : []),
+      ...(hasCompactCommand ? [COMPACT_CONVERSATION_COMMAND] : []),
     ]),
     menuLabel: 'Commands',
     emptySearchResultsText: 'No command by that name',
     /* `item.label` is deliberately not rendered. */
     renderItem: (item) => (
       <span className={styles.commandItem}>
-        {/* The `+`'s own glyph: this is the same action. No label — `Icon` is `aria-hidden` and the row's name comes from the item's `label`. */}
-        <Icon name="plus" size="sm" />
-        <span className={styles.commandName}>{item.id === SIDE_CONVERSATION_COMMAND.id ? 'side' : 'new'}</span>
-        <span className={styles.commandHint}>{item.id === SIDE_CONVERSATION_COMMAND.id ? 'Discuss with a text snapshot' : 'This one stays in the list'}</span>
+        <Icon name={item.id === COMPACT_CONVERSATION_COMMAND.id ? 'compact' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'chat' : 'plus'} size="sm" />
+        <span className={styles.commandName}>{item.id === COMPACT_CONVERSATION_COMMAND.id ? 'compact' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'side' : 'new'}</span>
+        <span className={styles.commandHint}>{item.id === COMPACT_CONVERSATION_COMMAND.id ? 'Compress this conversation’s context' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'Discuss with a text snapshot' : 'This one stays in the list'}</span>
       </span>
     ),
     /* A command is run, not inserted: returning `''` leaves the composer clear, and Astryx has already deleted the typed `/new`. */
     onSelect: (item) => {
-      if (item.id === SIDE_CONVERSATION_COMMAND.id) sideConversationRef.current?.('');
+      if (item.id === COMPACT_CONVERSATION_COMMAND.id) compactRef.current?.();
+      else if (item.id === SIDE_CONVERSATION_COMMAND.id) sideConversationRef.current?.('');
       else newConversationRef.current?.();
       return '';
     },
-  }), [hasNewCommand, hasSideCommand]);
-  const hasCommands = onNewConversation !== undefined || onSideConversation !== undefined;
+  }), [hasNewCommand, hasSideCommand, hasCompactCommand]);
+  const hasCommands = hasNewCommand || hasSideCommand || hasCompactCommand;
   /* One array per combination: a new array per render would make `useTriggerMenu` drop an open menu. */
   const triggers = useMemo<ChatComposerTrigger[]>(() => [
     ...(hasCommands ? [commandTrigger] : []),

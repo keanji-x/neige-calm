@@ -59,6 +59,8 @@ export type ConversationStore = Readonly<{
   runningAnchor: RunningTurnAnchor | null;
   uploadAttachment: UploadAttachment;
   interrupt: () => void;
+  compact: () => void;
+  compacting: boolean;
   retryHistory: () => void;
   retryRun: () => void;
   loadEarlier: () => void;

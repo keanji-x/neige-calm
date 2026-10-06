@@ -16,4 +16,5 @@
 // Revision 22 (#2209): `POST /api/cards/{id}/ratify` is gone and
 // `POST /api/tracks/{id}/asks/{ask_id}/answer` is new; a bundle of this revision would get 404 from
 // an older kernel when it answers a question.
-pub const REST_API_VERSION: &str = "22";
+// Revision 23 (#2301): manual context compaction and the compacting harness phase.
+pub const REST_API_VERSION: &str = "23";

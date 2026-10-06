@@ -229,6 +229,15 @@ impl PlannerBackend {
         }
     }
 
+    pub async fn compact_start(&self, thread_id: &str) -> Result<()> {
+        match &self.0 {
+            Arm::Codex(daemon) => daemon.thread_compact_start(thread_id).await,
+            Arm::Claude(_) => Err(CalmError::BadRequest(
+                "Manual context compaction is available for Codex conversations.".into(),
+            )),
+        }
+    }
+
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
         match &self.0 {
             Arm::Codex(daemon) => daemon.turn_interrupt(thread_id, turn_id).await,

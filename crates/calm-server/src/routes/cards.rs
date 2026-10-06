@@ -108,6 +108,10 @@ pub fn router() -> Router<AppState> {
             post(crate::routes::planner_input::steer_planner_input),
         )
         .route(
+            "/api/cards/{id}/planner/compact",
+            post(super::planner_compact::compact_planner_card),
+        )
+        .route(
             "/api/cards/{id}/planner/interrupt",
             post(interrupt_planner_card),
         )

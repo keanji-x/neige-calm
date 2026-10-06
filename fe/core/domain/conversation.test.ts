@@ -124,6 +124,7 @@ describe('kernelQueuesInput', () => {
     turn_completed: false,
     pending_thread_start: true,
     issuing_turn: true,
+    compacting: true,
     issuing_interrupt: true,
     turn_running: true,
     resumed: true,

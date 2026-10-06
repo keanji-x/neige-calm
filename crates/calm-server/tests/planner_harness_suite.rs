@@ -92,3 +92,6 @@ mod track_mail_claude;
 mod track_mail_contract;
 #[path = "cases/track_mail_fixture.rs"]
 mod track_mail_fixture;
+
+#[path = "cases/planner_compact.rs"]
+mod planner_compact;

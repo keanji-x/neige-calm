@@ -481,6 +481,7 @@ function useConversationPane(
   const existingId = open?.id ?? null;
   const newConversation = useCommittedCallback(existingId, startAnother);
   const interrupt = useCommittedCallback(existingId, store.interrupt);
+  const compact = useCommittedCallback(existingId, store.compact);
   const deleteQueuedEntry = useCommittedCallback(existingId, store.deleteQueuedEntry);
   const steerQueuedEntry = useCommittedCallback(existingId, (entry: PendingQueueEntry) => {
     const steer = store.steerQueuedEntry;
@@ -503,6 +504,8 @@ function useConversationPane(
   const canSteer = store.steerQueuedEntry !== undefined;
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({
+    compact: compact,
+    compacting: store.compacting,
     attachmentsSupported: store.attachmentsSupported,
     contextUsage: store.contextUsage,
     deleteQueuedEntry: deleteQueuedEntry,
@@ -519,7 +522,7 @@ function useConversationPane(
     steerQueuedEntry: canSteer ? steerQueuedEntry : undefined,
     stopping: store.stopping,
     working: store.working
-  }), [store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.queueWriteOut, store.sendBlocked, store.sending, setModel, store.stopping, store.working, canSteer, steerQueuedEntry]);
+  }), [compact, store.compacting, store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.queueWriteOut, store.sendBlocked, store.sending, setModel, store.stopping, store.working, canSteer, steerQueuedEntry]);
   const { replacing, bar: editingBar } = edit;
   const composerNode = useMemo(() => existingId === null ? null : (
             <ChatComposer
@@ -529,6 +532,7 @@ function useConversationPane(
               focusRequest={composerFocusRequest}
               draft={{ text: composer.text, onChange: setComposerText }}
               disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
+              onCompact={scopeProvider === 'codex' && composerView.historyReady && editingBar === undefined ? composerView.compact : undefined}
               sendWaiting={replacing} {...(editingBar === undefined ? {} : { editing: editingBar })}
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
               showSideCommand={options?.showSideCommand}
@@ -555,7 +559,7 @@ function useConversationPane(
               sendAdornment={<ContextRing usage={composerView.contextUsage} />}
               /* `stopping` keeps Stop shown while the interrupt is in flight; `interrupt()`
                                already refuses a second one. */
-              onStop={composerView.working || composerView.stopping ? composerView.interrupt : undefined}
+              onStop={!composerView.compacting && (composerView.working || composerView.stopping) ? composerView.interrupt : undefined}
               onNewConversation={options?.inline === true ? undefined : newConversation}
               mentionTrigger={mentionTrigger}
               /* The kernel reads the selection when it hands a batch to codex, so a change
@@ -675,6 +679,7 @@ function useConversationPane(
             {options?.sideError != null && (
               <ChatFooterNotice><ChatFooterError message={options.sideError} /></ChatFooterNotice>
             )}
+            {store.compacting && <ChatFooterNotice>Compacting conversation context…</ChatFooterNotice>}
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}

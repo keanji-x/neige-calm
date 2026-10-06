@@ -17,7 +17,7 @@ use crate::support::planner_queue_fixture::{
 };
 
 const TURN_A: &str = "fake-turn-0001";
-const TURN_B: &str = "fake-turn-0002";
+pub(super) const TURN_B: &str = "fake-turn-0002";
 const TURN_C: &str = "fake-turn-0003";
 
 /// One replace under `key`, as `actor`.
@@ -39,7 +39,7 @@ async fn replace_keyed_as(
 }
 
 /// One replace as a new send: a fresh key.
-async fn replace(boot: &Boot, turn_id: &str, text: &str) -> (StatusCode, Value) {
+pub(super) async fn replace(boot: &Boot, turn_id: &str, text: &str) -> (StatusCode, Value) {
     replace_keyed_as(boot, "user", turn_id, text, &calm_server::model::new_id()).await
 }
 
@@ -72,7 +72,7 @@ async fn pending_ids(boot: &Boot) -> Vec<String> {
         .collect()
 }
 
-async fn wait_for<F, Fut>(what: &str, mut done: F)
+pub(super) async fn wait_for<F, Fut>(what: &str, mut done: F)
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -119,7 +119,7 @@ async fn stored_snapshot(boot: &Boot) -> Value {
 
 // The run loop publishes its in-memory phase before committing the snapshot. Tests that
 // compare persisted state must wait for that commit, including the matching turn identity.
-async fn wait_for_stored_phase(boot: &Boot, phase: &str, turn_id: &str) {
+pub(super) async fn wait_for_stored_phase(boot: &Boot, phase: &str, turn_id: &str) {
     wait_for("the persisted turn phase", || async {
         let snapshot = stored_snapshot(boot).await;
         snapshot["phase"] == phase && snapshot["last_turn_id"] == turn_id
@@ -127,7 +127,7 @@ async fn wait_for_stored_phase(boot: &Boot, phase: &str, turn_id: &str) {
     .await;
 }
 
-fn emit_item(boot: &Boot, turn_id: &str, item: Value) {
+pub(super) fn emit_item(boot: &Boot, turn_id: &str, item: Value) {
     boot.daemon.emit_notification_for_test(Notification::Item {
         method: "item/completed".into(),
         params: json!({ "threadId": SEED_THREAD_ID, "turn": { "id": turn_id }, "item": item }),
@@ -207,7 +207,7 @@ async fn run_turn(boot: &Boot, text: &str) -> String {
 }
 
 /// Two finished turns, A then B.
-async fn two_turns() -> Boot {
+pub(super) async fn two_turns() -> Boot {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     assert_eq!(run_turn(&boot, "first").await, TURN_A);
     assert_eq!(run_turn(&boot, "second").await, TURN_B);

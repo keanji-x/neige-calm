@@ -310,6 +310,9 @@ enum HarnessObservationCommand {
     QuiesceSystemError {
         done: oneshot::Sender<Result<()>>,
     },
+    Compact {
+        answer: oneshot::Sender<Result<()>>,
+    },
     Delivery(HarnessObservationDelivery),
     Durable {
         deliveries: Vec<HarnessObservationDelivery>,
@@ -693,6 +696,29 @@ impl PlannerHarness {
         }
     }
 
+    pub async fn compact(&self) -> Result<()> {
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(CalmError::Conflict(
+                "the conversation is shutting down".into(),
+            ));
+        }
+        match &self.inner.observations {
+            ObservationIngress::Running(sender) => {
+                let (answer, result) = oneshot::channel();
+                sender
+                    .try_send(HarnessObservationCommand::Compact { answer })
+                    .map_err(map_observation_send_error)?;
+                result.await.map_err(|_| {
+                    CalmError::Conflict(
+                        "compaction submission was not confirmed; refresh the conversation".into(),
+                    )
+                })?
+            }
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(_) => compact_command::handle_compact(&self.inner).await,
+        }
+    }
+
     pub async fn interrupt(&self, reason: String) -> Result<()> {
         issue_interrupt(&self.inner, reason).await
     }
@@ -937,6 +963,7 @@ impl PlannerHarness {
         let state = match tag {
             HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
             HarnessPhaseTag::Idle => HarnessState::Idle,
+            HarnessPhaseTag::Compacting => HarnessState::Compacting { since: now },
             HarnessPhaseTag::IssuingTurn => HarnessState::Issuing {
                 since: now,
                 kind: IssuingKind::TurnStart,
@@ -1239,6 +1266,10 @@ async fn run_loop(
                         let stop=result.is_ok();
                         let _=done.send(result);
                         if stop { break; }
+                    }
+                    HarnessObservationCommand::Compact { answer } => {
+                        let outcome = compact_command::handle_compact(&inner).await;
+                        let _ = answer.send(outcome);
                     }
                     HarnessObservationCommand::Delivery(delivery) => {
                         let _accepted = on_observation(&inner, delivery.entry).await;
@@ -1905,6 +1936,18 @@ async fn on_notification(
         return Ok(());
     }
 
+    let maintenance_turn = match &*inner.state.lock().await {
+        HarnessState::CompactionRunning { turn_id, .. } => Some(turn_id.clone()),
+        _ => None,
+    };
+    if let Some(turn_id) = maintenance_turn
+        && matches!(&kind, PlannerEventKind::Item { params, .. } | PlannerEventKind::PlanUpdated { params }
+            if item_turn_id(params) == Some(turn_id.as_str()))
+    {
+        // Maintenance items are not conversational history. Recording them would put another
+        // turn after the latest user reply and prevent that reply's normal edit/rewind.
+        return persist_snapshot(inner).await;
+    }
     match kind {
         PlannerEventKind::Approval { method } => {
             tracing::warn!(
@@ -1951,6 +1994,7 @@ async fn on_notification(
                 HarnessState::TurnRunning {
                     turn_id: active, ..
                 } => active == &turn_id,
+                HarnessState::Compacting { .. } => last_seen.as_deref() != Some(turn_id.as_str()),
                 HarnessState::Idle => last_seen.is_none(),
                 HarnessState::Resumed { .. } => last_seen.as_deref() == Some(turn_id.as_str()),
                 _ => false,
@@ -1964,6 +2008,14 @@ async fn on_notification(
                     "planner harness ignoring TurnStarted that does not match expected turn"
                 );
                 live_reply::on_unaccepted_start(live, &state_snap, issued.as_deref(), &turn_id);
+                return persist_snapshot(inner).await;
+            }
+            if matches!(state_snap, HarnessState::Compacting { .. }) {
+                // Compaction has no user message: retain the user's latest turn for editing.
+                *inner.state.lock().await = HarnessState::CompactionRunning {
+                    turn_id,
+                    started_at: Instant::now(),
+                };
                 return persist_snapshot(inner).await;
             }
             let already_running_same = matches!(
@@ -1982,6 +2034,29 @@ async fn on_notification(
             *inner.interrupt_deadline.lock().await = None;
         }
         PlannerEventKind::TurnCompleted { turn } => {
+            let compact_state = inner.state.lock().await.clone();
+            if let HarnessState::CompactionRunning { turn_id, .. } = compact_state {
+                if turn.get("id").and_then(Value::as_str) != Some(turn_id.as_str()) {
+                    return Ok(());
+                }
+                *inner.state.lock().await = match turn.get("status").and_then(Value::as_str) {
+                    Some("completed" | "interrupted") => HarnessState::TurnCompleted {
+                        last_turn_id: inner
+                            .last_turn_id
+                            .lock()
+                            .await
+                            .clone()
+                            .expect("compaction requires history"),
+                    },
+                    _ => HarnessState::Wedged {
+                        since: Instant::now(),
+                        reason: "Context compaction failed; reset the conversation to continue."
+                            .into(),
+                    },
+                };
+                // A provider maintenance turn must not become the result of the user's previous prompt.
+                return persist_snapshot(inner).await;
+            }
             let fallback_turn_id = inner.last_turn_id.lock().await.clone();
             let turn_id = turn
                 .get("id")
@@ -3453,6 +3528,17 @@ async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
 }
 
 async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
+    let compact_timed_out = matches!(&*inner.state.lock().await,
+        HarnessState::Compacting { since } if since.elapsed() >= inner.config.interrupt_completion_budget)
+        || matches!(&*inner.state.lock().await, HarnessState::CompactionRunning { started_at, .. } if started_at.elapsed() >= inner.config.max_turn_duration);
+    if compact_timed_out {
+        *inner.state.lock().await = HarnessState::Wedged {
+            since: Instant::now(),
+            reason: "Compaction did not report a start; reset the conversation to continue.".into(),
+        };
+        persist_snapshot(inner).await?;
+        return Ok(());
+    }
     let resume_elapsed = {
         let state = inner.state.lock().await;
         match &*state {
@@ -3834,11 +3920,11 @@ async fn persist_snapshot_inner(
     let thread_id = snapshot.last_thread_id.clone();
     let active_turn_id = match snapshot.phase {
         HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingInterrupt => {
-            snapshot.last_turn_id.as_deref()
+            snapshot.last_turn_id.clone()
         }
+        HarnessPhaseTag::Compacting => inner.state.lock().await.active_turn_id(),
         _ => None,
-    }
-    .map(ToOwned::to_owned);
+    };
     let state_for_status = inner.state.lock().await.clone();
     let status = run_status_for(&state_for_status);
     let new_phase = snapshot.phase;
@@ -3925,6 +4011,7 @@ fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
     match snapshot.phase {
         HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
         HarnessPhaseTag::Idle => HarnessState::Idle,
+        HarnessPhaseTag::Compacting => HarnessState::Wedged { since: now, reason: "Context compaction was interrupted by a server restart; reset the conversation to continue.".into() },
         HarnessPhaseTag::IssuingTurn => {
             if snapshot.last_turn_id.is_some() {
                 HarnessState::Resumed { resumed_at: now }
@@ -4195,6 +4282,9 @@ mod tests {
     }
 }
 
+mod compact_command;
+#[cfg(test)]
+mod compact_tests;
 mod live_reply;
 mod native_ask;
 mod replace_command;

@@ -10,6 +10,13 @@ pub enum HarnessState {
         since: Instant,
         kind: IssuingKind,
     },
+    Compacting {
+        since: Instant,
+    },
+    CompactionRunning {
+        turn_id: String,
+        started_at: Instant,
+    },
     TurnRunning {
         turn_id: String,
         started_at: Instant,
@@ -50,9 +57,10 @@ pub fn run_status_for(state: &HarnessState) -> WorkerSessionState {
         HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. } => {
             WorkerSessionState::Idle
         }
-        HarnessState::Issuing { .. } | HarnessState::TurnRunning { .. } => {
-            WorkerSessionState::TurnPending
-        }
+        HarnessState::CompactionRunning { .. }
+        | HarnessState::Compacting { .. }
+        | HarnessState::Issuing { .. }
+        | HarnessState::TurnRunning { .. } => WorkerSessionState::TurnPending,
         HarnessState::Wedged { .. } => WorkerSessionState::Failed,
     }
 }
@@ -65,7 +73,11 @@ impl HarnessState {
     /// `Some` exactly in `TurnRunning`, measured at `now`.
     pub fn running_turn(&self, now: Instant) -> Option<RunningTurn> {
         match self {
-            Self::TurnRunning {
+            Self::CompactionRunning {
+                turn_id,
+                started_at,
+            }
+            | Self::TurnRunning {
                 turn_id,
                 started_at,
             } => Some(RunningTurn {
@@ -78,7 +90,9 @@ impl HarnessState {
 
     pub fn active_turn_id(&self) -> Option<String> {
         match self {
-            Self::TurnRunning { turn_id, .. } => Some(turn_id.clone()),
+            Self::CompactionRunning { turn_id, .. } | Self::TurnRunning { turn_id, .. } => {
+                Some(turn_id.clone())
+            }
             Self::Issuing {
                 kind: IssuingKind::Interrupt { target_turn_id, .. },
                 ..

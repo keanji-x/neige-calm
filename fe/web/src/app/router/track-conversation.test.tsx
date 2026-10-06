@@ -4078,3 +4078,42 @@ it('consumes automatic side submission once before an exhausted retry key change
   await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(2));
   expect(creates(requests, CONVERSATIONS)[1].body).toEqual(creates(requests, CONVERSATIONS)[0].body);
 });
+
+it('sends /compact to the selected conversation compaction endpoint without a chat input', async () => {
+  const { requests } = setup((request) => request.path.endsWith('/planner/compact')
+    ? ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', started: true }) : undefined);
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await screen.findByRole('complementary', { name: 'Assistant' });
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('/compact');
+  await waitFor(() => expect(creates(requests, `/api/cards/${ASSISTANT_CARD.id}/planner/compact`)).toHaveLength(1));
+  expect(creates(requests, `/api/cards/${ASSISTANT_CARD.id}/planner/input`)).toHaveLength(0);
+});
+
+it('compacts each selected conversation while another compaction request is pending', async () => {
+  const a = assistantRow({ title: 'Compact A' });
+  const b = assistantRow({ id: 'conv-assistant-2', title: 'Compact B' });
+  const answers = new Map<string, (response: ApiTransportResponse) => void>();
+  const { requests } = setup((request) => {
+    if (request.path === CONVERSATIONS) return ok([a, b]);
+    if (request.path.endsWith('/planner/compact')) {
+      return new Promise<ApiTransportResponse>((resolve) => { answers.set(pathCardId(request.path), resolve); });
+    }
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Compact A' }));
+  await screen.findByRole('complementary', { name: 'Compact A' });
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('/compact');
+  await waitFor(() => expect(creates(requests, `/api/cards/${a.id}/planner/compact`)).toHaveLength(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Compact B' }));
+  await screen.findByRole('complementary', { name: 'Compact B' });
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('/compact');
+  await waitFor(() => expect(creates(requests, `/api/cards/${b.id}/planner/compact`)).toHaveLength(1));
+  act(() => { answers.get(a.id)?.(ok({ card_id: a.id, worker_session_id: 'r-a', started: true })); });
+  await screen.findByText('Compacting conversation context…');
+  act(() => { answers.get(b.id)?.(ok({ card_id: b.id, worker_session_id: 'r-b', started: true })); });
+  await waitFor(() => expect(screen.queryByText('Compacting conversation context…')).toBeNull());
+});
