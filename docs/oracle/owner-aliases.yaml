@@ -146,6 +146,7 @@ aliases:
 
   # ── app/ ─────────────────────────────────────────────────
   "app/router": "app/router"
+  "app/conversations": "app/conversations"
   "app/router → cards/create": "app/router"          # 拆分：见 split_owners
   "app/navigation": "app/router/navigation"
   "web/shell": "app/router/navigation"

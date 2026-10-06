@@ -652,7 +652,8 @@
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
   source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,574-598;
-    fe/web/src/app/router/public.tsx:1743-1750,2193-2199; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
+    fe/core/domain/conversation-summary.ts:19-39; fe/web/src/app/conversations/store.ts:59-69,173-246;
+    fe/web/src/app/router/public.tsx:1068-1084,1250-1278,1430-1439,1538-1555; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
     fe/web/src/app/providers/queries.ts:949-954,988-995;
     fe/web/src/features/today/public.tsx:137-138,256-257;
     fe/web/src/app/providers/ui-preferences.tsx:74-110; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
@@ -695,7 +696,7 @@
     停在 pending 的操作什么也没写（效果与清除 lease 在同一事务提交，而标记 stuck 要求仍持有 lease），故同样答 `operation_failed`；
     停在之后阶段的卡或行可能已存在，答 500 `operation_stuck`，客户端提示去看轨道（或配方列表）后放弃这个 key（#2175）。
   source: fe/web/src/app/providers/idempotency-key.ts:25-45; fe/web/src/features/track/new-card/create.ts:13-83;
-    fe/core/domain/track.ts:408-486,669-705; fe/web/src/app/router/public.tsx:2094-2146;
+    fe/core/domain/track.ts:408-486,669-705; fe/web/src/app/router/public.tsx:1684-1728;
     fe/web/src/app/router/recipes-route.tsx:1-70; fe/web/src/app/shell/public.tsx:98-100,247-256;
     fe/web/src/app/router/calendar.tsx:46-59
   authoritative_test: fe/web/src/app/router/new-card.test.tsx:210-414; fe/web/src/app/router/recipes-route.test.tsx:416-530;
@@ -878,7 +879,7 @@
   why: >
     #2131 S7：草稿曾显示 "Transport request failed"、"Connection changed. Retry after reconnecting." 与恢复层的原文，
     与 #2128（连接状态只归全局指示器）矛盾；Recheck 与 Copy 也曾显示原始失败文本。
-  source: fe/core/domain/conversation.ts:766-797; fe/web/src/app/router/public.tsx:1020-1025,1050-1072,1104-1131,1137-1149;
+  source: fe/core/domain/conversation.ts:766-797; fe/web/src/app/router/public.tsx:579-581,600-671,674-686,704-746;
     fe/core/domain/read-failure.ts:46-69; fe/core/domain/agent-providers.ts:34-35; fe/web/src/app/providers/agent-providers.ts:43
   authoritative_test: fe/web/src/app/router/track-conversation.test.tsx:2884-2961;
     fe/web/src/app/shell/settings-planners.test.tsx:101-117

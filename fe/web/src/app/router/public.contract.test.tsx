@@ -1,3 +1,4 @@
+import { pendingConversationIds } from '../../../../core/domain/conversation-summary.ts';
 // @vitest-environment jsdom
 // Invariants owned by the route tree.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -8,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
-import { createAppRouter, createRouteTree, pendingConversationIds } from './public.tsx';
+import { createAppRouter, createRouteTree } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { pathFor, routeParamFromPath, type NavTarget } from './navigation.ts';
 

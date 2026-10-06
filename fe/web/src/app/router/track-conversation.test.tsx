@@ -1,3 +1,4 @@
+import { useConversationStore } from '../conversations/store.ts';
 // @vitest-environment jsdom
 // Starting a conversation on a track, driven through the real router; and what the
 // session registry may remember about one, driven through the real store.
@@ -24,7 +25,7 @@ import { ConversationProvider, useConversationRegistry } from '../conversations/
 import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
 import { DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { ThemeProvider } from '../theme/public.tsx';
-import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
+import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 /* A send's automatic retries wait no real time here; how long they back off is not under test. */

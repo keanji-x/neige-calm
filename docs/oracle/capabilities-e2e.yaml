@@ -113,7 +113,7 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:330,413-418,513-518; fe/core/domain/conversation-outbox.ts:129-171;
+  source: fe/web/src/app/conversations/store.ts:55-65,137-169,248-264; fe/core/domain/conversation-outbox.ts:153-225;
     fe/web/src/app/conversations/outbox.ts:188-193
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
@@ -122,7 +122,7 @@
   # here because a row declares one `test_tier` and that suite is not jsdom.
   authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:1041-1092;
     fe/web/src/app/router/track-conversation.test.tsx:701-747,2354-2395
-  owner_slice: app/router
+  owner_slice: app/conversations
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
@@ -392,7 +392,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:22,33-38,81-95,115-137;
-    fe/web/src/app/router/new-track-route.tsx:73; fe/web/src/app/router/public.tsx:1287,1793-1799;
+    fe/web/src/app/router/new-track-route.tsx:73; fe/web/src/app/router/public.tsx:508-521,837-842,1524-1530;
     fe/web/src/features/chat/thread/public.tsx:487,506,533,538-563
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose

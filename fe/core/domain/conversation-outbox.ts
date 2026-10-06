@@ -224,3 +224,11 @@ export function withConfirmedSends(
   const matched = matchSendOps(entries.filter(isConversationMessage), confirmed, spent);
   return mergeTranscript(withoutReplacedTurns(entries, confirmed), confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo));
 }
+
+/**
+ * Whether a tombstone written at `wroteAt` still hides an entry listed at `rev`:
+ * a higher rev is the kernel's word that it changed the entry after the client last saw it.
+ */
+export function queueTombstoneHides(wroteAt: number | undefined, rev: number): boolean {
+  return wroteAt !== undefined && rev <= wroteAt;
+}
