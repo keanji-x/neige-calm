@@ -1,14 +1,9 @@
-/* #1505 PR4 — the queued-message bubbles that float above the composer.
-
-   Not a surface of their own and not the composer's: each message is its own
-   chip on the page ground, which is what says "already said, still waiting"
-   rather than "the top of the box you are typing in". */
-
+/* The queue owns actions and layout; Astryx owns each message surface. */
 @layer features {
   .queue {
-    /* Sits in the composer's `drawer` slot, so the only spacing it owes is the
-       gap between the last bubble and the field's top edge. */
-    padding-block-end: var(--space-2);
+    /* Match compact composer's shell padding plus editable padding. */
+    --spacing-4: calc(var(--spacing-2) + var(--spacing-1));
+    padding-block-end: var(--space-6);
     min-inline-size: 0;
   }
 
@@ -18,54 +13,28 @@
   }
 
   .list {
-    gap: var(--space-1);
+    gap: var(--space-2);
   }
 
-  /*
-   * One bubble. Two tracks: the message and the cross.
-   *
-   * `minmax(0, 1fr)` and not `auto` for the first, and this is load-bearing
-   * rather than a preference: `Text maxLines={1}` truncates by going
-   * `white-space: nowrap`, so its min-content is the WHOLE message. Any track
-   * that respects content minimums gets blown out by it — measured at 712px
-   * inside a 290px composer, with the icon button pushed off the edge and
-   * clipped away entirely. `min-inline-size: 0` on the item alone did not fix
-   * it; the track has to be the thing that refuses.
-   *
-   * Full width, matched to the field below it. A bubble that hugged its text
-   * gave every queued message a different length, so a stack of them was a
-   * ragged edge over a straight one — and the two icons landed in a different
-   * place on every row, which is the half that costs something: they are the
-   * controls, and a control that moves has to be looked for. Same width as the
-   * composer, icons in one column, text ellipsing where the field ends.
-   */
-  .bubble {
+  .message {
+    padding-inline-end: var(--spacing-2);
+  }
+
+  .bubbleContent {
     display: grid;
-    /* One explicit track for the text; the controls after it — the cross,
-       and since #1625 P3 "Say it now" while a turn is running — take
-       implicit `auto` columns, so a bubble with one control has one track
-       after the text and a bubble with two has two, and no empty track adds
-       a gap. Each control keeps its own width for the reason the text does
-       not: the text gives way, a control is what it is. */
-    grid-template-columns: minmax(0, 1fr);
-    grid-auto-flow: column;
-    grid-auto-columns: auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    inline-size: 100%;
     align-items: center;
     gap: var(--space-1);
     min-inline-size: 0;
-    /* Asymmetric on purpose: the text needs an inset from the bubble's edge,
-       the icon button carries its own. */
-    padding: var(--space-px) var(--space-1) var(--space-px) var(--space-3);
-    border-radius: var(--radius-pill);
-    background: var(--surface-chip);
+    text-align: start;
   }
 
   .text {
     min-inline-size: 0;
+    text-align: start;
   }
 
-  /* A refusal is about one bubble, so it hangs under that bubble rather than
-     over the whole strip. */
   .notice {
     padding-block: var(--space-1);
   }

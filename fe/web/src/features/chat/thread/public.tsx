@@ -501,13 +501,15 @@ export const SIDE_CONVERSATION_COMMAND = Object.freeze({ id: 'side-conversation'
 
 /** Astryx's ChatComposer; we own the value and the send callback so the kernel path stays a string. */
 export function ChatComposer({
-  onSend, onStop, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
+  onSend, onSteer, onStop, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
   draft: controlledDraft, footerActions, sendAdornment,
   drawer, headerActions, allowEmptyText = false, mentionTrigger,
 }: {
   /** Hand over the words, or return `false` when they were not taken and stay in the field. Words of a send taken
    * and later given back return through the caller's `draft`; the composer has no second way to restore them. */
   onSend: (text: string) => boolean | void;
+  /** Submit guidance directly; absent when this surface cannot steer a running turn. */
+  onSteer?: (text: string) => boolean | void;
   /** A route may retain unsent words across its recovery surfaces. */
   draft?: Readonly<{ text: string; onChange: Dispatch<SetStateAction<string>> }>;
   /** Interrupt the turn in flight; its presence turns Send into Stop. No `stopping` guard: `ChatSendButton` is unconditionally enabled while Stop is shown, so withholding the callback only empties its `onClick` — the rule lives at the top of the router's `interrupt()`. */
@@ -552,6 +554,7 @@ export function ChatComposer({
   sideConversationRef.current = onSideConversation;
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLDivElement>(null);
   const [sendCount, setSendCount] = useState(0);
   const wantsFieldFocus = useRef(focusOnMount);
   /** The element this component last put focus on; `null` while no restore is in flight. */
@@ -574,7 +577,7 @@ export function ChatComposer({
       parkedFocus.current = null;
       return;
     }
-    const messageField = root.querySelector<HTMLElement>('[contenteditable="true"], textarea');
+    const messageField = inputRef.current?.querySelector<HTMLElement>('[contenteditable="true"], textarea') ?? null;
     messageField?.focus({ preventScroll: true });
     if (messageField !== null && document.activeElement === messageField) {
       wantsFieldFocus.current = false;
@@ -619,7 +622,7 @@ export function ChatComposer({
   ], [hasCommands, commandTrigger, mentionTrigger]);
 
   /** Hand one message to the caller. `stopShown` is not a reason to refuse: `POST /planner/input` queues the text behind the turn in flight. `disabled` is the router's "last POST has not settled". */
-  const submit = (value: string) => {
+  const submit = (value: string, mode: 'queue' | 'steer' = 'queue') => {
     const text = value.trim();
     /* `allowEmptyText` is the caller saying the message carries an image. */
     if ((text === '' && !allowEmptyText) || disabled) return;
@@ -633,7 +636,7 @@ export function ChatComposer({
       setDraft('');
       return;
     }
-    const taken = onSend(text);
+    const taken = mode === 'steer' && onSteer !== undefined && editing === undefined ? onSteer(text) : onSend(text);
     setDraft('');
     /* Astryx clears after calling `onSend`: put an untaken message back after that clear, into an empty field. */
     if (taken === false) void Promise.resolve().then(() => setDraft((current) => current === '' ? text : current));
@@ -645,7 +648,12 @@ export function ChatComposer({
   };
 
   /* `Send image`: `ChatSendButton` takes its availability from `canSend`, false on an empty draft, and an image-only message is an empty draft. Shown only while the vendor's own button is unavailable. */
-  const sendDoor = allowEmptyText && draft.trim() === '' && !stopShown && !sendWaiting && editing === undefined ? (
+  const sendDoor = onSteer !== undefined && editing === undefined ? (
+    <Button label="Queue message" size="sm" variant="primary" isIconOnly icon={sendIcon}
+      tooltip="Queue message · Enter"
+      isDisabled={disabled || sendWaiting || (draft.trim() === '' && !allowEmptyText)}
+      onClick={() => { submit(draft); }} />
+  ) : allowEmptyText && draft.trim() === '' && !stopShown && !sendWaiting && editing === undefined ? (
     <button
       type="button"
       className={styles.queueSend}
@@ -672,7 +680,7 @@ export function ChatComposer({
         if (event.key !== 'Enter' && event.key !== 'Tab' && event.key !== 'Escape') return;
         /* Only Enter pressed in the field is a send: this handler captures on the root, and the `drawer` slot puts buttons under it. */
         const field = event.target instanceof Element ? event.target.closest('[contenteditable], textarea, input') : null;
-        if (field === null) return;
+        if (field === null || !inputRef.current?.contains(field)) return;
         if (event.key === 'Escape') {
           /* Esc leaves edit mode, unless it is closing an open `/` or `@` menu; handled, so the drawer stays open. */
           if (editing === undefined || field.getAttribute('aria-expanded') === 'true' || event.nativeEvent.isComposing) return;
@@ -687,7 +695,10 @@ export function ChatComposer({
           event.stopPropagation();
           return;
         }
-        if (route === 'menu' || event.key !== 'Enter' || event.shiftKey) return;
+        if (route === 'menu' || event.key !== 'Enter') return;
+        const directSteer = event.shiftKey && (event.ctrlKey || event.metaKey)
+          && onSteer !== undefined && editing === undefined;
+        if (event.shiftKey && !directSteer) return;
         if (disabled) {
           event.preventDefault();
           event.stopPropagation();
@@ -699,6 +710,12 @@ export function ChatComposer({
            the router's Escape listener leaves an expanded combobox alone. */
         if (field.getAttribute('aria-expanded') === 'true') {
           field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        }
+        if (directSteer) {
+          event.preventDefault();
+          event.stopPropagation();
+          submit(draft, 'steer');
+          return;
         }
         /* Astryx's own `handleSubmit` refuses an empty draft (`if (!value.trim()) return;`), so an image-only send has to go through here. */
         if (allowEmptyText && draft.trim() === '') {
@@ -720,7 +737,7 @@ export function ChatComposer({
           /* Handed over whole — "one interrupt at a time" is the router's rule. */
           onStop={onStop}
           /* Astryx's own `handleSubmit` refuses only an empty draft and `isDisabled`, never `isStopShown`. */
-          onSubmit={submit}
+          onSubmit={(value) => { submit(value); }}
           {...(drawer === undefined ? {} : { drawer })}
           {...(editing === undefined && headerActions === undefined ? {} : { headerActions: editing === undefined ? headerActions : (
             <div className={styles.editBar} data-nc-edit-bar="">
@@ -735,6 +752,7 @@ export function ChatComposer({
           )}
           input={(
             <ChatComposerInput
+              ref={inputRef}
               label="Message"
               placeholder="Say something"
               /* No triggers where there is neither a command nor a mention: otherwise the field becomes an `aria-expanded="false"` combobox that can never expand. */

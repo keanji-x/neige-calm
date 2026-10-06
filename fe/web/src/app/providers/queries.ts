@@ -54,7 +54,7 @@ import {
   type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
-  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
+  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, editPlannerInputOperation, type FollowUpBehavior, sendPlannerInputOperation,
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
   createSerialWriter, deletePlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
@@ -236,14 +236,20 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     /* `admitted` is the caller's: a keyed send is admitted at the press, and each retry is admitted again.
        `answered` runs when the 200 is in hand, before the refresh starts its reads. */
     send: (text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
-      admitted: ApiTransportPort, answered: () => void) =>
-      runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
+      admitted: ApiTransportPort, answered: () => void, followUp: FollowUpBehavior = 'queue') =>
+      runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn, followUp), unauthorized)
         .then((sent) => { answered(); return refreshAfterSend(sent); }),
     /* Admitted at the press, as every chat write is: a stop that cannot leave the browser is not sent (#2068). */
     interrupt: () => Promise.resolve().then(() => admitTransport(transport))
       .then((admitted) => runOperation(admitted, interruptPlannerOperation(cardId), unauthorized)).then(refreshAfter),
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
+    editQueued: (entryId: string, text: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
+      runOperation(transport, editPlannerInputOperation(cardId, entryId, text, ifEntryRev), unauthorized)
+        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
+        .catch((error: unknown) => plannerQueueWriteFailure(
+          error instanceof ApiError ? error.failure : null, 'Could not edit the queued message.',
+        )).then(refreshAfter),
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
         .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))

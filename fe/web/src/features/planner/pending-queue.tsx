@@ -1,10 +1,13 @@
-// The messages a person typed while a turn was running: one bubble each, delete-only, with
+// The messages a person typed while a turn was running: one bubble each, with edit/delete and
 // "Say it now" offered only while the router passes `onSteer` (a running turn).
 
+import { ChatMessage, ChatMessageBubble } from '@astryxdesign/core/Chat';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { HStack } from '@astryxdesign/core/HStack';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { List } from '@astryxdesign/core/List';
+import { TextArea } from '@astryxdesign/core/TextArea';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 
@@ -21,6 +24,7 @@ export type PendingQueueProps = Readonly<{
   overflow: number;
   /** Blocks the controls while any write on this card is unanswered. */
   busy: boolean;
+  onEdit: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueWriteOutcome>;
   onDelete: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   /** Hand the entry to the turn running now; `undefined` means there is no such turn and the control is not drawn. */
   onSteer?: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
@@ -71,8 +75,9 @@ function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | '
 
 
 export function PendingQueue({
-  entries, overflow, busy, onDelete, onSteer,
+  entries, overflow, busy, onEdit, onDelete, onSteer,
 }: PendingQueueProps) {
+  const [editing, setEditing] = useState<Readonly<{ entry: PendingQueueEntry; text: string }> | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   /* One lock for the whole strip: `refusal` holds one entry's answer, so two writes settling together would silently drop one refusal. Raised in `onClick`, released in `clickAction`. */
   const [writing, setWriting] = useState(false);
@@ -99,49 +104,89 @@ export function PendingQueue({
             const text = refused?.kind === 'stale' ? refused.text : entry.text;
             return (
               <li key={entry.entry_id} data-nc-pending-entry={entry.entry_id}>
-                <div className={styles.bubble}>
-                  <Text
-                    className={styles.text}
-                    maxLines={1}
-                    hasTruncateTooltip
-                    data-nc-pending-entry-text=""
-                  >
-                    {text}
-                  </Text>
-                  {onSteer !== undefined && (
-                    <Button
-                      label="Say it now"
-                      variant="ghost"
-                      size="sm"
-                      isDisabled={blocked}
-                      data-nc-pending-entry-steer=""
+                {editing?.entry.entry_id === entry.entry_id ? (
+                  <VStack gap={1}>
+                    <TextArea label="Queued message" value={editing.text} isDisabled={blocked}
+                      onChange={(value) => { setEditing({ ...editing, text: value }); }} />
+                    {refused?.kind === 'stale' && (
+                      <Text as="p">Current message: {refused.text}</Text>
+                    )}
+                    <Button label={refused?.kind === 'stale' ? 'Replace newer message' : 'Save message'} size="sm"
+                      isDisabled={blocked || editing.text.trim() === ''}
                       onClick={() => { setWriting(true); }}
                       clickAction={async () => {
                         try {
-                          settle(entry.entry_id, await onSteer({ ...entry, text, rev }));
-                        } finally {
-                          setWriting(false);
-                        }
-                      }}
-                    />
-                  )}
-                  <IconButton
-                    label="Delete this message"
-                    icon={<Icon name="close" size="sm" />}
-                    variant="ghost"
-                    size="sm"
-                    isDisabled={blocked}
-                    /* Astryx runs `clickAction` inside `startTransition`, where a state update is non-urgent and produced no locked render at all; `onClick` runs before that transition starts. */
-                    onClick={() => { setWriting(true); }}
-                    clickAction={async () => {
-                      try {
-                        settle(entry.entry_id, await onDelete({ ...entry, text, rev }));
-                      } finally {
-                        setWriting(false);
-                      }
-                    }}
-                  />
-                </div>
+                          const revision = refused?.kind === 'stale' ? refused.rev : editing.entry.rev;
+                          const outcome = await onEdit({ ...editing.entry, rev: revision }, editing.text.trim());
+                          settle(entry.entry_id, outcome);
+                          if (outcome.kind === 'done' || outcome.kind === 'gone') setEditing(null);
+                        } finally { setWriting(false); }
+                      }} />
+                    {refused?.kind === 'stale' && (
+                      <Button label="Use current message" size="sm" variant="ghost" isDisabled={blocked}
+                        onClick={() => {
+                          setEditing({ entry: { ...entry, text: refused.text, rev: refused.rev }, text: refused.text });
+                          setRefusal(null);
+                        }} />
+                    )}
+                    <Button label="Cancel edit" size="sm" variant="ghost" isDisabled={blocked}
+                      onClick={() => { setEditing(null); }} />
+                  </VStack>
+                ) : (
+                  <ChatMessage sender="user" density="compact">
+                    <ChatMessageBubble width="100%" variant="ghost" className={styles.message} data-nc-pending-bubble="">
+                      <div className={styles.bubbleContent}>
+                        <Text
+                          className={styles.text}
+                          maxLines={1}
+                          hasTruncateTooltip
+                          data-nc-pending-entry-text=""
+                        >
+                          {text}
+                        </Text>
+                        <HStack gap={1} hAlign="end" vAlign="center" data-nc-pending-actions="">
+                          {onSteer !== undefined && (
+                            <IconButton
+                              label="Say it now"
+                              icon={<Icon name="enter" size="sm" />}
+                              variant="ghost"
+                              size="sm" width="var(--spacing-8)"
+                              isDisabled={blocked}
+                              data-nc-pending-entry-steer=""
+                              onClick={() => { setWriting(true); }}
+                              clickAction={async () => {
+                                try {
+                                  settle(entry.entry_id, await onSteer({ ...entry, text, rev }));
+                                } finally {
+                                  setWriting(false);
+                                }
+                              }}
+                            />
+                          )}
+                          <IconButton label="Edit this message" variant="ghost" size="sm" width="var(--spacing-8)" isDisabled={blocked}
+                            icon={<Icon name="edit" size="sm" />}
+                            onClick={() => { setEditing({ entry: { ...entry, text, rev }, text }); }} />
+                          <IconButton
+                            label="Delete this message"
+                            icon={<Icon name="close" size="sm" />}
+                            variant="ghost"
+                            size="sm" width="var(--spacing-8)"
+                            isDisabled={blocked}
+                            /* Astryx runs `clickAction` inside `startTransition`, where a state update is non-urgent and produced no locked render at all; `onClick` runs before that transition starts. */
+                            onClick={() => { setWriting(true); }}
+                            clickAction={async () => {
+                              try {
+                                settle(entry.entry_id, await onDelete({ ...entry, text, rev }));
+                              } finally {
+                                setWriting(false);
+                              }
+                            }}
+                          />
+                        </HStack>
+                      </div>
+                    </ChatMessageBubble>
+                  </ChatMessage>
+                )}
                 {noticeLine !== null && refused !== null && (
                   <div className={styles.notice} data-nc-pending-entry-notice="">
                     <Banner

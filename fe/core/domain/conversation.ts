@@ -472,11 +472,13 @@ export type SentPlannerInput = Readonly<{
  * latest turn an Edit replaces (#2043): the server removes it and queues this message in one commit,
  * or answers 409 `planner_turn_not_replaceable` and changes nothing; `null` for an ordinary send.
  */
+export type FollowUpBehavior = 'queue' | 'steer';
+
 export function sendPlannerInputOperation(
-  cardId: string, text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
+  cardId: string, text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null, followUp: FollowUpBehavior = 'queue',
 ): ApiOperation<SentPlannerInput> {
   return {
-    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`,
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input${followUp === 'steer' ? '/steer' : ''}`,
     /* Each field is omitted when empty: both are `#[serde(default)]` on the server, and an empty
        array or a null would change the bytes of every ordinary text-only send. */
     body: {
@@ -565,6 +567,12 @@ export function deletePlannerInputOperation(
     body: { if_entry_rev: ifEntryRev },
     responseSchema: plannerInputMutationSchema,
   };
+}
+
+/** Rewrite a queued message at the revision the person read. */
+export function editPlannerInputOperation(cardId: string, entryId: string, text: string, ifEntryRev: number): ApiOperation<PlannerInputMutation> {
+  return { method: 'PATCH', path: plannerInputPath(cardId, entryId),
+    body: { text, if_entry_rev: ifEntryRev }, responseSchema: plannerInputMutationSchema };
 }
 
 /** What `POST …/planner/input/{entry_id}/steer` answers on success. */

@@ -22,6 +22,7 @@ function renderQueue(props: Partial<PendingQueueProps> = {}) {
     entries={[entry()]}
     overflow={0}
     busy={false}
+    onEdit={vi.fn(async () => done)}
     onDelete={onDelete}
     {...props}
   />);
@@ -140,13 +141,13 @@ describe('PendingQueue', () => {
   it('offers "Say it now" only when a steer handler is given', () => {
     renderQueue();
     expect(screen.queryByRole('button', { name: 'Say it now' })).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.getAllByRole('button')).toHaveLength(2);
     cleanup();
 
     const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(() => done);
     renderQueue({ onSteer });
     expect(screen.getByRole('button', { name: 'Say it now' })).toBeTruthy();
-    expect(screen.getAllByRole('button')).toHaveLength(2);
+    expect(screen.getAllByRole('button')).toHaveLength(3);
   });
 
   it('hands the entry, at the revision shown, to the steer handler', async () => {
@@ -209,4 +210,46 @@ describe('PendingQueue', () => {
     expect(screen.queryByText(/waiting to send when this turn ends/)).toBeNull();
   });
 
+});
+
+it('edits a queued message with its listed revision', async () => {
+  const onEdit = vi.fn(async () => done);
+  renderQueue({ onEdit });
+  await userEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
+  const field = screen.getByRole('textbox', { name: 'Queued message' });
+  await userEvent.clear(field);
+  await userEvent.type(field, 'corrected words');
+  await userEvent.click(screen.getByRole('button', { name: 'Save message' }));
+  expect(onEdit).toHaveBeenCalledWith(entry(), 'corrected words');
+});
+
+it('keeps the revision read when editing despite a background refresh', async () => {
+  const onEdit = vi.fn(async () => done);
+  const { rerender } = renderQueue({ onEdit });
+  await userEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
+  rerender(<PendingQueue entries={[entry({ text: 'someone else', rev: 1 })]} overflow={0}
+    busy={false} onEdit={onEdit} onDelete={vi.fn(async () => done)} />);
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Queued message' }));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Queued message' }), 'my correction');
+  await userEvent.click(screen.getByRole('button', { name: 'Save message' }));
+  expect(onEdit).toHaveBeenCalledWith(entry(), 'my correction');
+});
+
+it('shows the conflict winner and requires explicit replacement or reload', async () => {
+  const onEdit = vi.fn<PendingQueueProps['onEdit']>()
+    .mockResolvedValueOnce({ kind: 'stale', text: 'newer server words', rev: 1 })
+    .mockResolvedValueOnce({ kind: 'done' });
+  renderQueue({ onEdit });
+  await userEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Queued message' }));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Queued message' }), 'my words');
+  await userEvent.click(screen.getByRole('button', { name: 'Save message' }));
+  expect(await screen.findByText('Current message: newer server words')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Save message' })).toBeNull();
+  expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Queued message' }).value).toBe('my words');
+  await pressable(() => screen.getByRole('button', { name: 'Use current message' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Use current message' }));
+  expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Queued message' }).value).toBe('newer server words');
+  await userEvent.click(screen.getByRole('button', { name: 'Save message' }));
+  expect(onEdit).toHaveBeenLastCalledWith(entry({ text: 'newer server words', rev: 1 }), 'newer server words');
 });

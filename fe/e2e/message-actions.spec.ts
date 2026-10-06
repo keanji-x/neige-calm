@@ -125,3 +125,34 @@ test('edits the latest message in the composer and replaces it on Send, in one k
     await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toHaveCount(0);
   } finally { await request.delete(`/api/areas/${area.id}`); }
 });
+
+
+test('queues by default, edits by icon, and steers the current draft by shortcut', async ({ page, request }) => {
+  const area = await createArea(request, `Composer follow-ups ${Date.now()}`);
+  try {
+    const track = await createTrack(request, area.id);
+    await page.goto(`/next/track/${track.id}`);
+    await page.getByRole('button', { name: 'Conversation Planner' }).click();
+    const composer = page.getByRole('combobox', { name: 'Message' });
+    await composer.fill('Start a conversation'); await composer.press('Enter');
+    await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+    await expect(page.getByRole('radiogroup', { name: 'Follow-up behavior' })).toHaveCount(0);
+    await composer.fill('Check the regression tests'); await composer.press('Enter');
+    const queued = page.locator('[data-nc-pending-entry]').filter({ hasText: 'Check the regression tests' });
+    await expect(queued).toBeVisible();
+    await queued.getByRole('button', { name: 'Edit this message' }).click();
+    await page.getByRole('textbox', { name: 'Queued message' }).fill('Check the regression tests before continuing');
+    await page.getByRole('button', { name: 'Save message' }).click();
+    await expect(queued).toContainText('Check the regression tests before continuing');
+    await composer.fill('Keep the change focused');
+    await queued.getByRole('button', { name: 'Say it now' }).click();
+    await expect(queued).toHaveCount(0);
+    await expect(composer).toHaveText('Keep the change focused');
+    const steering = page.waitForResponse((response) => response.url().endsWith('/planner/input/steer')
+      && response.request().method() === 'POST');
+    await composer.press('Control+Shift+Enter');
+    expect((await steering).status()).toBe(200);
+    await expect(composer).toHaveText('');
+    await expect(page.getByText('Check the regression tests before continuing', { exact: true })).toBeVisible();
+  } finally { await request.delete(`/api/areas/${area.id}`); }
+});

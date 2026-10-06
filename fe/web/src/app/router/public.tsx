@@ -90,7 +90,7 @@ import {
   FOLLOW_INSTALLATION_DEFAULT,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
   type ModelCatalog, type ModelSelection,
-  type PendingQueueEntry, type PlannerRunTokenUsage,
+  type FollowUpBehavior, type PendingQueueEntry, type PlannerRunTokenUsage,
   type PlannerQueueWriteOutcome, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
@@ -156,6 +156,7 @@ type ConversationStore = Readonly<{
   pendingQueue: readonly PendingQueueEntry[];
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;
+  editQueuedEntry: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueWriteOutcome>;
   deleteQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   /** Hand a queued entry to the running turn; `undefined` outside `turn_running`, and that is the whole gate. */
   steerQueuedEntry: ((entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>) | undefined;
@@ -179,7 +180,7 @@ type ConversationStore = Readonly<{
    * `replaces`: the turn an Edit's Send replaces in the same request, or `null` for a new message.
    */
   send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean,
-    replaces: ReplacedTurn | null) => Promise<void> | null;
+    replaces: ReplacedTurn | null, followUp?: FollowUpBehavior) => Promise<void> | null;
   /** Whether this card's track can take image attachments at all. */
   attachmentsSupported: boolean;
   /** How full this conversation's context is; `null` when the harness has never said. */
@@ -520,6 +521,10 @@ export function useConversationStore(
     sendBlocked: view.blocked,
     pendingQueue,
     pendingQueueOverflow,
+    editQueuedEntry: (entry, text) => mutations.editQueued(entry.entry_id, text, entry.rev).then((outcome) => {
+      if (outcome.kind === 'done') outbox.forgetQueuedEntry(entry.entry_id);
+      return outcome;
+    }),
     deleteQueuedEntry,
     steerQueuedEntry,
     historyReady: history.data !== undefined,
@@ -1367,6 +1372,8 @@ function useConversationPane(
               onSideConversation={options?.onSide === undefined || !store.historyReady ? undefined
                 : (question) => options.onSide?.(open, store.turnsOf(open.id), question)}
               onSend={(text) => store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null}
+              onSteer={store.steerQueuedEntry === undefined ? undefined
+                : (text) => store.send(open.id, text, attachments.items, true, null, 'steer') !== null}
               allowEmptyText={attachments.items.length > 0}
               /* The queue lives inside the composer, above the field: these messages have
                                not reached the model, so they are not part of the conversation behind it. */
@@ -1379,6 +1386,7 @@ function useConversationPane(
                     overflow={store.pendingQueueOverflow}
                     busy={store.sending}
                     onDelete={store.deleteQueuedEntry}
+                    onEdit={store.editQueuedEntry}
                     onSteer={store.steerQueuedEntry}
                   />
                   <PlannerAttachmentDrawer attachments={attachments} />

@@ -129,13 +129,14 @@ describe('mentionToken', () => {
   });
 });
 
-function MentionComposer({ search, onSend, onNewConversation }: {
+function MentionComposer({ search, onSend, onSteer, onNewConversation }: {
   search: MentionSearch;
   onSend: (text: string) => void;
+  onSteer?: (text: string) => void;
   onNewConversation?: () => void;
 }) {
   const trigger = useMentionTrigger(search);
-  return <ChatComposer onSend={onSend} mentionTrigger={trigger} {...(onNewConversation === undefined ? {} : { onNewConversation })} />;
+  return <ChatComposer onSend={onSend} onSteer={onSteer} mentionTrigger={trigger} {...(onNewConversation === undefined ? {} : { onNewConversation })} />;
 }
 
 function field(): HTMLElement {
@@ -392,4 +393,19 @@ describe('the @ menu in the real composer', () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeTruthy();
     expect(screen.queryByRole('combobox')).toBeNull();
   });
+});
+
+it('clears an empty mention menu before the direct steer shortcut', async () => {
+  const onSteer = vi.fn();
+  const search = vi.fn<MentionSearch>((query) => Promise.resolve(query === 'zz' ? [TAG] : []));
+  render(<MentionComposer search={search} onSend={vi.fn()} onSteer={onSteer} />);
+  await userEvent.type(field(), 'ask @bob');
+  await screen.findByText('No matches');
+  fireEvent.keyDown(field(), { key: 'Enter', ctrlKey: true, shiftKey: true });
+  expect(onSteer).toHaveBeenCalledWith('ask @bob');
+  await waitFor(() => { expect(field().getAttribute('aria-expanded')).toBe('false'); });
+  await userEvent.type(field(), '@zz');
+  await screen.findByRole('option', { name: /部署/ });
+  await userEvent.keyboard('{Enter}');
+  expect(field().querySelector('[data-astryx-token]')?.textContent).toBe('#部署');
 });

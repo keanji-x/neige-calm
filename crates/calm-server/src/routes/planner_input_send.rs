@@ -116,6 +116,47 @@ pub(crate) async fn send_planner_input(
         .map(Json)
 }
 
+/// Accept a human follow-up durably, then attempt to steer the active turn in the same
+/// serialized harness command. If no turn can take it, it remains queued. A replay
+/// acknowledges the original acceptance and never reissues steering.
+#[utoipa::path(
+    post, path = "/api/cards/{id}/planner/input/steer", tag = "cards",
+    params(("id" = String, Path, description = "Planner card id"),
+           ("Idempotency-Key" = String, Header, description = "Required; one key per message")),
+    request_body = SendPlannerInputRequest,
+    responses((status = 200, description = "Durably accepted; queue and transcript show delivery", body = SendPlannerInputResponse),
+              (status = 400, description = "Invalid input or replacement requested", body = ErrorBody),
+              (status = 403, description = "Human actor required", body = ErrorBody),
+              (status = 404, description = "Card not found", body = ErrorBody),
+              (status = 409, description = "Idempotency conflict or dormant harness", body = ErrorBody),
+              (status = 503, description = "Queue full or harness unavailable", body = ErrorBody))
+)]
+pub(crate) async fn send_planner_follow_up(
+    State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
+    actor: Actor,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<SendPlannerInputRequest>,
+) -> Result<Json<SendPlannerInputResponse>> {
+    require_rest_user_actor_for(
+        &actor,
+        "direct planner follow-up",
+        "Only the person may guide their running turn.",
+    )?;
+    if body.replaces_turn.is_some() {
+        return Err(CalmError::BadRequest(
+            "A direct follow-up cannot replace a finished turn".into(),
+        ));
+    }
+    let key = parse_idempotency_key_header(&headers)?
+        .ok_or_else(|| CalmError::BadRequest("Idempotency-Key header is required".into()))?;
+    send_planner_input_with_behavior(&s, &w, &cs, actor, (id, body), key, true)
+        .await
+        .map(Json)
+}
+
 /// The send behind the route, for callers inside the server that mint their own key.
 #[allow(deprecated)]
 pub(crate) async fn send_planner_input_keyed(
@@ -127,6 +168,20 @@ pub(crate) async fn send_planner_input_keyed(
     body: SendPlannerInputRequest,
     idempotency_key: String,
 ) -> Result<SendPlannerInputResponse> {
+    send_planner_input_with_behavior(s, w, cs, actor, (id, body), idempotency_key, false).await
+}
+
+#[allow(deprecated)]
+async fn send_planner_input_with_behavior(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    actor: Actor,
+    request: (String, SendPlannerInputRequest),
+    idempotency_key: String,
+    steer: bool,
+) -> Result<SendPlannerInputResponse> {
+    let (id, body) = request;
     let SendPlannerInputRequest {
         text,
         attachments,
@@ -167,6 +222,9 @@ pub(crate) async fn send_planner_input_keyed(
     });
     if let Some(turn_id) = &replaces_turn {
         hashed["replaces_turn"] = json!(turn_id);
+    }
+    if steer {
+        hashed["follow_up"] = json!("steer");
     }
     let key = SendKey {
         payload_hash: format!("v1:{}", stable_payload_hash(&hashed)?),
@@ -231,9 +289,15 @@ pub(crate) async fn send_planner_input_keyed(
     let replaced = replaces_turn.clone();
     let ack = match replaces_turn {
         None => {
-            harness
-                .observe_user_message_durable(text, attachments, key)
-                .await?
+            if steer {
+                harness
+                    .observe_user_message_steer_durable(text, attachments, key)
+                    .await?
+            } else {
+                harness
+                    .observe_user_message_durable(text, attachments, key)
+                    .await?
+            }
         }
         Some(turn_id) => {
             harness

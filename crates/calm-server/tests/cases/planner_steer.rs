@@ -1176,3 +1176,126 @@ async fn immediate_recovery_waits_for_the_failed_turn_to_settle_accepted_steers(
     }
     boot.harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn direct_follow_up_steers_without_a_separate_queue_request() {
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    queue_one(&boot, "start").await;
+    wait_for_turn_running(&boot).await;
+    let (status, body) = direct_follow_up(&boot, "correct direction", "direct-1", "user").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(pending(&boot).await.is_empty());
+    assert_eq!(boot.daemon.steered_turns_for_test().len(), 1);
+}
+
+async fn direct_follow_up(boot: &Boot, text: &str, key: &str, actor: &str) -> (StatusCode, Value) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/cards/{}/planner/input/steer",
+                    boot.planner_card.id
+                ))
+                .header("content-type", "application/json")
+                .header("x-calm-actor", actor)
+                .header("Idempotency-Key", key)
+                .body(Body::from(json!({"text": text}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn direct_follow_up_replay_does_not_steer_twice() {
+    let boot = boot_with_a_running_turn().await;
+    let (status, first) =
+        direct_follow_up(&boot, "correct direction", "direct-retry", "user").await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (status, replay) =
+        direct_follow_up(&boot, "correct direction", "direct-retry", "user").await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(first, replay);
+    assert_eq!(boot.daemon.steered_turns_for_test().len(), 1);
+    assert!(pending(&boot).await.is_empty());
+}
+
+#[tokio::test]
+async fn direct_follow_up_without_running_turn_stays_queued_and_rejects_agents() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let (status, body) = direct_follow_up(&boot, "next turn", "direct-idle", "user").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(pending(&boot).await.len(), 1);
+    let (status, body) = direct_follow_up(&boot, "agent intent", "direct-ai", "ai:codex").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(pending(&boot).await.len(), 1);
+}
+
+#[tokio::test]
+async fn direct_follow_up_key_cannot_be_reused_for_queue_intent() {
+    use crate::support::planner_queue_fixture::post_input_keyed;
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let (status, body) = direct_follow_up(&boot, "same words", "intent-key", "user").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post_input_keyed(
+        boot.app.clone(),
+        boot.planner_card.id.as_str(),
+        json!({"text": "same words"}),
+        "intent-key",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "idempotency_key_reused");
+    assert_eq!(pending(&boot).await.len(), 1);
+}
+
+#[tokio::test]
+async fn direct_follow_up_full_queue_does_not_fold_into_existing_intent() {
+    use calm_server::harness::{MAX_PENDING_QUEUE_LEN, QueueEntry};
+    let entries = (0..MAX_PENDING_QUEUE_LEN)
+        .map(|i| QueueEntry::user_message(format!("existing {i}"), None, vec![]))
+        .collect();
+    let boot = boot_with(idle_snapshot(entries)).await;
+    let before = boot.harness.pending_entries_for_test().await;
+    let (status, body) = direct_follow_up(&boot, "new guidance", "full-key", "user").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(boot.harness.pending_entries_for_test().await, before);
+    assert!(boot.daemon.steered_turns_for_test().is_empty());
+}
+
+#[tokio::test]
+async fn direct_follow_up_refusal_or_unknown_delivery_retains_one_accepted_message() {
+    for unknown in [false, true] {
+        let boot = boot_with_a_running_turn().await;
+        if unknown {
+            boot.daemon.fail_turn_steer_for_test(true);
+        } else {
+            boot.daemon.reject_turn_steer_for_test(Some(NO_ACTIVE_TURN));
+        }
+        let (status, first) =
+            direct_follow_up(&boot, "retained guidance", "direct-refusal", "user").await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        let rows = pending(&boot).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["text"], "retained guidance");
+        let (status, replay) =
+            direct_follow_up(&boot, "retained guidance", "direct-refusal", "user").await;
+        assert_eq!(status, StatusCode::OK, "{replay}");
+        assert_eq!(first, replay);
+        assert_eq!(boot.daemon.steered_turns_for_test().len(), 1);
+        assert_eq!(pending(&boot).await.len(), 1);
+    }
+}
