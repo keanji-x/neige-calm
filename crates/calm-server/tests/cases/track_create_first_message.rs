@@ -768,26 +768,20 @@ impl Boot {
         use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
         use calm_server::operation::{OperationKey, OperationOutcome};
 
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: calm_server::ids::ActorId::KernelDispatcher,
-            track_id: track["id"].as_str().expect("a created track").to_string(),
-            planner_card_id: planner_card_id.to_string().into(),
-            report_card_id: None,
-            sort: None,
-            cwd: track["cwd"]
-                .as_str()
-                .expect("a created track's cwd")
-                .to_string(),
-            goal: None,
-            reset_harness_items: false,
-            force_new_thread: false,
-            profile: Default::default(),
-            create_card: None,
-            first_message: None,
-            create_request_sha256: None,
-            opening_briefing: None,
-        })
-        .unwrap();
+        // Decoded through the production payload type; every field not named here takes its serde default.
+        let mut fields = json!({
+            "actor": calm_server::ids::ActorId::KernelDispatcher,
+            "track_id": track["id"].as_str().expect("a created track"),
+            "cwd": track["cwd"].as_str().expect("a created track's cwd"),
+            "force_new_thread": false,
+        });
+        fields[calm_truth::db::sqlite::PLANNER_START_CARD_KEY] = json!(planner_card_id);
+        let request: PlannerHarnessStartOperationPayload = serde_json::from_value(fields).unwrap();
+        assert!(
+            !request.force_new_thread && request.goal.is_none() && request.first_message.is_none(),
+            "premise: a plain non-deferred start: {request:?}"
+        );
+        let payload = serde_json::to_value(&request).unwrap();
         let op_id = self
             .state
             .operation_runtime
