@@ -10,7 +10,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::claude_planner::config::ClaudePlannerHost;
 use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::db::sqlite::{
-    HarnessTranscriptMeasure, HarvestOutcome, HarvestedFrom, HarvestedMessage,
+    HarnessTranscriptMeasure, HarvestOutcome, HarvestScope, HarvestedFrom, HarvestedMessage,
     append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
     harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
     harvest_pending_user_messages_tx, session_bind_attribution_tx,
@@ -840,10 +840,19 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         // Sentences a human typed, stranded on a runtime that left the active set before its queue drained. Read, carried and stamped in THIS transaction so a second restart takes nothing.
         let worker_session_id = new_id();
+        // A start that replaces the card's thread carries what its predecessor left undelivered, whether that predecessor is
+        // still active (the inherit above) or failed mid-conversation (#2192). The other starts keep the narrower scope: a
+        // send starts only a card whose rows are all failed starts, and a creator re-sends its own first message.
+        let scope = if defer_runtime_start {
+            HarvestScope::SupersededAndFailedCarrier
+        } else {
+            HarvestScope::Superseded
+        };
         let harvested = harvest_pending_user_messages_tx(
             tx,
             card.id.as_str(),
             worker_session_id.as_str(),
+            scope,
             now,
             stranded_user_messages,
         )
@@ -1242,10 +1251,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             )?;
                             // Supersede FIRST, then harvest: the harvest predicate is `state = 'superseded'` and this row is the one being retired.
                             session_supersede_active_tx(tx, &existing.id, now).await?;
+                            // The card's carrier is this operation's own placeholder now, so only superseded rows can be stranded.
                             let harvested = harvest_pending_user_messages_tx(
                                 tx,
                                 &card_id,
                                 &worker_session_id,
+                                HarvestScope::Superseded,
                                 now,
                                 stranded_user_messages,
                             )

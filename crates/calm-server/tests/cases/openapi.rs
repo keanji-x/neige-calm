@@ -23,6 +23,7 @@ fn document_contains_every_annotated_path() {
         "/api/cards/{id}/planner/input/{entry_id}",
         "/api/cards/{id}/planner/model",
         "/api/cards/{id}/planner/reset",
+        "/api/cards/{id}/planner/restart",
         "/api/cards/{card_id}/terminal",
         "/api/tracks/{track_id}/terminal-cards",
         "/api/tracks/{track_id}/codex-cards",

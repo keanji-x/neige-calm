@@ -14,6 +14,7 @@ use crate::ids::{ActorId, CardId};
 use crate::per_card_lock::lock_key;
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
 use crate::routes::planner_cards::{card_runs_headless_harness, validate_planner_input};
+use crate::routes::planner_session::dormant;
 use crate::routes::planner_start_fence::CardStartFence;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::session_projection_repo::WorkerSessionProjection;
@@ -92,7 +93,7 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
         (status = 400, description = "Empty text, a blank `replaces_turn`, or a missing or invalid Idempotency-Key (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 403, description = "Card is not a planner codex card, or `replaces_turn` from an actor other than `X-Calm-Actor: user`", body = ErrorBody),
         (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "Distinguished by `code`:\n* `idempotency_key_reused` — this Idempotency-Key was already used for a different message on this card (text, attachments, `replaces_turn` or actor); final, send the new message under a new key.\n* `idempotency_key_concurrent` — another request under this key was stored at the same moment and nothing of this one was; send it again under the same key to receive that answer.\n* `planner_harness_dormant` — the planner harness session is dormant and not recoverable; reset to start a session.\n* `planner_harness_runtime_superseded` — on a plain send, the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor.\n* `planner_turn_not_replaceable` — on a send with `replaces_turn`, the turn cannot be replaced now (not the latest, still running, messages waiting, the conversation shutting down or no longer the card's, or the provider refusing the cut) and nothing changed; the body carries the reason.\n* `conflict` — the conversation's run loop is shutting down, already closed, or stopped before answering, on a plain send and on a send with `replaces_turn` alike. This answer does not say whether the message was stored or the turn replaced: a loop that stopped before answering may have committed it. Send it again under the same key.", body = ErrorBody),
+        (status = 409, description = "Distinguished by `code`:\n* `idempotency_key_reused` — this Idempotency-Key was already used for a different message on this card (text, attachments, `replaces_turn` or actor); final, send the new message under a new key.\n* `idempotency_key_concurrent` — another request under this key was stored at the same moment and nothing of this one was; send it again under the same key to receive that answer.\n* `planner_harness_dormant` — the planner harness session is dormant and not recoverable; `POST /planner/restart` starts a fresh one and keeps the history.\n* `planner_harness_runtime_superseded` — on a plain send, the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor.\n* `planner_turn_not_replaceable` — on a send with `replaces_turn`, the turn cannot be replaced now (not the latest, still running, messages waiting, the conversation shutting down or no longer the card's, or the provider refusing the cut) and nothing changed; the body carries the reason.\n* `conflict` — the conversation's run loop is shutting down, already closed, or stopped before answering, on a plain send and on a send with `replaces_turn` alike. This answer does not say whether the message was stored or the turn replaced: a loop that stopped before answering may have committed it. Send it again under the same key.", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Observation queue saturated, shared codex app-server not running, a planner-harness start is still in flight, or the provider did not check a replace in time — retry shortly", body = ErrorBody),
     ),
@@ -331,11 +332,6 @@ async fn live_planner_harness(
     Option<CardStartFence>,
 )> {
     let fence = CardStartFence::lock(s, card_id).await;
-    let dormant = || {
-        CalmError::PlannerHarnessDormant(format!(
-            "no live planner harness session for card {card_id}; reset to start a session",
-        ))
-    };
     let runtime = s
         .repo
         .session_projection_active_for_card(&card_id.to_string())

@@ -18,10 +18,13 @@ use crate::state::{CodexShellState, RouteState, WorkerState};
 
 use super::planner_recovery;
 
-fn dormant(card_id: &CardId) -> CalmError {
-    CalmError::PlannerHarnessDormant(format!(
-        "no recoverable planner harness session for card {card_id}; reset to start a session",
-    ))
+/// The 409 `planner_harness_dormant` of every planner write route. A client may show the text to
+/// the person as it is, so it names the way out (`/planner/restart`) in their words.
+pub(crate) fn dormant() -> CalmError {
+    CalmError::PlannerHarnessDormant(
+        "This conversation's session can't be resumed; start a fresh session (history is kept)"
+            .into(),
+    )
 }
 
 /// The backend a harness of `provider` turns on, as a 503 when it is not ready. A Claude Planner
@@ -86,7 +89,7 @@ pub(crate) async fn ensure_planner_session(
     // Re-fetch under the lock and use only this row: `/planner/reset` or a racing Send may have moved it.
     let Some(runtime) = planner_recovery::candidate(s, card_id, human_send).await? else {
         if !human_send {
-            return Err(dormant(card_id));
+            return Err(dormant());
         }
         return start_fresh(s, cs, card_id, actor, fence).await;
     };
@@ -108,11 +111,11 @@ pub(crate) async fn ensure_planner_session(
         .as_ref()
         .is_some_and(is_harness_snapshot_value)
     {
-        return Err(dormant(card_id));
+        return Err(dormant());
     }
     // A half-failed start can leave an active row without a thread; boot recovery's rule falls back to the snapshot's `last_thread_id`, and only when BOTH are absent is the row unrecoverable.
     if effective_runtime_thread_id(&runtime).is_none() {
-        return Err(dormant(card_id));
+        return Err(dormant());
     }
     // A recovered harness can't issue turns without its backend; surface that instead of spawning a silently-wedged task.
     let provider = if runtime.kind == WorkerSessionKind::SharedPlanner
@@ -139,7 +142,7 @@ pub(crate) async fn ensure_planner_session(
     )
     .await?
     .installed()
-    .ok_or_else(|| dormant(card_id))?;
+    .ok_or_else(dormant)?;
     tracing::info!(
         card_id = %card_id,
         runtime_id = %runtime_id,
@@ -169,7 +172,7 @@ async fn send_owns_first_start(
 
 /// A person's send found no session to use. Only a card whose start would lose nothing is
 /// started: a live or retired carrier, or a transcript, is a conversation, and minting a new one
-/// over it is `/planner/reset`'s decision, never a send's. Nor is a card started while a
+/// over it is `/planner/restart`'s or `/planner/reset`'s decision, never a send's. Nor is a card started while a
 /// creator's start can still come: that start would supersede this send's session. The start is unkeyed, so a refused
 /// start (the backend down: 503) leaves nothing behind and the next send starts it.
 async fn start_fresh(
@@ -190,7 +193,7 @@ async fn start_fresh(
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
     let conversation = fence.conversation().await?;
     match conversation {
-        CardConversation::ThreadToPreserve => return Err(dormant(card_id)),
+        CardConversation::ThreadToPreserve => return Err(dormant()),
         CardConversation::StartInFlight => return Err(starting()),
         CardConversation::NeverStarted | CardConversation::OnlyFailedStarts => {}
     }
@@ -201,7 +204,7 @@ async fn start_fresh(
         .and_then(|role| PlannerBinding::from_card(&card, role))
         .ok_or_else(|| CalmError::Forbidden(format!("card {card_id} is not a harness card")))?;
     if !send_owns_first_start(s, &card, binding.profile, conversation).await? {
-        return Err(dormant(card_id));
+        return Err(dormant());
     }
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(crate::test_seams::PLANNER_FIRST_START, card_id.as_str()).await;

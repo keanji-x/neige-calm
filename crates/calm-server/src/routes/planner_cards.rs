@@ -1,5 +1,5 @@
 //! `/api/cards/{id}/planner/*` — the headless planner-harness card surface: interrupt, run
-//! snapshot, reset and the harness start they share, plus the input-length rule and the
+//! snapshot, reset, restart and the harness start they share, plus the input-length rule and the
 //! shared-planner turn teardown used by card, track and area deletion.
 
 use crate::actor::Actor;
@@ -16,6 +16,7 @@ use crate::operation::planner_harness_start_adapter::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_payload_hash};
+use crate::routes::planner_session::dormant;
 use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_lookup::card_is_shared_planner;
 use crate::session_projection_repo::WorkerSessionProjection;
@@ -280,7 +281,7 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
         (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)", body = InterruptPlannerCardResponse),
         (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "No live planner harness session for this card — reset to start a session (code `planner_harness_dormant`)", body = ErrorBody),
+        (status = 409, description = "No live session for this card; start a fresh one, history is kept (code `planner_harness_dormant`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -304,11 +305,6 @@ pub(crate) async fn interrupt_planner_card(
         )));
     }
 
-    let dormant = || {
-        CalmError::PlannerHarnessDormant(format!(
-            "no live planner harness session for card {id}; reset to start a session",
-        ))
-    };
     let runtime = s
         .repo
         .session_projection_active_for_card(&card.id.to_string())
@@ -477,9 +473,45 @@ pub(crate) async fn reset_planner_card(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<ResetPlannerCardResponse>> {
+    let (card, profile) = harness_card_to_start(&s, &id).await?;
+    let response =
+        fresh_start_planner_card(s, actor, card, profile, HarnessCardStart::Reset).await?;
+    Ok(Json(response))
+}
+
+// #2192: the recovery a person is offered instead of `/planner/reset`, which erases the history.
+/// Start a fresh session on a new thread and keep the transcript. The old session is shut down as
+/// `/planner/reset` does, and the messages it never delivered, whether it is live or failed
+/// mid-conversation, are queued on the new one.
+#[utoipa::path(
+    post,
+    path = "/api/cards/{id}/planner/restart",
+    tag = "cards",
+    params(("id" = String, Path, description = "Planner card id")),
+    responses(
+        (status = 200, description = "Fresh session started on a new thread; the transcript is kept", body = ResetPlannerCardResponse),
+        (status = 403, description = "Card is not a planner codex card, or is a Planner on an area chat track", body = ErrorBody),
+        (status = 404, description = "Card or track not found", body = ErrorBody),
+        (status = 409, description = "The card's provider cannot start now: Claude is not configured or its version cannot be confirmed (`conflict`)", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn restart_planner_card(
+    State(s): State<RouteState>,
+    actor: Actor,
+    Path(id): Path<String>,
+) -> Result<Json<ResetPlannerCardResponse>> {
+    let (card, profile) = harness_card_to_start(&s, &id).await?;
+    let response =
+        fresh_start_planner_card(s, actor, card, profile, HarnessCardStart::Restart).await?;
+    Ok(Json(response))
+}
+
+/// The card a reset or restart starts, with its OWN profile; the guards both routes share.
+async fn harness_card_to_start(s: &RouteState, id: &str) -> Result<(Card, HarnessProfile)> {
     let card = s
         .repo
-        .card_get(&id)
+        .card_get(id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let role = s
@@ -488,34 +520,37 @@ pub(crate) async fn reset_planner_card(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let binding = crate::harness::profile::PlannerBinding::from_card(&card, role)
         .ok_or_else(|| CalmError::Forbidden(format!("card {id} is not a planner codex card")))?;
-    let response = reset_planner_card_shared(s, actor, card, binding.profile).await?;
-    Ok(Json(response))
+    Ok((card, binding.profile))
 }
 
-async fn reset_planner_card_shared(
+/// Reset or restart under the card's start fence. The SAME per-card fence as `/planner/input` lazy
+/// recovery, or one racing a registry-miss Send could resurrect the session it replaced.
+/// Deadlock-free: neither adapter re-enters `planner_recovery_locks`.
+async fn fresh_start_planner_card(
     s: RouteState,
     actor: Actor,
     card: Card,
     profile: HarnessProfile,
+    start: HarnessCardStart,
 ) -> Result<ResetPlannerCardResponse> {
-    // Reset takes the SAME per-card fence as `/planner/input` lazy recovery, or a reset racing a registry-miss Send could resurrect the reset-away session. Deadlock-free: neither adapter re-enters `planner_recovery_locks`.
     let fence = CardStartFence::lock(&s, &card.id).await;
     let active_runtime = s
         .repo
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
-    reset_planner_harness_card(s, &fence, actor, card, profile, active_runtime).await
+    replace_planner_harness_session(s, &fence, actor, card, profile, start, active_runtime).await
 }
 
-async fn reset_planner_harness_card(
+async fn replace_planner_harness_session(
     s: RouteState,
     fence: &CardStartFence,
     actor: Actor,
     card: Card,
     profile: HarnessProfile,
+    start: HarnessCardStart,
     runtime: Option<WorkerSessionProjection>,
 ) -> Result<ResetPlannerCardResponse> {
-    start_harness_card(&s, fence, &actor, &card, profile, HarnessCardStart::Reset).await?;
+    start_harness_card(&s, fence, &actor, &card, profile, start).await?;
 
     if let Some(runtime) = runtime {
         let shutdown_payload = serde_json::to_value(PlannerHarnessShutdownOperationPayload {
@@ -531,7 +566,7 @@ async fn reset_planner_harness_card(
         .ok_or_else(|| CalmError::Internal(format!("runtime for card {} missing", card.id)))?;
     let new_thread_id = active.thread_id.clone().ok_or_else(|| {
         CalmError::Internal(format!(
-            "planner harness reset succeeded without a thread_id for card {}",
+            "a fresh planner harness start succeeded without a thread_id for card {}",
             card.id
         ))
     })?;
@@ -554,12 +589,14 @@ async fn reset_planner_harness_card(
 pub(crate) enum HarnessCardStart {
     /// `/planner/reset`: a new thread, and the transcript cleared.
     Reset,
+    /// `/planner/restart`: a new thread, and the transcript kept.
+    Restart,
     /// A send to a card with no thread to preserve (#2184): there is nothing to clear.
     Fresh,
 }
 
 /// Run one `planner-harness-start` for an existing harness card and wait for it. The one
-/// derivation of that start's payload, shared by reset and a send's fresh start, submitted under
+/// derivation of that start's payload, shared by reset, restart and a send's fresh start, submitted under
 /// the card's [`CardStartFence`]. `profile` is the card's OWN, from its
 /// [`PlannerBinding`](crate::harness::profile::PlannerBinding): starting an assistant under
 /// `Planner` would mint its thread with the planner prompt while the card row still says `assistant`.
@@ -586,7 +623,6 @@ pub(crate) async fn start_harness_card(
         )));
     }
     // No profile inherits the track title as a goal on these user-driven paths.
-    let reset = start == HarnessCardStart::Reset;
     let start_request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
@@ -595,8 +631,8 @@ pub(crate) async fn start_harness_card(
         sort: None,
         cwd: track.workspace.agent_cwd().to_string(),
         goal: None,
-        reset_harness_items: reset,
-        force_new_thread: reset,
+        reset_harness_items: start == HarnessCardStart::Reset,
+        force_new_thread: start != HarnessCardStart::Fresh,
         profile,
         create_card: None,
         first_message: None,

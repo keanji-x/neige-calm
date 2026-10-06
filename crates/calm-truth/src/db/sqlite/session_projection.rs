@@ -334,14 +334,28 @@ pub async fn session_mark_queue_harvested_tx(
     Ok(())
 }
 
-/// Move the never-delivered human sentences off this card's `superseded`
-/// runtimes to the successor minted in THIS transaction. `failed` rows are
-/// excluded (their caller re-sends under a retry key); the successor excludes
-/// itself because a revived placeholder already holds its queue in memory.
+/// Which of a card's retired runtimes a harvest reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HarvestScope {
+    /// The `superseded` ones only.
+    Superseded,
+    /// Also the card's current runtime when it failed mid-conversation (a wedge
+    /// or a system error: `failed`, never completed), for a start that replaces
+    /// the card's thread (#2192). A failed START is completed, and keeps its
+    /// queue for its creator's keyed retry.
+    SupersededAndFailedCarrier,
+}
+
+/// Move the never-delivered human sentences off this card's retired runtimes,
+/// as `scope` names them, to the successor minted in THIS transaction. Every
+/// other `failed` row is excluded (its caller re-sends under a retry key); the
+/// successor excludes itself because a revived placeholder already holds its
+/// queue in memory.
 pub async fn harvest_pending_user_messages_tx<F>(
     tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
     successor_id: &str,
+    scope: HarvestScope,
     now: i64,
     extract: F,
 ) -> WorkerSessionProjectionResult<HarvestedQueues>
@@ -349,16 +363,22 @@ where
     F: Fn(&str, &str) -> HarvestOutcome,
 {
     let rows = sqlx::query(
-        r#"SELECT id, handle_state_json
-             FROM worker_sessions
-            WHERE card_id = ?1
-              AND state = 'superseded'
-              AND queue_harvested_at_ms IS NULL
-              AND id != ?2
-            ORDER BY created_at_ms ASC, id ASC"#,
+        r#"SELECT ws.id, ws.handle_state_json
+             FROM worker_sessions ws
+            WHERE ws.card_id = ?1
+              AND ws.queue_harvested_at_ms IS NULL
+              AND ws.id != ?2
+              AND (ws.state = 'superseded'
+                   OR (?3
+                       AND ws.state = 'failed'
+                       AND ws.completed_at_ms IS NULL
+                       AND EXISTS (SELECT 1 FROM cards c
+                                    WHERE c.id = ws.card_id AND c.session_id = ws.id)))
+            ORDER BY ws.created_at_ms ASC, ws.id ASC"#,
     )
     .bind(card_id)
     .bind(successor_id)
+    .bind(scope == HarvestScope::SupersededAndFailedCarrier)
     .fetch_all(&mut **tx)
     .await?;
 

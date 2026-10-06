@@ -76,6 +76,8 @@ mod planner_queue_mutations;
 mod planner_replace;
 #[path = "cases/planner_repoint_restart_lock.rs"]
 mod planner_repoint_restart_lock;
+#[path = "cases/planner_restart.rs"]
+mod planner_restart;
 #[path = "cases/planner_start_fence_invariant.rs"]
 mod planner_start_fence_invariant;
 #[path = "cases/planner_steer.rs"]

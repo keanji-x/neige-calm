@@ -104,7 +104,7 @@ pub use session_mirror::{
     session_supersede_active_tx, session_supersede_and_start_tx,
 };
 pub use session_projection::{
-    HarvestOutcome, HarvestedFrom, HarvestedMessage, HarvestedQueues,
+    HarvestOutcome, HarvestScope, HarvestedFrom, HarvestedMessage, HarvestedQueues,
     harvest_pending_user_messages_tx, session_bind_attribution_tx,
     session_clear_queue_harvested_tx, session_clear_terminal_run_id_tx,
     session_complete_for_card_tx, session_complete_for_terminal_tx, session_complete_tx,

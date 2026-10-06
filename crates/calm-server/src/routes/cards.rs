@@ -20,7 +20,7 @@ use crate::routes::idempotency_key::{
 };
 use crate::routes::planner_cards::{
     card_runs_headless_harness, get_planner_run, interrupt_planner_card,
-    interrupt_shared_card_active_turn, reset_planner_card,
+    interrupt_shared_card_active_turn, reset_planner_card, restart_planner_card,
 };
 use crate::session_projection_lookup::{
     project_runtime_into_card_payload, project_runtime_into_cards_payload,
@@ -121,6 +121,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/cards/{id}/planner/run", get(get_planner_run))
         .route("/api/cards/{id}/planner/reset", post(reset_planner_card))
+        .route(
+            "/api/cards/{id}/planner/restart",
+            post(restart_planner_card),
+        )
 }
 
 #[utoipa::path(
