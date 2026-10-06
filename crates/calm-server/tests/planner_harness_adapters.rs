@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -33,9 +33,6 @@ use calm_server::track_area_cache::TrackAreaCache;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tracing_subscriber::layer::Context as TracingContext;
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::{Layer, registry as tracing_registry};
 
 /// Serializes tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -47,23 +44,6 @@ impl Drop for EnvGuard {
         unsafe {
             std::env::remove_var(self.0);
         }
-    }
-}
-
-struct TargetCaptureLayer {
-    targets: Arc<Mutex<Vec<String>>>,
-}
-
-impl<S> Layer<S> for TargetCaptureLayer
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(&self, event: &tracing::Event<'_>, _ctx: TracingContext<'_, S>) {
-        self.targets.lock().unwrap().push(format!(
-            "{}:{}",
-            event.metadata().level(),
-            event.metadata().target()
-        ));
     }
 }
 
@@ -1669,12 +1649,23 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
     .unwrap();
     tx.commit().await.unwrap();
 
-    // Rewind to the app-server-interact phase carrying the STALE tx_output.
+    // Rewind to the app-server-interact phase carrying the STALE tx_output. The mint's checkpoint transaction
+    // binds the thread to the row, writes the card back and checkpoints `codex_thread_id` together, so a
+    // process that died before it committed has none of the three; this clears exactly those (the row's
+    // thread, the output's checkpoint and the phase detail's thread). It is an approximation of that state,
+    // not a capture of it: the succeeded run's row snapshot and session state are kept. The writeback under
+    // test reads neither (it reads the card's payload in its own transaction), so the approximation does
+    // not change what this test pins.
     stale_output["result"] = stale_card;
     stale_output["data"]
         .as_object_mut()
         .unwrap()
         .remove("codex_thread_id");
+    sqlx::query("UPDATE worker_sessions SET thread_id = NULL WHERE card_id = ?1")
+        .bind(&card_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
     sqlx::query(
         r#"UPDATE operations
               SET phase = 'app_server_interact',
@@ -1689,7 +1680,7 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
     .bind(
         serde_json::to_string(&json!({
             "kind": "mint_and_await",
-            "thread_id": thread_id,
+            "thread_id": null,
         }))
         .unwrap(),
     )
@@ -1716,10 +1707,21 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
         Some(&json!("high")),
         "concurrent payload key was clobbered by the stale snapshot: {final_payload}"
     );
-    // ... and the six keys it does own are still applied.
+    // ... and the six keys it does own are still applied, naming the thread the replay minted.
+    let replayed_thread_id = repo
+        .session_projection_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("runtime row")
+        .thread_id
+        .expect("thread id");
+    assert_ne!(
+        replayed_thread_id, thread_id,
+        "the replay mints its own thread"
+    );
     assert_eq!(
         final_payload.get("codex_thread_id"),
-        Some(&json!(thread_id)),
+        Some(&json!(replayed_thread_id)),
         "{final_payload}"
     );
     assert!(
@@ -1742,273 +1744,6 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
     }
     // Untouched seed keys are still there too.
     assert_eq!(final_payload.get("planner_harness"), Some(&json!(true)));
-}
-
-#[tokio::test]
-async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
-    let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let track = seed_track(&repo).await;
-    let card_id = new_id();
-    seed_planner_card(&repo, &role_cache, &track, &card_id).await;
-    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-        actor: calm_server::ids::ActorId::User,
-        track_id: track.id.to_string(),
-        planner_card_id: CardId::from(card_id.clone()),
-        report_card_id: None,
-        sort: None,
-        cwd: track.workspace.path.clone(),
-        goal: Some("adapter goal".into()),
-        reset_harness_items: false,
-        force_new_thread: false,
-        profile: Default::default(),
-        create_card: None,
-        opening_briefing: None,
-        first_message: None,
-        create_request_sha256: None,
-    })
-    .unwrap();
-    let op_id = state
-        .operation_runtime
-        .submit("planner-harness-start", key(), payload)
-        .await
-        .unwrap();
-    assert!(matches!(
-        wait_op(&state, &op_id).await,
-        OperationOutcome::Succeeded { .. }
-    ));
-    let first_thread = repo
-        .session_projection_active_for_card(&card_id)
-        .await
-        .unwrap()
-        .expect("runtime row")
-        .thread_id;
-    assert_eq!(first_thread.as_deref(), Some("fake-thread-0001"));
-    let original_hash = card_mcp_hash(&repo, &card_id)
-        .await
-        .expect("initial start stores card MCP hash");
-
-    let (tx_output_json,): (String,) =
-        sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
-            .bind(&op_id)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    let mut output: TxOutput = serde_json::from_str(&tx_output_json).unwrap();
-    output
-        .data
-        .as_object_mut()
-        .expect("operation output data")
-        .remove("codex_thread_id");
-
-    sqlx::query(
-        r#"UPDATE operations
-              SET phase = 'app_server_interact',
-                  phase_detail_json = ?1,
-                  tx_output_json = ?2,
-                  lease_owner = NULL,
-                  lease_until_ms = NULL,
-                  completed_at_ms = NULL
-            WHERE id = ?3"#,
-    )
-    .bind(
-        serde_json::to_string(&serde_json::json!({
-            "kind": "mint_and_await",
-            "thread_id": Value::Null,
-        }))
-        .unwrap(),
-    )
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(&op_id)
-    .execute(repo.pool())
-    .await
-    .unwrap();
-
-    state.operation_runtime.drive().await.unwrap();
-    assert!(matches!(
-        wait_op(&state, &op_id).await,
-        OperationOutcome::Succeeded { .. }
-    ));
-    let recovered_thread = repo
-        .session_projection_active_for_card(&card_id)
-        .await
-        .unwrap()
-        .expect("runtime row after recovery")
-        .thread_id;
-    assert_eq!(recovered_thread.as_deref(), Some("fake-thread-0001"));
-    assert!(
-        state
-            .shared_codex_appserver
-            .cached_card_for_thread("fake-thread-0002")
-            .is_none(),
-        "recovery must reuse runtime thread_id instead of minting another planner thread"
-    );
-    assert_eq!(
-        card_mcp_hash(&repo, &card_id).await.as_deref(),
-        Some(original_hash.as_str()),
-        "reuse with a valid per-card token row must leave the card MCP hash in place"
-    );
-}
-
-#[tokio::test]
-async fn reusable_thread_without_token_fails_op() {
-    let (state, repo, role_cache) = state_with_fake_daemon().await;
-    let track = seed_track(&repo).await;
-    let card_id = new_id();
-    seed_planner_card(&repo, &role_cache, &track, &card_id).await;
-    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-        actor: calm_server::ids::ActorId::User,
-        track_id: track.id.to_string(),
-        planner_card_id: CardId::from(card_id.clone()),
-        report_card_id: None,
-        sort: None,
-        cwd: track.workspace.path.clone(),
-        goal: Some("adapter goal".into()),
-        reset_harness_items: false,
-        force_new_thread: false,
-        profile: Default::default(),
-        create_card: None,
-        opening_briefing: None,
-        first_message: None,
-        create_request_sha256: None,
-    })
-    .unwrap();
-    let op_id = state
-        .operation_runtime
-        .submit("planner-harness-start", key(), payload)
-        .await
-        .unwrap();
-    assert!(matches!(
-        wait_op(&state, &op_id).await,
-        OperationOutcome::Succeeded { .. }
-    ));
-    let original_hash = card_mcp_hash(&repo, &card_id)
-        .await
-        .expect("initial start stores card MCP hash");
-
-    sqlx::query("DELETE FROM card_mcp_tokens WHERE card_id = ?1")
-        .bind(&card_id)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    assert!(card_mcp_hash(&repo, &card_id).await.is_none());
-    let active = repo
-        .session_projection_active_for_card(&card_id)
-        .await
-        .unwrap()
-        .expect("active runtime before reusable-thread recovery");
-    assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
-    let active_runtime_id = active.id.clone();
-    let active_status = active.status;
-    let active_thread_id = active.thread_id.clone();
-
-    let (tx_output_json,): (String,) =
-        sqlx::query_as("SELECT tx_output_json FROM operations WHERE id = ?1")
-            .bind(&op_id)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    let mut output: TxOutput = serde_json::from_str(&tx_output_json).unwrap();
-    output
-        .data
-        .as_object_mut()
-        .expect("operation output data")
-        .remove("codex_thread_id");
-
-    sqlx::query(
-        r#"UPDATE operations
-              SET phase = 'app_server_interact',
-                  phase_detail_json = ?1,
-                  tx_output_json = ?2,
-                  lease_owner = NULL,
-                  lease_until_ms = NULL,
-                  completed_at_ms = NULL
-            WHERE id = ?3"#,
-    )
-    .bind(
-        serde_json::to_string(&serde_json::json!({
-            "kind": "mint_and_await",
-            "thread_id": Value::Null,
-        }))
-        .unwrap(),
-    )
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(&op_id)
-    .execute(repo.pool())
-    .await
-    .unwrap();
-
-    let targets = Arc::new(Mutex::new(Vec::new()));
-    let subscriber = tracing_registry().with(TargetCaptureLayer {
-        targets: targets.clone(),
-    });
-    let _guard = tracing::subscriber::set_default(subscriber);
-    state.operation_runtime.drive().await.unwrap();
-
-    match wait_op(&state, &op_id).await {
-        OperationOutcome::Failed {
-            from_phase,
-            last_error,
-            ..
-        } => {
-            assert_eq!(from_phase, PhaseTag::AppServerInteract);
-            assert!(
-                last_error.contains("no per-card MCP token row"),
-                "unexpected error: {last_error}"
-            );
-            assert!(
-                last_error.contains(&card_id),
-                "missing card id in error: {last_error}"
-            );
-            assert!(
-                last_error.contains("fake-thread-0001"),
-                "missing thread id in error: {last_error}"
-            );
-        }
-        other => panic!("expected failed reusable-thread operation, got {other:?}"),
-    }
-    let observed_targets = targets.lock().unwrap().clone();
-    assert!(
-        observed_targets
-            .iter()
-            .any(|target| target == "WARN:planner_harness::reusable_thread_invariant"),
-        "expected planner reusable-thread invariant warning; observed targets: {observed_targets:?}"
-    );
-    assert!(
-        card_mcp_hash(&repo, &card_id).await.is_none(),
-        "failed reuse path must not re-mint a card MCP token"
-    );
-    let active_after = repo
-        .session_projection_active_for_card(&card_id)
-        .await
-        .unwrap()
-        .expect("active runtime after failed reusable-thread recovery");
-    assert_eq!(active_after.id, active_runtime_id);
-    assert_eq!(active_after.status, active_status);
-    assert_eq!(active_after.thread_id, active_thread_id);
-    assert_eq!(
-        card_session_id(&repo, &card_id).await.as_deref(),
-        Some(active_runtime_id.as_str()),
-        "failed reuse path must keep the card linked to the existing session"
-    );
-    assert_eq!(
-        track_root_session_id(&repo, track.id.as_str())
-            .await
-            .as_deref(),
-        Some(active_runtime_id.as_str()),
-        "failed reuse path must keep the track root linked to the existing session"
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, Option<String>>(
-            "SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1"
-        )
-        .bind(&active_runtime_id)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap()
-        .as_deref(),
-        Some(original_hash.as_str()),
-        "failed reuse path must leave the running session token unchanged"
-    );
 }
 
 #[tokio::test]

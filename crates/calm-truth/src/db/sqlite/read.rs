@@ -1008,13 +1008,4 @@ impl RepoRead for SqlxRepo {
     async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>> {
         session_get_by_id(&self.pool, id).await
     }
-
-    async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool> {
-        let row: Option<(i64,)> =
-            sqlx::query_as(r#"SELECT 1 FROM card_mcp_tokens WHERE card_id = ?1 LIMIT 1"#)
-                .bind(card_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.is_some())
-    }
 }

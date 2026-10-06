@@ -302,9 +302,6 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Reload a worker session by id without authority filtering, so per-call revalidation can reject identities whose session left the active set.
     async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>>;
 
-    /// Whether a card owns a per-card MCP token row; only such threads may be reused without reminting.
-    async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool>;
-
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
 }
 

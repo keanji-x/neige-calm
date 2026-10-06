@@ -67,9 +67,6 @@ const START_PHASES: &[PhaseTag] = &[
     PhaseTag::Succeeded,
 ];
 
-const REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR: &str =
-    "no per-card MCP token row; refusing to start an unauthenticated shell";
-
 #[cfg(feature = "fixtures")]
 pub const FIXTURE_SOCKET_PREFIX: &str = "neige-mcp-fixture-";
 
@@ -1048,7 +1045,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let payload: PlannerHarnessStartOperationPayload =
             serde_json::from_value(op.payload.clone())?;
         let reset_harness_items = payload.reset_harness_items;
-        let force_new_thread = payload.force_new_thread;
         let profile = payload.profile;
         // Not a security boundary: production reads this role nowhere (the tool surface is resolved per MCP request from the card's persisted `role` column).
         let card_role = match profile {
@@ -1102,41 +1098,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             });
         }
         let mint_lock_guard = self.lock_card_mint(&card_id).await;
-        // Reuse requires the existing thread to have been minted under the per-card token contract (the card owns a `card_mcp_tokens` row).
-        let reusable_thread_id = if force_new_thread {
-            None
-        } else if let Some(runtime) = self
-            .repo
-            .session_projection_active_for_card(&card_id)
-            .await?
-            && let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref())
-        {
-            Some(thread_id)
-        } else {
-            None
-        };
+        // Every start mints its own thread; none adopts another's. `prepare_tx` has already superseded the
+        // card's active row and inserted this start's own thread-less row (one active row per card), and
+        // every submitter holds the card's `CardStartFence`, so normally no other start's thread exists here.
+        // The fence is the caller's, though: a cancelled caller, or boot recovery re-driving an unfinished
+        // start, can overlap a second start. Even then this start mints its own thread, prompt, cwd and
+        // credential rather than taking a thread a competing operation owns.
         let mut new_mcp_token_hash = None;
-        let thread_id = if let Some(thread_id) = reusable_thread_id {
-            // The token-row check guards a token baked into a Codex thread's config; a Claude Planner mints its own at its first turn.
-            if provider == AgentProvider::Codex
-                && !self.repo.card_mcp_token_exists_for_card(&card_id).await?
-            {
-                let message = format!(
-                    "planner card {card_id} reuses thread {thread_id} with \
-                     {REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR} \
-                     (re-run to mint a fresh thread)"
-                );
-                tracing::warn!(
-                    target: "planner_harness::reusable_thread_invariant",
-                    %card_id,
-                    thread_id = %thread_id,
-                    error = %message,
-                    "refusing to reuse planner thread without per-card MCP token row; migration 0035 should have nulled this thread_id"
-                );
-                return Err(CalmError::Conflict(message));
-            }
-            thread_id
-        } else if provider == AgentProvider::Claude {
+        let thread_id = if provider == AgentProvider::Claude {
             // #1791 §4.4: a fresh UUID names the Claude session, with no RPC; the MCP credential is minted at the first turn.
             uuid::Uuid::new_v4().to_string()
         } else {
@@ -1589,24 +1558,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 steps,
             }
         };
-        if from_phase == PhaseTag::AppServerInteract
-            && is_reusable_thread_missing_card_mcp_token_failure(reason)
-        {
-            // This arm returns before `fail_runtime`, so it never runs the give-back; that is only safe because this refusal is raised before the harvesting transaction.
-            // Checked with a real assertion, not `debug_assert`: if the journal is not empty the give-back has to run.
-            if !read_harvested_from_journal(output).is_empty() {
-                tracing::error!(
-                    card_id = %card_id,
-                    "planner harness: a compensation arm that assumed an empty harvest journal \
-                     found one; adding `fail_runtime` so the give-back runs"
-                );
-                steps.push(CompensationStep::new(
-                    "fail_runtime",
-                    json!({ "runtime_id": worker_session_id }),
-                ));
-            }
-            return Ok(finish(steps));
-        }
         if matches!(
             from_phase,
             PhaseTag::SpawnStarted | PhaseTag::SpawnSucceeded
@@ -1842,10 +1793,6 @@ pub mod claude_spawn_failure {
             "injected Claude Planner spawn failure (fixture)".into(),
         ))
     }
-}
-
-fn is_reusable_thread_missing_card_mcp_token_failure(reason: &str) -> bool {
-    reason.contains(REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR)
 }
 
 /// Replace a snapshot's pending queue with the one persisted on the runtime's own row, leaving every other field alone.
@@ -3078,62 +3025,6 @@ mod tests {
         candidate
     }
 
-    /// `plan_compensation` returns EARLY with no steps on the missing-per-card-MCP-token fence; without an unconditional `delete_card` this would leave a card with no session.
-    #[tokio::test]
-    async fn missing_mcp_token_early_return_still_deletes_a_lazily_minted_card() {
-        let repo = Arc::new(
-            SqlxRepo::open("sqlite::memory:")
-                .await
-                .expect("open in-memory sqlite repo"),
-        );
-        let repo_dyn: Arc<dyn Repo> = repo.clone();
-        let host = Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            repo_dyn,
-            PathBuf::new(),
-            std::env::temp_dir().join(format!("calm-plan-compensation-{}", new_id())),
-            Vec::new(),
-            EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
-        ));
-        let adapter = adapter_for(repo.clone(), host);
-        let reason = format!(
-            "planner card conv-1 reuses thread t-1 with {REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR} (re-run to mint a fresh thread)"
-        );
-        assert!(
-            is_reusable_thread_missing_card_mcp_token_failure(&reason),
-            "test reason must hit the zero-step arm"
-        );
-
-        let mut output = TxOutput::new("card", Some("conv-1".into()), json!({}));
-        output.data = json!({
-            "card_id": "conv-1",
-            "track_id": "track-1",
-            "runtime_id": "runtime-1",
-        });
-
-        let with_seed = plan_compensation_for(&adapter, &output, &reason, true).await;
-        assert_eq!(
-            with_seed
-                .steps
-                .iter()
-                .map(|step| step.op.as_str())
-                .collect::<Vec<_>>(),
-            vec!["delete_card"],
-            "a lazily minted card must be deleted even on the zero-step early return"
-        );
-        assert_eq!(with_seed.steps[0].args["card_id"], json!("conv-1"));
-        assert_eq!(with_seed.steps[0].args["track_id"], json!("track-1"));
-
-        // Counterexample: without `create_card` the zero-step contract is preserved verbatim.
-        let without_seed = plan_compensation_for(&adapter, &output, &reason, false).await;
-        assert!(
-            without_seed.steps.is_empty(),
-            "operations that did not mint a card must keep the zero-step early return: {:?}",
-            without_seed.steps
-        );
-    }
-
     /// `delete_card` is unconditional AND ordered after `abort_harness_task`: on the spawn arms the run loop is still alive.
     #[tokio::test]
     async fn lazily_minted_card_is_deleted_after_the_harness_task_is_aborted() {
@@ -3201,22 +3092,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["abort_harness_task", "interrupt_thread", "fail_runtime"],
         );
-    }
-
-    async fn plan_compensation_for(
-        adapter: &PlannerHarnessStartAdapter,
-        output: &TxOutput,
-        reason: &str,
-        create_card: bool,
-    ) -> CompensationStateVersioned {
-        plan_compensation_from(
-            adapter,
-            PhaseTag::AppServerInteract,
-            output,
-            reason,
-            create_card,
-        )
-        .await
     }
 
     async fn plan_compensation_from(

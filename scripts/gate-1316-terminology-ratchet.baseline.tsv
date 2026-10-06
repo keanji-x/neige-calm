@@ -16,11 +16,11 @@ spec	crates	501
 spec	fe	63
 spec	docs	0
 spec	e2e	1
-runtime_id	crates	1246
+runtime_id	crates	1239
 runtime_id	fe	0
 runtime_id	docs	1
 runtime_id	e2e	4
-harness_item	crates	276
+harness_item	crates	274
 harness_item	fe	97
 harness_item	docs	2
 harness_item	e2e	0

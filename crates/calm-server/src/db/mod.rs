@@ -116,7 +116,6 @@ pub trait ServerRepoReadExt {
         hashed_token: &str,
     ) -> Result<Option<WorkerSession>>;
     async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>>;
-    async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool>;
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
 }
 
@@ -410,11 +409,6 @@ where
     }
     async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>> {
         calm_truth::db::RepoRead::session_get_by_id(self, id)
-            .await
-            .map_err(Into::into)
-    }
-    async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool> {
-        calm_truth::db::RepoRead::card_mcp_token_exists_for_card(self, card_id)
             .await
             .map_err(Into::into)
     }
