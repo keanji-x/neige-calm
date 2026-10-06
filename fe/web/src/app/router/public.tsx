@@ -754,7 +754,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 /** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
-  options?: { showTrack?: boolean },
+  options?: { showTrack?: boolean; resizable?: boolean },
 ) {
   const registry = useConversationRegistry();
   const compact = useCompactViewport();
@@ -807,7 +807,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationViewTarget>,
-  options?: { showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
+  options?: { showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -1275,7 +1275,7 @@ function useConversationPane(
         title={options?.inline === true ? 'Side conversation · Codex' : open !== null ? conversationName(open) : draftOpen ? 'Untitled' : ''}
         mobileBackLabel="Conversations"
         onClose={closeDrawer}
-        resize={drawerResize}
+        resize={options?.resizable === false ? undefined : drawerResize}
         footer={draftOpen ? (
           <>
             {/* The strip is welded to the well's top edge, so it renders before the composer. */}
@@ -1502,6 +1502,7 @@ function useConversationPane(
 }
 
 function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const compact = useCompactViewport();
   const workspace = useWorkspace(transport, unauthorized);
   const go = useGo();
   const preferences = useUiPreferences();
@@ -1579,7 +1580,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       planner: null,
     },
     /* Every row is on the launchpad, which is what this page is. */
-    { showTrack: false },
+    { showTrack: false, resizable: false },
   );
 
   const startTodayConversation = () => {
@@ -1688,6 +1689,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       <button type="button" data-nc-action="tertiary" onClick={resetConfirm.feedback.clear}>Dismiss</button>
     </div>}
     <TodayPage
+      conversationPanel={compact ? undefined : chat.drawer}
       isTrackUnread={(track) => preferences.isUnread('track', track.id, track.activityAt ?? 0)}
       renderCalendarTasks={(date, onDateChange, trackCountOn) => <TodayCalendarTasks trackCountOn={trackCountOn} date={date} onDateChange={onDateChange} transport={transport} unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })} onOpenTrack={(trackId) => go({ name: 'track', trackId })} />}
       activityAvailable={workspaceError === null && workspace.overlaysError === null
@@ -1767,7 +1769,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       onConfirm={resetConfirm.confirm}
       onCancel={resetConfirm.cancel}
     />
-    {chat.drawer}
+    {compact && chat.drawer}
     </>
   );
 }

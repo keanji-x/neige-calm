@@ -103,9 +103,32 @@
 
   .withCalendar .panelColumn { align-self: stretch; block-size: 100%; overflow: hidden; }
   .panelColumn > div { padding-block-start: var(--space-3); }
-  .withCalendar .panelColumn > div { block-size: auto; }
   .filterAction { width: var(--control-h-sm); min-width: var(--control-h-sm); height: var(--control-h-sm); padding: 0; margin-inline-end: calc(var(--space-2) * -1); }
   .activityScroll { flex: 1 1 auto; min-block-size: 0; max-block-size: 12rem; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
+
+  .calendarCard {
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    min-block-size: 0;
+    max-block-size: 60%;
+  }
+
+  .calendarCard > div { padding-block-start: var(--space-3); }
+  .withCalendar .panelColumn > div { block-size: auto; }
+  .withCalendar .calendarCard > div { block-size: auto; }
+
+  .contextSection {
+    position: relative;
+    flex: 0 1 auto;
+    min-block-size: 0;
+  }
+
+  .contextSection > [data-nc-panel] { max-block-size: 100%; }
+  .contextSection:has([data-nc-drawer]) { flex: 1 1 auto; min-block-size: calc(var(--row-h) * 6); }
+  .conversationCard { position: absolute; inset: 0; }
+  .conversationCard:empty { display: none; }
+  .conversationCard > [data-nc-drawer-stack] { position: relative; inset: auto; inline-size: 100%; max-inline-size: none; block-size: 100%; }
 
   .section {
     display: flex;

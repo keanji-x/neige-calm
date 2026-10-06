@@ -179,7 +179,10 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
   it('opens its own conversation in the drawer, navigating nowhere', async () => {
     const { router } = renderApp({ launchpadRows: () => [conversationRow({ title: 'Today’s progress' })] });
     await userEvent.click(await screen.findByRole('button', { name: /Conversation Today’s progress/ }));
-    expect(await screen.findByRole('complementary', { name: 'Today’s progress' })).toBeTruthy();
+    const drawer = await screen.findByRole('complementary', { name: 'Today’s progress' });
+    const calendar = screen.getByRole('region', { name: 'Today calendar' });
+    expect(calendar.closest('aside')?.contains(drawer)).toBe(true);
+    expect(calendar.closest('[data-nc-panel]')).toBeNull();
     /* Still on Today: a navigation would have put `/track/lp` here. */
     expect(router.state.location.pathname).toBe('/today/legacy');
   });

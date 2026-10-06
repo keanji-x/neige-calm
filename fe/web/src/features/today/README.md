@@ -1,9 +1,12 @@
 # Calendar commitments (#1913)
 
-Today mounts Week/Month date navigation in the desktop sidebar. Dates show Track
-counts above and task counts below. Task details and Activity size to their
-content, with each list capped at 12rem and scrolling when necessary. Both lists shrink to keep the card within the
-available height, including in Month view. Activity shows update times
+Today mounts Week/Month date navigation at the top of the desktop sidebar.
+A separate Activity/Conversations card sits below it. Conversations open inside
+that lower card, keeping the calendar visible and usable above them. Date selection still drives both task
+details and Activity. Dates show Track counts above and task counts below.
+Task details and Activity size to their content, with each list capped at 12rem
+and scrolling when necessary. Month view shrinks the task list within the
+calendar's bounded height without shrinking Activity. Activity shows update times
 and a closed-track visibility toggle. Track activity is ordered by latest row or
 overlay update, newest first; equal times retain the selector’s creation-time/id
 order. Scheduled events keep their chronological order above the track rows.
@@ -18,9 +21,9 @@ desktop-only scope. An open dialog keeps its captured creation date.
 
 # `features/today`
 
-The landing route: a status bar and **the day's document**, beside a panel
-holding the week calendar's activity agenda, the Open list (tracks in a running phase), and the
-launchpad track's conversations.
+The landing route: a status bar and **the day's document**, beside a sidebar
+with a calendar card above the selected day's activity and the launchpad track's
+conversations.
 
 Two things were removed on 2026-09-03 (owner call) and must not drift back in
 without one:
@@ -258,7 +261,7 @@ Running is ambience and lives in the panel.
   *user-visible* list — #175 filters the system area out of `GET /api/areas` and
   the launchpad lives there — so "no tracks, no areas" is an ordinary state,
   not a reason to replace the page with a second generic empty sentence. The
-  Calendar and Conversations panel remain visible; the document region alone
+  calendar and Conversations card remain available; the document region alone
   shows muted Area/Track guidance without a separate empty-state headline. The conversation `+` remains visible
   before a launchpad exists and explicitly creates it when pressed.
 

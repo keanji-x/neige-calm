@@ -127,7 +127,7 @@ function TodayCompact({ nowMs }: TodayCompactProps) {
 function TodayDesktop({
   tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
-  documentAction, activityAvailable, renderCalendarTasks, isTrackUnread,
+  documentAction, activityAvailable, renderCalendarTasks, isTrackUnread, conversationPanel,
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
 
@@ -148,23 +148,35 @@ function TodayDesktop({
   const isVisible = (track: Track) => (showClosed || !isClosed(track)) && (showRead || isTrackUnread?.(track) === true);
   const activityTracks = tracks.filter(isVisible);
   const panel = (
-    <aside className={styles.panelColumn} data-nc-panel="">
-      <PanelCard fill={renderCalendarTasks !== undefined}>
+    <aside className={styles.panelColumn}>
+      <section className={styles.calendarCard} aria-label="Today calendar">
+        <PanelCard fill={renderCalendarTasks !== undefined}>
           <Calendar
-            activityAvailable={activityAvailable} showClosed={showClosed} onShowClosedChange={setShowClosed}
-            showRead={showRead} onShowReadChange={setShowRead} canFilterRead={isTrackUnread !== undefined}
+            activityAvailable={activityAvailable} showClosed={showClosed}
             taskAgenda={renderCalendarTasks?.(isoDate(selected), (date) => setSelected((current) => isoDate(current) === date ? current : new Date(`${date}T12:00:00`)), (date) => activityAvailable ? activeTracksOn(activityTracks, new Date(`${date}T12:00:00`), now.getTime()).length : null)}
             today={today}
             selected={selected}
             onSelect={setSelected}
             tracks={activityTracks}
-            areas={areas}
             scheduledEvents={scheduledEvents.filter((event) => isVisible(event.track))}
-            renderTrackRow={renderTrackRow}
             nowMs={now.getTime()}
           />
-        <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
-      </PanelCard>
+        </PanelCard>
+      </section>
+      <div className={styles.contextSection}>
+        <div data-nc-panel="">
+          <PanelCard fill={renderCalendarTasks !== undefined}>
+            <Activity
+              tracks={activityTracks} areas={areas} scheduledEvents={scheduledEvents.filter((event) => isVisible(event.track))}
+              selected={selected} renderTrackRow={renderTrackRow} nowMs={now.getTime()} activityAvailable={activityAvailable}
+              showClosed={showClosed} onShowClosedChange={setShowClosed}
+              showRead={showRead} onShowReadChange={setShowRead} canFilterRead={isTrackUnread !== undefined}
+            />
+            <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
+          </PanelCard>
+        </div>
+        <div className={styles.conversationCard}>{conversationPanel}</div>
+      </div>
     </aside>
   );
   return (
@@ -184,7 +196,7 @@ function TodayDesktop({
           />
         </div>
 
-        {/* `data-nc-panel` is how `app/shell` hides this while the conversation drawer is open; a CSS Module class is not nameable from the shell's stylesheet. */}
+        {/* Only the lower card carries the shell's hidden-panel marker; the calendar stays visible. */}
         {panel}
       </div>
     </div>
@@ -267,30 +279,20 @@ function Clock({ now }: { now: Date }) {
   );
 }
 
-function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, renderTrackRow, nowMs, activityAvailable, taskAgenda, showClosed, onShowClosedChange, showRead, onShowReadChange, canFilterRead }: {
-  showRead: boolean; onShowReadChange: (value: boolean) => void; canFilterRead: boolean;
-  showClosed: boolean; onShowClosedChange: (value: boolean) => void;
+function Calendar({ today, selected, onSelect, tracks, scheduledEvents, nowMs, activityAvailable, taskAgenda, showClosed }: {
+  showClosed: boolean;
   taskAgenda?: ReactNode;
   today: Date;
   selected: Date;
   onSelect: (day: Date) => void;
   tracks: readonly Track[];
-  areas: readonly Area[];
   scheduledEvents: readonly ScheduledEvent[];
-  renderTrackRow: TrackRowRenderer;
   nowMs?: number;
   activityAvailable: boolean;
 }) {
   const now = nowMs ?? Date.now();
   const weekStart = startOfWeek(selected);
   const days = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
-
-  const scheduledAgenda = scheduledEvents
-    .filter((event) => sameDay(event.date, selected) && (showClosed || !isClosed(event.track)))
-    .toSorted((left, right) => left.hour - right.hour);
-  const trackAgenda = activeTracksOn(tracks, selected, now)
-    .sort((left, right) => trackRecentAt(right) - trackRecentAt(left));
-  const scheduledIds = new Set(scheduledAgenda.map((event) => event.track.id));
 
   return (
     <>
@@ -349,7 +351,32 @@ function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, r
           })}
         </div>
       </div></PanelModule>}
-      <PanelModule title="Activity" grow={taskAgenda !== undefined} action={<DropdownMenu button={{ label: 'Activity filters', isIconOnly: true, icon: <Icon name="more" size="sm" />, className: styles.filterAction, size: 'sm', variant: 'ghost' }}>
+    </>
+  );
+}
+
+function Activity({ tracks, areas, scheduledEvents, selected, renderTrackRow, nowMs, activityAvailable,
+  showClosed, onShowClosedChange, showRead, onShowReadChange, canFilterRead,
+}: {
+  tracks: readonly Track[];
+  areas: readonly Area[];
+  scheduledEvents: readonly ScheduledEvent[];
+  selected: Date;
+  renderTrackRow: TrackRowRenderer;
+  nowMs: number;
+  activityAvailable: boolean;
+  showClosed: boolean; onShowClosedChange: (value: boolean) => void;
+  showRead: boolean; onShowReadChange: (value: boolean) => void; canFilterRead: boolean;
+}) {
+  const scheduledAgenda = scheduledEvents
+    .filter((event) => sameDay(event.date, selected) && (showClosed || !isClosed(event.track)))
+    .toSorted((left, right) => left.hour - right.hour);
+  const trackAgenda = activeTracksOn(tracks, selected, nowMs)
+    .sort((left, right) => trackRecentAt(right) - trackRecentAt(left));
+  const scheduledIds = new Set(scheduledAgenda.map((event) => event.track.id));
+
+  return (
+      <PanelModule title="Activity" grow action={<DropdownMenu button={{ label: 'Activity filters', isIconOnly: true, icon: <Icon name="more" size="sm" />, className: styles.filterAction, size: 'sm', variant: 'ghost' }}>
         <DropdownMenuItem label="Show closed" endContent={showClosed ? 'On' : 'Off'} onClick={() => onShowClosedChange(!showClosed)} />
         <DropdownMenuItem label="Show read" endContent={showRead ? 'On' : 'Off'} isDisabled={!canFilterRead} onClick={() => onShowReadChange(!showRead)} />
       </DropdownMenu>}>
@@ -377,6 +404,5 @@ function Calendar({ today, selected, onSelect, tracks, areas, scheduledEvents, r
           )}
         </div>
       </PanelModule>
-    </>
   );
 }

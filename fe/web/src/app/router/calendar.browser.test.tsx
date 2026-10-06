@@ -2,6 +2,10 @@ import { render, cleanup } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import '../../styles/entry.css';
+import shell from '../shell/shell.module.css';
+import { Drawer } from '../../ui/drawer/public.tsx';
+import { ChatComposer } from '../../features/chat/thread/public.tsx';
+import { useState } from '../../ui/state/public.ts';
 import { CalendarTasks, type CalendarEntriesView } from '../../features/calendar/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import type { CalendarEdit, CalendarEntry, CalendarListedEntry } from '../../../../core/domain/calendar.ts';
@@ -19,7 +23,7 @@ it('creates a task for the date selected inside the integrated sidebar week', as
     renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange} onWindowChange={() => undefined}
       timezone="Asia/Shanghai" month={ready([])} day={ready([])} enabled pending={false}
       onRetry={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={(write) => { writes.push(write); return Promise.resolve(); }} />} />);
-  await expect.element(page.getByRole('complementary').getByRole('region', { name: 'Calendar tasks' })).toBeVisible();
+  await expect.element(page.getByRole('region', { name: 'Today calendar' }).getByRole('region', { name: 'Calendar tasks' })).toBeVisible();
   await expect.element(page.getByRole('button', { name: 'Previous week' })).toBeVisible();
   await page.getByRole('link', { name: /October 3, 2026/ }).click();
   await page.getByRole('button', { name: 'New task', exact: true }).click();
@@ -147,7 +151,7 @@ it('counts a task ending just after midnight on the next day', async () => {
   view.rerender(<CalendarTasks {...props} month={ready([exact])} day={ready([exact])} />);
   await expect.element(page.getByRole('link', { name: /October 3, 2026, 0 tasks/ })).toBeVisible();
 });
-it('keeps a six-week Month card inside the screen by shrinking both lists', async () => {
+it('bounds a six-week Today calendar without shrinking the separate Activity card', async () => {
   await page.viewport(1440, 768);
   const entries: CalendarListedEntry[] = Array.from({ length: 20 }, (_, index) => ({ id: `height-${index}`, version: 1, cancelled: false,
     source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1, occurrences: [],
@@ -164,11 +168,14 @@ it('keeps a six-week Month card inside the screen by shrinking both lists', asyn
   const taskList = page.getByRole('region', { name: 'Task list' });
   const activity = page.getByRole('region', { name: 'Activity list' });
   const weekHeight = taskList.element().getBoundingClientRect().height;
+  const activityHeight = activity.element().getBoundingClientRect().height;
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   const panel = page.getByRole('complementary').element();
   expect(panel.getBoundingClientRect().bottom).toBeLessThanOrEqual(768);
   expect(taskList.element().getBoundingClientRect().height).toBeLessThan(weekHeight);
-  expect(activity.element().getBoundingClientRect().height).toBeLessThan(192);
+  expect(activity.element().getBoundingClientRect().height).toBe(activityHeight);
+  expect(activityHeight).toBeLessThanOrEqual(192);
+  expect(page.getByRole('region', { name: 'Today calendar' }).element().getBoundingClientRect().bottom).toBeLessThan(768);
   for (const list of [taskList.element(), activity.element()]) {
     expect(list.clientHeight).toBeGreaterThan(0);
     expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
@@ -257,4 +264,52 @@ it('shows recently updated Activity first in the integrated calendar sidebar', a
   await expect.element(activity.getByRole('button', { name: /^Track Recent update/ })).toBeVisible();
   const titles = [...activity.element().querySelectorAll('button')].map((row) => row.getAttribute('aria-label'));
   expect(titles).toEqual([expect.stringMatching(/^Track Recent update/), expect.stringMatching(/^Track Older update/)]);
+});
+
+
+it.each([1000, 768])('keeps the sidebar calendar and conversation usable at height %s', async (height) => {
+  await page.viewport(1440, height);
+  const sent: string[] = [];
+  function Example() {
+    const [open, setOpen] = useState(true);
+    return (<main className={shell.main} style={{ height: '100dvh' }}>
+    <TodayPage tracks={[]} areas={[]} activityAvailable renderTrackRow={() => null}
+      nowMs={Date.parse('2026-10-02T09:00:00+08:00')}
+      launchpad={{ track_id: 'today', report_has_noninitial_content: true }}
+      launchpadDocument={<p>Today report</p>}
+      conversationList={<p>Today conversations</p>}
+      conversationPanel={<Drawer stacked open={open} title="Today conversation" onClose={() => setOpen(false)}
+        footer={<ChatComposer onSend={(text) => { sent.push(text); }} />}><p>Conversation transcript</p></Drawer>}
+      renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange}
+        onWindowChange={() => undefined} timezone="Asia/Shanghai" month={ready([])} day={ready([])}
+        enabled pending={false} onRetry={() => undefined} onSettings={() => undefined}
+        onOpenTrack={() => undefined} onSave={() => Promise.resolve()} />} />
+  </main>);
+  }
+  render(<Example />);
+  const calendar = page.getByRole('region', { name: 'Calendar tasks' });
+  await expect.element(page.getByRole('complementary', { name: 'Today conversation' })).toBeVisible();
+  await expect.element(calendar).toBeVisible();
+  await calendar.getByRole('link', { name: /October 3, 2026/ }).click();
+  await expect.element(page.getByRole('heading', { name: 'Sat, Oct 3' })).toBeVisible();
+  const calendarBox = calendar.element().getBoundingClientRect();
+  const drawerBox = page.getByRole('complementary', { name: 'Today conversation' }).element().getBoundingClientRect();
+  expect(calendar.element().closest('aside')).not.toBeNull();
+  expect(calendarBox.bottom).toBeLessThanOrEqual(drawerBox.top);
+  await page.screenshot({ path: `../../../../test-results/today-calendar-conversation-${height}.png` });
+  await page.getByRole('radio', { name: 'Month', exact: true }).click();
+  await expect.element(calendar).toBeVisible();
+  await page.getByRole('textbox', { name: 'Message' }).fill('Plan my day');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  expect(sent).toEqual(['Plan my day']);
+  expect(calendar.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
+    page.getByRole('complementary', { name: 'Today conversation' }).element().getBoundingClientRect().top,
+  );
+  expect(page.getByRole('button', { name: 'Send', exact: true }).element().getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
+  await page.screenshot({ path: `../../../../test-results/today-calendar-month-conversation-${height}.png` });
+  await page.getByRole('button', { name: 'Close conversation' }).click();
+  await expect.element(page.getByRole('complementary', { name: 'Today conversation' })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
+  await expect.element(calendar).toBeVisible();
+  await page.screenshot({ path: `../../../../test-results/today-calendar-sidebar-${height}.png` });
 });

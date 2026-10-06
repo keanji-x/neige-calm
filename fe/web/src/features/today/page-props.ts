@@ -38,6 +38,8 @@ export type TodayPageProps = Readonly<{
   scheduledEvents?: readonly ScheduledEvent[];
   /** The panel card's second module, composed by `app/router`: the launchpad Track's own server-backed conversation list. */
   conversationList?: ReactNode;
+  /** Desktop conversation pane hosted below the calendar; compact viewports use the app's fullscreen drawer. */
+  conversationPanel?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
   /** Tests pin "now" so assertions cannot drift across midnight or DST. */
@@ -92,6 +94,10 @@ export const TODAY_VIEWPORT_LEDGER = Object.freeze({
   conversationList: Object.freeze({
     render: false,
     why: 'The panel card is desktop-only, and this is its second module.',
+  } as const),
+  conversationPanel: Object.freeze({
+    render: false,
+    why: 'Desktop hosts conversations below the calendar; the app renders the compact fullscreen drawer separately.',
   } as const),
   conversationAction: Object.freeze({
     render: false,
