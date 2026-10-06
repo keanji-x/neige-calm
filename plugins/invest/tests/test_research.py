@@ -202,3 +202,11 @@ def test_track_context_requires_provenance_and_ignores_extra_keys(rig):
     assert r.app.call(OWNER | {'created_at': 1}, 'portfolio_status', {}, PLANNER)['instruments']
     missing = {'id': 'research-aaa', 'creator_track_id': 'owner'}
     refused(FORBIDDEN, r.app.call, missing, 'instrument_status', {}, PLANNER)
+
+
+def test_research_status_prices_a_watched_symbol_it_does_not_hold(rig):
+    # The research recipe reads the symbol's price from here, never from a broker CLI.
+    r = rig
+    r.cover('US:AAA', price='123.45')
+    view = r.research(key(r, 'US:AAA'), 'instrument_status')
+    assert not view['held'] and view['position']['shares'] == 0 and view['position']['price'] == '123.45'
