@@ -5,17 +5,7 @@ import react from '@vitejs/plugin-react';
 
 // A development-only surface composed from production components; no API or user data.
 const port = Number(process.argv[2] ?? 5198);
-const entry = resolve(import.meta.dirname, 'edit-motion.tsx');
-const vite = await createServer({
-  configFile: false,
-  root: resolve(import.meta.dirname, '../../web'),
-  base: '/next/',
-  plugins: [react()],
-  define: { __NC_BUNDLED__: 'false', __NC_VERSION__: JSON.stringify('preview'), __NC_BUILD__: JSON.stringify('preview') },
-  optimizeDeps: { entries: [entry] },
-  server: { middlewareMode: true, fs: { allow: [resolve(import.meta.dirname, '../..')] } },
-  appType: 'custom',
-});
+const entry = resolve(import.meta.dirname, '../../web/src/app/shell/motion-preview.tsx');
 const server = createHttpServer(async (request, response) => {
   if (request.url?.split('?')[0] === '/next/motion-preview') {
     try {
@@ -23,10 +13,20 @@ const server = createHttpServer(async (request, response) => {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       response.end(html);
     } catch (error) {
-      vite.ssrFixStacktrace(error);
+      if (error instanceof Error) vite.ssrFixStacktrace(error);
       response.writeHead(500); response.end(String(error));
     }
   } else vite.middlewares(request, response, () => { response.writeHead(404); response.end(); });
+});
+const vite = await createServer({
+  configFile: false,
+  root: resolve(import.meta.dirname, '../../web'),
+  base: '/next/',
+  plugins: [react()],
+  define: { __NC_BUNDLED__: 'false', __NC_VERSION__: JSON.stringify('preview'), __NC_BUILD__: JSON.stringify('preview') },
+  optimizeDeps: { entries: [entry] },
+  server: { middlewareMode: true, hmr: { server }, fs: { allow: [resolve(import.meta.dirname, '../..')] } },
+  appType: 'custom',
 });
 server.listen(port, '127.0.0.1', () => process.stdout.write(`Motion preview: http://127.0.0.1:${port}/next/motion-preview\n`));
 const close = async () => { server.close(); await vite.close(); };

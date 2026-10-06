@@ -1,14 +1,14 @@
 import { createRoot } from 'react-dom/client';
-import { useState } from '../../web/src/ui/state/public.ts';
-import '../../web/src/styles/entry.css';
-import { Drawer } from '../../web/src/ui/drawer/public.tsx';
-import { ChatComposer, ChatThread } from '../../web/src/features/chat/thread/public.tsx';
-import { isComposerEmpty, isSameComposer } from '../../core/domain/conversation-composer.ts';
-import type { Conversation, TranscriptEntry } from '../../core/domain/conversation.ts';
+import { useState } from '../../ui/state/public.ts';
+import '../../styles/entry.css';
+import { Drawer } from '../../ui/drawer/public.tsx';
+import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
+import { isComposerEmpty, isSameComposer } from '../../../../core/domain/conversation-composer.ts';
+import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 
 const shortText = '帮我看看 edit 的动画，让进入编辑更自然一点。';
 const longText = '我们希望编辑消息时，原来的对话保持稳定，输入框平稳接住内容。文字应一直清晰可读，编辑条和输入区域一起展开，取消时清空未修改的内容，并保留你已修改的草稿。\n\n长消息也不需要从屏幕顶部飞到底部；可以通过局部的过渡，让人知道正在编辑哪条消息。动画期间仍然可以输入、取消或重新开始编辑。';
-const conversation: Conversation = { id: 'preview', trackId: 'preview', title: '动画预览', kind: 'codex', state: 'idle', updatedAt: 1 };
+const conversation: Conversation = Object.freeze({ id: 'preview', trackId: 'preview', title: '动画预览', kind: 'codex', state: 'idle', updatedAt: 1 });
 function Preview() {
   const [open, setOpen] = useState(true);
   const [prompt, setPrompt] = useState(shortText);
