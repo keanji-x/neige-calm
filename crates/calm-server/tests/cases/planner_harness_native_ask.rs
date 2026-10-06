@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, begin_immediate_tx, card_create_with_id_tx, session_prepare_deferred_planner_tx,
+    session_start_runtime_tx,
+};
 use calm_server::event::{AskQuestion, Event, EventBus};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, PlannerHarness,
@@ -25,6 +28,7 @@ use calm_server::state::WriteContext;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_activity::{ActivityItem, Recompute, TrackActivityProjector};
 use calm_server::track_area_cache::TrackAreaCache;
+use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
 
 const THREAD: &str = "thread-native-ask";
@@ -365,10 +369,10 @@ async fn a_planner_native_question_becomes_one_open_ask() {
 
     let asks = rig.asks().await;
     assert!(
-        matches!(asks.as_slice(), [(ActorId::AiPlanner(card), Event::AskRequested {
+        matches!(asks.as_slice(), [(ActorId::AiPlannerSession(session), Event::AskRequested {
                 track_id, questions, source_item_id: Some(source) })]
-            if card == &rig.card && track_id == &rig.track && questions == &captured_questions()
-                && source == ITEM_ID),
+            if session.as_str() == rig.session_id && track_id == &rig.track
+                && questions == &captured_questions() && source == ITEM_ID),
         "{asks:?}"
     );
     // The reply is stored and announced as before: the ask is beside it, not instead of it.
@@ -391,6 +395,7 @@ async fn a_planner_native_question_becomes_one_open_ask() {
 
 #[tokio::test]
 async fn the_same_item_asks_once_across_duplicate_frames_and_a_restart() {
+    let (logs, _guard) = Logs::capture();
     let rig = rig(Profile::Planner).await;
     rig.emit("item/completed", captured_params());
     rig.emit("item/completed", captured_params());
@@ -417,7 +422,81 @@ async fn the_same_item_asks_once_across_duplicate_frames_and_a_restart() {
         1,
         "a replay after a restart asks nothing"
     );
+    assert!(
+        !logs.text().contains(REFUSED),
+        "an item already asked is not a refusal: {}",
+        logs.text()
+    );
     restarted.shutdown().await.unwrap();
+}
+
+/// The harness reads first, so a repeat is quiet; the entry's own check in the write transaction
+/// is what keeps two writers racing on one item to one ask.
+#[tokio::test]
+async fn the_entry_asks_once_per_item_inside_its_transaction() {
+    let rig = rig(Profile::Planner).await;
+    rig.emit("item/completed", captured_params());
+    rig.settle().await;
+    assert_eq!(rig.asks().await.len(), 1);
+    rig.harness.shutdown().await.unwrap();
+
+    let mut tx = begin_immediate_tx(rig.repo.pool()).await.unwrap();
+    for (item, expect_ask) in [(ITEM_ID, false), ("call-another-item", true)] {
+        let asked = calm_server::ask::provider_ask_requested_tx(
+            &mut tx,
+            &rig.card,
+            captured_questions(),
+            item.to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(asked.is_some(), expect_ask, "{item}");
+    }
+    tx.rollback().await.unwrap();
+}
+
+/// A reset supersedes the old session before it stops the old harness; a question the old
+/// conversation reports in between is not the card's to ask.
+#[tokio::test]
+async fn a_superseded_session_asks_nothing() {
+    let rig = rig(Profile::Planner).await;
+    let mut tx = begin_immediate_tx(rig.repo.pool()).await.unwrap();
+    session_prepare_deferred_planner_tx(
+        &mut tx,
+        &WorkerSessionInit {
+            id: new_id(),
+            card_id: rig.card.to_string(),
+            kind: WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Starting,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(
+                serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+            ),
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let old = rig
+        .repo
+        .session_get_by_id(&WorkerSessionId::from(rig.session_id.as_str()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.state, WorkerSessionState::Superseded);
+
+    rig.emit("item/completed", captured_params());
+    rig.settle().await;
+    assert!(rig.item_added(ITEM_ID).await, "the reply is stored");
+    let asks = rig.asks().await;
+    assert!(asks.is_empty(), "{asks:?}");
+    rig.harness.shutdown().await.unwrap();
 }
 
 #[tokio::test]
