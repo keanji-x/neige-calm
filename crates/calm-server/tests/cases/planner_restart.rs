@@ -12,8 +12,12 @@ use calm_server::db::prelude::*;
 use calm_server::harness::run_loop::{
     ANY_RUNTIME, PlannerHarnessDrainRaceHook, install_planner_harness_drain_race_hook_for_test,
 };
-use calm_server::harness::{HarnessSnapshot, HarnessState, Observation, is_harness_snapshot_value};
+use calm_server::harness::{
+    HarnessSnapshot, HarnessState, Observation, SendKey, is_harness_snapshot_value,
+};
 use calm_server::model::{NewArea, new_id};
+use calm_server::planner_attachments::bind::BoundAttachment;
+use calm_types::planner_attachment::AttachmentId;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
@@ -116,12 +120,12 @@ impl Boot {
         .await
     }
 
-    /// Every session row of the card that holds `text` as a queued user message, with how many
-    /// copies it holds, read from the rows themselves.
+    /// Every session row of the card that still owes its queue (unstamped) and holds `text` as a
+    /// queued user message, with how many copies it holds, read from the rows themselves.
     async fn queued_copies(&self, text: &str) -> Vec<(String, usize)> {
         let rows: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT id, handle_state_json FROM worker_sessions WHERE card_id = ?1 \
-               ORDER BY created_at_ms, id",
+               AND queue_harvested_at_ms IS NULL ORDER BY created_at_ms, id",
         )
         .bind(&self.planner_card_id)
         .fetch_all(self.repo.pool())
@@ -148,24 +152,29 @@ impl Boot {
             .collect()
     }
 
-    /// How many `turn/start`s or steers carried `text` to the model.
-    fn deliveries(&self, text: &str) -> usize {
+    /// Each `turn/start` or steer that carried `text` to the model, and whether it carried the image
+    /// at `image` with it.
+    fn deliveries(&self, text: &str, image: &str) -> Vec<bool> {
         let daemon = &self.state.shared_codex_appserver;
-        daemon
+        let turns = daemon
             .started_turns_for_test()
-            .iter()
-            .filter(|(_, input)| format!("{input:?}").contains(text))
-            .count()
-            + daemon
-                .steered_turns_for_test()
-                .iter()
-                .filter(|steer| format!("{steer:?}").contains(text))
-                .count()
+            .into_iter()
+            .map(|(_, input)| format!("{input:?}"));
+        let steers = daemon
+            .steered_turns_for_test()
+            .into_iter()
+            .map(|steer| format!("{steer:?}"));
+        turns
+            .chain(steers)
+            .filter(|input| input.contains(text))
+            .map(|input| input.contains(&format!("LocalImage {{ path: {image:?} }}")))
+            .collect()
     }
 
-    /// Wedge the live session the way an unconfirmed Stop does, with `text` queued behind the turn.
-    /// Returns the wedged session's id; its row is now `failed`, and its harness stays registered.
-    async fn wedge_with_queued(&self, text: &str) -> String {
+    /// Wedge the live session with `text` and an image queued behind its turn: `interrupt_timeout`
+    /// is an unconfirmed Stop, `system_error` a provider error. Returns the wedged session's id; its
+    /// row is now `failed` mid-conversation and its harness stays registered.
+    async fn wedge_with_queued(&self, text: &str, reason: &str, image: &BoundAttachment) -> String {
         let session = self.active().await;
         let harness = self
             .state
@@ -179,17 +188,17 @@ impl Boot {
             })
             .await;
         harness
-            .observe_for_test(
-                Observation::UserMessage {
-                    text: text.to_string(),
-                },
-                None,
+            .observe_user_message_durable(
+                text.to_string(),
+                vec![image.clone()],
+                SendKey::unique_for_test(),
             )
-            .await;
+            .await
+            .unwrap();
         harness
             .set_state_for_test(HarnessState::Wedged {
                 since: Instant::now(),
-                reason: "interrupt_timeout".into(),
+                reason: reason.into(),
             })
             .await;
         harness.persist_snapshot().await.unwrap();
@@ -205,9 +214,21 @@ impl Boot {
         );
         let (status, run) = get(self.app.clone(), self.card_uri("planner/run")).await;
         assert_eq!(status, StatusCode::OK, "body={run}");
-        assert_eq!(run["phase"], "wedged", "premise: body={run}");
         assert_eq!(run["pending"][0]["text"], text, "premise: body={run}");
+        assert_eq!(
+            run["pending"][0]["attachments"].as_array().map(Vec::len),
+            Some(1),
+            "premise: body={run}"
+        );
         session.id
+    }
+
+    async fn current_session(&self) -> Option<String> {
+        sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+            .bind(&self.planner_card_id)
+            .fetch_one(self.repo.pool())
+            .await
+            .unwrap()
     }
 
     async fn harvested_at(&self, session_id: &str) -> Option<i64> {
@@ -247,13 +268,28 @@ async fn wait_for(what: &str, mut done: impl AsyncFnMut() -> bool) {
     }
 }
 
+/// A bound image as the upload route leaves one: a real file, addressed by id.
+fn bound_image(boot: &Boot) -> BoundAttachment {
+    let id = AttachmentId::parse(&format!("{}.png", uuid::Uuid::new_v4())).unwrap();
+    let path = boot._tmp.path().join(id.as_str());
+    std::fs::write(&path, b"queued image").unwrap();
+    BoundAttachment {
+        id,
+        size: 12,
+        path: path.to_string_lossy().into_owned(),
+    }
+}
+
 /// A message queued behind a turn that then wedged is on a `failed` row, which neither the
 /// inherit (active rows) nor the harvest (superseded rows) used to read. The first fresh start
-/// takes it once and stamps the row; the second takes nothing.
+/// inherits it whole, image included, and stamps the row; the second takes nothing.
 async fn a_fresh_start_carries_a_wedged_sessions_queue_exactly_once(route: &str) {
     const QUEUED: &str = "the message typed before the turn wedged";
     let boot = ordinary_track().await;
-    let wedged = boot.wedge_with_queued(QUEUED).await;
+    let image = bound_image(&boot);
+    let wedged = boot
+        .wedge_with_queued(QUEUED, "interrupt_timeout", &image)
+        .await;
 
     let release = hold_next_drain();
     let (status, body) = boot.fresh_start(route).await;
@@ -263,8 +299,7 @@ async fn a_fresh_start_carries_a_wedged_sessions_queue_exactly_once(route: &str)
     assert_eq!(
         boot.queued_copies(QUEUED).await,
         vec![(first.id.clone(), 1)],
-        "{route}: the new session holds the wedged session's queued message once, and the \
-         wedged row no longer holds it"
+        "{route}: only the new session owes the wedged session's queued message, once"
     );
     assert!(
         boot.harvested_at(&wedged).await.is_some(),
@@ -272,9 +307,15 @@ async fn a_fresh_start_carries_a_wedged_sessions_queue_exactly_once(route: &str)
     );
     release.notify_one();
     wait_for("the carried message reaches the model", async || {
-        boot.deliveries(QUEUED) == 1 && boot.queued_copies(QUEUED).await.is_empty()
+        !boot.deliveries(QUEUED, &image.path).is_empty()
+            && boot.queued_copies(QUEUED).await.is_empty()
     })
     .await;
+    assert_eq!(
+        boot.deliveries(QUEUED, &image.path),
+        vec![true],
+        "{route}: the text and its image reach the model together"
+    );
 
     let release = hold_next_drain();
     let (status, body) = boot.fresh_start(route).await;
@@ -288,24 +329,158 @@ async fn a_fresh_start_carries_a_wedged_sessions_queue_exactly_once(route: &str)
     );
     release.notify_one();
     assert_eq!(
-        boot.deliveries(QUEUED),
-        1,
+        boot.deliveries(QUEUED, &image.path),
+        vec![true],
         "{route}: delivered exactly once"
     );
 
-    boot.shutdown_session(&wedged).await;
     boot.shutdown_session(&first.id).await;
     boot.shutdown().await;
 }
 
 #[tokio::test]
-async fn reset_carries_a_wedged_sessions_queued_message_exactly_once() {
+async fn reset_carries_a_wedged_sessions_queued_message_and_image_exactly_once() {
     a_fresh_start_carries_a_wedged_sessions_queue_exactly_once("reset").await;
 }
 
 #[tokio::test]
-async fn restart_in_a_wedged_session_carries_its_queued_message_exactly_once() {
+async fn restart_in_a_wedged_session_carries_its_queued_message_and_image_exactly_once() {
     a_fresh_start_carries_a_wedged_sessions_queue_exactly_once("restart").await;
+}
+
+/// A restart whose `thread/start` fails gives the card back to the wedged session, with the queue
+/// still owed there; the next restart delivers it once, image included.
+#[tokio::test]
+async fn a_failed_restart_gives_the_card_back_to_its_wedged_session() {
+    const QUEUED: &str = "the message a failed restart must not strand";
+    let boot = ordinary_track().await;
+    let image = bound_image(&boot);
+    let wedged = boot
+        .wedge_with_queued(QUEUED, "interrupt_timeout", &image)
+        .await;
+
+    boot.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (status, body) = boot.fresh_start("restart").await;
+    assert!(
+        !status.is_success(),
+        "premise: the start failed: {status} body={body}"
+    );
+
+    assert_eq!(
+        boot.current_session().await,
+        Some(wedged.clone()),
+        "the card's session is the wedged one again"
+    );
+    assert_eq!(
+        boot.harvested_at(&wedged).await,
+        None,
+        "and it owes its queue again"
+    );
+    let (status, run) = get(boot.app.clone(), boot.card_uri("planner/run")).await;
+    assert_eq!(status, StatusCode::OK, "body={run}");
+    assert_eq!(run["phase"], "wedged", "body={run}");
+    assert_eq!(run["pending"][0]["text"], QUEUED, "body={run}");
+    assert_eq!(
+        run["pending"][0]["attachments"].as_array().map(Vec::len),
+        Some(1),
+        "body={run}"
+    );
+    assert_eq!(
+        boot.queued_copies(QUEUED).await,
+        vec![(wedged.clone(), 1)],
+        "the failed start's own row owes nothing"
+    );
+
+    let (status, body) = boot.fresh_start("restart").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    wait_for("the message reaches the model", async || {
+        !boot.deliveries(QUEUED, &image.path).is_empty()
+            && boot.queued_copies(QUEUED).await.is_empty()
+    })
+    .await;
+    assert_eq!(boot.deliveries(QUEUED, &image.path), vec![true]);
+    boot.shutdown().await;
+}
+
+/// A failed restart over a system-error session leaves it recoverable: a person's send resumes it,
+/// and the queued message and its image go out with it.
+#[tokio::test]
+async fn a_failed_restart_leaves_a_system_error_session_recoverable_by_a_send() {
+    const QUEUED: &str = "the message queued before the provider error";
+    let boot = ordinary_track().await;
+    let image = bound_image(&boot);
+    let failed = boot.wedge_with_queued(QUEUED, "system_error", &image).await;
+
+    boot.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (status, body) = boot.fresh_start("restart").await;
+    assert!(
+        !status.is_success(),
+        "premise: the start failed: {status} body={body}"
+    );
+    assert_eq!(boot.current_session().await, Some(failed.clone()));
+
+    let (status, body) =
+        post_input(boot.app.clone(), &boot.input_uri(), "carry on", &new_id()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body["worker_session_id"],
+        json!(failed),
+        "the send recovered the original session"
+    );
+    wait_for("the queued message reaches the model", async || {
+        !boot.deliveries(QUEUED, &image.path).is_empty()
+    })
+    .await;
+    assert_eq!(boot.deliveries(QUEUED, &image.path), vec![true]);
+    boot.shutdown().await;
+}
+
+/// Restart refuses what reset refuses, before anything starts.
+#[tokio::test]
+async fn restart_refuses_an_unknown_card_a_non_harness_card_and_an_area_chat_planner() {
+    let boot = ordinary_track().await;
+    let (status, body) = request(
+        boot.app.clone(),
+        "POST",
+        "/api/cards/no-such-card/planner/restart".into(),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+
+    let other: String = sqlx::query_scalar(
+        "SELECT id FROM cards WHERE track_id = (SELECT track_id FROM cards WHERE id = ?1) \
+           AND id != ?1 LIMIT 1",
+    )
+    .bind(&boot.planner_card_id)
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    let (status, body) = request(
+        boot.app.clone(),
+        "POST",
+        format!("/api/cards/{other}/planner/restart"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+
+    sqlx::query(
+        "UPDATE tracks SET purpose = 'area-chat' \
+           WHERE id = (SELECT track_id FROM cards WHERE id = ?1)",
+    )
+    .bind(&boot.planner_card_id)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    let (status, body) = boot.fresh_start("restart").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(boot.start_ops().await, 1, "nothing was started");
+    boot.shutdown().await;
 }
 
 /// Restart mints a new thread and keeps every transcript row; nothing announces a clear.

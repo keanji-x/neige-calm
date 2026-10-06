@@ -623,6 +623,33 @@ async fn session_get_required_for_runtime_tx(
         .ok_or_else(|| runtime_message(format!("worker session {id} missing while {context}")))
 }
 
+/// #2192 — the card's failed carrier, taken over by a start that then failed, owes its queue
+/// again. It stays `failed`; only the harvest marker goes.
+pub(super) async fn session_restore_failed_carrier_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &String,
+    now: i64,
+) -> WorkerSessionProjectionResult<WorkerSession> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET queue_harvested_at_ms = NULL,
+                  updated_at_ms = ?1
+            WHERE id = ?2
+              AND state = 'failed'
+              AND completed_at_ms IS NULL"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(runtime_message(format!(
+            "worker session {id} is not a failed carrier; cannot restore it to its card"
+        )));
+    }
+    session_get_required_for_runtime_tx(tx, id, "restoring a failed planner carrier").await
+}
+
 pub(super) async fn session_restore_from_superseded_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,

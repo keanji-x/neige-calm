@@ -8,9 +8,9 @@ use super::session_mirror::{
     ensure_runtime_status_transition, session_bind_attribution_mirror_tx,
     session_clear_terminal_run_id_mirror_tx, session_complete_mirror_tx, session_fail_if_active_tx,
     session_mark_superseded_tx, session_repoint_current_links_tx,
-    session_restore_from_superseded_tx, session_set_active_turn_mirror_tx,
-    session_set_handle_state_mirror_tx, session_set_harness_observation_tx,
-    session_set_status_mirror_tx,
+    session_restore_failed_carrier_tx, session_restore_from_superseded_tx,
+    session_set_active_turn_mirror_tx, session_set_handle_state_mirror_tx,
+    session_set_harness_observation_tx, session_set_status_mirror_tx,
 };
 use super::session_row::{agent_provider_to_db, runtime_message};
 use super::{SqlxRepo, begin_immediate_tx, derive_session_identity};
@@ -334,28 +334,14 @@ pub async fn session_mark_queue_harvested_tx(
     Ok(())
 }
 
-/// Which of a card's retired runtimes a harvest reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HarvestScope {
-    /// The `superseded` ones only.
-    Superseded,
-    /// Also the card's current runtime when it failed mid-conversation (a wedge
-    /// or a system error: `failed`, never completed), for a start that replaces
-    /// the card's thread (#2192). A failed START is completed, and keeps its
-    /// queue for its creator's keyed retry.
-    SupersededAndFailedCarrier,
-}
-
-/// Move the never-delivered human sentences off this card's retired runtimes,
-/// as `scope` names them, to the successor minted in THIS transaction. Every
-/// other `failed` row is excluded (its caller re-sends under a retry key); the
-/// successor excludes itself because a revived placeholder already holds its
-/// queue in memory.
+/// Move the never-delivered human sentences off this card's `superseded`
+/// runtimes to the successor minted in THIS transaction. `failed` rows are
+/// excluded (their caller re-sends under a retry key); the successor excludes
+/// itself because a revived placeholder already holds its queue in memory.
 pub async fn harvest_pending_user_messages_tx<F>(
     tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
     successor_id: &str,
-    scope: HarvestScope,
     now: i64,
     extract: F,
 ) -> WorkerSessionProjectionResult<HarvestedQueues>
@@ -363,22 +349,16 @@ where
     F: Fn(&str, &str) -> HarvestOutcome,
 {
     let rows = sqlx::query(
-        r#"SELECT ws.id, ws.handle_state_json
-             FROM worker_sessions ws
-            WHERE ws.card_id = ?1
-              AND ws.queue_harvested_at_ms IS NULL
-              AND ws.id != ?2
-              AND (ws.state = 'superseded'
-                   OR (?3
-                       AND ws.state = 'failed'
-                       AND ws.completed_at_ms IS NULL
-                       AND EXISTS (SELECT 1 FROM cards c
-                                    WHERE c.id = ws.card_id AND c.session_id = ws.id)))
-            ORDER BY ws.created_at_ms ASC, ws.id ASC"#,
+        r#"SELECT id, handle_state_json
+             FROM worker_sessions
+            WHERE card_id = ?1
+              AND state = 'superseded'
+              AND queue_harvested_at_ms IS NULL
+              AND id != ?2
+            ORDER BY created_at_ms ASC, id ASC"#,
     )
     .bind(card_id)
     .bind(successor_id)
-    .bind(scope == HarvestScope::SupersededAndFailedCarrier)
     .fetch_all(&mut **tx)
     .await?;
 
@@ -541,6 +521,44 @@ pub async fn session_mark_superseded_runtime_tx(
 
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
+/// The card's current session when it failed mid-conversation and still owes its queue (#2192):
+/// a wedge or a system error leaves it `failed`, never completed, and unharvested. A failed start
+/// is completed, and keeps its queue for its creator's retry.
+pub async fn session_projection_failed_carrier_for_card_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    card_id: &str,
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
+    let id: Option<String> = sqlx::query_scalar(
+        r#"SELECT ws.id
+             FROM cards c
+             JOIN worker_sessions ws ON ws.id = c.session_id AND ws.card_id = c.id
+            WHERE c.id = ?1
+              AND ws.state = 'failed'
+              AND ws.completed_at_ms IS NULL
+              AND ws.queue_harvested_at_ms IS NULL"#,
+    )
+    .bind(card_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    match id {
+        Some(id) => session_projection_by_id_tx(tx, &id).await,
+        None => Ok(None),
+    }
+}
+
+/// Compensating half of a start that took over the card's failed carrier: the carrier is the
+/// card's current session again, still `failed`, and owes its queue again.
+pub async fn session_restore_failed_carrier_runtime_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &String,
+) -> WorkerSessionProjectionResult<()> {
+    let session = session_restore_failed_carrier_tx(tx, id, now_ms()).await?;
+    let runtime = session_projection_by_id_tx(tx, id)
+        .await?
+        .ok_or_else(|| runtime_message(format!("worker session {id} missing after restore")))?;
+    session_repoint_current_links_tx(tx, &runtime.card_id, &session).await
+}
+
 pub async fn session_restore_from_superseded_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,

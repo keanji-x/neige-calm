@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    HarvestOutcome, HarvestScope, HarvestedMessage, SqlxRepo, card_with_claude_create_tx,
+    HarvestOutcome, HarvestedMessage, SqlxRepo, card_with_claude_create_tx,
     card_with_codex_create_tx, card_with_terminal_create_tx, harvest_pending_user_messages_tx,
     session_bind_attribution_tx, session_clear_queue_harvested_tx, session_commit_exit_tx,
     session_complete_for_card_tx, session_complete_tx, session_fail_if_active_runtime_tx,
@@ -2799,49 +2799,6 @@ async fn runtimes_active_for_kind_codex_kind_excludes_placeholder() {
     assert_ne!(rows[0].id, placeholder_id);
 }
 
-fn queued(text: &str) -> serde_json::Value {
-    json!({
-        "schema_version": 1,
-        "mode": "harness",
-        "phase": "idle",
-        "push_watermark": 0,
-        "pending_queue": [{"type": "user_message", "text": text}],
-        "pending_envelope_ids": [null],
-    })
-}
-
-/// A harvest decoder that takes every queued text off the row and leaves its queue empty.
-fn take_every_text(_id: &str, state: &str) -> HarvestOutcome {
-    let taken: Vec<HarvestedMessage> = serde_json::from_str::<serde_json::Value>(state)
-        .ok()
-        .and_then(|state| state.get("pending_queue").cloned())
-        .and_then(|queue| serde_json::from_value::<Vec<serde_json::Value>>(queue).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|obs| {
-            obs.get("text")
-                .and_then(|t| t.as_str())
-                .map(|text| HarvestedMessage {
-                    text: text.to_owned(),
-                    ids: vec![format!("id-of-{text}")],
-                    // `None` is what a pre-addressable-id queue entry carries, which is the case this fixture stands in for.
-                    entry_id: None,
-                })
-        })
-        .collect();
-    let mut remaining: serde_json::Value =
-        serde_json::from_str(state).unwrap_or_else(|_| json!({}));
-    if let Some(map) = remaining.as_object_mut() {
-        map.insert("pending_queue".into(), json!([]));
-        map.insert("pending_envelope_ids".into(), json!([]));
-        map.insert("pending_message_ids".into(), json!([]));
-    }
-    HarvestOutcome {
-        taken,
-        remaining_snapshot: Some(remaining),
-    }
-}
-
 /// The harvest predicate, row by row: only `superseded` rows (a failed create's caller re-sends its own
 /// text), only unstamped ones, never the successor itself, and every row read is stamped even if it yielded nothing.
 #[tokio::test]
@@ -2849,6 +2806,16 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     let repo = fresh_repo().await;
     let card = make_card(&repo, "codex").await;
 
+    fn queued(text: &str) -> serde_json::Value {
+        json!({
+            "schema_version": 1,
+            "mode": "harness",
+            "phase": "idle",
+            "push_watermark": 0,
+            "pending_queue": [{"type": "user_message", "text": text}],
+            "pending_envelope_ids": [null],
+        })
+    }
     /// Start a runtime and take it out of the active set again in the same transaction (`worker_sessions`
     /// has a partial unique index over the card's ACTIVE row). `created_at_ms` is explicit and increasing.
     async fn start_then_retire(
@@ -2915,14 +2882,42 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     )
     .await;
 
-    let extract = take_every_text;
+    let extract = |_id: &str, state: &str| -> HarvestOutcome {
+        let taken: Vec<HarvestedMessage> = serde_json::from_str::<serde_json::Value>(state)
+            .ok()
+            .and_then(|state| state.get("pending_queue").cloned())
+            .and_then(|queue| serde_json::from_value::<Vec<serde_json::Value>>(queue).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|obs| {
+                obs.get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|text| HarvestedMessage {
+                        text: text.to_owned(),
+                        ids: vec![format!("id-of-{text}")],
+                        // `None` is what a pre-addressable-id queue entry carries, which is the case this fixture stands in for.
+                        entry_id: None,
+                    })
+            })
+            .collect();
+        let mut remaining: serde_json::Value =
+            serde_json::from_str(state).unwrap_or_else(|_| json!({}));
+        if let Some(map) = remaining.as_object_mut() {
+            map.insert("pending_queue".into(), json!([]));
+            map.insert("pending_envelope_ids".into(), json!([]));
+            map.insert("pending_message_ids".into(), json!([]));
+        }
+        HarvestOutcome {
+            taken,
+            remaining_snapshot: Some(remaining),
+        }
+    };
 
     let mut tx = repo.pool().begin().await.unwrap();
     let harvested = harvest_pending_user_messages_tx(
         &mut tx,
         card.id.as_str(),
         successor.as_str(),
-        HarvestScope::Superseded,
         1_700_000_000_000,
         extract,
     )
@@ -2980,7 +2975,6 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         &mut tx,
         card.id.as_str(),
         successor.as_str(),
-        HarvestScope::Superseded,
         1_700_000_000_001,
         extract,
     )
@@ -3014,7 +3008,6 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         &mut tx,
         card.id.as_str(),
         successor.as_str(),
-        HarvestScope::Superseded,
         1_700_000_000_002,
         extract,
     )
@@ -3110,131 +3103,4 @@ async fn re_arming_a_row_clears_the_harvest_marker() {
         "a restored predecessor is live again and owes its own queue again — its snapshot was \
          never edited in place, so the sentences are still sitting on it"
     );
-}
-
-/// #2192: the wider scope adds ONE row, the card's current one when it failed mid-conversation (a
-/// wedge or a system error leaves it `failed` and never completed). A failed start is completed
-/// and keeps its queue for its creator's retry; an older failure is no longer the card's.
-#[tokio::test]
-async fn the_failed_carrier_scope_adds_only_the_cards_current_mid_conversation_failure() {
-    #[derive(Clone, Copy, Debug)]
-    enum Failure {
-        MidConversation,
-        Start,
-    }
-    async fn failed_row(
-        repo: &SqlxRepo,
-        card_id: &str,
-        at: i64,
-        text: &str,
-        how: Failure,
-    ) -> String {
-        let mut init = runtime_init(
-            card_id.to_string(),
-            WorkerSessionKind::SharedPlanner,
-            Some(AgentProvider::Codex),
-            WorkerSessionState::Starting,
-        );
-        init.handle_state_json = Some(queued(text));
-        init.now_ms = at;
-        let mut tx = repo.pool().begin().await.unwrap();
-        let started = session_start_runtime_tx(&mut tx, init).await.unwrap();
-        match how {
-            // The harness mirror's write when the run loop wedges.
-            Failure::MidConversation => session_set_harness_observation_runtime_tx(
-                &mut tx,
-                &started.id,
-                WorkerSessionState::Failed,
-                None,
-                None,
-            )
-            .await
-            .unwrap(),
-            // A failed start's compensation.
-            Failure::Start => session_fail_if_active_runtime_tx(&mut tx, &started.id)
-                .await
-                .unwrap(),
-        }
-        tx.commit().await.unwrap();
-        started.id
-    }
-    async fn harvest(
-        repo: &SqlxRepo,
-        card_id: &str,
-        scope: HarvestScope,
-    ) -> (Vec<String>, Vec<String>) {
-        let mut tx = repo.pool().begin().await.unwrap();
-        let harvested = harvest_pending_user_messages_tx(
-            &mut tx,
-            card_id,
-            "the-successor",
-            scope,
-            1_700_000_000_000,
-            take_every_text,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        (
-            harvested.messages.into_iter().map(|m| m.text).collect(),
-            harvested.stamped_worker_session_ids,
-        )
-    }
-
-    for (carrier_failure, carried) in [(Failure::MidConversation, true), (Failure::Start, false)] {
-        let repo = fresh_repo().await;
-        let card = make_card(&repo, "codex").await;
-        let card_id = card.id.as_str();
-        let older = failed_row(
-            &repo,
-            card_id,
-            1_000,
-            "an older failure's",
-            Failure::MidConversation,
-        )
-        .await;
-        let carrier = failed_row(&repo, card_id, 2_000, "the carrier's", carrier_failure).await;
-        let current: Option<String> =
-            sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
-                .bind(card_id)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            current.as_deref(),
-            Some(carrier.as_str()),
-            "premise: {carrier_failure:?}"
-        );
-
-        assert_eq!(
-            harvest(&repo, card_id, HarvestScope::Superseded).await,
-            (Vec::new(), Vec::new()),
-            "{carrier_failure:?}: the narrow scope reads no failed row"
-        );
-        let (texts, stamped) =
-            harvest(&repo, card_id, HarvestScope::SupersededAndFailedCarrier).await;
-        if carried {
-            assert_eq!(texts, vec!["the carrier's"], "{carrier_failure:?}");
-            assert_eq!(stamped, vec![carrier.clone()], "{carrier_failure:?}");
-        } else {
-            assert_eq!(
-                texts,
-                Vec::<String>::new(),
-                "{carrier_failure:?}: a failed start keeps its queue"
-            );
-            assert_eq!(stamped, Vec::<String>::new(), "{carrier_failure:?}");
-        }
-        assert_eq!(
-            harvest(&repo, card_id, HarvestScope::SupersededAndFailedCarrier).await,
-            (Vec::new(), Vec::new()),
-            "{carrier_failure:?}: a second harvest takes nothing, and the older failure is never read"
-        );
-        let older_stamp: Option<i64> =
-            sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
-                .bind(&older)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(older_stamp, None, "{carrier_failure:?}");
-    }
 }

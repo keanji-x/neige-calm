@@ -144,7 +144,8 @@ pub enum CalmError {
     PlannerResetUnsupportedInSharedMode(String),
 
     /// 409 — `/planner/input` hit a planner card whose harness session is dormant and not lazily
-    /// recoverable; the client should steer to `/planner/reset` instead of retrying.
+    /// recoverable; the client should offer `/planner/restart` (a fresh session that keeps the
+    /// history) instead of retrying.
     #[error("planner harness dormant: {0}")]
     PlannerHarnessDormant(String),
 

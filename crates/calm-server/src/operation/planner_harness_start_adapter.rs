@@ -10,15 +10,17 @@ use crate::card_role_cache::CardRoleCache;
 use crate::claude_planner::config::ClaudePlannerHost;
 use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::db::sqlite::{
-    HarnessTranscriptMeasure, HarvestOutcome, HarvestScope, HarvestedFrom, HarvestedMessage,
+    HarnessTranscriptMeasure, HarvestOutcome, HarvestedFrom, HarvestedMessage,
     append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
     harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
     harvest_pending_user_messages_tx, session_bind_attribution_tx,
     session_clear_queue_harvested_tx, session_delete_tx, session_fail_if_active_runtime_tx,
-    session_handle_state_by_id_tx, session_prepare_deferred_planner_tx,
-    session_projection_active_for_card_tx, session_restore_from_superseded_runtime_tx,
-    session_set_handle_state_of_any_runtime_tx, session_set_handle_state_tx,
-    session_start_runtime_tx, session_supersede_active_tx, session_supersede_and_start_tx,
+    session_handle_state_by_id_tx, session_mark_queue_harvested_tx,
+    session_prepare_deferred_planner_tx, session_projection_active_for_card_tx,
+    session_projection_failed_carrier_for_card_tx, session_restore_failed_carrier_runtime_tx,
+    session_restore_from_superseded_runtime_tx, session_set_handle_state_of_any_runtime_tx,
+    session_set_handle_state_tx, session_start_runtime_tx, session_supersede_active_tx,
+    session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -765,7 +767,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         } else {
             None
         };
-        let inherited_snapshot = existing_active_runtime.as_ref().and_then(|runtime| {
+        // #2192: with no active predecessor, the card's current session that failed mid-conversation (a wedge or a system
+        // error) is the predecessor. Its queue is inherited whole, attachments and ids included, and a failed start gives the
+        // card back to it (`restore_old_runtime`).
+        let failed_carrier = if defer_runtime_start && existing_active_runtime.is_none() {
+            session_projection_failed_carrier_for_card_tx(tx, card.id.as_str()).await?
+        } else {
+            None
+        };
+        let predecessor = existing_active_runtime.as_ref().or(failed_carrier.as_ref());
+        let inherited_snapshot = predecessor.and_then(|runtime| {
             let state = runtime.handle_state_json.as_ref()?;
             if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE) {
                 return None;
@@ -784,12 +795,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let mut inherited_queue_moved = false;
         // What the INHERIT took, for the undo journal: the predecessor is still `active` when the harvest runs, so the harvest's journal cannot cover it.
         let mut inherited_from: Vec<HarvestedFrom> = Vec::new();
+        // The failed carrier's own copy of its queue, carrying the ids the journal names.
+        let mut failed_carrier_keeps: Option<HarnessSnapshot> = None;
         if let Some(inherited) = inherited_snapshot {
             snapshot.push_watermark = inherited.push_watermark;
             // Inheriting the fused entries (not the raw arrays) is what keeps the queue ids the client has already been shown; the inherit CARRIES the predecessor's message ids, it does not mint over them.
             let mut inherited_entries = inherited.pending_entries();
             inherited_queue_moved = true;
-            if let Some(existing) = existing_active_runtime.as_ref() {
+            if let Some(existing) = predecessor {
                 // Only the human sentences are journalled, because only they are returned. `is_user_authored` is the SAME predicate `ensure_message_id` mints under.
                 let mut messages: Vec<HarvestedMessage> = Vec::new();
                 for entry in inherited_entries.iter_mut() {
@@ -821,6 +834,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     });
                 }
             }
+            if failed_carrier.is_some() {
+                let mut kept = inherited.clone();
+                kept.set_pending_entries(inherited_entries.clone());
+                failed_carrier_keeps = Some(kept);
+            }
             snapshot.set_pending_entries(inherited_entries);
         }
         // One clock for the whole mint, so the predecessor's `queue_harvested_at_ms` can never be newer than the successor that took its queue.
@@ -840,19 +858,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         // Sentences a human typed, stranded on a runtime that left the active set before its queue drained. Read, carried and stamped in THIS transaction so a second restart takes nothing.
         let worker_session_id = new_id();
-        // A start that replaces the card's thread carries what its predecessor left undelivered, whether that predecessor is
-        // still active (the inherit above) or failed mid-conversation (#2192). The other starts keep the narrower scope: a
-        // send starts only a card whose rows are all failed starts, and a creator re-sends its own first message.
-        let scope = if defer_runtime_start {
-            HarvestScope::SupersededAndFailedCarrier
-        } else {
-            HarvestScope::Superseded
-        };
         let harvested = harvest_pending_user_messages_tx(
             tx,
             card.id.as_str(),
             worker_session_id.as_str(),
-            scope,
             now,
             stranded_user_messages,
         )
@@ -914,9 +923,23 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             now,
         );
         if defer_runtime_start {
-            if let Some(existing) = existing_active_runtime.as_ref() {
+            if let Some(existing) = predecessor {
                 old_worker_session_id = Some(existing.id.clone());
                 old_runtime_status = Some(existing.status);
+            }
+            // The failed carrier is not emptied: it keeps its queue, under the ids the journal names, as what a failed start
+            // gives back. The stamp is what makes the take exactly-once; nothing reads a stamped row's queue.
+            if let Some(carrier) = failed_carrier.as_ref() {
+                if let Some(kept) = failed_carrier_keeps.as_ref() {
+                    session_set_handle_state_of_any_runtime_tx(
+                        tx,
+                        &carrier.id,
+                        Some(serde_json::to_value(kept)?),
+                        now,
+                    )
+                    .await?;
+                }
+                session_mark_queue_harvested_tx(tx, &carrier.id, now).await?;
             }
             // The inherit is a MOVE: the predecessor stops holding its queue in this transaction, or a later harvest or re-driven operation delivers it twice.
             // Written before `session_prepare_deferred_planner_tx` retires the row, while the ordinary writer still accepts it.
@@ -1251,12 +1274,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             )?;
                             // Supersede FIRST, then harvest: the harvest predicate is `state = 'superseded'` and this row is the one being retired.
                             session_supersede_active_tx(tx, &existing.id, now).await?;
-                            // The card's carrier is this operation's own placeholder now, so only superseded rows can be stranded.
                             let harvested = harvest_pending_user_messages_tx(
                                 tx,
                                 &card_id,
                                 &worker_session_id,
-                                HarvestScope::Superseded,
                                 now,
                                 stranded_user_messages,
                             )
@@ -2203,6 +2224,17 @@ async fn restore_old_runtime_after_spawn_failure(
     old_worker_session_id: String,
     status: WorkerSessionState,
 ) -> Result<()> {
+    // A failed carrier (#2192) goes back to being the card's session, still `failed`.
+    if status == WorkerSessionState::Failed {
+        return write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move {
+                session_restore_failed_carrier_runtime_tx(tx, &old_worker_session_id)
+                    .await
+                    .map_err(CalmError::from)
+            })
+        })
+        .await;
+    }
     active_run_status_to_db(&status)?;
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
