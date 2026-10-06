@@ -246,6 +246,11 @@ export function sortAreaTracksByRecent(tracks: readonly Track[]): Track[] {
   });
 }
 
+/** Stable partition: personal Area pins precede the owner's existing recency order. */
+export function areaPinnedTracks(tracks: readonly Track[], isPinned: (track: Track) => boolean): Track[] {
+  return [...tracks.filter(isPinned), ...tracks.filter((track) => !isPinned(track))];
+}
+
 /**
  * The desktop rail's Area rows before the limit: an open track, a closed one that is unread or
  * open in the view, and every track when the Area shows closed ones. Order is kept. It runs

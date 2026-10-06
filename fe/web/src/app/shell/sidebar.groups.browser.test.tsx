@@ -181,3 +181,48 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
   await expect.element(page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
 });
+
+
+it('uses the three-dot Track menu with keyboard and keeps actions separate from navigation', async () => {
+  await page.viewport(1400, 900);
+  const preferences = createUiPreferences();
+  preferences.setReadScope('db', 1_000);
+  const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
+    defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
+  const tracks: Track[] = ['Recent', 'Older'].map((title, i) => ({ id: `t${i}`, areaId: area.id, title, sort: i,
+    cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 2, ...NEUTRAL_ACTIVITY }));
+  const onGo = vi.fn();
+  const onSetPinned = vi.fn();
+  render(<UiPreferencesProvider preferences={preferences}>
+    <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
+      <div className={`${styles.shell} ${styles.shellExpanded}`} style={{ blockSize: '100dvh' }}>
+        <Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])} tracks={tracks}
+          currentPath="/" onGo={onGo} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}
+          onDeleteArea={vi.fn()} onNewTrack={vi.fn()} onSetPinned={onSetPinned} onDeleteTrack={vi.fn()}
+          onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()}
+          collapsed={false} onToggleCollapsed={vi.fn()} />
+        <main />
+      </div>
+    </ThemeProvider>
+  </UiPreferencesProvider>);
+  const menu = page.getByRole('button', { name: 'Actions for track Older' });
+  await expect.element(menu).toBeVisible();
+  const row = page.getByRole('button', { name: 'Track Older', exact: true }).element();
+  expect(menu.element().getBoundingClientRect().right).toBeLessThanOrEqual(row.getBoundingClientRect().right);
+  await menu.click();
+  await page.getByRole('menuitem', { name: 'Pin globally', exact: true }).click();
+  expect(onSetPinned).toHaveBeenCalledWith('t1', true);
+  await menu.click();
+  await page.getByRole('menuitem', { name: 'Pin within area', exact: true }).click();
+  const areaGroup = page.getByRole('group', { name: 'area Work', exact: true });
+  const navigationRows = [...areaGroup.element().querySelectorAll<HTMLButtonElement>('button[aria-label^="Track "]')];
+  expect(navigationRows[0]?.getAttribute('aria-label')).toBe('Track Older');
+  await menu.click();
+  await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
+  expect(preferences.isUnread('track', 't1', 0)).toBe(true);
+  expect(row.getAttribute('aria-describedby')).toBeTruthy();
+  await menu.click();
+  await userEvent.keyboard('{Escape}');
+  await expect.element(menu).toHaveFocus();
+  expect(onGo).not.toHaveBeenCalled();
+});

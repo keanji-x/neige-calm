@@ -69,6 +69,8 @@
     color: var(--text-3);
   }
 
+  .trackRow { display: flex; align-items: center; }
+
   .track {
     display: flex;
     flex-direction: row;
@@ -84,6 +86,8 @@
     overflow-wrap: anywhere;
     cursor: pointer;
   }
+
+  .trackRow .track { min-inline-size: 0; }
 
   .track[aria-current='page'] {
     background: var(--accent-soft);

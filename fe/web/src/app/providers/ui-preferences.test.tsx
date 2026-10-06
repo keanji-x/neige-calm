@@ -1,8 +1,8 @@
-import { cleanup } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
-import { createUiPreferences } from './ui-preferences.tsx';
+import { createUiPreferences, UiPreferencesProvider, useReadReceipt } from './ui-preferences.tsx';
 
 afterEach(cleanup);
 
@@ -360,4 +360,64 @@ it('keeps order and visibility per user across boots, with an in-memory fallback
   memory.setSidebarGroupVisible('area:a', false);
   expect(memory.sidebarOrder('areas', ['a', 'b'])).toEqual(['b', 'a']);
   expect(memory.sidebarGroupVisible('area:a')).toBe(false);
+});
+
+
+describe('personal Track actions', () => {
+  it('persists unread without activity or above-baseline updates and clears on acknowledgement', () => {
+    const storage = memoryStorage();
+    const preferences = createUiPreferences(storage);
+    preferences.setReadScope('db', 1_000);
+    preferences.markUnread('track', 't');
+    expect(preferences.isUnread('track', 't', 0)).toBe(true);
+    const restored = createUiPreferences(storage);
+    restored.setReadScope('db');
+    expect(restored.isUnread('track', 't', 0)).toBe(true);
+    expect(restored.isUnread('conversation', 't', 0)).toBe(false);
+    restored.markRead('track', 't', 0);
+    expect(restored.isUnread('track', 't', 0)).toBe(false);
+    expect(restored.isUnread('track', 't', 1_001)).toBe(true);
+  });
+
+  it('isolates Area pins and manual unread by database and user while surviving restart', () => {
+    const storage = memoryStorage();
+    const preferences = createUiPreferences(storage);
+    preferences.setRecoveryScope(JSON.stringify(['origin', 'owner', 'boot1']));
+    preferences.setReadScope('db1');
+    preferences.setAreaTrackPinned('area', 't', true);
+    preferences.markUnread('track', 't');
+    expect(preferences.areaTrackPinned('other-area', 't')).toBe(false);
+    preferences.setReadScope('db2');
+    expect(preferences.areaTrackPinned('area', 't')).toBe(false);
+    expect(preferences.isUnread('track', 't', 0)).toBe(false);
+    preferences.setReadScope('db1');
+    preferences.setRecoveryScope(JSON.stringify(['origin', 'owner', 'boot2']));
+    expect(preferences.areaTrackPinned('area', 't')).toBe(true);
+    expect(preferences.isUnread('track', 't', 0)).toBe(true);
+    preferences.setRecoveryScope(JSON.stringify(['origin', 'guest', 'boot2']));
+    expect(preferences.areaTrackPinned('area', 't')).toBe(false);
+    expect(preferences.isUnread('track', 't', 0)).toBe(false);
+    preferences.setReadScope(null);
+    preferences.markUnread('track', 't');
+    preferences.setAreaTrackPinned('area', 't', true);
+    expect(preferences.areaTrackPinned('area', 't')).toBe(false);
+    expect(preferences.isUnread('track', 't', 0)).toBe(false);
+  });
+});
+
+
+it('clears manual unread when the real visible-view receipt opens the Track again', () => {
+  const preferences = createUiPreferences();
+  preferences.setReadScope('db', 1_000);
+  function View({ enabled }: { enabled: boolean }) {
+    useReadReceipt('track', 't', 0, enabled);
+    return null;
+  }
+  const tree = (enabled: boolean) => <UiPreferencesProvider preferences={preferences}><View enabled={enabled} /></UiPreferencesProvider>;
+  const view = render(tree(true));
+  act(() => preferences.markUnread('track', 't'));
+  expect(preferences.isUnread('track', 't', 0)).toBe(true);
+  view.rerender(tree(false));
+  view.rerender(tree(true));
+  expect(preferences.isUnread('track', 't', 0)).toBe(false);
 });

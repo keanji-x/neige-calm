@@ -10,6 +10,7 @@ import {
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './row.module.css';
+import { TrackActions } from './actions.tsx';
 
 export type TrackRowVariant = 'default' | 'compact' | 'panel' | 'rail';
 
@@ -29,6 +30,13 @@ export type TrackRowProps = Readonly<{
   onSetPinned?: (trackId: string, pinned: boolean) => void;
   /** Supplying this reveals a delete button. The caller owns the confirm. */
   onDelete?: (trackId: string) => void;
+  /** Hosts provide the same personal actions on every workspace surface. */
+  actions?: Readonly<{
+    areaPinned: boolean;
+    onSetPinned: (id: string, pinned: boolean) => void;
+    onSetAreaPinned: (id: string, pinned: boolean) => void;
+    onMarkUnread: (id: string) => void;
+  }>;
 }>;
 
 function variantClass(variant: TrackRowVariant): string {
@@ -60,7 +68,7 @@ export function relativeTime(atMs: number, nowMs: number): string {
 /** The row is a `<button>` and the pin/delete affordances are siblings, not children: nesting interactive elements is invalid HTML. Sidebar pin actions appear on hover/focus or touch; other variants keep the pinned mark visible. */
 export function TrackRow({
   track, variant = 'default', areaName, hourLabel, active = false, nowMs,
-  onOpen, onSetPinned, onDelete, unread = false,
+  onOpen, onSetPinned, onDelete, actions, unread = false,
 }: TrackRowProps) {
   const descriptionId = useId();
   const pinned = track.pinnedAt !== null;
@@ -90,7 +98,7 @@ export function TrackRow({
         className={[
           styles.row, variantClass(variant),
           active ? styles.rowActive : '',
-          hasPin ? styles.hasPin : '', hasRemove ? styles.hasRemove : '',
+          hasPin ? styles.hasPin : '', hasRemove ? styles.hasRemove : '', actions !== undefined ? styles.hasMenu : '',
         ].filter(Boolean).join(' ')}
         aria-current={active ? 'page' : undefined}
         aria-label={label}
@@ -126,6 +134,9 @@ export function TrackRow({
           <Icon name="arrow-up" size="sm" />
         </button>
       )}
+      {actions !== undefined && <span className={styles.menuSlot}>
+        <TrackActions track={track} {...actions} onDelete={onDelete} className={styles.menuButton} />
+      </span>}
       {onDelete !== undefined && (
         <button
           type="button"

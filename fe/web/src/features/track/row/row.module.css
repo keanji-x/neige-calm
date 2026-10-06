@@ -374,4 +374,18 @@
       transition: none;
     }
   }
+  .menuSlot {
+    position: absolute;
+    inset-inline-end: var(--space-2);
+    inset-block-start: 50%;
+    translate: 0 -50%;
+  }
+
+  .menuButton { inline-size: var(--control-h-sm); block-size: var(--control-h-sm); }
+  .row.hasMenu { padding-inline-end: calc(var(--space-2) * 4 + var(--control-h-sm) * 3); }
+  .wrapperRail .hasMenu { padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
+  .wrapper:has(.hasMenu) .remove { inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm)); }
+  .wrapper:not(.wrapperRail):has(.hasMenu) .pin { inset-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
+  .wrapper:has(.hasMenu) .statusSlot { inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm) + (var(--control-h-sm) - var(--dot-sm)) / 2); }
+
 }

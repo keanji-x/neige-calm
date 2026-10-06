@@ -8,6 +8,8 @@ import { createContext, useContext, useEffect, useRef } from 'react';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT } from '../../../../core/domain/track.ts';
+import { OperationFeedback, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import type { Track } from '../../../../core/domain/track.ts';
 import { AREA_CREATE_FAILURES, AREA_CREATE_TEXT, AREA_PATCH_FAILURES, AREA_PATCH_TEXT, visibleAreas } from '../../../../core/domain/area.ts';
 import { ApiError, classifyFailure, NotSentError, refusedText, writeFailureOf, writeFailureText } from '../../../../core/domain/failure-class.ts';
@@ -95,6 +97,7 @@ export function AppShell({
   const workspace = useWorkspace(transport, unauthorized);
   const areaMutations = useAreaMutations(transport, unauthorized);
   const trackMutations = useTrackMutations(transport, unauthorized);
+  const pinFeedback = useOperationFeedback();
   const templates = useTrackTemplates(transport, unauthorized);
   const listDirectory = createDirectoryLister(transport, unauthorized);
   /* The create form is locked while a request is held, so every press resends the held key and body (#2131). */
@@ -363,6 +366,12 @@ export function AppShell({
                 onEditArea={requestEditArea}
                 /* The rail's receipt, key for key: opening a track on the phone clears the
                                    rail's dot too, and vice versa. */
+                trackActions={(track) => ({
+                  areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
+                  onSetPinned: (id, next) => { void pinFeedback.run(trackMutations.setPinned(id, track.areaId, next, nowMs ?? Date.now()), writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.pin)); },
+                  onSetAreaPinned: (id, next) => preferences.setAreaTrackPinned(track.areaId, id, next),
+                  onMarkUnread: (id) => preferences.markUnread('track', id),
+                })}
                 isUnread={(track) => preferences.isUnread('track', track.id, track.activityAt ?? 0)}
                 onOpenTrack={(trackId) => {
                   closeMobileSection();
@@ -405,6 +414,7 @@ export function AppShell({
 
         </div>
       </div>
+      <OperationFeedback feedback={pinFeedback} />
       <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={narrowRail && mobileNavOpen} aria-hidden={narrowRail && mobileNavOpen ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}

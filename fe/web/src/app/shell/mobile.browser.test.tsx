@@ -606,8 +606,8 @@ describe('Track mobile presentation', () => {
     await page.getByRole('menuitem', { name: 'Conversations', exact: true }).click();
     const panel = document.querySelector<HTMLElement>('[data-nc-mobile-page="open"]')!;
     await Promise.all(panel.getAnimations().map((animation) => animation.finished));
-    const planner = await page.getByRole('button', { name: /Design review/ }).findElement();
-    await page.getByRole('button', { name: /Design review/ }).click();
+    const planner = await page.getByRole('button', { name: /^Design review/ }).findElement();
+    await page.getByRole('button', { name: /^Design review/ }).click();
     const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
     expect(getComputedStyle(panel).visibility).toBe('visible');
     expect(drawer.getAnimations()).toHaveLength(0);

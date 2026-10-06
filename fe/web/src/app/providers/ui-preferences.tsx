@@ -103,11 +103,23 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {
       // No scope, no verdict: "everything is unread until /api/version answers" is a lie on every page load.
       if (database === null) return false;
-      return updatedAt > receipt(receiptKey(kind, id));
+      return read(`${receiptKey(kind, id)}:unread`) === true || updatedAt > receipt(receiptKey(kind, id));
     },
     markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {
       const key = receiptKey(kind, id);
+      if (database !== null) write(`${key}:unread`, false, true);
       if (Number.isFinite(updatedAt) && updatedAt > receipt(key)) write(key, String(updatedAt), true, database !== null);
+    },
+    /** Explicit unread is independent of activity timestamps and the baseline. */
+    markUnread(kind: 'track' | 'conversation', id: string): void {
+      if (database !== null) write(`${receiptKey(kind, id)}:unread`, true, true);
+    },
+    areaTrackPinned(areaId: string, trackId: string): boolean {
+      if (database === null) return false;
+      return read(`browser:area-pin:${database}:${areaId}:${trackId}`) === true;
+    },
+    setAreaTrackPinned(areaId: string, trackId: string, pinned: boolean): void {
+      if (database !== null) write(`browser:area-pin:${database}:${areaId}:${trackId}`, pinned, true);
     },
     setRecoveryScope(scope: string): void {
       if (recoveryScope === scope) return;

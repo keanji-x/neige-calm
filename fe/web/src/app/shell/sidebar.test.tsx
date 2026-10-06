@@ -709,3 +709,28 @@ it('keeps Show recovery for every built-in group after all groups are hidden', a
   expect(rows[0]?.pinnedAt).toBe(5);
   expect(onGo).not.toHaveBeenCalled();
 });
+
+
+it('offers personal Track actions without navigation and pins before the Area limit', async () => {
+  const preferences = createUiPreferences();
+  preferences.setReadScope('db', 1_000);
+  const onGo = vi.fn();
+  const onSetPinned = vi.fn();
+  const rows = [track({ id: 'old', title: 'Old', activityAt: 0 }), ...Array.from({ length: 6 }, (_, i) => track({ id: `t${i}`, title: `Task ${i}` }))];
+  preferences.setAreaTrackPinned('c1', 'old', true);
+  renderSidebar({ tracks: rows.toReversed(), onGo, onSetPinned }, preferences);
+  const group = within(screen.getByRole('group', { name: 'area Work' }));
+  expect(group.getAllByRole('button', { name: /^Track / })[0]?.getAttribute('aria-label')).toBe('Track Old');
+  await userEvent.click(group.getByRole('button', { name: 'Actions for track Old' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Pin globally' }));
+  expect(onSetPinned).toHaveBeenCalledWith('old', true);
+  await userEvent.click(group.getByRole('button', { name: 'Actions for track Old' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }));
+  expect(preferences.isUnread('track', 'old', 0)).toBe(true);
+  expect(onGo).not.toHaveBeenCalled();
+  expect(screen.queryByRole('group', { name: 'Pinned' })).toBeNull();
+  await userEvent.click(group.getByRole('button', { name: 'Actions for track Old' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Unpin within area' }));
+  expect(preferences.areaTrackPinned('c1', 'old')).toBe(false);
+  expect(group.queryByRole('button', { name: 'Track Old' })).toBeNull();
+});

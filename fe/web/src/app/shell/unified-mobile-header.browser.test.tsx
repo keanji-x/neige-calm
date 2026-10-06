@@ -118,14 +118,14 @@ it('uses Escape to close Planner before its Conversations page', async () => {
   const router = setup('/track/w1');
   await page.getByRole('button', { name: 'Track actions', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Conversations', exact: true }).click();
-  await page.getByRole('button', { name: /Design review/ }).click();
+  await page.getByRole('button', { name: /^Design review/ }).click();
   await page.getByRole('heading', { name: 'Design review', exact: true }).findElement();
   await userEvent.keyboard('{Escape}');
   await settlePaint();
   expect(router.state.location.search).toHaveProperty('panel', 'conversations');
   await expect.element(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
   expect(document.querySelector('[data-nc-drawer]')).toBeNull();
-  await expect.poll(() => document.activeElement).toBe(await page.getByRole('button', { name: /Design review/ }).findElement());
+  await expect.poll(() => document.activeElement).toBe(await page.getByRole('button', { name: /^Design review/ }).findElement());
   await userEvent.keyboard('{Escape}');
   await settlePaint();
   expect(router.state.location.search).not.toHaveProperty('panel');

@@ -87,9 +87,9 @@ describe('compact navigation interaction contracts', () => {
     expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Responsive mobile UI/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Responsive mobile UI/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Product' }));
-    expect(screen.getByRole('button', { name: /Responsive mobile UI/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Responsive mobile UI/ })).toBeTruthy();
     expect(document.querySelector('main')?.hasAttribute('inert')).toBe(true);
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull();

@@ -6,13 +6,15 @@ import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { activityLabelOf, activityNameBit } from '../../../../core/domain/activity.ts';
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
-import { isClosed, trackActivityState, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
+import { areaPinnedTracks, isClosed, trackActivityState, trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
 import { ActivityIndicator } from '../../ui/activity-indicator/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { MobileList, MobileListEmpty, MobileListGroup } from '../../ui/mobile-list/public.tsx';
 import { MobileNavigationHeader, type MobileNavigationActions } from './mobile-navigation-header.tsx';
 import styles from './mobile-navigation.module.css';
+import { TrackActions, type TrackActionsProps } from '../../features/track/row/actions.tsx';
+import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 type MobileTracksProps = Readonly<{
   view: 'areas' | 'tracks';
@@ -24,6 +26,7 @@ type MobileTracksProps = Readonly<{
   onOpenTrack: (trackId: string) => void;
   /** The reader's receipt for a track, keyed exactly as the rail's (`sidebar.tsx`): one receipt, both surfaces. */
   isUnread: (track: Track) => boolean;
+  trackActions?: (track: Track) => Omit<TrackActionsProps, 'track' | 'className'>;
   readError: string | null;
   readLoading: boolean;
   onRetryRead: () => void;
@@ -50,11 +53,13 @@ export function MobileTracks(props: MobileTracksProps) {
 
 function NavigationPage({
   view, areas, tracksByArea, areaId, currentTrackId, onBack, onCreateArea, onSelectArea, onEditArea, onOpenTrack, onNewTrack, onOpenSettings,
-  isUnread, readError, readLoading, onRetryRead,
+  isUnread, trackActions, readError, readLoading, onRetryRead,
 }: MobileTracksProps) {
   const shown = visibleAreas(areas);
   const selected = shown.find((candidate) => candidate.id === areaId);
-  const tracks = selected === undefined ? [] : tracksByArea.get(selected.id) ?? [];
+  const preferences = useUiPreferences();
+  const tracks = areaPinnedTracks(selected === undefined ? [] : tracksByArea.get(selected.id) ?? [],
+    (track) => preferences.areaTrackPinned(track.areaId, track.id));
   return <div className={styles.page}>
     <MobileNavigationHeader creationScope={view === 'areas' ? 'area' : 'track'} title={view === 'areas' ? 'Areas' : selected?.name ?? 'Tracks'}
       backLabel={view === 'areas' ? 'workspace' : 'Areas'} area={selected}
@@ -77,7 +82,7 @@ function NavigationPage({
             const activity = trackActivityState(track, isUnread(track));
             const activityBit = activityNameBit(activity);
             const descriptionId = `mobile-track-${track.id}-unread`;
-            return <li key={track.id}>
+            return <li key={track.id} className={styles.trackRow}>
               <button type="button" className={styles.track} aria-label={`${trackDisplayTitle(track.title)}${activityBit ? `, ${activityBit}` : ''}${isClosed(track) ? ', closed' : ''}`}
                 aria-describedby={activity === 'unread' ? descriptionId : undefined}
                 aria-current={track.id === currentTrackId ? 'page' : undefined} onClick={() => onOpenTrack(track.id)}>
@@ -85,6 +90,7 @@ function NavigationPage({
                 <span className={styles.trackCopy}><TrackTitle track={track} />{isClosed(track) && <span className={styles.trackMeta}>Closed</span>}</span>
                 {activity !== 'quiet' && <span className={styles.trackActivity} aria-hidden="true"><ActivityIndicator state={activity} /></span>}
               </button>
+              {trackActions !== undefined && <TrackActions track={track} {...trackActions(track)} />}
               {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}
             </li>;
           })}

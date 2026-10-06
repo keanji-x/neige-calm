@@ -2,10 +2,11 @@
 import { DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 
 import type { Area } from '../../../../core/domain/area.ts';
-import { railAreaTracks, type Track } from '../../../../core/domain/track.ts';
+import { areaPinnedTracks, railAreaTracks, type Track } from '../../../../core/domain/track.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { SidebarTrackGroup, type RowProps, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
+import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 export function AreaGroup({
   area, areaTracks, activeTrackId, expanded, onToggle, showClosed, onSetShowClosed, disclosureRef, onEdit,
@@ -24,11 +25,13 @@ export function AreaGroup({
   onRequestDelete: (areaId: string) => void;
   onNewTrack: (areaId: string) => void;
 }) {
+  const preferences = useUiPreferences();
+  const ordered = areaPinnedTracks(areaTracks, (track) => preferences.areaTrackPinned(area.id, track.id));
   return <SidebarTrackGroup
     title={area.name}
     label={`area ${area.name}`}
     level="area"
-    tracks={railAreaTracks(areaTracks, activeTrackId, rowProps.isUnread, showClosed)}
+    tracks={railAreaTracks(ordered, activeTrackId, rowProps.isUnread, showClosed)}
     activeTrackId={activeTrackId}
     expanded={expanded}
     onToggle={onToggle}

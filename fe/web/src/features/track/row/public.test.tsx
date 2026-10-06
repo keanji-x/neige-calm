@@ -173,3 +173,21 @@ describe('navigation activity markers', () => {
     expect(description()).toBe('Unread updates');
   });
 });
+
+
+it('dispatches menu actions and toggles without opening the row', async () => {
+  const onOpen = vi.fn();
+  const onSetPinned = vi.fn();
+  const onSetAreaPinned = vi.fn();
+  const onMarkUnread = vi.fn();
+  render(<TrackRow track={track({ pinnedAt: 10 })} onOpen={onOpen}
+    actions={{ areaPinned: true, onSetPinned, onSetAreaPinned, onMarkUnread }} />);
+  for (const label of ['Unpin globally', 'Unpin within area', 'Mark as unread']) {
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for track Open track' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: label }));
+  }
+  expect(onSetPinned).toHaveBeenCalledWith('w1', false);
+  expect(onSetAreaPinned).toHaveBeenCalledWith('w1', false);
+  expect(onMarkUnread).toHaveBeenCalledWith('w1');
+  expect(onOpen).not.toHaveBeenCalled();
+});
