@@ -611,6 +611,120 @@ async fn set_phase_clears_lease_and_rejects_stale_owner() {
     assert_eq!(stored.phase, Phase::TxCommitted);
 }
 
+/// What a keyed create's answer to a row stuck at `pending` rests on: the transaction that commits an
+/// adapter's effects also clears the lease, so the driver that claimed the row at `pending` can no
+/// longer mark it stuck from there. A `stuck` row whose `from_phase` is `pending` wrote nothing.
+#[tokio::test]
+async fn a_committed_prepare_leaves_no_lease_to_mark_the_row_stuck_from_pending() {
+    let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let op_id = repo
+        .insert_operation(
+            "park-test",
+            OperationKey {
+                operation_key: "stuck-pending-fence-op".into(),
+                idempotency_key: None,
+                payload_hash: "hash".into(),
+            },
+            json!({ "track_id": "track-a" }),
+        )
+        .await
+        .unwrap();
+    let op = repo.claim_drive_batch(1).await.unwrap().pop().unwrap();
+    assert_eq!(op.phase, Phase::Pending);
+    let adapter = TestParkingAdapter {
+        observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        record_artifacts: false,
+        steal_lease_after_artifacts: false,
+    };
+    let (prepared, _) = repo
+        .prepare_tx_and_advance(&op, &adapter)
+        .await
+        .unwrap()
+        .expect("the claiming driver commits the prepare");
+    assert_eq!(prepared.phase, Phase::TxCommitted);
+
+    let stuck = repo
+        .mark_stuck(
+            &op,
+            "operation drive failed: after the commit".into(),
+            PhaseTag::Pending,
+        )
+        .await
+        .unwrap();
+    assert!(
+        stuck.is_none(),
+        "a row whose prepare committed must not be marked stuck from `pending`: {stuck:?}"
+    );
+    let stored = repo.get_operation(&op_id).await.unwrap().unwrap();
+    assert_eq!(stored.phase, Phase::TxCommitted);
+}
+
+/// Boot recovery plans every abandoned row first and applies the items one at a time, driving the
+/// queue after each, so a row can have moved on from the phase its item was planned at. A step that
+/// then fails marks the row stuck from the phase it was claimed at, never the planned one: a row
+/// stuck from `pending` must still be one that wrote nothing.
+#[tokio::test]
+async fn boot_recovery_marks_a_row_stuck_from_the_phase_it_claimed_not_the_planned_one() {
+    let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
+    let op_id = repo
+        .insert_operation(
+            "park-test",
+            OperationKey {
+                operation_key: "stale-plan-op".into(),
+                idempotency_key: None,
+                payload_hash: "hash".into(),
+            },
+            json!({ "track_id": "track-a" }),
+        )
+        .await
+        .unwrap();
+    let adapter = Arc::new(TestParkingAdapter {
+        observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        record_artifacts: false,
+        steal_lease_after_artifacts: false,
+    });
+    let runtime = test_runtime(sqlx_repo, repo.clone(), vec![adapter]);
+    let plan = runtime.recover_on_boot().await.unwrap();
+    assert!(
+        matches!(
+            plan.items.as_slice(),
+            [RecoveryItem::Recover { op_id: planned, from_phase: Phase::Pending, .. }] if planned == &op_id
+        ),
+        "premise: the row is planned at `pending`: {:?}",
+        plan.items
+    );
+    // Behind the plan the row moves on to a committed phase with no output, which the next step
+    // cannot read, so that step fails.
+    let claimed = repo.claim_drive_batch(1).await.unwrap().pop().unwrap();
+    repo.set_phase(&claimed, Phase::TxCommitted)
+        .await
+        .unwrap()
+        .expect("the claiming driver advances");
+
+    runtime.apply_recovery(plan).await.unwrap();
+
+    let result = repo.operation_result(&op_id).await.unwrap();
+    assert!(
+        matches!(
+            &result,
+            Some(OperationResult {
+                outcome: OperationOutcome::Stuck {
+                    from_phase: PhaseTag::TxCommitted,
+                    ..
+                },
+                ..
+            })
+        ),
+        "the row is stuck from the phase it was claimed at: {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn stale_driver_cannot_win_final_transition_after_reclaim() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")

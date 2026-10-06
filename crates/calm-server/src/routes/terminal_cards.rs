@@ -68,7 +68,7 @@ pub struct NewTerminalCardBody {
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
-        (status = 500, description = "Daemon spawn failed; the saga rolled back the transaction (no leaked rows); `operation_failed` is final for this key", body = ErrorBody),
+        (status = 500, description = "Final for this key: `operation_failed` (spawn failed, the saga rolled back), `operation_stuck` (the card may exist)", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]

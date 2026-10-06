@@ -321,6 +321,24 @@ describe('a keyed card create', () => {
     expect(keyOf(posts()[1])).not.toBe(keyOf(posts()[0]));
   });
 
+  /* #2175: a create the kernel stopped part way is never driven again, and a retry under its key only replays this. */
+  it('reads a create that stopped part way as final: the card may exist, no Try again, and the next press mints a new key', async () => {
+    const stuck: ApiTransportResponse = { status: 500, statusText: 'Internal Server Error', body: {
+      error: 'operation drive failed: the daemon stopped answering', code: 'operation_stuck',
+    } };
+    const { posts } = setup({ answers: [stuck] });
+    await pickKind('codex');
+    await userEvent.click(await screen.findByRole('button', { name: 'Create codex' }));
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-new-card-error]')?.textContent)
+        .toBe('Creating the codex card stopped part way, so the card may exist. Check the track before creating another.');
+    });
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Create codex' }));
+    await waitFor(() => { expect(posts()).toHaveLength(2); });
+    expect(keyOf(posts()[1])).not.toBe(keyOf(posts()[0]));
+  });
+
   /* Picking the same fieldless kind again is the natural retry: it continues the held intent, as Try again does. */
   it('resends the held key and body when the same fieldless kind is picked again', async () => {
     const { posts, cards } = setup({ answers: ['lost'] });

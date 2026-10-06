@@ -21,6 +21,9 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
   ['POST /track-recipes', RECIPE_CREATE_FAILURES, [
     [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(413), 'refused'], [http(422), 'refused'],
     [unauthorized, 'refused'],
+    /* Final for the key: a create that failed for good, and one that stopped part way and may have made the recipe. */
+    [http(409, 'idempotency_key_reused'), 'refused'], [http(500, 'operation_failed'), 'refused'],
+    [http(500, 'operation_stuck'), 'stuck'],
     /* No key yet: anything else may have made the recipe. */
     [http(409, 'conflict'), 'unknown'], [http(500, 'db_error'), 'unknown'], [http(503), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],

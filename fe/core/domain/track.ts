@@ -10,7 +10,10 @@ import {
   activityStateOf, type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
 import { visibleAreas, type Area } from './area.js';
-import { casAttempts, type FailureTable, type Landed, type WriteClass, type WriteFailure, type WriteText } from './failure-class.js';
+import {
+  casAttempts, classifyFailure, NotSentError, refusedText, writeFailureOf,
+  type FailureTable, type Landed, type WriteClass, type WriteFailure, type WriteText,
+} from './failure-class.js';
 
 /**
  * `cwd` and the `*_at` columns may be absent from the OpenAPI `required` set; the decoder supplies
@@ -436,25 +439,50 @@ export function deleteTrackRecipeOperation(recipeId: string): ApiOperation<undef
 }
 
 /**
+ * A keyed create's failure classes: also `stuck`, a create the kernel stopped part way and never drives again
+ * (`operation_stuck`, #2175). What it made may exist, and a retry under its key only replays the same answer, so it is
+ * final for the key like a refusal; its sentence sends the reader to look before making another.
+ */
+export type KeyedCreateClass = WriteFailure | 'stuck';
+
+/** A keyed create's fixed sentences: a refusal without a reason, an unknown outcome, and a create that stopped part way. */
+export type KeyedCreateText = WriteText & Readonly<{ stuck: string }>;
+
+/**
+ * One failed keyed create as its table reads it, with its sentence: a write that was not sent is `refused`; a refusal
+ * says the server's reason (or `text.refused`), and `unknown` and `stuck` their fixed sentence. No transport text shows.
+ */
+export function readKeyedCreateFailure(
+  error: unknown, table: FailureTable<KeyedCreateClass>, text: KeyedCreateText,
+): Readonly<{ is: KeyedCreateClass; text: string }> {
+  const failure = writeFailureOf(error);
+  const is = failure instanceof NotSentError ? 'refused' : classifyFailure(failure, table);
+  return { is, text: is === 'refused' ? refusedText(failure, text.refused) : text[is] };
+}
+
+/**
  * What a failed `POST /api/track-recipes` says: 400 (an empty title, a body that would not parse, a malformed key), 403
  * (not the user), 413 and 422 are answered before anything is stored; a key bound to another body
  * (`idempotency_key_reused`) or a create that failed for good under its key (`operation_failed`) can never store this
- * one. All are final, so the next save mints a new key. Anything else may have made the recipe: the key is kept, and Try
- * again resends the same key and body, which the kernel answers with the recipe the first attempt made (#2131).
+ * one; a create that stopped part way (`operation_stuck`) may have stored it, but its key only replays that. All are
+ * final, so the next save mints a new key. Anything else may have made the recipe: the key is kept, and Try again
+ * resends the same key and body, which the kernel answers with the recipe the first attempt made (#2131).
  */
-export const RECIPE_CREATE_FAILURES: FailureTable<WriteFailure> = Object.freeze({
+export const RECIPE_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),
     Object.freeze({ code: 'operation_failed', is: 'refused' as const }),
+    Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),
     Object.freeze({ status: Object.freeze([400, 403, 413, 422]), is: 'refused' as const }),
   ]),
   unauthorized: 'refused',
   otherwise: 'unknown',
 });
 
-export const RECIPE_CREATE_TEXT: WriteText = Object.freeze({
+export const RECIPE_CREATE_TEXT: KeyedCreateText = Object.freeze({
   refused: 'The recipe was not created.',
   unknown: 'Creating the recipe is unconfirmed. Try again to check the same recipe.',
+  stuck: 'Creating the recipe stopped part way, so the recipe may exist. Check your recipes before saving it again.',
 });
 
 /**
@@ -651,14 +679,16 @@ export function createCardOperation(trackId: string, body: NewCardBody, idempote
 /**
  * What a failed card create says: 400, 403, 404 and 422 refuse the body, the track or the plugin before anything is
  * made; a key bound to another body (`idempotency_key_reused`) can never make this one; `conflict` is only a create the
- * kernel refused before its transaction committed (a Pending-phase failure, which a retry under the key replays); and
- * `operation_failed` is a create that failed for good after its commit, which a retry under the key replays too. All
- * are final, so the next intent mints a new key. Anything else may have made the card: the key is kept for Try again.
+ * kernel refused before its transaction committed (a Pending-phase failure, which a retry under the key replays);
+ * `operation_failed` is a create that failed for good, which a retry under the key replays too; and `operation_stuck` is
+ * a create that stopped part way, whose card may exist but whose key only replays that. All are final, so the next
+ * intent mints a new key. Anything else may have made the card: the key is kept for Try again.
  */
-export const CARD_CREATE_FAILURES: FailureTable<WriteClass> = Object.freeze({
+export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freeze({
   rules: Object.freeze([
     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),
     Object.freeze({ code: 'operation_failed', is: 'refused' as const }),
+    Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),
     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),
     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),
   ]),
@@ -666,8 +696,12 @@ export const CARD_CREATE_FAILURES: FailureTable<WriteClass> = Object.freeze({
   otherwise: 'unknown',
 });
 
-export function cardCreateText(label: string): WriteText {
-  return { refused: `The ${label} card was not created.`, unknown: `Creating the ${label} card is unconfirmed.` };
+export function cardCreateText(label: string): KeyedCreateText {
+  return {
+    refused: `The ${label} card was not created.`,
+    unknown: `Creating the ${label} card is unconfirmed.`,
+    stuck: `Creating the ${label} card stopped part way, so the card may exist. Check the track before creating another.`,
+  };
 }
 
 /** The kernel refuses this for a card it owns (`deletable === false`). */

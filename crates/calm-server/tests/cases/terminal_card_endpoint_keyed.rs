@@ -130,8 +130,7 @@ async fn boot_failing_spawn() -> super::Boot {
 }
 
 /// #2131 S4: a create that failed after its commit is final under its key. The first answer and
-/// every replay are 500 `operation_failed`, which the client reads as final and so releases the key;
-/// a stuck operation, whose card may exist, keeps the plain 500.
+/// every replay are 500 `operation_failed`, which the client reads as final and so releases the key.
 #[tokio::test]
 async fn a_create_that_failed_after_its_commit_is_final_under_its_key() {
     let boot = boot_failing_spawn().await;
@@ -157,4 +156,127 @@ async fn a_create_that_failed_after_its_commit_is_final_under_its_key() {
         cards.is_empty(),
         "the compensation removed the card: {cards:?}"
     );
+}
+
+/// Writes `stuck` onto the one operation a keyed create left under `key`, as the driver's stuck
+/// sink does, recording `from_phase` as the phase it stopped at.
+async fn stamp_stuck(boot: &super::Boot, key: &str, from_phase: &str) {
+    let pool = boot.repo.sqlite_pool().expect("sqlite repo");
+    let updated = sqlx::query(
+        "UPDATE operations \
+         SET phase = 'stuck', \
+             last_error = 'operation drive failed: injected', \
+             phase_detail_json = ?1, \
+             lease_owner = NULL, \
+             lease_until_ms = NULL \
+         WHERE idempotency_key = ?2",
+    )
+    .bind(
+        json!({
+            "reason": "operation drive failed: injected",
+            "since": 1,
+            "from_phase": from_phase,
+        })
+        .to_string(),
+    )
+    .bind(key)
+    .execute(&pool)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(updated, 1, "premise: the create's own operation went stuck");
+}
+
+/// #2175: a stuck operation is never driven again, so a replay under its key answers the same
+/// thing every time and drives nothing. Stuck at `pending`, it wrote nothing (its effects commit
+/// with the lease cleared), so the create failed for good: `operation_failed`, the answer the
+/// client mints a new key after.
+#[tokio::test]
+async fn a_create_stuck_before_its_commit_replays_as_failed_and_makes_no_card() {
+    let boot = boot_happy().await;
+    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
+    let (status, answer) = post_with_idempotency(
+        boot.app.clone(),
+        uri.clone(),
+        body("/bin/sh"),
+        Some("k-stuck-pending"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{answer}");
+    stamp_stuck(&boot, "k-stuck-pending", "pending").await;
+    let before = boot
+        .repo
+        .cards_by_track(&boot.track_id)
+        .await
+        .unwrap()
+        .len();
+    for attempt in ["replay", "second replay"] {
+        let (status, answer) = post_with_idempotency(
+            boot.app.clone(),
+            uri.clone(),
+            body("/bin/sh"),
+            Some("k-stuck-pending"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{attempt}: {answer}"
+        );
+        assert_eq!(answer["code"], "operation_failed", "{attempt}: {answer}");
+    }
+    assert_eq!(operations_under(&boot, "k-stuck-pending").await, 1);
+    let after = boot
+        .repo
+        .cards_by_track(&boot.track_id)
+        .await
+        .unwrap()
+        .len();
+    assert_eq!(after, before, "a replay of a stuck create makes no card");
+}
+
+/// #2175: stuck past `pending`, what the create made may exist, so the replay says so with its own
+/// code, `operation_stuck`, which the client reads as final for the key and asks the reader to look.
+#[tokio::test]
+async fn a_create_stuck_after_its_commit_replays_as_stuck_and_makes_no_card() {
+    let boot = boot_happy().await;
+    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
+    let (status, answer) = post_with_idempotency(
+        boot.app.clone(),
+        uri.clone(),
+        body("/bin/sh"),
+        Some("k-stuck-spawn"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{answer}");
+    stamp_stuck(&boot, "k-stuck-spawn", "spawn_started").await;
+    let before = boot
+        .repo
+        .cards_by_track(&boot.track_id)
+        .await
+        .unwrap()
+        .len();
+    for attempt in ["replay", "second replay"] {
+        let (status, answer) = post_with_idempotency(
+            boot.app.clone(),
+            uri.clone(),
+            body("/bin/sh"),
+            Some("k-stuck-spawn"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{attempt}: {answer}"
+        );
+        assert_eq!(answer["code"], "operation_stuck", "{attempt}: {answer}");
+    }
+    assert_eq!(operations_under(&boot, "k-stuck-spawn").await, 1);
+    let after = boot
+        .repo
+        .cards_by_track(&boot.track_id)
+        .await
+        .unwrap()
+        .len();
+    assert_eq!(after, before, "a replay of a stuck create makes no card");
 }

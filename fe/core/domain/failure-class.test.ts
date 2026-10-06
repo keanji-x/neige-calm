@@ -137,6 +137,10 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(409, 'idempotency_key_reused'), 'refused'], [http(400, 'idempotency_key_invalid'), 'refused'],
     /* A create the kernel refused before its transaction committed (a Pending-phase failure, replayed under its key). */
     [http(409, 'conflict'), 'refused'],
+    /* A create that failed for good under its key, or stopped before anything was made (#2131 S4, #2175). */
+    [http(500, 'operation_failed'), 'refused'],
+    /* A create that stopped part way and is never driven again: the card may exist, and the key replays the same. */
+    [http(500, 'operation_stuck'), 'stuck'],
     /* A 5xx or a lost answer: the card may exist, so the key is kept. */
     [http(409, 'idempotency_key_concurrent'), 'unknown'],
     [http(500), 'unknown'], [http(502, 'tool_call_failed'), 'unknown'], [http(503, 'service_unavailable'), 'unknown'],

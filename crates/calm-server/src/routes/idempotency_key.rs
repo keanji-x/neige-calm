@@ -117,9 +117,11 @@ fn canonical_json(value: serde_json::Value) -> serde_json::Value {
 /// first attempt and on every replay: the stored result, or the stored failure. A failure past the
 /// commit was settled by its compensation, so it is final for its key and answers 500
 /// `operation_failed`: the create will not complete, and only a new key may try again. A stuck
-/// operation is never driven again either (an operator clears it), but what it wrote may exist, so
-/// its outcome stays unknown: the plain 500 a client keeps its key for. Not for track or conversation
-/// create, whose key steps to a new attempt after a failure.
+/// operation is never driven again either, so every replay answers the same and it is final for its
+/// key too. Stuck at `pending` it wrote nothing: its effects commit in the transaction that clears
+/// its lease, and only the lease holder marks it stuck. So it answers `operation_failed` as well.
+/// Stuck anywhere later, what it made may exist: 500 `operation_stuck`. Not for track or
+/// conversation create, whose key steps to a new attempt after a failure.
 pub(crate) fn keyed_create_result(outcome: OperationOutcome) -> Result<Value> {
     match outcome {
         OperationOutcome::Succeeded { result }
@@ -138,9 +140,11 @@ pub(crate) fn keyed_create_result(outcome: OperationOutcome) -> Result<Value> {
                 refused => refused,
             },
         ),
-        OperationOutcome::Stuck { .. } => {
-            Err(CalmError::Internal("operation stuck, see DB".to_string()))
-        }
+        OperationOutcome::Stuck { reason, from_phase } => Err(if from_phase == PhaseTag::Pending {
+            CalmError::OperationFailed(reason)
+        } else {
+            CalmError::OperationStuck(reason)
+        }),
     }
 }
 
@@ -235,10 +239,11 @@ mod tests {
         assert!(operation_failure_parts(&CalmError::Internal("x".into())).is_none());
     }
 
-    /// A compensated failure is final for its key; a refusal keeps its own code; a stuck operation
-    /// may have left its row behind, so it stays the plain 500 a client keeps its key for.
+    /// A compensated failure is final for its key; a refusal keeps its own code. A stuck operation is
+    /// never driven again, so it is final for its key too: stuck at `pending` it wrote nothing and
+    /// answers as failed; stuck anywhere later what it made may exist, which `operation_stuck` says.
     #[test]
-    fn a_failed_operation_is_final_and_a_stuck_one_is_not() {
+    fn a_failed_operation_is_final_and_a_stuck_one_answers_by_its_phase() {
         let failed = |class: Option<&str>, from_phase| OperationOutcome::Failed {
             last_error: "spawn failed".into(),
             from_phase,
@@ -251,11 +256,37 @@ mod tests {
         let refused =
             keyed_create_result(failed(Some("not_found"), PhaseTag::Pending)).unwrap_err();
         assert_eq!(refused.code(), "not_found", "{refused:?}");
-        let stuck = keyed_create_result(OperationOutcome::Stuck {
-            reason: "lease lost".into(),
-            from_phase: PhaseTag::SpawnStarted,
-        })
-        .unwrap_err();
-        assert_eq!(stuck.code(), "internal", "{stuck:?}");
+        let stuck = |from_phase| {
+            keyed_create_result(OperationOutcome::Stuck {
+                reason: "operation drive failed: lease lost".into(),
+                from_phase,
+            })
+            .unwrap_err()
+        };
+        let before_commit = stuck(PhaseTag::Pending);
+        assert_eq!(
+            before_commit.code(),
+            "operation_failed",
+            "{before_commit:?}"
+        );
+        assert_eq!(before_commit.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        for from_phase in [
+            PhaseTag::TxCommitted,
+            PhaseTag::AppServerInteract,
+            PhaseTag::SpawnStarted,
+            PhaseTag::SpawnSucceeded,
+            PhaseTag::Parked,
+            PhaseTag::Compensating,
+            // A row whose detail lost its phase reads as `failed`: past the commit, so maybe made.
+            PhaseTag::Failed,
+        ] {
+            let after_commit = stuck(from_phase);
+            assert_eq!(
+                after_commit.code(),
+                "operation_stuck",
+                "{from_phase:?}: {after_commit:?}"
+            );
+            assert_eq!(after_commit.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 }

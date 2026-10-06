@@ -206,7 +206,7 @@ pub(crate) async fn get_recipe(
         (status = 400, description = "Malformed body or empty title, or an `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 403, description = "Only `X-Calm-Actor: user` may write recipes", body = ErrorBody),
         (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused, and the key binds nothing", body = ErrorBody),
-        (status = 500, description = "Internal error; `operation_failed` when the create under this key failed and is final for it", body = ErrorBody),
+        (status = 500, description = "Internal error; final for this key: `operation_failed` (the create failed), `operation_stuck` (the recipe may exist)", body = ErrorBody),
     ),
 )]
 pub(crate) async fn create_recipe(

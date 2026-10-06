@@ -1,7 +1,9 @@
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { NotSentError, readWriteFailure } from '../../../../core/domain/failure-class.ts';
-import { RECIPE_CREATE_FAILURES, RECIPE_CREATE_TEXT, RECIPE_SAVE_FAILURES, RECIPE_SAVE_TEXT } from '../../../../core/domain/track.ts';
+import {
+  readKeyedCreateFailure, RECIPE_CREATE_FAILURES, RECIPE_CREATE_TEXT, RECIPE_SAVE_FAILURES, RECIPE_SAVE_TEXT,
+} from '../../../../core/domain/track.ts';
 import { RecipesPage, type RecipeDraft, type RecipeWriteOutcome } from '../../features/report/recipe/public.tsx';
 import { useKeyedIntent } from '../providers/idempotency-key.ts';
 import { useTrackRecipeMutations, useTrackRecipes } from '../providers/queries.ts';
@@ -33,7 +35,7 @@ export function RecipesRoute({ transport, unauthorized }: { transport: ApiTransp
       createIntent.release(request);
       return { kind: 'saved', recipe };
     } catch (failure: unknown) {
-      const reading = readWriteFailure(failure, RECIPE_CREATE_FAILURES, RECIPE_CREATE_TEXT);
+      const reading = readKeyedCreateFailure(failure, RECIPE_CREATE_FAILURES, RECIPE_CREATE_TEXT);
       /* A resend that sent nothing leaves the earlier unknown outcome, and its key, standing. */
       if (reading.is === 'unknown' || (resent && failure instanceof NotSentError)) {
         return { kind: 'unconfirmed', message: RECIPE_CREATE_TEXT.unknown };

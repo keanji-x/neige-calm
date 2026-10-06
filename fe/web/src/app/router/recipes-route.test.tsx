@@ -505,6 +505,30 @@ describe('a keyed recipe create', () => {
   });
 });
 
+/* #2175: a create the kernel stopped part way may have made the recipe, and a retry under its key only replays this. */
+describe('a recipe create that stopped part way', () => {
+  const keyOf = (request: ApiRequest | undefined) => request?.headers?.['Idempotency-Key'];
+  const creates = (sent: readonly ApiRequest[]) =>
+    sent.filter((request) => request.method === 'POST' && request.path === '/api/track-recipes');
+
+  it('is final for its key: the recipe may exist, no Try again, and the next Save mints a new key', async () => {
+    const user = userEvent.setup();
+    const stuck = { status: 500, statusText: 'Internal Server Error', body: {
+      error: 'operation drive failed: storage went away', code: 'operation_stuck',
+    } } as const;
+    const { sent } = atRecipes({ recipeList: () => OK([]), postAnswers: [stuck, OK(CREATED)] });
+    await composeAndSave(user);
+    expect((await screen.findByRole('alert')).textContent)
+      .toBe('Creating the recipe stopped part way, so the recipe may exist. Check your recipes before saving it again.');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Canonicalised by the server.')).toBeTruthy();
+    expect(creates(sent)).toHaveLength(2);
+    expect(keyOf(creates(sent)[1])).not.toBe(keyOf(creates(sent)[0]));
+  });
+});
+
 describe('creating a track from a recipe', () => {
   /* `template_id` and `recipe_id` are mutually exclusive on the wire; the kernel
      answers a request naming both with a 400. */

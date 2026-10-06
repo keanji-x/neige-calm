@@ -1129,20 +1129,21 @@ impl OperationRuntime {
 
     async fn apply_recovery_item(&self, item: RecoveryItem) -> Result<()> {
         match item {
-            RecoveryItem::Recover {
-                op_id, from_phase, ..
-            } => {
+            RecoveryItem::Recover { op_id, .. } => {
                 let Some(op) = self.repo.claim_operation_for_recovery(&op_id).await? else {
                     return Ok(());
                 };
                 let adapter = self.adapter(&op.kind)?;
+                // The phase the row was claimed at, not the one it was planned at: an earlier item's
+                // drive may have moved it on, and a row stuck from `pending` must have written nothing.
+                let from_phase = op.phase.tag();
                 if let Err(e) = self.drive_one(adapter, op.clone()).await {
                     if let Some(result) = self
                         .repo
                         .mark_stuck(
                             &op,
                             format!("operation recovery apply failed: {e}"),
-                            from_phase.tag(),
+                            from_phase,
                         )
                         .await?
                     {

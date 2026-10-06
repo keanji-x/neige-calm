@@ -336,7 +336,7 @@ pub struct ViaToolCall {
         (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused, and the key binds nothing", body = ErrorBody),
         (status = 422, description = "Tool returned no `_meta.ui.resourceUri`", body = ErrorBody),
         (status = 502, description = "Plugin tool call failed", body = ErrorBody),
-        (status = 500, description = "Internal error; `operation_failed` when the create under this key failed and is final for it", body = ErrorBody),
+        (status = 500, description = "Internal error; final for this key: `operation_failed` (the create failed), `operation_stuck` (the card may exist)", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]

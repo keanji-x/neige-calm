@@ -176,12 +176,17 @@ pub enum CalmError {
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),
 
-    /// 500 — the operation this request ran, or the one its `Idempotency-Key` names, failed past
-    /// its commit and its compensation settled it. Final for that key: a replay answers the same,
-    /// and only a new key may try again. A stuck operation is never driven again either, but what it
-    /// wrote may exist, so its outcome stays unknown: `Internal`.
+    /// 500 — the operation this request ran, or the one its `Idempotency-Key` names, failed for
+    /// good: past its commit with its compensation settled, or stuck before it committed anything.
+    /// Final for that key: a replay answers the same, and only a new key may try again.
     #[error("operation failed: {0}")]
     OperationFailed(String),
+
+    /// 500 — that operation stopped part way and is never driven again: what it made may exist.
+    /// Final for that key as well, since a replay only answers the same; the caller looks for what
+    /// it made before trying again under a new key.
+    #[error("operation stuck: {0}")]
+    OperationStuck(String),
 
     #[error("internal: {0}")]
     Internal(String),
@@ -226,6 +231,7 @@ impl CalmError {
             CalmError::ServiceUnavailable(_) => "service_unavailable",
             CalmError::PayloadTooLarge(_) => "payload_too_large",
             CalmError::OperationFailed(_) => "operation_failed",
+            CalmError::OperationStuck(_) => "operation_stuck",
             CalmError::Internal(_) => "internal",
         }
     }
@@ -266,6 +272,7 @@ impl CalmError {
             | CalmError::CodexAppServer(_)
             | CalmError::CodexRefused(_)
             | CalmError::OperationFailed(_)
+            | CalmError::OperationStuck(_)
             | CalmError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -306,6 +313,7 @@ impl CalmError {
             | CalmError::ServiceUnavailable(m)
             | CalmError::PayloadTooLarge(m)
             | CalmError::OperationFailed(m)
+            | CalmError::OperationStuck(m)
             | CalmError::Internal(m) => m.clone(),
             CalmError::InvalidField { reason, .. } => reason.clone(),
             // Their `Display` carries no prefix: it is the whole sentence.
@@ -551,6 +559,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::CodexAppServer(m)
             | CalmError::PayloadTooLarge(m)
             | CalmError::OperationFailed(m)
+            | CalmError::OperationStuck(m)
             | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),
         }
     }

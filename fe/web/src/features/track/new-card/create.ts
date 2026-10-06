@@ -1,9 +1,9 @@
 // One add-card intent's policy (#2131): what a draft sends, when two drafts are one intent, and which failure ends it.
 // The route only wires it to the mutations, the key holder and the landing; nothing here holds state or mints a key.
 
-import { ApiError, classifyFailure, NotSentError, writeFailureText } from '../../../../../core/domain/failure-class.ts';
+import { ApiError, classifyFailure, NotSentError } from '../../../../../core/domain/failure-class.ts';
 import {
-  CARD_CREATE_FAILURES, cardCreateText,
+  CARD_CREATE_FAILURES, cardCreateText, readKeyedCreateFailure,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type ThemeRgb,
 } from '../../../../../core/domain/track.ts';
 import type { CardAddMenuEntry, CardRegistry } from '../../../systems/cards/public.js';
@@ -75,8 +75,9 @@ export function cardCreateEnded(error: unknown, resent: boolean): boolean {
 }
 
 /** What a failed attempt says; a resend that sent nothing leaves the earlier unknown outcome standing. */
-export function cardCreateFailureText(label: string, resent: boolean): (error: unknown) => string | null {
+export function cardCreateFailureText(label: string, resent: boolean): (error: unknown) => string {
   const text = cardCreateText(label);
-  const read = writeFailureText(CARD_CREATE_FAILURES, text);
-  return (error) => (resent && error instanceof NotSentError ? text.unknown : read(error));
+  return (error) => (resent && error instanceof NotSentError
+    ? text.unknown
+    : readKeyedCreateFailure(error, CARD_CREATE_FAILURES, text).text);
 }

@@ -1873,7 +1873,7 @@
       "oracle:INV-APP-119"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex d24d53b5d..7bb3c607c 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -658,7 +658,6 @@ export function createCardOperation(trackId: string, body: NewCardBody, idempote\n export const CARD_CREATE_FAILURES: FailureTable<WriteClass> = Object.freeze({\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n   ]),\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -687,7 +687,6 @@ export function createCardOperation(trackId: string, body: NewCardBody, idempote\n export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freeze({\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n     Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n",
     "expected_red": [
       "a keyed card create reads a create that failed for good under its key as a final refusal with the server’s reason: no Try again, and the next press mints a new key"
     ],
@@ -1881,6 +1881,21 @@
       "web/src/app/router/new-card.test.tsx"
     ],
     "why_more_than_one": "Measured in the exclusive worktree: reading `operation_failed` as unknown reddens only the case that answers a create with it, which then shows the fixed unknown state and a Try again under the spent key instead of the server's reason; every other card-create answer is matched by another rule and stays green."
+  },
+  {
+    "mutation_id": "k1b-stuck-create-read-as-unknown",
+    "defends": [
+      "oracle:INV-APP-119"
+    ],
+    "target": "core/domain/track.ts",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -688,7 +688,6 @@ export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freez\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n     Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n   ]),\n",
+    "expected_red": [
+      "a keyed card create reads a create that stopped part way as final: the card may exist, no Try again, and the next press mints a new key"
+    ],
+    "selection_paths": [
+      "web/src/app/router/new-card.test.tsx"
+    ],
+    "why_more_than_one": "Reading `operation_stuck` as unknown reddens only the case that answers a create with it, which then shows the fixed unknown sentence and a Try again under a key that only replays the stuck answer; every other card-create answer is matched by another rule and stays green."
   },
   {
     "mutation_id": "s2131-s7-create-retry-shows-raw-text",
