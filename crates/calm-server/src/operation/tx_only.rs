@@ -12,13 +12,13 @@ use sqlx::SqlitePool;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::event::BroadcastEnvelope;
-use crate::model::{new_id, now_ms};
+use crate::model::new_id;
 
-use super::repo_sqlite::{insert_pending_row, operation_from_row};
+use super::repo_sqlite::{insert_pending_row, operation_from_row, write_phase_and_tx_output};
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, OperationId,
-    OperationKey, OperationResult, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome,
-    Tx, TxOutput, idempotency_payload_conflict, operation_result_from,
+    OperationKey, OperationResult, Phase, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle,
+    SpawnOutcome, Tx, TxOutput, idempotency_payload_conflict, operation_result_from,
 };
 
 /// An adapter whose effects all end at the commit of [`Self::prepare_tx`]: no app-server step, no
@@ -138,8 +138,11 @@ pub(super) async fn commit_tx_only(
     // concurrent request it waits for needs.
     #[cfg(feature = "fixtures")]
     if let Some(idempotency_key) = key.idempotency_key.as_deref() {
-        crate::test_seams::pause_point(crate::test_seams::OPERATION_DEDUP_MISSED, idempotency_key)
-            .await;
+        crate::test_seams::pause_point(
+            crate::test_seams::OPERATION_KEYED_COMMIT_BEGIN,
+            idempotency_key,
+        )
+        .await;
     }
     let mut tx = begin_immediate_tx(pool).await?;
     match commit_in_tx(&mut tx, adapter, key, payload).await {
@@ -188,31 +191,10 @@ async fn commit_in_tx(
     let op = read_row(tx, &op_id).await?;
     let mut output = adapter.prepare_tx(tx, &payload, &op).await?;
     let events = std::mem::take(&mut output.post_commit_events);
-    let now = now_ms();
-    sqlx::query(
-        r#"UPDATE operations
-           SET tx_output_json = ?1,
-               target_type = ?2,
-               target_id = ?3,
-               target_json = ?4,
-               phase = 'succeeded',
-               phase_detail_json = NULL,
-               completed_at_ms = ?5,
-               updated_at_ms = ?5
-           WHERE id = ?6"#,
-    )
-    .bind(serde_json::to_string(&output)?)
-    .bind(&output.target_type)
-    .bind(&output.target_id)
-    .bind(serde_json::to_string(&serde_json::json!({
-        "type": output.target_type,
-        "id": output.target_id,
-    }))?)
-    .bind(now)
-    .bind(&op_id)
-    .execute(&mut **tx)
-    .await?;
-    // The answer is read back from the row, the same way a replay reads it.
+    // Inserted above in this transaction, so the row holds no lease.
+    write_phase_and_tx_output(&mut **tx, &op_id, None, &Phase::Succeeded, &output).await?;
+    // The answer is read back from the row, the same way a replay reads it; a row the write missed
+    // has not settled.
     let result = operation_result_from(&read_row(tx, &op_id).await?)?.ok_or_else(|| {
         crate::error::CalmError::Internal(format!("operation {op_id} did not settle"))
     })?;

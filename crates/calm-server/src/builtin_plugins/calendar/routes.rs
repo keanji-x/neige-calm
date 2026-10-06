@@ -3,7 +3,7 @@ use super::{
     model::*,
     store::{self, Access},
 };
-use crate::json_body::JsonBody;
+use crate::extract::{JsonBody, Path, Query};
 use crate::{
     actor::Actor,
     error::{CalmError, ErrorBody, Result},
@@ -13,7 +13,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::State,
     routing::{get, post},
 };
 

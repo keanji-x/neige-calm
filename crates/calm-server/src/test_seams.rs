@@ -68,10 +68,14 @@ pub const PLANNER_FIRST_START: &str = "planner-first-start";
 pub const TRACK_CREATE_BEFORE_PLANNER_START: &str = "track-create-before-planner-start";
 
 /// Where an operation insert has found no row under its `(kind, idempotency_key)` and is about to
-/// write one, or where a keyed commit (`OperationRuntime::commit_keyed`) is about to begin the
-/// transaction that checks its key; keyed by the idempotency key.
+/// write one; keyed by the idempotency key.
 #[cfg(feature = "fixtures")]
 pub const OPERATION_DEDUP_MISSED: &str = "operation-dedup-missed";
+
+/// Where a keyed commit (`OperationRuntime::commit_keyed`) is about to begin the transaction that
+/// checks its key, before any check; keyed by the idempotency key.
+#[cfg(feature = "fixtures")]
+pub const OPERATION_KEYED_COMMIT_BEGIN: &str = "operation-keyed-commit-begin";
 
 /// Reach the production worker-lease preparation (#1830 S2: the track's checkout, materialized
 /// for a managed track, checked clean) from an integration test. Returns the worker's directory.

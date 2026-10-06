@@ -2,12 +2,12 @@
 //! The claim rules live in `calm_truth::area_folder_claim`, shared with the track-create `attach_folder` path.
 
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::json_body::JsonBody;
+use crate::extract::{JsonBody, Path, Query};
 use crate::model::{AreaFolder, AreaResolve, FolderConflict, NewAreaFolder};
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,

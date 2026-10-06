@@ -181,6 +181,9 @@ async fn a_kernel_too_old_refusal_leaves_the_row_disabled() {
 
 /// A 409 conflict restores the bit the request found, whichever it was: a row already enabled
 /// (as a boot leaves one whose spawn failed) stays enabled, so autospawn keeps trying it.
+/// A refusal that rolls the enable back publishes no live state either, so a client is not told
+/// `crashed` beside a disabled row. One that keeps the row enabled reports why that enabled plugin
+/// is not running.
 #[tokio::test]
 async fn a_minted_name_refusal_leaves_the_row_as_it_found_it() {
     for found in [false, true] {
@@ -188,6 +191,7 @@ async fn a_minted_name_refusal_leaves_the_row_as_it_found_it() {
         let (status, _) = call(&fx, "POST", "/api/plugins/mint-a/enable").await;
         assert_eq!(status, StatusCode::OK);
         wait_running(&fx, "mint-a").await;
+        let before = plugin_states(&fx, "mint.a").await;
 
         let (status, body) = call(&fx, "POST", "/api/plugins/mint.a/enable").await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
@@ -197,8 +201,39 @@ async fn a_minted_name_refusal_leaves_the_row_as_it_found_it() {
             found,
             "the refusal must leave `enabled` as the request found it ({found})"
         );
+        let after = plugin_states(&fx, "mint.a").await;
+        if found {
+            assert_eq!(after.len(), before.len() + 1, "{after:?}");
+            let (state, last_error) = after.last().unwrap();
+            assert_eq!(state, "crashed");
+            assert_eq!(last_error.as_deref(), body["error"].as_str());
+        } else {
+            assert_eq!(
+                after, before,
+                "a rolled-back refusal publishes no live state"
+            );
+        }
         call(&fx, "POST", "/api/plugins/mint-a/disable").await;
     }
+}
+
+/// Every live state published for `id`, oldest first, as `(state, last_error)`, from the persisted
+/// log a client's event stream replays.
+async fn plugin_states(fx: &Fx, id: &str) -> Vec<(String, Option<String>)> {
+    fx.repo
+        .events_since(0, 500)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, _, _, event)| match event {
+            calm_server::event::Event::PluginState {
+                id: of,
+                state,
+                last_error,
+            } if of == id => Some((state, last_error)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A 503 is the enable having landed: the row stays enabled, and the reason is the plugin's

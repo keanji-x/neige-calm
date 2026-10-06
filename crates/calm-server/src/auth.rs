@@ -5,12 +5,12 @@ pub mod login_throttle;
 
 use crate::config::Config;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::json_body::JsonBody;
+use crate::extract::JsonBody;
 use axum::{
     Extension, Json, Router,
     body::Body,
     extract::{ConnectInfo, FromRequestParts, Request, State},
-    http::{HeaderMap, Method, StatusCode, header, request::Parts},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -400,15 +400,67 @@ pub fn session_router() -> Router<AuthState> {
         .route("/api/auth/logout", post(logout_handler))
 }
 
-/// Both comparisons always run and are combined without short-circuit, over fixed-size digests, so
-/// neither which field was wrong nor the configured lengths show in the timing.
-fn credentials_match(body: &LoginBody, want_user: &str, want_pass: &str) -> bool {
-    let same = |given: &str, want: &str| {
-        Sha256::digest(given.as_bytes()).ct_eq(&Sha256::digest(want.as_bytes()))
-    };
-    let user = same(&body.username, want_user);
-    let pass = same(&body.password, want_pass);
-    bool::from(user & pass)
+/// The SHA-256 digests of a username and password, so the comparison runs over fixed-size values.
+/// Computed before the throttle's lock is taken, which then covers only the comparison.
+struct CredentialDigests {
+    user: [u8; 32],
+    pass: [u8; 32],
+}
+
+impl CredentialDigests {
+    fn of(user: &str, pass: &str) -> Self {
+        Self {
+            user: Sha256::digest(user.as_bytes()).into(),
+            pass: Sha256::digest(pass.as_bytes()).into(),
+        }
+    }
+
+    /// Both comparisons always run and are combined without short-circuit, in constant time over
+    /// the digests, so the comparison does not show which field was wrong. Hashing does not hide
+    /// lengths: SHA-256 takes longer for a longer input, one compression per 64-byte block.
+    fn matches(&self, want: &Self) -> bool {
+        bool::from(self.user.ct_eq(&want.user) & self.pass.ct_eq(&want.pass))
+    }
+}
+
+/// The login route's answer when it mints no session. The throttle refusal is not a `CalmError`
+/// variant: only this route raises it, and outside that enum it cannot reach the lossy
+/// `CalmError -> TruthError` bridge, which has no 429 to carry it.
+pub enum LoginError {
+    /// 429 `login_throttled`: this peer failed too often; its credentials were not compared.
+    Throttled {
+        retry_after_secs: u64,
+    },
+    Calm(CalmError),
+}
+
+impl From<CalmError> for LoginError {
+    fn from(error: CalmError) -> Self {
+        Self::Calm(error)
+    }
+}
+
+impl IntoResponse for LoginError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Throttled { retry_after_secs } => {
+                let body = ErrorBody {
+                    error: format!(
+                        "Too many failed sign-in attempts. Try again in {retry_after_secs} seconds."
+                    ),
+                    code: "login_throttled".into(),
+                    field: None,
+                };
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(header::RETRY_AFTER, HeaderValue::from(retry_after_secs))],
+                    Json(body),
+                )
+                    .into_response()
+            }
+            Self::Calm(error) => error.into_response(),
+        }
+    }
 }
 
 /// POST /api/auth/login — verify credentials, mint a session, set cookie.
@@ -428,7 +480,7 @@ pub async fn login_handler(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     JsonBody(body): JsonBody<LoginBody>,
-) -> Result<Response> {
+) -> std::result::Result<Response, LoginError> {
     // Dev autologin: any login is a no-op success with a synthetic whoami; no cookie set, the middleware promotes every request anyway.
     if auth.config.dev_autologin {
         let principal = Principal::owner(&auth.config, "dev-autologin".to_string());
@@ -440,23 +492,26 @@ pub async fn login_handler(
         auth.config.password.as_deref(),
     ) else {
         // Impossible in practice (boot panics if password is unset + dev autologin is off); refuse rather than lock the user out by accident.
-        return Err(CalmError::Unauthorized);
+        return Err(CalmError::Unauthorized.into());
     };
 
     // Every listener that mounts this route attaches the peer; without it there is nothing to key the throttle on.
     let Some(Extension(ConnectInfo(peer))) = peer else {
         return Err(CalmError::Internal(
             "login requires the peer address of the connection".into(),
-        ));
+        )
+        .into());
     };
+    let given = CredentialDigests::of(&body.username, &body.password);
+    let want = CredentialDigests::of(want_user, want_pass);
     match auth
         .login_throttle
-        .attempt(peer.ip(), || credentials_match(&body, want_user, want_pass))
+        .attempt(peer.ip(), || given.matches(&want))
     {
         LoginAttempt::Accepted => {}
-        LoginAttempt::Rejected => return Err(CalmError::Unauthorized),
+        LoginAttempt::Rejected => return Err(CalmError::Unauthorized.into()),
         LoginAttempt::Throttled { retry_after } => {
-            return Err(CalmError::LoginThrottled {
+            return Err(LoginError::Throttled {
                 // Round up: a client that waits exactly this long must not be refused again.
                 retry_after_secs: retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0),
             });

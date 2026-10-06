@@ -12,14 +12,14 @@ use crate::mcp_track_report::{
 };
 use axum::Extension;
 use axum::body::Body;
-use axum::extract::{FromRef, Path, State};
+use axum::extract::{FromRef, State};
 use axum::http::Request;
 use calm_server::actor::Actor;
 use calm_server::auth::Principal;
 use calm_server::db::sqlite::{begin_immediate_tx, project_tasks_tx, task_claim_pending_tx};
 use calm_server::event::{EditAuthor, Event, EventBus};
+use calm_server::extract::{JsonBody, Path};
 use calm_server::ids::ActorId;
-use calm_server::json_body::JsonBody;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::track_report_blocks::{

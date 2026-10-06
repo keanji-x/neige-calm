@@ -4,6 +4,7 @@
 
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::extract::Path;
 use crate::report_sources::{
     Detail, SourceRow, TrackSourceDetail, TrackSourceList, TrackSourceSummary, captured_at_text,
     store,
@@ -11,7 +12,7 @@ use crate::report_sources::{
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
