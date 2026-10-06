@@ -1,6 +1,6 @@
 // The empty boundary live region costs a plugin row nothing.
 // Pure layout: `.pluginEffectBoundary:empty { position: absolute }` takes it out of the flex flow, and jsdom computes no layout.
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 
@@ -8,7 +8,7 @@ import '../../styles/entry.css';
 
 import { PluginsPane } from './plugins.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 it('costs a plugin row no height while it is empty', async () => {
   await page.viewport(1180, 720);

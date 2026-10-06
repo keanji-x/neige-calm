@@ -1,5 +1,5 @@
 /* The reference appendix's heading, measured in a real browser: jsdom computes no layout. */
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -9,7 +9,7 @@ import '../../../styles/entry.css';
 import type { ReportBlock } from '../../../../../core/domain/report.ts';
 import { ReportDocument } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const task = (id: string, key: string): ReportBlock => ({
   id,

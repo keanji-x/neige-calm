@@ -1,17 +1,19 @@
 /* A reply as it streams (#1923 S2): the pane follows its growth only for a reader at the end, and
    the stored reply that replaces it lands without a jump. Measured against a real engine. */
-import { act, fireEvent, render } from '@testing-library/react';
+import { cleanup, act, fireEvent, render } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../../styles/entry.css';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 
 import { ChatComposer, ChatThread } from './public.tsx';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import type { Conversation, ConversationTurn, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
 
-afterEach(async () => { document.body.replaceChildren(); await page.viewport(1280, 720); });
+function disposeFixture() { cleanup(); document.body.replaceChildren(); }
+afterEach(async () => { disposeFixture(); await page.viewport(1280, 720); });
 
 const conversation: Conversation = { id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'running', updatedAt: 0 };
 const LINE = 'The reply runs on for a few lines so the pane has something to scroll. ';
@@ -195,4 +197,21 @@ describe('jump to the newest message', () => {
     expect(pane().scrollHeight).toBe(pane().clientHeight);
     expect(document.querySelector('[data-nc-chat-scroll-dock]')).toBeNull();
   });
+});
+
+it('releases a pending real tooltip before fixture teardown detaches its anchor', async () => {
+  const show = vi.spyOn(HTMLElement.prototype, 'showPopover');
+  try {
+    const positive = render(<Tooltip content="Connected tooltip" delay={80}><button type="button">Connected anchor</button></Tooltip>);
+    fireEvent.mouseEnter(positive.getByRole('button', { name: 'Connected anchor' }));
+    await expect.poll(() => show.mock.calls.length).toBe(1);
+    positive.unmount(); show.mockClear();
+    const view = render(<Tooltip content="Pending tooltip" delay={80}><button type="button">Delayed anchor</button></Tooltip>);
+    const trigger = view.getByRole('button', { name: 'Delayed anchor' });
+    fireEvent.mouseEnter(trigger);
+    expect(show).not.toHaveBeenCalled();
+    disposeFixture();
+    await new Promise(resolve => setTimeout(resolve, 160));
+    expect(show).not.toHaveBeenCalled();
+  } finally { show.mockRestore(); }
 });

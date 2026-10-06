@@ -1,4 +1,4 @@
-import { act, render } from '@testing-library/react';
+import { cleanup, act, render } from '@testing-library/react';
 import { commands, page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 
@@ -31,7 +31,7 @@ const entry: CardEntry = {
   create: Object.freeze({ mode: 'kernel-minted-only' as const }),
 };
 
-afterEach(async () => { document.body.replaceChildren(); await commands.emulateReducedMotion(false); });
+afterEach(async () => { cleanup(); document.body.replaceChildren(); await commands.emulateReducedMotion(false); });
 
 it('brings a newly selected card into the board viewport', async () => {
   await browserPage.viewport(1200, 800);

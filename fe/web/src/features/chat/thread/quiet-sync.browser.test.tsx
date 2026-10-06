@@ -1,5 +1,5 @@
 /* The quiet-sync fold in a real engine: `<details>` visibility is layout, and jsdom has none. */
-import { act, render } from '@testing-library/react';
+import { cleanup, act, render } from '@testing-library/react';
 import { userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -13,7 +13,7 @@ import {
 } from '../../../../../core/domain/conversation.ts';
 import { REPORT_READ_TOOLS } from '../../../../../core/keys/mcp-tools.ts';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const NOW = 1_760_000_000_000;
 

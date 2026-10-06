@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
@@ -9,7 +9,7 @@ import { PanelCard } from '../../../ui/panel-card/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { card, openableCardsOf } from './test-fixtures.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['kind']>): ReportTaskRow => ({
   blockId, key: blockId, state: 'ready', declaration: null, status, statusDetail: null,
   kind, workerCardId: `card-${blockId}`, pendingReason: null,

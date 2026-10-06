@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,7 +9,7 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../../core/domain/track.t
 import { TrackPage } from './public.tsx';
 
 afterEach(() => {
-  document.body.replaceChildren();
+  cleanup(); document.body.replaceChildren();
   delete document.documentElement.dataset.theme;
 });
 

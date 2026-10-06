@@ -1,6 +1,6 @@
 /* A reply as it streams (#1923 S2), as a finger gets it (`vitest.config.ts`: `pointer: coarse`, touch): the pane
    follows its growth only for a reader at the end, and a narrow pane takes a growing code block without overflowing. */
-import { act, fireEvent, render } from '@testing-library/react';
+import { cleanup, act, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
@@ -9,7 +9,7 @@ import { ChatThread } from './public.tsx';
 import type { Conversation, ConversationTurn, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const conversation: Conversation = { id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'running', updatedAt: 0 };
 const LINE = 'The reply runs on for a few lines so the pane has something to scroll. ';

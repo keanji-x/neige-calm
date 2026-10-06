@@ -1,9 +1,9 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ErrorBox } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 describe('ErrorBox browser styles', () => {
   it('vertically centers the inline-block decorative dot', () => {

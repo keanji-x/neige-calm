@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -6,7 +6,7 @@ import '../../../styles/entry.css';
 
 import styles from './document.module.css';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 describe('Report mobile measure', () => {
   it('collapses the desktop document grid and wraps long text inside the viewport', async () => {

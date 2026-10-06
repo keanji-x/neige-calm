@@ -1,5 +1,5 @@
 /* A document carrying its maintenance contract in a leading HTML comment, measured: an emptied block is still a grid item holding a `row-gap` row open. The load-bearing rule is `.row:has(> .block:empty)` in `document.module.css`; the row is `display: contents`, so the backlink sidenote is a sibling grid item. */
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -9,7 +9,7 @@ import '../../../styles/entry.css';
 import type { ReportBlock } from '../../../../../core/domain/report.ts';
 import { ReportDocument } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const prose = (id: string, markdown: string): ReportBlock => ({ id, kind: 'prose', payload: { markdown } });
 
@@ -74,7 +74,7 @@ describe('a contract block takes no room', () => {
 
     render(<Page blocks={[prose('b_1', CONTRACT), prose('b_2', SECTION)]} />);
     const withContract = topInFrame(document.querySelector('#b_2')!);
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
 
     // The control: the same document without the contract.
     render(<Page blocks={[prose('b_2', SECTION)]} />);
@@ -95,7 +95,7 @@ describe('a contract block takes no room', () => {
     expect(sidenote!.checkVisibility()).toBe(false);
     expect(sidenote!.getBoundingClientRect().height).toBe(0);
     const withContract = topInFrame(document.querySelector('#b_2')!);
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
 
     render(<Page blocks={[prose('b_2', SECTION)]} />);
     expect(withContract).toBe(topInFrame(document.querySelector('#b_2')!));

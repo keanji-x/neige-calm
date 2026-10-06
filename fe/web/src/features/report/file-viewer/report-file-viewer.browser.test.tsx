@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,7 +7,7 @@ import '../../../styles/entry.css';
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import { ReportFileViewer } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 function files(path: string, text: string): WorkspaceFilePort {
   return {

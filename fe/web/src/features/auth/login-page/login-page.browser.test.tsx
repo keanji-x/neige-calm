@@ -1,8 +1,8 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LoginPage } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 describe('login page browser contract', () => {
   it('INV-LOGIN-003 focuses username and declares both credential autocomplete tokens', () => {

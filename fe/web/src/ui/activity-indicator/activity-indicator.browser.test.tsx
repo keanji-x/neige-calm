@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { commands } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -7,7 +7,7 @@ import '../../styles/entry.css';
 import { ActivityIndicator } from './public.tsx';
 
 afterEach(() => {
-  document.body.replaceChildren();
+  cleanup(); document.body.replaceChildren();
   delete document.documentElement.dataset.theme;
 });
 
@@ -58,7 +58,7 @@ describe('activity indicator colours', () => {
   it.each(['light', 'dark'] as const)('%s: attention and failed sit more than 30° apart in OKLCH hue', (theme) => {
     if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
     const attention = backgroundOf('attention');
-    document.body.replaceChildren();
+    cleanup(); document.body.replaceChildren();
     const failed = backgroundOf('failed');
     expect(attention).not.toEqual(failed);
     expect(hueDistance(oklchHue(attention), oklchHue(failed))).toBeGreaterThan(30);

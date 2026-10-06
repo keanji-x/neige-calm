@@ -3,7 +3,7 @@
  * jsdom has neither the UA close watcher that turns Escape into a light dismiss
  * nor real hover.
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
@@ -27,7 +27,7 @@ const TEMPLATES: readonly TrackTemplate[] = [{
   ],
 }];
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 function renderForm() {
   return render(

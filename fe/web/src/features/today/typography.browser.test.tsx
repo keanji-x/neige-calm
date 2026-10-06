@@ -1,6 +1,6 @@
 /* Facts about Today that only a real engine can settle: computed values and box geometry, not class names. */
 import type { ReactNode } from 'react';
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -10,7 +10,7 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import type { Area } from '../../../../core/domain/area.ts';
 import { TodayPage, type TodayPageProps } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const NOW = new Date(2026, 7, 10, 15, 0, 0).getTime();
 

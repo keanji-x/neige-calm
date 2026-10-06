@@ -1,6 +1,6 @@
 // Settings › Planners with the production styles in a real browser (#1817): a long reason (a path in a
 // fix hint) wraps inside its row at desktop and phone widths instead of widening the pane.
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,7 +10,7 @@ import type { ProviderAvailability } from '../../../../core/domain/agent-provide
 import { PlannersPane } from './planners.tsx';
 import { SettingsSurface } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const LOGGED_OUT = 'not logged in — run `claude /login` with '
   + 'CLAUDE_CONFIG_DIR=/home/owner/.local/share/neige-next/claude-planner/config-dir-for-the-dedicated-login';

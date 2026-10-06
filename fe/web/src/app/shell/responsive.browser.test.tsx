@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -23,7 +23,7 @@ function MobileNavigationProbe() {
   </div>;
 }
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 describe('responsive shell layout', () => {
   it('renders the brand mark as a crisp theme-owned square mask', () => {

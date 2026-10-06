@@ -1,5 +1,5 @@
 /* A table cell's citation, as the engine lays it out: jsdom cannot say whether the button is painted or whether the panel scrolls. */
-import { act, render } from '@testing-library/react';
+import { cleanup, act, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -12,7 +12,7 @@ import { useState } from '../../../ui/state/public.ts';
 import { ReportSourcePanel } from '../source/public.tsx';
 import { ReportTableBlock } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const FILLER = Array.from({ length: 80 }, (_, index) => `第 ${index + 1} 段。市场在观望，数据在变化，结论暂时不动。`).join('\n\n');
 const QUOTE = '布伦特原油收于每桶 67.4 美元';

@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -6,7 +6,7 @@ import '../../styles/entry.css';
 
 import { TodayPage } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 describe('Today mobile presentation', () => {
   it('renders the Astryx calendar surface at phone width', async () => {

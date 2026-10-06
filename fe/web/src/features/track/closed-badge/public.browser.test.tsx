@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
@@ -6,7 +6,7 @@ import '../../../styles/entry.css';
 import { TrackClosedBadge } from './public.tsx';
 
 afterEach(() => {
-  document.body.replaceChildren();
+  cleanup(); document.body.replaceChildren();
   delete document.documentElement.dataset.theme;
 });
 

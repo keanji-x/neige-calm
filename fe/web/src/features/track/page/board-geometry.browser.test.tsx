@@ -1,5 +1,5 @@
 /* The card board is a viewport-sized overlay whatever the report's height: the grid's `inset: 0` overlay has `.workspace` as its containing block, so both files' classes are imported rather than restated. */
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -10,7 +10,7 @@ import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
 import styles from './page.module.css';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const VIEWPORT = 600;
 

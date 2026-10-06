@@ -1,5 +1,5 @@
 import { page as browserPage, userEvent } from 'vitest/browser';
-import { render, waitFor } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../../styles/entry.css';
@@ -9,7 +9,7 @@ import { TrackPage } from './public.tsx';
 import { renderPage, track } from './test-fixtures.tsx';
 
 afterEach(() => {
-  document.body.replaceChildren();
+  cleanup(); document.body.replaceChildren();
   delete document.documentElement.dataset.theme;
 });
 

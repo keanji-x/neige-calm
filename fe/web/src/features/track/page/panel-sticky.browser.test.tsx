@@ -1,6 +1,6 @@
 /* The panel card stays while the document scrolls under it. Sticky may only travel inside its containing block, and jsdom computes no layout, so the fixture is the page's own production nesting. */
 import { InventoryGroups } from './inventory-groups.tsx';
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -10,7 +10,7 @@ import '../../../styles/entry.css';
 import pageHeader from '../../../ui/page-header/page-header.module.css';
 import styles from './page.module.css';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 /** The track page's skeleton inside the page's own scrollport; `report` is a block tall enough to scroll. */
 function Page({ documentHeight }: { documentHeight: number }) {

@@ -1,5 +1,5 @@
 /* The two-part conversation row (name + track crumb), measured in a real rendering engine. */
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -11,7 +11,7 @@ import {
 } from '../../../../../core/domain/conversation.ts';
 import { ChatList } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 /* The panel track is `max(15rem, 25cqi)`: 240px at its floor, ~280px on a wide window. */
 const COLUMN = 270;

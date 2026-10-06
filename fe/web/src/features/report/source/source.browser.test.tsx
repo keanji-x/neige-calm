@@ -1,5 +1,5 @@
 /* The source panel's claims that only a rendering engine can answer: jsdom computes no layout. */
-import { act, render } from '@testing-library/react';
+import { cleanup, act, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -11,7 +11,7 @@ import { Drawer } from '../../../ui/drawer/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { ReportSourcePanel } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const FILLER = Array.from({ length: 80 }, (_, index) => `第 ${index + 1} 段。市场在观望，数据在变化，结论暂时不动。`).join('\n\n');
 const QUOTE = '9月加息概率接近九成';

@@ -1,5 +1,5 @@
 /* The mobile Task row's strike-through, measured: a class assertion cannot say whether the word is struck. `.mobileRowStruck` lives inside `@media (width < 60rem)`, evaluated against the iframe the suite renders into. */
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,7 +11,7 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../../core/domain/track.t
 import { TrackPage } from './public.tsx';
 
 afterEach(() => {
-  document.body.replaceChildren();
+  cleanup(); document.body.replaceChildren();
 });
 
 const track: Track = {

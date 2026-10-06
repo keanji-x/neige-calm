@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,7 +6,7 @@ import '../../styles/entry.css';
 
 import { NetworkPane } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 describe('Settings mobile presentation', () => {
   it('keeps one row shape and one trailing edge at phone width', async () => {

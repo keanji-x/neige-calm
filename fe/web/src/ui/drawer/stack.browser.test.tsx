@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import '../../styles/entry.css';
@@ -6,7 +6,7 @@ import { Drawer } from './public.tsx';
 import { useState } from '../state/public.ts';
 import { useCompactViewport } from '../viewport/public.ts';
 
-afterEach(async () => { document.body.replaceChildren(); await page.viewport(1280, 720); });
+afterEach(async () => { cleanup(); document.body.replaceChildren(); await page.viewport(1280, 720); });
 
 function Harness() {
   const [side, setSide] = useState(false);

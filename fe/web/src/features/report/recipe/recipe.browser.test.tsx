@@ -1,12 +1,12 @@
 // The recipe body editor, for real, in a real engine: CodeMirror measures a layout jsdom does not have.
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { TrackRecipe } from '../../../../../core/domain/track.ts';
 import { RecipeEditor, type RecipeDraft, type RecipeWriteOutcome } from './public.tsx';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const RECIPE: TrackRecipe = {
   id: 'r-ship', title: 'Ship checklist', body: '## Ship checklist\n',
