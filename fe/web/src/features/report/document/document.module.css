@@ -46,14 +46,16 @@
     position: relative;
     display: grid;
     grid-template-columns:
-      var(--document-start)
-      var(--document-measure, var(--measure-prose))
+      var(--document-start, 0px)
+      minmax(0, var(--document-measure, 40rem))
       minmax(0, 1fr);
     row-gap: var(--space-8);
 
     inline-size: 100%;
     max-inline-size: none;
     counter-reset: report-section;
+    /* Honor a larger user root font without changing the global prose contract. */
+    font-size: max(var(--text-lg), 1.125rem);
   }
 
   /* One block, plus its sidenote. Placed explicitly — the rail claims column 1,
@@ -169,7 +171,7 @@
     margin-block-start: calc(var(--space-12) + var(--space-6));
     margin-block-end: var(--space-6);
     font-family: var(--font-serif);
-    font-size: var(--text-xl);
+    font-size: max(var(--text-xl), 1.375rem);
     font-weight: var(--weight-medium);
     line-height: var(--leading-snug);
     letter-spacing: var(--tracking-tight);
@@ -305,7 +307,7 @@
 
   .appendix {
     margin-inline-start: var(--document-start, 0px);
-    inline-size: var(--document-measure, var(--measure-prose));
+    inline-size: min(100%, var(--document-measure, 40rem));
     min-inline-size: 0;
   }
 
@@ -460,7 +462,7 @@
     margin-block-start: calc(var(--space-12) + var(--space-6));
     margin-block-end: var(--space-6);
     font-family: var(--font-serif);
-    font-size: var(--text-xl);
+    font-size: max(var(--text-xl), 1.375rem);
     font-weight: var(--weight-medium);
     line-height: var(--leading-snug);
     letter-spacing: var(--tracking-tight);
@@ -533,7 +535,7 @@
     margin-block-start: var(--space-11);
     margin-block-end: var(--space-4);
     font-family: var(--font-serif);
-    font-size: var(--text-md);
+    font-size: max(var(--text-md), 0.9375rem);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-snug);
     color: var(--text);
@@ -666,7 +668,8 @@
      must not keep its fixed document measure and widen the viewport. */
   @media (width < 60rem) {
     .doc {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: minmax(0, min(100%, var(--document-measure, 40rem)));
+      justify-content: center;
       max-inline-size: 100%;
       overflow-wrap: anywhere;
     }

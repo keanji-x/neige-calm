@@ -192,7 +192,7 @@ describe('the drawer against a real rendering engine', () => {
     expect(getComputedStyle(heading, '::before').opacity).toBe('1');
 
     await page.viewport(1440, 900);
-    expect(report.getBoundingClientRect().width).toBeCloseTo(568, 0);
+    expect(report.getBoundingClientRect().width).toBeCloseTo(640, 0);
     expect(getComputedStyle(outline).display).toBe('none');
     expect(getComputedStyle(heading, '::before').opacity).toBe('1');
 

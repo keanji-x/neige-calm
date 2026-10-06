@@ -63,6 +63,7 @@ describe('ReportFileViewer', () => {
       style={{
         position: 'relative', inlineSize: 1000, blockSize: 600,
         ['--document-measure' as string]: '568px',
+        ['--document-start' as string]: '80px',
       }}
     >
       <ReportFileViewer
@@ -84,12 +85,10 @@ describe('ReportFileViewer', () => {
       .toContain('A rendered paragraph.');
     const frame = document.querySelector<HTMLElement>('[data-testid="markdown-frame"]')!;
     const heading = document.querySelector<HTMLElement>('[data-nc-report] h2')!;
-    expect(heading.getBoundingClientRect().width).toBeGreaterThan(800);
+    expect(Math.round(heading.getBoundingClientRect().width)).toBe(568);
     const frameRect = frame.getBoundingClientRect();
     const headingRect = heading.getBoundingClientRect();
-    expect(Math.abs(
-      (headingRect.left - frameRect.left) - (frameRect.right - headingRect.right),
-    )).toBeLessThanOrEqual(1);
+    expect(Math.round(headingRect.left - frameRect.left)).toBe(80);
   });
 
   it('returns to the Report on Escape', () => {

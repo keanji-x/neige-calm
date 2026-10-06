@@ -13,7 +13,7 @@
     display: grid;
     grid-template-columns:
       var(--document-start, 0px)
-      minmax(0, var(--document-measure, var(--measure-prose)))
+      minmax(0, var(--document-measure, 40rem))
       minmax(0, 1fr);
     row-gap: var(--space-6);
     inline-size: 100%;
@@ -70,16 +70,6 @@
     margin-inline-start: var(--document-start, 0px);
   }
 
-  .bodyWide .markdown {
-    grid-column: 2;
-    --document-start: 0px;
-    --document-measure: 100%;
-  }
-
-  .bodyWide .markdown > .notice {
-    margin-inline-start: 0;
-  }
-
   .sourceWrap {
     display: flex;
     flex-direction: column;
@@ -130,12 +120,28 @@
       grid-column: 1;
     }
 
-    .bodyWide .markdown {
-      grid-column: 1;
+    /* Match the compact Report column, including its file-name metadata. */
+    .bodyProse {
+      grid-template-columns:
+        minmax(0, 1fr)
+        minmax(0, min(100%, var(--document-measure, 40rem)))
+        minmax(0, 1fr);
+    }
+
+    .bodyProse .fileName {
+      grid-column: 2;
+    }
+
+    .bodyProse .markdown {
+      grid-column: 1 / -1;
     }
 
     .markdown > .notice {
       margin-inline-start: 0;
+    }
+
+    .bodyProse .markdown > .notice {
+      margin-inline-start: max(0px, calc((100% - var(--document-measure, 40rem)) / 2));
     }
   }
 }

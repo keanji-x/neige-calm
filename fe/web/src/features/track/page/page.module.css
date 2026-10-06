@@ -1,30 +1,12 @@
 @layer features {
   .page {
-    /*
-     * The document's measure and its margins, derived from one number.
-     *
-     * **568, not the global `--measure-prose` 504.** Measured on the real font:
-     * New York at 18px averages 8.2px a character, so 504 is 61 characters a
-     * line and 568 is 69 — both inside the 45–75 comfortable range, but the
-     * narrow one made the column read as a ribbon inside a 1440 window where it
-     * is one of five vertical bands. The global token stays 504: `styles/` is a
-     * frozen interface (§6.8) and every other prose surface on it is a
-     * different shape of page. Widening it globally is a change request, and
-     * this comment is the evidence for it.
-     *
-     * The margin is what is left over, halved — a document with two equal
-     * margins reads as a page. It is also, exactly, how much room the outline
-     * has for its labels (§6.16): every pixel the measure takes is a pixel off
-     * a section title.
-     *
-     *   leftover = (100cqi − 3×24 − panel-span − 568) / 2
-     *   at 1440 / rail 240: (1200 − 72 − 300 − 568) / 2 = 130
-     *
-     * `ui/page-header` reads `--document-start` too, which is what puts the
-     * page title on the first character of the prose.
-     */
-    --document-measure-max: calc(var(--measure-prose) + var(--space-12) * 2);
-    /* Preserve the authored 568px measure whenever it fits. A wide
+    /* One relative reading ceiling shared with the document and file overlay.
+       The remaining space becomes equal margins inside the document track;
+       opening a wider conversation spends those margins before shrinking text.
+       At the default root size, 40rem is 640px (about 35 CJK glyphs at 18px).
+       Keep this local: the global prose token also sizes unrelated UI surfaces. */
+    --document-measure-max: 40rem;
+    /* Preserve the reading measure whenever it fits. A wide
        conversation may consume the margin before the shell reaches compact
        mode; then the measure shrinks to the real first grid track instead of
        painting underneath the drawer. */
