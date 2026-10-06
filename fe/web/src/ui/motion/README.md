@@ -4,6 +4,8 @@ Styles owns small CSS feedback tokens; UI owns the generic Motion physics and pl
 
 ## Physical motion
 
+This is the default for new or changed interactive position, size and presence motion. Consumers reuse `SizeMotion`, `useSpringPresence` or the shared playback adapter and declare targets/geometry; they do not add local response frequencies, duration formulas, curves or spring solvers. The UI owner calibrates the shared response. Declared color-feedback, direct-manipulation and decorative-loop contracts remain intentional exceptions.
+
 `spring.ts` uses Motion 14's `spring` solver and its analytical velocity and rest criteria. One response frequency (20/s) derives critical damping with normalized mass. There are no per-component durations, reference distances, distance multipliers or duration bounds. Motion decides settlement.
 
 The library trajectory is sampled once at 10ms rendering precision and played through owned browser-native effects. This is interpolation precision, not a feel setting. Native animation time samples the same model's position and velocity for a retarget. Cancellation discards native effects; identity guards reject stale completions. The adapter owns all effects directly, avoiding a vendor completion callback that writes discarded styles. Size still requires layout; this is not a compositor-only claim.
