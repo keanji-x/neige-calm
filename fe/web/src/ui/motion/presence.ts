@@ -3,8 +3,8 @@ import { playSpring, type SpringPlayback } from './spring.ts';
 
 /** Paired surfaces share one spring progress and preserve velocity through reversals. */
 export function useSpringPresence(
-  primary: RefObject<HTMLElement | null>, peer: RefObject<HTMLElement | null>,
-  open: boolean, present: boolean, enabled: boolean, onExited: () => void,
+  primary: RefObject<HTMLElement | null>, peer: RefObject<HTMLElement | null> | null,
+  open: boolean, present: boolean, enabled: boolean, onExited: () => void, paint: (value: number) => Keyframe,
 ) {
   const active = useRef<SpringPlayback | null>(null);
   const settled = useRef(0);
@@ -24,12 +24,10 @@ export function useSpringPresence(
     if (element === null) return;
     const from = active.current?.sample() ?? { value: settled.current, velocity: 0 };
     cancel();
-    const elements = peer.current === null ? [element] : [element, peer.current];
+    const paired = peer?.current;
+    const elements = paired == null ? [element] : [element, paired];
     const target = open ? 1 : 0;
-    const playback = playSpring(elements, from.value, target, from.velocity, value => ({
-      opacity: Math.max(0, Math.min(1, value)),
-      translate: `0 calc(var(--space-6) * ${1 - value})`,
-    }));
+    const playback = playSpring(elements, from.value, target, from.velocity, paint);
     active.current = playback;
     void playback.finished.then(() => {
       if (active.current !== playback) return;

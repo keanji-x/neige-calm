@@ -28,9 +28,8 @@
     background: var(--paper);
     box-shadow: var(--shadow-float);
 
-    /* Overlays are §2.6's stated exception to "no entrance animation": entering
-       costs --motion-medium, leaving is instant. */
-    animation: dialog-enter var(--motion-medium) var(--ease-enter);
+    /* Shared Motion owns panel entry; dismissal and focus remain synchronous. */
+    transition: none;
   }
 
   /* The wide form carries child views, whose height changes as the user drills
@@ -130,13 +129,6 @@
 
   @keyframes dialog-backdrop-enter {
     from { background-color: transparent; }
-  }
-
-  @keyframes dialog-enter {
-    from {
-      opacity: 0;
-      translate: 0 var(--space-4);
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {

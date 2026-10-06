@@ -265,7 +265,7 @@
   .wrapper:has(.menuButton[aria-expanded='true']) .menuButton {
     opacity: 1;
     pointer-events: auto;
-    transition: opacity var(--motion-quick) ease-out;
+    transition: opacity var(--motion-quick) var(--ease-feedback);
   }
 
   /*

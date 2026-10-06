@@ -12,7 +12,7 @@ The library trajectory is sampled once at 10ms rendering precision and played th
 
 `SizeMotion` measures an intrinsic flow root that contains margins/floats. Mode changes animate real height with no text scaling, unmount or focus movement. Ordinary typing/updates and initial mount are immediate; late intrinsic updates retarget while moving. Settlement restores automatic height. Reduced motion and unmount release clipping and effects. Children must not derive their height as a percentage of the animated host. Keep floating/portalled overlays outside transient clipping.
 
-`useSpringPresence` gives paired surfaces one progress trajectory. Drawer and seam map it to opacity and a spacing-token lift. They keep live content and velocity through reversal. Only the current playback may finish dismissal. Compact pages/reduced motion settle directly. Native-child transition events do not own the spring lifecycle.
+`useSpringPresence` gives a declared single surface or pair one progress trajectory; the owner supplies its geometric paint mapping. Dialog uses its existing small lift and immediate dismissal; Drawer uses its paired card/seam mapping. Drawer and seam map it to opacity and a spacing-token lift. They keep live content and velocity through reversal. Only the current playback may finish dismissal. Compact pages/reduced motion settle directly. Native-child transition events do not own the spring lifecycle.
 
 ## Other motion
 

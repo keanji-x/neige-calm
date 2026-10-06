@@ -6,6 +6,7 @@ import '../../styles/entry.css';
 import { Dialog } from '../dialog/public.tsx';
 import { useState } from '../state/public.ts';
 import { readMotionTransition } from './transition.ts';
+import { springTrajectory } from './spring.ts';
 
 function Scene() {
   const [open, setOpen] = useState(false);
@@ -18,14 +19,15 @@ function Scene() {
 }
 afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 
-it('uses the shared entry recipe without scaling text and coordinates the backdrop', () => {
+it('uses the shared physical spring without scaling text and preserves backdrop feedback', () => {
   render(<Scene />);
   act(() => { screen.getByRole('button', { name: 'Open dialog' }).click(); });
   const panel = screen.getByRole('dialog', { name: 'Motion dialog' });
-  const style = getComputedStyle(panel);
-  const recipe = readMotionTransition(panel, 'enter');
-  expect(parseFloat(style.animationDuration)).toBe(recipe.duration);
-  expect(style.animationTimingFunction).toBe(`cubic-bezier(${recipe.ease.join(', ')})`);
+  const animation = panel.getAnimations()[0];
+  const effect = animation.effect as KeyframeEffect;
+  expect(effect.getKeyframes().length).toBeGreaterThan(2);
+  expect(effect.getTiming().duration).toBe(springTrajectory(0, 1, 0).duration);
+  expect(effect.getTiming().easing).toBe('linear');
   const frames = panel.getAnimations().flatMap(animation => (animation.effect as KeyframeEffect).getKeyframes());
   expect(frames.some(frame => frame.scale !== undefined)).toBe(false);
   expect(frames.some(frame => frame.translate !== undefined)).toBe(true);
@@ -55,8 +57,25 @@ it('has no entrance travel under reduced motion and fits a compact viewport', as
   await userEvent.click(screen.getByRole('button', { name: 'Open dialog' }));
   const panel = screen.getByRole('dialog', { name: 'Motion dialog' });
   expect(getComputedStyle(panel).animationName).toBe('none');
+  expect(panel.getAnimations()).toHaveLength(0);
   expect(getComputedStyle(panel.parentElement!).animationName).toBe('none');
   expect(panel.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
   expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(390);
   await expect.poll(() => document.activeElement).toBe(screen.getByRole('textbox', { name: 'Task name' }));
+});
+
+it('discards an entry completion queued before dismissal without affecting the next dialog', async () => {
+  render(<Scene />);
+  act(() => { screen.getByRole('button', { name: 'Open dialog' }).click(); });
+  const first = screen.getByRole('dialog', { name: 'Motion dialog' });
+  for (const animation of first.getAnimations()) animation.finish();
+  act(() => { screen.getByRole('button', { name: 'Done' }).click(); });
+  expect(first.isConnected).toBe(false);
+  expect(first.getAnimations()).toHaveLength(0);
+  act(() => { screen.getByRole('button', { name: 'Open dialog' }).click(); });
+  const second = screen.getByRole('dialog', { name: 'Motion dialog' });
+  expect(second).not.toBe(first);
+  await Promise.all(second.getAnimations().map(animation => animation.finished));
+  expect(getComputedStyle(second).opacity).toBe('1');
+  expect(screen.getByRole('textbox', { name: 'Task name' })).toBe(document.activeElement);
 });

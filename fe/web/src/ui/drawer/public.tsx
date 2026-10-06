@@ -107,7 +107,10 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   // Compact pages disappear in this commit; no mobile transitionend is owed.
   if (compact && closing) setClosing(false);
 
-  useSpringPresence(panelRef, seamRef, open, open || closing, !compact, () => { setClosing(false); });
+  useSpringPresence(panelRef, seamRef, open, open || closing, !compact, () => { setClosing(false); }, value => ({
+    opacity: Math.max(0, Math.min(1, value)),
+    translate: `0 calc(var(--space-6) * ${1 - value})`,
+  }));
 
   // Keep the local escape-layer contract for unmigrated Dialog/file-viewer hosts;
   // native Astryx children still dismiss first through the shared layer stack.
