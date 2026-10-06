@@ -108,7 +108,7 @@ async fn a_reset_at_a_stale_revision_is_a_conflict_and_writes_nothing() {
 fn only_the_user_may_apply_a_reset() {
     let mut doc = crate::track_report_doc::ReportDoc::from_payload(&TrackReportPayload::new(
         "s",
-        &calm_types::report_blocks::render_fence("app", &json!({ "src": "/apps/x" })),
+        calm_types::report_blocks::render_fence("app", &json!({ "src": "/apps/x" })),
     ));
     let before = doc.project().unwrap();
     for author in [
