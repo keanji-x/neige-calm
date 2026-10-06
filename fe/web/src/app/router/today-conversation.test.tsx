@@ -78,6 +78,10 @@ function renderApp({
         return launchpadConversations?.() ?? Promise.resolve(ok(launchpadRows()));
       }
       if (request.path === '/api/tracks/w1/conversations') return Promise.resolve(ok(trackRows));
+      if (request.path.startsWith('/api/cards/') && request.path.endsWith('/planner/run')) {
+        return Promise.resolve(ok({ card_id: request.path.split('/')[3], worker_session_id: 'runtime',
+          phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null }));
+      }
       if (request.path.includes('/harness/items')) return Promise.resolve(ok(historyRows));
       return Promise.resolve(ok([]));
     },
