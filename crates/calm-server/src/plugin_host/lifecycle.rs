@@ -183,7 +183,13 @@ impl PluginHost {
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
         self.lifecycle_db.set_enabled(id, true).await?;
-        match self.spawn_under(&guard, None).await {
+        // A conflict refusal of a row found disabled is rolled back below, so it publishes nothing.
+        let report = if found {
+            super::ConflictReport::Publish
+        } else {
+            super::ConflictReport::Silent
+        };
+        match self.spawn_under_reporting(&guard, None, report).await {
             Ok(()) | Err(HostError::AlreadyRunning(_)) => {}
             Err(e) => {
                 let answer = spawn_error_to_calm(e);

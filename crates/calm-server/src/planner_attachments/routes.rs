@@ -1,8 +1,9 @@
 //! `POST`/`GET /api/cards/{id}/planner/attachments[/{attachment_id}]`.
 //! Reading is admitted for any actor (an agent can already open these bytes with its own tools); writing refuses a request that declares a non-`user` actor, and a request with no `X-Calm-Actor` header is `user`.
 
+use crate::extract::Path;
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};

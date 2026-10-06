@@ -1,11 +1,15 @@
-//! `JsonBody<T>`: the one JSON request-body extractor. It deserializes exactly as `axum::Json`
+//! The request extractors handlers take: `JsonBody<T>` for a JSON body, `Path<T>` for path
+//! parameters, `Query<T>` for the query string. Each deserializes exactly as axum's own extractor
 //! does, but a rejection answers the `ErrorBody` contract (`{error, code}`) with the status axum
-//! gives it, instead of axum's plain-text body. `tests/cases/json_body_extractor_scan.rs` keeps
-//! `axum::Json` out of every handler's arguments.
+//! gives it, instead of axum's plain-text body. `tests/cases/extractor_scan.rs` keeps axum's
+//! `Json`, `Path` and `Query` out of every handler's arguments.
+//!
+//! `Path` and `Query` keep axum's names on purpose: utoipa's axum integration recognises those
+//! extractors by name, and infers a handler's documented parameters from them.
 
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Request};
+use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use serde::de::DeserializeOwned;
 
 use crate::error::CalmError;
@@ -24,7 +28,7 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         match axum::Json::<T>::from_request(req, state).await {
             Ok(axum::Json(value)) => Ok(JsonBody(value)),
-            Err(rejection) => Err(rejection_error(rejection)),
+            Err(rejection) => Err(rejection_error(rejection.status(), rejection.body_text())),
         }
     }
 }
@@ -32,7 +36,7 @@ where
 /// Every status a [`JsonBody`] rejection answers, with its OpenAPI description. The document adds
 /// each one to every operation that declares a JSON request body (`openapi::DeclaredResponses`),
 /// so a route annotation names a JSON body once and these follow.
-pub(crate) const REJECTIONS: [(StatusCode, &str); 4] = [
+pub(crate) const JSON_BODY_REJECTIONS: [(StatusCode, &str); 4] = [
     (
         StatusCode::BAD_REQUEST,
         "`bad_request`: the body is not parseable JSON.",
@@ -51,21 +55,59 @@ pub(crate) const REJECTIONS: [(StatusCode, &str); 4] = [
     ),
 ];
 
-/// A rejection keeps axum's status, so only the body changes shape: 400 unparseable JSON
-/// (`bad_request`), 413 over the body limit (`payload_too_large`), 415 no JSON content type
-/// (`unsupported_media_type`), 422 JSON of the wrong shape (`invalid_body`). The reason is axum's
-/// own text, which names the field serde stopped at.
-fn rejection_error(rejection: JsonRejection) -> CalmError {
-    let reason = rejection.body_text();
-    match rejection.status() {
+/// The path parameters; `Path(id): Path<String>` in a handler's arguments.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Path<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for Path<T>
+where
+    T: DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = CalmError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
+            Ok(path) => Ok(Path(path.0)),
+            Err(rejection) => Err(rejection_error(rejection.status(), rejection.body_text())),
+        }
+    }
+}
+
+/// The query string; `Query(params): Query<T>` in a handler's arguments.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Query<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for Query<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = CalmError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Query::<T>::from_request_parts(parts, state).await {
+            Ok(query) => Ok(Query(query.0)),
+            Err(rejection) => Err(rejection_error(rejection.status(), rejection.body_text())),
+        }
+    }
+}
+
+/// A rejection keeps axum's status, so only the body changes shape. A JSON body: 400 unparseable
+/// JSON (`bad_request`), 413 over the body limit (`payload_too_large`), 415 no JSON content type
+/// (`unsupported_media_type`), 422 JSON of the wrong shape (`invalid_body`). Path parameters and the
+/// query string: 400 a value that does not parse (`bad_request`), or 500 (`internal`) for a route
+/// whose parameters do not fit its handler, a server fault. The reason is axum's own text, which
+/// names the field serde stopped at.
+fn rejection_error(status: StatusCode, reason: String) -> CalmError {
+    match status {
         StatusCode::BAD_REQUEST => CalmError::BadRequest(reason),
         StatusCode::PAYLOAD_TOO_LARGE => CalmError::PayloadTooLarge(reason),
         StatusCode::UNSUPPORTED_MEDIA_TYPE => CalmError::UnsupportedMediaType(reason),
         StatusCode::UNPROCESSABLE_ENTITY => CalmError::InvalidBody(reason),
-        // `JsonRejection` is non-exhaustive; every rejection axum 0.8 has is one of the four above.
-        other => CalmError::Internal(format!(
-            "unexpected JSON body rejection ({other}): {reason}"
-        )),
+        StatusCode::INTERNAL_SERVER_ERROR => CalmError::Internal(reason),
+        // The rejection types are non-exhaustive; every rejection axum 0.8 has is one of the above.
+        other => CalmError::Internal(format!("unexpected request rejection ({other}): {reason}")),
     }
 }
 
@@ -159,7 +201,10 @@ mod tests {
             ),
         ];
         let mut answered: Vec<u16> = cases.iter().map(|case| case.2.as_u16()).collect();
-        let mut documented: Vec<u16> = REJECTIONS.iter().map(|(s, _)| s.as_u16()).collect();
+        let mut documented: Vec<u16> = JSON_BODY_REJECTIONS
+            .iter()
+            .map(|(s, _)| s.as_u16())
+            .collect();
         answered.sort_unstable();
         documented.sort_unstable();
         assert_eq!(

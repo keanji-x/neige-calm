@@ -14,7 +14,8 @@ mod rank;
 #[cfg(test)]
 mod tests;
 
-use axum::extract::{Path, Query, State};
+use crate::extract::{Path, Query};
+use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 use calm_types::mentions::MentionCandidates;

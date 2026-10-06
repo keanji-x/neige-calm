@@ -6,7 +6,7 @@
 //! with the reason otherwise); a Claude entry declares no default effort, so an unsupported one
 //! is dropped, and so is any effort sent with a model the Claude list does not carry.
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::{Json, http::StatusCode};
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
@@ -18,8 +18,8 @@ use crate::db::sqlite::card_update_tx;
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
+use crate::extract::{JsonBody, Path};
 use crate::ids::CardId;
-use crate::json_body::JsonBody;
 use crate::model::CardPatch;
 use crate::operation::codex_adapter::card_payload_get_tx;
 use crate::planner_model::CardModelSelection;

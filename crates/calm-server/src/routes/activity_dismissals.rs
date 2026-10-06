@@ -2,12 +2,7 @@
 //! track's activity overlay aside. The key is stored, not the item: the projector drops a stored key
 //! from its track's items, and the same source happening again has a new key, so it lights up again.
 
-use axum::{
-    Router,
-    extract::{Path, State},
-    http::StatusCode,
-    routing::post,
-};
+use axum::{Router, extract::State, http::StatusCode, routing::post};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
@@ -15,8 +10,8 @@ use crate::actor::Actor;
 use crate::db::sqlite::track_get_tx;
 use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::extract::{JsonBody, Path};
 use crate::ids::TrackId;
-use crate::json_body::JsonBody;
 use crate::model::now_ms;
 use crate::state::{AppState, RouteState};
 use crate::track_activity::notifications::is_item_key;
