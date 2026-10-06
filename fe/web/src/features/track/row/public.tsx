@@ -111,7 +111,7 @@ export function TrackRow({
         <span className={styles.titleRow}>
           {hourLabel !== undefined && <span className={styles.hour}>{hourLabel}</span>}
           <ListText tone="primary" emphasis={active ? 'selected' : variant === 'default' ? 'medium' : undefined}
-            className={styles.title} title={title}><TrackTitle track={track} /></ListText>
+            className={styles.title} title={title} fadeOverflow={variant === 'rail' && actions !== undefined}><TrackTitle track={track} /></ListText>
         </span>
         {!trailingStatus && (
           <span className={styles.age}>{relativeTime(track.updatedAt, now)}</span>

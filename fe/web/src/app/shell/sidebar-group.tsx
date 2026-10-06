@@ -53,7 +53,7 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
     ref={disclosureRef}
     type="button"
     data-nc-role="row"
-    className={`${styles.areaRow} ${actions === undefined ? styles.groupSingleAction : ''}`}
+    className={styles.areaRow}
     aria-expanded={disclosure.isOpen}
     aria-label={`${disclosure.isOpen ? 'Collapse' : 'Expand'} ${label}`}
     onClick={disclosure.toggle}
@@ -61,12 +61,12 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
     <span className={`${styles.chevron} ${disclosure.isOpen ? styles.chevronOpen : ''}`} aria-hidden="true">
       <Icon name="chevron-right" />
     </span>
-    <ListText tone={level === 'section' ? 'section' : 'group'} className={styles.areaName} title={title}>{title}</ListText>
+    <ListText tone={level === 'section' ? 'section' : 'group'} className={styles.areaName} title={title} fadeOverflow>{title}</ListText>
   </button>;
   return <div role="group" aria-label={label} className={level === 'section' ? styles.section : styles.areaGroup}>
     <div className={styles.areaRowWrap}>
       {level === 'section' ? <ListText as="h2" tone="section" className={styles.groupHeading}>{button}</ListText> : button}
-      <span className={`${styles.areaActions} ${actions === undefined ? styles.groupMenuTrailing : ''}`}>
+      <span className={styles.areaActions}>
         <DropdownMenu placement="below" button={{
           label: management.menuLabel, icon: <Icon name="more" size="sm" />,
           isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.areaActionsButton,

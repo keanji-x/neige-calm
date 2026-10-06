@@ -26,3 +26,10 @@ and 8px below it. Rows stay 28px apart; both insets count toward the bounded
 module height. Leading icon slots never add a second
 text indent to a child row. A browser contract composes the actual Sidebar,
 Cards, Tasks and Conversations and checks both themes and their geometry.
+
+
+`fadeOverflow` enables a measured alpha fade only when the element's text exceeds
+its bounded width. Hosts retain layout/overflow ownership and use `text-overflow:
+clip` instead of an ellipsis when opting in. Full DOM text, native title and
+accessible names are preserved; resize and content updates remeasure overflow,
+and the observer disconnects on unmount. Short labels receive no mask.

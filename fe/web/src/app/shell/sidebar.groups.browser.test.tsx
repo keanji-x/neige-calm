@@ -78,6 +78,23 @@ it('places view options before collapse and shares group disclosure, keyboard ac
   const newAreaBox = page.getByRole('button', { name: 'New area', exact: true }).element().getBoundingClientRect();
   expect(newAreaBox.width).toBeCloseTo(28, 0);
   expect(newAreaBox.height).toBeCloseTo(28, 0);
+  const centerX = (element: Element) => {
+    const box = element.getBoundingClientRect();
+    return box.left + box.width / 2;
+  };
+  const areaMenu = page.getByRole('button', { name: 'Area actions for Work', exact: true }).element();
+  const areaPlus = page.getByRole('button', { name: 'New track in Work', exact: true }).element();
+  const workGroup = page.getByRole('group', { name: 'area Work', exact: true });
+  const trackMenu = workGroup.getByRole('button', { name: 'Actions for track Review result', exact: true }).element();
+  const trackDelete = workGroup.getByRole('button', { name: 'Delete Review result', exact: true }).element();
+  expect(centerX(trackMenu)).toBeLessThan(centerX(trackDelete));
+  expect(centerX(trackMenu)).toBeCloseTo(centerX(areaMenu), 0);
+  expect(centerX(trackDelete)).toBeCloseTo(centerX(areaPlus), 0);
+  expect(centerX(options.element())).toBeCloseTo(centerX(areaMenu), 0);
+  expect(centerX(page.getByRole('button', { name: 'Group actions for Pinned', exact: true }).element())).toBeCloseTo(centerX(areaMenu), 0);
+  expect(centerX(page.getByRole('button', { name: 'Group actions for Areas', exact: true }).element())).toBeCloseTo(centerX(areaMenu), 0);
+  expect(centerX(collapse.element())).toBeCloseTo(centerX(areaPlus), 0);
+
   await options.click();
   await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toBeVisible();
   await userEvent.keyboard('{ArrowDown}');
@@ -242,5 +259,40 @@ it('reserves room for menu actions and metadata in Today compact rows', async ()
   await row.hover();
   const remove = page.getByRole('button', { name: 'Delete Compact row', exact: true }).element().getBoundingClientRect();
   const age = row.element().lastElementChild!.getBoundingClientRect();
-  expect(age.right).toBeLessThanOrEqual(remove.left);
+  const menu = page.getByRole('button', { name: 'Actions for track Compact row', exact: true }).element().getBoundingClientRect();
+  expect(age.right).toBeLessThanOrEqual(menu.left);
+  expect(menu.right).toBeLessThanOrEqual(remove.left);
+});
+
+
+it('fades only overflowing rail titles and keeps the action menu distinct', async () => {
+  await page.viewport(1400, 900);
+  const base: Track = { id: 'long', title: '', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
+  const tree = (title: string, width: string) => <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
+    <div style={{ inlineSize: width }}><TrackRow track={{ ...base, title }} variant="rail"
+      onOpen={vi.fn()} onDelete={vi.fn()}
+      actions={{ areaPinned: false, onSetPinned: vi.fn(), onSetAreaPinned: vi.fn(), onMarkUnread: vi.fn() }} /></div>
+  </ThemeProvider>;
+  const english = 'Review the exceptionally long navigation title';
+  const chinese = '验证很长的任务标题与右侧操作菜单是否存在视觉冲突';
+  const view = render(tree(chinese, '14rem'));
+  const titleNode = () => document.querySelector<HTMLElement>('button[data-nc-role="row"] [title]')!;
+  for (const title of [chinese, english]) {
+    view.rerender(tree(title, '14rem'));
+    expect(titleNode().scrollWidth).toBeGreaterThan(titleNode().clientWidth);
+    await expect.poll(() => getComputedStyle(titleNode()).maskImage).toContain('linear-gradient');
+    expect(getComputedStyle(titleNode()).textOverflow).toBe('clip');
+    expect(page.getByRole('button', { name: `Track ${title}`, exact: true }).element().getAttribute('aria-label')).toBe(`Track ${title}`);
+    const menu = page.getByRole('button', { name: `Actions for track ${title}`, exact: true }).element();
+    expect(titleNode().getBoundingClientRect().right).toBeLessThanOrEqual(menu.getBoundingClientRect().left);
+  }
+  view.rerender(tree('Short', '14rem'));
+  await expect.poll(() => getComputedStyle(titleNode()).maskImage).toBe('none');
+  expect(titleNode().scrollWidth).toBeLessThanOrEqual(titleNode().clientWidth);
+  view.rerender(tree(english, '14rem'));
+  await expect.poll(() => getComputedStyle(titleNode()).maskImage).toContain('linear-gradient');
+  // A layout resize without changing React props must also remove the fade.
+  titleNode().closest('button')!.parentElement!.parentElement!.style.inlineSize = '40rem';
+  await expect.poll(() => getComputedStyle(titleNode()).maskImage).toBe('none');
 });

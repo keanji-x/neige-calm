@@ -218,7 +218,7 @@ export function Sidebar({
           <div className={styles.brandActions}>
             <DropdownMenu placement="below" button={{
               label: 'Sidebar view options', icon: <Icon name="more" />,
-              isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.iconButton,
+              isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.areaActionsButton,
             }}>
               <DropdownMenuSubMenu label="Hidden groups" isDisabled={hiddenGroups.length === 0}>
                 {hiddenGroups.map((group) => <DropdownMenuItem key={group.id} label={`Show ${group.title}`} onClick={group.restore} />)}

@@ -374,9 +374,11 @@
       transition: none;
     }
   }
+  .variantRail.hasMenu .title { text-overflow: clip; }
+
   .menuSlot {
     position: absolute;
-    inset-inline-end: var(--space-2);
+    inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
     inset-block-start: 50%;
     translate: 0 -50%;
   }
@@ -387,8 +389,9 @@
   .row.hasMenu.hasPin.hasRemove { padding-inline-end: calc(var(--space-2) * 4 + var(--control-h-sm) * 3); }
   .wrapperRail .row.hasMenu,
   .wrapperRail .row.hasMenu.hasPin { padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
-  .wrapper:has(.hasMenu) .remove { inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm)); }
+  .wrapper:has(.hasMenu) .remove { inset-inline-end: var(--space-2); }
+  .wrapperPanel:has(.hasMenu) .remove { inset-inline-end: 0; }
+  .wrapperPanel:has(.hasMenu) .menuSlot { inset-inline-end: calc(var(--space-2) + var(--control-h-sm)); }
   .wrapper:not(.wrapperRail):has(.hasMenu) .pin { inset-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
-  .wrapper:has(.hasMenu) .statusSlot { inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm) + (var(--control-h-sm) - var(--dot-sm)) / 2); }
 
 }
