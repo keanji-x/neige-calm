@@ -78,3 +78,23 @@ it('resolves directly to natural size under reduced motion', async () => {
   await expect.poll(() => host().getBoundingClientRect().height).toBe(192);
   expect(host().style.height).toBe('');
 });
+
+it('lets the browser advance a large height change without per-frame inline rewrites', async () => {
+  const view = render(<Panel mode="compact" />);
+  view.rerender(<Panel mode="expanded" height={500} />);
+  const animations = host().getAnimations();
+  expect(animations).toHaveLength(1);
+  const animation = animations[0];
+  animation.pause();
+  const effect = animation.effect as KeyframeEffect;
+  expect(Number(effect.getTiming().duration)).toBeGreaterThan(240);
+  expect(Number(effect.getTiming().duration)).toBeLessThanOrEqual(360);
+  const initialInline = host().style.height;
+  animation.currentTime = 100;
+  await frame();
+  expect(host().style.height).toBe(initialInline);
+  expect(host().getBoundingClientRect().height).toBeGreaterThan(40);
+  animation.finish();
+  await settled();
+  expect(host().getBoundingClientRect().height).toBe(500);
+});

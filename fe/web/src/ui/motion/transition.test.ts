@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { readMotionTransition } from './transition.ts';
+import { readMotionTransition, readSizeTransition } from './transition.ts';
 
 function surface() {
   const element = document.createElement('div');
@@ -40,4 +40,22 @@ it.each(['', 'ease', 'cubic-bezier(0,1,1)', 'cubic-bezier(-1,0,1,1)', 'cubic-bez
   const element = surface();
   element.style.setProperty('--ease-layout', value);
   expect(() => readMotionTransition(element, 'layout')).toThrow('Invalid motion tokens');
+});
+
+it('uses a bounded size recipe that is symmetric and honors surface duration overrides', () => {
+  const element = surface();
+  expect(readMotionTransition(element, 'size').ease).toEqual([.4, 0, .2, 1]);
+  expect(readSizeTransition(element, 40, 168).duration).toBe(.24);
+  expect(readSizeTransition(element, 40, 48).duration).toBeCloseTo(.156);
+  expect(readSizeTransition(element, 40, 1040).duration).toBe(.36);
+  expect(readSizeTransition(element, 1040, 40)).toEqual(readSizeTransition(element, 40, 1040));
+  expect(readSizeTransition(element, 40, 40).duration).toBe(0);
+  element.style.setProperty('--motion-medium', '120ms');
+  expect(readSizeTransition(element, 40, 168).duration).toBe(.12);
+});
+
+it.each([NaN, Infinity, -1])('rejects invalid measured size %s', invalid => {
+  const element = surface();
+  expect(() => readSizeTransition(element, invalid, 40)).toThrow('Invalid intrinsic motion size');
+  expect(() => readSizeTransition(element, 40, invalid)).toThrow('Invalid intrinsic motion size');
 });

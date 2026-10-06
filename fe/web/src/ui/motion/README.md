@@ -3,16 +3,16 @@
 ## Ownership and entry points
 
 - `styles` owns duration and easing tokens, shared by both themes.
-- `ui/motion/transition.ts` exports `MotionIntent`, `MotionTransition` and `readMotionTransition(surface, intent)`. It converts the surface's CSS tokens into Motion options. Enter uses medium/enter, exit uses snappy/exit, layout uses medium/layout, disclosure uses snappy/layout, feedback uses quick/feedback, and emphasis uses slow/emphasis. Millisecond and second duration overrides are supported; absent or invalid tokens throw rather than silently adopting library defaults.
+- `ui/motion/transition.ts` exports `MotionIntent`, `MotionTransition` and `readMotionTransition(surface, intent)`. It converts the surface's CSS tokens into Motion options. Enter uses medium/enter, exit uses snappy/exit, layout uses medium/layout, size uses medium/emphasis, disclosure uses snappy/layout, feedback uses quick/feedback, and emphasis uses slow/emphasis. Millisecond and second duration overrides are supported; absent or invalid tokens throw rather than silently adopting library defaults.
 - `ui/motion/size.tsx` exports `SizeMotion({ motionKey, children })`, an interruptible intrinsic-height primitive. The caller supplies a stable string or boolean presentation mode. No domain identifiers, field selectors, or backend state enter the primitive.
 
 CSS consumers use the same token pairs directly; hover/color changes remain CSS transitions. Motion coordinates live layout where CSS alone cannot do so. Decorative repeating SVG animation remains owned by brand components. New consumers extend this owner rather than introducing per-feature animation runners.
 
 ## SizeMotion behavior
 
-Initial mount and ordinary content updates are immediate. A mode change animates height with the layout recipe. The measuring wrapper establishes a flow root, so child margins and floats contribute to the measured height. Children remain mounted, unscaled and interactive throughout; the primitive adds no role, label, keyboard handler, or focus movement.
+Initial mount and ordinary content updates are immediate. A mode change animates height with the size recipe through Motion Mini and native Web Animations. The 128px reference travel takes the surface's medium duration; square-root distance scaling is bounded to 65–150% of that duration (156–360ms with default tokens). Unlike position/layout feedback, intrinsic size uses a gentle start and finish from the emphasis curve. The measuring wrapper establishes a flow root, so child margins and floats contribute to the measured height. Children remain mounted, unscaled and interactive throughout; the primitive adds no role, label, keyboard handler, or focus movement.
 
-Intrinsic size changes during travel retarget from the painted height. A reversed mode change interrupts the previous animation. Generation ownership rejects stale frame writes. Finish, unmount, and a change to reduced motion release inline height and clipping. Reduced motion also bypasses new transitions. After settlement, height is automatic again.
+Intrinsic size changes during travel retarget from the painted height. A reversed mode change interrupts the previous animation. The browser advances height without per-frame JavaScript style writes; height still requires layout and is not a compositor-only effect. Playback ownership rejects stale completions. Finish, unmount, and a change to reduced motion release inline height and clipping. Reduced motion also bypasses new transitions. After settlement, height is automatic again.
 
 Children must size intrinsically; do not derive their height as a percentage of the animated host. Keep floating/portalled overlays outside transient clipping. Feature owners update domain state and focus synchronously, independently of motion completion. The caller retains DOM identity and supplies accessibility semantics.
 

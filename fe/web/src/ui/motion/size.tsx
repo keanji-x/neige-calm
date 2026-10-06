@@ -1,6 +1,7 @@
-import { animate, type AnimationPlaybackControls } from 'motion';
+import type { AnimationPlaybackControls } from 'motion';
+import { animate } from 'motion/mini';
 import { useEffectEvent, useLayoutEffect, useRef, type ReactNode } from 'react';
-import { readMotionTransition } from './transition.ts';
+import { readSizeTransition } from './transition.ts';
 import styles from './size.module.css';
 
 /**
@@ -14,11 +15,9 @@ export function SizeMotion({ children, motionKey }: Readonly<{ children: ReactNo
   const previousKey = useRef(motionKey);
   const naturalHeight = useRef<number | null>(null);
   const controls = useRef<AnimationPlaybackControls | null>(null);
-  const generation = useRef(0);
   const targetHeight = useRef<number | null>(null);
 
   const clear = useEffectEvent(() => {
-    generation.current += 1;
     controls.current?.stop();
     controls.current = null;
     targetHeight.current = null;
@@ -34,17 +33,12 @@ export function SizeMotion({ children, motionKey }: Readonly<{ children: ReactNo
     clear();
     naturalHeight.current = to;
     if (from === to || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const transition = readMotionTransition(host, 'layout');
+    const transition = readSizeTransition(host, from, to);
     host.style.height = `${from}px`;
     host.style.overflow = 'clip';
     targetHeight.current = to;
-    const revision = generation.current;
-    const animation = animate(from, to, {
-      ...transition,
-      onUpdate: value => {
-        if (generation.current === revision) host.style.height = `${value}px`;
-      },
-    });
+    // Native height interpolation avoids a JS style write on every frame. Height still participates in layout.
+    const animation = animate(host, { height: [`${from}px`, `${to}px`] }, transition);
     controls.current = animation;
     void Promise.resolve(animation).then(() => {
       if (controls.current === animation) clear();

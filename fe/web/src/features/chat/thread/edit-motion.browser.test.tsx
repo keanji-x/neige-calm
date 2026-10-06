@@ -10,18 +10,18 @@ import type { Conversation, TranscriptEntry } from '../../../../../core/domain/c
 
 const TEXT = 'Review the animation system and explain how editing can feel more natural. Keep the message readable and the rest of the conversation still. '.repeat(3);
 const conversation: Conversation = Object.freeze({ id: 'edit', trackId: 'track', title: null, kind: 'codex', state: 'idle', updatedAt: 1 });
-function Scene({ onUpdate = () => {} }: { onUpdate?: () => void }) {
+function Scene({ onUpdate = () => {}, message = TEXT }: { onUpdate?: () => void; message?: string }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState('');
   const turns: TranscriptEntry[] = [
-    { id: 'you', author: 'you', text: TEXT, atMs: 1 },
+    { id: 'you', author: 'you', text: message, atMs: 1 },
     { id: 'outcome', author: 'turn', turnId: 'turn', status: 'completed', elapsedMs: null, atMs: 2 },
   ];
   return <div data-nc-drawer="" style={{ width: 440 }}>
     <ChatThread conversation={conversation} turns={turns} cards={{}} stalled={false} canContinue={false}
-      editing={editing ? 'outcome' : null} editMessage={() => { onUpdate(); setEditing(true); setText(TEXT); }} />
+      editing={editing ? 'outcome' : null} editMessage={() => { onUpdate(); setEditing(true); setText(message); }} />
     <ChatComposer onSend={() => {}} draft={{ text, onChange: setText }} focusRequest={editing ? 1 : 0}
-      {...(editing ? { editing: { preview: TEXT, onCancel: () => { setEditing(false); setText(''); } } } : {})} />
+      {...(editing ? { editing: { preview: message, onCancel: () => { setEditing(false); setText(''); } } } : {})} />
   </div>;
 }
 const size = () => document.querySelector<HTMLElement>('[data-nc-size-motion]')!;
@@ -97,4 +97,32 @@ it('skips travel under reduced motion and stops a transition when the preference
   await commands.emulateReducedMotion(true);
   await expect.poll(() => size().style.height).toBe('');
   expect(field().textContent).toBe(TEXT);
+});
+
+it('keeps very long messages live while the browser advances the expanded input', async () => {
+  const message = TEXT.repeat(20);
+  render(<Scene message={message} />);
+  const initial = size().getBoundingClientRect().height;
+  edit();
+  expect(field().textContent).toBe(message);
+  expect(document.activeElement).toBe(field());
+  // The vendor fills its live editable in an effect; wait for the resize retarget to own the final intrinsic size.
+  await expect.poll(() => {
+    const effect = size().getAnimations()[0]?.effect as KeyframeEffect | undefined;
+    return Number.parseFloat(String(effect?.getKeyframes().at(-1)?.height));
+  }).toBe(size().firstElementChild!.getBoundingClientRect().height);
+  const animation = size().getAnimations()[0];
+  expect(animation).toBeDefined();
+  animation.pause();
+  const inline = size().style.height;
+  animation.currentTime = Number(animation.effect!.getTiming().duration) / 2;
+  await frame();
+  expect(size().getBoundingClientRect().height).toBeGreaterThan(initial);
+  expect(size().style.height).toBe(inline);
+  expect(field().scrollHeight).toBeGreaterThan(field().clientHeight);
+  expect(getComputedStyle(field()).transform).toBe('none');
+  cancel();
+  expect(field().textContent).toBe('');
+  await settled();
+  expect(size().getAnimations()).toHaveLength(0);
 });
