@@ -395,44 +395,47 @@ fn builtin_plugin_ids_are_their_manifest_ids_and_words() {
     assert_eq!(catalog().len(), 2, "every built-in is checked above");
 }
 
+const PLANNER_AND_ASSISTANT: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
+
+/// #2227: every compiled tool, written out: its plugin id, local name, served name and roles.
+const NATIVE_TOOLS: &[(&str, &str, &str, &[CardRole])] = &[
+    (
+        "calendar",
+        "add",
+        "plugin_calendar_add",
+        PLANNER_AND_ASSISTANT,
+    ),
+    (
+        "calendar",
+        "ls",
+        "plugin_calendar_ls",
+        PLANNER_AND_ASSISTANT,
+    ),
+    (
+        "calendar",
+        "rm",
+        "plugin_calendar_rm",
+        PLANNER_AND_ASSISTANT,
+    ),
+    (
+        "calendar",
+        "set",
+        "plugin_calendar_set",
+        PLANNER_AND_ASSISTANT,
+    ),
+    (
+        "gitforge",
+        dev::publish::PUBLISH,
+        "plugin_gitforge_publish",
+        &[CardRole::Planner],
+    ),
+];
+
 /// #2227: a compiled tool is a plugin tool. Each is served under the name `registry_name` mints
 /// from its plugin id and its local name, written out here, keeps its roles, and has no other
 /// spelling in the kernel registry.
 #[test]
 fn builtin_native_tools_are_served_under_their_minted_names() {
-    const PLANNER_AND_ASSISTANT: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
-    let expected: [(&str, &str, &str, &[CardRole]); 5] = [
-        (
-            "calendar",
-            "add",
-            "plugin_calendar_add",
-            PLANNER_AND_ASSISTANT,
-        ),
-        (
-            "calendar",
-            "ls",
-            "plugin_calendar_ls",
-            PLANNER_AND_ASSISTANT,
-        ),
-        (
-            "calendar",
-            "rm",
-            "plugin_calendar_rm",
-            PLANNER_AND_ASSISTANT,
-        ),
-        (
-            "calendar",
-            "set",
-            "plugin_calendar_set",
-            PLANNER_AND_ASSISTANT,
-        ),
-        (
-            "gitforge",
-            dev::publish::PUBLISH,
-            "plugin_gitforge_publish",
-            &[CardRole::Planner],
-        ),
-    ];
     let registry = crate::mcp_server::build_default_registry();
     let mut served: Vec<(String, String, Vec<CardRole>)> = registry
         .descriptors()
@@ -442,12 +445,12 @@ fn builtin_native_tools_are_served_under_their_minted_names() {
         })
         .collect();
     served.sort_by(|a, b| a.1.cmp(&b.1));
-    let want: Vec<(String, String, Vec<CardRole>)> = expected
+    let want: Vec<(String, String, Vec<CardRole>)> = NATIVE_TOOLS
         .iter()
         .map(|(id, _, name, roles)| (id.to_string(), name.to_string(), roles.to_vec()))
         .collect();
     assert_eq!(served, want);
-    for (id, local, name, _) in expected {
+    for &(id, local, name, _) in NATIVE_TOOLS {
         assert_eq!(registry_name(id, local), name, "{id}/{local}");
         assert!(
             name.starts_with(&registry_name(id, "")),
@@ -468,7 +471,16 @@ fn builtin_native_tools_never_mint_a_manifest_tool_name() {
         .flat_map(|plugin| plugin.native.descriptors())
         .map(|descriptor| descriptor.name)
         .collect();
-    assert_eq!(native.len(), 5, "anti-vacuity: {native:?}");
+    let mut sorted = native.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        NATIVE_TOOLS
+            .iter()
+            .map(|(_, _, name, _)| name.to_string())
+            .collect::<Vec<_>>(),
+        "anti-vacuity: every compiled tool is checked"
+    );
     let colliding: Vec<&String> = native.iter().filter(|n| manifest.contains(*n)).collect();
     assert!(
         colliding.is_empty(),
