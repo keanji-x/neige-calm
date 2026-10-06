@@ -502,13 +502,13 @@ describe('track conversations', () => {
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(false);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload history' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     expect(reads).toBe(2);
   });
 
-  /* #2175 M1a: both reads failing is one notice with one Try again, which reads both again. */
-  it('folds a failed history read and a failed run read into one notice whose Try again re-reads both', async () => {
+  /* #2175 M1a: both reads failing is one notice with one Reload conversation, which reads both again. */
+  it('folds a failed history read and a failed run read into one notice whose Reload conversation re-reads both', async () => {
     let failing = true;
     const { requests } = setup((request) => {
       if (!failing) return undefined;
@@ -524,11 +524,11 @@ describe('track conversations', () => {
       expect(text).toContain('The conversation’s status could not be loaded.');
     });
     expect(within(drawerElement()).getAllByRole('alert')).toHaveLength(1);
-    expect(within(drawerElement()).getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+    expect(within(drawerElement()).getAllByRole('button', { name: 'Reload conversation' })).toHaveLength(1);
 
     const before = { history: reads(HISTORY_PATH), run: reads('/planner/run') };
     failing = false;
-    fireEvent.click(within(drawerElement()).getByRole('button', { name: 'Try again' }));
+    fireEvent.click(within(drawerElement()).getByRole('button', { name: 'Reload conversation' }));
     await waitFor(() => expect(within(drawerElement()).queryByRole('alert')).toBeNull());
     expect(reads(HISTORY_PATH)).toBeGreaterThan(before.history);
     expect(reads('/planner/run')).toBeGreaterThan(before.run);
@@ -1162,8 +1162,8 @@ describe('track conversations', () => {
   });
 
   /* #2068 item 10: a replayed send waits for a run read started after its answer. While that read fails, the composer
-     stays closed, so the failure is said with a Try again instead of leaving nothing to press. */
-  it('[#2068] offers a Try again while a replayed send waits on a run read that failed', async () => {
+     stays closed, so the failure is said with Reload status instead of leaving nothing to press. */
+  it('[#2068] offers Reload status while a replayed send waits on a run read that failed', async () => {
     const text = 'Replayed while the run read fails';
     let attempts = 0;
     let runFails = false;
@@ -1185,7 +1185,7 @@ describe('track conversations', () => {
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     const before = runReads();
     runFails = false;
-    fireEvent.click(within(drawerElement()).getByRole('button', { name: 'Try again' }));
+    fireEvent.click(within(drawerElement()).getByRole('button', { name: 'Reload status' }));
     await waitFor(() => expect(runReads()).toBeGreaterThan(before));
     await waitFor(() => expect(within(drawerElement()).queryByRole('alert')).toBeNull());
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
@@ -2168,12 +2168,12 @@ describe('track conversations', () => {
     await submit();
     await waitFor(() => expect(inputBodies(requests)).toEqual([{ text: 'Original prompt', replaces_turn: 'turn' }]));
     /* The re-read failed: the cached transcript still holds the replaced turn, which stays hidden. */
-    await screen.findByRole('button', { name: 'Try again' });
+    await screen.findByRole('button', { name: 'Reload history' });
     expect(screen.queryByText('Original answer', { exact: true })).toBeNull();
     expect(screen.getByText('Earlier answer', { exact: true })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Copy response' })).toBeNull();
     failReads = false;
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload history' }));
     await screen.findByText('Replacement answer', { exact: true });
     expect(screen.queryByText('Original answer', { exact: true })).toBeNull();
     expect(await screen.findByRole('button', { name: 'Copy response' })).toBeTruthy();

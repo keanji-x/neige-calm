@@ -66,6 +66,8 @@ export type ChatThreadProps = Readonly<{
   stalled: boolean;
   /** The runtime reason is separate from the persisted terminal transcript. */
   stalledReason?: string | null;
+  /** A failed status read cannot confirm current execution from cached facts. History stays readable. */
+  statusUnconfirmed?: boolean;
   stopFeedback?: ConversationStopFeedback | null;
   /** The caller declares composer availability; a transcript outcome cannot authorize sends. */
   canContinue: boolean;
@@ -83,25 +85,25 @@ export type ChatThreadProps = Readonly<{
   imageFiles?: ReplyImageFiles | null;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, statusUnconfirmed = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
-  const live = !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
+  const live = !statusUnconfirmed && !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
   const currentOutcome = lastTurn?.author === 'turn' ? lastTurn : null;
-  const copyTarget = currentResponseMessage(turns, currentOutcome !== null && !live && !stalled && stopFeedback === null);
+  const copyTarget = currentResponseMessage(turns, currentOutcome !== null && !statusUnconfirmed && !live && !stalled && stopFeedback === null);
   const copyAction = copyText === undefined || copyTarget === null ? null
     : { id: `${conversation.id}:${copyTarget.id}`, text: copyTarget.text, run: () => copyText(copyTarget.text) };
   const regenerateTarget = latestUserMessage(turns);
-  const regenerateAction = regenerateMessage === undefined || regenerateTarget === null || live || stalled || currentOutcome === null
+  const regenerateAction = regenerateMessage === undefined || regenerateTarget === null || statusUnconfirmed || live || stalled || currentOutcome === null
     ? null : { id: `${conversation.id}:${regenerateTarget.id}`, run: () => regenerateMessage(regenerateTarget) };
   /* Only the latest turn, and only one the reader started: its outcome names the turn the server removes. */
-  const editAction = editMessage === undefined || regenerateTarget === null || live || stalled || currentOutcome === null
+  const editAction = editMessage === undefined || regenerateTarget === null || statusUnconfirmed || live || stalled || currentOutcome === null
     || currentOutcome.turnId === '' ? null
     : { id: `${conversation.id}:${currentOutcome.turnId}`, run: () => {
       // Enter immediately. Presentation must not delay edit state or the caret.
       editMessage(currentOutcome);
     } };
-  const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue} live={live}
+  const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue && !statusUnconfirmed} live={live} statusUnconfirmed={statusUnconfirmed}
     stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
@@ -172,7 +174,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   const followedTo = useRef<string | undefined>(undefined);
   const followedLength = useRef(0);
   const followedNotice = useRef<string | null>(null);
-  const noticeKind = stalled ? 'paused' : stopFeedback?.kind ?? null;
+  const noticeKind = statusUnconfirmed ? 'status-unconfirmed' : stalled ? 'paused' : stopFeedback?.kind ?? null;
 
   // Attach once per pane/conversation. Input intent survives streaming renders.
   useEffect(() => {

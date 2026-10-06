@@ -14,7 +14,7 @@ const cases = Object.freeze([
   { label: 'Running', detail: undefined, timestamp: null },
   { label: 'Completed', detail: undefined, timestamp: { kind: 'finished' as const, atMs: 1000 } },
   { label: 'Interrupted', detail: 'The response was interrupted.', timestamp: { kind: 'finished' as const, atMs: 1000 } },
-  { label: 'Failed', detail: 'The model provider is temporarily unavailable.', timestamp: { kind: 'finished' as const, atMs: 1000 } },
+  { label: 'Failed', detail: 'No failure details are available.', timestamp: { kind: 'finished' as const, atMs: 1000 } },
   { label: 'Stopping', detail: 'Waiting for the response to end.', timestamp: null },
   { label: 'Paused', detail: 'The response is paused.', timestamp: { kind: 'paused' as const, atMs: 1000 } },
 ]);

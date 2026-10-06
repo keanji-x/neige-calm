@@ -9,7 +9,10 @@ import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 
-export function renderDailyFixture({ initial = '/', failChanges = false }: Readonly<{ initial?: string; failChanges?: boolean }> = {}) {
+export function renderDailyFixture({ initial = '/', failChanges = false, reply }: Readonly<{
+  initial?: string; failChanges?: boolean;
+  reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>;
+}> = {}) {
   const requests: ApiRequest[] = [];
   const area = { id: 'daily-area', name: 'system', color: '#6574cd', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
   const projectArea = { ...area, id: 'project-area', name: 'Project', kind: 'user' };
@@ -22,6 +25,8 @@ export function renderDailyFixture({ initial = '/', failChanges = false }: Reado
   const transport: ApiTransportPort = { send: async (request) => {
     await Promise.resolve();
     requests.push(request);
+    const response = await reply?.(request);
+    if (response !== undefined) return response;
     if (request.path === '/api/areas') return ok([projectArea]);
     if (request.path === '/api/areas/daily-area/tracks') return ok([track]);
     if (request.path === '/api/areas/project-area/tracks') return ok([project]);
@@ -45,5 +50,5 @@ export function renderDailyFixture({ initial = '/', failChanges = false }: Reado
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
-  return { router, requests };
+  return { router, requests, client };
 }

@@ -181,7 +181,7 @@ describe('ChatThread', () => {
       turns={[turnOutcome({ text: '   ', message: 'raw provider payload', code })]} />);
     expect(screen.getByText('Failed', { exact: true })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
-    expect(screen.getByText('The model provider is temporarily unavailable.', { exact: true })).toBeTruthy();
+    expect(screen.getByText('No failure details are available.', { exact: true })).toBeTruthy();
     expect(container.querySelector('[data-nc-turn-outcome]')?.getAttribute('data-nc-turn-outcome')).toBe('failed');
     expect(screen.getByRole('button', { name: 'Failed', expanded: true })).toBeTruthy();
     expect(container.textContent).not.toContain('raw provider payload');
@@ -237,7 +237,28 @@ describe('ChatThread', () => {
     render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
     fireEvent.click(screen.getByRole('button', { name: 'Failed', expanded: false }));
     expect(screen.getByText(reason, { exact: true })).toBeTruthy();
-    expect(screen.queryByText('The model provider is temporarily unavailable.', { exact: true })).toBeNull();
+    expect(screen.queryByText('No failure details are available.', { exact: true })).toBeNull();
+  });
+
+  it('keeps recorded failure evidence without claiming current execution when status is unconfirmed', () => {
+    const regenerate = vi.fn();
+    const edit = vi.fn();
+    const { container, rerender } = render(<ChatThread canContinue cards={{ c1: 'working' }} stalled={false}
+      statusUnconfirmed conversation={conversation()} regenerateMessage={regenerate} editMessage={edit}
+      turns={[turn({ text: 'Try this.' }), turnOutcome({ text: 'Actual failure reason.' })]} />);
+    expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Status unconfirmed');
+    fireEvent.click(screen.getByRole('button', { name: 'Status unconfirmed', expanded: false }));
+    expect(screen.getByText('Last recorded response: failed.')).toBeTruthy();
+    expect(screen.getByText('Actual failure reason.')).toBeTruthy();
+    expect(screen.queryByText('Running', { exact: true })).toBeNull();
+    expect(screen.queryByText('Send a message to continue.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Regenerate response' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+    expect(container.querySelector('[data-nc-meta-duration]')).toBeNull();
+    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} statusUnconfirmed
+      conversation={conversation()} turns={[]} />);
+    expect(screen.getByText('Status unconfirmed', { exact: true })).toBeTruthy();
+    expect(screen.queryByText('Nothing said yet.')).toBeNull();
   });
 
   it('does not guess the cause or substitute raw errors for a missing readable reason', () => {

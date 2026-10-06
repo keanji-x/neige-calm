@@ -45,7 +45,7 @@ it.each(['interrupted', 'failed'] as const)('retains the disclosure and default 
   await userEvent.click(button);
   expect(detail.checkVisibility()).toBe(true);
   expect(detail.textContent).toBe(status === 'failed'
-    ? 'The model provider is temporarily unavailable.' : 'No interruption details are available.');
+    ? 'No failure details are available.' : 'No interruption details are available.');
 });
 
 it.each([['interrupted', 320], ['interrupted', 390], ['interrupted', 1280],

@@ -15,10 +15,11 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** One stable row across live, request, pause and terminal transitions. */
-export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction, runningAnchor }: {
+export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfirmed, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction, runningAnchor }: {
   outcome: ConversationTurnOutcome | null;
   canContinue: boolean;
   live: boolean;
+  statusUnconfirmed: boolean;
   stalled: boolean;
   stalledReason: string | null;
   feedback: ConversationStopFeedback | null;
@@ -28,13 +29,22 @@ export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stall
   /** Where the running turn's clock starts; `null` shows `Running` with no number. */
   runningAnchor: RunningTurnAnchor | null;
 }) {
-  const runningElapsedMs = useRunningElapsedMs(!stalled && feedback === null && live ? runningAnchor?.startMs ?? null : null);
+  const runningElapsedMs = useRunningElapsedMs(!statusUnconfirmed && !stalled && feedback === null && live ? runningAnchor?.startMs ?? null : null);
   let heading: string;
   let tone: 'neutral' | 'warning' | 'error' = 'neutral';
   let details: ReactNode;
   let clock: ConversationMetaClock = { elapsedMs: null, timestamp: null };
   let terminal: ConversationTurnOutcome['status'] | undefined;
-  if (stalled) {
+  if (statusUnconfirmed) {
+    heading = 'Status unconfirmed'; tone = 'warning';
+    details = <>
+      <p className={styles.outcomeReason}>Reload the status below to check the conversation’s current state.</p>
+      {outcome !== null && <>
+        <p className={styles.outcomeReason}>Last recorded response: {outcome.status}.</p>
+        <OutcomeDetails outcome={outcome} canContinue={false} />
+      </>}
+    </>;
+  } else if (stalled) {
     heading = 'Paused'; tone = 'warning';
     details = <p className={styles.outcomeReason}>{stalledReason ?? 'This conversation is stuck.'}</p>;
   } else if (feedback !== null) {
@@ -55,20 +65,24 @@ export function CurrentStatusNotice({ outcome, canContinue, live, stalled, stall
     heading = terminal === 'completed' ? 'Completed' : terminal === 'interrupted' ? 'Interrupted' : 'Failed';
     tone = terminal === 'completed' ? 'neutral' : terminal === 'interrupted' ? 'warning' : 'error';
     clock = { elapsedMs: outcome.elapsedMs, timestamp: { kind: 'finished', atMs: outcome.atMs } };
-    if (terminal !== 'completed') {
-      const hasReason = outcome.text !== undefined && outcome.text.trim() !== '';
-      const hint = terminal === 'failed' ? outcomeHintText(outcome.code, outcome.rawStatus) : null;
-      details = <>
-        {hasReason && <p className={styles.outcomeReason} data-nc-turn-outcome-message="" title={outcome.message}>{outcome.text}</p>}
-        {hint !== null && <p className={styles.outcomeReason} data-nc-turn-outcome-hint="">{hint}</p>}
-        {!hasReason && hint === null && <p className={styles.outcomeReason} data-nc-turn-outcome-fallback="">
-          {terminal === 'failed' ? 'The model provider is temporarily unavailable.' : 'No interruption details are available.'}
-        </p>}
-        {canContinue && <p className={styles.outcomeGuidance} data-nc-interruption-guidance="">Send a message to continue.</p>}
-      </>;
-    }
+    if (terminal !== 'completed') details = <OutcomeDetails outcome={outcome} canContinue={canContinue} />;
   } else return null;
   return <ThreadStatusNotice heading={heading} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
+}
+
+/** Recorded diagnostics stay readable even when a run query cannot confirm current execution. */
+function OutcomeDetails({ outcome, canContinue }: { outcome: ConversationTurnOutcome; canContinue: boolean }) {
+  if (outcome.status === 'completed') return null;
+  const hasReason = outcome.text !== undefined && outcome.text.trim() !== '';
+  const hint = outcome.status === 'failed' ? outcomeHintText(outcome.code, outcome.rawStatus) : null;
+  return <>
+    {hasReason && <p className={styles.outcomeReason} data-nc-turn-outcome-message="" title={outcome.message}>{outcome.text}</p>}
+    {hint !== null && <p className={styles.outcomeReason} data-nc-turn-outcome-hint="">{hint}</p>}
+    {!hasReason && hint === null && <p className={styles.outcomeReason} data-nc-turn-outcome-fallback="">
+      {outcome.status === 'failed' ? 'No failure details are available.' : 'No interruption details are available.'}
+    </p>}
+    {canContinue && <p className={styles.outcomeGuidance} data-nc-interruption-guidance="">Send a message to continue.</p>}
+  </>;
 }
 
 function outcomeHintText(code: string | undefined, rawStatus: string | undefined): string | null {
