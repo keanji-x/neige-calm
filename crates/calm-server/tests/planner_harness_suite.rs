@@ -34,6 +34,8 @@ mod planner_attachments_guarded_surface;
 mod planner_attachments_rest;
 #[path = "cases/planner_first_start.rs"]
 mod planner_first_start;
+#[path = "cases/planner_first_start_owner.rs"]
+mod planner_first_start_owner;
 #[path = "cases/planner_harness_backpressure.rs"]
 mod planner_harness_backpressure;
 #[path = "cases/planner_harness_boot_recovery.rs"]

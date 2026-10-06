@@ -385,6 +385,13 @@ fn minted_card_shape(profile: HarnessProfile) -> Result<(CardRole, &'static str)
     }
 }
 
+/// Whether cards of this profile are minted by their own start operation (`create_card`). Such a
+/// card exists only because that start ran, and its one submitter refuses to mint an existing
+/// card again, so no creator start of an existing one can still be coming (#2184).
+pub(crate) fn profile_mints_its_own_card(profile: HarnessProfile) -> bool {
+    minted_card_shape(profile).is_ok()
+}
+
 /// Read by `plain_chat::card_is_track_assistant` and the track conversation list predicate; those three places are the whole contract.
 pub(crate) const ASSISTANT_HARNESS_PROFILE_MARKER: &str = crate::harness::profile::ASSISTANT_MARKER;
 

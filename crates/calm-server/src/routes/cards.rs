@@ -1202,6 +1202,19 @@ pub(crate) enum HarnessCardStart {
     Fresh,
 }
 
+/// The profile an existing harness card (re)starts under: its OWN. Starting an assistant under
+/// `Planner` would mint its thread with the planner prompt while the card row still says
+/// `assistant`.
+pub(crate) fn harness_card_profile(card: &Card, role: Option<CardRole>) -> HarnessProfile {
+    if crate::plain_chat::card_is_plain_chat(card, role, true) {
+        HarnessProfile::PlainChat
+    } else if crate::plain_chat::card_is_track_assistant(card, role, true) {
+        HarnessProfile::Assistant
+    } else {
+        HarnessProfile::Planner
+    }
+}
+
 /// Run one `planner-harness-start` for an existing harness card and wait for it. The one
 /// derivation of that start's payload, shared by reset and a send's fresh start; the caller holds the
 /// card's `planner_recovery_locks` guard.
@@ -1225,15 +1238,8 @@ pub(crate) async fn start_harness_card(
             track.id
         )));
     }
-    // A marked conversation card starts under its OWN profile: starting an assistant under `Planner` would mint its thread with the planner prompt while the card row still says `assistant`.
     // No profile inherits the track title as a goal on these user-driven paths.
-    let profile = if crate::plain_chat::card_is_plain_chat(card, role, true) {
-        HarnessProfile::PlainChat
-    } else if crate::plain_chat::card_is_track_assistant(card, role, true) {
-        HarnessProfile::Assistant
-    } else {
-        HarnessProfile::Planner
-    };
+    let profile = harness_card_profile(card, role);
     let reset = start == HarnessCardStart::Reset;
     let start_request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),

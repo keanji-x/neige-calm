@@ -7,8 +7,10 @@ use crate::error::{CalmError, Result};
 use crate::harness::profile::PlannerBinding;
 use crate::harness::{PlannerHarness, is_harness_snapshot_value};
 use crate::ids::CardId;
+use crate::model::Card;
+use crate::operation::planner_harness_start_adapter::profile_mints_its_own_card;
 use crate::per_card_lock::{PerCardLockGuard, lock_card};
-use crate::routes::cards::{HarnessCardStart, start_harness_card};
+use crate::routes::cards::{HarnessCardStart, harness_card_profile, start_harness_card};
 use crate::session_projection_repo::{
     AgentProvider, CardConversation, WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
 };
@@ -47,12 +49,12 @@ fn starting() -> CalmError {
 /// * an active row with a registered harness → reused (unlocked fast path);
 /// * an active row with a registry miss → re-spawned from its snapshot (no Codex RPC);
 /// * a person's send to a `failed` carrier with a recoverable snapshot → `planner_recovery`;
-/// * a person's send to a card whose starts all failed before getting a thread, or to a managed
-///   Track's never-started card (`managed_track::planner_starts_on_first_send`) → one
-///   `planner-harness-start`;
+/// * a person's send to a card nothing can start any more but the send ([`send_owns_first_start`]:
+///   a managed Track's card, or a self-minted conversation whose starts failed threadless) with
+///   no thread to preserve → one `planner-harness-start`;
 /// * a `starting` row, or a start in flight on a card with nothing to preserve → 503, retry;
-/// * anything else (a carrier holding a thread, a transcript, or a never-started card whose
-///   creator owns its first start) → 409 `planner_harness_dormant`. Row-intrinsic dormancy is checked before daemon
+/// * anything else (a carrier holding a thread, a transcript, or a card whose creator may still
+///   start it) → 409 `planner_harness_dormant`. Row-intrinsic dormancy is checked before daemon
 ///   liveness, so such a row is 409 even with the daemon down.
 ///
 /// Everything past the fast path runs under the per-card `planner_recovery_locks` guard, which
@@ -146,10 +148,29 @@ pub(crate) async fn ensure_planner_session(
     Ok((runtime, harness, Some(guard)))
 }
 
+/// Whether no creator can still submit this card's initial start, so a send may run it: a
+/// managed Track's cards (`managed_track::planner_starts_on_first_send`), and a self-minted
+/// conversation card whose minting start already ran and failed. Any other card's creator (an
+/// ordinary create and its keyed retry, the launchpad's ensure, a child bootstrap) may start it
+/// again, superseding whatever session a send had started.
+async fn send_owns_first_start(
+    s: &RouteState,
+    card: &Card,
+    conversation: CardConversation,
+) -> Result<bool> {
+    if crate::managed_track::planner_starts_on_first_send(&s.mcp_context, card.track_id.as_str())
+        .await?
+    {
+        return Ok(true);
+    }
+    let profile = harness_card_profile(card, s.write.verify_role(&card.id));
+    Ok(conversation == CardConversation::OnlyFailedStarts && profile_mints_its_own_card(profile))
+}
+
 /// A person's send found no session to use. Only a card whose start would lose nothing is
 /// started: a carrier holding a thread, or a transcript, is a conversation, and minting a new one
-/// over it is `/planner/reset`'s decision, never a send's. A never-started card is started only
-/// when no creator's start can still be coming: one would supersede this send's session. The start is unkeyed, so a refused
+/// over it is `/planner/reset`'s decision, never a send's. Nor is a card started while a
+/// creator's start can still come: that start would supersede this send's session. The start is unkeyed, so a refused
 /// start (the backend down: 503) leaves nothing behind and the next send starts it.
 async fn start_fresh(
     s: &RouteState,
@@ -167,22 +188,17 @@ async fn start_fresh(
         .card_get(card_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    match s
+    let conversation = s
         .repo
         .session_projection_conversation_for_card(&card_id.to_string())
-        .await?
-    {
-        CardConversation::OnlyFailedStarts => {}
-        CardConversation::NeverStarted
-            if crate::managed_track::planner_starts_on_first_send(
-                &s.mcp_context,
-                card.track_id.as_str(),
-            )
-            .await? => {}
-        CardConversation::NeverStarted | CardConversation::ThreadToPreserve => {
-            return Err(dormant(card_id));
-        }
+        .await?;
+    match conversation {
+        CardConversation::ThreadToPreserve => return Err(dormant(card_id)),
         CardConversation::StartInFlight => return Err(starting()),
+        CardConversation::NeverStarted | CardConversation::OnlyFailedStarts => {}
+    }
+    if !send_owns_first_start(s, &card, conversation).await? {
+        return Err(dormant(card_id));
     }
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(crate::test_seams::PLANNER_FIRST_START, card_id.as_str()).await;

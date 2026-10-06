@@ -9,7 +9,8 @@ use crate::session_projection_repo::{CardConversation, Result};
 /// `last_thread_id`. Any other row, and any transcript row, is a conversation. A snapshot that
 /// is not valid JSON may hold a thread, so it counts as one. `planner-harness-start` and its
 /// frozen payload key for the card are the start adapter's; `succeeded`, `failed` and `stuck`
-/// are the phases an operation is never driven out of.
+/// are the phases an operation is never driven out of. A `parked` one is still in flight: the
+/// operation runtime's parked sweep completes or fails it, so it answers 503 like any other.
 pub(super) async fn card_conversation(
     pool: &SqlitePool,
     card_id: &str,
