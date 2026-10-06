@@ -215,10 +215,20 @@ Agent-facing JSON-RPC codes, one meaning each:
   tools mint one name is refused, and a plugin whose id mints the same `plugin_<id>_` prefix as a
   running one (`a-b`, `a.b`) is refused at spawn. A name two plugins still mint is refused at
   routing, naming both raw pairs.
-- **Native tool names** (manifest-authored) are written in the minted form already:
-  `<object>_<verb>` with §3's verbs and §4's parameters, so nothing is rewritten. A tool that wraps
-  a known CLI mirrors that CLI's words instead (`gh_pr_list`, `git_worktree_add`). A connector
-  plugin (an external MCP server) keeps its upstream names; only its minted name is rewritten.
+- **Prefix by lifecycle, not by where the code lives.** `neige_` names a tool served to every
+  Track. A tool that comes and goes with a plugin's enablement or a Track's plugin scope is a
+  plugin tool, `plugin_<id>_<tool>`, minted by `registry_name`, whether its manifest declares it
+  or a built-in compiles it. An always-enabled built-in is still scoped: a Track bound to another
+  plugin does not see it. Known deviations, renamed together in one #2087 slice with a migration
+  (#2227): `neige_dev_publish` → `plugin_gitforge_publish`, and `neige_calendar_{add,ls,set,rm}`
+  → `plugin_calendar_{add,ls,set,rm}`.
+- **Native tool names** (manifest-authored or compiled) are written in the minted form already:
+  `<object>_<verb>` with §3's verbs and §4's parameters, so nothing is rewritten. When the
+  plugin applies that verb to one object only, the object is left out, because the plugin id
+  already names it (`publish`, not `track_publish`); a plugin with several objects keeps them
+  (`instrument_add`, `thesis_add`). A tool that wraps a known CLI mirrors that CLI's words
+  instead (`gh_pr_list`, `git_worktree_add`). A connector plugin (an external MCP server) keeps
+  its upstream names; only its minted name is rewritten.
 - **Host callbacks** (`neige.kv.*`, `neige.overlay.*`, `neige.card.*`, `neige.event.subscribe`)
   are JSON-RPC methods of the plugin-to-host protocol, like `tools/call`, not tools. No model sees
   them, so they keep their dotted names. Since a tool name never contains `.`, the two namespaces
