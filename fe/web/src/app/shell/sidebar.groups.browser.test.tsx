@@ -212,4 +212,3 @@ it('recovers hidden groups through the full pointer list and Escape layers', asy
   }
 
 });
-
