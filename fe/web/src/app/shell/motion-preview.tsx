@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { useState } from '../../ui/state/public.ts';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { InventoryGroups } from '../../features/track/page/inventory-groups.tsx';
+import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
+import { ActivityIndicator } from '../../ui/activity-indicator/public.tsx';
+import { NeigeMotion } from '../../ui/brand/motion.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
@@ -14,6 +17,7 @@ const longText = '我们希望编辑消息时，原来的对话保持稳定，�
 const conversation: Conversation = Object.freeze({ id: 'preview', trackId: 'preview', title: '动画预览', kind: 'codex', state: 'idle', updatedAt: 1 });
 function Preview() {
   const [open, setOpen] = useState(true);
+  const [percent, setPercent] = useState(10);
   const [dialogOpen, setDialogOpen] = useState(false);
   const dialogInput = useRef<HTMLInputElement>(null);
   const [prompt, setPrompt] = useState(shortText);
@@ -78,6 +82,15 @@ function Preview() {
         ] }} empty={<p>暂无内容</p>} />
         <InventoryGroups noun="task" groups={[{ key: 'working', label: '任务分组', expanded: true, rows: ['清晰可读', '操作自然'] }]}
           renderRows={rows => rows.map(row => <p key={row}>{row}</p>)} />
+      </div>
+    </section>
+    <section style={{ marginTop: 28 }}>
+      <h2 style={{ fontSize: 22, marginBottom: 16 }}>进度与状态</h2>
+      <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button onClick={() => setPercent(value => value === 10 ? 65 : 10)}>更新进度</button>
+        <ContextRing usage={{ used_tokens: percent * 100, context_window: 10000, percent, at_ms: 0 }} />
+        <ActivityIndicator state="working" />
+        {(['thinking', 'execution', 'creation'] as const).map(kind => <div key={kind} style={{ width: 48, height: 48 }}><NeigeMotion kind={kind} /></div>)}
       </div>
     </section>
     <Dialog open={dialogOpen} title="创建任务" initialFocusRef={dialogInput} onClose={() => setDialogOpen(false)}>

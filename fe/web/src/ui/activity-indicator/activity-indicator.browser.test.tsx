@@ -1,4 +1,5 @@
 import { render } from '@testing-library/react';
+import { commands } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../styles/entry.css';
@@ -77,7 +78,7 @@ describe('activity indicator colours', () => {
 });
 
 it('keeps the default working indicator as the original compact rotating ring', () => {
-  const { container } = render(<ActivityIndicator state="working" />);
+  const { container, unmount } = render(<ActivityIndicator state="working" />);
   const marker = container.querySelector<HTMLElement>('[data-nc-activity="working"]')!;
   expect(marker.querySelector('[data-nc-motion]')).toBeNull();
   const style = getComputedStyle(marker);
@@ -86,6 +87,10 @@ it('keeps the default working indicator as the original compact rotating ring', 
   expect(style.borderTopStyle).toBe('solid');
   expect(style.animationName).not.toBe('none');
   expect(style.animationDuration).toBe('0.9s');
+  expect(style.animationTimingFunction).toBe('linear');
+  expect(marker.getAnimations()).toHaveLength(1);
+  unmount();
+  expect(marker.getAnimations()).toHaveLength(0);
 });
 
 it('uses a contextual motion only when explicitly requested', () => {
@@ -96,4 +101,17 @@ it('uses a contextual motion only when explicitly requested', () => {
   expect(style.animationName).toBe('none');
   expect(style.borderTopWidth).toBe('0px');
   expect(marker.getBoundingClientRect().width).toBe(Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--glyph')));
+});
+
+it('keeps a visible static working mark and disposes the loop under reduced motion', async () => {
+  await commands.emulateReducedMotion(true);
+  try {
+    const { container, unmount } = render(<ActivityIndicator state="working" />);
+    const marker = container.querySelector<HTMLElement>('[data-nc-activity="working"]')!;
+    expect(getComputedStyle(marker).animationName).toBe('none');
+    expect(marker.getBoundingClientRect().width).toBe(10);
+    unmount();
+    expect(marker.isConnected).toBe(false);
+    expect(marker.getAnimations()).toHaveLength(0);
+  } finally { await commands.emulateReducedMotion(false); }
 });

@@ -389,7 +389,7 @@
    * getting out of the way. One property, one direction, no loop.
    */
   .doc [data-nc-arrived] {
-    animation: report-arrival var(--motion-slow) ease-in;
+    animation: report-arrival var(--motion-slow) var(--ease-emphasis);
   }
 
   @keyframes report-arrival {

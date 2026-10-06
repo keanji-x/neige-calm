@@ -23,3 +23,9 @@ Chat edit calls its action immediately, changes the composer's mode key, and mar
 `transition.test.ts` pins token conversion, local overrides and explicit rejection. `size.browser.test.tsx` exercises generic panels with margins, floats, live controls, dynamic content, StrictMode disposal and reduced motion. Chat edit tests additionally cover immediate refill/focus and rapid cancellation/re-entry through the production action. Future primitives should bring equivalent standalone lifecycle coverage before migrating more surfaces.
 
 Dialog consumes entry and backdrop-feedback recipes through CSS. It uses a small lift plus opacity without scaling text, dismisses immediately, and keeps focus/inert/keyboard behavior with the existing dialog owner. See `docs/motion-adoption.md` and #2208 for the staged migration.
+
+## Continuous response and native loops
+
+ContextRing uses medium/layout for arc travel; labels, percentages and over-window states update immediately. Report arrival uses slow/emphasis for a single background highlight after its anchor settles. Both explicitly suppress travel under reduced motion.
+
+EdgeNavigation intentionally keeps instant/linear (60ms) sizing for pointer response and quick/feedback for color. Its geometry is owned by the rail, not a layout runner. The activity ring keeps its compact 900ms linear rotation; brand SVG keeps its native 5.6s cycle and spline geometry with one frozen timing declaration. Reduced motion leaves static status marks, and unmount disposes native animation with the element. These owner-defined rhythms do not require extra interaction recipes or global tokens.

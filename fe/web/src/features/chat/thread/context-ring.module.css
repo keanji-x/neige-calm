@@ -42,7 +42,11 @@
 
   .fill {
     stroke: var(--text-3);
-    transition: stroke-dasharray 240ms ease;
+    transition: stroke-dasharray var(--motion-medium) var(--ease-layout);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fill { transition: none; }
   }
 
   /*

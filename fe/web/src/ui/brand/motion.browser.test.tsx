@@ -128,3 +128,16 @@ it('turns each creation fold clockwise throughout the cycle', () => {
     });
   }
 });
+
+it('shares one native cycle across all tracks and removes the SVG on unmount', () => {
+  for (const kind of ['thinking', 'execution', 'creation'] as const) {
+    const { container, unmount } = render(<NeigeMotion kind={kind} />);
+    const svg = container.querySelector('svg')!;
+    const tracks = [...svg.querySelectorAll('animate, animateTransform')];
+    expect(tracks.length).toBeGreaterThan(0);
+    expect(tracks.every(track => track.getAttribute('dur') === '5.6s' && track.getAttribute('repeatCount') === 'indefinite')).toBe(true);
+    unmount();
+    expect(svg.isConnected).toBe(false);
+    expect(document.querySelector('[data-nc-motion]')).toBeNull();
+  }
+});

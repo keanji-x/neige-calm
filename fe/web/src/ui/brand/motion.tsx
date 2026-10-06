@@ -1,6 +1,14 @@
 import { executionFrames, foldCenter, pointsOf, snowFold } from './motion-geometry.ts';
 import styles from './motion.module.css';
 
+// Native SVG timing stays with its decorative geometry, shared by every track.
+const LOOP = Object.freeze({ dur: '5.6s', repeatCount: 'indefinite' } as const);
+const SPLINE = '.42 0 .58 1';
+
+function splines(times: string): string {
+  return Array.from({ length: times.split(';').length - 1 }, () => SPLINE).join(';');
+}
+
 export type NeigeMotionKind = 'thinking' | 'execution' | 'creation';
 
 /** Decorative, theme-owned vector motion. The owning surface supplies the status name. */
@@ -20,13 +28,13 @@ export function NeigeMotion({ kind, className = '' }: Readonly<{ kind: NeigeMoti
 }
 
 function Tween({ attribute, values, times }: Readonly<{ attribute: string; values: string; times: string }>) {
-  return <animate attributeName={attribute} values={values} keyTimes={times} dur="5.6s" repeatCount="indefinite" calcMode="spline"
-    keySplines={Array.from({ length: times.split(';').length - 1 }, () => '.42 0 .58 1').join(';')} />;
+  return <animate attributeName={attribute} values={values} keyTimes={times} {...LOOP} calcMode="spline"
+    keySplines={splines(times)} />;
 }
 
 function Turn({ values, times }: Readonly<{ values: string; times: string }>) {
-  return <animateTransform attributeName="transform" type="rotate" values={values} keyTimes={times} dur="5.6s" repeatCount="indefinite"
-    calcMode="spline" keySplines={Array.from({ length: times.split(';').length - 1 }, () => '.42 0 .58 1').join(';')} />;
+  return <animateTransform attributeName="transform" type="rotate" values={values} keyTimes={times} {...LOOP}
+    calcMode="spline" keySplines={splines(times)} />;
 }
 
 function Thinking() {
@@ -38,14 +46,14 @@ function Thinking() {
       return <g key={index} transform={`translate(${x} ${y})`}>
         <g>
           <animateTransform attributeName="transform" type="scale" values=".03;.03;1;1;.03;.03" keyTimes="0;.18;.44;.56;.82;1"
-            dur="5.6s" repeatCount="indefinite" calcMode="spline" keySplines=".42 0 .58 1;.42 0 .58 1;.42 0 .58 1;.42 0 .58 1;.42 0 .58 1" />
+            {...LOOP} calcMode="spline" keySplines={splines('0;.18;.44;.56;.82;1')} />
           <polyline points={pointsOf(points.map(([px, py]) => [px - x, py - y]))}>
             <Tween attribute="opacity" values="0;0;1;1;0;0" times="0;.18;.28;.72;.82;1" />
           </polyline>
         </g>
         <circle r="17" fill="currentColor" stroke="none">
           <Tween attribute="opacity" values="1;1;0;0;1;1" times="0;.22;.38;.62;.78;1" />
-          <animate attributeName="r" values="17;17;4.25;4.25;17;17" keyTimes="0;.22;.38;.62;.78;1" dur="5.6s" repeatCount="indefinite" />
+          <animate attributeName="r" values="17;17;4.25;4.25;17;17" keyTimes="0;.22;.38;.62;.78;1" {...LOOP} />
         </circle>
       </g>;
     })}
@@ -63,7 +71,7 @@ function Creation() {
       return <g key={index} transform={`rotate(${index * 120} 192 192)`}>
         <g>
           <animateTransform attributeName="transform" type="translate" values={`${x} 52;${x} 52;${x} ${y};${x} ${y};${x} 52;${x} 52`}
-            keyTimes={times} dur="5.6s" repeatCount="indefinite" calcMode="spline" keySplines=".42 0 .58 1;.42 0 .58 1;.42 0 .58 1;.42 0 .58 1;.42 0 .58 1" />
+            keyTimes={times} {...LOOP} calcMode="spline" keySplines={splines(times)} />
           <g>
             <Turn values="-150;-150;0;0;-150;-150" times={times} />
             <polyline points={pointsOf(points.map(([px, py]) => [px - x, py - y]))} />
@@ -79,7 +87,7 @@ function Execution() {
     {[0, 1, 2].map(index => {
       const frames = executionFrames(index);
       return <polyline key={index} points="108,128 172,192 108,256">
-        <animate attributeName="points" values={frames.values} keyTimes={frames.times} dur="5.6s" repeatCount="indefinite" calcMode="linear" />
+        <animate attributeName="points" values={frames.values} keyTimes={frames.times} {...LOOP} calcMode="linear" />
       </polyline>;
     })}
     <line x1="204" y1="256" x2="276" y2="256">
