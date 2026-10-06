@@ -70,6 +70,6 @@ it('keeps execution status unconfirmed throughout a cold retry', async () => {
     await screen.findByText('Status unconfirmed', { exact: true });
     expect(screen.getByText('Checking the conversation’s current state.')).toBeTruthy();
     expect(screen.queryByText('Running', { exact: true })).toBeNull();
-  } finally { await act(() => { release(); }); }
+  } finally { act(() => { release(); }); }
   await screen.findByText('Running', { exact: true });
 });
