@@ -7,7 +7,7 @@ import { readMotionTransition } from '../../../ui/motion/transition.ts';
 
 afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 function task() {
-  render(<ReportTaskBlock blockId="motion-task" payload={{ key: 'Review motion', kind: 'codex', declared_by: 'spec', ready: true, goal: 'Keep disclosure responsive.' }} />);
+  render(<ReportTaskBlock blockId="motion-task" payload={{ key: 'Review motion', kind: 'codex', declared_by: 'user', ready: true, goal: 'Keep disclosure responsive.' }} />);
   const summary = document.querySelector<HTMLElement>('[data-nc-task-state] > summary')!;
   return { summary, marker: summary.firstElementChild! };
 }
