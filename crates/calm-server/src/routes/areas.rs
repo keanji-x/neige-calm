@@ -608,9 +608,7 @@ impl RecycledAreaDeletion {
                     workspace_recycle::restore_area_recycle_report(&self.recycle_report)
                 {
                     return Err(CalmError::Internal(format!(
-                        "area deletion rolled back ({}), but workspace compensation failed: {}",
-                        error.reason(),
-                        restore_error.reason()
+                        "area deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
                     )));
                 }
                 for thread_id in &self.quiesced.sealed_thread_ids {

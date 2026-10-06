@@ -10,7 +10,7 @@ import {
   TASK_ACCEPT_TOOL, TASK_REJECT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
   MAIL_SEND_TOOL,
 } from '../keys/mcp-tools.js';
-import { classifyFailure, refusedText, type FailureTable, type WriteFailure, type WriteText } from './failure-class.js';
+import { classifyFailure, failureReason, refusedText, type FailureTable, type WriteFailure, type WriteText } from './failure-class.js';
 import { sha256Hex } from './sha256.js';
 
 /** A frozen discussion source; does not name a provider session. */
@@ -642,7 +642,7 @@ export function plannerQueueWriteFailure(
   const stale = kind === 'stale' && failure?.kind === 'http' ? plannerInputStaleSchema.safeParse(failure.body) : null;
   if (stale?.success === true) return { kind: 'stale', text: stale.data.text, rev: stale.data.rev };
   if (kind === 'failed' || kind === 'stale') {
-    return { kind: 'failed', message: failure?.kind === 'http' && failure.message !== '' ? failure.message : fallback };
+    return { kind: 'failed', message: failure?.kind === 'http' && failure.message !== '' ? failureReason(failure) : fallback };
   }
   return { kind };
 }

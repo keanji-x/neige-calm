@@ -1,5 +1,5 @@
 import type { ApiFailure } from '../api/types.js';
-import { ApiError, classifyFailure, type FailureTable } from './failure-class.js';
+import { ApiError, classifyFailure, failureReason, type FailureTable } from './failure-class.js';
 
 /**
  * What a failed read means to the reader: `refused`, the server answered and said why (its reason is worth showing);
@@ -34,7 +34,7 @@ export function readFailureOf(error: unknown): ApiFailure | null {
  */
 export function readFailureText(failure: ApiFailure | null, sentence: string): string {
   if (failure === null || classifyFailure(failure, READ_FAILURES) !== 'refused') return sentence;
-  const reason = failure.message.trim();
+  const reason = failureReason(failure).trim();
   return reason === '' ? sentence : `${sentence} ${reason}`;
 }
 

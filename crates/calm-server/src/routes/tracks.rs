@@ -601,10 +601,7 @@ fn prepare_initial_report_payload(
         )));
     }
     crate::track_report_guard::validate_body_fences(&body).map_err(|error| {
-        CalmError::Internal(format!(
-            "track create: template `{label}` body: {}",
-            error.reason()
-        ))
+        CalmError::Internal(format!("track create: template `{label}` body: {error}"))
     })?;
     let template_context = crate::template_context::TemplateContext::new(
         payload.summary.clone(),
@@ -1909,11 +1906,14 @@ fn prepare_fork_report(
             // the prose fences are checked here. Deliberately only the fence check: refusing
             // well-formed fences too would reject already-persisted source tracks.
             if let Some(markdown) = block.payload.get("markdown").and_then(|v| v.as_str()) {
+                // A 400 keeps its kind, so only its reason is wrapped; any other kind passes through.
                 crate::track_report_guard::validate_body_fences(markdown).map_err(|error| {
-                    CalmError::BadRequest(format!(
-                        "track create: invalid forked report block {block_id}: {}",
-                        error.reason()
-                    ))
+                    match error {
+                        CalmError::BadRequest(reason) => CalmError::BadRequest(format!(
+                            "track create: invalid forked report block {block_id}: {reason}"
+                        )),
+                        other => other,
+                    }
                 })?;
             }
             continue;
@@ -3091,9 +3091,7 @@ impl RecycledTrackDeletion {
                 if let Err(restore_error) = workspace_recycle::restore_recycled_workspace(&decision)
                 {
                     return Err(CalmError::Internal(format!(
-                        "track deletion rolled back ({}), but workspace compensation failed: {}",
-                        error.reason(),
-                        restore_error.reason()
+                        "track deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
                     )));
                 }
                 route

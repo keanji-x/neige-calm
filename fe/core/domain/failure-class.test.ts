@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
+import { performApiRequest } from '../api/client.js';
 import type { ApiFailure } from '../api/types.js';
 import {
   CONVERSATION_CREATE_FAILURES, PLANNER_ATTACHMENT_FAILURES, PLANNER_MODEL_FAILURES, PLANNER_QUEUE_WRITE_FAILURES,
@@ -9,7 +11,8 @@ import { PLANNER_INTERRUPT_FAILURES } from './conversation-stop.js';
 import { AREA_CREATE_FAILURES, AREA_PATCH_FAILURES } from './area.js';
 import { DISMISS_FAILURES } from './activity.js';
 import {
-  ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, NotSentError, refusalText, refusedText, writeClassOf, writeFailureText,
+  ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, failureReason, NotSentError, refusalText, refusedText, writeClassOf,
+  writeFailureText,
   type FailureTable,
 } from './failure-class.js';
 import {
@@ -323,5 +326,32 @@ describe('refusedText', () => {
     expect(refusedText({ kind: 'http', status: 400, code: 'bad_request', message: '' }, 'Not created.')).toBe('Not created.');
     expect(refusedText(new NotSentError(new Error('offline')), 'Not created.')).toBe('Not created.');
     expect(refusedText(null, 'Not created.')).toBe('Not created.');
+  });
+});
+
+describe('a refusal that names a field', () => {
+  /** The kernel's exact answer to a create whose `template_input` misses a required key, through the real client. */
+  async function missingInput(): Promise<ApiFailure> {
+    const result = await performApiRequest(
+      { send: () => Promise.resolve({ status: 400, statusText: 'Bad Request', body: {
+        error: 'required field is missing', code: 'bad_request', field: 'template_input.issue_url',
+      } }) },
+      { method: 'POST', path: '/api/tracks', body: {}, responseSchema: z.unknown() },
+    );
+    if (result.status !== 'failed') throw new Error('the kernel answer must be a failure');
+    return result.error;
+  }
+
+  it('says which field in every sentence a reader is shown', async () => {
+    const failure = await missingInput();
+    const sentence = 'template_input.issue_url: required field is missing';
+    expect(failureReason(failure)).toBe(sentence);
+    expect(refusedText(failure, 'Not created.')).toBe(sentence);
+    expect(refusalText(failure, PLUGIN_CONFIG_FAILURES, 'Not created.')).toBe(sentence);
+    expect(new ApiError(failure).message).toBe(sentence);
+  });
+
+  it('leaves a refusal without a field in its own words', () => {
+    expect(failureReason(http(400, 'bad_request', 'config patch must be a JSON object'))).toBe('config patch must be a JSON object');
   });
 });

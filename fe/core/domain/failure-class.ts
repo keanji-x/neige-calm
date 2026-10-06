@@ -36,12 +36,21 @@ export function classifyFailure<C extends string>(failure: ApiFailure | null, ta
   return table.rules.find((rule) => matches(rule, failure))?.is ?? table.otherwise;
 }
 
+/**
+ * The server's reason as a reader is shown it. A refusal about one field of the request carries that field apart
+ * from its reason, so the sentence is `<field>: <reason>`: shown without it, "required field is missing" would not
+ * say which. Only a caller that places the reason on the field itself (the plugin config form) reads `message` alone.
+ */
+export function failureReason(failure: ApiFailure): string {
+  return failure.kind === 'http' && failure.field !== undefined ? `${failure.field}: ${failure.message}` : failure.message;
+}
+
 /** A failed request as a rejected promise carries it: the `ApiFailure` survives for the tables to read. */
 export class ApiError extends Error {
   readonly failure: ApiFailure;
 
   constructor(failure: ApiFailure) {
-    super(failure.message);
+    super(failureReason(failure));
     this.name = 'ApiError';
     this.failure = failure;
   }
@@ -76,7 +85,7 @@ export type WriteClass = WriteFailure | 'done';
  * {@link readWriteFailure}.
  */
 export function refusedText(failure: ApiFailure | NotSentError | null, refused: string): string {
-  return failure === null || failure instanceof NotSentError || failure.message === '' ? refused : failure.message;
+  return failure === null || failure instanceof NotSentError || failure.message === '' ? refused : failureReason(failure);
 }
 
 /** One write's fixed sentences: when it was refused without a reason, and when its outcome is unknown. */

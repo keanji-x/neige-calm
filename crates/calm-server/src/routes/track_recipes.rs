@@ -110,7 +110,13 @@ fn validate_recipe_body(body: &str) -> Result<()> {
         ));
     }
     crate::track_report_guard::validate_body_fences(body)
-        .map_err(|error| CalmError::BadRequest(format!("track recipe body: {}", error.reason())))?;
+        // A 400 keeps its kind, so only its reason is wrapped; any other kind passes through.
+        .map_err(|error| match error {
+            CalmError::BadRequest(reason) => {
+                CalmError::BadRequest(format!("track recipe body: {reason}"))
+            }
+            other => other,
+        })?;
     check_document(body)
         .map(|_| ())
         .map_err(|error| CalmError::BadRequest(format!("report contract header: {error}")))

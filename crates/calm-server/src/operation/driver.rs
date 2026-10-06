@@ -414,7 +414,9 @@ impl OperationRuntime {
                 let Some((_next, events)) = (match prepared {
                     Ok(prepared) => prepared,
                     Err(e) => {
-                        if let Some((last_error, last_error_class)) = client_failure_parts(&e) {
+                        if let Some((last_error, last_error_class)) =
+                            crate::routes::idempotency_key::operation_failure_parts(&e)
+                        {
                             if let Some(result) = self
                                 .repo
                                 .mark_failed(
@@ -1236,17 +1238,6 @@ fn kill_parked_group_if_alive(artifacts: &SpawnArtifacts, alive: bool) {
     }
     if parked_artifacts_alive(artifacts) {
         signal_process_group(artifacts.pgid, libc::SIGKILL);
-    }
-}
-
-fn client_failure_parts(error: &CalmError) -> Option<(String, &'static str)> {
-    match error {
-        CalmError::BadRequest(message) => Some((message.clone(), "bad_request")),
-        CalmError::NotFound(message) => Some((message.clone(), "not_found")),
-        CalmError::Forbidden(message) => Some((message.clone(), "forbidden")),
-        CalmError::Conflict(message) => Some((message.clone(), "conflict")),
-        CalmError::Unauthorized => Some(("unauthorized".into(), "unauthorized")),
-        _ => None,
     }
 }
 

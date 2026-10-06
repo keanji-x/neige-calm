@@ -46,6 +46,28 @@ pub(crate) fn parse_idempotency_key_header(headers: &HeaderMap) -> Result<Option
     }
 }
 
+/// A refusal an operation's adapter raised before anything was written, as the operation stores it:
+/// `(last_error, last_error_class)`. `None` is a fault, not a refusal. [`calm_error_from_operation_failure`]
+/// is the inverse. A field violation is stored as its `<field>: <reason>` text under `bad_request`:
+/// the stored row has no column for the field, and the text still names it.
+pub(crate) fn operation_failure_parts(error: &CalmError) -> Option<(String, &'static str)> {
+    match error {
+        CalmError::BadRequest(message) => Some((message.clone(), "bad_request")),
+        CalmError::InvalidField { field, reason } => {
+            Some((format!("{field}: {reason}"), "bad_request"))
+        }
+        CalmError::InvalidBody(message) => Some((message.clone(), "invalid_body")),
+        CalmError::UnsupportedMediaType(message) => {
+            Some((message.clone(), "unsupported_media_type"))
+        }
+        CalmError::NotFound(message) => Some((message.clone(), "not_found")),
+        CalmError::Forbidden(message) => Some((message.clone(), "forbidden")),
+        CalmError::Conflict(message) => Some((message.clone(), "conflict")),
+        CalmError::Unauthorized => Some(("unauthorized".into(), "unauthorized")),
+        _ => None,
+    }
+}
+
 /// A stored operation's failure as the route answers it: a refusal keeps its class; a failure past
 /// the commit is `Internal`.
 pub(crate) fn calm_error_from_operation_failure(
@@ -55,6 +77,8 @@ pub(crate) fn calm_error_from_operation_failure(
 ) -> CalmError {
     match last_error_class {
         Some("bad_request") => CalmError::BadRequest(last_error),
+        Some("invalid_body") => CalmError::InvalidBody(last_error),
+        Some("unsupported_media_type") => CalmError::UnsupportedMediaType(last_error),
         Some("not_found") => CalmError::NotFound(last_error),
         Some("forbidden") => CalmError::Forbidden(last_error),
         Some("conflict") => CalmError::Conflict(last_error),
@@ -175,6 +199,40 @@ mod tests {
             parse_idempotency_key_header(&HeaderMap::new()).unwrap(),
             None
         );
+    }
+
+    /// Every refusal an adapter can raise is stored as a refusal and answered with its own code and
+    /// status again; a field violation keeps its field in the text.
+    #[test]
+    fn a_stored_refusal_answers_with_the_code_it_was_raised_with() {
+        let refusals = [
+            CalmError::BadRequest("x".into()),
+            CalmError::InvalidField {
+                field: "template_input.issue_url".into(),
+                reason: "required field is missing".into(),
+            },
+            CalmError::InvalidBody("x".into()),
+            CalmError::UnsupportedMediaType("x".into()),
+            CalmError::NotFound("x".into()),
+            CalmError::Forbidden("x".into()),
+            CalmError::Conflict("x".into()),
+            CalmError::Unauthorized,
+        ];
+        for refusal in refusals {
+            let (last_error, class) = operation_failure_parts(&refusal)
+                .unwrap_or_else(|| panic!("{refusal:?} must be stored as a refusal"));
+            let answered =
+                calm_error_from_operation_failure(Some(class), last_error, PhaseTag::SpawnStarted);
+            assert_eq!(answered.code(), refusal.code(), "{refusal:?}");
+            assert_eq!(answered.status(), refusal.status(), "{refusal:?}");
+        }
+        let (text, _) = operation_failure_parts(&CalmError::InvalidField {
+            field: "config.retries".into(),
+            reason: "expected type `integer`".into(),
+        })
+        .unwrap();
+        assert_eq!(text, "config.retries: expected type `integer`");
+        assert!(operation_failure_parts(&CalmError::Internal("x".into())).is_none());
     }
 
     /// A compensated failure is final for its key; a refusal keeps its own code; a stuck operation

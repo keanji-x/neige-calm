@@ -1428,3 +1428,18 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     expect(retry?.body).toEqual(first?.body);
   });
 });
+
+describe('a refused create that names a field', () => {
+  it('names the input field a refused create is about', async () => {
+    /* The kernel's exact answer to a `template_input` missing a required key: the reason, with the field apart. */
+    harness({ templates: [], trackCreateSequence: [{ status: 400, statusText: 'Bad Request', body: {
+      error: 'required field is missing', code: 'bad_request', field: 'template_input.issue_url',
+    } }] });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Bound input');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    expect((await within(await screen.findByRole('main')).findByRole('alert')).textContent)
+      .toContain('template_input.issue_url: required field is missing');
+  });
+});
